@@ -1,14 +1,14 @@
-# dev-web-stack M1 — Plan 1: Foundation, Static/Node Sites, and Trusted TLS
+# dev-web-stack M1 — Plan 1: Foundation, Static/Node Sites, Trusted TLS, and External Vhosts
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Deliver a working Linux slice of dev-web-stack: install the privileged helper, initialize the local CA and hosts block, run the daemon and dashboard, and serve static and Node sites at trusted `https://<name>.test` URLs.
+**Goal:** Deliver a working Linux slice of dev-web-stack: install the privileged helper, initialize the local CA and hosts block, run the daemon and dashboard, serve static and Node sites at trusted `https://<name>.test` URLs, and optionally serve them through helper-managed native nginx or Apache vhosts.
 
-**Architecture:** One Go module builds `devstack` (CLI + daemon) and `devstack-helper` (root service). The unprivileged daemon owns SQLite state, the reverse proxy, the supervisor, the dashboard, and site orchestration. The helper owns only hosts edits, CA key custody/signing, trust-store installation, and fixed 80/443 forwarders. Sites are served by supervised backend processes on loopback ports; the proxy routes by `Host`.
+**Architecture:** One Go module builds `devstack` (CLI + daemon) and `devstack-helper` (root service). The unprivileged daemon owns SQLite state, the reverse proxy, the supervisor, the dashboard, and site orchestration. The helper owns hosts edits, CA key custody/signing, trust-store installation, fixed 80/443 forwarders, and validated native vhost generation/installation. Sites are served by supervised backend processes on loopback ports in builtin mode; in external mode nginx/Apache own 80/443, static sites are served from their roots, and Node traffic is proxied to its loopback backend.
 
-**Tech Stack:** Go 1.26+, `modernc.org/sqlite`, `spf13/cobra`, stdlib `net/http`/`crypto/tls`/`crypto/x509`, Svelte 5 + TypeScript + Vite, systemd, Linux x86_64.
+**Tech Stack:** Go 1.26+, `modernc.org/sqlite`, `spf13/cobra`, stdlib `net/http`/`crypto/tls`/`crypto/x509`, Svelte 5 + TypeScript + Vite, systemd, nginx/Apache (optional external serving), Linux x86_64.
 
-**Spec:** `docs/superpowers/specs/2026-10-22-dev-web-stack-m1-design.md` (Plan 1 implements §§5–9, 10.1, 10.3, 12–15, and 17–19 for static/Node on Linux, including install/uninstall but not upgrade; PHP is Plan 2, Windows/WSL is Plan 3, packaging is Plan 4.)
+**Specs:** `docs/superpowers/specs/2026-10-22-dev-web-stack-m1-design.md` (Plan 1 implements §§5–9, 10.1, 10.3, 12–15, and 17–19 for static/Node on Linux, including install/uninstall but not upgrade; PHP is Plan 2, Windows/WSL is Plan 3, packaging is Plan 4.) and `docs/superpowers/specs/2026-10-22-external-vhosts-design.md` (helper-managed nginx/Apache vhosts; static/Node in Plan 1, PHP in Plan 2).
 
 ## Global Constraints
 
@@ -25,6 +25,10 @@
 - Hosts block markers: `# BEGIN devstack` and `# END devstack`; only `127.0.0.1 <domain>` lines inside; unrelated content preserved; atomic replace.
 - Logs: rotate at 10 MB, keep 5 files, 5,000-line in-memory ring per site.
 - Supervisor: readiness 30s (Node 60s), stop grace 10s, backoff `1s, 2s, 4s, 8s, 16s, 30s`, crash after 5 failures in 5 minutes.
+- Serving mode: `serving_mode: builtin | nginx | apache`, default `builtin`; exactly one active. External mode releases the 80/443 forwarders; the built-in proxy listeners do not start.
+- External files: `/etc/devstack/vhosts/<server>/current/*.conf`, `/etc/devstack/tls/<owner>.{crt,key}` (key `0600` root, cert `0644`), one bridge include in the server's standard include directory; helper state in `/var/lib/devstack-helper/vhosts.json` (`0600`).
+- The helper renders vhosts only from validated site specs; no arbitrary config text, paths, commands, or ports. Every sync runs the fixed config test and reload, and rolls back on failure.
+- External static sites have no `serve-static` process; the vhost is the serving mechanism and a stopped site serves a branded 503. Node keeps its supervised backend. PHP vhosts and FastCGI templates are Plan 2.
 - Every task ends with a green test run and a commit. No TODO/TBD placeholders.
 
 ## Review Focus
@@ -34,6 +38,9 @@
 3. **Process adoption and orphans:** daemon restart with running sites must not duplicate processes or leak process groups; stopped sites stay stopped.
 4. **Certificate integrity:** wrong SANs, expired certs, mismatched keys, or permissive key modes must be rejected and reported; renewal must not brick a serving site.
 5. **Filesystem boundaries:** static requests, the fs browser, and archive extraction must not read outside the intended root via `..` or symlinks.
+6. **Vhost injection and containment:** helper-rendered nginx/Apache configs must escape every interpolated value, reject traversal/symlink roots and out-of-range ports, and never accept arbitrary config text or commands.
+7. **Mode-switch safety:** a failed nginx/Apache config test or reload must restore the previous release and serving mode; 80/443 must never be left unowned, and builtin↔external switches must be reversible.
+8. **Vhost TLS custody:** site keys under `/etc/devstack/tls` are root-only, certificates match the site SANs, and renewal never bricks a serving vhost.
 
 ---
 
@@ -1460,10 +1467,7 @@ git commit -m "feat: add CLI commands and human/JSON output"
 ## Task 19: Dashboard UI
 
 **Files:**
-- Create: `ui/package.json`, `ui/vite.config.ts`, `ui/tsconfig.json`, `ui/index.html`
-- Create: `ui/src/main.ts`, `ui/src/App.svelte`, `ui/src/app.css`
-- Create: `ui/src/lib/api.ts`, `ui/src/lib/api.test.ts`
-- Create: `ui/src/routes/Sites.svelte`, `AddSite.svelte`, `SiteDetail.svelte`, `Runtimes.svelte`, `Doctor.svelte`, `Settings.svelte`
+- Existing (built ahead of the plan at `1d7a2bd`): `ui/package.json`, `ui/vite.config.ts`, `ui/tsconfig.json`, `ui/index.html`, `ui/src/**`, `ui/src/lib/api.test.ts`
 - Create: `ui/tests/e2e.spec.ts`, `ui/playwright.config.ts`
 - Modify: `ui/embed.go`, `internal/api/server.go` (serve embedded assets)
 
@@ -1471,37 +1475,35 @@ git commit -m "feat: add CLI commands and human/JSON output"
 - Produces: embedded `ui.FS()` via `//go:embed all:dist`; dashboard served at `/` with SPA fallback and static assets under `/assets/`.
 - Produces API client `api.ts` functions mirroring Task 16 routes; CSRF from `GET /api/v1/session`.
 
-- [ ] **Step 1: Write failing UI tests**
+- [ ] **Step 1: Write failing embedding and Playwright tests**
 
-```ts
-test('create request includes CSRF header', async () => {
-  const calls: RequestInit[] = []
-  global.fetch = vi.fn(async (_u, init) => { calls.push(init!); return new Response(JSON.stringify({ id: 's1' }), { status: 201 }) })
-  await api.createSite({ name: 'blog', path: '/tmp', kind: 'static' })
-  expect((calls[0].headers as Record<string,string>)['X-CSRF-Token']).toBe('csrf')
-})
+```go
+func TestUIEmbedServesIndex(t *testing.T) {
+    // GET / on a server with the embedded FS returns index.html; GET /api/v1/health
+    // still routes to the API; GET /assets/<hashed>.js returns the asset with a JS MIME type.
+}
 ```
 Playwright: visit dashboard, see Sites, open Add Site, browse a temp directory, submit, see `https://blog.test`, open detail, assert logs panel and start/stop buttons.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd ui && npm ci && npm test`
-Expected: FAIL (missing api module).
+Run: `go test ./ui ./internal/api` and `cd ui && npx playwright test`
+Expected: FAIL (missing embed and Playwright config).
 
 - [ ] **Step 3: Implement**
 
-Svelte 5 SPA with a small router (`svelte-spa-router`), accessible form controls, and a restrained dev-tool visual style. Screens: Sites list (status pill, URL, start/stop/restart), Add Site wizard (name, path browser, static/Node, Node version, command, TLS/HTTPS toggles; missing runtimes require explicit confirmation before download), Site detail (URL, cert expiry, logs streaming with pause, delete with typed confirmation), Runtimes (Node installed/available, install/remove), Doctor (checks + repair), Settings (ports read-only and log retention). Use `EventSource` for logs/events. API client sends `credentials: 'same-origin'`, stores CSRF in memory, and surfaces error codes/messages. `npm run build` outputs `ui/dist`; `ui/embed.go` embeds it; the API serves `index.html` for non-API routes. Add Playwright config using the daemon from Task 17 with a temp home.
+The Svelte 5 dashboard already exists (Sites, Add Site, Site detail, Runtimes, Doctor, Settings; mock/real API; CSRF; SSE; light/dark; responsive). Review it against the design brief, then add `ui/embed.go` with `//go:embed all:dist`, serve `index.html` for non-API routes and assets under `/assets/`, and add the Playwright config using the daemon from Task 17 with a temp home. Record any UI gaps for Task 25, which adds the Serving screen and vhost preview.
 
 - [ ] **Step 4: Run tests and build**
 
-Run: `cd ui && npm test && npm run build && cd .. && go test ./... && go build ./...`
+Run: `cd ui && npm ci && npm test && npm run build && cd .. && go test ./... && go build ./...`
 Expected: PASS and embedded assets build.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add ui internal/api
-git commit -m "feat: add embedded Svelte dashboard"
+git commit -m "feat: embed dashboard and add Playwright coverage"
 ```
 
 ---
@@ -1555,7 +1557,343 @@ git commit -m "feat: add Linux install, systemd units, docs, and CI"
 
 ---
 
-## Task 21: Plan 1 acceptance pass
+## Task 21: Vhost spec model and nginx/Apache renderers
+
+**Files:**
+- Create: `internal/vhost/vhost.go`, `internal/vhost/nginx.go`, `internal/vhost/apache.go`
+- Create: `internal/vhost/nginx_test.go`, `internal/vhost/apache_test.go`
+- Create: `internal/vhost/testdata/` golden files
+
+**Interfaces:**
+- Produces:
+
+```go
+type Server string
+const ( ServerNginx Server = "nginx"; ServerApache Server = "apache" )
+type Mode string
+const ( ModeBuiltin Mode = "builtin"; ModeNginx Mode = "nginx"; ModeApache Mode = "apache" )
+type SiteSpec struct {
+    ID, Name, Domain string
+    WWW bool
+    Kind model.SiteKind
+    DocumentRoot string
+    BackendPort int
+    TLS, ForceHTTPS, SPAFallback, FrontController bool
+    DesiredState model.DesiredState
+    CertPEM, KeyPEM []byte
+    CertNotAfter time.Time
+}
+type DashboardSpec struct { Domain string; UIPort int; CertPEM, KeyPEM []byte }
+type Set struct { Server Server; Sites []SiteSpec; Dashboard DashboardSpec; MaxBodyBytes int64 }
+func Render(set Set) (map[string][]byte, error)
+func RenderSite(server Server, s SiteSpec) ([]byte, error)
+func ValidateSiteSpec(s SiteSpec) error
+var ErrPHPUnsupported = errors.New("PHP vhosts arrive with Plan 2")
+```
+
+- [ ] **Step 1: Write failing tests**
+
+```go
+func TestRenderNginxStaticMatrix(t *testing.T) {
+    base := SiteSpec{ID: "s1", Name: "blog", Domain: "blog.test", WWW: true,
+        Kind: model.SiteStatic, DocumentRoot: "/home/u/blog/public",
+        DesiredState: model.DesiredRunning, TLS: true, CertPEM: certPEM, KeyPEM: keyPEM}
+    for _, tc := range []struct{ name string; mutate func(*SiteSpec); want ...string }{
+        {"force-https", func(s *SiteSpec) { s.ForceHTTPS = true }, "return 308 https://$host$request_uri"},
+        {"no-force", func(s *SiteSpec) {}, "root /home/u/blog/public"},
+        {"spa", func(s *SiteSpec) { s.SPAFallback = true }, "try_files $uri $uri/ /index.html"},
+        {"stopped", func(s *SiteSpec) { s.DesiredState = model.DesiredStopped }, "return 503"},
+    } { /* render, compare golden file */ }
+}
+func TestRenderRejectsTraversalAndInjection(t *testing.T) {
+    bad := []SiteSpec{
+        {ID: "x", Domain: "evil.com", Kind: model.SiteStatic, DocumentRoot: "/tmp"},
+        {ID: "x", Domain: "blog.test", Kind: model.SiteStatic, DocumentRoot: "/tmp/../etc"},
+        {ID: "x\nserver", Domain: "blog.test", Kind: model.SiteStatic, DocumentRoot: "/tmp"},
+        {ID: "x", Domain: "blog.test", Kind: model.SiteNode, BackendPort: 80},
+        {ID: "x", Domain: "blog.test", Kind: model.SitePHP, DocumentRoot: "/tmp"},
+    }
+    for _, s := range bad { if err := ValidateSiteSpec(s); err == nil { t.Fatalf("accepted %+v", s) } }
+}
+func TestRenderEscapesApachePaths(t *testing.T) {
+    // A document root containing spaces/quotes must render as one quoted argument,
+    // and a newline must be rejected before rendering.
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/vhost`
+Expected: FAIL (undefined: Render).
+
+- [ ] **Step 3: Implement**
+
+Render nginx and Apache vhosts from `Set`: static `root`/`DocumentRoot` + `try_files`/`FallbackResource`, Node proxy to `BackendPort` with WebSocket upgrade and forwarded headers, dashboard vhost to `127.0.0.1:<UIPort>`, default 404, branded 503, and the full TLS/force-HTTPS matrix from the vhost spec. PHP returns `ErrPHPUnsupported`. Validate domains with `domain.ValidateDomain` (allow `devstack.test`), roots as absolute/symlink-resolved directories, ports in `41000–42999`, IDs/names `[a-z0-9-]`, and reject newlines/NUL/quotes in every interpolated value. Escape Apache paths as quoted arguments. Emit a generated-file header. Golden files cover static running/stopped, SPA, TLS on/off, force-HTTPS, www, Node, dashboard, default 404, and maintenance 503.
+
+- [ ] **Step 4: Run tests**
+
+Run: `go test ./internal/vhost`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/vhost
+git commit -m "feat: add nginx and Apache vhost renderers"
+```
+
+---
+
+## Task 22: Helper vhost manager, bridge, atomic releases, and RPC
+
+**Files:**
+- Create: `internal/helper/vhosts.go`, `internal/helper/vhost_linux.go`, `internal/helper/vhosts_test.go`
+- Create: `internal/helperproto/vhosts.go`
+- Modify: `internal/helper/server.go`, `internal/helper/ca.go`
+- Modify: `internal/helperproto/types.go`
+- Modify: `cmd/devstack-helper/main.go` (flags `--vhost-root`, `--vhost-state`, `--nginx-include-dir`, `--apache-include-dir`; defaults `/etc/devstack`, `/var/lib/devstack-helper/vhosts.json`, auto-detect, auto-detect)
+
+**Interfaces:**
+- Produces:
+
+```go
+type VhostManager struct { /* ... */ }
+func NewVhostManager(root, statePath string, authority *Authority, runner CommandRunner, logger *slog.Logger) *VhostManager
+func (m *VhostManager) Sync(ctx context.Context, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+func (m *VhostManager) Status(ctx context.Context) (helperproto.VhostStatusResponse, error)
+func (m *VhostManager) SetMode(ctx context.Context, mode string, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+func (m *VhostManager) Remove(ctx context.Context) error
+func (a *Authority) VerifyLeaf(certPEM, keyPEM []byte, domains []string) error
+```
+
+- Produces RPCs: `GET /v1/vhosts/status`, `POST /v1/vhosts/sync`, `POST /v1/vhosts/mode`, `DELETE /v1/vhosts`, using `helperproto.VHostSyncRequest`, `VHostSite`, `VhostStatusResponse`.
+
+- [ ] **Step 1: Write failing tests**
+
+```go
+func TestSyncWritesReleaseAndBridge(t *testing.T) {
+    root := t.TempDir(); runner := &fakeRunner{}
+    m := NewVhostManager(root, filepath.Join(root, "vhosts.json"), testAuthority(t), runner, slog.Default())
+    st, err := m.Sync(ctx, validNginxRequest(t))
+    if err != nil { t.Fatal(err) }
+    if st.ConfigOK != true || st.CurrentRelease == "" { t.Fatalf("%+v", st) }
+    if _, err := os.Stat(filepath.Join(root, "nginx", "current", "blog-test.conf")); err != nil { t.Fatal(err) }
+    if !runner.called("nginx", "-t") { t.Fatal("config test not run") }
+    if !runner.called("systemctl", "reload", "nginx") { t.Fatal("reload not run") }
+}
+func TestSyncRollsBackOnConfigFailure(t *testing.T) {
+    // First sync succeeds; second render is forced to fail the fake config test.
+    // Assert current still points at the first release and the error is VHOST_CONFIG_INVALID.
+}
+func TestSyncRejectsWrongSANAndLooseKey(t *testing.T) {
+    // Cert SAN other.test, a 0644 key, and an expired cert must all fail before any write.
+}
+func TestSetModeBuiltinRestoresForwarders(t *testing.T) {
+    // Switch to nginx, then builtin: bridge/release removed, SetForwarders(true) called.
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/helper`
+Expected: FAIL (undefined: NewVhostManager).
+
+- [ ] **Step 3: Implement**
+
+`Sync` validates the request (mode, domains, IDs, roots, ports, PEMs), renders via `internal/vhost`, writes a timestamped release under `<root>/<server>/releases/`, writes TLS files atomically (key `0600`, cert `0644`, fsynced), ensures the bridge include in the detected standard directory, swaps `current` with `os.Rename`, runs the fixed config test (`nginx -t` or `apachectl configtest`), reloads (`systemctl reload nginx|apache2|httpd`), and prunes to the last two releases. On test or reload failure, swap `current` back, re-run the test, and return `VHOST_CONFIG_INVALID`/`SERVER_RELOAD_FAILED` with scrubbed stderr. `SetMode` stops/starts forwarders through the existing `SetForwarders` path and performs the same rollback; `Remove` deletes only our bridge/releases/TLS files and restores forwarders. Detect the server binary, version, include directory, and Apache modules; unsupported layouts return `VHOST_INCLUDE_MISSING`/`SERVING_MODE_UNAVAILABLE`. Serialize syncs with a mutex. Reject payloads over 8 MiB. `Authority.VerifyLeaf` checks chain, key match, SAN set, and expiry.
+
+- [ ] **Step 4: Run tests**
+
+Run: `go test ./internal/helper`
+Expected: PASS (real nginx/Apache subtests skip when absent).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/helper internal/helperproto
+git commit -m "feat: add helper-managed nginx and Apache vhosts"
+```
+
+---
+
+## Task 23: Daemon serving-mode integration, static lifecycle, and API
+
+**Files:**
+- Modify: `internal/config/config.go`, `internal/config/config_test.go`
+- Modify: `internal/sites/service.go`, `internal/sites/service_test.go`
+- Modify: `internal/daemon/daemon.go`, `internal/daemon/daemon_test.go`
+- Create: `internal/api/handlers_vhosts.go`
+- Modify: `internal/api/server.go`, `internal/api/api_test.go`
+- Modify: `internal/client/client.go`, `internal/client/client_test.go`
+
+**Interfaces:**
+- Produces `Config.ServingMode string` (`builtin|nginx|apache`, default `builtin`, validated in `Validate`).
+- Produces:
+
+```go
+type Vhosts interface {
+    VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error)
+    SyncVhosts(ctx context.Context, req helperproto.VHostSyncRequest) error
+    SetServingMode(ctx context.Context, mode string, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+    RemoveVhosts(ctx context.Context) error
+}
+func (s *Service) SetServingMode(ctx context.Context, mode string) error
+func (s *Service) SyncVhosts(ctx context.Context) error
+```
+
+- Produces routes: `GET /api/v1/vhosts/status`, `POST /api/v1/vhosts/mode`, `POST /api/v1/vhosts/sync`, `GET /api/v1/vhosts/preview?site=&server=`.
+- Produces client methods: `VhostStatus`, `SetServingMode`, `SyncVhosts`, `PreviewVhost`.
+
+- [ ] **Step 1: Write failing tests**
+
+```go
+func TestExternalStaticStartsWithoutProcess(t *testing.T) {
+    svc, fakes := newTestService(t); fakes.vhosts.mode = "nginx"
+    site, err := svc.Create(ctx, CreateRequest{Name: "blog", Path: fakes.root, Kind: "static", TLS: true})
+    if err != nil { t.Fatal(err) }
+    if site.Status != model.StatusRunning || site.HTTPPort != 0 { t.Fatalf("%+v", site) }
+    if fakes.backend.started["site"] { t.Fatal("static backend started in external mode") }
+    if !fakes.vhosts.synced["blog.test"] { t.Fatal("vhost not synced") }
+}
+func TestCreateRollsBackWhenVhostSyncFails(t *testing.T) {
+    svc, fakes := newTestService(t); fakes.vhosts.mode = "nginx"; fakes.vhosts.err = errors.New("bad config")
+    if _, err := svc.Create(ctx, CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"}); err == nil { t.Fatal("want error") }
+    if sites, _ := svc.List(ctx); len(sites) != 0 { t.Fatal("site persisted") }
+    if fakes.backend.started["site"] { t.Fatal("backend left running") }
+}
+func TestVhostModeRequiresCSRF(t *testing.T) {
+    h := newTestAPI(t)
+    rec := httptest.NewRecorder()
+    h.ServeHTTP(rec, httptest.NewRequest("POST", "http://127.0.0.1/api/v1/vhosts/mode", strings.NewReader(`{"mode":"nginx"}`)))
+    if rec.Code != http.StatusForbidden { t.Fatalf("code = %d", rec.Code) }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/config ./internal/sites ./internal/api ./internal/client`
+Expected: FAIL (undefined: ServingMode / SyncVhosts).
+
+- [ ] **Step 3: Implement**
+
+Add `serving_mode` to config defaults/validation. In external mode, static sites skip `Backend.Prepare`/`Start`; `Start` validates the root and syncs a running vhost, `Stop` syncs a 503 vhost, and `Get`/`List` derive status from desired state + root readability. Node/PHP keep supervised backends; every mutation and cert renewal calls `SyncVhosts`, and a failure rolls back like a hosts failure. Daemon startup reconciles helper state with config, syncs the full set, and skips the proxy listeners in external mode (API/UI stays on 7070). Add the four API handlers with session/CSRF/Host checks and the client methods. `PreviewVhost` renders without installing.
+
+- [ ] **Step 4: Run tests**
+
+Run: `go test ./internal/config ./internal/sites ./internal/api ./internal/client ./internal/daemon`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/config internal/sites internal/api internal/client internal/daemon
+git commit -m "feat: add external serving mode to daemon and API"
+```
+
+---
+
+## Task 24: CLI vhost commands and Doctor checks
+
+**Files:**
+- Create: `internal/cli/vhost.go`
+- Modify: `internal/cli/root.go`, `internal/cli/cli_test.go`
+- Modify: `internal/doctor/checks.go`, `internal/doctor/doctor.go`, `internal/doctor/doctor_test.go`
+
+**Interfaces:**
+- Produces CLI: `devstack vhost status`, `vhost use nginx|apache|builtin [--yes]`, `vhost sync`, `vhost preview <site> [--server nginx|apache]`, `vhost path`; all support `--json`.
+- Produces Doctor checks: `serving-mode`, `vhost-server`, `vhost-include`, `vhost-config`, `vhost-freshness`, `vhost-tls` with `ok|warn|fail|skipped` and remediation.
+
+- [ ] **Step 1: Write failing tests**
+
+```go
+func TestCLIVhostStatusAndUse(t *testing.T) {
+    fake := &fakeClient{vhostStatus: helperproto.VhostStatusResponse{Mode: "builtin", ServerVersion: "1.26.1"}}
+    out := runCLI(t, fake, "vhost", "status")
+    if !strings.Contains(out, "builtin") { t.Fatalf("output = %q", out) }
+    out = runCLI(t, fake, "vhost", "use", "nginx", "--yes")
+    if !fake.servingModeSet || fake.servingMode != "nginx" { t.Fatal("mode not switched") }
+}
+func TestDoctorReportsVhostConfigFailure(t *testing.T) {
+    svc, fakes := newTestDoctor(t); fakes.vhosts.status.ConfigOK = false
+    rep, _ := svc.Run(ctx)
+    if hasCheck(rep, "vhost-config", StatusOK) { t.Fatalf("%+v", rep.Checks) }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `go test ./internal/cli ./internal/doctor`
+Expected: FAIL (undefined: vhost command / vhost check).
+
+- [ ] **Step 3: Implement**
+
+Add the vhost command tree with confirmation for mode changes, human/JSON output, and daemon auto-start. Doctor checks the mode, server binary/version/service state, bridge include presence, config-test result, release freshness against registered sites, and TLS key modes; warnings for a stopped unused server. `vhost path` prints `/etc/devstack/vhosts/<server>/current` and the bridge path.
+
+- [ ] **Step 4: Run tests**
+
+Run: `go test ./internal/cli ./internal/doctor`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/cli internal/doctor
+git commit -m "feat: add vhost CLI and Doctor checks"
+```
+
+---
+
+## Task 25: Serving UI, vhost preview, docs, and E2E
+
+**Files:**
+- Modify: `ui/src/routes/Settings.svelte`, `ui/src/routes/SiteDetail.svelte`
+- Modify: `ui/src/lib/api.ts`, `ui/src/lib/types.ts`, `ui/src/lib/mock.ts`, `ui/src/lib/components/AppShell.svelte`
+- Create: `docs/vhosts.md`
+- Modify: `README.md`, `test/e2e/linux.sh`, `Makefile`, `.github/workflows/ci.yml`
+
+**Interfaces:**
+- Produces a Settings → Serving panel: mode selector, server/version, include/config-test state, last sync, Sync now, switch confirmation, preview drawer.
+- Produces a Site detail "Preview vhost" action.
+- Produces `docs/vhosts.md` covering prerequisites, include layout, mode switching, TLS, troubleshooting, and uninstall.
+- Produces E2E coverage for builtin→nginx→builtin when nginx is installed.
+
+- [ ] **Step 1: Write failing tests**
+
+```ts
+test('vhost mode switch sends CSRF and confirms impact', async () => {
+  const calls: RequestInit[] = []
+  global.fetch = vi.fn(async (_u, init) => { calls.push(init!); return new Response(JSON.stringify({ mode: 'nginx' }), { status: 200 }) })
+  await api.setServingMode('nginx')
+  expect((calls[0].headers as Record<string,string>)['X-CSRF-Token']).toBe('csrf')
+})
+```
+
+Extend `test/e2e/linux.sh`: after the builtin HTTPS checks, run `devstack vhost use nginx --yes` (skip with a clear message if nginx is absent), assert `nginx -t`, curl a static and a Node site through the vhost, then `devstack vhost use builtin --yes` and assert the forwarders/proxy serve again.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cd ui && npm test` and `bash test/e2e/linux.sh`
+Expected: FAIL (missing vhost API/UI and E2E steps).
+
+- [ ] **Step 3: Implement**
+
+Add the Serving panel and preview drawer using the design-system tokens; wire the API/mock client and CSRF. Cover loading, empty, error, and confirmation states; show the impact of a mode switch (80/443 ownership, reload, temporary downtime). Add the docs and E2E steps. CI installs nginx/apache for the Ubuntu job.
+
+- [ ] **Step 4: Run tests and build**
+
+Run: `cd ui && npm test && npm run build && cd .. && go test ./... && go build ./... && bash test/e2e/linux.sh`
+Expected: PASS (nginx-specific E2E skips cleanly when unavailable).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add ui docs/vhosts.md README.md test/e2e Makefile .github
+git commit -m "feat: add vhost serving UI, docs, and E2E"
+```
+
+---
+
+## Task 26: Plan 1 acceptance pass
 
 **Files:**
 - Create: `docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md`
@@ -1566,16 +1904,16 @@ git commit -m "feat: add Linux install, systemd units, docs, and CI"
 
 - [ ] **Step 1: Write the acceptance checklist**
 
-Copy the Plan 1 subset of spec §21: init/trust/hosts green; static site at trusted HTTPS; Node site with HMR WebSocket; start/stop/restart from CLI and UI; daemon restart reconciliation; uninstall/trust remove; docs.
+Copy the Plan 1 subset of spec §21: init/trust/hosts green; static site at trusted HTTPS; Node site with HMR WebSocket; start/stop/restart from CLI and UI; daemon restart reconciliation; uninstall/trust remove; docs. Add external serving: `devstack vhost use nginx` and `use apache` install native vhosts, serve static and Node at trusted HTTPS, preview vhosts, roll back a deliberately broken config, and `use builtin` restores the proxy/forwarders; uninstall removes our vhosts without touching unrelated configs.
 
 - [ ] **Step 2: Run the automated acceptance script**
 
 Run: `make build && bash test/e2e/linux.sh`
-Expected: PASS; record output hashes/versions.
+Expected: PASS; record output hashes/versions. The script exercises builtin mode and, when nginx is installed, builtin→nginx→builtin including static and Node traffic.
 
 - [ ] **Step 3: Run the manual checks on a Fedora 44 workstation**
 
-Verify Chrome and Firefox show no certificate warning for a static and a Node site, `devstack trust status` matches each browser, UI flows work, and `devstack uninstall` restores hosts/CA/forwarders. Record results.
+Verify Chrome and Firefox show no certificate warning for a static and a Node site, `devstack trust status` matches each browser, UI flows work, external nginx and Apache modes serve both site kinds after a mode switch and reload, and `devstack uninstall` restores hosts/CA/forwarders and removes our vhosts/bridge/TLS files. Record results.
 
 - [ ] **Step 4: Fix or file every failure before marking the plan complete**
 
@@ -1592,6 +1930,7 @@ git commit -m "docs: record plan 1 acceptance results"
 
 ## Plan series and deferred work
 
-- **Plan 2 — PHP:** PHP build pipeline (8.2–8.5, extensions), version management, per-site FPM, php.ini and extension toggles, FastCGI transport, PHP UI.
-- **Plan 3 — Windows/WSL:** agent, provisioning, path translation, Windows helper (named pipe, cert store, Firefox policy), Windows install, backend conformance.
+- **Plan 1 extension — external vhosts:** Tasks 21–26 add helper-managed native nginx/Apache vhosts for static and Node sites, mode switching with rollback, CLI/API/UI, Doctor checks, docs, and acceptance. Spec: `docs/superpowers/specs/2026-10-22-external-vhosts-design.md`.
+- **Plan 2 — PHP:** PHP build pipeline (8.2–8.5, extensions), version management, per-site FPM, php.ini and extension toggles, FastCGI transport, PHP UI, plus the PHP vhost template and FastCGI wiring in the external-vhost subsystem (nginx `fastcgi_pass`, Apache `proxy:fcgi`).
+- **Plan 3 — Windows/WSL:** agent, provisioning, path translation, Windows helper (named pipe, cert store, Firefox policy), Windows install, backend conformance. External nginx/Apache serving is Linux-only in M1.
 - **Plan 4 — Packaging/release:** signed binaries/packages, release workflow, upgrade, diagnostics bundle, docs polish, full M1 acceptance.

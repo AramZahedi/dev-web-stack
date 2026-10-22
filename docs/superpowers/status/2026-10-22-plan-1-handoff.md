@@ -99,3 +99,21 @@ These were controller decisions; carry them forward unless the spec says otherwi
 ## Immediate next step
 
 Push `plan-1-foundation` to origin (done by the controller as part of this handoff if the push succeeds), then resume at **Task 6** using the plan and the SDD process. Do not start PHP or Windows work until Plan 1 is accepted.
+
+## Addendum 2026-10-22 — external vhost scope extension
+
+Plan 1 has been extended with helper-managed native nginx/Apache vhosts. The task
+numbering after Task 20 shifts: the old Task 21 acceptance pass is now **Task 26**, and
+Tasks 21–25 cover the vhost renderers, helper manager/RPC, daemon/API integration, CLI +
+Doctor, and UI/docs/E2E.
+
+- New spec: `docs/superpowers/specs/2026-10-22-external-vhosts-design.md`.
+- M1 spec updated: external serving is now in scope; the "Apache/nginx configuration
+  generation — not planned" non-goal was removed.
+- Plan 1 header, Global Constraints, Review Focus, acceptance, and plan series updated.
+- PHP vhost templates and FastCGI wiring belong to Plan 2 (FPM lands there).
+- Task 6 (supervisor) is complete on this branch at `2adb116` after review and one fix round.
+- The dashboard UI was built ahead of Task 19 and committed at `1d7a2bd`; its task review is
+  still pending, and Task 25 will add the Serving screen and vhost preview.
+
+Resume the plan at **Task 7**. Do not implement vhost code before the spec is reviewed.

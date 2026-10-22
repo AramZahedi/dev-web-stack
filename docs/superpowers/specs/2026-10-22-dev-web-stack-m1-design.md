@@ -4,6 +4,7 @@
 - **Date:** 2026-10-22
 - **Scope:** Milestone 1 only
 - **Target platforms:** systemd-based Linux x86_64 (glibc 2.35+) and Windows 11 x86_64 with WSL2
+- **Vhost extension:** `docs/superpowers/specs/2026-10-22-external-vhosts-design.md`
 
 ## 1. Summary
 
@@ -11,7 +12,7 @@
 
 On Linux, sites run directly on the host. On Windows, a dedicated WSL2 distro runs sites and runtimes while the native Windows app owns the UI, proxy, and OS integration. Teammates install once; after that, vhosts, certificates, and runtimes are managed entirely from the CLI or dashboard.
 
-No Docker or Podman is used. We own the supervisor, proxy, routing, TLS, runtime catalog, and site lifecycle.
+No Docker or Podman is used. We own the supervisor, proxy, routing, TLS, runtime catalog, and site lifecycle. Optional external serving is available through helper-managed native nginx or Apache vhosts; the built-in proxy remains the default.
 
 ## 2. Goals and success criteria
 
@@ -23,6 +24,7 @@ No Docker or Podman is used. We own the supervisor, proxy, routing, TLS, runtime
 4. Give each PHP vhost its own version, php.ini, and extension set.
 5. Make install, diagnostics, trust repair, and uninstall predictable on Linux and Windows.
 6. Keep the privileged surface small and auditable.
+7. Offer an optional helper-managed nginx/Apache serving mode with native vhosts, safe mode switching, and rollback.
 
 **Success criteria**
 
@@ -38,7 +40,6 @@ No Docker or Podman is used. We own the supervisor, proxy, routing, TLS, runtime
 - Team-shared `devstack.yaml`, lockfiles, one-command onboarding (M3).
 - Log aggregation beyond per-site logs, diagnostics bundles, auto-update, signed MSI/deb/rpm packaging (M4).
 - macOS, Linux arm64, Windows arm64, Windows 10.
-- Apache/nginx configuration generation; we run our own proxy.
 - Custom TLDs other than `.test`.
 - Remote or shared environments, tunneling, container-based stacks.
 - Multi-user shared workstations; M1 assumes one installing user per machine.
@@ -55,6 +56,7 @@ No Docker or Podman is used. We own the supervisor, proxy, routing, TLS, runtime
 | State | SQLite (`modernc.org/sqlite`, pure Go) + YAML machine config |
 | Local domains | `<name>.test`, optional `www.<name>.test` |
 | Privilege | Small helper service; daemon and UI unprivileged |
+| External serving | Optional helper-managed native nginx/Apache vhosts; one active `serving_mode` (`builtin` default); PHP vhosts in Plan 2 |
 | Windows | Managed Debian 12 WSL2 distro running a `devstack-agent` service |
 | PHP | Our own relocatable builds, PHP 8.2–8.5, shared extensions |
 | PHP isolation | One `php-fpm` master per running site |
@@ -105,11 +107,14 @@ No Docker or Podman is used. We own the supervisor, proxy, routing, TLS, runtime
 | `InstallTrust` / `RemoveTrust` | Install/remove the helper's own root CA in OS and browser stores |
 | `SyncHosts` | Atomically replace the managed hosts block with a validated list |
 | `SetForwarders` | Enable/disable the fixed 80/443 listeners, forwarding to the configured loopback proxy ports (targets validated, loopback-only) |
+| `VhostStatus` / `SyncVhosts` / `SetServingMode` / `RemoveVhosts` | Report, install, switch, and remove helper-managed native nginx/Apache vhosts (validated `VHostSpec` only) |
 | `Uninstall` | Reverse all system changes after a confirmation token |
 
-The helper accepts no file paths, commands, or arbitrary certificates. It verifies peer credentials: the installing UID on Linux (`SO_PEERCRED`) and the installing SID on Windows (named-pipe client token). It listens on `/run/devstack-helper/helper.sock` (Linux) and `\\.\pipe\devstack-helper` (Windows). Sockets are `0600` and owned by that user; the Windows pipe ACL grants only that SID plus SYSTEM/Administrators.
+The helper accepts no file paths, commands, or arbitrary certificates. It renders vhosts only from validated site data and runs only fixed config-test/reload commands. It verifies peer credentials: the installing UID on Linux (`SO_PEERCRED`) and the installing SID on Windows (named-pipe client token). It listens on `/run/devstack-helper/helper.sock` (Linux) and `\\.\pipe\devstack-helper` (Windows). Sockets are `0600` and owned by that user; the Windows pipe ACL grants only that SID plus SYSTEM/Administrators.
 
 **`devstack-agent`** — Linux binary inside the WSL distro, run as a systemd service. Exposes the backend API on the distro's NAT interface with a per-install bearer token. Owns process supervision, PHP masters, site processes, log capture, and port allocation inside the distro. The Windows daemon reaches it through WSL localhost forwarding, falling back to the distro IP if forwarding is unhealthy. M1 requires WSL NAT networking (not mirrored); the agent is never reachable from outside the WSL NAT.
+
+**External server (optional)** — when `serving_mode` is `nginx` or `apache`, the helper installs native vhosts under `/etc/devstack/vhosts`, copies site certificates into `/etc/devstack/tls`, tests the config, and reloads the server. The external server owns 80/443; the built-in proxy listeners and 80/443 forwarders are inactive in this mode. Static sites are served directly by the external server; Node (and later PHP) traffic goes to supervised loopback backends.
 
 **Site servers** — every running site has a backend endpoint:
 
@@ -152,6 +157,7 @@ internal/api/            REST + SSE handlers
 internal/proxy/          router, TLS/SNI, FastCGI, WebSocket passthrough
 internal/backend/        interface, local, wsl client, conformance helpers
 internal/supervisor/     process lifecycle, readiness, backoff, reconciliation
+internal/vhost/          native nginx/Apache vhost specs and renderers
 internal/php/            builds, FPM config, ini composition, extensions
 internal/runtime/        catalog, downloads, checksums, install/remove
 internal/trust/          CA client, trust-store adapters, verification
@@ -180,6 +186,11 @@ run/                   sockets, pid files
 cache/                 verified download cache
 ```
 
+External serving adds root-owned helper state outside `$DEVSTACK_HOME`:
+`/etc/devstack/vhosts/{nginx,apache}/current/*.conf`, `/etc/devstack/tls/<owner>.{crt,key}`,
+and one bridge include in the server's standard include directory. The helper records the
+mode, release, bridge path, and last error in `/var/lib/devstack-helper/vhosts.json` (0600).
+
 **`config.yaml` defaults:**
 
 ```yaml
@@ -192,6 +203,7 @@ graceful_stop_seconds: 10
 max_request_body_mb: 1024
 log_max_mb: 10
 log_keep: 5
+serving_mode: builtin   # builtin | nginx | apache
 ```
 
 Ports are configurable. `devstack doctor` fails with an actionable message when a port is occupied, including the owning process when it can be determined.
@@ -242,8 +254,9 @@ type Site struct {
 3. Require a healthy helper; sync the new domain and optional `www` alias into the hosts block. If this fails, creation fails with `HOSTS_SYNC_FAILED` and no site is persisted.
 4. Allocate backend ports: 41000–42999 for HTTP upstreams (static/Node), 43000–43999 for FastCGI.
 5. Ensure the runtime build exists (download on demand only after explicit consent; otherwise `RUNTIME_MISSING`).
-6. Write the site row, generate configs, hot-reload the proxy route table.
+6. Write the site row, generate configs, hot-reload the proxy route table (builtin) or sync the external vhost set (nginx/Apache).
 7. Start the site if `auto_start_sites`, wait for the kind's readiness deadline (30s, 60s for Node), and return the URL and status.
+8. In external mode, a static site has no backend process: the vhost is the serving mechanism, and `Start`/`Stop` install a running or branded-503 vhost. Node keeps its supervised backend.
 
 **Delete flow:** stop the site, remove its hosts entries and route, delete certificates and generated configs, keep logs until `devstack prune`, never delete project files. Deletion requires confirmation in the UI and `--yes` in the CLI.
 
@@ -253,6 +266,7 @@ type Site struct {
 
 ## 8. Proxy and routing
 
+- `serving_mode` selects the serving path. `builtin` uses the Go proxy described here. `nginx`/`apache` replace it with helper-managed native vhosts (see the external vhost spec): the external server owns 80/443, static sites are served from their roots, Node is proxied to its loopback port, and PHP uses FastCGI in Plan 2. The API/UI listener on 7070 is unchanged.
 - HTTP listener `127.0.0.1:8080`, HTTPS `127.0.0.1:8443`. The helper forwards host port 80/443 to these; on Linux the helper owns the listeners so the daemon stays unprivileged.
 - Exact `Host` match (lowercased, port stripped) against the route table. Optional `www.` alias is a separate route with the same site. Unknown hosts return a branded 404 page; `devstack.test` routes to the dashboard.
 - Routes reload atomically via an immutable snapshot behind `atomic.Pointer`; no proxy restart on site changes.
@@ -276,6 +290,7 @@ type Site struct {
 - Leaf certificates are valid for 90 days, renewed at 30 days remaining by a daily job. Each site certificate includes the primary domain and the `www` alias when enabled. Renewal hot-swaps the SNI certificate map; no restart.
 - The dashboard has its own leaf for `devstack.test`. Unknown hosts use it.
 - The helper returns the root certificate to the daemon for chain serving; the private key never leaves the helper.
+- In external mode, the daemon sends each site's leaf and key PEM with the vhost sync. The helper verifies the chain, SANs, key match, and expiry, then writes `/etc/devstack/tls/<owner>.{crt,key}` (key `0600` root, cert `0644`) for the external server to read. Renewal triggers a full vhost sync; a failed renewal keeps the old certificate and leaves the vhost unchanged.
 
 **Trust installation**
 
@@ -350,7 +365,7 @@ Each running PHP site gets its own `php-fpm` master:
 - `pm = dynamic`, `pm.max_children = 5`, `pm.start_servers = 2`, `pm.min_spare_servers = 1`, `pm.max_spare_servers = 3`, `catch_workers_output = yes`, `clear_env = no`.
 - On Linux, the master runs as the current user. Inside WSL, the agent starts the root master with pool `user = devstack`, `group = devstack`.
 - Env vars from the site are injected into the pool. `PATH` includes the selected Node/PHP build paths where relevant.
-- The proxy talks FastCGI directly; no nginx/Apache involved.
+- The built-in proxy talks FastCGI directly; in external mode nginx/Apache talk FastCGI to the same per-site port. No nginx/Apache is required in builtin mode.
 - Stopping the site stops its master. No idle masters are kept.
 
 **Apply strategy (validate-then-swap):** render config → run `php-fpm -t` → start a new master on a new port with the new php.ini → issue a health request → atomically update the site's active FPM port → drain and stop the old master. Any failure leaves the old master serving and returns the validation output.
@@ -413,6 +428,7 @@ devstack runtime remove <id>      blocked while in use
 devstack runtime verify           re-check installed file hashes
 devstack php --site <name> -- ... run the site's PHP CLI
 devstack trust status|repair|remove
+devstack vhost status|use|sync|preview|path   native nginx/Apache serving (see vhost spec)
 devstack ui                       open the dashboard
 devstack uninstall [--wsl]        remove integration; --yes; project files untouched
 devstack version
@@ -428,17 +444,20 @@ Embedded Svelte 5 SPA served by the daemon, available at `https://devstack.test`
 - **Sites:** live status, runtime badges, URL, start/stop/restart, add-site wizard (path, kind, version, domain, command), logs drawer.
 - **Site detail:** status, URL and certificate info, PHP version selector, extension toggles (inherit/on/off), ini editor (rows + raw) with validate and apply, env vars, delete.
 - **Runtimes:** installed PHP/Node builds, available versions, add/remove/update, per-version defaults for ini and extensions.
-- **Settings:** ports, auto-start, log retention, uninstall/cleanup actions.
+- **Settings:** ports, auto-start, log retention, serving mode (builtin/nginx/Apache) with detection, config-test state, sync and vhost preview, uninstall/cleanup actions.
+- **Site detail:** a "Preview vhost" action shows the generated nginx or Apache config without installing it.
 
 Logs stream over SSE with pause/resume and download. Destructive actions require typed confirmation. The UI follows system light/dark and is keyboard navigable.
 
 ## 15. API and security
 
 - REST JSON under `/api/v1`; SSE for events and logs. The OpenAPI document is generated and checked in.
+- Vhost endpoints: `GET /vhosts/status`, `POST /vhosts/mode`, `POST /vhosts/sync`, and `GET /vhosts/preview?site=&server=`. Mode changes require the same CSRF/session checks as other mutations.
 - Auth: the CLI connects over the Unix socket/named pipe (peer credentials). The UI gets a `HttpOnly`, `SameSite=Strict` session cookie from a loopback-only bootstrap endpoint; mutations require a CSRF token. Requests must carry an allowed `Host` (`127.0.0.1`, `localhost`, `devstack.test`).
 - The daemon binds loopback only. No remote access, no CORS.
 - The helper RPC is JSON over a Unix socket / named pipe with peer-credential checks and a version handshake; incompatible versions refuse to proceed with a clear error.
 - Commands are executed as argv arrays. Node start commands are user-authored and run through `/bin/sh -lc` as the site user; they are never executed as root/SYSTEM.
+- The helper renders external vhosts only from validated site data (domains, roots, ports, certificate PEM); it accepts no arbitrary config text, paths, commands, or ports. Document roots are symlink-resolved and confined to the registered site path, and template interpolation is newline/NUL-safe.
 - Artifacts are checksum-verified and extracted with traversal/symlink guards.
 - Secrets and private keys are `0600`; logs redact `Authorization`, cookies, and env values matching `*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*`.
 - The UI is local-only; no telemetry.
@@ -487,12 +506,14 @@ Logs stream over SSE with pause/resume and download. Destructive actions require
 - Installs to `%LOCALAPPDATA%\Programs\devstack`, registers the helper service (elevation), adds the daemon to per-user startup, then runs `devstack init` to provision WSL.
 - Unsigned binaries may trigger SmartScreen in M1; signing is M4. Internal distribution notes this.
 
+**External serving (opt-in):** `devstack vhost use nginx|apache` requires the server, required Apache modules, and a supported include layout to be present already; nothing is installed or enabled silently. `install.sh` does not select a mode. The first switch writes the bridge include, tests the config, and reloads; switching back restores the forwarders. `docs/vhosts.md` documents distro-specific prerequisites and removal.
+
 **Upgrade:** replace binaries, restart daemon, run migrations, verify helper/agent protocol versions, re-sync hosts and forwarders. Downgrades are not supported; the DB backup is kept before migration.
 
 **Uninstall (`devstack uninstall`)**
 
 1. Stop all sites and the daemon.
-2. Remove hosts block, CA from all trust stores, Firefox policy, NSS entries, forwarders, and the helper's CA key/state.
+2. Remove hosts block, CA from all trust stores, Firefox policy, NSS entries, forwarders, helper-managed vhosts/bridge/TLS files, and the helper's CA key/state.
 3. Remove system/user units and binaries (helper removal requires elevation).
 4. Optionally remove the WSL distro and `~/.devstack` (logs, runtimes, config). Project files are never removed.
 5. Print a checklist of what was and was not removed.
@@ -501,15 +522,15 @@ Logs stream over SSE with pause/resume and download. Destructive actions require
 
 - Every error has a stable code, a human message, and a remediation hint. The UI shows the code and a copyable details panel.
 - Proxy error pages identify the site and state: stopped, crashed, starting, misconfigured, or backend unreachable, with the last log lines.
-- Representative codes: `HELPER_UNAVAILABLE`, `HOSTS_SYNC_FAILED`, `PORT_IN_USE`, `DOMAIN_CONFLICT`, `READY_TIMEOUT`, `PHP_CONFIG_INVALID`, `PHP_VERSION_IN_USE`, `RUNTIME_MISSING`, `RUNTIME_CORRUPT`, `TRUST_MISSING`, `WSL_UNAVAILABLE`, `AGENT_UNAUTHENTICATED`, `BACKEND_UNAVAILABLE`.
+- Representative codes: `HELPER_UNAVAILABLE`, `HOSTS_SYNC_FAILED`, `PORT_IN_USE`, `DOMAIN_CONFLICT`, `READY_TIMEOUT`, `PHP_CONFIG_INVALID`, `PHP_VERSION_IN_USE`, `RUNTIME_MISSING`, `RUNTIME_CORRUPT`, `TRUST_MISSING`, `WSL_UNAVAILABLE`, `AGENT_UNAUTHENTICATED`, `BACKEND_UNAVAILABLE`, `SERVING_MODE_UNAVAILABLE`, `VHOST_CONFIG_INVALID`, `VHOST_SYNC_FAILED`, `VHOST_INCLUDE_MISSING`, `SERVER_RELOAD_FAILED`, `VHOST_SYNC_BUSY`.
 - Partial failures roll back: a failed site create leaves no route/hosts row; a failed PHP apply keeps the old master; a failed cert issuance keeps the old cert/domain.
 - Doctor checks: helper status/version, listener ports, hosts block contents, CA fingerprint and each trust target, WSL/agent health, runtime checksums, port allocation conflicts, and free disk space.
 
 ## 19. Testing
 
-**Unit:** SNI selection, hosts parse/render/validate, php.ini composition, extension precedence/dependency order, port allocation, catalog checksums, archive extraction guards, supervisor state machine, path translation, API auth/CSRF/Host checks, config migration.
+**Unit:** SNI selection, hosts parse/render/validate, php.ini composition, extension precedence/dependency order, port allocation, catalog checksums, archive extraction guards, supervisor state machine, path translation, API auth/CSRF/Host checks, config migration, vhost template rendering, vhost validation/injection guards, mode-switch rollback.
 
-**Integration (Linux):** real static/Node/PHP processes behind the proxy; TLS handshake verified against the generated chain; `php -m` assertions per site and extension toggle; ini effects via probe scripts; failed `php-fpm -t` leaves the old master serving; WebSocket echo through the proxy; log rotation.
+**Integration (Linux):** real static/Node/PHP processes behind the proxy; TLS handshake verified against the generated chain; `php -m` assertions per site and extension toggle; ini effects via probe scripts; failed `php-fpm -t` leaves the old master serving; WebSocket echo through the proxy; log rotation. External mode: real nginx and Apache config tests on a temp prefix, static/Node traffic on high ports, WebSocket echo, the TLS/force-HTTPS/503/404 matrix, and builtin→nginx→builtin plus nginx→apache switch rollback.
 
 **Backend conformance:** one suite for `localBackend` and `wslBackend`, covering start/stop/exec/logs/status/port allocation/runtime install/CA install. Linux in CI; WSL nightly on a self-hosted Windows runner and on demand via `devstack test backend`.
 
@@ -523,7 +544,7 @@ Logs stream over SSE with pause/resume and download. Destructive actions require
 
 ## 20. CI and release
 
-- **App CI:** Linux containers (Ubuntu 22.04, Ubuntu 24.04, Debian 12, Fedora 44) run unit/integration tests, `go test -race`, `go vet`, lint, UI build/lint/test, and Playwright. Windows runners compile and run unit + helper/cert-store tests. WSL conformance runs nightly self-hosted.
+- **App CI:** Linux containers (Ubuntu 22.04, Ubuntu 24.04, Debian 12, Fedora 44) run unit/integration tests, `go test -race`, `go vet`, lint, UI build/lint/test, and Playwright. The Ubuntu job installs `nginx` and `apache2` so external-vhost config-test and serving tests run rather than skip. Windows runners compile and run unit + helper/cert-store tests. WSL conformance runs nightly self-hosted.
 - **PHP builds:** separate matrix for 8.2–8.5 with caching, SBOM generation, checksums, and smoke tests; publication only if every extension loads and FPM serves a request.
 - **Release:** GoReleaser produces `devstack`, `devstack-helper`, and `devstack-agent` per platform with SHA-256 manifests; `install.sh`/`install.ps1` are attached. M1 ships unsigned binaries; signed OS packages are M4.
 - **Versioning:** semantic version for the app; build IDs for PHP/Node artifacts. Helper and agent report protocol versions; mismatches fail closed with an upgrade instruction.
@@ -541,6 +562,7 @@ Logs stream over SSE with pause/resume and download. Destructive actions require
 9. `devstack trust remove` and `devstack uninstall` revert hosts, CA, listeners, units, and processes; project files are untouched; Doctor diagnoses each intentionally broken precondition.
 10. CI is green, race detector clean, helper RPC and archive-extraction security tests pass, and no privileged process writes into user-owned config.
 11. Docs cover install, first site, PHP versions/ini/extensions, TLS repair, WSL paths/performance, upgrades, and uninstall.
+12. External serving works end to end: `devstack vhost use nginx` (and Apache) installs native vhosts, tests/reloads the server, serves static and Node sites at trusted HTTPS, and `devstack vhost use builtin` restores the built-in proxy and forwarders. A deliberately broken vhost config leaves the previous mode serving. `devstack uninstall` removes our vhosts, bridge, and TLS files without touching unrelated vhosts.
 
 ## 22. Risks and mitigations
 
@@ -609,6 +631,5 @@ Response includes `id`, `url`, `status`, `backend`, `backend_path`, and active p
 | Log aggregation/diagnostics bundle | M4 |
 | Auto-update, remote catalog, signed MSI/deb/rpm | M4 |
 | arm64, macOS, Windows 10 | Post-M4 / not planned |
-| Apache/nginx config generation | Not planned |
 | Docker/Podman integration | Not planned |
 | Custom TLDs, DNS server | Not planned |
