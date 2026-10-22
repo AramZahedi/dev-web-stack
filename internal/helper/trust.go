@@ -23,8 +23,17 @@ import (
 type Target = trust.Target
 
 // CommandRunner runs an external command and returns its combined output.
+// Implementations that can drop privileges should also implement
+// UserCommandRunner.
 type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+// UserCommandRunner is an optional extension implemented by runners that can
+// execute a command as another user. The helper uses it for certutil so root
+// never follows user-controlled NSS database paths with root privileges.
+type UserCommandRunner interface {
+	RunAs(ctx context.Context, uid, gid int, name string, args ...string) ([]byte, error)
 }
 
 // TrustManager installs, removes, and checks the helper's root CA in the
@@ -37,6 +46,10 @@ type TrustManager struct {
 
 	userHome string
 	runner   CommandRunner
+
+	ownerUID int
+	ownerGID int
+	ownerErr error
 
 	anchorDir string
 	fedora    bool
@@ -65,6 +78,8 @@ func NewTrustManager(rootPEM []byte, userHome string, runner CommandRunner, anch
 	}
 	if home == "" {
 		m.homeErr = errors.New("user home directory is empty")
+	} else {
+		m.resolveHomeOwner()
 	}
 	cert, err := parseRootCertificatePEM(rootPEM)
 	if err != nil {
@@ -114,6 +129,9 @@ func (m *TrustManager) configError() error {
 	}
 	if m.homeErr != nil {
 		return fmt.Errorf("helper: %w", m.homeErr)
+	}
+	if m.ownerErr != nil {
+		return fmt.Errorf("helper: %w", m.ownerErr)
 	}
 	return nil
 }
@@ -264,14 +282,17 @@ func detailError(err error) string {
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	return runCombined(exec.CommandContext(ctx, name, args...))
+}
+
+func runCombined(cmd *exec.Cmd) ([]byte, error) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
 		if message != "" {
-			return output, fmt.Errorf("%s: %w: %s", name, err, message)
+			return output, fmt.Errorf("%s: %w: %s", cmd.Path, err, message)
 		}
-		return output, fmt.Errorf("%s: %w", name, err)
+		return output, fmt.Errorf("%s: %w", cmd.Path, err)
 	}
 	return output, nil
 }

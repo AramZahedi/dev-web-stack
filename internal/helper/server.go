@@ -178,7 +178,10 @@ func (s *Server) signCertificate(ctx context.Context, req helperproto.SignReques
 	}
 	certPEM, serial, notAfter, err := s.authority.SignCSR(req.CSR, req.Domains, maxLeafValidity)
 	if err != nil {
-		return helperproto.SignResponse{}, fmt.Errorf("%w: %v", helperproto.ErrInvalidRequest, err)
+		if errors.Is(err, errInvalidSigningRequest) {
+			return helperproto.SignResponse{}, fmt.Errorf("%w: %v", helperproto.ErrInvalidRequest, err)
+		}
+		return helperproto.SignResponse{}, err
 	}
 	return helperproto.SignResponse{CertPEM: certPEM, Serial: serial, NotAfter: notAfter}, nil
 }

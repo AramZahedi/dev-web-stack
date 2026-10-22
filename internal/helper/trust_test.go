@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 )
@@ -352,10 +354,20 @@ func TestTrustAnchorCommandsAndDetection(t *testing.T) {
 	}
 }
 
+type runnerCredential struct {
+	uid  int
+	gid  int
+	name string
+	args []string
+}
+
 type fakeNSSRunner struct {
-	mu    sync.Mutex
-	dbs   map[string]map[string]bool
-	calls []runnerCall
+	mu          sync.Mutex
+	dbs         map[string]map[string]bool
+	calls       []runnerCall
+	credentials []runnerCredential
+	inputUIDs   []int
+	listErr     error
 }
 
 func newFakeNSSRunner() *fakeNSSRunner {
@@ -363,14 +375,27 @@ func newFakeNSSRunner() *fakeNSSRunner {
 }
 
 func (r *fakeNSSRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	return r.execute(false, 0, 0, name, args...)
+}
+
+func (r *fakeNSSRunner) RunAs(_ context.Context, uid, gid int, name string, args ...string) ([]byte, error) {
+	return r.execute(true, uid, gid, name, args...)
+}
+
+func (r *fakeNSSRunner) execute(asUser bool, uid, gid int, name string, args ...string) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, runnerCall{name: name, args: append([]string(nil), args...)})
+	if asUser {
+		r.credentials = append(r.credentials, runnerCredential{
+			uid: uid, gid: gid, name: name, args: append([]string(nil), args...),
+		})
+	}
 	if name != "certutil" {
-		return nil, fmt.Errorf("unexpected command %q", name)
+		return nil, nil
 	}
 
-	var db, nick, op string
+	var db, nick, op, input string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-d":
@@ -381,6 +406,11 @@ func (r *fakeNSSRunner) Run(_ context.Context, name string, args ...string) ([]b
 		case "-n":
 			if i+1 < len(args) {
 				nick = args[i+1]
+				i++
+			}
+		case "-i":
+			if i+1 < len(args) {
+				input = args[i+1]
 				i++
 			}
 		case "-N":
@@ -401,10 +431,22 @@ func (r *fakeNSSRunner) Run(_ context.Context, name string, args ...string) ([]b
 		if _, ok := r.dbs[db]; !ok {
 			r.dbs[db] = make(map[string]bool)
 		}
+		// Emulate the files certutil creates so status/remove exercise the
+		// initialized-database path.
+		if err := os.WriteFile(filepath.Join(db, "cert9.db"), nil, 0o600); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	case "A":
 		if nick == "" {
 			return nil, errors.New("certutil -A without -n")
+		}
+		if input != "" {
+			if info, err := os.Stat(input); err == nil {
+				if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+					r.inputUIDs = append(r.inputUIDs, int(stat.Uid))
+				}
+			}
 		}
 		if _, ok := r.dbs[db]; !ok {
 			r.dbs[db] = make(map[string]bool)
@@ -418,10 +460,21 @@ func (r *fakeNSSRunner) Run(_ context.Context, name string, args ...string) ([]b
 		delete(r.dbs[db], nick)
 		return nil, nil
 	case "L":
-		if !r.dbs[db][nick] {
-			return nil, errors.New("nickname not found")
+		if r.listErr != nil {
+			return nil, r.listErr
 		}
-		return []byte(nick), nil
+		if nick != "" {
+			if !r.dbs[db][nick] {
+				return nil, errors.New("nickname not found")
+			}
+			return []byte(nick), nil
+		}
+		var names []string
+		for name := range r.dbs[db] {
+			// Emulate certutil's padded nickname/trust columns.
+			names = append(names, name+"            C,,")
+		}
+		return []byte(strings.Join(names, "\n")), nil
 	default:
 		return nil, fmt.Errorf("unsupported certutil invocation: %v", args)
 	}
@@ -443,6 +496,33 @@ func (r *fakeNSSRunner) invocations(name string) []runnerCall {
 		}
 	}
 	return out
+}
+
+func (r *fakeNSSRunner) credentialsSeen() []runnerCredential {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]runnerCredential(nil), r.credentials...)
+}
+
+func (r *fakeNSSRunner) inputOwners() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int(nil), r.inputUIDs...)
+}
+
+func (r *fakeNSSRunner) callsForDB(db string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var n int
+	for _, call := range r.calls {
+		for _, arg := range call.args {
+			if arg == "sql:"+db {
+				n++
+				break
+			}
+		}
+	}
+	return n
 }
 
 func TestTrustNSSChromeAndFirefoxProfiles(t *testing.T) {
@@ -671,4 +751,292 @@ func TestAuthorizeHomeResolvesAllowUID(t *testing.T) {
 	if _, err := s.authorizeHome(filepath.Join(account.HomeDir, "other")); !errors.Is(err, helperproto.ErrUnauthorized) {
 		t.Fatalf("foreign home error = %v, want ErrUnauthorized", err)
 	}
+}
+
+func TestOSReleaseFamily(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		fedora  bool
+		known   bool
+	}{
+		{"fedora", "ID=fedora\nVERSION_ID=44\n", true, true},
+		{"rhel", "ID=\"rhel\"\nID_LIKE=\"fedora\"\n", true, true},
+		{"debian", "ID=debian\n", false, true},
+		{"ubuntu", "ID=ubuntu\nID_LIKE=debian\n", false, true},
+		{"mint quoted like", "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n", false, true},
+		{"unknown", "ID=plan9\n", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fedora, known := osReleaseFamily([]byte(tt.content))
+			if fedora != tt.fedora || known != tt.known {
+				t.Fatalf("osReleaseFamily = fedora=%v known=%v, want %v/%v", fedora, known, tt.fedora, tt.known)
+			}
+		})
+	}
+}
+
+func TestTrustRunsCertutilAsHomeOwner(t *testing.T) {
+	installFakeCertutil(t)
+	home := t.TempDir()
+	if os.Geteuid() == 0 {
+		// Exercise a real ownership difference when the test runs privileged.
+		if err := os.Chown(home, 65534, 65534); err != nil {
+			t.Skipf("cannot chown test home: %v", err)
+		}
+	}
+	homeInfo, err := os.Stat(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := homeInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("home stat type = %T", homeInfo.Sys())
+	}
+	ownerUID, ownerGID := int(stat.Uid), int(stat.Gid)
+
+	profileDir := filepath.Join(home, ".mozilla", "firefox", "rel.default")
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ini := "[Profile0]\nName=relative\nIsRelative=1\nPath=rel.default\n"
+	if err := os.WriteFile(filepath.Join(home, ".mozilla", "firefox", "profiles.ini"), []byte(ini), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newFakeNSSRunner()
+	tm := NewTrustManager(newTestAuthority(t).RootPEM(), home, runner, t.TempDir())
+	targets, err := tm.Install(context.Background())
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	chrome, ok := findTarget(targets, "Chrome")
+	if !ok || !chrome.OK {
+		t.Fatalf("Chrome target = %+v (found %v)", chrome, ok)
+	}
+	firefox, ok := findTarget(targets, "Firefox (relative)")
+	if !ok || !firefox.OK {
+		t.Fatalf("Firefox target = %+v (found %v)", firefox, ok)
+	}
+
+	credentials := runner.credentialsSeen()
+	if len(credentials) == 0 {
+		t.Fatal("certutil was run without owner credentials")
+	}
+	seenDBs := make(map[string]bool)
+	for _, credential := range credentials {
+		if credential.name != "certutil" {
+			t.Fatalf("RunAs called for %q, want certutil", credential.name)
+		}
+		if credential.uid != ownerUID || credential.gid != ownerGID {
+			t.Fatalf("certutil credentials = %d:%d, want %d:%d", credential.uid, credential.gid, ownerUID, ownerGID)
+		}
+		for i, arg := range credential.args {
+			if arg == "-d" && i+1 < len(credential.args) {
+				seenDBs[strings.TrimPrefix(credential.args[i+1], "sql:")] = true
+			}
+		}
+	}
+	for _, db := range []string{filepath.Join(home, ".pki", "nssdb"), profileDir} {
+		if !seenDBs[db] {
+			t.Fatalf("certutil did not run as owner for NSS database %s; saw %v", db, seenDBs)
+		}
+	}
+	for _, uid := range runner.inputOwners() {
+		if uid != ownerUID {
+			t.Fatalf("staged CA certificate owner = %d, want %d", uid, ownerUID)
+		}
+	}
+
+	if os.Geteuid() != 0 {
+		return
+	}
+	for _, dir := range []string{
+		filepath.Join(home, ".pki"),
+		filepath.Join(home, ".pki", "nssdb"),
+		profileDir,
+	} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		dirStat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Fatalf("%s stat type = %T", dir, info.Sys())
+		}
+		if int(dirStat.Uid) != ownerUID || int(dirStat.Gid) != ownerGID {
+			t.Fatalf("%s owner = %d:%d, want %d:%d", dir, dirStat.Uid, dirStat.Gid, ownerUID, ownerGID)
+		}
+	}
+}
+
+func TestTrustNSSRejectsSymlinkedDatabaseFiles(t *testing.T) {
+	installFakeCertutil(t)
+	for _, fileName := range nssDBFileNames {
+		t.Run(fileName, func(t *testing.T) {
+			home := t.TempDir()
+			db := filepath.Join(home, ".pki", "nssdb")
+			if err := os.MkdirAll(db, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), fileName)
+			const original = "outside the home"
+			if err := os.WriteFile(outside, []byte(original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(db, fileName)); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			runner := newFakeNSSRunner()
+			tm := NewTrustManager(newTestAuthority(t).RootPEM(), home, runner, t.TempDir())
+			operations := []struct {
+				name string
+				run  func() ([]Target, error)
+			}{
+				{"install", func() ([]Target, error) { return tm.Install(context.Background()) }},
+				{"status", func() ([]Target, error) { return tm.Status(context.Background()) }},
+				{"remove", func() ([]Target, error) { return tm.Remove(context.Background()) }},
+			}
+			for _, operation := range operations {
+				targets, err := operation.run()
+				if err != nil {
+					t.Fatalf("%s: %v", operation.name, err)
+				}
+				chrome, ok := findTarget(targets, "Chrome")
+				if !ok || chrome.OK {
+					t.Fatalf("%s Chrome target = %+v (found %v), want failure", operation.name, chrome, ok)
+				}
+				if !strings.Contains(chrome.Detail, "symlink") {
+					t.Fatalf("%s Chrome detail = %q, want a symlink rejection", operation.name, chrome.Detail)
+				}
+			}
+			if got := len(runner.invocations("certutil")); got != 0 {
+				t.Fatalf("certutil ran %d times with a symlinked %s", got, fileName)
+			}
+			data, err := os.ReadFile(outside)
+			if err != nil {
+				t.Fatalf("outside file was removed: %v", err)
+			}
+			if string(data) != original {
+				t.Fatalf("outside file changed to %q", data)
+			}
+		})
+	}
+}
+
+func TestTrustNSSListErrorIsReported(t *testing.T) {
+	installFakeCertutil(t)
+	home := t.TempDir()
+	db := filepath.Join(home, ".pki", "nssdb")
+	if err := os.MkdirAll(db, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(db, "cert9.db"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeNSSRunner()
+	runner.listErr = errors.New("database locked")
+	tm := NewTrustManager(newTestAuthority(t).RootPEM(), home, runner, t.TempDir())
+
+	targets, err := tm.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	chrome, ok := findTarget(targets, "Chrome")
+	if !ok || chrome.OK {
+		t.Fatalf("Status Chrome target = %+v (found %v), want failure", chrome, ok)
+	}
+	if !strings.Contains(chrome.Detail, "database locked") {
+		t.Fatalf("Status Chrome detail = %q, want the certutil error", chrome.Detail)
+	}
+
+	targets, err = tm.Remove(context.Background())
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	chrome, ok = findTarget(targets, "Chrome")
+	if !ok || chrome.OK {
+		t.Fatalf("Remove Chrome target = %+v (found %v), want failure", chrome, ok)
+	}
+	if !strings.Contains(chrome.Detail, "database locked") {
+		t.Fatalf("Remove Chrome detail = %q, want the certutil error", chrome.Detail)
+	}
+	if got := runner.callsForDB(db); got < 2 {
+		t.Fatalf("certutil invocation count for the database = %d, want at least 2", got)
+	}
+}
+
+func TestFirefoxProfilesRejectsUnsafeFiles(t *testing.T) {
+	t.Run("symlink", func(t *testing.T) {
+		home := t.TempDir()
+		base := filepath.Join(home, ".mozilla", "firefox")
+		if err := os.MkdirAll(base, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		outside := filepath.Join(t.TempDir(), "profiles.ini")
+		if err := os.WriteFile(outside, []byte("[Profile0]\nPath=x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(base, "profiles.ini")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if _, _, err := firefoxProfiles(home); err == nil {
+			t.Fatal("firefoxProfiles followed a symlinked profiles.ini")
+		}
+	})
+
+	t.Run("fifo", func(t *testing.T) {
+		home := t.TempDir()
+		base := filepath.Join(home, ".mozilla", "firefox")
+		if err := os.MkdirAll(base, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Mkfifo(filepath.Join(base, "profiles.ini"), 0o600); err != nil {
+			t.Skipf("mkfifo unavailable: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := firefoxProfiles(home)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("firefoxProfiles accepted a FIFO profiles.ini")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("firefoxProfiles blocked opening a FIFO profiles.ini")
+		}
+	})
+
+	t.Run("oversized", func(t *testing.T) {
+		home := t.TempDir()
+		base := filepath.Join(home, ".mozilla", "firefox")
+		if err := os.MkdirAll(base, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(base, "profiles.ini")
+		if err := os.WriteFile(path, bytes.Repeat([]byte("a"), maxProfilesIniSize+1), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := firefoxProfiles(home); err == nil {
+			t.Fatal("firefoxProfiles accepted an oversized profiles.ini")
+		}
+	})
+
+	t.Run("directory", func(t *testing.T) {
+		home := t.TempDir()
+		base := filepath.Join(home, ".mozilla", "firefox")
+		if err := os.MkdirAll(base, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(base, "profiles.ini"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := firefoxProfiles(home); err == nil {
+			t.Fatal("firefoxProfiles accepted a directory profiles.ini")
+		}
+	})
 }

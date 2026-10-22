@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
 	"net/url"
 	"os"
@@ -339,6 +340,119 @@ func TestLoadOrCreateAuthorityRejectsCorruptState(t *testing.T) {
 	}
 }
 
+func writeCustomAuthority(t *testing.T, dir string, key *ecdsa.PrivateKey, mutate func(*x509.Certificate)) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: rootCommonName},
+		NotBefore:             now,
+		NotAfter:              now.AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            0,
+		MaxPathLenZero:        true,
+		SignatureAlgorithm:    x509.ECDSAWithSHA256,
+	}
+	if mutate != nil {
+		mutate(tmpl)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create custom root: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, rootKeyFile),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, rootCertFile),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadOrCreateAuthorityRejectsLooseKeyMode(t *testing.T) {
+	dir := t.TempDir()
+	a, err := LoadOrCreateAuthority(dir, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(a.KeyPath(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrCreateAuthority(dir, time.Now); err == nil {
+		t.Fatal("CA with a 0644 key was accepted")
+	}
+}
+
+func TestLoadOrCreateAuthorityRejectsContractViolations(t *testing.T) {
+	p256 := func() *ecdsa.PrivateKey {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		key    *ecdsa.PrivateKey
+		mutate func(*x509.Certificate)
+	}{
+		{
+			"wrong common name",
+			p256(),
+			func(c *x509.Certificate) { c.Subject.CommonName = "other CA" },
+		},
+		{
+			"missing crl sign",
+			p256(),
+			func(c *x509.Certificate) { c.KeyUsage = x509.KeyUsageCertSign },
+		},
+		{
+			"path length not zero",
+			p256(),
+			func(c *x509.Certificate) {
+				c.MaxPathLen = -1
+				c.MaxPathLenZero = false
+			},
+		},
+		{
+			"not a CA",
+			p256(),
+			func(c *x509.Certificate) {
+				c.IsCA = false
+				c.BasicConstraintsValid = false
+			},
+		},
+		{
+			"wrong curve",
+			p384,
+			nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeCustomAuthority(t, dir, tt.key, tt.mutate)
+			if _, err := LoadOrCreateAuthority(dir, time.Now); err == nil {
+				t.Fatalf("CA with %s was accepted", tt.name)
+			}
+		})
+	}
+}
+
 func TestSignCSRRejectsNonTestSAN(t *testing.T) {
 	a := newTestAuthority(t)
 	key := newTestKey(t)
@@ -545,47 +659,43 @@ func TestVerifyLeaf(t *testing.T) {
 }
 
 func TestVerifyLeafExpiry(t *testing.T) {
+	a := newTestAuthority(t)
 	key := newTestKey(t)
 	domains := []string{"blog.test"}
 	csr := makeTestCSR(t, key, domains...)
 	keyPEM := encodeECPrivateKey(t, key)
 
-	past := time.Now().Add(-100 * 24 * time.Hour)
-	expiredAuthority, err := LoadOrCreateAuthority(t.TempDir(), func() time.Time { return past })
+	leafPEM, _, _, err := a.SignCSR(csr, domains, 90*24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiredPEM, _, _, err := expiredAuthority.SignCSR(csr, domains, 90*24*time.Hour)
-	if err != nil {
-		t.Fatal(err)
+	if err := a.VerifyLeaf(leafPEM, keyPEM, domains); err != nil {
+		t.Fatalf("VerifyLeaf at issuance time: %v", err)
 	}
-	if err := expiredAuthority.VerifyLeaf(expiredPEM, keyPEM, domains); err == nil {
+
+	// VerifyLeaf follows the authority clock, so advancing it past the leaf's
+	// expiry must fail.
+	a.now = func() time.Time { return time.Now().Add(91 * 24 * time.Hour) }
+	if err := a.VerifyLeaf(leafPEM, keyPEM, domains); err == nil {
 		t.Fatal("VerifyLeaf accepted an expired certificate")
 	}
 
-	future := time.Now().Add(100 * 24 * time.Hour)
-	futureAuthority, err := LoadOrCreateAuthority(t.TempDir(), func() time.Time { return future })
-	if err != nil {
-		t.Fatal(err)
-	}
-	futurePEM, _, _, err := futureAuthority.SignCSR(csr, domains, 90*24*time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := futureAuthority.VerifyLeaf(futurePEM, keyPEM, domains); err == nil {
+	// Moving the authority clock before issuance must fail as not yet valid.
+	a.now = func() time.Time { return time.Now().Add(-time.Minute) }
+	if err := a.VerifyLeaf(leafPEM, keyPEM, domains); err == nil {
 		t.Fatal("VerifyLeaf accepted a not-yet-valid certificate")
 	}
 
 	// A short-lived but currently valid certificate is accepted.
-	shortAuthority := newTestAuthority(t)
-	shortPEM, _, notAfter, err := shortAuthority.SignCSR(csr, domains, time.Hour)
+	a.now = time.Now
+	shortPEM, _, notAfter, err := a.SignCSR(csr, domains, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if time.Until(notAfter) > time.Hour {
 		t.Fatalf("short leaf notAfter = %v", notAfter)
 	}
-	if err := shortAuthority.VerifyLeaf(shortPEM, keyPEM, domains); err != nil {
+	if err := a.VerifyLeaf(shortPEM, keyPEM, domains); err != nil {
 		t.Fatalf("VerifyLeaf rejected a valid short-lived certificate: %v", err)
 	}
 }

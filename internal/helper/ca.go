@@ -32,6 +32,22 @@ const (
 
 var oidSubjectAltName = asn1.ObjectIdentifier{2, 5, 29, 17}
 
+// errInvalidSigningRequest marks errors caused by the caller's CSR, domains,
+// or validity window. The helper maps these to INVALID_REQUEST; all other
+// signing failures are internal errors.
+var errInvalidSigningRequest = errors.New("helper: invalid certificate signing request")
+
+func invalidSigningRequest(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", errInvalidSigningRequest, err)
+}
+
+func invalidSigningRequestf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errInvalidSigningRequest, fmt.Sprintf(format, args...))
+}
+
 // Authority is the helper's local certificate authority. It owns the CA
 // private key; callers only ever receive the root certificate.
 type Authority struct {
@@ -112,54 +128,48 @@ func (a *Authority) SignCSR(csrPEM []byte, domains []string, ttl time.Duration) 
 		return nil, "", time.Time{}, errors.New("helper: certificate authority is not initialized")
 	}
 	if ttl <= 0 {
-		return nil, "", time.Time{}, fmt.Errorf("helper: certificate validity %v must be positive", ttl)
+		return nil, "", time.Time{}, invalidSigningRequestf("certificate validity %v must be positive", ttl)
 	}
 	if ttl > maxLeafValidity {
-		return nil, "", time.Time{}, fmt.Errorf("helper: certificate validity %v exceeds the %v maximum", ttl, maxLeafValidity)
+		return nil, "", time.Time{}, invalidSigningRequestf(
+			"certificate validity %v exceeds the %v maximum", ttl, maxLeafValidity)
 	}
 	wanted, err := normalizeDomains(domains)
 	if err != nil {
-		return nil, "", time.Time{}, err
+		return nil, "", time.Time{}, invalidSigningRequest(err)
 	}
 
 	block, rest := pem.Decode(csrPEM)
 	if block == nil {
-		return nil, "", time.Time{}, errors.New("helper: CSR is not PEM encoded")
+		return nil, "", time.Time{}, invalidSigningRequestf("CSR is not PEM encoded")
 	}
 	if block.Type != "CERTIFICATE REQUEST" && block.Type != "NEW CERTIFICATE REQUEST" {
-		return nil, "", time.Time{}, fmt.Errorf("helper: unexpected PEM block type %q for a CSR", block.Type)
+		return nil, "", time.Time{}, invalidSigningRequestf("unexpected PEM block type %q for a CSR", block.Type)
 	}
 	if len(bytes.TrimSpace(rest)) != 0 {
-		return nil, "", time.Time{}, errors.New("helper: CSR PEM contains trailing data")
+		return nil, "", time.Time{}, invalidSigningRequestf("CSR PEM contains trailing data")
 	}
 	csr, err := x509.ParseCertificateRequest(block.Bytes)
 	if err != nil {
-		return nil, "", time.Time{}, fmt.Errorf("helper: parse CSR: %w", err)
+		return nil, "", time.Time{}, invalidSigningRequest(fmt.Errorf("parse CSR: %w", err))
 	}
 	if err := csr.CheckSignature(); err != nil {
-		return nil, "", time.Time{}, fmt.Errorf("helper: CSR signature is invalid: %w", err)
+		return nil, "", time.Time{}, invalidSigningRequest(fmt.Errorf("CSR signature is invalid: %w", err))
 	}
 	got, err := sanDNSNames(csr.Extensions, "certificate request")
 	if err != nil {
-		return nil, "", time.Time{}, err
+		return nil, "", time.Time{}, invalidSigningRequest(err)
 	}
 	if !sameStringSet(got, wanted) {
-		return nil, "", time.Time{}, fmt.Errorf(
-			"helper: CSR subjectAltName set %v does not match requested domains %v", sortedCopy(got), sortedCopy(wanted))
+		return nil, "", time.Time{}, invalidSigningRequestf(
+			"CSR subjectAltName set %v does not match requested domains %v", sortedCopy(got), sortedCopy(wanted))
 	}
 
 	serial, err := randomSerial()
 	if err != nil {
 		return nil, "", time.Time{}, err
 	}
-	now := time.Now()
-	if a.now != nil {
-		now = a.now()
-	}
-	if now.IsZero() {
-		now = time.Now()
-	}
-	now = now.UTC().Truncate(time.Second)
+	now := a.currentTime().UTC().Truncate(time.Second)
 	notAfter := now.Add(ttl)
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
@@ -212,7 +222,7 @@ func (a *Authority) VerifyLeaf(certPEM, keyPEM []byte, domains []string) error {
 			"helper: certificate subjectAltName set %v does not match requested domains %v", sortedCopy(got), sortedCopy(wanted))
 	}
 
-	now := time.Now()
+	now := a.currentTime()
 	if now.Before(cert.NotBefore) {
 		return fmt.Errorf("helper: certificate is not valid before %v", cert.NotBefore)
 	}
@@ -279,13 +289,38 @@ func createAuthority(dir string, now func() time.Time) (*Authority, error) {
 }
 
 func loadAuthority(dir string, now func() time.Time, keyPEM, certPEM []byte) (*Authority, error) {
+	keyInfo, err := os.Lstat(filepath.Join(dir, rootKeyFile))
+	if err != nil {
+		return nil, fmt.Errorf("helper: inspect CA key: %w", err)
+	}
+	if !keyInfo.Mode().IsRegular() {
+		return nil, errors.New("helper: CA key is not a regular file")
+	}
+	if keyInfo.Mode().Perm() != 0o600 {
+		return nil, fmt.Errorf("helper: CA key mode is %04o; want 0600", keyInfo.Mode().Perm())
+	}
+
 	cert, err := parseCertificatePEM(certPEM)
 	if err != nil {
 		return nil, fmt.Errorf("helper: CA certificate is corrupt: %w", err)
 	}
-	if !cert.IsCA {
-		return nil, errors.New("helper: CA certificate is not a CA certificate")
+	if cert.Subject.CommonName != rootCommonName {
+		return nil, fmt.Errorf("helper: CA certificate CN is %q; want %q", cert.Subject.CommonName, rootCommonName)
 	}
+	if !cert.IsCA || !cert.BasicConstraintsValid {
+		return nil, errors.New("helper: CA certificate lacks the CA basic constraint")
+	}
+	if cert.KeyUsage != x509.KeyUsageCertSign|x509.KeyUsageCRLSign {
+		return nil, fmt.Errorf("helper: CA key usage is %v; want certSign|crlSign", cert.KeyUsage)
+	}
+	if !cert.MaxPathLenZero || cert.MaxPathLen != 0 {
+		return nil, errors.New("helper: CA certificate must have a zero path length constraint")
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || pub.Curve != elliptic.P256() {
+		return nil, errors.New("helper: CA certificate is not ECDSA P-256")
+	}
+
 	signer, err := decodePrivateKeyPEM(keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("helper: CA key is corrupt: %w", err)
@@ -294,6 +329,9 @@ func loadAuthority(dir string, now func() time.Time, keyPEM, certPEM []byte) (*A
 	if !ok {
 		return nil, fmt.Errorf("helper: CA key is %T, want ECDSA", signer)
 	}
+	if key.Curve != elliptic.P256() {
+		return nil, errors.New("helper: CA key is not ECDSA P-256")
+	}
 	if !publicKeysEqual(cert.PublicKey, &key.PublicKey) {
 		return nil, errors.New("helper: CA private key does not match the root certificate")
 	}
@@ -301,6 +339,16 @@ func loadAuthority(dir string, now func() time.Time, keyPEM, certPEM []byte) (*A
 		return nil, fmt.Errorf("helper: CA root certificate is not self-signed correctly: %w", err)
 	}
 	return newAuthority(dir, now, cert, key, certPEM), nil
+}
+
+// currentTime returns the authority clock used for issuance and verification.
+func (a *Authority) currentTime() time.Time {
+	if a != nil && a.now != nil {
+		if current := a.now(); !current.IsZero() {
+			return current
+		}
+	}
+	return time.Now()
 }
 
 func newAuthority(dir string, now func() time.Time, cert *x509.Certificate, key *ecdsa.PrivateKey, certPEM []byte) *Authority {
