@@ -14,7 +14,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -44,10 +46,24 @@ type Config struct {
 	// AllowUID is the only user permitted to call the helper. The socket is
 	// owned by this user and is readable only by its owner.
 	AllowUID int
+	// AllowHome overrides the home directory that trust operations may
+	// modify. When empty, the home directory of AllowUID is resolved with
+	// os/user. Tests set this field so they never touch a real home.
+	AllowHome string
+	// CADir is the directory containing the helper's root CA. When non-empty
+	// the CA and trust handlers are wired automatically.
+	CADir string
+	// TrustDir overrides the system CA anchor directory. When empty the
+	// distribution's anchor directory is detected.
+	TrustDir string
+	// Runner executes system trust-update commands. A nil runner uses
+	// os/exec.
+	Runner CommandRunner
 	// Logger receives server diagnostics. A nil logger uses slog.Default.
 	Logger *slog.Logger
-	// Service contains the privileged operations added by later tasks. A nil
-	// function returns NOT_IMPLEMENTED.
+	// Service contains the privileged operations exposed by the helper. When
+	// CADir is set, the CA and trust hooks are filled automatically; any hook
+	// supplied by an embedding caller is left untouched.
 	Service Service
 }
 
@@ -69,6 +85,8 @@ type Service struct {
 type Server struct {
 	cfg    Config
 	logger *slog.Logger
+
+	authority *Authority
 
 	hostsMu sync.Mutex
 
@@ -94,7 +112,144 @@ func NewServer(cfg Config) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, logger: logger}, nil
+	s := &Server{cfg: cfg, logger: logger}
+	if cfg.CADir != "" {
+		authority, err := LoadOrCreateAuthority(cfg.CADir, time.Now)
+		if err != nil {
+			return nil, fmt.Errorf("helper: load CA: %w", err)
+		}
+		s.authority = authority
+		s.cfg.Service = s.wireService(s.cfg.Service)
+	}
+	return s, nil
+}
+
+// wireService fills in the CA and trust handlers that the helper owns. Hooks
+// supplied by an embedding caller are left untouched.
+func (s *Server) wireService(service Service) Service {
+	if service.CAFingerprint == nil {
+		service.CAFingerprint = s.authority.Fingerprint
+	}
+	if service.EnsureCA == nil {
+		service.EnsureCA = s.ensureCA
+	}
+	if service.SignCertificate == nil {
+		service.SignCertificate = s.signCertificate
+	}
+	if service.InstallTrust == nil {
+		service.InstallTrust = s.installTrust
+	}
+	if service.RemoveTrust == nil {
+		service.RemoveTrust = s.removeTrust
+	}
+	if service.TrustStatus == nil {
+		service.TrustStatus = s.trustStatus
+	}
+	return service
+}
+
+func (s *Server) ensureCA(ctx context.Context) (helperproto.EnsureCAResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return helperproto.EnsureCAResponse{}, err
+	}
+	if s.authority == nil {
+		return helperproto.EnsureCAResponse{}, helperproto.ErrNotImplemented
+	}
+	return helperproto.EnsureCAResponse{
+		RootPEM:     s.authority.RootPEM(),
+		Fingerprint: s.authority.Fingerprint(),
+	}, nil
+}
+
+func (s *Server) signCertificate(ctx context.Context, req helperproto.SignRequest) (helperproto.SignResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return helperproto.SignResponse{}, err
+	}
+	if s.authority == nil {
+		return helperproto.SignResponse{}, helperproto.ErrNotImplemented
+	}
+	if len(req.Domains) == 0 {
+		return helperproto.SignResponse{}, fmt.Errorf("%w: at least one domain is required", helperproto.ErrInvalidRequest)
+	}
+	for _, d := range req.Domains {
+		if err := domain.ValidateDomain(d); err != nil {
+			return helperproto.SignResponse{}, fmt.Errorf("%w: %v", helperproto.ErrInvalidRequest, err)
+		}
+	}
+	certPEM, serial, notAfter, err := s.authority.SignCSR(req.CSR, req.Domains, maxLeafValidity)
+	if err != nil {
+		return helperproto.SignResponse{}, fmt.Errorf("%w: %v", helperproto.ErrInvalidRequest, err)
+	}
+	return helperproto.SignResponse{CertPEM: certPEM, Serial: serial, NotAfter: notAfter}, nil
+}
+
+func (s *Server) installTrust(ctx context.Context, req helperproto.TrustRequest) (helperproto.TrustResponse, error) {
+	home, err := s.authorizeHome(req.UserHome)
+	if err != nil {
+		return helperproto.TrustResponse{}, err
+	}
+	targets, err := s.newTrustManager(home).Install(ctx)
+	if err != nil {
+		return helperproto.TrustResponse{}, err
+	}
+	return helperproto.TrustResponse{Targets: targets}, nil
+}
+
+func (s *Server) removeTrust(ctx context.Context, req helperproto.TrustRequest) (helperproto.TrustResponse, error) {
+	home, err := s.authorizeHome(req.UserHome)
+	if err != nil {
+		return helperproto.TrustResponse{}, err
+	}
+	targets, err := s.newTrustManager(home).Remove(ctx)
+	if err != nil {
+		return helperproto.TrustResponse{}, err
+	}
+	return helperproto.TrustResponse{Targets: targets}, nil
+}
+
+func (s *Server) trustStatus(ctx context.Context, req helperproto.TrustRequest) (helperproto.TrustResponse, error) {
+	home, err := s.authorizeHome(req.UserHome)
+	if err != nil {
+		return helperproto.TrustResponse{}, err
+	}
+	targets, err := s.newTrustManager(home).Status(ctx)
+	if err != nil {
+		return helperproto.TrustResponse{}, err
+	}
+	return helperproto.TrustResponse{Targets: targets}, nil
+}
+
+func (s *Server) newTrustManager(home string) *TrustManager {
+	return NewTrustManager(s.authority.RootPEM(), home, s.cfg.Runner, s.cfg.TrustDir)
+}
+
+// authorizeHome rejects trust requests for any directory other than the
+// allowed user's home. The helper must never write into another user's
+// browser or trust stores.
+func (s *Server) authorizeHome(requested string) (string, error) {
+	if requested == "" {
+		return "", fmt.Errorf("%w: user_home is required", helperproto.ErrInvalidRequest)
+	}
+	if !filepath.IsAbs(requested) {
+		return "", fmt.Errorf("%w: user_home must be an absolute path", helperproto.ErrInvalidRequest)
+	}
+	allowed := s.cfg.AllowHome
+	if allowed == "" {
+		account, err := user.LookupId(strconv.Itoa(s.cfg.AllowUID))
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory for UID %d: %w", s.cfg.AllowUID, err)
+		}
+		allowed = account.HomeDir
+	}
+	if allowed == "" {
+		return "", errors.New("the allowed user has no home directory")
+	}
+	requested = filepath.Clean(requested)
+	allowed = filepath.Clean(allowed)
+	if requested != allowed {
+		return "", fmt.Errorf("%w: user_home does not match the allowed user's home directory", helperproto.ErrUnauthorized)
+	}
+	return requested, nil
 }
 
 // Start creates the socket and begins serving. It returns once the listener is
