@@ -455,6 +455,7 @@ git commit -m "feat: add process supervisor with backoff and orphan cleanup"
 **Files:**
 - Create: `internal/backend/backend.go`, `internal/backend/local.go`, `internal/backend/local_test.go`
 - Create: `internal/backend/conformance/conformance.go`
+- Create: `cmd/devstack/serve_static.go` (minimal; Task 11 replaces its internals)
 
 **Interfaces:**
 - Produces:
@@ -526,7 +527,7 @@ Expected: FAIL (undefined: NewLocal).
 
 - [ ] **Step 3: Implement**
 
-`Local` holds a `supervisor.Manager`, a static-spec map, `store`, and `RuntimeProvider`. Static `Start` launches `selfBin` with `serve-static --root <docroot> --addr 127.0.0.1:<port> [--spa]`; Node launches `/bin/sh -lc <Command>` with env: `PATH=<node>/bin:$PATH`, `PORT=<port>`, `NODE_EXTRA_CA_CERTS=<home>/pki/ca-bundle.crt`, and site env. Readiness is TCP on `127.0.0.1:<port>`. `Stop` delegates to the supervisor. `Logs` returns a pipe fed by the logs store. `Exec` runs argv as the daemon user with the site env. `InstallCA` writes a combined system+devstack bundle to `pki/ca-bundle.crt` (`0600`). Add a `conformance.Suite` used by Plan 3's WSL backend later; it exercises Prepare/Start/Stop/Status/Logs/Exec/Health.
+`Local` holds a `supervisor.Manager`, a static-spec map, `store`, and `RuntimeProvider`. Static `Start` launches `selfBin` with `serve-static --root <docroot> --addr 127.0.0.1:<port> [--spa]`; Task 7 adds a minimal `serve-static` subcommand (`http.FileServer`, no listing, `--spa` fallback) so this test works, and Task 11 replaces its internals with the secure `internal/staticserve` handler. Node launches `/bin/sh -lc <Command>` with env: `PATH=<node>/bin:$PATH`, `PORT=<port>`, `NODE_EXTRA_CA_CERTS=<home>/pki/ca-bundle.crt`, and site env. Readiness is TCP on `127.0.0.1:<port>`. `Stop` delegates to the supervisor. `Logs` returns a pipe fed by the logs store. `Exec` runs argv as the daemon user with the site env. `InstallCA` writes a combined system+devstack bundle to `pki/ca-bundle.crt` (`0600`). Add a `conformance.Suite` used by Plan 3's WSL backend later; it exercises Prepare/Start/Stop/Status/Logs/Exec/Health.
 
 - [ ] **Step 4: Run tests**
 
@@ -790,7 +791,7 @@ git commit -m "feat: add privileged TCP forwarders for ports 80 and 443"
 **Files:**
 - Create: `internal/proxy/router.go`, `internal/proxy/server.go`, `internal/proxy/handler.go`, `internal/proxy/router_test.go`, `internal/proxy/server_test.go`
 - Create: `internal/staticserve/handler.go`, `internal/staticserve/handler_test.go`
-- Create: `cmd/devstack/serve_static.go`
+- Modify: `cmd/devstack/serve_static.go` (replace the Task 7 minimal handler)
 
 **Interfaces:**
 - Produces:
@@ -850,7 +851,7 @@ Expected: FAIL (undefined: NewRouter).
 
 - [ ] **Step 3: Implement**
 
-Router: lowercase host lookup (strip port), immutable snapshot, per-route reverse proxy with `X-Forwarded-For/Proto/Host`, 30s read-header/120s idle, body limit from config, unknown host branded 404, upstream failure branded 502 page naming the site and suggesting `devstack site logs`, `ForceHTTPS` 308, `TLS=false` HTTPS→HTTP 308, never emit HSTS. Enable HTTP/2 on the TLS listener. Node reverse proxy must pass WebSocket upgrades (use `httputil.ReverseProxy`; add a test with a test WebSocket server). Optional per-site access logging is off by default and writes through the logs store when enabled. Static handler: `os.OpenRoot` for symlink/traversal containment, `index.html` for directories, no listing, MIME, ranges via `http.ServeContent`, `Cache-Control: no-store`, optional SPA fallback to `index.html` for non-file paths, 404 for missing. Add `serve-static` subcommand using `--root`, `--addr`, `--spa`.
+Router: lowercase host lookup (strip port), immutable snapshot, per-route reverse proxy with `X-Forwarded-For/Proto/Host`, 30s read-header/120s idle, body limit from config, unknown host branded 404, upstream failure branded 502 page naming the site and suggesting `devstack site logs`, `ForceHTTPS` 308, `TLS=false` HTTPS→HTTP 308, never emit HSTS. Enable HTTP/2 on the TLS listener. Node reverse proxy must pass WebSocket upgrades (use `httputil.ReverseProxy`; add a test with a test WebSocket server). Optional per-site access logging is off by default and writes through the logs store when enabled. Static handler: `os.OpenRoot` for symlink/traversal containment, `index.html` for directories, no listing, MIME, ranges via `http.ServeContent`, `Cache-Control: no-store`, optional SPA fallback to `index.html` for non-file paths, 404 for missing. Replace the Task 7 minimal `serve-static` handler with one that uses `internal/staticserve` (same `--root`, `--addr`, `--spa` flags).
 
 - [ ] **Step 4: Run tests**
 
