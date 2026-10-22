@@ -1,0 +1,20 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - misspell
+    - unconvert
+  exclusions:
+    generated: lax
+    paths:
+      - ui/node_modules
+      - ui/dist
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
