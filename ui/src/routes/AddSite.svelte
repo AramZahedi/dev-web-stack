@@ -1,0 +1,1609 @@
+<script lang="ts">
+  import { onMount, tick } from 'svelte';
+  import { push } from 'svelte-spa-router';
+  import {
+    ArrowLeft,
+    ArrowRight,
+    Check,
+    ChevronDown,
+    Code,
+    FolderOpen,
+    Globe,
+    Lock,
+    LockOpen,
+    Plus,
+    ShieldCheck,
+    Trash2,
+  } from 'lucide-svelte';
+  import * as api from '../lib/api';
+  import { describeError } from '../lib/errors';
+  import { isAbsolutePath } from '../lib/format';
+  import { addToast } from '../lib/stores';
+  import type { RuntimeBuild, Settings } from '../lib/types';
+  import Badge from '../lib/components/Badge.svelte';
+  import Button from '../lib/components/Button.svelte';
+  import ErrorBanner from '../lib/components/ErrorBanner.svelte';
+  import Field from '../lib/components/Field.svelte';
+  import IconButton from '../lib/components/IconButton.svelte';
+  import PathBrowser from '../lib/components/PathBrowser.svelte';
+  import Skeleton from '../lib/components/Skeleton.svelte';
+  import Toggle from '../lib/components/Toggle.svelte';
+
+  type Kind = 'static' | 'node';
+  interface EnvRow {
+    key: string;
+    value: string;
+  }
+
+  const steps = [
+    { label: 'Project', title: 'Project details', description: 'Name the site and point devstack at its folder.' },
+    { label: 'Runtime', title: 'How should it run?', description: 'Choose a static document root or a supervised Node process.' },
+    { label: 'Options', title: 'Domain and options', description: 'Decide how the site is served, then review everything.' },
+  ];
+
+  let step = $state(1);
+  let name = $state('');
+  let path = $state('');
+  let kind = $state<Kind>('static');
+  let nodeVersion = $state('');
+  let command = $state('npm run dev');
+  let documentRoot = $state('.');
+  let spaFallback = $state(false);
+  let tls = $state(true);
+  let forceHttps = $state(false);
+  let www = $state(false);
+  let envRows = $state<EnvRow[]>([{ key: '', value: '' }]);
+  let errors = $state<Record<string, string>>({});
+  let showErrors = $state(false);
+  let submitting = $state(false);
+  let apiError = $state<{ code: string; message: string } | null>(null);
+  let runtimes = $state<RuntimeBuild[]>([]);
+  let runtimesLoading = $state(true);
+  let runtimesError = $state<{ code: string; message: string } | null>(null);
+  let settings = $state<Settings | null>(null);
+  let pathOpen = $state(false);
+  let headingEl: HTMLHeadingElement | undefined = $state();
+
+  const nodeRuntimes = $derived(
+    runtimes
+      .filter((runtime) => runtime.kind === 'node')
+      .slice()
+      .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true })),
+  );
+
+  const previewName = $derived(name.trim() || 'your-site');
+  const previewUrl = $derived(`${tls ? 'https' : 'http'}://${previewName}.test`);
+  const previewRuntime = $derived(
+    kind === 'static' ? 'Static files' : nodeVersion ? `Node ${nodeVersion}` : 'Node — not selected',
+  );
+  const initialBrowsePath = $derived(settings?.user_home ?? '/');
+
+  const errorItems = $derived(
+    Object.entries(errors).map(([key, message]) => ({
+      key,
+      message,
+      label: fieldLabel(key),
+    })),
+  );
+
+  async function loadRuntimeData(): Promise<void> {
+    runtimesLoading = true;
+    runtimesError = null;
+    try {
+      const [builds, config] = await Promise.all([
+        api.listRuntimes(),
+        api.getSettings().catch(() => null),
+      ]);
+      runtimes = builds;
+      settings = config;
+      if (!nodeVersion && nodeRuntimes.length > 0) nodeVersion = nodeRuntimes[0].version;
+    } catch (caught) {
+      runtimesError = describeError(caught);
+    } finally {
+      runtimesLoading = false;
+    }
+  }
+
+  onMount(() => {
+    void loadRuntimeData();
+  });
+
+  function fieldLabel(key: string): string {
+    if (key === 'name') return 'Site name';
+    if (key === 'path') return 'Project folder';
+    if (key === 'node_version') return 'Node version';
+    if (key === 'command') return 'Start command';
+    if (key === 'document_root') return 'Document root';
+    if (key.startsWith('env-')) return `Environment variable ${Number(key.slice(4)) + 1}`;
+    return key;
+  }
+
+  function fieldStep(key: string): number {
+    if (key === 'name' || key === 'path' || key === 'kind') return 1;
+    if (key === 'node_version' || key === 'command' || key === 'document_root' || key.startsWith('env-')) {
+      return 2;
+    }
+    return 3;
+  }
+
+  function validateAll(): Record<string, string> {
+    const next: Record<string, string> = {};
+    const finalName = name.trim();
+    if (!finalName) {
+      next.name = 'Enter a site name.';
+    } else if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(finalName)) {
+      next.name = 'Use lowercase letters, numbers and hyphens; start and end with a letter or number.';
+    } else if (finalName.length > 63) {
+      next.name = 'Keep the name at 63 characters or fewer.';
+    }
+
+    if (!path.trim()) {
+      next.path = 'Choose the project folder.';
+    } else if (!isAbsolutePath(path.trim())) {
+      next.path = 'Use an absolute path, for example /home/you/projects/app.';
+    }
+
+    if (kind === 'static') {
+      if (!documentRoot.trim()) next.document_root = 'Enter a document root. Use . to serve the project root.';
+    } else {
+      if (!nodeVersion) next.node_version = 'Install a Node build before adding a Node site.';
+      if (!command.trim()) next.command = 'Enter the command that starts the dev server.';
+    }
+
+    if (kind === 'node') {
+      const seen = new Set<string>();
+      envRows.forEach((row, index) => {
+        const key = row.key.trim();
+        if (!key) {
+          if (row.value.trim()) next[`env-${index}`] = 'Add a name for this value.';
+          return;
+        }
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          next[`env-${index}`] = 'Use letters, numbers and underscores; do not start with a number.';
+        } else if (seen.has(key)) {
+          next[`env-${index}`] = 'This variable is already defined.';
+        }
+        seen.add(key);
+      });
+    }
+
+    return next;
+  }
+
+  function stepFields(target: number): string[] {
+    const fields = ['name', 'path', 'kind', 'node_version', 'command', 'document_root'];
+    if (target === 2 && kind === 'node') fields.push(...envRows.map((_, index) => `env-${index}`));
+    return fields.filter((key) => fieldStep(key) === target);
+  }
+
+  function validateStep(target: number): Record<string, string> {
+    const all = validateAll();
+    const keys = new Set(stepFields(target));
+    const scoped: Record<string, string> = {};
+    for (const [key, value] of Object.entries(all)) {
+      if (keys.has(key)) scoped[key] = value;
+    }
+    return scoped;
+  }
+
+  function clearError(key: string): void {
+    if (!errors[key]) return;
+    const next = { ...errors };
+    delete next[key];
+    errors = next;
+  }
+
+  function validateField(key: string): void {
+    const all = validateAll();
+    if (all[key]) {
+      errors = { ...errors, [key]: all[key] };
+    } else {
+      clearError(key);
+    }
+  }
+
+  function scrollBehavior(): ScrollBehavior {
+    if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      return 'auto';
+    }
+    return 'smooth';
+  }
+
+  async function focusField(key: string): Promise<void> {
+    const target = fieldStep(key);
+    step = target;
+    await tick();
+    const id =
+      key === 'kind'
+        ? 'kind-static'
+        : key === 'name'
+          ? 'site-name'
+          : key === 'path'
+            ? 'site-path'
+            : key.startsWith('env-')
+              ? `env-key-${key.slice(4)}`
+              : key.replace(/_/g, '-');
+    const element = document.getElementById(id);
+    element?.focus();
+    element?.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
+  }
+
+  async function goToStep(target: number): Promise<void> {
+    step = Math.min(3, Math.max(1, target));
+    await tick();
+    headingEl?.focus();
+    window.scrollTo({ top: 0, behavior: scrollBehavior() });
+  }
+
+  async function next(): Promise<void> {
+    const found = validateStep(step);
+    const keys = new Set(stepFields(step));
+    const nextErrors = { ...errors };
+    for (const key of keys) delete nextErrors[key];
+    errors = { ...nextErrors, ...found };
+    if (Object.keys(found).length > 0) {
+      showErrors = true;
+      const first = Object.keys(found)[0];
+      await focusField(first);
+      return;
+    }
+    await goToStep(step + 1);
+  }
+
+  function back(): void {
+    if (step === 1) {
+      push('/sites');
+      return;
+    }
+    void goToStep(step - 1);
+  }
+
+  function addEnv(): void {
+    envRows = [...envRows, { key: '', value: '' }];
+    void tick().then(() => document.getElementById(`env-key-${envRows.length - 1}`)?.focus());
+  }
+
+  function removeEnv(index: number): void {
+    envRows = envRows.filter((_, position) => position !== index);
+    const next: Record<string, string> = {};
+    for (const [key, value] of Object.entries(errors)) {
+      if (!key.startsWith('env-')) next[key] = value;
+    }
+    errors = next;
+  }
+
+  function setKind(value: Kind): void {
+    kind = value;
+    const next = { ...errors };
+    delete next.kind;
+    delete next.node_version;
+    delete next.command;
+    delete next.document_root;
+    for (const key of Object.keys(next)) {
+      if (key.startsWith('env-')) delete next[key];
+    }
+    errors = next;
+  }
+
+  async function create(): Promise<void> {
+    const found = validateAll();
+    errors = found;
+    showErrors = true;
+    apiError = null;
+    if (Object.keys(found).length > 0) {
+      const first = Object.keys(found)[0];
+      await focusField(first);
+      return;
+    }
+
+    submitting = true;
+    try {
+      const env: Record<string, string> = {};
+      if (kind === 'node') {
+        for (const row of envRows) {
+          if (row.key.trim()) env[row.key.trim()] = row.value;
+        }
+      }
+      const site = await api.createSite({
+        name: name.trim(),
+        path: path.trim(),
+        kind,
+        node_version: kind === 'node' ? nodeVersion : undefined,
+        command: kind === 'node' ? command.trim() : undefined,
+        document_root: kind === 'static' ? documentRoot.trim() : undefined,
+        www,
+        tls,
+        force_https: tls ? forceHttps : false,
+        spa_fallback: kind === 'static' ? spaFallback : false,
+        env,
+      });
+      addToast({
+        kind: 'success',
+        title: `${site.name} added`,
+        message: `${site.domain} is starting. Logs are live on the detail page.`,
+      });
+      push(`/sites/${encodeURIComponent(site.id)}`);
+    } catch (caught) {
+      apiError = describeError(caught);
+    } finally {
+      submitting = false;
+    }
+  }
+</script>
+
+<div class="page">
+  <a class="back" href="#/sites">
+    <ArrowLeft size={14} strokeWidth={2} aria-hidden="true" />
+    All sites
+  </a>
+
+  <div class="wizard">
+    <div class="wizard-main">
+      <ol class="stepper" aria-label="Add site steps">
+        {#each steps as item, index (item.label)}
+          {@const number = index + 1}
+          <li class:current={step === number} class:done={step > number}>
+            <span class="step-number" aria-hidden="true">
+              {#if step > number}
+                <Check size={12} strokeWidth={2.6} />
+              {:else}
+                {number}
+              {/if}
+            </span>
+            <span class="step-name" aria-current={step === number ? 'step' : undefined}>{item.label}</span>
+          </li>
+        {/each}
+      </ol>
+
+      <section class="panel" aria-labelledby="step-heading">
+        <header class="panel-head">
+          <p class="eyebrow">Step {step} of 3</p>
+          <h2 id="step-heading" tabindex="-1" bind:this={headingEl}>{steps[step - 1].title}</h2>
+          <p class="step-copy">{steps[step - 1].description}</p>
+        </header>
+
+        <div class="panel-body">
+          {#if apiError}
+            <div class="banner">
+              <ErrorBanner
+                title="Could not create the site"
+                code={apiError.code}
+                message={apiError.message}
+                ondismiss={() => (apiError = null)}
+              />
+            </div>
+          {/if}
+
+          {#if showErrors && errorItems.length > 0}
+            <div class="error-summary" role="alert" aria-labelledby="error-summary-title">
+              <p id="error-summary-title">Check {errorItems.length === 1 ? 'one field' : `${errorItems.length} fields`} before continuing</p>
+              <ul>
+                {#each errorItems as item (item.key)}
+                  <li>
+                    <button type="button" onclick={() => focusField(item.key)}>
+                      <strong>{item.label}:</strong>
+                      {item.message}
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+
+          {#if step === 1}
+            <div class="form-stack">
+              <Field
+                id="site-name"
+                label="Site name"
+                required
+                hint="The site becomes name.test. Lowercase letters, numbers and hyphens only."
+                error={errors.name}
+              >
+                <div class="suffix-wrap">
+                  <input
+                    id="site-name"
+                    class="input mono"
+                    type="text"
+                    placeholder="my-project"
+                    autocomplete="off"
+                    spellcheck="false"
+                    bind:value={name}
+                    aria-invalid={Boolean(errors.name)}
+                    aria-describedby={errors.name ? 'site-name-error' : 'site-name-hint'}
+                    oninput={() => clearError('name')}
+                    onblur={() => validateField('name')}
+                  />
+                  <span class="suffix mono" aria-hidden="true">.test</span>
+                </div>
+              </Field>
+
+              <Field
+                id="site-path"
+                label="Project folder"
+                required
+                hint="An existing absolute path. devstack never writes to your project files."
+                error={errors.path}
+              >
+                <div class="path-row">
+                  <input
+                    id="site-path"
+                    class="input mono"
+                    type="text"
+                    placeholder="/home/you/projects/my-app"
+                    autocomplete="off"
+                    spellcheck="false"
+                    bind:value={path}
+                    aria-invalid={Boolean(errors.path)}
+                    aria-describedby={errors.path ? 'site-path-error' : 'site-path-hint'}
+                    oninput={() => clearError('path')}
+                    onblur={() => validateField('path')}
+                  />
+                  <Button variant="secondary" onclick={() => (pathOpen = true)}>
+                    <FolderOpen size={14} strokeWidth={1.9} aria-hidden="true" />
+                    Browse
+                  </Button>
+                </div>
+              </Field>
+
+              <fieldset class="kind-group">
+                <legend>Site kind</legend>
+                <div class="kind-options">
+                  <label class="kind-card" class:checked={kind === 'static'}>
+                    <input
+                      id="kind-static"
+                      type="radio"
+                      name="site-kind"
+                      value="static"
+                      checked={kind === 'static'}
+                      onchange={() => setKind('static')}
+                    />
+                    <span class="kind-icon" aria-hidden="true"><Globe size={17} strokeWidth={1.8} /></span>
+                    <span class="kind-copy">
+                      <span class="kind-title">Static</span>
+                      <span class="kind-desc">Prebuilt HTML, CSS and assets served from a folder.</span>
+                    </span>
+                    {#if kind === 'static'}<span class="kind-check" aria-hidden="true"><Check size={14} strokeWidth={2.4} /></span>{/if}
+                  </label>
+
+                  <label class="kind-card" class:checked={kind === 'node'}>
+                    <input
+                      id="kind-node"
+                      type="radio"
+                      name="site-kind"
+                      value="node"
+                      checked={kind === 'node'}
+                      onchange={() => setKind('node')}
+                    />
+                    <span class="kind-icon" aria-hidden="true"><Code size={17} strokeWidth={1.8} /></span>
+                    <span class="kind-copy">
+                      <span class="kind-title">Node</span>
+                      <span class="kind-desc">A supervised dev server, started with your command.</span>
+                    </span>
+                    {#if kind === 'node'}<span class="kind-check" aria-hidden="true"><Check size={14} strokeWidth={2.4} /></span>{/if}
+                  </label>
+
+                  <label class="kind-card disabled">
+                    <input type="radio" name="site-kind" value="php" disabled />
+                    <span class="kind-icon" aria-hidden="true"><Code size={17} strokeWidth={1.8} /></span>
+                    <span class="kind-copy">
+                      <span class="kind-title">PHP <Badge>M2</Badge></span>
+                      <span class="kind-desc">PHP-FPM pools arrive in the next milestone.</span>
+                    </span>
+                  </label>
+                </div>
+              </fieldset>
+            </div>
+          {:else if step === 2}
+            {#if kind === 'static'}
+              <div class="form-stack">
+                <Field
+                  id="document-root"
+                  label="Document root"
+                  required
+                  hint="Relative to the project folder. Use . to serve the folder itself."
+                  error={errors.document_root}
+                >
+                  <input
+                    id="document-root"
+                    class="input mono"
+                    type="text"
+                    placeholder="."
+                    autocomplete="off"
+                    spellcheck="false"
+                    bind:value={documentRoot}
+                    aria-invalid={Boolean(errors.document_root)}
+                    aria-describedby={errors.document_root ? 'document-root-error' : 'document-root-hint'}
+                    oninput={() => clearError('document_root')}
+                    onblur={() => validateField('document_root')}
+                  />
+                </Field>
+
+                <div class="options-box">
+                  <Toggle
+                    label="SPA fallback"
+                    description="Route unknown paths to index.html so client-side routers work on refresh."
+                    bind:checked={spaFallback}
+                  />
+                </div>
+              </div>
+            {:else}
+              <div class="form-stack">
+                {#if runtimesLoading}
+                  <div class="loading-field">
+                    <Skeleton width="90px" height="10px" />
+                    <Skeleton width="100%" height="36px" />
+                  </div>
+                {:else if runtimesError}
+                  <ErrorBanner
+                    title="Could not load Node builds"
+                    code={runtimesError.code}
+                    message={runtimesError.message}
+                    onretry={loadRuntimeData}
+                  />
+                {:else if nodeRuntimes.length === 0}
+                  <div class="notice">
+                    <p>No Node builds are installed yet.</p>
+                    <p class="notice-copy">
+                      Install one from <a class="link" href="#/runtimes">Runtimes</a>, then come back to finish this site.
+                    </p>
+                  </div>
+                {:else}
+                  <Field id="node-version" label="Node version" required error={errors.node_version}>
+                    <div class="select-wrap">
+                      <select
+                        id="node-version"
+                        class="input mono"
+                        bind:value={nodeVersion}
+                        aria-invalid={Boolean(errors.node_version)}
+                        aria-describedby={errors.node_version ? 'node-version-error' : undefined}
+                        onchange={() => clearError('node_version')}
+                      >
+                        {#each nodeRuntimes as runtime (runtime.id)}
+                          <option value={runtime.version}>Node {runtime.version} · {runtime.backend}</option>
+                        {/each}
+                      </select>
+                      <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+                    </div>
+                  </Field>
+                {/if}
+
+                <Field
+                  id="node-command"
+                  label="Start command"
+                  required
+                  hint="Runs through your shell in the project folder. Use the command you would run locally."
+                  error={errors.command}
+                >
+                  <input
+                    id="node-command"
+                    class="input mono"
+                    type="text"
+                    placeholder="npm run dev"
+                    autocomplete="off"
+                    spellcheck="false"
+                    bind:value={command}
+                    aria-invalid={Boolean(errors.command)}
+                    aria-describedby={errors.command ? 'node-command-error' : 'node-command-hint'}
+                    oninput={() => clearError('command')}
+                    onblur={() => validateField('command')}
+                  />
+                </Field>
+
+                <fieldset class="env">
+                  <legend>Environment variables <span class="optional">Optional</span></legend>
+                  <p class="env-hint">Added to the process environment. Values are redacted in the dashboard.</p>
+                  <div class="env-list">
+                    {#each envRows as row, index (index)}
+                      <div class="env-row">
+                        <div class="env-cell">
+                          <label class="sr-only" for={`env-key-${index}`}>Variable {index + 1} name</label>
+                          <input
+                            id={`env-key-${index}`}
+                            class="input mono"
+                            type="text"
+                            placeholder="NODE_ENV"
+                            autocomplete="off"
+                            spellcheck="false"
+                            bind:value={row.key}
+                            aria-invalid={Boolean(errors[`env-${index}`])}
+                            aria-describedby={errors[`env-${index}`] ? `env-error-${index}` : undefined}
+                            oninput={() => clearError(`env-${index}`)}
+                            onblur={() => validateField(`env-${index}`)}
+                          />
+                          {#if errors[`env-${index}`]}
+                            <p class="env-error" id={`env-error-${index}`}>{errors[`env-${index}`]}</p>
+                          {/if}
+                        </div>
+                        <div class="env-cell">
+                          <label class="sr-only" for={`env-value-${index}`}>Variable {index + 1} value</label>
+                          <input
+                            id={`env-value-${index}`}
+                            class="input mono"
+                            type="text"
+                            placeholder="development"
+                            autocomplete="off"
+                            spellcheck="false"
+                            bind:value={row.value}
+                          />
+                        </div>
+                        <IconButton
+                          label={`Remove environment variable ${index + 1}`}
+                          icon={Trash2}
+                          size="sm"
+                          onclick={() => removeEnv(index)}
+                        />
+                      </div>
+                    {/each}
+                  </div>
+                  <div class="env-add">
+                    <Button size="sm" variant="ghost" onclick={addEnv}>
+                      <Plus size={13} strokeWidth={2.2} aria-hidden="true" />
+                      Add variable
+                    </Button>
+                  </div>
+                </fieldset>
+              </div>
+            {/if}
+          {:else}
+            <div class="form-stack">
+              <div class="options-box options-list">
+                <Toggle
+                  label="Serve over HTTPS"
+                  description="Issue a certificate from the local devstack CA for this domain."
+                  bind:checked={tls}
+                  onchange={(checked) => {
+                    tls = checked;
+                    if (!checked) forceHttps = false;
+                  }}
+                />
+                <Toggle
+                  label="Force HTTPS"
+                  description="Redirect plain HTTP requests to the HTTPS URL."
+                  bind:checked={forceHttps}
+                  disabled={!tls}
+                />
+                <Toggle
+                  label="Add www alias"
+                  description={`Also respond on www.${previewName}.test with the same certificate.`}
+                  bind:checked={www}
+                />
+                {#if kind === 'static'}
+                  <Toggle
+                    label="SPA fallback"
+                    description="Route unknown paths to index.html for client-side routing."
+                    bind:checked={spaFallback}
+                  />
+                {/if}
+              </div>
+
+              <div class="review">
+                <div class="review-head">
+                  <h3>Review</h3>
+                  <span class="sr-only">Review your choices</span>
+                </div>
+                <dl>
+                  <div class="review-row">
+                    <dt>Project</dt>
+                    <dd>
+                      <span class="review-main">{name || '—'}</span>
+                      <span class="review-sub mono">{path || 'No folder selected'}</span>
+                    </dd>
+                    <button type="button" class="edit" onclick={() => goToStep(1)}>Edit</button>
+                  </div>
+                  <div class="review-row">
+                    <dt>Runtime</dt>
+                    <dd>
+                      <span class="review-main">{previewRuntime}</span>
+                      <span class="review-sub mono">
+                        {kind === 'static' ? `root ${documentRoot || '.'}` : command || 'No command'}
+                      </span>
+                    </dd>
+                    <button type="button" class="edit" onclick={() => goToStep(2)}>Edit</button>
+                  </div>
+                  <div class="review-row">
+                    <dt>Domain</dt>
+                    <dd>
+                      <span class="review-main mono">{previewUrl}</span>
+                      <span class="review-sub">
+                        {[tls ? 'TLS' : 'HTTP', forceHttps ? 'force HTTPS' : null, www ? 'www alias' : null]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    </dd>
+                    <button type="button" class="edit" onclick={() => goToStep(3)}>Edit</button>
+                  </div>
+                  <div class="review-row">
+                    <dt>Environment</dt>
+                    <dd>
+                      <span class="review-main">
+                        {envRows.filter((row) => row.key.trim()).length} variables
+                      </span>
+                      <span class="review-sub">Stored locally with the site</span>
+                    </dd>
+                    {#if kind === 'node'}
+                      <button type="button" class="edit" onclick={() => goToStep(2)}>Edit</button>
+                    {/if}
+                  </div>
+                </dl>
+              </div>
+
+              <p class="protect-note">
+                <ShieldCheck size={14} strokeWidth={1.9} aria-hidden="true" />
+                Project files are never modified. Removing the site later leaves the folder untouched.
+              </p>
+            </div>
+          {/if}
+        </div>
+
+        <footer class="panel-foot">
+          <Button variant="ghost" onclick={back}>{step === 1 ? 'Cancel' : 'Back'}</Button>
+          <div class="foot-right">
+            {#if step < 3}
+              <Button variant="primary" onclick={next}>
+                Continue
+                <ArrowRight size={14} strokeWidth={2.2} aria-hidden="true" />
+              </Button>
+            {:else}
+              <Button variant="primary" onclick={create} loading={submitting} disabled={submitting}>
+                {submitting ? 'Creating site…' : 'Create site'}
+              </Button>
+            {/if}
+          </div>
+        </footer>
+      </section>
+    </div>
+
+    <aside class="preview" aria-label="Site preview">
+      <div class="preview-card">
+        <div class="preview-head">
+          <span class="preview-label">Preview</span>
+          <span class="tls-state" class:on={tls}>
+            {#if tls}<Lock size={11} strokeWidth={2} aria-hidden="true" />{:else}<LockOpen size={11} strokeWidth={2} aria-hidden="true" />{/if}
+            {tls ? 'TLS on' : 'TLS off'}
+          </span>
+        </div>
+        <p class="preview-url mono">{previewUrl}</p>
+        <p class="preview-domain mono">{www ? `${previewName}.test + www` : `${previewName}.test`}</p>
+
+        <dl class="preview-meta">
+          <div>
+            <dt>Kind</dt>
+            <dd>{kind === 'static' ? 'Static' : 'Node'}</dd>
+          </div>
+          <div>
+            <dt>Runtime</dt>
+            <dd class="mono">{previewRuntime}</dd>
+          </div>
+          <div>
+            <dt>Folder</dt>
+            <dd class="mono path" title={path}>{path || 'Not selected'}</dd>
+          </div>
+        </dl>
+
+        <div class="next">
+          <p class="next-title">What happens next</p>
+          <ol>
+            <li>
+              <span class="num mono">01</span>
+              <span>Reserve <span class="mono">{previewName}.test</span> in the hosts file.</span>
+            </li>
+            <li>
+              <span class="num mono">02</span>
+              <span>{tls ? 'Issue a certificate from the local CA.' : 'Skip TLS and serve over HTTP.'}</span>
+            </li>
+            <li>
+              <span class="num mono">03</span>
+              <span>Write the proxy route and start the site.</span>
+            </li>
+            <li>
+              <span class="num mono">04</span>
+              <span>Probe readiness and stream the first logs.</span>
+            </li>
+          </ol>
+        </div>
+
+        <p class="preview-note">
+          <ShieldCheck size={13} strokeWidth={1.9} aria-hidden="true" />
+          Local only. No remote access, no telemetry.
+        </p>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<PathBrowser
+  open={pathOpen}
+  initialPath={initialBrowsePath}
+  onselect={(selected) => {
+    path = selected;
+    clearError('path');
+    validateField('path');
+  }}
+  onclose={() => (pathOpen = false)}
+/>
+
+<style>
+  .page {
+    padding-top: 18px;
+  }
+
+  .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 14px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .back:hover {
+    color: var(--fg);
+  }
+
+  .wizard {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 318px;
+    align-items: start;
+    gap: 18px;
+  }
+
+  .wizard-main {
+    min-width: 0;
+  }
+
+  .stepper {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 12px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .stepper li {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    color: var(--muted-2);
+    font-size: 11.5px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .stepper li:not(:last-child)::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    margin-left: 2px;
+    background: var(--border);
+  }
+
+  .stepper li.current,
+  .stepper li.done {
+    color: var(--fg);
+  }
+
+  .stepper li.done::after {
+    background: var(--accent-border);
+  }
+
+  .step-number {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--border-strong);
+    border-radius: 50%;
+    background: var(--surface);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
+  .stepper li.current .step-number {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--success-fg);
+  }
+
+  .stepper li.done .step-number {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+    color: var(--success-fg);
+  }
+
+  .step-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+
+  .panel-head {
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .eyebrow {
+    margin-bottom: 4px;
+    color: var(--muted-2);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  h2 {
+    font-size: 19px;
+    letter-spacing: -0.02em;
+  }
+
+  h2:focus {
+    outline: none;
+  }
+
+  .step-copy {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+
+  .panel-body {
+    padding: 18px 20px 22px;
+  }
+
+  .banner {
+    margin-bottom: 14px;
+  }
+
+  .form-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .suffix-wrap {
+    position: relative;
+  }
+
+  .suffix-wrap :global(.input) {
+    padding-right: 48px;
+  }
+
+  .suffix {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font-size: 11.5px;
+    pointer-events: none;
+  }
+
+  .path-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .path-row :global(.input) {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .kind-group {
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .kind-group legend {
+    margin-bottom: 7px;
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .kind-options {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .kind-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    min-height: 112px;
+    padding: 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: var(--input-bg);
+    cursor: pointer;
+    transition:
+      border-color 150ms var(--ease),
+      background-color 150ms var(--ease);
+  }
+
+  .kind-card:hover {
+    border-color: var(--control-border);
+  }
+
+  .kind-card.checked {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .kind-card > input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+  }
+
+  .kind-card:has(input:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .kind-card.disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    border-color: var(--border);
+  }
+
+  .kind-icon {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--muted);
+  }
+
+  .checked .kind-icon {
+    color: var(--success-fg);
+    border-color: var(--accent-border);
+  }
+
+  .kind-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .kind-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--fg);
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+
+  .kind-desc {
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+
+  .kind-check {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    color: var(--success-fg);
+  }
+
+  .options-box {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--input-bg);
+    padding: 2px 12px;
+  }
+
+  .options-list {
+    padding: 2px 14px;
+  }
+
+  .options-list > :global(.toggle) {
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    padding: 12px 2px;
+  }
+
+  .options-list > :global(.toggle:last-child) {
+    border-bottom: 0;
+  }
+
+  .loading-field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .notice {
+    padding: 12px;
+    border: 1px solid color-mix(in srgb, var(--warning) 36%, var(--border));
+    border-radius: var(--radius-lg);
+    background: var(--warning-soft);
+  }
+
+  .notice p {
+    color: var(--fg);
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+
+  .notice .notice-copy {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 400;
+  }
+
+  .env {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .env legend {
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .optional {
+    margin-left: 5px;
+    color: var(--muted-2);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .env-hint {
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+
+  .env-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .env-add {
+    display: flex;
+    justify-content: flex-start;
+  }
+
+  .env-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px;
+    gap: 6px;
+    align-items: start;
+  }
+
+  .env-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .env-error {
+    color: var(--danger-fg);
+    font-size: 10.5px;
+    line-height: 1.4;
+  }
+
+  .review {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+
+  .review-head {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+
+  .review-head h3 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .review dl {
+    margin: 0;
+  }
+
+  .review-row {
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr) 40px;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .review-row:first-child {
+    border-top: 0;
+  }
+
+  .review dt {
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .review dd {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .review-main {
+    font-size: 12.5px;
+    color: var(--fg);
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+
+  .review-sub {
+    color: var(--muted-2);
+    font-size: 10.5px;
+    overflow-wrap: anywhere;
+  }
+
+  .edit {
+    justify-self: end;
+    padding: 2px 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 500;
+  }
+
+  .edit:hover {
+    color: var(--fg);
+    background: var(--surface-2);
+  }
+
+  .protect-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .protect-note :global(svg) {
+    flex: none;
+    margin-top: 1px;
+    color: var(--muted-2);
+  }
+
+  .panel-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+
+  .foot-right {
+    display: flex;
+    gap: 8px;
+  }
+
+  .preview {
+    position: sticky;
+    top: calc(var(--topbar-h) + 16px);
+  }
+
+  .preview-card {
+    display: flex;
+    flex-direction: column;
+    padding: 15px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .preview-label {
+    color: var(--muted-2);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .tls-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 5px;
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 500;
+  }
+
+  .tls-state.on {
+    background: var(--success-soft);
+    color: var(--success-fg);
+  }
+
+  .preview-url {
+    margin-top: 12px;
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  .preview-domain {
+    margin-top: 2px;
+    color: var(--muted-2);
+    font-size: 10.5px;
+  }
+
+  .preview-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 14px 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .preview-meta > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .preview-meta > div:first-child {
+    border-top: 0;
+  }
+
+  .preview-meta dt {
+    color: var(--muted);
+    font-size: 10.5px;
+  }
+
+  .preview-meta dd {
+    color: var(--fg);
+    font-size: 10.5px;
+    text-align: right;
+    min-width: 0;
+  }
+
+  .preview-meta .path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 190px;
+  }
+
+  .next-title {
+    margin-bottom: 7px;
+    color: var(--muted-2);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+
+  .next ol {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .next li {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+
+  .next .num {
+    flex: none;
+    color: var(--muted-2);
+    font-size: 9px;
+    padding-top: 1px;
+  }
+
+  .preview-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    color: var(--muted-2);
+    font-size: 10px;
+  }
+
+  .error-summary {
+    margin-bottom: 16px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+    border-left: 3px solid var(--danger);
+    border-radius: var(--radius-lg);
+    background: var(--danger-soft);
+  }
+
+  .error-summary > p {
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .error-summary ul {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 5px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .error-summary button {
+    padding: 1px 0;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.45;
+    text-align: left;
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--danger) 45%, transparent);
+    text-underline-offset: 2px;
+  }
+
+  .error-summary button:hover {
+    color: var(--fg);
+  }
+
+  .error-summary strong {
+    color: var(--danger-fg);
+    font-weight: 600;
+  }
+
+  @media (max-width: 1080px) {
+    .wizard {
+      grid-template-columns: minmax(0, 1fr) 280px;
+    }
+  }
+
+  @media (max-width: 940px) {
+    .wizard {
+      grid-template-columns: 1fr;
+    }
+
+    .preview {
+      position: static;
+    }
+
+    .preview-card {
+      max-width: none;
+    }
+  }
+
+  @media (max-width: 620px) {
+    .kind-options {
+      grid-template-columns: 1fr;
+    }
+
+    .kind-card {
+      min-height: 0;
+      flex-direction: row;
+      align-items: center;
+    }
+
+    .kind-copy {
+      flex: 1;
+    }
+
+    .kind-check {
+      position: static;
+      margin-left: auto;
+    }
+
+    .path-row {
+      flex-direction: column;
+    }
+
+    .panel-head {
+      padding: 16px;
+    }
+
+    .panel-body {
+      padding: 16px;
+    }
+
+    .panel-foot {
+      padding: 12px 16px;
+    }
+
+    .review-row {
+      grid-template-columns: 72px minmax(0, 1fr) 36px;
+    }
+
+    .env-row {
+      grid-template-columns: minmax(0, 1fr) 28px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-2);
+    }
+
+    .env-row .env-cell:nth-child(2) {
+      grid-column: 1;
+    }
+
+    .env-row > :global(button) {
+      grid-row: 1;
+      grid-column: 2;
+      align-self: start;
+    }
+
+    .stepper li {
+      gap: 5px;
+      font-size: 10.5px;
+    }
+
+    .step-number {
+      width: 20px;
+      height: 20px;
+    }
+  }
+</style>

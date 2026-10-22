@@ -1,0 +1,732 @@
+import { ApiError } from './errors';
+import type {
+  CatalogEntry,
+  CreateSiteRequest,
+  DaemonEvent,
+  DoctorCheck,
+  DoctorReport,
+  FsListing,
+  Health,
+  LogLine,
+  RuntimeBuild,
+  Session,
+  Settings,
+  Site,
+  SiteStatus,
+  TrustTarget,
+  UpdateSiteRequest,
+} from './types';
+
+const now = Date.now();
+const iso = (offsetMs: number) => new Date(now + offsetMs).toISOString();
+const days = (value: number) => value * 86_400_000;
+
+function wait(min = 150, max = 350): Promise<void> {
+  const duration = min + Math.random() * (max - min);
+  return new Promise((resolve) => setTimeout(resolve, duration));
+}
+
+function clone<T>(value: T): T {
+  return structuredClone(value);
+}
+
+const sessions: Session = { csrf_token: 'mock-csrf-token-7f3c9a' };
+
+type EventListener = (event: DaemonEvent) => void;
+const eventListeners = new Set<EventListener>();
+
+function emitEvent(type: string, siteID: string | undefined, message: string): void {
+  const event: DaemonEvent = {
+    type,
+    site_id: siteID,
+    message,
+    created_at: new Date().toISOString(),
+  };
+  for (const listener of eventListeners) listener(event);
+}
+
+const sites: Site[] = [
+  {
+    id: 's_blog',
+    name: 'blog',
+    domain: 'blog.test',
+    www: false,
+    backend: 'local',
+    host_path: '/home/dev/projects/blog',
+    backend_path: '/home/dev/projects/blog',
+    kind: 'static',
+    php_version: '',
+    node_version: '',
+    command: '',
+    env: {
+      PUBLIC_SITE_URL: 'https://blog.test',
+    },
+    document_root: 'public',
+    front_controller: false,
+    spa_fallback: false,
+    tls: true,
+    force_https: true,
+    desired_state: 'running',
+    status: 'running',
+    http_port: 41001,
+    fastcgi_port: 0,
+    created_at: iso(-days(34)),
+    updated_at: iso(-1000 * 60 * 7),
+    certificate: {
+      not_after: iso(days(83)),
+      domains: ['blog.test'],
+      serial: '6f:2c:91:aa:0e:44',
+    },
+  },
+  {
+    id: 's_shop',
+    name: 'shop',
+    domain: 'shop.test',
+    www: true,
+    backend: 'local',
+    host_path: '/home/dev/projects/shop',
+    backend_path: '/home/dev/projects/shop',
+    kind: 'node',
+    php_version: '',
+    node_version: '24.9.0',
+    command: 'npm run dev',
+    env: {
+      NODE_ENV: 'development',
+      PORT: '41002',
+      DATABASE_URL: 'postgres://localhost:5432/shop',
+      SESSION_SECRET: 'shop_dev_2f9c4a6e8b1d',
+    },
+    document_root: '',
+    front_controller: false,
+    spa_fallback: false,
+    tls: true,
+    force_https: true,
+    desired_state: 'running',
+    status: 'running',
+    http_port: 41002,
+    fastcgi_port: 0,
+    created_at: iso(-days(19)),
+    updated_at: iso(-1000 * 60 * 2),
+    certificate: {
+      not_after: iso(days(18)),
+      domains: ['shop.test', 'www.shop.test'],
+      serial: '71:9e:04:c2:88:af',
+    },
+  },
+  {
+    id: 's_api',
+    name: 'api',
+    domain: 'api.test',
+    www: false,
+    backend: 'local',
+    host_path: '/home/dev/projects/api',
+    backend_path: '/home/dev/projects/api',
+    kind: 'node',
+    php_version: '',
+    node_version: '22.20.0',
+    command: 'npm start',
+    env: {
+      NODE_ENV: 'production',
+      API_TOKEN: 'tok_live_81ea5d9f0c27',
+      LOG_LEVEL: 'debug',
+    },
+    document_root: '',
+    front_controller: false,
+    spa_fallback: false,
+    tls: false,
+    force_https: false,
+    desired_state: 'running',
+    status: 'crashed',
+    http_port: 0,
+    fastcgi_port: 0,
+    created_at: iso(-days(11)),
+    updated_at: iso(-1000 * 60 * 34),
+    certificate: undefined,
+  },
+];
+
+const runtimes: RuntimeBuild[] = [
+  {
+    id: 'node-24.9.0',
+    kind: 'node',
+    version: '24.9.0',
+    backend: 'local',
+    path: '/home/dev/.devstack/runtimes/node/24.9.0',
+    checksum: '9a4f7c02e1d8b63a5f0c92d47e18ba6c3f5d20e9a7b4c61d8f30e2a95c7b4d18',
+    installed_at: iso(-days(26)),
+    size: 51_904_512,
+  },
+  {
+    id: 'node-22.20.0',
+    kind: 'node',
+    version: '22.20.0',
+    backend: 'local',
+    path: '/home/dev/.devstack/runtimes/node/22.20.0',
+    checksum: '41c8e5b09d7a2f63c1e0b8d94a75f2c6e3d10b8a9f4c72e5d6a0b3c81f9e2d47',
+    installed_at: iso(-days(58)),
+    size: 49_807_360,
+  },
+];
+
+const catalog: CatalogEntry[] = [
+  {
+    id: 'node@24.11.0-linux-x64',
+    kind: 'node',
+    version: '24.11.0',
+    build: 'linux-x64',
+    url: 'https://nodejs.org/dist/v24.11.0/node-v24.11.0-linux-x64.tar.xz',
+    sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    size: 52_428_800,
+  },
+  {
+    id: 'node@22.21.1-linux-x64',
+    kind: 'node',
+    version: '22.21.1',
+    build: 'linux-x64',
+    url: 'https://nodejs.org/dist/v22.21.1/node-v22.21.1-linux-x64.tar.xz',
+    sha256: 'a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a',
+    size: 49_807_360,
+  },
+  {
+    id: 'node@24.9.0-linux-x64',
+    kind: 'node',
+    version: '24.9.0',
+    build: 'linux-x64',
+    url: 'https://nodejs.org/dist/v24.9.0/node-v24.9.0-linux-x64.tar.xz',
+    sha256: '9a4f7c02e1d8b63a5f0c92d47e18ba6c3f5d20e9a7b4c61d8f30e2a95c7b4d18',
+    size: 51_904_512,
+  },
+];
+
+let doctorChecks: DoctorCheck[] = [
+  {
+    id: 'helper',
+    title: 'Helper service',
+    status: 'ok',
+    detail: 'devstack-helper 0.1.0 is responding on /run/devstack/helper.sock.',
+    remediation: '',
+  },
+  {
+    id: 'hosts',
+    title: 'Hosts entries',
+    status: 'ok',
+    detail: '3 managed domains match the hosts block (blog.test, shop.test, api.test).',
+    remediation: '',
+  },
+  {
+    id: 'ca',
+    title: 'Local certificate authority',
+    status: 'ok',
+    detail: 'CA key is present with mode 0600. Leaf certificates are issued on demand.',
+    remediation: '',
+  },
+  {
+    id: 'trust',
+    title: 'Browser trust',
+    status: 'warn',
+    detail: 'Firefox profile was not found, so the CA is not trusted in Firefox.',
+    remediation: 'Install Firefox, then run `devstack trust repair` after its first launch.',
+  },
+  {
+    id: 'ports',
+    title: 'Proxy ports',
+    status: 'ok',
+    detail: 'Ports 80 and 443 are forwarded by the helper; 8080, 8443 and 7070 are free.',
+    remediation: '',
+  },
+  {
+    id: 'runtimes',
+    title: 'Runtime integrity',
+    status: 'ok',
+    detail: '2 Node builds verified against their recorded SHA-256 checksums.',
+    remediation: '',
+  },
+  {
+    id: 'disk',
+    title: 'Disk space',
+    status: 'ok',
+    detail: '18.4 GB free in /home/dev/.devstack — well above the 1 GB minimum.',
+    remediation: '',
+  },
+  {
+    id: 'wsl',
+    title: 'WSL2 backend',
+    status: 'skipped',
+    detail: 'No WSL2 distribution is configured on this Linux machine.',
+    remediation: 'WSL2 support arrives with the Windows backend in a later release.',
+  },
+];
+
+let lastDoctorRun = iso(-1000 * 60 * 9);
+
+let trustTargets: TrustTarget[] = [
+  {
+    name: 'System trust store',
+    ok: true,
+    detail: 'devstack-local-ca installed in /usr/local/share/ca-certificates.',
+  },
+  {
+    name: 'Chrome / Chromium',
+    ok: true,
+    detail: 'NSS database ~/.pki/nssdb contains “devstack local CA”.',
+  },
+  {
+    name: 'Firefox',
+    ok: false,
+    detail: 'No profile found in ~/.mozilla/firefox/profiles.ini.',
+  },
+];
+
+const settings: Settings = {
+  home: '/home/dev/.devstack',
+  user_home: '/home/dev',
+  http_port: 8080,
+  https_port: 8443,
+  ui_port: 7070,
+  wsl_distro: 'devstack',
+  auto_start_sites: true,
+  graceful_stop_seconds: 10,
+  max_request_body_mb: 1024,
+  log_max_mb: 10,
+  log_keep: 5,
+  version: '0.1.0',
+  socket_path: '/home/dev/.devstack/devstack.sock',
+  pid_path: '/home/dev/.devstack/devstack.pid',
+};
+
+const directories: Record<string, string[]> = {
+  '/': ['home', 'opt', 'tmp', 'var'],
+  '/home': ['dev'],
+  '/home/dev': ['.devstack', 'Documents', 'Downloads', 'projects'],
+  '/home/dev/.devstack': ['logs', 'runtimes'],
+  '/home/dev/.devstack/logs': ['api', 'blog', 'shop'],
+  '/home/dev/.devstack/logs/api': [],
+  '/home/dev/.devstack/logs/blog': [],
+  '/home/dev/.devstack/logs/shop': [],
+  '/home/dev/.devstack/runtimes': ['node'],
+  '/home/dev/.devstack/runtimes/node': ['22.20.0', '24.9.0', '24.11.0'],
+  '/home/dev/.devstack/runtimes/node/22.20.0': [],
+  '/home/dev/.devstack/runtimes/node/24.9.0': [],
+  '/home/dev/.devstack/runtimes/node/24.11.0': [],
+  '/home/dev/Documents': ['notes', 'specs'],
+  '/home/dev/Documents/notes': [],
+  '/home/dev/Documents/specs': [],
+  '/home/dev/Downloads': [],
+  '/home/dev/projects': ['api', 'blog', 'design-system', 'scratch', 'shop'],
+  '/home/dev/projects/api': ['src', 'test'],
+  '/home/dev/projects/api/src': ['handlers', 'middleware'],
+  '/home/dev/projects/api/src/handlers': [],
+  '/home/dev/projects/api/src/middleware': [],
+  '/home/dev/projects/api/test': [],
+  '/home/dev/projects/blog': ['public', 'src'],
+  '/home/dev/projects/blog/public': ['assets'],
+  '/home/dev/projects/blog/public/assets': [],
+  '/home/dev/projects/blog/src': [],
+  '/home/dev/projects/design-system': ['pages'],
+  '/home/dev/projects/design-system/pages': [],
+  '/home/dev/projects/shop': ['node_modules', 'public', 'src'],
+  '/home/dev/projects/shop/node_modules': ['.bin'],
+  '/home/dev/projects/shop/node_modules/.bin': [],
+  '/home/dev/projects/shop/public': [],
+  '/home/dev/projects/shop/src': ['components', 'routes'],
+  '/home/dev/projects/shop/src/components': [],
+  '/home/dev/projects/shop/src/routes': [],
+  '/home/dev/projects/scratch': ['public'],
+  '/home/dev/projects/scratch/public': [],
+  '/opt': ['devstack'],
+  '/opt/devstack': ['bin'],
+  '/opt/devstack/bin': [],
+  '/tmp': ['devstack-demo'],
+  '/tmp/devstack-demo': ['public'],
+  '/tmp/devstack-demo/public': [],
+  '/var': ['log'],
+  '/var/log': [],
+};
+
+function findSite(ref: string): Site {
+  const decoded = decodeURIComponent(ref);
+  const site = sites.find((entry) => entry.id === decoded || entry.name === decoded);
+  if (!site) throw new ApiError('NOT_FOUND', `No site named “${decoded}”.`, 404);
+  return site;
+}
+
+function portsFor(site: Site, index: number): { http: number; fastcgi: number } {
+  if (site.kind === 'php') return { http: 0, fastcgi: 43_000 + index };
+  return { http: 41_000 + index + 1, fastcgi: 0 };
+}
+
+function setStatus(site: Site, status: SiteStatus): void {
+  site.status = status;
+  site.desired_state = status === 'stopped' ? 'stopped' : 'running';
+  site.updated_at = new Date().toISOString();
+  if (status === 'running') {
+    const index = sites.findIndex((entry) => entry.id === site.id);
+    const ports = portsFor(site, Math.max(index, 0));
+    site.http_port = ports.http;
+    site.fastcgi_port = ports.fastcgi;
+  } else if (status === 'stopped' || status === 'crashed' || status === 'error') {
+    site.http_port = 0;
+    site.fastcgi_port = 0;
+  }
+}
+
+const logTemplates: Record<string, Omit<LogLine, 'time'>[]> = {
+  blog: [
+    { source: 'proxy', text: 'GET / 200 — 4.1ms — 127.0.0.1' },
+    { source: 'proxy', text: 'GET /assets/app.css 200 — 1.2ms' },
+    { source: 'app', text: 'Serving public/ with cache-control: no-store' },
+    { source: 'supervisor', text: 'heartbeat ok · pid 48213 · uptime 2h 14m' },
+  ],
+  shop: [
+    { source: 'app', text: 'VITE v6.1.0  ready in 412 ms' },
+    { source: 'app', text: '->  Local:   http://127.0.0.1:41002/' },
+    { source: 'proxy', text: 'GET /api/products 200 — 18.7ms' },
+    { source: 'app', text: 'hmr update /src/routes/+page.svelte' },
+    { source: 'supervisor', text: 'heartbeat ok · pid 49307 · uptime 46m' },
+  ],
+  api: [
+    { source: 'supervisor', text: 'process exited with code 1; restarting in 8s (attempt 4/5)' },
+    { source: 'app', text: 'Error: connect ECONNREFUSED 127.0.0.1:5432' },
+    { source: 'app', text: '    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1611:16)' },
+    { source: 'supervisor', text: 'readiness probe failed after 60s; marking site crashed' },
+  ],
+};
+
+let logCursor: Record<string, number> = {};
+
+export const mockApi = {
+  async health(): Promise<Health> {
+    await wait(30, 80);
+    return {
+      status: 'ok',
+      version: settings.version ?? '0.1.0',
+      helper: 'ok',
+      helper_version: '0.1.0',
+      ca_fingerprint: '8F:2A:9C:71:D4:E0:63:1B:B8:05:AE:47:22:9D:6C:F1',
+    };
+  },
+
+  async getSession(): Promise<Session> {
+    await wait(20, 60);
+    return clone(sessions);
+  },
+
+  async listSites(): Promise<Site[]> {
+    await wait();
+    return clone(sites);
+  },
+
+  async getSite(ref: string): Promise<Site> {
+    await wait();
+    return clone(findSite(ref));
+  },
+
+  async createSite(request: CreateSiteRequest): Promise<Site> {
+    await wait();
+    const name = request.name.trim();
+    if (!name) throw new ApiError('INVALID_REQUEST', 'Site name is required.', 400);
+    if (sites.some((site) => site.name === name)) {
+      throw new ApiError('DOMAIN_CONFLICT', `A site named “${name}” already exists.`, 409);
+    }
+    if (!request.path?.startsWith('/')) {
+      throw new ApiError('INVALID_REQUEST', 'Project path must be absolute.', 400);
+    }
+    const projectPath = request.path.length > 1 ? request.path.replace(/\/+$/, '') : request.path;
+    if (!directories[projectPath]) {
+      throw new ApiError('INVALID_REQUEST', 'Project path must be an existing readable directory.', 400);
+    }
+    if (request.kind === 'node') {
+      const runtime = runtimes.find(
+        (entry) => entry.kind === 'node' && entry.version === request.node_version,
+      );
+      if (!runtime) {
+        throw new ApiError(
+          'RUNTIME_MISSING',
+          `Node ${request.node_version ?? ''} is not installed. Install it from the Runtimes page first.`,
+          409,
+        );
+      }
+    }
+    const id = `s_${name.replace(/[^a-z0-9]/g, '')}_${sites.length + 1}`;
+    const site: Site = {
+      id,
+      name,
+      domain: `${name}.test`,
+      www: request.www ?? false,
+      backend: 'local',
+      host_path: projectPath,
+      backend_path: projectPath,
+      kind: request.kind,
+      php_version: '',
+      node_version: request.kind === 'node' ? (request.node_version ?? '') : '',
+      command: request.kind === 'node' ? (request.command ?? '') : '',
+      env: request.env ?? {},
+      document_root: request.document_root ?? '',
+      front_controller: false,
+      spa_fallback: request.spa_fallback ?? false,
+      tls: request.tls ?? true,
+      force_https: request.force_https ?? false,
+      desired_state: 'running',
+      status: 'starting',
+      http_port: 0,
+      fastcgi_port: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      certificate: request.tls
+        ? {
+            not_after: iso(days(90)),
+            domains: [`${name}.test`, ...(request.www ? [`www.${name}.test`] : [])],
+            serial: '7c:11:8e:3a:bd:02',
+          }
+        : undefined,
+    };
+    sites.push(site);
+    emitEvent('site.created', site.id, `${site.name}.test was added`);
+    setTimeout(() => {
+      const current = sites.find((entry) => entry.id === id);
+      if (current) {
+        setStatus(current, 'running');
+        emitEvent('site.running', current.id, `${current.name} is running`);
+      }
+    }, 900);
+    return clone(site);
+  },
+
+  async updateSite(ref: string, request: UpdateSiteRequest): Promise<Site> {
+    await wait();
+    const site = findSite(ref);
+    Object.assign(site, request, { updated_at: new Date().toISOString() });
+    emitEvent('site.updated', site.id, `${site.name} was updated`);
+    return clone(site);
+  },
+
+  async deleteSite(ref: string): Promise<void> {
+    await wait();
+    const site = findSite(ref);
+    const index = sites.findIndex((entry) => entry.id === site.id);
+    if (index >= 0) sites.splice(index, 1);
+    delete logTemplates[site.name];
+    emitEvent('site.deleted', site.id, `${site.name} was removed`);
+  },
+
+  async startSite(ref: string): Promise<void> {
+    await wait();
+    const site = findSite(ref);
+    if (site.status === 'running') return;
+    setStatus(site, 'running');
+    emitEvent('site.started', site.id, `${site.name} is running`);
+  },
+
+  async stopSite(ref: string): Promise<void> {
+    await wait();
+    const site = findSite(ref);
+    setStatus(site, 'stopped');
+    emitEvent('site.stopped', site.id, `${site.name} was stopped`);
+  },
+
+  async restartSite(ref: string): Promise<void> {
+    await wait();
+    const site = findSite(ref);
+    site.status = 'starting';
+    site.updated_at = new Date().toISOString();
+    setStatus(site, 'running');
+    emitEvent('site.restarted', site.id, `${site.name} was restarted`);
+  },
+
+  async listRuntimes(): Promise<RuntimeBuild[]> {
+    await wait();
+    return clone(runtimes);
+  },
+
+  async availableRuntimes(): Promise<CatalogEntry[]> {
+    await wait();
+    return clone(catalog);
+  },
+
+  async installRuntime(id: string): Promise<RuntimeBuild> {
+    await wait(250, 450);
+    const entry = catalog.find((item) => item.id === id);
+    if (!entry) throw new ApiError('NOT_FOUND', `Runtime “${id}” is not in the catalog.`, 404);
+    if (runtimes.some((item) => item.kind === entry.kind && item.version === entry.version)) {
+      throw new ApiError(
+        'RUNTIME_ALREADY_INSTALLED',
+        `${entry.kind === 'node' ? 'Node' : entry.kind} ${entry.version} is already installed.`,
+        409,
+      );
+    }
+    runtimes.push({
+      id: entry.id,
+      kind: entry.kind,
+      version: entry.version,
+      backend: 'local',
+      path: `/home/dev/.devstack/runtimes/${entry.kind}/${entry.version}`,
+      checksum: entry.sha256,
+      installed_at: new Date().toISOString(),
+      size: entry.size,
+    });
+    emitEvent('runtime.installed', undefined, `Node ${entry.version} was installed`);
+    return clone(runtimes[runtimes.length - 1]);
+  },
+
+  async removeRuntime(buildID: string): Promise<void> {
+    await wait();
+    const index = runtimes.findIndex((item) => item.id === buildID);
+    if (index < 0) throw new ApiError('NOT_FOUND', 'Runtime build was not found.', 404);
+    const runtime = runtimes[index];
+    const usedBy = sites.filter(
+      (site) => site.kind === 'node' && site.node_version === runtime.version,
+    );
+    if (usedBy.length > 0) {
+      throw new ApiError(
+        'RUNTIME_IN_USE',
+        `Node ${runtime.version} is used by ${usedBy.map((site) => site.name).join(', ')}.`,
+        409,
+      );
+    }
+    runtimes.splice(index, 1);
+    emitEvent('runtime.removed', undefined, `Node ${runtime.version} was removed`);
+  },
+
+  async doctor(): Promise<DoctorReport> {
+    await wait();
+    return {
+      checks: clone(doctorChecks),
+      ok: !doctorChecks.some((check) => check.status === 'fail'),
+      last_run: lastDoctorRun,
+    };
+  },
+
+  async runDoctor(): Promise<DoctorReport> {
+    await wait(350, 600);
+    lastDoctorRun = new Date().toISOString();
+    emitEvent('doctor.updated', undefined, 'Doctor checks completed');
+    return {
+      checks: clone(doctorChecks),
+      ok: !doctorChecks.some((check) => check.status === 'fail'),
+      last_run: lastDoctorRun,
+    };
+  },
+
+  async repairDoctor(): Promise<DoctorReport> {
+    await wait(450, 750);
+    doctorChecks = doctorChecks.map((check) => {
+      if (check.status === 'skipped') return check;
+      if (check.id === 'trust') {
+        return {
+          ...check,
+          status: 'ok',
+          detail: 'No Firefox profile is installed; every available trust target has the CA.',
+          remediation: '',
+        };
+      }
+      return { ...check, status: 'ok', remediation: '' };
+    });
+    lastDoctorRun = new Date().toISOString();
+    trustTargets = trustTargets.map((target) =>
+      target.name === 'Firefox'
+        ? { ...target, ok: true, detail: 'Firefox is not installed; nothing to configure.' }
+        : target,
+    );
+    emitEvent('doctor.repaired', undefined, 'Doctor repair completed');
+    return {
+      checks: clone(doctorChecks),
+      ok: true,
+      last_run: lastDoctorRun,
+    };
+  },
+
+  async trust(): Promise<TrustTarget[]> {
+    await wait();
+    return clone(trustTargets);
+  },
+
+  async repairTrust(): Promise<TrustTarget[]> {
+    await wait(300, 500);
+    trustTargets = trustTargets.map((target) =>
+      target.name === 'Firefox'
+        ? { ...target, ok: true, detail: 'Firefox is not installed; nothing to configure.' }
+        : { ...target, ok: true },
+    );
+    return clone(trustTargets);
+  },
+
+  async removeTrust(): Promise<TrustTarget[]> {
+    await wait(250, 450);
+    trustTargets = trustTargets.map((target) => ({
+      ...target,
+      ok: false,
+      detail: 'The devstack CA is not installed for this target.',
+    }));
+    emitEvent('trust.removed', undefined, 'The devstack CA was removed from trust stores');
+    return clone(trustTargets);
+  },
+
+  async browseFs(path: string): Promise<FsListing> {
+    await wait(120, 260);
+    let normalized = path.trim();
+    if (!normalized) {
+      throw new ApiError('INVALID_REQUEST', 'A directory path is required.', 400);
+    }
+    if (normalized.length > 1) normalized = normalized.replace(/\/+$/, '');
+    if (!normalized.startsWith('/')) {
+      throw new ApiError('INVALID_REQUEST', 'Directory path must be absolute.', 400);
+    }
+    const children = directories[normalized];
+    if (!children) throw new ApiError('NOT_FOUND', `Directory “${normalized}” is not readable.`, 404);
+    return {
+      path: normalized,
+      entries: children.map((name) => ({
+        name,
+        path: normalized === '/' ? `/${name}` : `${normalized}/${name}`,
+      })),
+    };
+  },
+
+  async settings(): Promise<Settings> {
+    await wait();
+    return clone(settings);
+  },
+
+  openLogStream(
+    ref: string,
+    onLine: (line: LogLine) => void,
+    onStatus?: (status: 'live' | 'error') => void,
+  ): () => void {
+    const site = findSite(ref);
+    const templates = logTemplates[site.name] ?? logTemplates.blog;
+    let cursor = logCursor[site.name] ?? 0;
+    let closed = false;
+    const initialTimers: ReturnType<typeof setTimeout>[] = [];
+
+    const emit = () => {
+      if (closed) return;
+      const template = templates[cursor % templates.length];
+      cursor += 1;
+      logCursor[site.name] = cursor;
+      onLine({
+        time: new Date().toISOString(),
+        source: template.source,
+        text: template.text,
+      });
+    };
+
+    for (let index = 0; index < 3; index += 1) {
+      initialTimers.push(setTimeout(() => {
+        emit();
+        if (index === 2) onStatus?.('live');
+      }, 90 + index * 90));
+    }
+
+    const interval = setInterval(emit, 700);
+    return () => {
+      closed = true;
+      initialTimers.forEach(clearTimeout);
+      clearInterval(interval);
+    };
+  },
+
+  openEvents(onEvent: (event: DaemonEvent) => void): () => void {
+    eventListeners.add(onEvent);
+    return () => eventListeners.delete(onEvent);
+  },
+};
