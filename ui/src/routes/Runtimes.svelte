@@ -166,11 +166,11 @@
           <div class="runtime-row skeleton">
             <Skeleton width="40px" height="40px" radius="8px" />
             <div class="skeleton-copy">
-              <Skeleton width="150px" height="15px" />
-              <Skeleton width={`${240 + index * 50}px`} height="10px" />
-              <Skeleton width="280px" height="9px" />
+              <Skeleton width="40%" height="15px" />
+              <Skeleton width={`${64 + index * 10}%`} height="10px" />
+              <Skeleton width="88%" height="9px" />
             </div>
-            <Skeleton width="96px" height="30px" radius="8px" />
+            <span class="skeleton-action"><Skeleton width="96px" height="30px" radius="8px" /></span>
           </div>
         {/each}
       </div>
@@ -246,10 +246,10 @@
           <div class="catalog-row skeleton">
             <Skeleton width="36px" height="36px" radius="7px" />
             <div class="skeleton-copy">
-              <Skeleton width="140px" height="14px" />
-              <Skeleton width={`${220 + index * 30}px`} height="9px" />
+              <Skeleton width="42%" height="14px" />
+              <Skeleton width={`${64 + index * 8}%`} height="9px" />
             </div>
-            <Skeleton width="80px" height="30px" radius="8px" />
+            <span class="skeleton-action"><Skeleton width="80px" height="30px" radius="8px" /></span>
           </div>
         {/each}
       </div>
@@ -681,6 +681,12 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    min-width: 0;
+  }
+
+  .skeleton-action {
+    display: flex;
+    align-items: center;
   }
 
   .install-details {
@@ -737,6 +743,10 @@
   }
 
   @media (max-width: 640px) {
+    .skeleton-action {
+      display: none;
+    }
+
     .runtime-row {
       grid-template-columns: 36px minmax(0, 1fr);
     }

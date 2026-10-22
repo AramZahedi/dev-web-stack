@@ -204,7 +204,7 @@
       <div class="skeleton-main">
         <Skeleton width="120px" height="10px" />
         <Skeleton width="260px" height="24px" />
-        <Skeleton width="420px" height="12px" />
+        <Skeleton width="min(420px, 100%)" height="12px" />
         <div class="skeleton-legend">
           {#each Array(4) as _, index (index)}
             <Skeleton width="80px" height="18px" />
@@ -217,8 +217,8 @@
         <div class="check-skeleton">
           <Skeleton width="22px" height="22px" radius="50%" />
           <div class="check-skeleton-copy">
-            <Skeleton width={`${140 + index * 22}px`} height="12px" />
-            <Skeleton width={`${260 + index * 18}px`} height="10px" />
+            <Skeleton width={`${42 + index * 5}%`} height="12px" />
+            <Skeleton width={`${72 + index * 4}%`} height="10px" />
           </div>
           <Skeleton width="58px" height="18px" radius="999px" />
         </div>
@@ -807,6 +807,7 @@
     flex-direction: column;
     gap: 9px;
     padding-top: 4px;
+    min-width: 0;
   }
 
   .skeleton-legend {
@@ -835,6 +836,7 @@
     flex-direction: column;
     gap: 6px;
     flex: 1;
+    min-width: 0;
   }
 
   .error-state {

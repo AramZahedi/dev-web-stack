@@ -102,6 +102,8 @@ interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   body?: unknown;
   mutation?: boolean;
+  /** Endpoints that return no meaningful JSON payload (lifecycle actions, deletes). */
+  voidResponse?: boolean;
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -124,8 +126,18 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   if (!response.ok) throw await readError(response);
-  if (response.status === 204) return undefined as T;
+  if (response.status === 202 || response.status === 204) return undefined as T;
   const contentType = response.headers.get('content-type') ?? '';
+  if (options.voidResponse) {
+    // Some proxies/daemons return 200 with an empty body for accepted actions.
+    const text = await response.text();
+    if (!text.trim() || contentType.includes('application/json')) return undefined as T;
+    throw new ApiError(
+      'INVALID_RESPONSE',
+      'The daemon returned an unexpected response for this action.',
+      response.status,
+    );
+  }
   if (!contentType.includes('application/json')) {
     throw new ApiError(
       'INVALID_RESPONSE',
@@ -173,22 +185,22 @@ export async function updateSite(ref: string, body: UpdateSiteRequest): Promise<
 
 export async function deleteSite(ref: string): Promise<void> {
   if (isMockMode) return mockApi.deleteSite(ref);
-  await request<void>(sitePath(ref), { method: 'DELETE' });
+  await request<void>(sitePath(ref), { method: 'DELETE', voidResponse: true });
 }
 
 export async function startSite(ref: string): Promise<void> {
   if (isMockMode) return mockApi.startSite(ref);
-  await request<void>(`${sitePath(ref)}/start`, { method: 'POST' });
+  await request<void>(`${sitePath(ref)}/start`, { method: 'POST', voidResponse: true });
 }
 
 export async function stopSite(ref: string): Promise<void> {
   if (isMockMode) return mockApi.stopSite(ref);
-  await request<void>(`${sitePath(ref)}/stop`, { method: 'POST' });
+  await request<void>(`${sitePath(ref)}/stop`, { method: 'POST', voidResponse: true });
 }
 
 export async function restartSite(ref: string): Promise<void> {
   if (isMockMode) return mockApi.restartSite(ref);
-  await request<void>(`${sitePath(ref)}/restart`, { method: 'POST' });
+  await request<void>(`${sitePath(ref)}/restart`, { method: 'POST', voidResponse: true });
 }
 
 export async function listRuntimes(): Promise<RuntimeBuild[]> {
@@ -208,7 +220,10 @@ export async function installRuntime(id: string): Promise<RuntimeBuild> {
 
 export async function removeRuntime(buildID: string): Promise<void> {
   if (isMockMode) return mockApi.removeRuntime(buildID);
-  await request<void>(`/runtimes/${encodeURIComponent(buildID)}`, { method: 'DELETE' });
+  await request<void>(`/runtimes/${encodeURIComponent(buildID)}`, {
+    method: 'DELETE',
+    voidResponse: true,
+  });
 }
 
 export async function getDoctor(): Promise<DoctorReport> {

@@ -20,13 +20,20 @@
   const titleId = `dialog-title-${Math.random().toString(36).slice(2, 8)}`;
   const descriptionId = `dialog-desc-${Math.random().toString(36).slice(2, 8)}`;
 
+  function isUsable(element: HTMLElement | null | undefined): element is HTMLElement {
+    if (!element) return false;
+    if (element.hasAttribute('disabled')) return false;
+    if (element.getAttribute('aria-disabled') === 'true') return false;
+    return element.offsetParent !== null;
+  }
+
   function focusable(): HTMLElement[] {
     if (!dialogEl) return [];
     return Array.from(
       dialogEl.querySelectorAll<HTMLElement>(
         'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
       ),
-    ).filter((element) => element.offsetParent !== null);
+    ).filter(isUsable);
   }
 
   $effect(() => {
@@ -36,7 +43,10 @@
     document.body.style.overflow = 'hidden';
 
     tick().then(() => {
-      const auto = dialogEl?.querySelector<HTMLElement>('[data-autofocus]');
+      const autofocusCandidates = Array.from(
+        dialogEl?.querySelectorAll<HTMLElement>('[data-autofocus]') ?? [],
+      );
+      const auto = autofocusCandidates.find(isUsable);
       const target = auto ?? focusable()[0] ?? dialogEl;
       target?.focus();
     });

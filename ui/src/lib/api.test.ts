@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSite, listSites, resetApiClientForTests } from './api';
+import {
+  createSite,
+  listSites,
+  resetApiClientForTests,
+  restartSite,
+  startSite,
+  stopSite,
+} from './api';
 import { ApiError } from './errors';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -7,6 +14,10 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function emptyResponse(status: number): Response {
+  return new Response(null, { status });
 }
 
 describe('api client', () => {
@@ -61,6 +72,54 @@ describe('api client', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const secondHeaders = new Headers((fetchMock.mock.calls[2][1] as RequestInit).headers);
     expect(secondHeaders.get('X-CSRF-Token')).toBe('csrf-abc');
+  });
+
+  it('accepts a 202 Accepted response with no body for lifecycle actions', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'csrf-lifecycle' }))
+      .mockResolvedValueOnce(emptyResponse(202));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(startSite('s_blog')).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe('/api/v1/sites/s_blog/start');
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-lifecycle');
+  });
+
+  it('accepts 204 and empty 200 bodies for void endpoints', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'csrf-lifecycle' }))
+      .mockResolvedValueOnce(emptyResponse(204))
+      .mockResolvedValueOnce(emptyResponse(200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(stopSite('s_blog')).resolves.toBeUndefined();
+    await expect(restartSite('s_blog')).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not accept an HTML 200 response for a void endpoint', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'csrf-lifecycle' }))
+      .mockResolvedValueOnce(
+        new Response('<html>SPA fallback</html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(stopSite('s_blog')).rejects.toMatchObject({
+      name: 'ApiError',
+      code: 'INVALID_RESPONSE',
+      status: 200,
+    });
   });
 
   it('maps an error envelope to ApiError with code, message and details', async () => {

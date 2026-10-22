@@ -282,21 +282,43 @@
   {/if}
 
   {#if loading}
-    <div class="table-card" aria-busy="true" aria-label="Loading sites">
-      <div class="table-skeleton">
-        {#each Array(5) as _, index (index)}
-          <div class="skeleton-row">
-            <Skeleton width="82px" height="20px" radius="999px" />
-            <Skeleton width={`${160 + ((index * 23) % 100)}px`} height="13px" />
-            <Skeleton width="58px" height="18px" radius="6px" />
-            <Skeleton width="84px" height="11px" />
-            <Skeleton width="140px" height="11px" />
+    <div class="loading-state" aria-busy="true" aria-label="Loading sites">
+      <div class="table-card">
+        <div class="table-skeleton">
+          {#each Array(5) as _, index (index)}
+            <div class="skeleton-row">
+              <Skeleton width="9%" height="20px" radius="999px" />
+              <Skeleton width="28%" height="13px" />
+              <Skeleton width="9%" height="18px" radius="6px" />
+              <Skeleton width="11%" height="11px" />
+              <Skeleton width="17%" height="11px" />
+            </div>
+          {/each}
+        </div>
+      </div>
+      <div class="mobile-list loading-cards" aria-hidden="true">
+        {#each Array(3) as _, index (index)}
+          <div class="site-card skeleton-card">
+            <div class="skeleton-card-top">
+              <div class="skeleton-card-copy">
+                <Skeleton width="46%" height="15px" />
+                <Skeleton width="32%" height="10px" />
+              </div>
+              <Skeleton width="72px" height="20px" radius="999px" />
+            </div>
+            <Skeleton width="58%" height="10px" />
+            <Skeleton width="42%" height="10px" />
+            <div class="skeleton-card-actions">
+              <Skeleton width="32%" height="32px" radius="8px" />
+              <Skeleton width="27%" height="32px" radius="8px" />
+              <Skeleton width="27%" height="32px" radius="8px" />
+            </div>
           </div>
         {/each}
       </div>
     </div>
   {:else if sites.length === 0 && !error}
-    <div class="table-card empty-card">
+    <div class="state-card">
       <EmptyState
         icon={Globe}
         title="No local sites yet"
@@ -309,7 +331,7 @@
       </EmptyState>
     </div>
   {:else if sites.length > 0 && filtered.length === 0}
-    <div class="table-card empty-card">
+    <div class="state-card">
       <EmptyState icon={Search} title="No sites match" description="Try another search or clear the status filter.">
         <Button variant="secondary" onclick={clearFilters}>Clear filters</Button>
       </EmptyState>
@@ -825,8 +847,40 @@
     border-bottom: 0;
   }
 
-  .empty-card {
+  .state-card {
     padding: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+
+  .loading-state {
+    min-width: 0;
+  }
+
+  .skeleton-card-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .skeleton-card-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .skeleton-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 1px;
+    padding-top: 9px;
+    border-top: 1px solid var(--border);
   }
 
   .mobile-list {

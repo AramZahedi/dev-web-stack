@@ -20,7 +20,11 @@
   aria-label={label}
   aria-describedby={description ? descriptionId : undefined}
   {disabled}
-  onclick={() => onchange?.(!checked)}
+  onclick={() => {
+    if (disabled) return;
+    checked = !checked;
+    onchange?.(checked);
+  }}
 >
   <span class="copy" aria-hidden="true">
     <span class="label">{label}</span>

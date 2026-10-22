@@ -20,6 +20,7 @@
 <style>
   .skeleton {
     display: block;
+    max-width: 100%;
     background: linear-gradient(
       90deg,
       var(--surface-2) 0%,
