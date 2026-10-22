@@ -1,6 +1,6 @@
 // Package conformance contains a reusable black-box acceptance suite for
-// backend.Backend implementations. The local backend runs it in tests today;
-// the WSL backend will run the same suite in Plan 3.
+// backend.Backend implementations. The WSL backend will run it in Plan 3; it
+// can also be pointed at the local backend from a suite fixture.
 package conformance
 
 import (

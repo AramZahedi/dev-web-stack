@@ -3,6 +3,7 @@ package backend
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,8 +12,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -254,6 +257,89 @@ func TestLocalExec(t *testing.T) {
 	}
 }
 
+func TestLocalExecResolvesCommandFromSitePATH(t *testing.T) {
+	b, root := newTestLocal(t)
+	binDir := filepath.Join(root, "site-bin")
+	writeExecutable(t, binDir, "site-tool", `printf '%s' "$SITE_MARKER"`)
+	spec := SiteSpec{ID: "exec-path", Kind: "static", BackendPath: root, HTTPPort: freePort(t),
+		Env: map[string]string{
+			"PATH":        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"SITE_MARKER": "found-on-site-path",
+		}}
+	if _, err := b.Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := b.Exec(context.Background(), "exec-path", []string{"site-tool"}, nil)
+	if err != nil {
+		t.Fatalf("bare command did not resolve through the site PATH: %v", err)
+	}
+	if result.ExitCode != 0 || result.Stdout != "found-on-site-path" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestLocalExecUsesNodeRuntimeEnvironment(t *testing.T) {
+	nodeRoot := t.TempDir()
+	binDir := filepath.Join(nodeRoot, "bin")
+	writeExecutable(t, binDir, "node-tool",
+		`printf '%s|%s|%s\n' "$PORT" "$NODE_EXTRA_CA_CERTS" "$(command -v node-tool)"`)
+	fake := &fakeRuntime{build: model.RuntimeBuild{
+		ID: "node-22", Kind: "node", Version: "22", Path: nodeRoot,
+	}}
+	b, root := newTestLocalWithRuntime(t, fake)
+	port := freePort(t)
+	spec := SiteSpec{ID: "node-exec", Kind: "node", BackendPath: root, HTTPPort: port,
+		Command: "true", RuntimeVersion: "22"}
+	if _, err := b.Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := b.Exec(context.Background(), "node-exec", []string{"node-tool"}, nil)
+	if err != nil {
+		t.Fatalf("node Exec: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit = %d, stderr = %q", result.ExitCode, result.Stderr)
+	}
+	want := fmt.Sprintf("%d|%s|%s", port,
+		filepath.Join(b.cfg.Home, "pki", "ca-bundle.crt"),
+		filepath.Join(binDir, "node-tool"))
+	if strings.TrimSpace(result.Stdout) != want {
+		t.Fatalf("stdout = %q, want %q", result.Stdout, want)
+	}
+}
+
+func TestLocalExecCancellationReturnsContextErrorAndKillsGroup(t *testing.T) {
+	b, root := newTestLocal(t)
+	spec := SiteSpec{ID: "exec-cancel", Kind: "static", BackendPath: root, HTTPPort: freePort(t)}
+	if _, err := b.Prepare(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(root, "background.pid")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := b.Exec(ctx, "exec-cancel",
+		[]string{"/bin/sh", "-c", `sleep 30 & echo $! > "$PID_FILE"; wait`},
+		map[string]string{"PID_FILE": pidFile})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Exec returned success after its context expired")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context deadline exceeded", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Exec took %s to honour cancellation", elapsed)
+	}
+
+	pid := waitPIDFile(t, pidFile, 2*time.Second)
+	waitProcessGone(t, pid, 2*time.Second)
+}
+
 func TestLocalInstallCA(t *testing.T) {
 	b, _ := newTestLocal(t)
 	dir := t.TempDir()
@@ -440,6 +526,65 @@ func rootFile(t *testing.T, root, name, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeExecutable(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func waitPIDFile(t *testing.T, path string, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if convErr != nil || pid <= 0 {
+				t.Fatalf("invalid pid file %q: %q", path, data)
+			}
+			return pid
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid file %s was not written: %v", path, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// waitProcessGone accepts both a reaped process and a zombie, because a killed
+// descendant may remain a zombie briefly until the init process reaps it.
+func waitProcessGone(t *testing.T, pid int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if processGone(pid) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d survived Exec cancellation", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func processGone(pid int) bool {
+	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return errors.Is(err, os.ErrNotExist)
+	}
+	closeParen := strings.LastIndexByte(string(data), ')')
+	return closeParen >= 0 && closeParen+2 < len(data) && data[closeParen+2] == 'Z'
 }
 
 func freePort(t *testing.T) int {

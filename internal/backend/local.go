@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -27,6 +28,10 @@ import (
 const (
 	staticReadyTimeout = 30 * time.Second
 	nodeReadyTimeout   = 60 * time.Second
+
+	// execWaitDelay bounds how long Exec waits for inherited stdout/stderr
+	// pipes to close after the direct child exits or is killed.
+	execWaitDelay = 2 * time.Second
 
 	// logTailLines is the snapshot size returned when Logs is not following.
 	logTailLines = 5000
@@ -317,7 +322,8 @@ func (l *Local) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser
 }
 
 // Exec runs argv in the site's working directory with the site and caller
-// environments. A non-zero exit status is a normal Result.
+// environments. A non-zero exit status is a normal Result. Cancelling ctx kills
+// the process group and is reported as ctx.Err.
 func (l *Local) Exec(ctx context.Context, id string, argv []string, env map[string]string) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -336,28 +342,43 @@ func (l *Local) Exec(ctx context.Context, id string, argv []string, env map[stri
 		return Result{}, fmt.Errorf("backend: site %q is not prepared", id)
 	}
 
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir = p.workingDir
-	cmd.Env = mergedEnv(p.spec.Env, env)
+	envValues := l.execEnvironment(p, env)
+	executable, err := resolveExecutable(argv[0], envValues["PATH"], p.workingDir)
+	if err != nil {
+		return Result{}, fmt.Errorf("backend: exec in site %q: %w", id, err)
+	}
 
-	var stdout, stderr bytes.Buffer
+	cmd := &exec.Cmd{
+		Path: executable,
+		Args: append([]string{argv[0]}, argv[1:]...),
+	}
+	cmd.Dir = p.workingDir
+	cmd.Env = environmentList(envValues)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = execWaitDelay
+
+	var stdout, stderr lockedBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	result := Result{}
-	err := cmd.Run()
+	runErr := runCommand(ctx, cmd)
 	result.Stdout = stdout.String()
 	result.Stderr = stderr.String()
-	if err == nil {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		result.ExitCode = -1
+		return result, ctxErr
+	}
+	if runErr == nil {
 		return result, nil
 	}
 
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if errors.As(runErr, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()
 		return result, nil
 	}
-	return result, fmt.Errorf("backend: exec in site %q: %w", id, err)
+	return result, fmt.Errorf("backend: exec in site %q: %w", id, runErr)
 }
 
 // EnsureRuntime delegates installation to the configured runtime provider.
@@ -603,9 +624,19 @@ func nodeEnvironment(port int, nodeRoot, caBundle string, siteEnv map[string]str
 	return env
 }
 
+// execEnvironment returns the environment for an Exec call. Node sites get the
+// same runtime PATH, PORT, and CA variables as their supervised process.
+func (l *Local) execEnvironment(p preparedSite, callEnv map[string]string) map[string]string {
+	siteEnv := p.spec.Env
+	if p.spec.Kind == string(model.SiteNode) {
+		siteEnv = nodeEnvironment(p.spec.HTTPPort, p.nodeRoot, l.caBundlePath(), p.spec.Env)
+	}
+	return mergedEnv(siteEnv, callEnv)
+}
+
 // mergedEnv layers the site environment and per-call environment over the
 // daemon's environment.
-func mergedEnv(siteEnv, callEnv map[string]string) []string {
+func mergedEnv(siteEnv, callEnv map[string]string) map[string]string {
 	values := make(map[string]string, len(os.Environ())+len(siteEnv)+len(callEnv))
 	for _, entry := range os.Environ() {
 		key, value, ok := strings.Cut(entry, "=")
@@ -620,7 +651,11 @@ func mergedEnv(siteEnv, callEnv map[string]string) []string {
 	for key, value := range callEnv {
 		values[key] = value
 	}
+	return values
+}
 
+// environmentList renders a merged environment in a deterministic order.
+func environmentList(values map[string]string) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -632,6 +667,77 @@ func mergedEnv(siteEnv, callEnv map[string]string) []string {
 		env = append(env, key+"="+values[key])
 	}
 	return env
+}
+
+// resolveExecutable finds name using pathValue, which is the merged environment
+// PATH rather than the daemon's PATH. Names containing a path separator are
+// left for the kernel so relative paths resolve against the command directory.
+func resolveExecutable(name, pathValue, workingDir string) (string, error) {
+	if strings.ContainsRune(name, os.PathSeparator) {
+		return name, nil
+	}
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			dir = "."
+		}
+		if !filepath.IsAbs(dir) && workingDir != "" {
+			dir = filepath.Join(workingDir, dir)
+		}
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		return candidate, nil
+	}
+	return "", fmt.Errorf("executable %q not found in PATH", name)
+}
+
+// lockedBuffer collects command output. It is safe when a copy goroutine is
+// still draining after Wait returns because WaitDelay expired.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// runCommand starts cmd in its own process group and waits for it. If ctx is
+// done first, the entire process group is killed so descendants cannot keep
+// running or hold stdout/stderr open past the deadline.
+func runCommand(ctx context.Context, cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = cmd.Process.Kill()
+		}
+		<-done
+		return ctx.Err()
+	}
 }
 
 // logStream unsubscribes when the reader is closed.

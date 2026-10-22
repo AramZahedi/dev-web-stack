@@ -81,7 +81,8 @@ type Backend interface {
 	// finite snapshot of recent lines; when true it streams until closed.
 	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
 	// Exec runs argv with the site environment and the caller's extra
-	// environment. A non-zero exit is returned in Result, not as an error.
+	// environment. A non-zero exit is returned in Result, not as an error;
+	// cancelling the context kills the process group and returns ctx.Err.
 	Exec(ctx context.Context, id string, argv []string, env map[string]string) (Result, error)
 	// EnsureRuntime installs or returns the requested runtime build.
 	EnsureRuntime(ctx context.Context, kind, version string) (model.RuntimeBuild, error)
