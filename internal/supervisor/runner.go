@@ -68,7 +68,10 @@ func (m *Manager) supervise(p *proc) {
 		}
 
 		if err := m.awaitReady(p, c); err != nil {
-			m.terminateChild(p, c)
+			if terr := m.terminateChild(p, c); terr != nil {
+				p.keepPIDFile()
+			}
+			p.clearChild(c)
 			if p.isStopping() || errors.Is(err, errStoppedDuringStart) {
 				m.finishStopped(p)
 				if first {
@@ -99,15 +102,30 @@ func (m *Manager) supervise(p *proc) {
 		case <-p.stopCh:
 			// Stop or context cancellation arrived while the process was
 			// running. Terminate it here so requestStop alone is sufficient.
-			m.terminateChild(p, c)
+			if err := m.terminateChild(p, c); err != nil {
+				p.keepPIDFile()
+			}
 		}
 		if p.isStopping() {
-			m.finishStopped(p)
 			if err := m.ensureGroupGone(c.pid, cleanupKillWait); err != nil {
 				m.logger.Warn("supervisor: process group did not exit", "id", p.id, "pid", c.pid, "error", err)
+				p.keepPIDFile()
 			}
+			p.clearChild(c)
+			m.finishStopped(p)
 			return
 		}
+
+		// An unexpected exit does not imply the whole group is gone. A shell
+		// that backgrounds the real server or a daemonizing master can leave
+		// descendants holding ports. Reap the group before restarting or
+		// removing the pid file, otherwise a restart duplicates the server and
+		// orphan cleanup can no longer find it.
+		if err := m.ensureGroupGone(c.pid, cleanupKillWait); err != nil {
+			m.logger.Warn("supervisor: process group did not exit", "id", p.id, "pid", c.pid, "error", err)
+			p.keepPIDFile()
+		}
+		p.clearChild(c)
 
 		exitErr := c.waitErr
 		if exitErr == nil {
@@ -138,6 +156,7 @@ func (m *Manager) startChild(p *proc) (*child, error) {
 	cmd.Stdout = nonNilWriter(spec.Stdout)
 	cmd.Stderr = nonNilWriter(spec.Stderr)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = ioDrainTimeout
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("supervisor: start %q: %w", spec.ID, err)
@@ -162,12 +181,13 @@ func (m *Manager) startChild(p *proc) (*child, error) {
 	}()
 
 	if err := m.writePIDFile(spec.ID, pid, ticks); err != nil {
-		m.terminateChild(p, c)
+		_ = m.terminateChild(p, c)
 		return nil, err
 	}
 
 	p.mu.Lock()
 	p.child = c
+	p.pidFileLeaked = false
 	if !p.stopping {
 		p.status.State = model.StatusStarting
 		p.status.PID = pid
@@ -179,7 +199,10 @@ func (m *Manager) startChild(p *proc) (*child, error) {
 	// Stop may have raced with the spawn and seen no child yet. It is waiting
 	// on doneCh, so terminate here rather than leaving the process behind.
 	if stopping {
-		m.terminateChild(p, c)
+		if err := m.terminateChild(p, c); err != nil {
+			p.keepPIDFile()
+		}
+		p.clearChild(c)
 		return nil, errStoppedDuringStart
 	}
 	return c, nil
@@ -253,23 +276,29 @@ func (m *Manager) awaitReady(p *proc, c *child) error {
 }
 
 // terminateChild stops one process group, escalating from SIGTERM to SIGKILL
-// after StopGrace. It always waits for the direct child to be reaped.
-func (m *Manager) terminateChild(p *proc, c *child) {
+// after StopGrace. It always waits for the direct child to be reaped and polls
+// until the group is gone. A non-nil error means the group could not be
+// confirmed gone.
+func (m *Manager) terminateChild(p *proc, c *child) error {
 	if c == nil {
-		return
+		return nil
 	}
+	var errs []error
 	if !channelClosed(c.exitedCh) {
 		_ = syscall.Kill(-c.pid, syscall.SIGTERM)
 		if !waitChannel(nil, c.exitedCh, m.stopGrace()) {
 			_ = syscall.Kill(-c.pid, syscall.SIGKILL)
 			if !waitChannel(nil, c.exitedCh, killWait) {
 				m.logger.Error("supervisor: process did not exit after SIGKILL", "id", p.id, "pid", c.pid)
+				errs = append(errs, fmt.Errorf("supervisor: process %d did not exit after SIGKILL", c.pid))
 			}
 		}
 	}
 	if err := m.ensureGroupGone(c.pid, cleanupKillWait); err != nil {
 		m.logger.Warn("supervisor: process group did not exit", "id", p.id, "pid", c.pid, "error", err)
+		errs = append(errs, err)
 	}
+	return errors.Join(errs...)
 }
 
 // retryOrCrash records a failure and either sleeps through the next backoff
@@ -289,7 +318,7 @@ func (m *Manager) retryOrCrash(p *proc, failures *[]time.Time, cause error) bool
 	}
 
 	maxRestarts := p.spec.Restart.MaxRestarts
-	if maxRestarts <= 0 || len(*failures) > maxRestarts {
+	if maxRestarts <= 0 || len(*failures) >= maxRestarts {
 		m.finishCrashed(p, cause)
 		return false
 	}
@@ -337,7 +366,12 @@ func (m *Manager) finishStopped(p *proc) {
 	p.status.State = model.StatusStopped
 	p.status.PID = 0
 	p.status.StartedAt = time.Time{}
+	leaked := p.pidFileLeaked
 	p.mu.Unlock()
+	if leaked {
+		m.logger.Warn("supervisor: keeping pid file; process group may survive", "id", p.id)
+		return
+	}
 	m.removePIDFile(p.id)
 }
 
@@ -350,8 +384,13 @@ func (m *Manager) finishCrashed(p *proc, cause error) {
 		p.status.LastError = cause.Error()
 	}
 	st := p.status
+	leaked := p.pidFileLeaked
 	p.mu.Unlock()
-	m.removePIDFile(p.id)
+	if leaked {
+		m.logger.Warn("supervisor: keeping pid file; process group may survive", "id", p.id)
+	} else {
+		m.removePIDFile(p.id)
+	}
 	m.logger.Error("supervisor: process crashed", "id", p.id, "restarts", st.Restarts, "error", st.LastError)
 }
 
@@ -363,8 +402,13 @@ func (m *Manager) finishError(p *proc, err error) {
 	if err != nil {
 		p.status.LastError = err.Error()
 	}
+	leaked := p.pidFileLeaked
 	p.mu.Unlock()
-	m.removePIDFile(p.id)
+	if leaked {
+		m.logger.Warn("supervisor: keeping pid file; process group may survive", "id", p.id)
+	} else {
+		m.removePIDFile(p.id)
+	}
 	m.logger.Error("supervisor: process failed to start", "id", p.id, "error", err)
 }
 

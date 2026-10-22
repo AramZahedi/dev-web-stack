@@ -24,7 +24,12 @@ type pidRecord struct {
 // CleanupOrphans kills process groups left behind by a previous daemon. It
 // only acts on pid files whose recorded start time still matches the live
 // process, then polls until the group is gone before deleting the file.
-// Processes without a matching pid file are never touched.
+//
+// A process group can outlive its leader. If the recorded PID is gone or has
+// been reused but its group still exists, the start time can no longer be
+// verified; the pid file is kept (and an error reported) rather than risking a
+// signal to an unrelated group. Processes without a matching pid file are
+// never touched.
 func (m *Manager) CleanupOrphans() error {
 	if m == nil {
 		return errors.New("supervisor: nil manager")
@@ -60,6 +65,12 @@ func (m *Manager) CleanupOrphans() error {
 			m.logger.Debug("supervisor: ignoring unrecognized pid file", "path", path)
 			continue
 		}
+		if rec.PID <= 1 {
+			// kill(-1) signals every process we can reach, not "group 1".
+			m.logger.Warn("supervisor: refusing to signal reserved pid", "id", rec.ID, "pid", rec.PID)
+			errs = append(errs, fmt.Errorf("supervisor: pid %d in %s is not signalable; left pid file in place", rec.PID, path))
+			continue
+		}
 		if rec.PID == os.Getpid() || rec.PID == syscall.Getpgrp() {
 			m.logger.Warn("supervisor: refusing to signal our own process group", "id", rec.ID, "pid", rec.PID)
 			continue
@@ -68,15 +79,37 @@ func (m *Manager) CleanupOrphans() error {
 		ticks, err := procStartTicks(rec.PID)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			// The process is already gone; only the file needs cleaning.
+			// The leader is gone, but its group may still contain a server.
+			alive, probeErr := groupAlive(rec.PID)
+			if probeErr != nil {
+				errs = append(errs, fmt.Errorf("supervisor: probe group %d from %s: %w", rec.PID, path, probeErr))
+				continue
+			}
+			if alive {
+				m.logger.Warn("supervisor: process group outlived its leader; leaving pid file", "id", rec.ID, "pid", rec.PID)
+				errs = append(errs, fmt.Errorf("supervisor: process group %d outlived its leader; left %s in place", rec.PID, path))
+				continue
+			}
 			errs = removePIDPath(errs, path)
 			continue
 		case err != nil:
 			errs = append(errs, fmt.Errorf("supervisor: verify pid %d from %s: %w", rec.PID, path, err))
 			continue
 		case ticks != rec.StartTicks:
-			// The PID now belongs to someone else. Never signal it.
-			m.logger.Warn("supervisor: pid was reused; leaving it alone", "id", rec.ID, "pid", rec.PID)
+			// The PID now belongs to someone else. Only remove the file when
+			// no group with that ID remains; otherwise a surviving descendant
+			// may still be holding the port.
+			alive, probeErr := groupAlive(rec.PID)
+			if probeErr != nil {
+				errs = append(errs, fmt.Errorf("supervisor: probe group %d from %s: %w", rec.PID, path, probeErr))
+				continue
+			}
+			if alive {
+				m.logger.Warn("supervisor: pid was reused but its group is alive; leaving pid file", "id", rec.ID, "pid", rec.PID)
+				errs = append(errs, fmt.Errorf("supervisor: pid %d was reused and process group %d is still alive; left %s in place", rec.PID, rec.PID, path))
+				continue
+			}
+			m.logger.Warn("supervisor: pid was reused; removing stale pid file", "id", rec.ID, "pid", rec.PID)
 			errs = removePIDPath(errs, path)
 			continue
 		}
@@ -93,8 +126,13 @@ func (m *Manager) CleanupOrphans() error {
 
 // cleanupGroup terminates an orphaned process group, escalating to SIGKILL
 // when it does not exit promptly. It returns only after the group is gone or
-// the bounded wait expires.
+// the bounded wait expires. The group leader guard runs before any signal so a
+// malformed pid file can never turn into kill(-1) or a signal to an unrelated
+// process group.
 func cleanupGroup(pid int) error {
+	if err := signalableGroupLeader(pid); err != nil {
+		return err
+	}
 	alive, err := groupAlive(pid)
 	if err != nil {
 		return err
@@ -113,9 +151,28 @@ func cleanupGroup(pid int) error {
 	return fmt.Errorf("process group %d did not exit", pid)
 }
 
+// signalableGroupLeader rejects PIDs that cannot safely be used with
+// kill(-pid): reserved PIDs and processes that are not their own group leader.
+func signalableGroupLeader(pid int) error {
+	if pid <= 1 {
+		return fmt.Errorf("supervisor: refusing to signal reserved pid %d", pid)
+	}
+	pgrp, err := procPgrp(pid)
+	if err != nil {
+		return fmt.Errorf("supervisor: inspect process group for pid %d: %w", pid, err)
+	}
+	if pgrp != pid {
+		return fmt.Errorf("supervisor: pid %d is in process group %d, not a group leader", pid, pgrp)
+	}
+	return nil
+}
+
 // ensureGroupGone SIGKILLs any members left in pid's group and waits for the
 // group to disappear.
 func (m *Manager) ensureGroupGone(pid int, timeout time.Duration) error {
+	if pid <= 1 {
+		return fmt.Errorf("supervisor: refusing to signal reserved pid %d", pid)
+	}
 	alive, err := groupAlive(pid)
 	if err != nil {
 		return err
@@ -162,23 +219,35 @@ func waitGroupGone(pid int, timeout time.Duration) bool {
 	}
 }
 
-// procStartTicks returns field 22 (starttime) from /proc/<pid>/stat. The comm
-// field is parenthesized and may itself contain spaces or parentheses, so
-// parsing starts after the last ')'.
-func procStartTicks(pid int) (uint64, error) {
+// procStatFields returns the fields of /proc/<pid>/stat after the comm field.
+// The comm field is parenthesized and may itself contain spaces or
+// parentheses, so parsing starts after the last ')'.
+func procStatFields(pid int) ([]string, error) {
 	if pid <= 0 {
-		return 0, fmt.Errorf("supervisor: invalid pid %d", pid)
+		return nil, fmt.Errorf("supervisor: invalid pid %d", pid)
 	}
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	text := string(data)
 	end := strings.LastIndexByte(text, ')')
 	if end < 0 {
-		return 0, fmt.Errorf("supervisor: malformed /proc/%d/stat", pid)
+		return nil, fmt.Errorf("supervisor: malformed /proc/%d/stat", pid)
 	}
 	fields := strings.Fields(text[end+1:])
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("supervisor: truncated /proc/%d/stat", pid)
+	}
+	return fields, nil
+}
+
+// procStartTicks returns field 22 (starttime) from /proc/<pid>/stat.
+func procStartTicks(pid int) (uint64, error) {
+	fields, err := procStatFields(pid)
+	if err != nil {
+		return 0, err
+	}
 	// The suffix starts at field 3 (state); starttime is field 22.
 	const startTimeIndex = 22 - 3
 	if len(fields) <= startTimeIndex {
@@ -189,6 +258,24 @@ func procStartTicks(pid int) (uint64, error) {
 		return 0, fmt.Errorf("supervisor: parse start time for pid %d: %w", pid, err)
 	}
 	return ticks, nil
+}
+
+// procPgrp returns field 5 (pgrp) from /proc/<pid>/stat.
+func procPgrp(pid int) (int, error) {
+	fields, err := procStatFields(pid)
+	if err != nil {
+		return 0, err
+	}
+	// The suffix starts at field 3 (state); pgrp is field 5.
+	const pgrpIndex = 5 - 3
+	if len(fields) <= pgrpIndex {
+		return 0, fmt.Errorf("supervisor: truncated /proc/%d/stat", pid)
+	}
+	pgrp, err := strconv.Atoi(fields[pgrpIndex])
+	if err != nil {
+		return 0, fmt.Errorf("supervisor: parse process group for pid %d: %w", pid, err)
+	}
+	return pgrp, nil
 }
 
 func readPIDRecord(path string) (pidRecord, error) {

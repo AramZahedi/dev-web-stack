@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -41,6 +40,11 @@ const (
 	// killWait bounds the wait for a process to disappear after SIGKILL.
 	killWait = 5 * time.Second
 
+	// ioDrainTimeout bounds how long Wait waits for inherited stdout/stderr
+	// pipes to close after the direct child exits. Without it, a daemonizing
+	// child that leaves a descendant holding the pipes would hide the exit.
+	ioDrainTimeout = 500 * time.Millisecond
+
 	// cleanupTermWait and cleanupKillWait bound orphan cleanup escalation.
 	cleanupTermWait = 500 * time.Millisecond
 	cleanupKillWait = 2 * time.Second
@@ -63,9 +67,11 @@ type ReadyCheck struct {
 	Timeout time.Duration
 }
 
-// RestartPolicy bounds automatic restarts after unexpected exits. A process is
-// restarted at most MaxRestarts times within Window; the failure that would
-// exceed the cap leaves it crashed. A zero value disables restarts.
+// RestartPolicy bounds automatic restarts after unexpected exits. MaxRestarts
+// is the failure-count threshold: a process is marked crashed when this many
+// failures occur within Window. For example, MaxRestarts=5 allows four
+// restarts and crashes on the fifth failure. A zero value crashes on the first
+// failure.
 type RestartPolicy struct {
 	MaxRestarts int
 	Window      time.Duration
@@ -124,6 +130,10 @@ type proc struct {
 	child    *child
 	stopping bool
 	restarts int
+
+	// pidFileLeaked keeps the pid file when the process group could not be
+	// confirmed gone, so a later CleanupOrphans can retry.
+	pidFileLeaked bool
 }
 
 // startOutcome is delivered once to the caller waiting in Start.
@@ -219,48 +229,29 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 	}
 	p.stopping = true
 	p.status.State = model.StatusStopping
-	var (
-		pid    int
-		exited <-chan struct{}
-	)
-	if p.child != nil {
-		pid = p.child.pid
-		exited = p.child.exitedCh
-	}
 	p.mu.Unlock()
+
+	// The supervisor owns every signal. It observes stopCh while starting,
+	// waiting for readiness, waiting for exit, and backing off, then terminates
+	// the process group and polls until it is gone. Delegating here avoids any
+	// chance of signalling a recycled pid after a crash.
 	p.requestStop()
 
-	if pid > 0 && !channelClosed(exited) {
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
-		if !waitChannel(ctx, exited, m.stopGrace()) {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			if !waitChannel(ctx, exited, killWait) {
-				return fmt.Errorf("supervisor: process group %d did not exit after SIGKILL", pid)
-			}
-		}
-	}
-
+	wait := m.stopGrace() + killWait + cleanupKillWait + time.Second
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
 	select {
 	case <-p.doneCh:
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-timer.C:
+		return fmt.Errorf("supervisor: stop %q timed out after %s", id, wait)
 	}
 
 	// The supervisor marks a stopped process before closing doneCh. A crashed
 	// or errored process that is being retired here still needs the transition.
 	if p.snapshot().State != model.StatusStopped {
 		m.finishStopped(p)
-	}
-
-	p.mu.Lock()
-	if p.child != nil && p.child.pid > 0 {
-		pid = p.child.pid
-	}
-	p.mu.Unlock()
-	if pid > 0 {
-		if err := m.ensureGroupGone(pid, cleanupKillWait); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -326,6 +317,24 @@ func (p *proc) deliver(out startOutcome) {
 	case p.resultCh <- out:
 	default:
 	}
+}
+
+// keepPIDFile records that the process group could not be confirmed gone, so
+// terminal transitions must leave the pid file for a later cleanup pass.
+func (p *proc) keepPIDFile() {
+	p.mu.Lock()
+	p.pidFileLeaked = true
+	p.mu.Unlock()
+}
+
+// clearChild drops c once its group has been cleaned up. It only clears the
+// matching pointer so a newer spawn is never lost.
+func (p *proc) clearChild(c *child) {
+	p.mu.Lock()
+	if p.child == c {
+		p.child = nil
+	}
+	p.mu.Unlock()
 }
 
 func validateSpec(spec ProcessSpec) error {
