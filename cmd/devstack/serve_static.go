@@ -1,20 +1,21 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
-	"os"
-	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/AramZahedi/dev-web-stack/internal/staticserve"
 )
 
-// newServeStaticCmd serves one static site for the local backend. Task 11
-// replaces the handler with internal/staticserve; the flags stay the same.
+// newServeStaticCmd serves one static site for the local backend. The
+// supervisor starts it with --root, --addr, and optional --spa flags.
 func newServeStaticCmd() *cobra.Command {
 	var (
 		root string
@@ -26,27 +27,8 @@ func newServeStaticCmd() *cobra.Command {
 		Short:  "Serve a static site directory (internal)",
 		Hidden: true,
 		Args:   cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			if strings.TrimSpace(root) == "" {
-				return errors.New("--root is required")
-			}
-			info, err := os.Stat(root)
-			if err != nil {
-				return fmt.Errorf("serve-static root %s: %w", root, err)
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("serve-static root %s is not a directory", root)
-			}
-
-			server := &http.Server{
-				Addr:              addr,
-				Handler:           staticHandler(root, spa),
-				ReadHeaderTimeout: 10 * time.Second,
-			}
-			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				return err
-			}
-			return nil
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runServeStatic(cmd.Context(), root, addr, spa)
 		},
 	}
 	cmd.Flags().StringVar(&root, "root", "", "directory to serve")
@@ -55,37 +37,51 @@ func newServeStaticCmd() *cobra.Command {
 	return cmd
 }
 
-// staticHandler serves files and index.html for directories, never a directory
-// listing. With spa enabled, missing non-file paths return index.html.
-func staticHandler(root string, spa bool) http.Handler {
-	files := http.FileServer(http.Dir(root))
-	indexPath := filepath.Join(root, "index.html")
+// runServeStatic serves root until ctx is cancelled or the server fails to
+// start. Listen errors are returned to the caller so the process exits
+// non-zero.
+func runServeStatic(ctx context.Context, root, addr string, spa bool) error {
+	if strings.TrimSpace(root) == "" {
+		return errors.New("--root is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clean := path.Clean("/" + r.URL.Path)
-		target := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(clean, "/")))
+	handler, err := staticserve.NewStaticHandler(root, spa)
+	if err != nil {
+		return fmt.Errorf("serve-static: %w", err)
+	}
+	defer func() { _ = handler.Close() }()
 
-		info, err := os.Stat(target)
-		switch {
-		case err == nil && info.IsDir():
-			if _, err := os.Stat(filepath.Join(target, "index.html")); err != nil {
-				http.NotFound(w, r)
-				return
-			}
-		case err != nil:
-			if !spa || path.Ext(clean) != "" {
-				http.NotFound(w, r)
-				return
-			}
-			if _, err := os.Stat(indexPath); err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			clone := r.Clone(r.Context())
-			clone.URL.Path = "/"
-			files.ServeHTTP(w, clone)
-			return
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("serve-static: listen on %s: %w", addr, err)
+	}
+
+	server := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- server.Serve(listener)
+	}()
+
+	select {
+	case err := <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
 		}
-		files.ServeHTTP(w, r)
-	})
+		return fmt.Errorf("serve-static: %w", err)
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serve-static: %w", err)
+		}
+		return nil
+	}
 }
