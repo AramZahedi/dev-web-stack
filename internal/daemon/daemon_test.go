@@ -32,6 +32,9 @@ var (
 	testBinaryDir  string
 	testBinaryPath string
 	testBinaryErr  error
+
+	allocatedPortsMu sync.Mutex
+	allocatedPorts   = make(map[int]bool)
 )
 
 func TestMain(m *testing.M) {
@@ -348,10 +351,20 @@ func freePort(t *testing.T) int {
 		if err := ln.Close(); err != nil {
 			t.Fatal(err)
 		}
-		// Never hand out the backend upstream/FastCGI ranges.
+		// Never hand out the backend upstream/FastCGI ranges, and never hand
+		// out the same port twice: tests configure HTTP and HTTPS listeners
+		// from separate calls, and a duplicate makes the daemon reject its
+		// configuration.
 		if port >= 41000 && port <= 43999 {
 			continue
 		}
+		allocatedPortsMu.Lock()
+		if allocatedPorts[port] {
+			allocatedPortsMu.Unlock()
+			continue
+		}
+		allocatedPorts[port] = true
+		allocatedPortsMu.Unlock()
 		return port
 	}
 }
