@@ -5,9 +5,8 @@ trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 
 > **Status:** Plan 1 foundation implemented. The CLI, daemon, loopback REST API,
 > static and Node site lifecycle, embedded Svelte dashboard, privileged helper,
-> Linux installer, systemd units, and end-to-end tests are in place.
-> External nginx/Apache vhosts, PHP, and Windows/WSL support arrive in later
-> plans.
+> Linux installer, systemd units, external nginx/Apache serving, and end-to-end
+> tests are in place. PHP vhosts and Windows/WSL support arrive in later plans.
 
 ## Quick start
 
@@ -28,6 +27,24 @@ starts the helper forwarders and daemon, and runs diagnostics. The helper's
 Then open <https://devstack.test>.
 
 Full instructions: [docs/install.md](docs/install.md).
+
+## Serving modes
+
+Serving is `builtin` by default: the helper owns ports 80/443 and the Go proxy
+publishes every site. If nginx or Apache is already installed, you can switch to
+native vhosts:
+
+```sh
+devstack vhost status
+devstack vhost use nginx --yes     # or apache
+devstack vhost use builtin --yes
+```
+
+devstack does not install or enable servers or modules. External mode requires
+`ui_port: 7070`, and Apache needs `ssl`, `proxy`, `proxy_http`, `proxy_wstunnel`,
+`headers`, and `rewrite`. Preview and sync are available through `devstack vhost
+preview <site>`, `devstack vhost sync`, and Settings → Serving in the dashboard.
+See [docs/vhosts.md](docs/vhosts.md) for layout, rollback, and troubleshooting.
 
 ## Build and test
 
@@ -64,6 +81,7 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
 |---|---|
 | [Install](docs/install.md) | prerequisites, installer, systemd, config, logs, upgrade, uninstall |
 | [Sites](docs/sites.md) | first static site, Node sites, lifecycle commands, limitations |
+| [Vhosts](docs/vhosts.md) | external nginx/Apache serving, mode switching, preview, TLS custody, troubleshooting |
 | [TLS and trust](docs/tls.md) | local CA, browser trust, repair, curl/Node usage |
 
 ## Dashboard
@@ -93,6 +111,6 @@ Dev mode uses the mock API unless `VITE_API_MODE` is set; use
 | `build/helper.yaml.example` | helper configuration reference |
 | `install.sh` | Linux installer |
 | `test/e2e/linux.sh` | unprivileged Linux end-to-end test |
-| `docs/` | install, sites, and TLS guides |
+| `docs/` | install, sites, vhosts, and TLS guides |
 
 Design and implementation plans live in `docs/superpowers/`.

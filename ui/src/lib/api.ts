@@ -11,9 +11,12 @@ import type {
   RuntimeBuild,
   Session,
   Settings,
+  ServingMode,
   Site,
   TrustTarget,
   UpdateSiteRequest,
+  VhostPreview,
+  VhostStatus,
 } from './types';
 
 export const API_BASE = '/api/v1';
@@ -264,6 +267,31 @@ export async function browseFs(path: string): Promise<FsListing> {
 export async function getSettings(): Promise<Settings> {
   if (isMockMode) return mockApi.settings();
   return request<Settings>('/settings');
+}
+
+export async function getVhostStatus(): Promise<VhostStatus> {
+  if (isMockMode) return mockApi.getVhostStatus();
+  return request<VhostStatus>('/vhosts/status');
+}
+
+export async function setServingMode(mode: ServingMode): Promise<VhostStatus> {
+  if (isMockMode) return mockApi.setServingMode(mode);
+  return request<VhostStatus>('/vhosts/mode', { method: 'POST', body: { mode } });
+}
+
+export async function syncVhosts(): Promise<VhostStatus> {
+  if (isMockMode) return mockApi.syncVhosts();
+  return request<VhostStatus>('/vhosts/sync', { method: 'POST' });
+}
+
+export async function previewVhost(
+  site: string,
+  server: 'nginx' | 'apache',
+): Promise<VhostPreview> {
+  if (isMockMode) return mockApi.previewVhost(site, server);
+  return request<VhostPreview>(
+    `/vhosts/preview?site=${encodeURIComponent(site)}&server=${server}`,
+  );
 }
 
 export interface StreamHandlers {

@@ -5,20 +5,24 @@
     CircleCheck,
     CircleX,
     Copy,
+    Eye,
     FileCode,
     Lock,
+    RefreshCw,
     Server,
     ShieldCheck,
     Terminal,
     Trash2,
+    TriangleAlert,
     Unplug,
     Wrench,
   } from 'lucide-svelte';
   import * as api from '../lib/api';
   import { copyText } from '../lib/clipboard';
   import { describeError } from '../lib/errors';
+  import { formatDateTime, formatRelative } from '../lib/format';
   import { addToast, daemon, session, toastError } from '../lib/stores';
-  import type { Settings, TrustTarget } from '../lib/types';
+  import type { Settings, ServingMode, TrustTarget, VhostStatus } from '../lib/types';
   import Badge from '../lib/components/Badge.svelte';
   import Button from '../lib/components/Button.svelte';
   import Card from '../lib/components/Card.svelte';
@@ -26,17 +30,36 @@
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
   import IconButton from '../lib/components/IconButton.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
+  import VhostPreviewDrawer from '../lib/components/VhostPreviewDrawer.svelte';
 
   let settings = $state<Settings | null>(null);
   let trust = $state<TrustTarget[]>([]);
   let loading = $state(true);
   let error = $state<{ code: string; message: string } | null>(null);
+  let vhostStatus = $state<VhostStatus | null>(null);
+  let vhostLoading = $state(true);
+  let vhostError = $state<{ code: string; message: string } | null>(null);
+  let vhostSyncing = $state(false);
+  let pendingMode = $state<ServingMode | null>(null);
+  let modeBusy = $state(false);
+  let modeError = $state<{ code: string; message: string } | null>(null);
+  let previewOpen = $state(false);
+  let previewServer = $state<'nginx' | 'apache'>('nginx');
+  let previewSite = $state('');
+  let previewLoading = $state(false);
+  let previewReturnFocus = $state<HTMLElement | null>(null);
   let trustAction = $state<'repair' | 'remove' | null>(null);
   let removeTrustOpen = $state(false);
   let uninstallOpen = $state(false);
   let uninstallArmed = $state(false);
   let commandCopied = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const servingModes: { value: ServingMode; label: string; hint: string }[] = [
+    { value: 'builtin', label: 'Built-in', hint: 'Go proxy + forwarders' },
+    { value: 'nginx', label: 'nginx', hint: 'Native vhosts' },
+    { value: 'apache', label: 'Apache', hint: 'Native vhosts' },
+  ];
 
   const configPath = $derived(
     settings ? `${settings.home.replace(/\/$/, '')}/config.yaml` : '~/.devstack/config.yaml',
@@ -49,6 +72,87 @@
   );
   const version = $derived(settings?.version ?? $daemon.version ?? '0.1.0');
   const failingTargets = $derived(trust.filter((target) => !target.ok).length);
+  const activeMode = $derived(vhostStatus?.mode ?? settings?.serving_mode ?? 'builtin');
+  const activeModeLabel = $derived(modeLabel(activeMode));
+  const activeModeDescription = $derived(modeDescription(activeMode));
+  const modeBadgeVariant = $derived(
+    activeMode === 'builtin' ? 'neutral' : vhostStatus?.config_ok === false ? 'danger' : 'accent',
+  );
+  const serverDisplay = $derived(
+    activeMode === 'builtin'
+      ? 'Built-in proxy'
+      : vhostStatus?.server
+        ? `${vhostStatus.server}${vhostStatus.server_version ? ` ${vhostStatus.server_version}` : ''}`
+        : activeMode,
+  );
+  const includeLabel = $derived(
+    activeMode === 'builtin' ? 'Not required' : vhostStatus?.include_present ? 'Present' : 'Missing',
+  );
+  const configLabel = $derived(
+    activeMode === 'builtin'
+      ? 'Not applicable'
+      : vhostStatus?.config_ok === false
+        ? 'Failed'
+        : 'Passed',
+  );
+  const lastSyncLabel = $derived(
+    usableTimestamp(vhostStatus?.last_sync) ? formatRelative(vhostStatus?.last_sync) : 'Never',
+  );
+  const lastSyncTitle = $derived(
+    usableTimestamp(vhostStatus?.last_sync)
+      ? formatDateTime(vhostStatus?.last_sync)
+      : 'No sync recorded',
+  );
+  const impactItems = $derived(pendingMode ? modeImpact(pendingMode) : []);
+  const pendingModeLabel = $derived(
+    pendingMode ? (pendingMode === 'builtin' ? 'Built-in' : modeLabel(pendingMode)) : '',
+  );
+
+  function usableTimestamp(value: string | undefined): boolean {
+    return Boolean(value) && !value?.startsWith('0001-01-01');
+  }
+
+  function modeLabel(mode: ServingMode): string {
+    if (mode === 'nginx') return 'nginx';
+    if (mode === 'apache') return 'Apache';
+    return 'Built-in proxy';
+  }
+
+  function modeDescription(mode: ServingMode): string {
+    if (mode === 'nginx') {
+      return 'Native nginx vhosts own ports 80 and 443. The built-in proxy and helper forwarders are stopped.';
+    }
+    if (mode === 'apache') {
+      return 'Native Apache vhosts own ports 80 and 443. The built-in proxy and helper forwarders are stopped.';
+    }
+    return 'The built-in Go proxy and helper forwarders publish every site on ports 80 and 443.';
+  }
+
+  function modeImpact(target: ServingMode): string[] {
+    const current = vhostStatus?.mode ?? 'builtin';
+    if (target === 'builtin') {
+      return [
+        current === 'builtin'
+          ? 'The built-in proxy already serves every site.'
+          : `The ${modeLabel(current)} vhosts and bridge include are removed.`,
+        'The built-in proxy returns and the helper owns ports 80 and 443 again.',
+        current === 'builtin'
+          ? 'No restart is needed.'
+          : `${modeLabel(current)} reloads after the vhosts are removed.`,
+        'Brief downtime is possible for every site while the switch completes.',
+      ];
+    }
+    const items = [
+      `${modeLabel(target)} takes ownership of ports 80 and 443.`,
+      'The built-in proxy stops and its 80/443 forwarders are released.',
+      `${modeLabel(target)} reloads with the generated vhosts.`,
+      'Brief downtime is possible for every site while the switch completes.',
+    ];
+    if (current !== 'builtin' && current !== target) {
+      items.unshift(`The ${modeLabel(current)} bridge and release are removed first.`);
+    }
+    return items;
+  }
 
   async function load(initial = false): Promise<void> {
     if (initial) loading = true;
@@ -64,15 +168,118 @@
     }
   }
 
+  async function loadVhosts(initial = false): Promise<void> {
+    if (initial) vhostLoading = true;
+    vhostError = null;
+    try {
+      vhostStatus = await api.getVhostStatus();
+    } catch (caught) {
+      vhostError = describeError(caught);
+    } finally {
+      vhostLoading = false;
+    }
+  }
+
   onMount(() => {
     void load(true);
-    const refresh = () => void load();
+    void loadVhosts(true);
+    const refresh = () => {
+      void load();
+      void loadVhosts();
+    };
     window.addEventListener('devstack:refresh', refresh);
     return () => {
       window.removeEventListener('devstack:refresh', refresh);
       if (copyTimer) clearTimeout(copyTimer);
     };
   });
+
+  function requestServingMode(mode: ServingMode): void {
+    if (!vhostStatus || mode === vhostStatus.mode || modeBusy) return;
+    modeError = null;
+    pendingMode = mode;
+  }
+
+  async function confirmServingMode(): Promise<void> {
+    if (!pendingMode || modeBusy) return;
+    const target = pendingMode;
+    modeBusy = true;
+    modeError = null;
+    try {
+      const status = await api.setServingMode(target);
+      vhostStatus = status;
+      pendingMode = null;
+      if (settings) settings = { ...settings, serving_mode: status.mode };
+      addToast({
+        kind: 'success',
+        title:
+          target === 'builtin'
+            ? 'Built-in proxy restored'
+            : `${modeLabel(target)} is now serving sites`,
+        message:
+          target === 'builtin'
+            ? 'The devstack vhosts were removed and the helper forwarders own ports 80 and 443 again.'
+            : `${modeLabel(target)} owns ports 80 and 443. The built-in proxy has stopped.`,
+      });
+    } catch (caught) {
+      const described = describeError(caught);
+      modeError = described;
+      toastError('Could not switch serving mode', `${described.code}: ${described.message}`);
+    } finally {
+      modeBusy = false;
+    }
+  }
+
+  async function syncVhosts(): Promise<void> {
+    if (vhostSyncing || !vhostStatus) return;
+    vhostSyncing = true;
+    try {
+      vhostStatus = await api.syncVhosts();
+      vhostError = null;
+      addToast({
+        kind: 'success',
+        title: 'Vhosts synced',
+        message:
+          vhostStatus.mode === 'builtin'
+            ? 'Built-in mode has no external vhosts to install.'
+            : `${modeLabel(vhostStatus.mode)} reloaded the current release.`,
+      });
+    } catch (caught) {
+      const described = describeError(caught);
+      toastError('Could not sync vhosts', `${described.code}: ${described.message}`);
+    } finally {
+      vhostSyncing = false;
+    }
+  }
+
+  async function openVhostPreview(event?: MouseEvent): Promise<void> {
+    if (!vhostStatus || previewLoading) return;
+    previewReturnFocus = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    previewServer =
+      vhostStatus.mode === 'apache' || vhostStatus.server === 'apache' ? 'apache' : 'nginx';
+    if (!previewSite) {
+      previewLoading = true;
+      try {
+        const sites = await api.listSites();
+        previewSite = sites[0]?.name ?? '';
+      } catch (caught) {
+        const described = describeError(caught);
+        toastError('Could not load sites for preview', `${described.code}: ${described.message}`);
+        return;
+      } finally {
+        previewLoading = false;
+      }
+    }
+    if (!previewSite) {
+      addToast({
+        kind: 'info',
+        title: 'No sites to preview',
+        message: 'Add a site first, then preview its generated nginx or Apache config.',
+      });
+      return;
+    }
+    previewOpen = true;
+  }
 
   async function repairTrust(): Promise<void> {
     if (trustAction) return;
@@ -239,6 +446,174 @@
           <dd class="mono">{settings.wsl_distro || '—'}</dd>
         </div>
       </dl>
+    </Card>
+
+    <Card
+      title="Serving"
+      subtitle="Choose how devstack publishes sites on ports 80 and 443"
+      headerWrap
+      className="serving-card"
+    >
+      {#snippet actions()}
+        <Button
+          size="sm"
+          variant="secondary"
+          onclick={openVhostPreview}
+          loading={previewLoading}
+          disabled={!vhostStatus || Boolean(vhostLoading)}
+        >
+          {#if !previewLoading}<Eye size={12} strokeWidth={2} aria-hidden="true" />{/if}
+          Preview vhost
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          onclick={syncVhosts}
+          loading={vhostSyncing}
+          disabled={!vhostStatus || Boolean(vhostLoading)}
+        >
+          {#if !vhostSyncing}<RefreshCw size={12} strokeWidth={2} aria-hidden="true" />{/if}
+          Sync now
+        </Button>
+      {/snippet}
+
+      {#if vhostLoading && !vhostStatus}
+        <div class="serving-loading" aria-busy="true" aria-label="Loading serving status">
+          <Skeleton width="90px" height="12px" />
+          <Skeleton width="100%" height="46px" />
+          <div class="serving-loading-grid">
+            {#each Array(4) as _, index (index)}
+              <div>
+                <Skeleton width="66px" height="9px" />
+                <Skeleton width={`${64 + index * 8}%`} height="11px" />
+              </div>
+            {/each}
+          </div>
+        </div>
+      {:else if vhostError && !vhostStatus}
+        <ErrorBanner
+          title="Could not load serving status"
+          code={vhostError.code}
+          message={vhostError.message}
+          onretry={() => loadVhosts(true)}
+        />
+      {:else if vhostStatus}
+        {#if vhostError}
+          <div class="serving-inline-error">
+            <ErrorBanner
+              title="Serving status is out of date"
+              code={vhostError.code}
+              message={vhostError.message}
+              onretry={() => loadVhosts()}
+              ondismiss={() => (vhostError = null)}
+            />
+          </div>
+        {/if}
+
+        <div class="serving-top">
+          <div class="serving-summary">
+            <div class="serving-mode-line">
+              <span class="serving-mode-name">{activeModeLabel}</span>
+              <Badge variant={modeBadgeVariant}>{activeMode}</Badge>
+              {#if activeMode !== 'builtin' && vhostStatus.last_error}
+                <Badge variant="warning">Attention</Badge>
+              {/if}
+            </div>
+            <p>{activeModeDescription}</p>
+          </div>
+
+          <div class="mode-picker" role="group" aria-label="Serving mode">
+            {#each servingModes as option (option.value)}
+              <button
+                type="button"
+                class="mode-option"
+                class:active={activeMode === option.value}
+                aria-pressed={activeMode === option.value}
+                aria-label={`Use ${option.label} serving`}
+                disabled={modeBusy}
+                onclick={() => requestServingMode(option.value)}
+              >
+                <span class="mode-option-head">
+                  {#if activeMode === option.value}
+                    <Check size={12} strokeWidth={2.4} aria-hidden="true" />
+                  {/if}
+                  {option.label}
+                </span>
+                <span class="mode-option-hint">{option.hint}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+
+        <dl class="serving-grid">
+          <div class="serving-item">
+            <dt>Server</dt>
+            <dd class="mono">{serverDisplay}</dd>
+          </div>
+          <div class="serving-item">
+            <dt>Bridge include</dt>
+            <dd>
+              <span
+                class="serving-state"
+                class:ok={activeMode !== 'builtin' && vhostStatus.include_present}
+                class:warn={activeMode !== 'builtin' && !vhostStatus.include_present}
+              >
+                {#if activeMode !== 'builtin'}
+                  {#if vhostStatus.include_present}
+                    <CircleCheck size={12} strokeWidth={2} aria-hidden="true" />
+                  {:else}
+                    <CircleX size={12} strokeWidth={2} aria-hidden="true" />
+                  {/if}
+                {/if}
+                {includeLabel}
+              </span>
+            </dd>
+          </div>
+          <div class="serving-item">
+            <dt>Config test</dt>
+            <dd>
+              <span
+                class="serving-state"
+                class:ok={activeMode !== 'builtin' && vhostStatus.config_ok}
+                class:danger={activeMode !== 'builtin' && !vhostStatus.config_ok}
+              >
+                {#if activeMode !== 'builtin'}
+                  {#if vhostStatus.config_ok}
+                    <CircleCheck size={12} strokeWidth={2} aria-hidden="true" />
+                  {:else}
+                    <CircleX size={12} strokeWidth={2} aria-hidden="true" />
+                  {/if}
+                {/if}
+                {configLabel}
+              </span>
+            </dd>
+          </div>
+          <div class="serving-item">
+            <dt>Last sync</dt>
+            <dd title={lastSyncTitle}>{lastSyncLabel}</dd>
+          </div>
+          <div class="serving-item wide">
+            <dt>Current release</dt>
+            <dd class="mono">{vhostStatus.current_release || '—'}</dd>
+          </div>
+          {#if vhostStatus.bridge_path}
+            <div class="serving-item wide">
+              <dt>Bridge path</dt>
+              <dd class="mono">{vhostStatus.bridge_path}</dd>
+            </div>
+          {/if}
+        </dl>
+
+        {#if vhostStatus.last_error}
+          <div class="serving-last-error" role="status">
+            <TriangleAlert size={14} strokeWidth={2} aria-hidden="true" />
+            <div>
+              <p class="last-error-title">Last error</p>
+              <p>{vhostStatus.last_error}</p>
+            </div>
+          </div>
+        {/if}
+      {/if}
     </Card>
 
     <div class="two-col">
@@ -420,6 +795,43 @@
   oncancel={() => (uninstallOpen = false)}
 />
 
+<ConfirmDialog
+  open={pendingMode !== null}
+  title={`Switch serving to ${pendingModeLabel}?`}
+  description="This changes which process owns ports 80 and 443 for every devstack site."
+  confirmLabel={`Switch to ${pendingModeLabel}`}
+  busy={modeBusy}
+  onconfirm={confirmServingMode}
+  oncancel={() => {
+    if (!modeBusy) {
+      pendingMode = null;
+      modeError = null;
+    }
+  }}
+>
+  {#snippet details()}
+    <ul class="impact-list">
+      {#each impactItems as item (item)}
+        <li>{item}</li>
+      {/each}
+    </ul>
+    {#if modeError}
+      <p class="dialog-error" role="alert">
+        <span class="mono">{modeError.code}</span>
+        {modeError.message}
+      </p>
+    {/if}
+  {/snippet}
+</ConfirmDialog>
+
+<VhostPreviewDrawer
+  open={previewOpen}
+  site={previewSite}
+  initialServer={previewServer}
+  returnFocus={previewReturnFocus}
+  onclose={() => (previewOpen = false)}
+/>
+
 <style>
   .banner {
     margin-bottom: 14px;
@@ -533,6 +945,253 @@
 
   .bool.on {
     color: var(--success-fg);
+  }
+
+  :global(.serving-card) {
+    margin-top: 14px;
+  }
+
+  .serving-loading {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .serving-loading-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .serving-loading-grid > div {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .serving-inline-error {
+    margin-bottom: 12px;
+  }
+
+  .serving-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+
+  .serving-summary {
+    flex: 1;
+    min-width: min(280px, 100%);
+  }
+
+  .serving-mode-line {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+
+  .serving-mode-name {
+    color: var(--fg);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .serving-summary > p {
+    max-width: 620px;
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
+  .mode-picker {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    flex: none;
+    width: min(430px, 100%);
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+  }
+
+  .mode-option {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    min-height: 48px;
+    padding: 6px 9px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--muted);
+    text-align: left;
+    transition:
+      background-color 150ms var(--ease),
+      border-color 150ms var(--ease),
+      color 150ms var(--ease);
+  }
+
+  .mode-option:hover:not(:disabled) {
+    background: var(--surface-3);
+    color: var(--fg);
+  }
+
+  .mode-option.active {
+    border-color: var(--accent-border);
+    background: var(--accent-soft);
+    color: var(--fg);
+  }
+
+  .mode-option:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .mode-option-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--fg);
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  .mode-option-hint {
+    color: var(--muted-2);
+    font-size: 9px;
+    line-height: 1.3;
+  }
+
+  .serving-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    margin: 14px 0 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  .serving-item {
+    min-width: 0;
+    padding: 9px 12px;
+    background: var(--surface);
+  }
+
+  .serving-item.wide {
+    grid-column: 1 / -1;
+    background: var(--surface-2);
+  }
+
+  .serving-item dt {
+    color: var(--muted-2);
+    font-size: 9.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+
+  .serving-item dd {
+    margin: 2px 0 0;
+    color: var(--fg);
+    font-size: 11px;
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+
+  .serving-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .serving-state :global(svg) {
+    flex: none;
+  }
+
+  .serving-state.ok {
+    color: var(--success-fg);
+  }
+
+  .serving-state.warn {
+    color: var(--warning-fg);
+  }
+
+  .serving-state.danger {
+    color: var(--danger-fg);
+  }
+
+  .serving-last-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    margin-top: 12px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+    border-radius: var(--radius);
+    background: var(--warning-soft);
+    color: var(--warning-fg);
+  }
+
+  .serving-last-error :global(svg) {
+    flex: none;
+    margin-top: 1px;
+  }
+
+  .last-error-title {
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .serving-last-error p:not(.last-error-title) {
+    margin-top: 1px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .impact-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding-left: 17px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .impact-list li::marker {
+    color: var(--warning-fg);
+  }
+
+  .dialog-error {
+    margin-top: 12px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
+    border-radius: var(--radius);
+    background: var(--danger-soft);
+    color: var(--danger-fg);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
+  .dialog-error .mono {
+    margin-right: 5px;
+    font-size: 10px;
   }
 
   .two-col {
@@ -842,6 +1501,15 @@
     .config-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+
+    .serving-grid,
+    .serving-loading-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .mode-picker {
+      width: 100%;
+    }
   }
 
   @media (max-width: 700px) {
@@ -851,8 +1519,13 @@
   }
 
   @media (max-width: 620px) {
-    .config-grid {
+    .config-grid,
+    .serving-grid {
       grid-template-columns: 1fr;
+    }
+
+    .mode-option {
+      min-height: 52px;
     }
 
     .danger {

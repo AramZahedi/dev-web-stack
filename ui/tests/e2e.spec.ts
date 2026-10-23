@@ -225,6 +225,70 @@ test('Settings theme toggle applies and persists', async ({ page }) => {
   expect(await page.evaluate(() => localStorage.getItem('devstack.theme'))).toBe('dark');
 });
 
+test('Settings Serving switches modes, syncs, and previews vhosts', async ({ page }) => {
+  await open(page, '#/settings');
+
+  const serving = page.locator('.serving-card');
+  await expect(serving.getByRole('heading', { name: 'Serving' })).toBeVisible();
+  await expect(serving.getByText('Built-in proxy', { exact: true }).first()).toBeVisible();
+  await expect(serving.getByRole('button', { name: 'Use Built-in serving' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+
+  await serving.getByRole('button', { name: 'Use nginx serving' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Switch serving to nginx?' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('nginx takes ownership of ports 80 and 443.')).toBeVisible();
+  await expect(dialog.getByText(/Brief downtime is possible/)).toBeVisible();
+
+  await dialog.getByRole('button', { name: 'Switch to nginx' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'nginx is now serving sites' }),
+  ).toBeVisible();
+  await expect(serving.getByText('nginx 1.28.0', { exact: true })).toBeVisible();
+  await expect(serving.getByText('Present', { exact: true })).toBeVisible();
+  await expect(serving.getByText('Passed', { exact: true })).toBeVisible();
+
+  await serving.getByRole('button', { name: 'Sync now' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Vhosts synced' })).toBeVisible();
+
+  const previewButton = serving.getByRole('button', { name: 'Preview vhost' });
+  await previewButton.click();
+  const drawer = page.getByRole('dialog', { name: 'blog vhost preview' });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.locator('pre')).toContainText('server_name blog.test;');
+  await expect(drawer.locator('pre')).toContainText('root /home/dev/projects/blog/public;');
+
+  await drawer.getByRole('tab', { name: 'Apache' }).click();
+  await expect(drawer.locator('pre')).toContainText('<VirtualHost *:443>');
+  await expect(drawer.locator('pre')).toContainText('ServerName blog.test');
+
+  await page.keyboard.press('Escape');
+  await expect(drawer).toBeHidden();
+  await expect(previewButton).toBeFocused();
+});
+
+test('Site detail previews its rendered vhost', async ({ page }) => {
+  await open(page, '#/sites/blog');
+  await expect(page.getByRole('heading', { name: 'blog' })).toBeVisible();
+
+  const previewButton = page.getByRole('button', { name: 'Preview vhost' });
+  await previewButton.click();
+  const drawer = page.getByRole('dialog', { name: 'blog vhost preview' });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.locator('pre')).toContainText('root /home/dev/projects/blog/public;');
+
+  await drawer.getByRole('tab', { name: 'Apache' }).click();
+  await expect(drawer.locator('pre')).toContainText(
+    'DocumentRoot "/home/dev/projects/blog/public"',
+  );
+
+  await drawer.getByRole('button', { name: 'Close vhost preview' }).click();
+  await expect(drawer).toBeHidden();
+});
+
 test.describe('375px viewport', () => {
   test.use({ viewport: { width: 375, height: 812 } });
 
@@ -282,6 +346,24 @@ test.describe('375px viewport', () => {
       expect(width.body, `${route.name} body overflow`).toBeLessThanOrEqual(width.viewport);
     });
   }
+
+  test('vhost preview drawer has no horizontal overflow', async ({ page }) => {
+    await open(page, '#/settings');
+    await expect(page.getByRole('heading', { name: 'Serving' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Preview vhost' }).click();
+    const drawer = page.getByRole('dialog', { name: 'blog vhost preview' });
+    await expect(drawer).toBeVisible();
+    await expect(drawer.locator('pre')).toBeVisible();
+
+    const width = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+    }));
+    expect(width.document, 'preview drawer document overflow').toBeLessThanOrEqual(width.viewport);
+    expect(width.body, 'preview drawer body overflow').toBeLessThanOrEqual(width.viewport);
+  });
 
   test('mobile navigation drawer opens, closes with Escape, and follows links', async ({ page }) => {
     await open(page, '#/sites');

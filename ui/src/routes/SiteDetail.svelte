@@ -6,6 +6,7 @@
     Check,
     Copy,
     ExternalLink,
+    Eye,
     FileCode,
     Globe,
     KeyRound,
@@ -40,6 +41,7 @@
   import LogsPanel from '../lib/components/LogsPanel.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
   import StatusPill from '../lib/components/StatusPill.svelte';
+  import VhostPreviewDrawer from '../lib/components/VhostPreviewDrawer.svelte';
 
   interface Props {
     params: { ref?: string };
@@ -58,6 +60,10 @@
   let revealed = $state<Record<string, boolean>>({});
   let deleteOpen = $state(false);
   let deleting = $state(false);
+  let previewOpen = $state(false);
+  let previewServer = $state<'nginx' | 'apache'>('nginx');
+  let previewLoading = $state(false);
+  let previewReturnFocus = $state<HTMLElement | null>(null);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
   const ref = $derived(params?.ref ? decodeURIComponent(params.ref) : '');
@@ -175,6 +181,23 @@
       toastError('Could not remove site', `${described.code}: ${described.message}`);
     } finally {
       deleting = false;
+    }
+  }
+
+  async function previewVhost(event?: MouseEvent): Promise<void> {
+    if (!site || previewLoading) return;
+    previewReturnFocus = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    previewLoading = true;
+    try {
+      const status = await api.getVhostStatus();
+      previewServer =
+        status.mode === 'apache' || status.server === 'apache' ? 'apache' : 'nginx';
+    } catch {
+      // The drawer reports the real preview error; builtin defaults to nginx.
+      previewServer = 'nginx';
+    } finally {
+      previewLoading = false;
+      previewOpen = true;
     }
   }
 
@@ -349,6 +372,18 @@
         </Card>
 
         <Card title="Certificate">
+          {#snippet actions()}
+            <Button
+              size="sm"
+              variant="ghost"
+              onclick={previewVhost}
+              loading={previewLoading}
+              title="Preview the generated nginx or Apache vhost"
+            >
+              {#if !previewLoading}<Eye size={12} strokeWidth={2} aria-hidden="true" />{/if}
+              Preview vhost
+            </Button>
+          {/snippet}
           {#if !site.tls}
             <div class="cert-off">
               <span class="cert-icon" aria-hidden="true"><LockOpen size={18} strokeWidth={1.8} /></span>
@@ -477,6 +512,16 @@
     if (!deleting) deleteOpen = false;
   }}
 />
+
+{#if site}
+  <VhostPreviewDrawer
+    open={previewOpen}
+    site={site.name}
+    initialServer={previewServer}
+    returnFocus={previewReturnFocus}
+    onclose={() => (previewOpen = false)}
+  />
+{/if}
 
 <style>
   .page {

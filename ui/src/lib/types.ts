@@ -11,6 +11,34 @@ export type SiteStatus =
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'skipped';
 
+export type ServingMode = 'builtin' | 'nginx' | 'apache';
+
+export interface VhostTLSFile {
+  name: string;
+  mode: number;
+  regular: boolean;
+}
+
+export interface VhostStatus {
+  mode: ServingMode;
+  server: string;
+  server_version: string;
+  bridge_path: string;
+  include_present: boolean;
+  current_release: string;
+  config_ok: boolean;
+  last_error?: string;
+  last_sync: string;
+  tls_dir_mode?: number;
+  tls_files?: VhostTLSFile[];
+}
+
+export interface VhostPreview {
+  server: 'nginx' | 'apache';
+  site: string;
+  content: string;
+}
+
 export interface CertificateInfo {
   not_after: string;
   domains: string[];
@@ -124,6 +152,7 @@ export interface Settings {
   http_port: number;
   https_port: number;
   ui_port: number;
+  serving_mode: ServingMode;
   wsl_distro: string;
   auto_start_sites: boolean;
   graceful_stop_seconds: number;

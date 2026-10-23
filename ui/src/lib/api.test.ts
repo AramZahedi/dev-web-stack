@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createSite,
+  getVhostStatus,
   listSites,
+  previewVhost,
   resetApiClientForTests,
   restartSite,
+  setServingMode,
   startSite,
   stopSite,
+  syncVhosts,
 } from './api';
 import { ApiError } from './errors';
 
@@ -120,6 +124,88 @@ describe('api client', () => {
       code: 'INVALID_RESPONSE',
       status: 200,
     });
+  });
+
+  it('sends the CSRF token and mode when switching serving mode', async () => {
+    const status = {
+      mode: 'nginx',
+      server: 'nginx',
+      server_version: '1.28.0',
+      bridge_path: '/etc/nginx/devstack-vhosts.conf',
+      include_present: true,
+      current_release: '/etc/devstack/vhosts/nginx/releases/20261023T120000Z',
+      config_ok: true,
+      last_sync: '2026-10-23T12:00:00Z',
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'csrf-vhost' }))
+      .mockResolvedValueOnce(jsonResponse(status));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(setServingMode('nginx')).resolves.toMatchObject({ mode: 'nginx' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe('/api/v1/vhosts/mode');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-vhost');
+    expect(JSON.parse(String(init.body))).toEqual({ mode: 'nginx' });
+  });
+
+  it('loads vhost status and renders a preview with an encoded query', async () => {
+    const status = { mode: 'builtin', server: '', config_ok: true };
+    const preview = {
+      server: 'apache',
+      site: 'blog',
+      content: '<VirtualHost *:443>\n    ServerName blog.test\n</VirtualHost>\n',
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(status))
+      .mockResolvedValueOnce(jsonResponse(preview));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getVhostStatus()).resolves.toMatchObject({ mode: 'builtin' });
+    await expect(previewVhost('blog', 'apache')).resolves.toEqual(preview);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [statusUrl, statusInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(statusUrl).toBe('/api/v1/vhosts/status');
+    expect(statusInit.method ?? 'GET').toBe('GET');
+    expect(new Headers(statusInit.headers).get('X-CSRF-Token')).toBeNull();
+
+    const [previewUrl, previewInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(previewUrl).toBe('/api/v1/vhosts/preview?site=blog&server=apache');
+    expect(previewInit.method ?? 'GET').toBe('GET');
+    expect(new Headers(previewInit.headers).get('X-CSRF-Token')).toBeNull();
+    expect(previewInit.credentials).toBe('same-origin');
+    expect(JSON.parse(JSON.stringify(preview.content))).toContain('blog.test');
+  });
+
+  it('syncs vhosts with CSRF and parses the refreshed status', async () => {
+    const status = {
+      mode: 'nginx',
+      server: 'nginx',
+      server_version: '1.28.0',
+      include_present: true,
+      config_ok: true,
+      last_sync: '2026-10-23T12:05:00Z',
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'csrf-sync' }))
+      .mockResolvedValueOnce(jsonResponse(status));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(syncVhosts()).resolves.toMatchObject({ last_sync: '2026-10-23T12:05:00Z' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe('/api/v1/vhosts/sync');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-sync');
+    expect(init.body).toBeUndefined();
   });
 
   it('maps an error envelope to ApiError with code, message and details', async () => {

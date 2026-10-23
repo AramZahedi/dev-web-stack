@@ -4,9 +4,9 @@ devstack is a local web development stack for Linux. It serves static and Node
 sites at trusted `https://<name>.test` URLs and manages the daemon, helper,
 hosts entries, and local certificate authority.
 
-This document covers the Plan 1 Linux install. PHP, Windows/WSL, and external
-nginx/Apache vhosts arrive in later plans. See [Sites](sites.md) and
-[TLS and trust](tls.md) for day-to-day use.
+This document covers the Plan 1 Linux install. External nginx/Apache serving is
+available now; PHP and Windows/WSL arrive in later plans. See [Sites](sites.md),
+[Vhosts](vhosts.md), and [TLS and trust](tls.md) for day-to-day use.
 
 ## Supported systems
 
