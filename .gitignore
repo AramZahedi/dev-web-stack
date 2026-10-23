@@ -13,3 +13,6 @@ ui/dist/*
 
 # Editor/IDE
 .idea/
+
+# Local browser automation artifacts
+.playwright-mcp/
