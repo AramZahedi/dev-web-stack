@@ -8,30 +8,37 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
-func renderApacheSite(s SiteSpec, maxBody int64, tlsDir string) []byte {
+func renderApacheSite(s SiteSpec, maxBody int64, tlsDir string, ports listenPorts) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
 
 	switch {
 	case s.DesiredState == model.DesiredStopped:
-		writeApacheStoppedVHost(&b, s, false, tlsDir)
+		writeApacheStoppedVHost(&b, s, false, tlsDir, ports)
 		b.WriteString("\n")
-		writeApacheStoppedVHost(&b, s, true, tlsDir)
+		writeApacheStoppedVHost(&b, s, true, tlsDir, ports)
 	case s.TLS && s.ForceHTTPS:
-		writeApacheRedirectVHost(&b, s, false, "https", tlsDir)
+		writeApacheRedirectVHost(&b, s, false, "https", tlsDir, ports)
 		b.WriteString("\n")
-		writeApacheServingVHost(&b, s, maxBody, true, tlsDir)
+		writeApacheServingVHost(&b, s, maxBody, true, tlsDir, ports)
 	case s.TLS:
-		writeApacheServingVHost(&b, s, maxBody, false, tlsDir)
+		writeApacheServingVHost(&b, s, maxBody, false, tlsDir, ports)
 		b.WriteString("\n")
-		writeApacheServingVHost(&b, s, maxBody, true, tlsDir)
+		writeApacheServingVHost(&b, s, maxBody, true, tlsDir, ports)
 	default:
-		writeApacheServingVHost(&b, s, maxBody, false, tlsDir)
+		writeApacheServingVHost(&b, s, maxBody, false, tlsDir, ports)
 		b.WriteString("\n")
-		writeApacheRedirectVHost(&b, s, true, "http", tlsDir)
+		writeApacheRedirectVHost(&b, s, true, "http", tlsDir, ports)
 	}
 	return []byte(b.String())
+}
+
+func apacheVHostPort(ports listenPorts, tls bool) int {
+	if tls {
+		return ports.https
+	}
+	return ports.http
 }
 
 func writeApacheVHostOpen(b *strings.Builder, port int, s SiteSpec) {
@@ -54,12 +61,8 @@ func writeApacheSiteTLS(b *strings.Builder, s SiteSpec, tlsDir string) {
 	writeApacheTLSDirectives(b, certPath, keyPath)
 }
 
-func writeApacheServingVHost(b *strings.Builder, s SiteSpec, maxBody int64, tls bool, tlsDir string) {
-	port := 80
-	if tls {
-		port = 443
-	}
-	writeApacheVHostOpen(b, port, s)
+func writeApacheServingVHost(b *strings.Builder, s SiteSpec, maxBody int64, tls bool, tlsDir string, ports listenPorts) {
+	writeApacheVHostOpen(b, apacheVHostPort(ports, tls), s)
 	if tls {
 		writeApacheSiteTLS(b, s, tlsDir)
 	}
@@ -130,12 +133,8 @@ func writeApacheProxyConfig(b *strings.Builder, port int, scheme string) {
 	b.WriteString("    RequestHeader set X-Forwarded-Host \"%{DEVSTACK_HOST}e\"\n")
 }
 
-func writeApacheStoppedVHost(b *strings.Builder, s SiteSpec, tls bool, tlsDir string) {
-	port := 80
-	if tls {
-		port = 443
-	}
-	writeApacheVHostOpen(b, port, s)
+func writeApacheStoppedVHost(b *strings.Builder, s SiteSpec, tls bool, tlsDir string, ports listenPorts) {
+	writeApacheVHostOpen(b, apacheVHostPort(ports, tls), s)
 	if tls {
 		writeApacheSiteTLS(b, s, tlsDir)
 	}
@@ -146,12 +145,8 @@ func writeApacheStoppedVHost(b *strings.Builder, s SiteSpec, tls bool, tlsDir st
 	b.WriteString("</VirtualHost>\n")
 }
 
-func writeApacheRedirectVHost(b *strings.Builder, s SiteSpec, tls bool, scheme string, tlsDir string) {
-	port := 80
-	if tls {
-		port = 443
-	}
-	writeApacheVHostOpen(b, port, s)
+func writeApacheRedirectVHost(b *strings.Builder, s SiteSpec, tls bool, scheme string, tlsDir string, ports listenPorts) {
+	writeApacheVHostOpen(b, apacheVHostPort(ports, tls), s)
 	if tls {
 		writeApacheSiteTLS(b, s, tlsDir)
 	}
@@ -161,12 +156,12 @@ func writeApacheRedirectVHost(b *strings.Builder, s SiteSpec, tls bool, scheme s
 	b.WriteString("</VirtualHost>\n")
 }
 
-func renderApacheDashboard(d DashboardSpec, maxBody int64, tlsDir string) []byte {
+func renderApacheDashboard(d DashboardSpec, maxBody int64, tlsDir string, ports listenPorts) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
 
-	fmt.Fprintf(&b, "<VirtualHost *:443>\n")
+	fmt.Fprintf(&b, "<VirtualHost *:%d>\n", ports.https)
 	fmt.Fprintf(&b, "    ServerName %s\n", d.Domain)
 	certPath, keyPath := dashboardCertificatePaths(tlsDir)
 	writeApacheTLSDirectives(&b, certPath, keyPath)
@@ -178,17 +173,14 @@ func renderApacheDashboard(d DashboardSpec, maxBody int64, tlsDir string) []byte
 	return []byte(b.String())
 }
 
-func renderApacheDefault(tlsDir string) []byte {
+func renderApacheDefault(tlsDir string, ports listenPorts) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
 	b.WriteString("# This file sorts first; Apache uses the first vhost for each port as the default.\n")
 
 	for _, tls := range []bool{false, true} {
-		port := 80
-		if tls {
-			port = 443
-		}
+		port := apacheVHostPort(ports, tls)
 		fmt.Fprintf(&b, "<VirtualHost *:%d>\n", port)
 		b.WriteString("    ServerName devstack.invalid\n")
 		if tls {

@@ -28,6 +28,8 @@ forward_https_port: 20443
 proxy_http_port: 21080
 proxy_https_port: 21443
 auto_forward: false
+vhost_http_port: 23080
+vhost_https_port: 23443
 vhost_root: /tmp/config/vhosts
 vhost_state: /tmp/config/vhost-state.json
 nginx_include_dir: /tmp/config/nginx.d
@@ -51,6 +53,8 @@ log_level: debug
 		proxyHTTPPort:    21080,
 		proxyHTTPSPort:   21443,
 		autoForward:      false,
+		vhostHTTPPort:    23080,
+		vhostHTTPSPort:   23443,
 		vhostRoot:        "/tmp/config/vhosts",
 		vhostState:       "/tmp/config/vhost-state.json",
 		nginxIncludeDir:  "/tmp/config/nginx.d",
@@ -92,6 +96,8 @@ log_level: warn
 		"--socket", "/tmp/flag/helper.sock",
 		"--allow-uid", "77",
 		"--proxy-http", "22080",
+		"--vhost-http-port", "24080",
+		"--vhost-https-port", "24443",
 		"--vhost-root", "/tmp/flag/vhosts",
 		"--vhost-state", "/tmp/flag/vhost-state.json",
 		"--nginx-include-dir", "/tmp/flag/nginx.d",
@@ -110,6 +116,9 @@ log_level: warn
 	}
 	if opts.proxyHTTPPort != 22080 {
 		t.Fatalf("proxyHTTPPort = %d", opts.proxyHTTPPort)
+	}
+	if opts.vhostHTTPPort != 24080 || opts.vhostHTTPSPort != 24443 {
+		t.Fatalf("vhost ports = %d, %d", opts.vhostHTTPPort, opts.vhostHTTPSPort)
 	}
 	if opts.vhostRoot != "/tmp/flag/vhosts" || opts.vhostState != "/tmp/flag/vhost-state.json" {
 		t.Fatalf("vhost paths = %q, %q", opts.vhostRoot, opts.vhostState)
@@ -143,6 +152,9 @@ func TestParseOptionsEmptyConfigKeepsDefaults(t *testing.T) {
 	}
 	if !opts.autoForward {
 		t.Fatal("autoForward = false, want true by default")
+	}
+	if opts.vhostHTTPPort != 80 || opts.vhostHTTPSPort != 443 {
+		t.Fatalf("vhost port defaults = %d, %d", opts.vhostHTTPPort, opts.vhostHTTPSPort)
 	}
 	if opts.vhostRoot != defaultVhostRoot || opts.vhostState != defaultVhostState {
 		t.Fatalf("vhost defaults = %q, %q", opts.vhostRoot, opts.vhostState)

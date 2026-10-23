@@ -706,6 +706,146 @@ func TestRenderCustomTLSDir(t *testing.T) {
 	}
 }
 
+func TestRenderHighListenPorts(t *testing.T) {
+	for _, server := range []Server{ServerNginx, ServerApache} {
+		t.Run(string(server), func(t *testing.T) {
+			set := testSet(server, 0)
+			set.HTTPListenPort = 18080
+			set.HTTPSListenPort = 18443
+
+			files, err := Render(set)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+
+			site := files["blog-1a2b3c4d.conf"]
+			dashboard := files["_devstack.test.conf"]
+			notFound := files["_default.conf"]
+			if len(site) == 0 || len(dashboard) == 0 || len(notFound) == 0 {
+				t.Fatalf("rendered set is missing a config")
+			}
+
+			assertContains := func(name string, data []byte, want string) {
+				t.Helper()
+				if !bytes.Contains(data, []byte(want)) {
+					t.Errorf("%s is missing %q:\n%s", name, want, data)
+				}
+			}
+			assertNotContains := func(name string, data []byte, unwanted string) {
+				t.Helper()
+				if bytes.Contains(data, []byte(unwanted)) {
+					t.Errorf("%s still contains %q:\n%s", name, unwanted, data)
+				}
+			}
+
+			switch server {
+			case ServerNginx:
+				assertContains("site", site, "listen 18080;")
+				assertContains("site", site, "listen 18443 ssl http2;")
+				assertContains("dashboard", dashboard, "listen 18443 ssl http2;")
+				assertContains("default", notFound, "listen 18080 default_server;")
+				assertContains("default", notFound, "listen 18443 ssl http2 default_server;")
+				assertNotContains("site", site, "listen 80;")
+				assertNotContains("site", site, "listen 443")
+				assertNotContains("dashboard", dashboard, "listen 443")
+				assertNotContains("default", notFound, "listen 80 ")
+				assertNotContains("default", notFound, "listen 443")
+			case ServerApache:
+				assertContains("site", site, "<VirtualHost *:18080>")
+				assertContains("site", site, "<VirtualHost *:18443>")
+				assertContains("dashboard", dashboard, "<VirtualHost *:18443>")
+				assertContains("default", notFound, "<VirtualHost *:18080>")
+				assertContains("default", notFound, "<VirtualHost *:18443>")
+				assertNotContains("site", site, "<VirtualHost *:80>")
+				assertNotContains("site", site, "<VirtualHost *:443>")
+				assertNotContains("dashboard", dashboard, "<VirtualHost *:443>")
+				assertNotContains("default", notFound, "<VirtualHost *:80>")
+				assertNotContains("default", notFound, "<VirtualHost *:443>")
+			}
+		})
+	}
+}
+
+func TestRenderHighListenPortsStoppedAndRedirect(t *testing.T) {
+	for _, server := range []Server{ServerNginx, ServerApache} {
+		t.Run(string(server), func(t *testing.T) {
+			stopped := staticSite()
+			stopped.ID = "stop"
+			stopped.Name = "stopped"
+			stopped.Domain = "stopped.test"
+			stopped.DesiredState = model.DesiredStopped
+
+			redirect := staticSite()
+			redirect.ID = "plain"
+			redirect.Name = "plain"
+			redirect.Domain = "plain.test"
+			redirect.TLS = false
+			redirect.CertPEM = nil
+			redirect.KeyPEM = nil
+
+			set := testSet(server, 0)
+			set.Sites = []SiteSpec{stopped, redirect}
+			set.HTTPListenPort = 18080
+			set.HTTPSListenPort = 18443
+
+			files, err := Render(set)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+
+			for name, data := range map[string][]byte{
+				"stopped-stop.conf": files["stopped-stop.conf"],
+				"plain-plain.conf":  files["plain-plain.conf"],
+			} {
+				if len(data) == 0 {
+					t.Fatalf("%s was not rendered", name)
+				}
+				if !bytes.Contains(data, []byte("18080")) || !bytes.Contains(data, []byte("18443")) {
+					t.Errorf("%s does not use both high ports:\n%s", name, data)
+				}
+				if bytes.Contains(data, []byte("listen 80;")) ||
+					bytes.Contains(data, []byte("listen 443")) ||
+					bytes.Contains(data, []byte("<VirtualHost *:80>")) ||
+					bytes.Contains(data, []byte("<VirtualHost *:443>")) {
+					t.Errorf("%s still uses production ports:\n%s", name, data)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderRejectsInvalidListenPorts(t *testing.T) {
+	tests := []struct {
+		name      string
+		httpPort  int
+		httpsPort int
+		want      string
+	}{
+		{name: "negative http", httpPort: -1, want: "between 1 and 65535"},
+		{name: "negative https", httpsPort: -1, want: "between 1 and 65535"},
+		{name: "http too high", httpPort: 65536, want: "between 1 and 65535"},
+		{name: "https too high", httpsPort: 65536, want: "between 1 and 65535"},
+		{name: "same ports", httpPort: 8443, httpsPort: 8443, want: "differ"},
+		{name: "http default collides with https", httpPort: 443, want: "differ"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, server := range []Server{ServerNginx, ServerApache} {
+				set := testSet(server, 0)
+				set.HTTPListenPort = tc.httpPort
+				set.HTTPSListenPort = tc.httpsPort
+				_, err := Render(set)
+				if err == nil {
+					t.Fatalf("%s: Render accepted ports %d/%d", server, tc.httpPort, tc.httpsPort)
+				}
+				if !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("%s: error %q does not contain %q", server, err, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestRenderRejectsInvalidTLSDir(t *testing.T) {
 	for _, tc := range []struct {
 		name string

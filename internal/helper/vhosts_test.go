@@ -314,6 +314,110 @@ func TestSyncCustomTLSDir(t *testing.T) {
 	}
 }
 
+func TestSyncRendersHighListenPorts(t *testing.T) {
+	for _, mode := range []string{vhostModeNginx, vhostModeApache} {
+		t.Run(mode, func(t *testing.T) {
+			env := newVhostTestEnv(t)
+			if mode == vhostModeApache {
+				env.runner.fn = apacheRunner(t, true)
+			}
+			env.manager.HTTPListenPort = 18080
+			env.manager.HTTPSListenPort = 18443
+
+			if _, err := env.manager.Sync(context.Background(), env.request(mode)); err != nil {
+				t.Fatalf("Sync: %v", err)
+			}
+
+			release := env.currentTarget(mode)
+			for file, wants := range map[string][]string{
+				"blog-s-1.conf": {
+					"18080",
+					"18443",
+				},
+				"_devstack.test.conf": {"18443"},
+				"_default.conf": {
+					"18080",
+					"18443",
+				},
+			} {
+				data, err := os.ReadFile(filepath.Join(release, file))
+				if err != nil {
+					t.Fatalf("read %s: %v", file, err)
+				}
+				for _, want := range wants {
+					if !bytes.Contains(data, []byte(want)) {
+						t.Errorf("%s does not use listen port %s:\n%s", file, want, data)
+					}
+				}
+				for _, unwanted := range []string{"listen 80;", "listen 443", "<VirtualHost *:80>", "<VirtualHost *:443>"} {
+					if bytes.Contains(data, []byte(unwanted)) {
+						t.Errorf("%s still uses a production port %q:\n%s", file, unwanted, data)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestServerWiresVhostListenPorts(t *testing.T) {
+	parent := t.TempDir()
+	srv, err := NewServer(Config{
+		SocketPath:       filepath.Join(parent, "run", "helper.sock"),
+		AllowUID:         os.Getuid(),
+		VhostRoot:        parent,
+		VhostHTTPPort:    18080,
+		VhostHTTPSPort:   18443,
+		ForwardHTTPPort:  28080,
+		ForwardHTTPSPort: 28443,
+		ProxyHTTPPort:    29080,
+		ProxyHTTPSPort:   29443,
+		Logger:           vhostTestLogger,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if srv.vhosts == nil {
+		t.Fatal("vhost manager was not wired")
+	}
+	if srv.vhosts.HTTPListenPort != 18080 || srv.vhosts.HTTPSListenPort != 18443 {
+		t.Fatalf("manager ports = %d/%d, want 18080/18443",
+			srv.vhosts.HTTPListenPort, srv.vhosts.HTTPSListenPort)
+	}
+}
+
+func TestServerRejectsInvalidVhostListenPorts(t *testing.T) {
+	tests := []struct {
+		name      string
+		httpPort  int
+		httpsPort int
+	}{
+		{name: "negative", httpPort: -1, httpsPort: 443},
+		{name: "too high", httpPort: 80, httpsPort: 65536},
+		{name: "same", httpPort: 18443, httpsPort: 18443},
+		{name: "http default collides", httpPort: 443, httpsPort: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := t.TempDir()
+			_, err := NewServer(Config{
+				SocketPath:       filepath.Join(parent, "run", "helper.sock"),
+				AllowUID:         os.Getuid(),
+				VhostRoot:        parent,
+				VhostHTTPPort:    tc.httpPort,
+				VhostHTTPSPort:   tc.httpsPort,
+				ForwardHTTPPort:  28080,
+				ForwardHTTPSPort: 28443,
+				ProxyHTTPPort:    29080,
+				ProxyHTTPSPort:   29443,
+				Logger:           vhostTestLogger,
+			})
+			if err == nil {
+				t.Fatalf("NewServer accepted vhost ports %d/%d", tc.httpPort, tc.httpsPort)
+			}
+		})
+	}
+}
+
 func TestSyncFixesLooseKeyMode(t *testing.T) {
 	env := newVhostTestEnv(t)
 	tlsDir := filepath.Join(env.root, "tls")

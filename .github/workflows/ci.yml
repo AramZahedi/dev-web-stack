@@ -42,9 +42,11 @@ jobs:
         working-directory: ui
         run: npm run test:e2e
 
-      # nginx, Apache, and certutil are not used by the Plan 1 E2E yet. They are
-      # installed here so later external-vhost and browser-trust tests run on the
-      # same Ubuntu 24.04 image. Services are stopped: devstack owns its ports.
+      # nginx is used by the external-vhost E2E: the script runs a real nginx
+      # from a temporary prefix on high ports and wraps reloads in ${TMP}/bin.
+      # Apache and certutil are installed for later external-vhost and
+      # browser-trust coverage. Services are stopped and disabled so the test
+      # never touches a system server or binds 80/443.
       - name: Install Linux E2E tools
         run: |
           sudo apt-get update
@@ -85,7 +87,9 @@ jobs:
           ./install.sh --dry-run
 
       # The script uses temporary HOME/state/hosts/trust paths and high ports.
-      # It never binds 80/443 or modifies the real trust stores, so no sudo is
-      # needed for the E2E flow.
+      # When nginx is installed and port 7070 is free it also exercises a real
+      # builtin -> nginx -> builtin switch; otherwise those steps skip with a
+      # message. It never binds 80/443 or modifies the real trust stores, so no
+      # sudo is needed for the E2E flow.
       - name: Linux installer and daemon E2E
         run: E2E_SKIP_BUILD=1 bash test/e2e/linux.sh

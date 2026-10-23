@@ -72,6 +72,11 @@ type VhostManager struct {
 	// TLSDir is the directory receiving <owner>.crt and <owner>.key files. It
 	// defaults to <root>/tls when empty.
 	TLSDir string
+	// HTTPListenPort and HTTPSListenPort are the listen ports rendered into
+	// vhosts. Zero selects the production defaults, 80 and 443. Only tests set
+	// high ports so a real server can run unprivileged.
+	HTTPListenPort  int
+	HTTPSListenPort int
 	// NginxIncludeDir and ApacheIncludeDir override the auto-detected include
 	// directories. Explicit values skip main-config verification.
 	NginxIncludeDir  string
@@ -661,11 +666,13 @@ func (m *VhostManager) syncLocked(ctx context.Context, req helperproto.VHostSync
 	bridgePath := filepath.Join(includeDir, bridgeFilename)
 
 	files, err := vhost.Render(vhost.Set{
-		Server:       server,
-		Sites:        prepared.sites,
-		Dashboard:    prepared.dashboard,
-		MaxBodyBytes: req.MaxBodyBytes,
-		TLSDir:       m.tlsDir(),
+		Server:          server,
+		Sites:           prepared.sites,
+		Dashboard:       prepared.dashboard,
+		MaxBodyBytes:    req.MaxBodyBytes,
+		TLSDir:          m.tlsDir(),
+		HTTPListenPort:  m.HTTPListenPort,
+		HTTPSListenPort: m.HTTPSListenPort,
 	})
 	if err != nil {
 		return helperproto.VhostStatusResponse{}, fmt.Errorf("%w: render vhosts: %v", helperproto.ErrInvalidRequest, err)

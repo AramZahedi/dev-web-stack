@@ -70,6 +70,18 @@ type Set struct {
 	// referenced by the rendered configs. An empty value uses the production
 	// default /etc/devstack/tls.
 	TLSDir string
+	// HTTPListenPort and HTTPSListenPort are the listen ports used in the
+	// rendered configs. Zero selects the production defaults, 80 and 443.
+	// They exist so tests can run a real server unprivileged on high ports;
+	// production always uses 80/443.
+	HTTPListenPort  int
+	HTTPSListenPort int
+}
+
+// listenPorts is the resolved pair of ports used while rendering one set.
+type listenPorts struct {
+	http  int
+	https int
 }
 
 // ErrPHPUnsupported reports that a PHP vhost was requested before Plan 2 ships
@@ -83,11 +95,41 @@ const (
 	defaultTLSDir   = "/etc/devstack/tls"
 	dashboardDomain = "devstack.test"
 
+	defaultHTTPListenPort  = 80
+	defaultHTTPSListenPort = 443
+
 	defaultMaxBodyBytes int64 = 1024 * 1024 * 1024
 	minNodePort               = 41000
 	maxNodePort               = 42999
 	maxSlugLen                = 63
 )
+
+// ValidateListenPorts validates a pair of vhost listen ports. A zero value
+// selects the production default for that scheme (80 or 443); everything else
+// must be a valid TCP port and the two resolved ports must differ.
+func ValidateListenPorts(httpPort, httpsPort int) error {
+	_, err := resolveListenPorts(httpPort, httpsPort)
+	return err
+}
+
+func resolveListenPorts(httpPort, httpsPort int) (listenPorts, error) {
+	if httpPort == 0 {
+		httpPort = defaultHTTPListenPort
+	}
+	if httpsPort == 0 {
+		httpsPort = defaultHTTPSListenPort
+	}
+	if httpPort < 1 || httpPort > 65535 {
+		return listenPorts{}, fmt.Errorf("vhost: HTTP listen port %d must be between 1 and 65535", httpPort)
+	}
+	if httpsPort < 1 || httpsPort > 65535 {
+		return listenPorts{}, fmt.Errorf("vhost: HTTPS listen port %d must be between 1 and 65535", httpsPort)
+	}
+	if httpPort == httpsPort {
+		return listenPorts{}, fmt.Errorf("vhost: HTTP and HTTPS listen ports must differ, both are %d", httpPort)
+	}
+	return listenPorts{http: httpPort, https: httpsPort}, nil
+}
 
 // ValidateSiteSpec validates one site using syntactic checks only. It never
 // stats, resolves symlinks, or otherwise touches the filesystem; existence,
@@ -248,6 +290,10 @@ func Render(set Set) (map[string][]byte, error) {
 	if err := validateTLSDir(tlsDir); err != nil {
 		return nil, err
 	}
+	ports, err := resolveListenPorts(set.HTTPListenPort, set.HTTPSListenPort)
+	if err != nil {
+		return nil, err
+	}
 
 	files := make(map[string][]byte, len(set.Sites)+3)
 	owners := make(map[string]string, len(set.Sites))
@@ -261,19 +307,19 @@ func Render(set Set) (map[string][]byte, error) {
 		}
 		owners[name] = site.ID
 
-		data, err := renderSite(set.Server, site, maxBody, tlsDir)
+		data, err := renderSite(set.Server, site, maxBody, tlsDir, ports)
 		if err != nil {
 			return nil, err
 		}
 		files[name] = data
 	}
 
-	dashboard, err := renderDashboard(set.Server, set.Dashboard, maxBody, tlsDir)
+	dashboard, err := renderDashboard(set.Server, set.Dashboard, maxBody, tlsDir, ports)
 	if err != nil {
 		return nil, err
 	}
 	files["_devstack.test.conf"] = dashboard
-	files["_default.conf"] = renderDefault(set.Server, tlsDir)
+	files["_default.conf"] = renderDefault(set.Server, tlsDir, ports)
 	files["_maintenance.html"] = maintenanceFile()
 	return files, nil
 }
@@ -287,7 +333,10 @@ func RenderSite(server Server, s SiteSpec) ([]byte, error) {
 	if err := ValidateSiteSpec(s); err != nil {
 		return nil, err
 	}
-	return renderSite(server, s, defaultMaxBodyBytes, defaultTLSDir)
+	return renderSite(server, s, defaultMaxBodyBytes, defaultTLSDir, listenPorts{
+		http:  defaultHTTPListenPort,
+		https: defaultHTTPSListenPort,
+	})
 }
 
 func validateServer(server Server) error {
@@ -299,34 +348,34 @@ func validateServer(server Server) error {
 	}
 }
 
-func renderSite(server Server, s SiteSpec, maxBody int64, tlsDir string) ([]byte, error) {
+func renderSite(server Server, s SiteSpec, maxBody int64, tlsDir string, ports listenPorts) ([]byte, error) {
 	switch server {
 	case ServerNginx:
-		return renderNginxSite(s, maxBody, tlsDir), nil
+		return renderNginxSite(s, maxBody, tlsDir, ports), nil
 	case ServerApache:
-		return renderApacheSite(s, maxBody, tlsDir), nil
+		return renderApacheSite(s, maxBody, tlsDir, ports), nil
 	default:
 		return nil, fmt.Errorf("vhost: unsupported server %q", server)
 	}
 }
 
-func renderDashboard(server Server, d DashboardSpec, maxBody int64, tlsDir string) ([]byte, error) {
+func renderDashboard(server Server, d DashboardSpec, maxBody int64, tlsDir string, ports listenPorts) ([]byte, error) {
 	switch server {
 	case ServerNginx:
-		return renderNginxDashboard(d, maxBody, tlsDir), nil
+		return renderNginxDashboard(d, maxBody, tlsDir, ports), nil
 	case ServerApache:
-		return renderApacheDashboard(d, maxBody, tlsDir), nil
+		return renderApacheDashboard(d, maxBody, tlsDir, ports), nil
 	default:
 		return nil, fmt.Errorf("vhost: unsupported server %q", server)
 	}
 }
 
-func renderDefault(server Server, tlsDir string) []byte {
+func renderDefault(server Server, tlsDir string, ports listenPorts) []byte {
 	switch server {
 	case ServerNginx:
-		return renderNginxDefault(tlsDir)
+		return renderNginxDefault(tlsDir, ports)
 	case ServerApache:
-		return renderApacheDefault(tlsDir)
+		return renderApacheDefault(tlsDir, ports)
 	default:
 		return nil
 	}

@@ -19,6 +19,8 @@ func TestParseOptionsFlags(t *testing.T) {
 		"--https-port", "8444",
 		"--proxy-http", "9080",
 		"--proxy-https", "9443",
+		"--vhost-http-port", "10080",
+		"--vhost-https-port", "10443",
 		"--vhost-root", "/tmp/devstack",
 		"--vhost-state", "/tmp/vhosts.json",
 		"--nginx-include-dir", "/tmp/nginx.d",
@@ -37,6 +39,8 @@ func TestParseOptionsFlags(t *testing.T) {
 		opts.httpsPort != 8444 ||
 		opts.proxyHTTPPort != 9080 ||
 		opts.proxyHTTPSPort != 9443 ||
+		opts.vhostHTTPPort != 10080 ||
+		opts.vhostHTTPSPort != 10443 ||
 		opts.vhostRoot != "/tmp/devstack" ||
 		opts.vhostState != "/tmp/vhosts.json" ||
 		opts.nginxIncludeDir != "/tmp/nginx.d" ||
@@ -71,6 +75,9 @@ func TestParseOptionsDefaults(t *testing.T) {
 	}
 	if opts.httpPort != 80 || opts.httpsPort != 443 || opts.proxyHTTPPort != 8080 || opts.proxyHTTPSPort != 8443 {
 		t.Fatalf("ports = %+v", opts)
+	}
+	if opts.vhostHTTPPort != 80 || opts.vhostHTTPSPort != 443 {
+		t.Fatalf("vhost ports = %d, %d", opts.vhostHTTPPort, opts.vhostHTTPSPort)
 	}
 	if opts.vhostRoot != defaultVhostRoot || opts.vhostState != defaultVhostState {
 		t.Fatalf("vhost defaults = %q, %q", opts.vhostRoot, opts.vhostState)

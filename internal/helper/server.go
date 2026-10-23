@@ -24,6 +24,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/forwarder"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/hosts"
+	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
 
 const maxRequestBody = 8 << 20
@@ -95,6 +96,12 @@ type Config struct {
 	// include directories. Empty values auto-detect.
 	NginxIncludeDir  string
 	ApacheIncludeDir string
+	// VhostHTTPPort and VhostHTTPSPort are the listen ports rendered into
+	// helper-managed nginx/Apache vhosts. Zero selects the production
+	// defaults, 80 and 443. Tests use high ports so a real server can run
+	// without root.
+	VhostHTTPPort  int
+	VhostHTTPSPort int
 	// Logger receives server diagnostics. A nil logger uses slog.Default.
 	Logger *slog.Logger
 	// Service contains the privileged operations exposed by the helper. When
@@ -169,6 +176,9 @@ func NewServer(cfg Config) (*Server, error) {
 		s.authority = authority
 	}
 	if cfg.VhostRoot != "" {
+		if err := vhost.ValidateListenPorts(cfg.VhostHTTPPort, cfg.VhostHTTPSPort); err != nil {
+			return nil, fmt.Errorf("helper: %w", err)
+		}
 		statePath := cfg.VhostStatePath
 		if statePath == "" {
 			statePath = filepath.Join(cfg.VhostRoot, "vhosts.json")
@@ -177,6 +187,8 @@ func NewServer(cfg Config) (*Server, error) {
 		manager.TLSDir = filepath.Join(cfg.VhostRoot, "tls")
 		manager.NginxIncludeDir = cfg.NginxIncludeDir
 		manager.ApacheIncludeDir = cfg.ApacheIncludeDir
+		manager.HTTPListenPort = cfg.VhostHTTPPort
+		manager.HTTPSListenPort = cfg.VhostHTTPSPort
 		manager.Forwarders = func(ctx context.Context, enable bool) error {
 			return s.setForwarders(ctx, helperproto.ForwardersRequest{Enable: enable})
 		}

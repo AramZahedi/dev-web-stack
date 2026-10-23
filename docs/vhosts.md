@@ -294,6 +294,33 @@ before stopping the forwarders. It does not remove nginx or Apache packages,
 their main configuration, or project files. To return to the built-in proxy
 before uninstalling, run `devstack vhost use builtin --yes` first.
 
+## Testing external mode
+
+The Linux E2E script (`test/e2e/linux.sh`) runs the full builtin flow first,
+then exercises a real `builtin → nginx → builtin` switch when nginx is installed
+and the dashboard port is free. It never uses root, a system service, or a
+system configuration file:
+
+- nginx runs from a temporary prefix on high HTTP/HTTPS ports;
+- the helper is pointed at temporary vhost, state, bridge, and TLS trees;
+- test-only `nginx` and `systemctl` wrappers in the temporary `bin` directory
+  add the prefix/config flags and translate `systemctl reload nginx` into
+  `nginx -s reload`;
+- the static site is fetched through the nginx vhost with `--resolve`,
+  `--noproxy '*'`, and the daemon CA, then again through the builtin forwarder;
+- when an installed Node runtime exists, a Node site is served through the same
+  nginx vhost; otherwise that check is skipped with a message.
+
+The dashboard vhost always targets `127.0.0.1:7070`, so external mode requires
+`ui_port: 7070`. If 7070 is already in use, the script runs the builtin flow on
+a high UI port and skips the external steps with an explicit message.
+
+The high listen ports used by the test are a test seam, not a production
+option: `vhost_http_port`/`vhost_https_port` (helper flags
+`--vhost-http-port`/`--vhost-https-port`) default to 80/443 and production
+always renders those ports. Do not change them on a real installation unless
+you are deliberately running the server unprivileged for a test.
+
 ## Limitations
 
 - PHP vhosts and FastCGI wiring are Plan 2 work. Plan 1 serves static and Node

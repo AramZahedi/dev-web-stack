@@ -2,12 +2,13 @@ package vhost
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
-func renderNginxSite(s SiteSpec, maxBody int64, tlsDir string) []byte {
+func renderNginxSite(s SiteSpec, maxBody int64, tlsDir string, ports listenPorts) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
@@ -15,23 +16,30 @@ func renderNginxSite(s SiteSpec, maxBody int64, tlsDir string) []byte {
 	names := siteServerNames(s)
 	switch {
 	case s.DesiredState == model.DesiredStopped:
-		writeNginxStoppedServer(&b, s, names, false, tlsDir)
+		writeNginxStoppedServer(&b, s, names, false, tlsDir, ports)
 		b.WriteString("\n")
-		writeNginxStoppedServer(&b, s, names, true, tlsDir)
+		writeNginxStoppedServer(&b, s, names, true, tlsDir, ports)
 	case s.TLS && s.ForceHTTPS:
-		writeNginxRedirectServer(&b, s, names, false, "https", tlsDir)
+		writeNginxRedirectServer(&b, s, names, false, "https", tlsDir, ports)
 		b.WriteString("\n")
-		writeNginxServingServer(&b, s, names, maxBody, true, tlsDir)
+		writeNginxServingServer(&b, s, names, maxBody, true, tlsDir, ports)
 	case s.TLS:
-		writeNginxServingServer(&b, s, names, maxBody, false, tlsDir)
+		writeNginxServingServer(&b, s, names, maxBody, false, tlsDir, ports)
 		b.WriteString("\n")
-		writeNginxServingServer(&b, s, names, maxBody, true, tlsDir)
+		writeNginxServingServer(&b, s, names, maxBody, true, tlsDir, ports)
 	default:
-		writeNginxServingServer(&b, s, names, maxBody, false, tlsDir)
+		writeNginxServingServer(&b, s, names, maxBody, false, tlsDir, ports)
 		b.WriteString("\n")
-		writeNginxRedirectServer(&b, s, names, true, "http", tlsDir)
+		writeNginxRedirectServer(&b, s, names, true, "http", tlsDir, ports)
 	}
 	return []byte(b.String())
+}
+
+func nginxListenValue(port int, tls bool) string {
+	if tls {
+		return strconv.Itoa(port) + " ssl http2"
+	}
+	return strconv.Itoa(port)
 }
 
 func writeNginxServerOpen(b *strings.Builder, listen, names string) {
@@ -54,12 +62,12 @@ func writeNginxDashboardTLS(b *strings.Builder, tlsDir string) {
 	b.WriteString("    ssl_protocols TLSv1.2 TLSv1.3;\n")
 }
 
-func writeNginxServingServer(b *strings.Builder, s SiteSpec, names string, maxBody int64, tls bool, tlsDir string) {
-	listen := "80"
+func writeNginxServingServer(b *strings.Builder, s SiteSpec, names string, maxBody int64, tls bool, tlsDir string, ports listenPorts) {
+	port := ports.http
 	if tls {
-		listen = "443 ssl http2"
+		port = ports.https
 	}
-	writeNginxServerOpen(b, listen, names)
+	writeNginxServerOpen(b, nginxListenValue(port, tls), names)
 	if tls {
 		writeNginxSiteTLS(b, s, tlsDir)
 	}
@@ -133,12 +141,12 @@ func writeNginxDenyLocations(b *strings.Builder) {
 	b.WriteString("    }\n")
 }
 
-func writeNginxStoppedServer(b *strings.Builder, s SiteSpec, names string, tls bool, tlsDir string) {
-	listen := "80"
+func writeNginxStoppedServer(b *strings.Builder, s SiteSpec, names string, tls bool, tlsDir string, ports listenPorts) {
+	port := ports.http
 	if tls {
-		listen = "443 ssl http2"
+		port = ports.https
 	}
-	writeNginxServerOpen(b, listen, names)
+	writeNginxServerOpen(b, nginxListenValue(port, tls), names)
 	if tls {
 		writeNginxSiteTLS(b, s, tlsDir)
 	}
@@ -148,12 +156,12 @@ func writeNginxStoppedServer(b *strings.Builder, s SiteSpec, names string, tls b
 	b.WriteString("}\n")
 }
 
-func writeNginxRedirectServer(b *strings.Builder, s SiteSpec, names string, tls bool, scheme string, tlsDir string) {
-	listen := "80"
+func writeNginxRedirectServer(b *strings.Builder, s SiteSpec, names string, tls bool, scheme string, tlsDir string, ports listenPorts) {
+	port := ports.http
 	if tls {
-		listen = "443 ssl http2"
+		port = ports.https
 	}
-	writeNginxServerOpen(b, listen, names)
+	writeNginxServerOpen(b, nginxListenValue(port, tls), names)
 	if tls {
 		writeNginxSiteTLS(b, s, tlsDir)
 	}
@@ -162,12 +170,12 @@ func writeNginxRedirectServer(b *strings.Builder, s SiteSpec, names string, tls 
 	b.WriteString("}\n")
 }
 
-func renderNginxDashboard(d DashboardSpec, maxBody int64, tlsDir string) []byte {
+func renderNginxDashboard(d DashboardSpec, maxBody int64, tlsDir string, ports listenPorts) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
 
-	writeNginxServerOpen(&b, "443 ssl http2", d.Domain)
+	writeNginxServerOpen(&b, nginxListenValue(ports.https, true), d.Domain)
 	writeNginxDashboardTLS(&b, tlsDir)
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "    client_max_body_size %d;\n", maxBody)
@@ -177,17 +185,17 @@ func renderNginxDashboard(d DashboardSpec, maxBody int64, tlsDir string) []byte 
 	return []byte(b.String())
 }
 
-func renderNginxDefault(tlsDir string) []byte {
+func renderNginxDefault(tlsDir string, ports listenPorts) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
 
 	for _, tls := range []bool{false, true} {
 		if tls {
-			writeNginxServerOpen(&b, "443 ssl http2 default_server", "_")
+			writeNginxServerOpen(&b, nginxListenValue(ports.https, true)+" default_server", "_")
 			writeNginxDashboardTLS(&b, tlsDir)
 		} else {
-			writeNginxServerOpen(&b, "80 default_server", "_")
+			writeNginxServerOpen(&b, nginxListenValue(ports.http, false)+" default_server", "_")
 		}
 		b.WriteString("\n")
 		b.WriteString("    error_page 404 =404 /_devstack/404.html;\n")

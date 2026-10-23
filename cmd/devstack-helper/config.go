@@ -32,6 +32,8 @@ type fileConfig struct {
 
 	VhostRoot        *string `yaml:"vhost_root"`
 	VhostState       *string `yaml:"vhost_state"`
+	VhostHTTPPort    *int    `yaml:"vhost_http_port"`
+	VhostHTTPSPort   *int    `yaml:"vhost_https_port"`
 	NginxIncludeDir  *string `yaml:"nginx_include_dir"`
 	ApacheIncludeDir *string `yaml:"apache_include_dir"`
 
@@ -144,6 +146,12 @@ func (cfg fileConfig) apply(opts *options) {
 	}
 	if cfg.VhostState != nil {
 		opts.vhostState = *cfg.VhostState
+	}
+	if cfg.VhostHTTPPort != nil {
+		opts.vhostHTTPPort = *cfg.VhostHTTPPort
+	}
+	if cfg.VhostHTTPSPort != nil {
+		opts.vhostHTTPSPort = *cfg.VhostHTTPSPort
 	}
 	if cfg.NginxIncludeDir != nil {
 		opts.nginxIncludeDir = *cfg.NginxIncludeDir

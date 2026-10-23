@@ -31,6 +31,12 @@ auto_forward: true
 vhost_root: /etc/devstack
 vhost_state: /var/lib/devstack-helper/vhosts.json
 
+# Listen ports rendered into the external server's vhosts. Production uses
+# 80/443. High ports exist for unprivileged tests and are not a production
+# configuration option.
+vhost_http_port: 80
+vhost_https_port: 443
+
 # Bridge include directories. Empty auto-detects and verifies that the main
 # server config actually loads the directory.
 nginx_include_dir: ""

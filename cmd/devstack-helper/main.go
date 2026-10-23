@@ -30,6 +30,9 @@ const (
 	defaultHTTPSPort      = 443
 	defaultProxyHTTPPort  = 8080
 	defaultProxyHTTPSPort = 8443
+
+	defaultVhostHTTPPort  = 80
+	defaultVhostHTTPSPort = 443
 )
 
 // options holds the parsed helper configuration. Values start at the built-in
@@ -49,6 +52,8 @@ type options struct {
 	autoForward      bool
 	vhostRoot        string
 	vhostState       string
+	vhostHTTPPort    int
+	vhostHTTPSPort   int
 	nginxIncludeDir  string
 	apacheIncludeDir string
 	logLevel         string
@@ -74,6 +79,8 @@ func parseOptions(args []string) (options, error) {
 		autoForward:    true,
 		vhostRoot:      defaultVhostRoot,
 		vhostState:     defaultVhostState,
+		vhostHTTPPort:  defaultVhostHTTPPort,
+		vhostHTTPSPort: defaultVhostHTTPSPort,
 		logLevel:       "info",
 	}
 
@@ -105,6 +112,8 @@ func parseOptions(args []string) (options, error) {
 	flags.BoolVar(&opts.autoForward, "auto-forward", opts.autoForward, "bind the privileged forwarders at startup")
 	flags.StringVar(&opts.vhostRoot, "vhost-root", opts.vhostRoot, "parent directory owning the vhosts and TLS trees")
 	flags.StringVar(&opts.vhostState, "vhost-state", opts.vhostState, "helper vhost state file")
+	flags.IntVar(&opts.vhostHTTPPort, "vhost-http-port", opts.vhostHTTPPort, "helper-managed vhost HTTP listen port")
+	flags.IntVar(&opts.vhostHTTPSPort, "vhost-https-port", opts.vhostHTTPSPort, "helper-managed vhost HTTPS listen port")
 	flags.StringVar(&opts.nginxIncludeDir, "nginx-include-dir", opts.nginxIncludeDir, "nginx bridge include directory (empty detects)")
 	flags.StringVar(&opts.apacheIncludeDir, "apache-include-dir", opts.apacheIncludeDir, "Apache bridge include directory (empty detects)")
 	flags.StringVar(&opts.logLevel, "log-level", opts.logLevel, "debug, info, warn, or error")
@@ -148,6 +157,8 @@ func newHelperServer(opts options, logger *slog.Logger) (*helper.Server, error) 
 		AutoForward:      opts.autoForward,
 		VhostRoot:        opts.vhostRoot,
 		VhostStatePath:   opts.vhostState,
+		VhostHTTPPort:    opts.vhostHTTPPort,
+		VhostHTTPSPort:   opts.vhostHTTPSPort,
 		NginxIncludeDir:  opts.nginxIncludeDir,
 		ApacheIncludeDir: opts.apacheIncludeDir,
 		Logger:           logger,
