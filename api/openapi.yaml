@@ -38,6 +38,7 @@ tags:
   - name: doctor
   - name: filesystem
   - name: settings
+  - name: vhosts
   - name: dashboard
 paths:
   /api/v1/health:
@@ -578,6 +579,148 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/vhosts/status:
+    get:
+      tags: [vhosts]
+      summary: Report the helper-managed external serving state
+      description: |
+        Reports the helper's persisted mode, server version, bridge state,
+        config-test result, current release, and last sync. Read-only requests
+        do not require a session.
+      operationId: getVhostStatus
+      security: []
+      responses:
+        "200":
+          description: Current vhost status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VhostStatus"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/vhosts/mode:
+    post:
+      tags: [vhosts]
+      summary: Switch the serving mode
+      description: |
+        Switches between builtin, nginx, and apache. The daemon stops or starts
+        the built-in proxy and static backends as required and persists the
+        mode only after the helper succeeds. Returns the refreshed status.
+      operationId: setVhostMode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VhostModeRequest"
+      responses:
+        "200":
+          description: The refreshed vhost status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VhostStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The mode is unavailable, a sync is busy, or the bridge include is missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The rendered configuration failed the server config test.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/vhosts/sync:
+    post:
+      tags: [vhosts]
+      summary: Reinstall the complete vhost set
+      operationId: syncVhosts
+      responses:
+        "200":
+          description: The refreshed vhost status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VhostStatus"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The mode is unavailable, a sync is busy, or the bridge include is missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The rendered configuration failed the server config test.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The vhost sync failed and the previous release was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The server reload failed and the previous release was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/vhosts/preview:
+    get:
+      tags: [vhosts]
+      summary: Render one site vhost without installing it
+      description: |
+        Renders the site's nginx or Apache configuration as plain text. The
+        preview never writes vhost files and never calls the helper.
+      operationId: previewVhost
+      security: []
+      parameters:
+        - name: site
+          in: query
+          required: true
+          description: Site id or name.
+          schema:
+            type: string
+        - name: server
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [nginx, apache]
+      responses:
+        "200":
+          description: The rendered site vhost.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VhostPreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /api/v1/fs:
     get:
       tags: [filesystem]
@@ -757,6 +900,12 @@ components:
             $ref: "#/components/schemas/Error"
     HelperUnavailable:
       description: The privileged helper is unreachable or rejected the request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: The requested service is not configured in this daemon.
       content:
         application/json:
           schema:
@@ -1099,6 +1248,7 @@ components:
         - https_port
         - ui_port
         - auto_start_sites
+        - serving_mode
         - graceful_stop_seconds
         - max_request_body_mb
         - log_max_mb
@@ -1119,6 +1269,10 @@ components:
           type: integer
         auto_start_sites:
           type: boolean
+        serving_mode:
+          type: string
+          enum: [builtin, nginx, apache]
+          description: Active serving mode; builtin uses the Go proxy.
         graceful_stop_seconds:
           type: integer
         max_request_body_mb:
@@ -1131,6 +1285,60 @@ components:
           type: integer
         log_keep:
           type: integer
+
+    VhostStatus:
+      type: object
+      required:
+        - mode
+        - server
+        - server_version
+        - bridge_path
+        - include_present
+        - current_release
+        - config_ok
+        - last_sync
+      properties:
+        mode:
+          type: string
+          enum: [builtin, nginx, apache]
+        server:
+          type: string
+        server_version:
+          type: string
+        bridge_path:
+          type: string
+        include_present:
+          type: boolean
+        current_release:
+          type: string
+        config_ok:
+          type: boolean
+        last_error:
+          type: string
+        last_sync:
+          type: string
+          format: date-time
+
+    VhostModeRequest:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [builtin, nginx, apache]
+
+    VhostPreview:
+      type: object
+      required: [server, site, content]
+      properties:
+        server:
+          type: string
+          enum: [nginx, apache]
+        site:
+          type: string
+        content:
+          type: string
+          description: Rendered native server configuration as plain text.
 
     LogLine:
       type: object

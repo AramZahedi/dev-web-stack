@@ -34,6 +34,9 @@ func TestDefaultValues(t *testing.T) {
 	if cfg.HTTPPort != 8080 || cfg.HTTPSPort != 8443 || cfg.UIPort != 7070 {
 		t.Fatalf("ports = %+v", cfg)
 	}
+	if cfg.ServingMode != ServingModeBuiltin {
+		t.Fatalf("ServingMode = %q", cfg.ServingMode)
+	}
 	if cfg.WSLDistro != "devstack" {
 		t.Fatalf("WSLDistro = %q", cfg.WSLDistro)
 	}
@@ -70,6 +73,9 @@ func TestLoadReadsFileAndKeepsDefaults(t *testing.T) {
 	}
 	if cfg.HTTPSPort != 8443 || cfg.UIPort != 7070 || cfg.WSLDistro != "devstack" {
 		t.Fatalf("defaults not applied: %+v", cfg)
+	}
+	if cfg.ServingMode != ServingModeBuiltin {
+		t.Fatalf("ServingMode default = %q", cfg.ServingMode)
 	}
 }
 
@@ -157,6 +163,11 @@ func TestValidatePorts(t *testing.T) {
 		{"duplicate ui and http", func(c *Config) { c.UIPort = c.HTTPPort }, false},
 		{"zero graceful stop", func(c *Config) { c.GracefulStopSeconds = 0 }, false},
 		{"negative graceful stop", func(c *Config) { c.GracefulStopSeconds = -1 }, false},
+		{"serving builtin", func(c *Config) { c.ServingMode = ServingModeBuiltin }, true},
+		{"serving nginx", func(c *Config) { c.ServingMode = ServingModeNginx }, true},
+		{"serving apache", func(c *Config) { c.ServingMode = ServingModeApache }, true},
+		{"serving empty", func(c *Config) { c.ServingMode = "" }, false},
+		{"serving unknown", func(c *Config) { c.ServingMode = "caddy" }, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -219,6 +230,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	cfg.HTTPPort = 9090
 	cfg.WSLDistro = "other"
 	cfg.LogKeep = 9
+	cfg.ServingMode = ServingModeNginx
 	if err := cfg.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -229,6 +241,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.HTTPPort != 9090 || got.WSLDistro != "other" || got.LogKeep != 9 {
 		t.Fatalf("round trip = %+v", got)
+	}
+	if got.ServingMode != ServingModeNginx {
+		t.Fatalf("serving mode round trip = %q", got.ServingMode)
 	}
 }
 

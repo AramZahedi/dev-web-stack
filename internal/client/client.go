@@ -24,6 +24,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
@@ -204,6 +205,44 @@ func (c *Client) SiteAction(ctx context.Context, ref, action string) error {
 // DeleteSite removes a site.
 func (c *Client) DeleteSite(ctx context.Context, ref string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/sites/"+url.PathEscape(ref), nil, nil)
+}
+
+// VhostStatus reports the helper-managed external serving state.
+func (c *Client) VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error) {
+	var status helperproto.VhostStatusResponse
+	err := c.doJSON(ctx, http.MethodGet, "/api/v1/vhosts/status", nil, &status)
+	return status, err
+}
+
+// SetServingMode switches the serving mode and returns the refreshed status.
+func (c *Client) SetServingMode(ctx context.Context, mode string) (helperproto.VhostStatusResponse, error) {
+	var status helperproto.VhostStatusResponse
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/vhosts/mode", map[string]string{"mode": mode}, &status)
+	return status, err
+}
+
+// SyncVhosts reinstalls the complete external vhost set and returns the
+// refreshed status.
+func (c *Client) SyncVhosts(ctx context.Context) (helperproto.VhostStatusResponse, error) {
+	var status helperproto.VhostStatusResponse
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/vhosts/sync", nil, &status)
+	return status, err
+}
+
+// PreviewVhost renders one site's nginx or Apache configuration.
+func (c *Client) PreviewVhost(ctx context.Context, ref, server string) (string, error) {
+	query := url.Values{}
+	query.Set("site", ref)
+	query.Set("server", server)
+	var response struct {
+		Server  string `json:"server"`
+		Site    string `json:"site"`
+		Content string `json:"content"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/vhosts/preview?"+query.Encode(), nil, &response); err != nil {
+		return "", err
+	}
+	return response.Content, nil
 }
 
 // Logs opens the site's log stream. follow=false requests a finite SSE

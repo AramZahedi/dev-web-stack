@@ -68,6 +68,13 @@ const (
 	codeHelperUnavailable  = "HELPER_UNAVAILABLE"
 	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
 	codeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
+
+	codeServingModeUnavailable = "SERVING_MODE_UNAVAILABLE"
+	codeVhostConfigInvalid     = "VHOST_CONFIG_INVALID"
+	codeVhostSyncFailed        = "VHOST_SYNC_FAILED"
+	codeVhostIncludeMissing    = "VHOST_INCLUDE_MISSING"
+	codeServerReloadFailed     = "SERVER_RELOAD_FAILED"
+	codeVhostSyncBusy          = "VHOST_SYNC_BUSY"
 )
 
 // SiteService is the site lifecycle surface used by the API.
@@ -105,6 +112,14 @@ type HelperClient interface {
 	TrustStatus(ctx context.Context, userHome string) ([]trust.Target, error)
 }
 
+// VhostService is the external serving surface used by the API.
+type VhostService interface {
+	VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error)
+	SetServingMode(ctx context.Context, mode string) error
+	SyncVhosts(ctx context.Context) error
+	PreviewVhost(ctx context.Context, ref, server string) (string, error)
+}
+
 // Config configures the API server. AllowedHosts is additive to the required
 // loopback hosts (127.0.0.1, localhost, devstack.test). A zero MaxBodyBytes
 // uses the API's 1024 MiB transport default (matching
@@ -116,6 +131,7 @@ type Config struct {
 	UserHome     string
 	MaxBodyBytes int64
 	AllowedHosts []string
+	Vhosts       VhostService
 	Logger       *slog.Logger
 }
 
@@ -127,6 +143,7 @@ type Server struct {
 	doctor   DoctorService
 	logs     *logs.Store
 	helper   HelperClient
+	vhosts   VhostService
 	cfg      Config
 
 	secret       [sha256.Size]byte
@@ -166,6 +183,7 @@ func NewServer(
 		doctor:            doc,
 		logs:              logStore,
 		helper:            helper,
+		vhosts:            cfg.Vhosts,
 		cfg:               cfg,
 		allowedHosts:      normalizeAllowedHosts(cfg.AllowedHosts),
 		ui:                cfg.UI,
@@ -239,6 +257,11 @@ func (s *Server) apiRoutes() []route {
 
 		{http.MethodGet, "/api/v1/fs", s.handleFS},
 		{http.MethodGet, "/api/v1/settings", s.handleSettings},
+
+		{http.MethodGet, "/api/v1/vhosts/status", s.handleVhostStatus},
+		{http.MethodPost, "/api/v1/vhosts/mode", s.handleVhostMode},
+		{http.MethodPost, "/api/v1/vhosts/sync", s.handleVhostSync},
+		{http.MethodGet, "/api/v1/vhosts/preview", s.handleVhostPreview},
 	}
 }
 
@@ -307,6 +330,7 @@ type settingsResponse struct {
 	HTTPSPort           int    `json:"https_port"`
 	UIPort              int    `json:"ui_port"`
 	AutoStartSites      bool   `json:"auto_start_sites"`
+	ServingMode         string `json:"serving_mode"`
 	GracefulStopSeconds int    `json:"graceful_stop_seconds"`
 	MaxRequestBodyMB    int    `json:"max_request_body_mb"`
 	LogMaxMB            int    `json:"log_max_mb"`
@@ -332,6 +356,7 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 		HTTPSPort:           defaults.HTTPSPort,
 		UIPort:              defaults.UIPort,
 		AutoStartSites:      defaults.AutoStartSites,
+		ServingMode:         defaults.ServingMode,
 		GracefulStopSeconds: defaults.GracefulStopSeconds,
 		MaxRequestBodyMB:    defaults.MaxRequestBodyMB,
 		LogMaxMB:            defaults.LogMaxMB,
@@ -371,6 +396,7 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 
 	readString("home", &out.Home)
 	readString("wsl_distro", &out.WSLDistro)
+	readString("serving_mode", &out.ServingMode)
 	readInt("http_port", &out.HTTPPort)
 	readInt("https_port", &out.HTTPSPort)
 	readInt("ui_port", &out.UIPort)
@@ -647,6 +673,20 @@ func classifyError(err error) (int, string, string, any) {
 	}
 	if errors.Is(err, runtimemgr.ErrNoCatalogEntry) {
 		return http.StatusConflict, codeRuntimeMissing, err.Error(), nil
+	}
+	switch {
+	case errors.Is(err, helperproto.ErrServingModeUnavailable):
+		return http.StatusConflict, codeServingModeUnavailable, err.Error(), nil
+	case errors.Is(err, helperproto.ErrVhostSyncBusy):
+		return http.StatusConflict, codeVhostSyncBusy, err.Error(), nil
+	case errors.Is(err, helperproto.ErrVhostIncludeMissing):
+		return http.StatusConflict, codeVhostIncludeMissing, err.Error(), nil
+	case errors.Is(err, helperproto.ErrVhostConfigInvalid):
+		return http.StatusUnprocessableEntity, codeVhostConfigInvalid, err.Error(), nil
+	case errors.Is(err, helperproto.ErrServerReloadFailed):
+		return http.StatusBadGateway, codeServerReloadFailed, err.Error(), nil
+	case errors.Is(err, helperproto.ErrVhostSyncFailed):
+		return http.StatusInternalServerError, codeVhostSyncFailed, err.Error(), nil
 	}
 	if errors.Is(err, helperproto.ErrUnauthorized) ||
 		errors.Is(err, helperproto.ErrProtocolMismatch) ||

@@ -1,0 +1,240 @@
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/helper"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/store"
+)
+
+// vhostTestRunner answers the fixed nginx commands the helper runs. It never
+// touches a system nginx installation.
+type vhostTestRunner struct{}
+
+func (vhostTestRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	switch name {
+	case "nginx":
+		return []byte("nginx version: nginx/1.26.0"), nil
+	case "systemctl":
+		return []byte("ok"), nil
+	}
+	return nil, fmt.Errorf("unexpected command %s %v", name, args)
+}
+
+// startVhostTestHelper runs a real helper with the vhost manager enabled, a
+// temporary release/include tree, and a fake command runner.
+func startVhostTestHelper(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	hosts := filepath.Join(dir, "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	allowHome := filepath.Join(dir, "allowed-home")
+	if err := os.MkdirAll(allowHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := helper.Config{
+		SocketPath:       filepath.Join(dir, "run", "helper.sock"),
+		HostsPath:        hosts,
+		AllowUID:         os.Getuid(),
+		AllowHome:        allowHome,
+		CADir:            filepath.Join(dir, "pki"),
+		TrustDir:         filepath.Join(dir, "trust"),
+		ForwardHTTPPort:  freePort(t),
+		ForwardHTTPSPort: freePort(t),
+		ProxyHTTPPort:    freePort(t),
+		ProxyHTTPSPort:   freePort(t),
+		VhostRoot:        filepath.Join(dir, "vhost-root"),
+		NginxIncludeDir:  filepath.Join(dir, "nginx-includes"),
+		Runner:           vhostTestRunner{},
+	}
+	srv, err := helper.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("new vhost helper: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := srv.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("start vhost helper: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = srv.Close()
+	})
+	return cfg.SocketPath
+}
+
+func setConfigServingMode(t *testing.T, home, mode string) {
+	t.Helper()
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ServingMode = mode
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// requireDefaultUIPort skips external-mode tests when the fixed dashboard port
+// is already in use. The helper only accepts a 7070 dashboard backend.
+func requireDefaultUIPort(t *testing.T) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:7070")
+	if err != nil {
+		t.Skipf("dashboard port 7070 is unavailable: %v", err)
+	}
+	_ = listener.Close()
+}
+
+func vhostStatusRequest(t *testing.T, client *http.Client) helperproto.VhostStatusResponse {
+	t.Helper()
+	resp, data := apiRequest(t, client, http.MethodGet, "/api/v1/vhosts/status", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("vhost status = %d %s", resp.StatusCode, data)
+	}
+	var status helperproto.VhostStatusResponse
+	if err := json.Unmarshal(data, &status); err != nil {
+		t.Fatal(err)
+	}
+	return status
+}
+
+func TestDaemonBuiltinStartsProxy(t *testing.T) {
+	useBuiltBinary(t)
+	home := t.TempDir()
+	opts := testOptions(t, home, startTestHelper(t))
+	run := startDaemon(t, opts)
+	defer run.stop(t)
+
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	getHealth(t, client)
+	status := vhostStatusRequest(t, client)
+	if status.Mode != "builtin" || !status.ConfigOK {
+		t.Fatalf("status = %+v", status)
+	}
+
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", opts.HTTPPort), time.Second)
+	if err != nil {
+		t.Fatalf("builtin proxy HTTP listener is not running: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestDaemonExternalSkipsProxyAndReconciles(t *testing.T) {
+	useBuiltBinary(t)
+	home := t.TempDir()
+	setConfigServingMode(t, home, config.ServingModeNginx)
+	opts := testOptions(t, home, startVhostTestHelper(t))
+	requireDefaultUIPort(t)
+	opts.UIPort = 7070
+	run := startDaemon(t, opts)
+	defer run.stop(t)
+
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	getHealth(t, client)
+	status := vhostStatusRequest(t, client)
+	if status.Mode != "nginx" || !status.ConfigOK || status.LastSync.IsZero() {
+		t.Fatalf("status = %+v", status)
+	}
+
+	for _, port := range []int{opts.HTTPPort, opts.HTTPSPort} {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			t.Fatalf("built-in proxy port %d is listening in external mode", port)
+		}
+	}
+
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "index.html"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	site := createStaticSite(t, client, "blog", project)
+	if site.HTTPPort != 0 || site.Status != model.StatusRunning {
+		t.Fatalf("external static site = %+v", site)
+	}
+
+	resp, data := apiRequest(t, client, http.MethodGet, "/api/v1/settings", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("settings = %d %s", resp.StatusCode, data)
+	}
+	var settings struct {
+		ServingMode string `json:"serving_mode"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.ServingMode != config.ServingModeNginx {
+		t.Fatalf("persisted serving_mode = %q", settings.ServingMode)
+	}
+}
+
+func TestRenewExternalSyncsVhosts(t *testing.T) {
+	useBuiltBinary(t)
+	previous := renewInterval
+	renewInterval = 100 * time.Millisecond
+	t.Cleanup(func() { renewInterval = previous })
+
+	home := t.TempDir()
+	setConfigServingMode(t, home, config.ServingModeNginx)
+	opts := testOptions(t, home, startVhostTestHelper(t))
+	requireDefaultUIPort(t)
+	opts.UIPort = 7070
+	run := startDaemon(t, opts)
+	defer run.stop(t)
+
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "index.html"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	site := createStaticSite(t, client, "blog", project)
+	before := vhostStatusRequest(t, client).LastSync
+
+	st, err := store.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	rec, err := st.GetCertBySite(context.Background(), site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.NotAfter = time.Now().Add(time.Hour).UTC()
+	if err := st.SaveCert(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		status := vhostStatusRequest(t, client)
+		if status.LastSync.After(before) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("certificate renewal did not sync vhosts; last sync %v, before %v", status.LastSync, before)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	renewed, err := st.GetCertBySite(context.Background(), site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !renewed.NotAfter.After(rec.NotAfter.Add(24 * time.Hour)) {
+		t.Fatalf("certificate was not renewed: %v", renewed.NotAfter)
+	}
+}

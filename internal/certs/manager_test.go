@@ -328,6 +328,61 @@ func parseLeafPEM(t *testing.T, data []byte) *x509.Certificate {
 	return cert
 }
 
+func TestPEMReturnsCertificateAndPrivateKey(t *testing.T) {
+	ctx := context.Background()
+	m, _ := newTestCertManager(t)
+
+	rec, err := m.Ensure(ctx, "site1", []string{"blog.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM, keyPEM, err := m.PEM(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(certPEM, readFile(t, rec.CertPath)) {
+		t.Fatal("certificate PEM does not match the issued file")
+	}
+	if !bytes.Equal(keyPEM, readFile(t, rec.KeyPath)) {
+		t.Fatal("key PEM does not match the issued file")
+	}
+	parseLeafPEM(t, certPEM)
+	block, _ := pem.Decode(keyPEM)
+	if block == nil || block.Type != "EC PRIVATE KEY" {
+		t.Fatalf("key PEM block = %v", block)
+	}
+}
+
+func TestPEMFallsBackToCanonicalPathsAndRejectsNonRegularFiles(t *testing.T) {
+	ctx := context.Background()
+	m, _ := newTestCertManager(t)
+
+	rec, err := m.Ensure(ctx, "site1", []string{"blog.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutPaths := rec
+	withoutPaths.KeyPath = ""
+	withoutPaths.CertPath = ""
+	if _, _, err := m.PEM(withoutPaths); err != nil {
+		t.Fatalf("canonical fallback: %v", err)
+	}
+
+	if err := os.Remove(rec.CertPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.PEM(rec); err == nil {
+		t.Fatal("PEM succeeded with a missing certificate file")
+	}
+
+	if err := os.Symlink(rec.KeyPath, rec.CertPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.PEM(rec); err == nil {
+		t.Fatal("PEM accepted a symlink as a certificate file")
+	}
+}
+
 func TestEnsureWritesSecureKeyAndVerifiesChain(t *testing.T) {
 	ctx := context.Background()
 	m, signer := newTestCertManager(t)

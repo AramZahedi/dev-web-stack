@@ -22,6 +22,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
@@ -60,7 +61,22 @@ type Hosts interface {
 type Certs interface {
 	Ensure(ctx context.Context, owner string, domains []string) (model.CertRecord, error)
 	Load(rec model.CertRecord) (*tls.Certificate, error)
+	PEM(rec model.CertRecord) (certPEM, keyPEM []byte, err error)
 	Delete(ctx context.Context, owner string) error
+}
+
+// Vhosts is the privileged helper's external serving boundary.
+type Vhosts interface {
+	VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error)
+	SyncVhosts(ctx context.Context, req helperproto.VHostSyncRequest) error
+	SetServingMode(ctx context.Context, mode string, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+	RemoveVhosts(ctx context.Context) error
+}
+
+// ProxyControl starts and stops the built-in HTTP/HTTPS proxy.
+type ProxyControl interface {
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
 }
 
 // Deps is the complete set of service dependencies. Now and NewID are optional
@@ -70,6 +86,8 @@ type Deps struct {
 	Backend backend.Backend
 	Helper  Hosts
 	Certs   Certs
+	Vhosts  Vhosts
+	Proxy   ProxyControl
 	Router  *proxy.Router
 	Ports   *domain.PortAllocator
 	Config  config.Config
@@ -131,11 +149,14 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		return model.Site{}, err
 	}
 
-	port, err := s.deps.Ports.Allocate(domain.PortHTTP)
-	if err != nil {
-		return model.Site{}, fmt.Errorf("sites: allocate HTTP port for %q: %w", site.Name, err)
+	var port int
+	if site.Kind == model.SiteNode || !s.externalServing() {
+		port, err = s.deps.Ports.Allocate(domain.PortHTTP)
+		if err != nil {
+			return model.Site{}, fmt.Errorf("sites: allocate HTTP port for %q: %w", site.Name, err)
+		}
+		site.HTTPPort = port
 	}
-	site.HTTPPort = port
 
 	fail := func(cause error, certIssued bool) (model.Site, error) {
 		return model.Site{}, s.rollbackCreate(ctx, site, oldHosts, certIssued, port, cause)
@@ -163,6 +184,24 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
 	}
 
+	// External static sites are served directly by nginx/Apache: no backend
+	// process and no proxy port.
+	if s.externalServing() && site.Kind == model.SiteStatic {
+		site.Status = model.StatusRunning
+		site.UpdatedAt = s.currentTime()
+		if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
+			return fail(fmt.Errorf("sites: record running state for %q: %w", site.Name, err), true)
+		}
+		if err := s.syncVhostsLocked(ctx, ""); err != nil {
+			return fail(fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err), true)
+		}
+		if err := s.rebuildRoutesLocked(ctx); err != nil {
+			return fail(fmt.Errorf("sites: publish routes for %q: %w", site.Name, err), true)
+		}
+		s.emitStatus(ctx, site, "", model.StatusRunning, "")
+		return site, nil
+	}
+
 	prepared, err := s.deps.Backend.Prepare(ctx, backendSpec(site))
 	if err != nil {
 		return fail(fmt.Errorf("sites: prepare %q: %w", site.Name, err), true)
@@ -179,6 +218,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		return fail(fmt.Errorf("sites: publish routes for %q: %w", site.Name, err), true)
+	}
+	if err := s.syncVhostsLocked(ctx, ""); err != nil {
+		return fail(fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err), true)
 	}
 
 	s.emitStatus(ctx, site, "", model.StatusRunning, "")
@@ -239,6 +281,10 @@ func (s *Service) Update(ctx context.Context, ref string, req UpdateRequest) (mo
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		cause := fmt.Errorf("sites: publish routes for %q: %w", current.Name, err)
+		return model.Site{}, s.rollbackUpdate(ctx, current, oldHosts, oldDomains, domainsChanged, cause)
+	}
+	if err := s.syncVhostsLocked(ctx, ""); err != nil {
+		cause := fmt.Errorf("sites: publish vhost for %q: %w", current.Name, err)
 		return model.Site{}, s.rollbackUpdate(ctx, current, oldHosts, oldDomains, domainsChanged, cause)
 	}
 
@@ -315,11 +361,21 @@ func (s *Service) Start(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.startLocked(ctx, site); err != nil {
+	started, err := s.startLocked(ctx, site)
+	if err != nil {
 		return err
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		return fmt.Errorf("sites: publish routes for %q: %w", site.Name, err)
+	}
+	if s.externalServing() && started.Kind != model.SiteStatic {
+		if err := s.syncVhostsLocked(ctx, ""); err != nil {
+			cause := fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err)
+			if started.DesiredState != site.DesiredState || started.Status != site.Status {
+				return errors.Join(cause, s.restoreSiteStateLocked(ctx, site, started))
+			}
+			return cause
+		}
 	}
 	return nil
 }
@@ -339,11 +395,21 @@ func (s *Service) Stop(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.stopLocked(ctx, site); err != nil {
+	stopped, err := s.stopLocked(ctx, site)
+	if err != nil {
 		return err
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		return fmt.Errorf("sites: publish routes for %q: %w", site.Name, err)
+	}
+	if s.externalServing() && stopped.Kind != model.SiteStatic {
+		if err := s.syncVhostsLocked(ctx, ""); err != nil {
+			cause := fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err)
+			if stopped.DesiredState != site.DesiredState || stopped.Status != site.Status {
+				return errors.Join(cause, s.restoreSiteStateLocked(ctx, site, stopped))
+			}
+			return cause
+		}
 	}
 	return nil
 }
@@ -363,6 +429,7 @@ func (s *Service) Restart(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
+	previous := site
 	site, err = s.stopLocked(ctx, site)
 	if err != nil {
 		return err
@@ -373,6 +440,12 @@ func (s *Service) Restart(ctx context.Context, ref string) error {
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		return fmt.Errorf("sites: publish routes for %q: %w", site.Name, err)
+	}
+	if s.externalServing() && site.Kind != model.SiteStatic {
+		if err := s.syncVhostsLocked(ctx, ""); err != nil {
+			cause := fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err)
+			return errors.Join(cause, s.restoreSiteStateLocked(ctx, previous, site))
+		}
 	}
 	return nil
 }
@@ -392,6 +465,9 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	site, err := s.resolveLocked(ctx, ref)
 	if err != nil {
 		return err
+	}
+	if s.externalServing() {
+		return s.deleteExternalLocked(ctx, site)
 	}
 	site, err = s.stopLocked(ctx, site)
 	if err != nil {
@@ -559,6 +635,10 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 // startLocked allocates a port if the row has none, prepares and starts the
 // backend, and persists the running state. The caller must hold s.mu.
 func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	if s.externalServing() && site.Kind == model.SiteStatic {
+		return s.startExternalStaticLocked(ctx, site)
+	}
+
 	var allocated int
 	if site.HTTPPort == 0 {
 		port, err := s.deps.Ports.Allocate(domain.PortHTTP)
@@ -606,6 +686,10 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 // stopLocked stops the backend and persists the stopped state. It is
 // idempotent. The caller must hold s.mu.
 func (s *Service) stopLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	if s.externalServing() && site.Kind == model.SiteStatic {
+		return s.stopExternalStaticLocked(ctx, site)
+	}
+
 	if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil {
 		return site, fmt.Errorf("sites: stop %q: %w", site.Name, err)
 	}
@@ -620,9 +704,88 @@ func (s *Service) stopLocked(ctx context.Context, site model.Site) (model.Site, 
 	return site, nil
 }
 
+// startExternalStaticLocked validates the document root, records the desired
+// running state, and syncs the vhost. There is no backend process in external
+// mode. A sync failure restores the previous row.
+func (s *Service) startExternalStaticLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	if err := staticRootError(site); err != nil {
+		return site, fmt.Errorf("sites: document root for %q: %w", site.Name, err)
+	}
+	previous := site
+	oldStatus := site.Status
+	site.DesiredState = model.DesiredRunning
+	site.Status = model.StatusRunning
+	site.UpdatedAt = s.currentTime()
+	if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
+		return previous, fmt.Errorf("sites: record running state for %q: %w", site.Name, err)
+	}
+	if err := s.syncVhostsLocked(ctx, ""); err != nil {
+		if restoreErr := s.deps.Store.UpdateSite(ctx, previous); restoreErr != nil {
+			return previous, errors.Join(err, fmt.Errorf("rollback: restore %q: %w", site.Name, restoreErr))
+		}
+		return previous, fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err)
+	}
+	s.emitStatus(ctx, site, oldStatus, model.StatusRunning, "")
+	return site, nil
+}
+
+// stopExternalStaticLocked records the stopped state and syncs the vhost. A
+// sync failure restores the previous row.
+func (s *Service) stopExternalStaticLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	previous := site
+	oldStatus := site.Status
+	site.DesiredState = model.DesiredStopped
+	site.Status = model.StatusStopped
+	site.UpdatedAt = s.currentTime()
+	if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
+		return previous, fmt.Errorf("sites: record stopped state for %q: %w", site.Name, err)
+	}
+	if err := s.syncVhostsLocked(ctx, ""); err != nil {
+		if restoreErr := s.deps.Store.UpdateSite(ctx, previous); restoreErr != nil {
+			return previous, errors.Join(err, fmt.Errorf("rollback: restore %q: %w", site.Name, restoreErr))
+		}
+		return previous, fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err)
+	}
+	s.emitStatus(ctx, site, oldStatus, model.StatusStopped, "")
+	return site, nil
+}
+
+// restoreSiteStateLocked reverses a start/stop that was followed by a failed
+// external vhost sync. The row is restored and the backend converged to the
+// previous desired state. Ports allocated only by the failed transition are
+// released.
+func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current model.Site) error {
+	var errs []error
+	if s.deps.Backend != nil {
+		if err := s.deps.Backend.Stop(ctx, current.ID, true); err != nil {
+			errs = append(errs, fmt.Errorf("rollback: stop %q: %w", current.Name, err))
+		}
+		if previous.DesiredState == model.DesiredRunning {
+			if _, err := s.deps.Backend.Prepare(ctx, backendSpec(previous)); err != nil {
+				errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", previous.Name, err))
+			} else if _, err := s.deps.Backend.Start(ctx, previous.ID); err != nil {
+				errs = append(errs, fmt.Errorf("rollback: start %q: %w", previous.Name, err))
+			}
+		}
+	}
+	if s.deps.Store != nil {
+		if err := s.deps.Store.UpdateSite(ctx, previous); err != nil {
+			errs = append(errs, fmt.Errorf("rollback: restore row %q: %w", previous.Name, err))
+		}
+	}
+	if previous.HTTPPort == 0 && current.HTTPPort != 0 && s.deps.Ports != nil {
+		s.deps.Ports.Release(current.HTTPPort)
+	}
+	return errors.Join(errs...)
+}
+
 // refreshLocked asks the backend for the observed status and persists a
-// transition. The caller must hold s.mu.
+// transition. External static status is derived from desired state and document
+// root readability without touching a backend. The caller must hold s.mu.
 func (s *Service) refreshLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	if s.externalServing() && site.Kind == model.SiteStatic {
+		return s.refreshExternalStaticLocked(ctx, site)
+	}
 	status, err := s.deps.Backend.Status(ctx, site.ID)
 	if err != nil {
 		return site, fmt.Errorf("sites: status for %q: %w", site.Name, err)
@@ -637,6 +800,29 @@ func (s *Service) refreshLocked(ctx context.Context, site model.Site) (model.Sit
 		return site, fmt.Errorf("sites: record status for %q: %w", site.Name, err)
 	}
 	s.emitStatus(ctx, site, oldStatus, status.State, status.Message)
+	return site, nil
+}
+
+// refreshExternalStaticLocked derives status from desired state and document
+// root readability, persisting a transition when practical.
+func (s *Service) refreshExternalStaticLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	status := model.StatusStopped
+	if site.DesiredState == model.DesiredRunning {
+		status = model.StatusRunning
+		if err := staticRootError(site); err != nil {
+			status = model.StatusError
+		}
+	}
+	if status == site.Status {
+		return site, nil
+	}
+	oldStatus := site.Status
+	site.Status = status
+	site.UpdatedAt = s.currentTime()
+	if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
+		return site, fmt.Errorf("sites: record status for %q: %w", site.Name, err)
+	}
+	s.emitStatus(ctx, site, oldStatus, status, "")
 	return site, nil
 }
 
@@ -667,13 +853,21 @@ func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts 
 	if port != 0 && s.deps.Ports != nil {
 		s.deps.Ports.Release(port)
 	}
+	if s.externalServing() {
+		if err := s.syncVhostsLocked(ctx, ""); err != nil {
+			errs = append(errs, fmt.Errorf("rollback: restore vhosts: %w", err))
+		}
+	}
 	return errors.Join(errs...)
 }
 
 // rollbackUpdate restores the old row, certificate, hosts block, and routes.
 func (s *Service) rollbackUpdate(ctx context.Context, old model.Site, oldHosts, oldDomains []string, certChanged bool, cause error) error {
 	errs := []error{cause}
-	if certChanged {
+	// A failed external sync may already have copied new certificate material
+	// for the same owner, so restore the old leaf even when the domain set did
+	// not change.
+	if certChanged || s.externalServing() {
 		if _, err := s.deps.Certs.Ensure(ctx, old.ID, oldDomains); err != nil {
 			errs = append(errs, fmt.Errorf("rollback: restore certificate for %q: %w", old.Name, err))
 		}
@@ -686,6 +880,11 @@ func (s *Service) rollbackUpdate(ctx context.Context, old model.Site, oldHosts, 
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("rollback: restore routes for %q: %w", old.Name, err))
+	}
+	if s.externalServing() {
+		if err := s.syncVhostsLocked(ctx, ""); err != nil {
+			errs = append(errs, fmt.Errorf("rollback: restore vhosts for %q: %w", old.Name, err))
+		}
 	}
 	return errors.Join(errs...)
 }

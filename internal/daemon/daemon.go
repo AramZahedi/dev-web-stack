@@ -43,11 +43,14 @@ const (
 
 	helperDialTimeout   = 15 * time.Second
 	helperRetryInterval = 100 * time.Millisecond
-	renewInterval       = 24 * time.Hour
 	apiShutdownTimeout  = 5 * time.Second
 	socketDialTimeout   = 250 * time.Millisecond
 	maxLogTailBytes     = 32 << 10
 )
+
+// renewInterval is a variable so tests can shorten the certificate renewal
+// period without sleeping for a day.
+var renewInterval = 24 * time.Hour
 
 // selfExecutable is a seam so tests can point the backend at a built devstack
 // binary instead of the test executable.
@@ -195,11 +198,21 @@ func Run(ctx context.Context, opts Options) error {
 
 	certManager := certs.NewManager(st, helper, paths.PKI, nil)
 	router := proxy.NewRouter()
+	proxyServer := proxy.NewServer(proxy.ServerConfig{
+		HTTPAddr:     net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.HTTPPort)),
+		HTTPSAddr:    net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.HTTPSPort)),
+		Router:       router,
+		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
+		Logger:       logger,
+	})
+	d.proxy = proxyServer
 	siteService := sites.NewService(sites.Deps{
 		Store:   st,
 		Backend: local,
 		Helper:  helper,
 		Certs:   certManager,
+		Vhosts:  helper,
+		Proxy:   proxyServer,
 		Router:  router,
 		Ports:   domain.NewPortAllocator(),
 		Config:  cfg,
@@ -224,19 +237,23 @@ func Run(ctx context.Context, opts Options) error {
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
+		Vhosts:       siteService,
 		Logger:       logger,
 	})
 
-	proxyServer := proxy.NewServer(proxy.ServerConfig{
-		HTTPAddr:     net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.HTTPPort)),
-		HTTPSAddr:    net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.HTTPSPort)),
-		Router:       router,
-		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
-		Logger:       logger,
-	})
-	d.proxy = proxyServer
-	if err := proxyServer.Start(context.Background()); err != nil {
-		return fmt.Errorf("daemon: start proxy: %w", err)
+	// The built-in proxy owns the loopback HTTP/HTTPS listeners only in
+	// builtin mode. External modes let the native server own 80/443.
+	if cfg.ServingMode == config.ServingModeBuiltin {
+		if err := proxyServer.Start(context.Background()); err != nil {
+			return fmt.Errorf("daemon: start proxy: %w", err)
+		}
+	}
+
+	// Reconcile helper state with config.yaml before any static site process
+	// exists. The built-in proxy is already listening, so a builtin switch can
+	// restore its forwarders safely.
+	if err := siteService.ReconcileServingMode(ctx); err != nil {
+		return fmt.Errorf("daemon: reconcile serving mode: %w", err)
 	}
 
 	if err := d.startAPI(apiServer.Handler()); err != nil {
@@ -254,8 +271,10 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	d.persistSettings(ctx)
-	if err := siteService.RebuildRoutes(ctx); err != nil {
-		return fmt.Errorf("daemon: publish routes: %w", err)
+	if cfg.ServingMode == config.ServingModeBuiltin {
+		if err := siteService.RebuildRoutes(ctx); err != nil {
+			return fmt.Errorf("daemon: publish routes: %w", err)
+		}
 	}
 	d.startDesiredSites(ctx)
 	if err := d.writeReady(); err != nil {
@@ -393,6 +412,7 @@ func (d *daemon) persistSettings(ctx context.Context) {
 		"https_port":            strconv.Itoa(d.cfg.HTTPSPort),
 		"ui_port":               strconv.Itoa(d.cfg.UIPort),
 		"auto_start_sites":      strconv.FormatBool(d.cfg.AutoStartSites),
+		"serving_mode":          d.cfg.ServingMode,
 		"graceful_stop_seconds": strconv.Itoa(d.cfg.GracefulStopSeconds),
 		"max_request_body_mb":   strconv.Itoa(d.cfg.MaxRequestBodyMB),
 		"log_max_mb":            strconv.Itoa(d.cfg.LogMaxMB),
@@ -434,8 +454,14 @@ func (d *daemon) renew(parent context.Context) {
 	} else if len(renewed) != 0 {
 		d.logger.Info("daemon: renewed certificates", "count", len(renewed))
 	}
-	if err := d.sites.RebuildRoutes(ctx); err != nil {
-		d.logger.Warn("daemon: republish routes after renewal", "error", err)
+	if d.sites.ServingMode() == config.ServingModeBuiltin {
+		if err := d.sites.RebuildRoutes(ctx); err != nil {
+			d.logger.Warn("daemon: republish routes after renewal", "error", err)
+		}
+		return
+	}
+	if err := d.sites.SyncVhosts(ctx); err != nil {
+		d.logger.Warn("daemon: sync vhosts after renewal", "error", err)
 	}
 }
 

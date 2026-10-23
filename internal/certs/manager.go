@@ -229,6 +229,61 @@ func (m *Manager) Delete(ctx context.Context, owner string) error {
 	return errors.Join(errs...)
 }
 
+// PEM returns the certificate chain and private key for rec. It reads the
+// record's paths when they stay inside the certificate directory and falls back
+// to the canonical owner paths otherwise. Both files must be regular; the key
+// must still be 0600. It never logs key material.
+func (m *Manager) PEM(rec model.CertRecord) (certPEM, keyPEM []byte, err error) {
+	if m == nil {
+		return nil, nil, errors.New("certs: nil manager")
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.dir == "" {
+		return nil, nil, errors.New("certs: certificate directory is empty")
+	}
+	if err := validateOwner(rec.SiteID); err != nil {
+		return nil, nil, err
+	}
+	keyPath := m.pathInsideDir(rec.KeyPath, rec.SiteID+".key")
+	certPath := m.pathInsideDir(rec.CertPath, rec.SiteID+".crt")
+
+	keyPEM, err = readRegularFile(keyPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("certs: read key for %q: %w", rec.SiteID, err)
+	}
+	info, err := os.Lstat(keyPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("certs: inspect key for %q: %w", rec.SiteID, err)
+	}
+	if info.Mode().Perm() != keyFileMode {
+		return nil, nil, fmt.Errorf("certs: key for %q has mode %04o; want 0600", rec.SiteID, info.Mode().Perm())
+	}
+	certPEM, err = readRegularFile(certPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("certs: read certificate for %q: %w", rec.SiteID, err)
+	}
+	if len(certPEM) == 0 || len(keyPEM) == 0 {
+		return nil, nil, fmt.Errorf("certs: certificate material for %q is empty", rec.SiteID)
+	}
+	return certPEM, keyPEM, nil
+}
+
+// pathInsideDir returns path when it is a clean path directly inside the
+// manager directory, and the canonical name otherwise.
+func (m *Manager) pathInsideDir(path, name string) string {
+	canonical := filepath.Join(m.dir, name)
+	if path == "" {
+		return canonical
+	}
+	clean := filepath.Clean(path)
+	if filepath.Dir(clean) == m.dir && filepath.Base(clean) == name {
+		return clean
+	}
+	return canonical
+}
+
 // prepare validates an owner/domain request and returns the canonical owner
 // and deduplicated SAN list.
 func (m *Manager) prepare(owner string, domains []string) (string, []string, error) {

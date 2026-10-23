@@ -31,6 +31,13 @@ var (
 	ErrInvalidRequest   = helperproto.ErrInvalidRequest
 	ErrNotImplemented   = helperproto.ErrNotImplemented
 	ErrInternal         = helperproto.ErrInternal
+
+	ErrServingModeUnavailable = helperproto.ErrServingModeUnavailable
+	ErrVhostConfigInvalid     = helperproto.ErrVhostConfigInvalid
+	ErrVhostSyncFailed        = helperproto.ErrVhostSyncFailed
+	ErrVhostIncludeMissing    = helperproto.ErrVhostIncludeMissing
+	ErrServerReloadFailed     = helperproto.ErrServerReloadFailed
+	ErrVhostSyncBusy          = helperproto.ErrVhostSyncBusy
 )
 
 // Error is a structured helper error response.
@@ -57,6 +64,18 @@ func (e *Error) Unwrap() error {
 		return helperproto.ErrNotImplemented
 	case helperproto.CodeInternal:
 		return helperproto.ErrInternal
+	case helperproto.CodeServingModeUnavailable:
+		return helperproto.ErrServingModeUnavailable
+	case helperproto.CodeVhostConfigInvalid:
+		return helperproto.ErrVhostConfigInvalid
+	case helperproto.CodeVhostSyncFailed:
+		return helperproto.ErrVhostSyncFailed
+	case helperproto.CodeVhostIncludeMissing:
+		return helperproto.ErrVhostIncludeMissing
+	case helperproto.CodeServerReloadFailed:
+		return helperproto.ErrServerReloadFailed
+	case helperproto.CodeVhostSyncBusy:
+		return helperproto.ErrVhostSyncBusy
 	default:
 		return nil
 	}
@@ -182,6 +201,32 @@ func (c *Client) SetForwarders(ctx context.Context, httpPort, httpsPort int, ena
 // Uninstall removes the helper's hosts entries, trust, and forwarders.
 func (c *Client) Uninstall(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, helperproto.PathUninstall, helperproto.UninstallRequest{}, nil)
+}
+
+// VhostStatus reports the helper's persisted vhost mode and last sync state.
+func (c *Client) VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error) {
+	var resp helperproto.VhostStatusResponse
+	err := c.do(ctx, http.MethodGet, helperproto.PathVhostsStatus, nil, &resp)
+	return resp, err
+}
+
+// SyncVhosts installs a complete vhost set for the active external server.
+func (c *Client) SyncVhosts(ctx context.Context, req helperproto.VHostSyncRequest) error {
+	return c.do(ctx, http.MethodPost, helperproto.PathVhostsSync, req, nil)
+}
+
+// SetServingMode switches the helper's serving mode. External modes require a
+// complete sync request; builtin ignores it.
+func (c *Client) SetServingMode(ctx context.Context, mode string, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error) {
+	payload := helperproto.VhostModeRequest{Mode: mode, Sync: &req}
+	var resp helperproto.VhostStatusResponse
+	err := c.do(ctx, http.MethodPost, helperproto.PathVhostsMode, payload, &resp)
+	return resp, err
+}
+
+// RemoveVhosts deletes helper-managed vhosts, bridge files, and TLS material.
+func (c *Client) RemoveVhosts(ctx context.Context) error {
+	return c.do(ctx, http.MethodDelete, helperproto.PathVhosts, nil, nil)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {

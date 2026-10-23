@@ -18,6 +18,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
@@ -31,10 +32,13 @@ type testFakes struct {
 	backend *fakeBackend
 	hosts   *fakeHosts
 	certs   *fakeCerts
+	vhosts  *fakeVhosts
+	proxy   *fakeProxy
 	router  *proxy.Router
 	ports   *domain.PortAllocator
 	config  config.Config
 	root    string
+	order   *[]string
 }
 
 // newTestService builds a Service against a temporary SQLite database, a real
@@ -75,8 +79,14 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 		ensured:   make(map[string][]string),
 		records:   make(map[string]model.CertRecord),
 		certsByID: make(map[string]*tls.Certificate),
+		pems:      make(map[string]fakePEM),
 		deleted:   make(map[string]bool),
 	}
+	fv := &fakeVhosts{}
+	fp := &fakeProxy{}
+	order := []string{}
+	fc.order = &order
+	fv.order = &order
 
 	cfg := config.Default()
 	cfg.Home = dir
@@ -97,6 +107,8 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 		Backend: fb,
 		Helper:  fh,
 		Certs:   fc,
+		Vhosts:  fv,
+		Proxy:   fp,
 		Router:  router,
 		Ports:   ports,
 		Config:  cfg,
@@ -112,10 +124,13 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 		backend: fb,
 		hosts:   fh,
 		certs:   fc,
+		vhosts:  fv,
+		proxy:   fp,
 		router:  router,
 		ports:   ports,
 		config:  cfg,
 		root:    root,
+		order:   &order,
 	}
 }
 
@@ -236,6 +251,12 @@ func (f *fakeBackend) setStatus(id string, state model.SiteStatus) {
 	f.status[id] = state
 }
 
+func (f *fakeBackend) statusFor(id string) model.SiteStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status[id]
+}
+
 // fakeHosts records every SyncHosts call. failAt fails the Nth call (1-based)
 // without changing the current managed set, matching a helper that rejected the
 // update.
@@ -321,12 +342,20 @@ type fakeCerts struct {
 	ensured   map[string][]string
 	records   map[string]model.CertRecord
 	certsByID map[string]*tls.Certificate
+	pems      map[string]fakePEM
 	deleted   map[string]bool
 	serial    int
+	order     *[]string
 
 	err       error
 	loadErr   error
 	deleteErr error
+	pemErr    error
+}
+
+type fakePEM struct {
+	cert []byte
+	key  []byte
 }
 
 var _ Certs = (*fakeCerts)(nil)
@@ -358,6 +387,10 @@ func (f *fakeCerts) Ensure(ctx context.Context, owner string, domains []string) 
 	f.records[owner] = rec
 	f.ensured[owner] = append([]string(nil), domains...)
 	f.certsByID[owner] = fakeTLSCert(owner, domains)
+	f.pems[owner] = fakePEM{
+		cert: []byte("cert:" + owner),
+		key:  []byte("key:" + owner),
+	}
 	return rec, nil
 }
 
@@ -380,9 +413,13 @@ func (f *fakeCerts) Delete(ctx context.Context, owner string) error {
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
+	if f.order != nil {
+		*f.order = append(*f.order, "cert-delete:"+owner)
+	}
 	delete(f.records, owner)
 	delete(f.certsByID, owner)
 	delete(f.ensured, owner)
+	delete(f.pems, owner)
 	f.deleted[owner] = true
 	if f.store != nil {
 		if err := f.store.DeleteCertBySite(ctx, owner); err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -390,6 +427,19 @@ func (f *fakeCerts) Delete(ctx context.Context, owner string) error {
 		}
 	}
 	return nil
+}
+
+func (f *fakeCerts) PEM(rec model.CertRecord) ([]byte, []byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pemErr != nil {
+		return nil, nil, f.pemErr
+	}
+	value, ok := f.pems[rec.SiteID]
+	if !ok {
+		return nil, nil, fmt.Errorf("fake certs: no PEM for %q", rec.SiteID)
+	}
+	return append([]byte(nil), value.cert...), append([]byte(nil), value.key...), nil
 }
 
 func (f *fakeCerts) ensuredFor(owner string) []string {
@@ -417,6 +467,146 @@ func fakeTLSCert(owner string, domains []string) *tls.Certificate {
 			DNSNames: append([]string(nil), domains...),
 		},
 	}
+}
+
+// fakeVhosts implements the helper-managed vhost boundary. Sync and mode calls
+// are recorded even when they fail so tests can assert rollback requests.
+type fakeVhosts struct {
+	mu sync.Mutex
+
+	status helperproto.VhostStatusResponse
+	order  *[]string
+
+	syncRequests []helperproto.VHostSyncRequest
+	modeCalls    []string
+	modeRequests []helperproto.VHostSyncRequest
+	statusCalls  int
+	removed      int
+
+	err       error
+	statusErr error
+	modeErr   error
+	removeErr error
+}
+
+var _ Vhosts = (*fakeVhosts)(nil)
+
+func (f *fakeVhosts) VhostStatus(context.Context) (helperproto.VhostStatusResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statusCalls++
+	if f.statusErr != nil {
+		return helperproto.VhostStatusResponse{}, f.statusErr
+	}
+	status := f.status
+	if status.Mode == "" {
+		status.Mode = "builtin"
+	}
+	return status, nil
+}
+
+func (f *fakeVhosts) SyncVhosts(_ context.Context, req helperproto.VHostSyncRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.syncRequests = append(f.syncRequests, req)
+	if f.order != nil {
+		*f.order = append(*f.order, "vhost-sync")
+	}
+	if f.err != nil {
+		return f.err
+	}
+	f.status.Mode = req.Mode
+	f.status.Server = req.Mode
+	f.status.ConfigOK = true
+	return nil
+}
+
+func (f *fakeVhosts) SetServingMode(_ context.Context, mode string, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modeCalls = append(f.modeCalls, mode)
+	f.modeRequests = append(f.modeRequests, req)
+	if f.modeErr != nil {
+		return helperproto.VhostStatusResponse{}, f.modeErr
+	}
+	if f.err != nil && mode != "builtin" {
+		return helperproto.VhostStatusResponse{}, f.err
+	}
+	f.status.Mode = mode
+	f.status.Server = mode
+	f.status.ConfigOK = true
+	return f.status, nil
+}
+
+func (f *fakeVhosts) RemoveVhosts(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed++
+	return f.removeErr
+}
+
+func (f *fakeVhosts) lastSync() (helperproto.VHostSyncRequest, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.syncRequests) == 0 {
+		return helperproto.VHostSyncRequest{}, false
+	}
+	return f.syncRequests[len(f.syncRequests)-1], true
+}
+
+func (f *fakeVhosts) syncCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.syncRequests)
+}
+
+func (f *fakeVhosts) syncAt(index int) (helperproto.VHostSyncRequest, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if index < 0 || index >= len(f.syncRequests) {
+		return helperproto.VHostSyncRequest{}, false
+	}
+	return f.syncRequests[index], true
+}
+
+// fakeProxy implements ProxyControl.
+type fakeProxy struct {
+	mu       sync.Mutex
+	started  bool
+	starts   int
+	stops    int
+	startErr error
+	stopErr  error
+}
+
+var _ ProxyControl = (*fakeProxy)(nil)
+
+func (f *fakeProxy) Start(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.starts++
+	if f.startErr != nil {
+		return f.startErr
+	}
+	f.started = true
+	return nil
+}
+
+func (f *fakeProxy) Stop(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stops++
+	if f.stopErr != nil {
+		return f.stopErr
+	}
+	f.started = false
+	return nil
+}
+
+func (f *fakeProxy) isStarted() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.started
 }
 
 func containsString(values []string, want string) bool {

@@ -18,6 +18,24 @@ const (
 	reservedPortHigh = 43999
 )
 
+// Serving modes. Exactly one mode is active; builtin keeps the Go proxy and
+// external modes delegate to the privileged helper's nginx or Apache vhosts.
+const (
+	ServingModeBuiltin = "builtin"
+	ServingModeNginx   = "nginx"
+	ServingModeApache  = "apache"
+)
+
+// ValidServingMode reports whether mode is one of the supported serving modes.
+func ValidServingMode(mode string) bool {
+	switch mode {
+	case ServingModeBuiltin, ServingModeNginx, ServingModeApache:
+		return true
+	default:
+		return false
+	}
+}
+
 // Config holds the machine-level settings stored in config.yaml.
 type Config struct {
 	// Home is the resolved machine root. It is not stored in config.yaml.
@@ -29,6 +47,7 @@ type Config struct {
 
 	WSLDistro      string `yaml:"wsl_distro"`
 	AutoStartSites bool   `yaml:"auto_start_sites"`
+	ServingMode    string `yaml:"serving_mode"`
 
 	GracefulStopSeconds int `yaml:"graceful_stop_seconds"`
 	MaxRequestBodyMB    int `yaml:"max_request_body_mb"`
@@ -45,6 +64,7 @@ func Default() Config {
 		UIPort:              7070,
 		WSLDistro:           "devstack",
 		AutoStartSites:      true,
+		ServingMode:         ServingModeBuiltin,
 		GracefulStopSeconds: 10,
 		MaxRequestBodyMB:    1024,
 		LogMaxMB:            10,
@@ -118,6 +138,10 @@ func (c Config) Validate() error {
 	}
 	if c.GracefulStopSeconds <= 0 {
 		return fmt.Errorf("graceful_stop_seconds must be greater than 0, got %d", c.GracefulStopSeconds)
+	}
+	if !ValidServingMode(c.ServingMode) {
+		return fmt.Errorf("serving_mode %q must be one of %s, %s, or %s", c.ServingMode,
+			ServingModeBuiltin, ServingModeNginx, ServingModeApache)
 	}
 	return nil
 }

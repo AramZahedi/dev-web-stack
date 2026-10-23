@@ -50,6 +50,7 @@ type apiFixture struct {
 	runtimes *fakeRuntimeService
 	doctor   *fakeDoctorService
 	helper   *fakeHelperClient
+	vhosts   *fakeVhostService
 	logs     *logs.Store
 	store    *store.Store
 	session  string
@@ -122,6 +123,14 @@ func newFixture(t *testing.T, cfg Config) *apiFixture {
 		}},
 	}
 	fakeDoctor := &fakeDoctorService{}
+	fakeVhosts := &fakeVhostService{
+		status: helperproto.VhostStatusResponse{
+			Mode:           "builtin",
+			IncludePresent: true,
+			ConfigOK:       true,
+			LastSync:       time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
+		},
+	}
 	fakeHelper := &fakeHelperClient{
 		status: helperproto.StatusResponse{
 			Version:       helperproto.Version,
@@ -134,6 +143,7 @@ func newFixture(t *testing.T, cfg Config) *apiFixture {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	cfg.Vhosts = fakeVhosts
 	srv := NewServer(st, fakeSites, fakeRuntimes, fakeDoctor, logStore, fakeHelper, cfg)
 
 	return &apiFixture{
@@ -143,6 +153,7 @@ func newFixture(t *testing.T, cfg Config) *apiFixture {
 		runtimes: fakeRuntimes,
 		doctor:   fakeDoctor,
 		helper:   fakeHelper,
+		vhosts:   fakeVhosts,
 		logs:     logStore,
 		store:    st,
 		session:  testSessionValue,
@@ -1337,6 +1348,67 @@ func (f *fakeSiteService) find(ref string) (model.Site, bool) {
 		}
 	}
 	return model.Site{}, false
+}
+
+type fakeVhostService struct {
+	mu sync.Mutex
+
+	status   helperproto.VhostStatusResponse
+	preview  string
+	modes    []string
+	syncs    int
+	statuses int
+	previews []string
+
+	err        error
+	modeErr    error
+	syncErr    error
+	statusErr  error
+	previewErr error
+}
+
+func (f *fakeVhostService) VhostStatus(context.Context) (helperproto.VhostStatusResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statuses++
+	if f.statusErr != nil {
+		return helperproto.VhostStatusResponse{}, f.statusErr
+	}
+	return f.status, nil
+}
+
+func (f *fakeVhostService) SetServingMode(_ context.Context, mode string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modes = append(f.modes, mode)
+	if f.modeErr != nil {
+		return f.modeErr
+	}
+	if f.err != nil {
+		return f.err
+	}
+	f.status.Mode = mode
+	return nil
+}
+
+func (f *fakeVhostService) SyncVhosts(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.syncs++
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	return f.err
+}
+
+func (f *fakeVhostService) PreviewVhost(_ context.Context, ref, server string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.previews = append(f.previews, ref+"/"+server)
+	if f.previewErr != nil {
+		return "", f.previewErr
+	}
+	return f.preview, nil
 }
 
 type fakeRuntimeService struct {

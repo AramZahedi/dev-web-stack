@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 )
@@ -239,6 +240,40 @@ func (f *fakeAPI) mux() *http.ServeMux {
 		f.record(r)
 		f.writeErrorOr(w, func() { w.WriteHeader(http.StatusNoContent) })
 	})
+	mux.HandleFunc("GET /api/v1/vhosts/status", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, helperproto.VhostStatusResponse{
+				Mode: "nginx", Server: "nginx", ServerVersion: "1.26.0", ConfigOK: true,
+			})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/vhosts/mode", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			var req struct {
+				Mode string `json:"mode"`
+			}
+			_ = json.Unmarshal([]byte(f.lastBody()), &req)
+			writeTestJSON(w, http.StatusOK, helperproto.VhostStatusResponse{Mode: req.Mode, ConfigOK: true})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/vhosts/sync", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, helperproto.VhostStatusResponse{Mode: "nginx", ConfigOK: true})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/vhosts/preview", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]string{
+				"server":  r.URL.Query().Get("server"),
+				"site":    r.URL.Query().Get("site"),
+				"content": "# preview\nserver_name " + r.URL.Query().Get("site") + ".test;\n",
+			})
+		})
+	})
 	return mux
 }
 
@@ -372,6 +407,51 @@ func TestClientRoutesAndPayloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	api.last(t, http.MethodDelete, "/api/v1/sites/"+site.ID)
+}
+
+func TestClientVhostMethods(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	ctx := context.Background()
+
+	status, err := c.VhostStatus(ctx)
+	if err != nil || status.Mode != "nginx" || status.ServerVersion != "1.26.0" {
+		t.Fatalf("status = %+v %v", status, err)
+	}
+	api.last(t, http.MethodGet, "/api/v1/vhosts/status")
+
+	status, err = c.SetServingMode(ctx, "apache")
+	if err != nil || status.Mode != "apache" {
+		t.Fatalf("mode = %+v %v", status, err)
+	}
+	mode := api.last(t, http.MethodPost, "/api/v1/vhosts/mode")
+	if !strings.Contains(mode.body, `"mode":"apache"`) {
+		t.Fatalf("mode payload = %s", mode.body)
+	}
+
+	status, err = c.SyncVhosts(ctx)
+	if err != nil || status.Mode != "nginx" {
+		t.Fatalf("sync = %+v %v", status, err)
+	}
+	api.last(t, http.MethodPost, "/api/v1/vhosts/sync")
+
+	content, err := c.PreviewVhost(ctx, "blog", "apache")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "server_name blog.test;") {
+		t.Fatalf("preview content = %q", content)
+	}
+	preview := api.last(t, http.MethodGet, "/api/v1/vhosts/preview")
+	if !strings.Contains(preview.query, "site=blog") || !strings.Contains(preview.query, "server=apache") {
+		t.Fatalf("preview query = %q", preview.query)
+	}
 }
 
 func TestClientErrorMapping(t *testing.T) {
