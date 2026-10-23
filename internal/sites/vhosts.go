@@ -276,11 +276,18 @@ func (s *Service) switchBuiltinToExternal(ctx context.Context, mode string, req 
 	if err := s.saveServingModeLocked(ctx, mode); err != nil {
 		var errs []error
 		errs = append(errs, fmt.Errorf("sites: save serving mode: %w", err))
+		// Start the built-in proxy before restoring helper builtin. The helper
+		// enables the 80/443 forwarders immediately, so reversing that order
+		// would leave privileged ports bound with no loopback proxy behind them.
+		if proxyErr := s.startBuiltinProxyLocked(ctx); proxyErr != nil {
+			errs = append(errs, fmt.Errorf("rollback: start built-in proxy: %w", proxyErr))
+			return errors.Join(errs...)
+		}
 		if _, herr := s.deps.Vhosts.SetServingMode(ctx, config.ServingModeBuiltin, helperproto.VHostSyncRequest{}); herr != nil {
 			errs = append(errs, fmt.Errorf("rollback: restore helper builtin mode: %w", herr))
 		}
-		if restoreErr := s.restoreBuiltinRuntimeLocked(ctx); restoreErr != nil {
-			errs = append(errs, restoreErr)
+		if restoreErr := s.startStaticBackendsLocked(ctx); restoreErr != nil {
+			errs = append(errs, fmt.Errorf("rollback: restart static backends: %w", restoreErr))
 		}
 		return errors.Join(errs...)
 	}
@@ -343,6 +350,14 @@ func (s *Service) switchExternal(ctx context.Context, previous, mode string, req
 	}
 	if err := s.saveServingModeLocked(ctx, mode); err != nil {
 		errs := []error{fmt.Errorf("sites: save serving mode: %w", err)}
+		// Mismatch repair starts with config already naming the target while
+		// the helper is still builtin. Restoring the helper to builtin here
+		// would enable 80/443 forwarders without the built-in proxy (the daemon
+		// is configured external), so leave the successfully switched external
+		// helper in place when config already matches the target.
+		if s.servingMode() == mode {
+			return errors.Join(errs...)
+		}
 		oldReq, buildErr := s.buildVhostRequestLocked(ctx, previous, "")
 		if buildErr != nil {
 			errs = append(errs, fmt.Errorf("rollback: build %q request: %w", previous, buildErr))

@@ -836,6 +836,31 @@ func TestSyncAllowsStoppedNodeWithoutBackendPath(t *testing.T) {
 	}
 }
 
+func TestSyncAllowsStoppedNodeWithStalePaths(t *testing.T) {
+	env := newVhostTestEnv(t)
+	req := env.request("nginx")
+	req.Sites[0] = helperproto.VHostSite{
+		ID:           "s-1",
+		Name:         "blog",
+		Domain:       "blog.test",
+		BackendPath:  filepath.Join(env.root, "deleted-project"),
+		Kind:         string(model.SiteNode),
+		DocumentRoot: filepath.Join(env.root, "deleted-project", "public"),
+		DesiredState: string(model.DesiredStopped),
+	}
+
+	if _, err := env.manager.Sync(context.Background(), req); err != nil {
+		t.Fatalf("Sync stopped node with stale paths: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog-s-1.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("return 503 ")) {
+		t.Fatalf("stopped node vhost did not render a 503:\n%s", data)
+	}
+}
+
 func TestStatusMissingStateIsBuiltin(t *testing.T) {
 	env := newVhostTestEnv(t)
 	st, err := env.manager.Status(context.Background())

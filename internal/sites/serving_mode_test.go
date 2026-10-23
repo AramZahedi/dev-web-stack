@@ -264,6 +264,53 @@ func TestSyncDegradesBrokenSitesInsteadOfFailing(t *testing.T) {
 	}
 }
 
+func TestStoppedNodeWithStaleBackendPathDoesNotBlockSync(t *testing.T) {
+	svc, fakes := newTestService(t)
+	useServingMode(svc, fakes, config.ServingModeNginx)
+	ctx := context.Background()
+
+	good, err := svc.Create(ctx, CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := svc.Create(ctx, CreateRequest{
+		Name: "shop", Path: fakes.root, Kind: "node", NodeVersion: "24", Command: "node server.js",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Stop(ctx, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := fakes.store.GetSite(ctx, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.BackendPath = filepath.Join(t.TempDir(), "deleted-project")
+	stored.DocumentRoot = "public"
+	if err := fakes.store.UpdateSite(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.SyncVhosts(ctx); err != nil {
+		t.Fatalf("stale stopped node poisoned the full sync: %v", err)
+	}
+	req, ok := fakes.vhosts.lastSync()
+	if !ok || len(req.Sites) != 2 {
+		t.Fatalf("sync request = %+v, want two sites", req)
+	}
+	byID := make(map[string]helperproto.VHostSite, len(req.Sites))
+	for _, site := range req.Sites {
+		byID[site.ID] = site
+	}
+	if spec := byID[node.ID]; spec.DesiredState != string(model.DesiredStopped) {
+		t.Fatalf("stopped node spec = %+v, want stopped", spec)
+	}
+	if spec := byID[good.ID]; spec.DesiredState != string(model.DesiredRunning) {
+		t.Fatalf("healthy site spec = %+v, want running", spec)
+	}
+}
+
 func TestExternalNodeStillStartsBackend(t *testing.T) {
 	svc, fakes := newTestService(t)
 	useServingMode(svc, fakes, config.ServingModeNginx)
@@ -543,6 +590,42 @@ func TestSetServingModeRepairsHelperMismatch(t *testing.T) {
 			t.Fatal("builtin proxy is not running after the repair")
 		}
 		assertSavedMode(t, svc, config.ServingModeBuiltin)
+	})
+
+	t.Run("mismatch repair save failure keeps the helper external", func(t *testing.T) {
+		svc, fakes := newTestService(t)
+		persistServingMode(t, svc, config.ServingModeNginx)
+		if _, err := svc.Create(context.Background(), CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"}); err != nil {
+			t.Fatal(err)
+		}
+		fakes.vhosts.status.Mode = config.ServingModeBuiltin
+		notADir := filepath.Join(t.TempDir(), "home-is-a-file")
+		if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		svc.deps.Config.Home = notADir
+		modesBefore := len(fakes.vhosts.modeCalls)
+
+		if err := svc.SetServingMode(context.Background(), config.ServingModeNginx); err == nil {
+			t.Fatal("want config save error")
+		}
+		if svc.deps.Config.ServingMode != config.ServingModeNginx {
+			t.Fatalf("in-memory mode = %q, want nginx", svc.deps.Config.ServingMode)
+		}
+		calls := fakes.vhosts.modeCalls[modesBefore:]
+		if len(calls) != 1 || calls[0] != config.ServingModeNginx {
+			t.Fatalf("mode calls = %v, want only the nginx repair", calls)
+		}
+		if fakes.proxy.isStarted() {
+			t.Fatal("built-in proxy started while config remains external")
+		}
+		status, err := fakes.vhosts.VhostStatus(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Mode != config.ServingModeNginx {
+			t.Fatalf("helper mode = %q, want nginx", status.Mode)
+		}
 	})
 
 	t.Run("config external but helper builtin", func(t *testing.T) {

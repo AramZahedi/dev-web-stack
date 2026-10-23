@@ -935,8 +935,10 @@ func (m *VhostManager) validateSite(site helperproto.VHostSite, ids, hosts map[s
 	}
 
 	resolvedBackend := ""
-	stoppedStatic := kind == model.SiteStatic && model.DesiredState(site.DesiredState) == model.DesiredStopped
-	if !stoppedStatic {
+	// Stopped vhosts render only the branded 503 and never dial a backend or
+	// read a document root, so stale paths are harmless for every kind.
+	stopped := model.DesiredState(site.DesiredState) == model.DesiredStopped
+	if !stopped {
 		switch {
 		case site.BackendPath != "":
 			var err error
