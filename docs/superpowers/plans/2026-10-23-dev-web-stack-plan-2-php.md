@@ -12,6 +12,8 @@
 
 **Depends on:** `docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-foundation.md` (implemented). Plan 2 preserves every Plan 1 behavior: host allowlist, CSRF/session checks, peer-UID helper, vhost validation, supervisor semantics, and the dashboard design system.
 
+> **Implementation status (2026-10-23):** Tasks 1–2 are complete and reviewed. Task 3 is implemented and committed but not yet reviewed. Tasks 4–12 are not started. See `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`.
+
 **Build-artifact dependency (honest gate):** `internal/catalog/catalog.json` contains **no PHP entries until a release publishes real artifacts**. The CI matrix in Task 11 builds, smoke-tests, checksums, SBOMs, and uploads each archive; only then does the release job generate a `php@<version>-r<revision>` entry from the published URL and checksum. Unit and integration tests use fixture catalogs and tarballs; acceptance uses this machine's real `/usr/local/php` when present and skips cleanly when absent. No production PHP URL or checksum is invented in this plan.
 
 ## Global Constraints

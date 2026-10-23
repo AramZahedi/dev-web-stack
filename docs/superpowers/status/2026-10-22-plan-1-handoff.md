@@ -1,5 +1,8 @@
 # dev-web-stack — Plan 1 Handoff / Status
 
+> **Plan 2 is now current.** See `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`
+> for the PHP branch, Task 3 review state, and next steps.
+
 - **Date:** 2026-10-23
 - **Branch:** `plan-1-foundation`
 - **Remote:** `origin` (`git@github.com:AramZahedi/dev-web-stack.git`)
