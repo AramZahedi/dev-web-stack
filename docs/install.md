@@ -286,8 +286,9 @@ markers by hand.
 
 ## Plan 1 limitations
 
-- Builtin reverse proxy only. nginx and Apache vhosts are not available yet;
-  the CI image installs both for upcoming work.
+- Builtin serving is the default; optional native nginx/Apache vhosts are
+  available for static and Node sites. The external server must already be
+  installed and own 80/443; PHP vhosts arrive in Plan 2.
 - Static and Node sites only. PHP support is planned for a later milestone.
 - Linux x86_64 and systemd only. Windows/WSL support is planned later.
 - The helper, CA, hosts block, and trust targets are machine-global but scoped

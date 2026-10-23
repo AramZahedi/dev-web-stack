@@ -3,10 +3,13 @@
 A local web development stack for Linux: static and Node sites served at
 trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 
-> **Status:** Plan 1 foundation implemented. The CLI, daemon, loopback REST API,
-> static and Node site lifecycle, embedded Svelte dashboard, privileged helper,
-> Linux installer, systemd units, external nginx/Apache serving, and end-to-end
-> tests are in place. PHP vhosts and Windows/WSL support arrive in later plans.
+> **Status:** Plan 1 implementation and its automated acceptance suite pass
+> (unit, race, vet, build, Linux E2E, UI unit/type/build/Playwright). The manual
+> Fedora 44 checks for browser trust, privileged install/uninstall on 80/443,
+> live UI flows, and real Apache serving were not run in the acceptance
+> environment; see the
+> [Plan 1 acceptance report](docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md).
+> PHP vhosts and Windows/WSL support arrive in later plans.
 
 ## Quick start
 
@@ -74,6 +77,16 @@ v0.1.0-3-gabc1234 (abc1234)
 ```
 
 Running `go run ./cmd/devstack version` prints the default `dev`.
+
+## Status and limitations
+
+- Plan 1 serves static and Node sites on Linux. PHP vhosts (Plan 2),
+  Windows/WSL (Plan 3), and packaging/release work (Plan 4) are not included.
+- Automated external serving is verified with real nginx on high ports. Real
+  Apache serving and browser-trust checks remain manual acceptance items; see
+  the [Plan 1 acceptance report](docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md).
+- Node HMR WebSockets are covered by automated proxy tests, but no browser HMR
+  session was part of the acceptance pass.
 
 ## Documentation
 

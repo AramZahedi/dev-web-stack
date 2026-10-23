@@ -177,7 +177,8 @@ If a site says running but the URL fails:
 ## Plan 1 limitations
 
 - Static and Node sites only; PHP is a later milestone.
-- Builtin proxy only; nginx/Apache vhost modes are not part of this plan.
+- Builtin serving is the default; optional native nginx/Apache vhosts are
+  available for static and Node sites. PHP vhosts arrive in Plan 2.
 - One backend process per site; multi-process Node clusters are not managed.
 - Site updates are remove-and-re-add; project files are always preserved.
 - The dashboard and all site domains use the local CA; there is no per-site
