@@ -23,6 +23,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/testcert"
+	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
 
 var vhostTestLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -460,7 +461,7 @@ func TestSyncPersistsStateAndStatusUsesNoCommands(t *testing.T) {
 	if persisted.Mode != "nginx" || persisted.Server != "nginx" || persisted.CurrentRelease != first.CurrentRelease {
 		t.Fatalf("persisted state = %+v", persisted)
 	}
-	if !persisted.ConfigOK || persisted.LastSync.IsZero() || persisted.BridgePath == "" {
+	if !persisted.ConfigOK || persisted.LastSync.IsZero() || persisted.BridgePath == "" || persisted.BridgeHash == "" {
 		t.Fatalf("persisted state = %+v", persisted)
 	}
 	owners := map[string]bool{}
@@ -828,6 +829,97 @@ func TestSyncRefusesForeignBridge(t *testing.T) {
 	}
 }
 
+func TestSyncRefusesEditedOwnedBridge(t *testing.T) {
+	env := newVhostTestEnv(t)
+	ctx := context.Background()
+	if _, err := env.manager.Sync(ctx, env.request("nginx")); err != nil {
+		t.Fatalf("first Sync: %v", err)
+	}
+	bridge := env.bridge("nginx")
+	edited := []byte(vhostGeneratedHeader + "\n\ninclude /tmp/evil/*.conf;\n")
+	if err := os.WriteFile(bridge, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.manager.Sync(ctx, env.request("nginx")); !errors.Is(err, helperproto.ErrVhostIncludeMissing) {
+		t.Fatalf("error = %v, want VHOST_INCLUDE_MISSING", err)
+	}
+	data, err := os.ReadFile(bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, edited) {
+		t.Fatalf("edited bridge was overwritten:\n%s", data)
+	}
+}
+
+func TestRemoveRefusesEditedOwnedBridge(t *testing.T) {
+	env := newVhostTestEnv(t)
+	ctx := context.Background()
+	if _, err := env.manager.SetMode(ctx, "nginx", env.request("nginx")); err != nil {
+		t.Fatalf("SetMode nginx: %v", err)
+	}
+	bridge := env.bridge("nginx")
+	edited := []byte(vhostGeneratedHeader + "\n\ninclude /tmp/evil/*.conf;\n")
+	if err := os.WriteFile(bridge, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.manager.Remove(ctx); !errors.Is(err, helperproto.ErrVhostIncludeMissing) {
+		t.Fatalf("error = %v, want VHOST_INCLUDE_MISSING", err)
+	}
+	if _, err := os.Stat(bridge); err != nil {
+		t.Fatalf("edited bridge was removed: %v", err)
+	}
+	status, err := env.manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != "nginx" {
+		t.Fatalf("mode = %q, want nginx", status.Mode)
+	}
+}
+
+func TestSyncBridgeMigrationOwnership(t *testing.T) {
+	t.Run("matching bridge is adopted", func(t *testing.T) {
+		env := newVhostTestEnv(t)
+		bridge := env.bridge("nginx")
+		if err := os.MkdirAll(filepath.Dir(bridge), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content, err := env.manager.bridgeContent(vhost.ServerNginx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(bridge, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.manager.Sync(context.Background(), env.request("nginx")); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		state, err := env.manager.readState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.BridgeHash == "" {
+			t.Fatal("matching pre-existing bridge was not recorded as owned")
+		}
+	})
+
+	t.Run("edited header bridge without state is refused", func(t *testing.T) {
+		env := newVhostTestEnv(t)
+		bridge := env.bridge("nginx")
+		if err := os.MkdirAll(filepath.Dir(bridge), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		edited := []byte(vhostGeneratedHeader + "\n\ninclude /tmp/evil/*.conf;\n")
+		if err := os.WriteFile(bridge, edited, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.manager.Sync(context.Background(), env.request("nginx")); !errors.Is(err, helperproto.ErrVhostIncludeMissing) {
+			t.Fatalf("error = %v, want VHOST_INCLUDE_MISSING", err)
+		}
+	})
+}
+
 func TestSyncAutoDetectsNginxInclude(t *testing.T) {
 	env := newVhostTestEnv(t)
 	env.manager.NginxIncludeDir = ""
@@ -858,10 +950,46 @@ func TestSyncAutoDetectsNginxInclude(t *testing.T) {
 	}
 }
 
+func TestSyncAutoDetectsDebianNginxInclude(t *testing.T) {
+	env := newVhostTestEnv(t)
+	env.manager.NginxIncludeDir = ""
+	base := t.TempDir()
+	confDir := filepath.Join(base, "etc", "nginx")
+	includeDir := filepath.Join(confDir, "conf.d")
+	if err := os.MkdirAll(includeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	confPath := filepath.Join(confDir, "nginx.conf")
+	if err := os.WriteFile(confPath, []byte("events {}\nhttp {\n    include conf.d/*.conf;\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.fn = func(name string, args []string) ([]byte, error) {
+		if name == "nginx" && len(args) == 1 && args[0] == "-V" {
+			return []byte("nginx version: nginx/1.24.0\nconfigure arguments: --prefix=/usr/share/nginx --conf-path=" + confPath + "\n"), nil
+		}
+		if name == "nginx" && len(args) == 1 && args[0] == "-t" {
+			return nil, nil
+		}
+		return nil, nil
+	}
+	if _, err := env.manager.Sync(context.Background(), env.request("nginx")); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(includeDir, bridgeFilename)); err != nil {
+		t.Fatalf("Debian-layout bridge: %v", err)
+	}
+}
+
 func TestSyncAutoDetectIncludeMissing(t *testing.T) {
 	env := newVhostTestEnv(t)
 	env.manager.NginxIncludeDir = ""
 	prefix := t.TempDir()
+	env.manager.nginxCandidates = func(prefix, _ string) []includeCandidate {
+		return []includeCandidate{{
+			dir:    filepath.Join(prefix, "conf", "conf.d"),
+			config: filepath.Join(prefix, "conf", "nginx.conf"),
+		}}
+	}
 	env.runner.fn = func(name string, args []string) ([]byte, error) {
 		if name == "nginx" && len(args) == 1 && args[0] == "-V" {
 			return []byte("nginx version: nginx/1.24.0\nconfigure arguments: --prefix=" + prefix + "\n"), nil
@@ -1058,6 +1186,123 @@ func TestSetModeExternalRestoresOldBridgeOnNewFailure(t *testing.T) {
 	}
 	if status.Mode != "nginx" {
 		t.Fatalf("mode = %q, want nginx", status.Mode)
+	}
+	for _, name := range []string{"s-1.crt", "s-1.key", "__dashboard__.crt", "__dashboard__.key"} {
+		if _, err := os.Stat(filepath.Join(env.root, "tls", name)); err != nil {
+			t.Fatalf("shared TLS file %s was removed by the failed switch: %v", name, err)
+		}
+	}
+	reloads := 0
+	for _, call := range env.runner.invocations("systemctl") {
+		if len(call.args) == 2 && call.args[0] == "reload" && call.args[1] == "nginx" {
+			reloads++
+		}
+	}
+	if reloads < 2 {
+		t.Fatalf("old nginx was not reloaded during rollback (reloads = %d)", reloads)
+	}
+}
+
+func TestSetModeBuiltinForwarderFailureRestoresExternal(t *testing.T) {
+	env := newVhostTestEnv(t)
+	ctx := context.Background()
+	if _, err := env.manager.SetMode(ctx, "nginx", env.request("nginx")); err != nil {
+		t.Fatalf("SetMode nginx: %v", err)
+	}
+	env.manager.Forwarders = func(_ context.Context, enable bool) error {
+		env.mu.Lock()
+		env.forwarderCalls = append(env.forwarderCalls, enable)
+		env.mu.Unlock()
+		if enable {
+			return errors.New("ports 80/443 are unavailable")
+		}
+		return nil
+	}
+	if _, err := env.manager.SetMode(ctx, "builtin", helperproto.VHostSyncRequest{}); !errors.Is(err, helperproto.ErrVhostSyncFailed) {
+		t.Fatalf("error = %v, want VHOST_SYNC_FAILED", err)
+	}
+	if _, err := os.Stat(env.bridge("nginx")); err != nil {
+		t.Fatalf("bridge was not restored: %v", err)
+	}
+	if env.currentTarget("nginx") == "" {
+		t.Fatal("release was not restored")
+	}
+	if _, err := os.Stat(filepath.Join(env.root, "tls", "s-1.crt")); err != nil {
+		t.Fatalf("TLS was not restored: %v", err)
+	}
+	status, err := env.manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != "nginx" {
+		t.Fatalf("mode = %q, want nginx", status.Mode)
+	}
+}
+
+func TestSetModeBuiltinRemovalFailureRestoresExternal(t *testing.T) {
+	env := newVhostTestEnv(t)
+	ctx := context.Background()
+	if _, err := env.manager.SetMode(ctx, "nginx", env.request("nginx")); err != nil {
+		t.Fatalf("SetMode nginx: %v", err)
+	}
+	releasesDir := filepath.Join(env.root, "nginx", "releases")
+	if err := os.Chmod(releasesDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(releasesDir, 0o755) })
+	if _, err := env.manager.SetMode(ctx, "builtin", helperproto.VHostSyncRequest{}); err == nil {
+		t.Fatal("SetMode builtin succeeded despite an unremovable release")
+	}
+	if _, err := os.Stat(env.bridge("nginx")); err != nil {
+		t.Fatalf("bridge was not restored: %v", err)
+	}
+	if env.currentTarget("nginx") == "" {
+		t.Fatal("current release was not restored")
+	}
+	status, err := env.manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != "nginx" {
+		t.Fatalf("mode = %q, want nginx", status.Mode)
+	}
+	if got := env.forwarders(); len(got) != 1 || got[0] != false {
+		t.Fatalf("forwarders after failed teardown = %v, want [false]", got)
+	}
+}
+
+func TestRemoveRemovalFailureKeepsExternalState(t *testing.T) {
+	env := newVhostTestEnv(t)
+	ctx := context.Background()
+	if _, err := env.manager.SetMode(ctx, "nginx", env.request("nginx")); err != nil {
+		t.Fatalf("SetMode nginx: %v", err)
+	}
+	releasesDir := filepath.Join(env.root, "nginx", "releases")
+	if err := os.Chmod(releasesDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(releasesDir, 0o755) })
+	if err := env.manager.Remove(ctx); err == nil {
+		t.Fatal("Remove succeeded despite an unremovable release")
+	}
+	if _, err := os.Stat(env.bridge("nginx")); err != nil {
+		t.Fatalf("bridge was not restored: %v", err)
+	}
+	if env.currentTarget("nginx") == "" {
+		t.Fatal("current release was not restored")
+	}
+	if _, err := os.Stat(filepath.Join(env.root, "tls", "s-1.crt")); err != nil {
+		t.Fatalf("TLS was removed after a failed teardown: %v", err)
+	}
+	status, err := env.manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != "nginx" {
+		t.Fatalf("mode = %q, want nginx", status.Mode)
+	}
+	if got := env.forwarders(); len(got) != 1 || got[0] != false {
+		t.Fatalf("forwarders after failed Remove = %v, want [false]", got)
 	}
 }
 
