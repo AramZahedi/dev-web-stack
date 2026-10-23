@@ -1,0 +1,412 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/AramZahedi/dev-web-stack/internal/daemon"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/sites"
+)
+
+// fakeAPI is a minimal Unix-socket API used by the client tests.
+type fakeAPI struct {
+	mu     sync.Mutex
+	sites  map[string]model.Site
+	routes []recordedRequest
+	err    error
+}
+
+type recordedRequest struct {
+	method string
+	path   string
+	query  string
+	body   string
+}
+
+func (f *fakeAPI) record(r *http.Request) {
+	data, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	f.routes = append(f.routes, recordedRequest{
+		method: r.Method,
+		path:   r.URL.Path,
+		query:  r.URL.RawQuery,
+		body:   string(data),
+	})
+	f.mu.Unlock()
+}
+
+func (f *fakeAPI) last(t *testing.T, method, path string) recordedRequest {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.routes) - 1; i >= 0; i-- {
+		if f.routes[i].method == method && f.routes[i].path == path {
+			return f.routes[i]
+		}
+	}
+	t.Fatalf("no %s %s request recorded: %+v", method, path, f.routes)
+	return recordedRequest{}
+}
+
+func (f *fakeAPI) lastBody() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.routes) == 0 {
+		return ""
+	}
+	return f.routes[len(f.routes)-1].body
+}
+
+func (f *fakeAPI) writeErrorOr(w http.ResponseWriter, ok func()) {
+	if f.err != nil {
+		writeTestJSON(w, http.StatusConflict, map[string]any{
+			"code":    "DOMAIN_CONFLICT",
+			"message": f.err.Error(),
+			"details": map[string]any{"field": "name"},
+		})
+		return
+	}
+	ok()
+}
+
+func writeTestJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func startFakeAPI(t *testing.T, home string, api *fakeAPI) {
+	t.Helper()
+	if api.sites == nil {
+		api.sites = map[string]model.Site{}
+	}
+	socket := daemon.SocketPath(home)
+	if err := os.MkdirAll(filepath.Dir(socket), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: api.mux()}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+}
+
+func (f *fakeAPI) mux() *http.ServeMux {
+	if f.sites == nil {
+		f.sites = map[string]model.Site{}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/sites", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			f.mu.Lock()
+			list := make([]model.Site, 0, len(f.sites))
+			for _, site := range f.sites {
+				list = append(list, site)
+			}
+			f.mu.Unlock()
+			writeTestJSON(w, http.StatusOK, list)
+		})
+	})
+	mux.HandleFunc("POST /api/v1/sites", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			var req struct {
+				Name string `json:"name"`
+				Path string `json:"path"`
+				Kind string `json:"kind"`
+			}
+			if err := json.Unmarshal([]byte(f.lastBody()), &req); err != nil {
+				writeTestJSON(w, http.StatusBadRequest, map[string]any{"code": "INVALID_REQUEST", "message": err.Error(), "details": nil})
+				return
+			}
+			site := model.Site{ID: "site-1", Name: req.Name, Domain: req.Name + ".test", Kind: model.SiteKind(req.Kind), HostPath: req.Path}
+			f.mu.Lock()
+			f.sites[site.ID] = site
+			f.mu.Unlock()
+			writeTestJSON(w, http.StatusCreated, site)
+		})
+	})
+	mux.HandleFunc("GET /api/v1/sites/{ref}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			f.mu.Lock()
+			site, ok := f.sites[r.PathValue("ref")]
+			f.mu.Unlock()
+			if !ok {
+				writeTestJSON(w, http.StatusNotFound, map[string]any{"code": "NOT_FOUND", "message": "missing", "details": nil})
+				return
+			}
+			writeTestJSON(w, http.StatusOK, site)
+		})
+	})
+	mux.HandleFunc("PATCH /api/v1/sites/{ref}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			f.mu.Lock()
+			site, ok := f.sites[r.PathValue("ref")]
+			f.mu.Unlock()
+			if !ok {
+				writeTestJSON(w, http.StatusNotFound, map[string]any{"code": "NOT_FOUND", "message": "missing", "details": nil})
+				return
+			}
+			var req struct {
+				Domain string `json:"domain"`
+			}
+			_ = json.Unmarshal([]byte(f.lastBody()), &req)
+			if req.Domain != "" {
+				site.Domain = req.Domain
+			}
+			f.mu.Lock()
+			f.sites[site.ID] = site
+			f.mu.Unlock()
+			writeTestJSON(w, http.StatusOK, site)
+		})
+	})
+	mux.HandleFunc("DELETE /api/v1/sites/{ref}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			f.mu.Lock()
+			delete(f.sites, r.PathValue("ref"))
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		})
+	})
+	mux.HandleFunc("POST /api/v1/sites/{ref}/{action}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { w.WriteHeader(http.StatusAccepted) })
+	})
+	mux.HandleFunc("GET /api/v1/sites/{ref}/logs/stream", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "data: {\"text\":\"hello\"}\n\n")
+		})
+	})
+	mux.HandleFunc("GET /api/v1/doctor", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, map[string]any{"checks": []any{}, "ok": true}) })
+	})
+	mux.HandleFunc("POST /api/v1/doctor/repair", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, map[string]any{"checks": []any{}, "ok": true}) })
+	})
+	mux.HandleFunc("GET /api/v1/trust", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, []any{}) })
+	})
+	mux.HandleFunc("POST /api/v1/trust/repair", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, []any{}) })
+	})
+	mux.HandleFunc("DELETE /api/v1/trust", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, []any{}) })
+	})
+	mux.HandleFunc("GET /api/v1/runtimes", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, []any{}) })
+	})
+	mux.HandleFunc("GET /api/v1/runtimes/available", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, []any{}) })
+	})
+	mux.HandleFunc("POST /api/v1/runtimes/install", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusCreated, model.RuntimeBuild{ID: "node-24", Kind: "node", Version: "24"})
+		})
+	})
+	mux.HandleFunc("DELETE /api/v1/runtimes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { w.WriteHeader(http.StatusNoContent) })
+	})
+	return mux
+}
+
+func TestClientSitesCRUD(t *testing.T) {
+	home := t.TempDir()
+	startFakeAPI(t, home, &fakeAPI{sites: map[string]model.Site{}})
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	site, err := c.AddSite(context.Background(), sites.CreateRequest{Name: "blog", Path: t.TempDir(), Kind: "static"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := c.ListSites(context.Background())
+	if err != nil || len(list) != 1 || list[0].Domain != "blog.test" {
+		t.Fatalf("%+v %v", list, err)
+	}
+	if err := c.DeleteSite(context.Background(), site.ID); err != nil {
+		t.Fatal(err)
+	}
+	if list, err = c.ListSites(context.Background()); err != nil || len(list) != 0 {
+		t.Fatalf("site not deleted: %+v %v", list, err)
+	}
+}
+
+func TestClientRoutesAndPayloads(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	ctx := context.Background()
+
+	site, err := c.AddSite(ctx, sites.CreateRequest{Name: "blog", Path: "/tmp/blog", Kind: "static", SPAFallback: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := api.last(t, http.MethodPost, "/api/v1/sites")
+	if !strings.Contains(create.body, `"path":"/tmp/blog"`) || !strings.Contains(create.body, `"spa_fallback":true`) {
+		t.Fatalf("create payload = %s", create.body)
+	}
+
+	if _, err := c.GetSite(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	api.last(t, http.MethodGet, "/api/v1/sites/"+site.ID)
+
+	www := false
+	if _, err := c.UpdateSite(ctx, site.ID, sites.UpdateRequest{Domain: "hello.test", WWW: &www}); err != nil {
+		t.Fatal(err)
+	}
+	update := api.last(t, http.MethodPatch, "/api/v1/sites/"+site.ID)
+	if !strings.Contains(update.body, `"domain":"hello.test"`) || !strings.Contains(update.body, `"www":false`) {
+		t.Fatalf("update payload = %s", update.body)
+	}
+
+	if err := c.SiteAction(ctx, site.ID, "restart"); err != nil {
+		t.Fatal(err)
+	}
+	api.last(t, http.MethodPost, "/api/v1/sites/"+site.ID+"/restart")
+
+	logs, err := c.Logs(ctx, site.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := io.ReadAll(logs)
+	_ = logs.Close()
+	if err != nil || !strings.Contains(string(stream), "hello") {
+		t.Fatalf("logs = %q %v", stream, err)
+	}
+	logReq := api.last(t, http.MethodGet, "/api/v1/sites/"+site.ID+"/logs/stream")
+	if !strings.Contains(logReq.query, "follow=false") {
+		t.Fatalf("logs query = %q", logReq.query)
+	}
+
+	if report, err := c.Doctor(ctx); err != nil || !report.OK {
+		t.Fatalf("doctor = %+v %v", report, err)
+	}
+	if report, err := c.Repair(ctx); err != nil || !report.OK {
+		t.Fatalf("repair = %+v %v", report, err)
+	}
+	if targets, err := c.TrustStatus(ctx); err != nil || len(targets) != 0 {
+		t.Fatalf("trust status = %+v %v", targets, err)
+	}
+	if targets, err := c.TrustRepair(ctx); err != nil || len(targets) != 0 {
+		t.Fatalf("trust repair = %+v %v", targets, err)
+	}
+	if targets, err := c.TrustRemove(ctx); err != nil || len(targets) != 0 {
+		t.Fatalf("trust remove = %+v %v", targets, err)
+	}
+	if builds, err := c.Runtimes(ctx); err != nil || len(builds) != 0 {
+		t.Fatalf("runtimes = %+v %v", builds, err)
+	}
+	if entries, err := c.AvailableRuntimes(ctx); err != nil || len(entries) != 0 {
+		t.Fatalf("available = %+v %v", entries, err)
+	}
+	build, err := c.InstallRuntime(ctx, "node-24")
+	if err != nil || build.ID != "node-24" {
+		t.Fatalf("install = %+v %v", build, err)
+	}
+	install := api.last(t, http.MethodPost, "/api/v1/runtimes/install")
+	if !strings.Contains(install.body, `"id":"node-24"`) {
+		t.Fatalf("install payload = %s", install.body)
+	}
+	if err := c.RemoveRuntime(ctx, "node-24"); err != nil {
+		t.Fatal(err)
+	}
+	api.last(t, http.MethodDelete, "/api/v1/runtimes/node-24")
+
+	if err := c.DeleteSite(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	api.last(t, http.MethodDelete, "/api/v1/sites/"+site.ID)
+}
+
+func TestClientErrorMapping(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}, err: errors.New("blog.test is already used")}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	_, err = c.AddSite(context.Background(), sites.CreateRequest{Name: "blog", Path: "/tmp/blog", Kind: "static"})
+	if err == nil {
+		t.Fatal("AddSite succeeded against an error response")
+	}
+	var clientErr *Error
+	if !errors.As(err, &clientErr) {
+		t.Fatalf("error type = %T, want *client.Error", err)
+	}
+	if clientErr.Code != "DOMAIN_CONFLICT" || !strings.Contains(clientErr.Message, "already used") {
+		t.Fatalf("error = %+v", clientErr)
+	}
+	details, ok := clientErr.Details.(map[string]any)
+	if !ok || details["field"] != "name" {
+		t.Fatalf("details = %#v", clientErr.Details)
+	}
+}
+
+func TestNewRequiresSocket(t *testing.T) {
+	home := t.TempDir()
+	if _, err := New(home); err == nil {
+		t.Fatal("New accepted a missing socket")
+	}
+	if err := os.MkdirAll(filepath.Dir(daemon.SocketPath(home)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(daemon.SocketPath(home), []byte("not a socket"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(home); err == nil {
+		t.Fatal("New accepted a regular file as a socket")
+	}
+}
+
+func TestClientActionValidation(t *testing.T) {
+	home := t.TempDir()
+	startFakeAPI(t, home, &fakeAPI{sites: map[string]model.Site{}})
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if err := c.SiteAction(context.Background(), "site-1", "explode"); err == nil {
+		t.Fatal("SiteAction accepted an unknown action")
+	}
+}
