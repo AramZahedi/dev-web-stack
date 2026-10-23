@@ -347,47 +347,67 @@ func (s *Service) Update(ctx context.Context, ref string, req UpdateRequest) (mo
 	if err != nil {
 		return model.Site{}, err
 	}
+	phpUpdate, err := s.preparePHPUpdateLocked(ctx, current, &updated)
+	if err != nil {
+		return model.Site{}, err
+	}
+	fail := func(certChanged bool, cause error) (model.Site, error) {
+		phpUpdate.cleanup()
+		return model.Site{}, s.rollbackUpdate(ctx, current, oldHosts, oldDomains, certChanged, cause)
+	}
 
 	if domainsChanged {
 		union := append(append([]string(nil), oldDomains...), newDomains...)
 		unionHosts, err := s.hostsFor(ctx, current.ID, union)
 		if err != nil {
+			phpUpdate.cleanup()
 			return model.Site{}, err
 		}
 		if err := s.syncHosts(ctx, unionHosts); err != nil {
+			phpUpdate.cleanup()
 			cause := fmt.Errorf("sites: sync hosts for %q: %w", current.Name, err)
 			return model.Site{}, errors.Join(cause, s.syncHosts(ctx, oldHosts))
 		}
 		if _, err := s.deps.Certs.Ensure(ctx, current.ID, newDomains); err != nil {
 			cause := fmt.Errorf("sites: issue certificate for %q: %w", current.Name, err)
-			return model.Site{}, s.rollbackUpdate(ctx, current, oldHosts, oldDomains, true, cause)
+			return fail(true, cause)
 		}
 	}
 
 	updated.UpdatedAt = s.currentTime()
 	if err := s.deps.Store.UpdateSite(ctx, updated); err != nil {
 		cause := fmt.Errorf("sites: update %q: %w", current.Name, err)
-		return model.Site{}, s.rollbackUpdate(ctx, current, oldHosts, oldDomains, domainsChanged, cause)
+		return fail(domainsChanged, cause)
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		cause := fmt.Errorf("sites: publish routes for %q: %w", current.Name, err)
-		return model.Site{}, s.rollbackUpdate(ctx, current, oldHosts, oldDomains, domainsChanged, cause)
+		return fail(domainsChanged, cause)
 	}
 	if err := s.syncVhostsLocked(ctx, ""); err != nil {
 		cause := fmt.Errorf("sites: publish vhost for %q: %w", current.Name, err)
-		return model.Site{}, s.rollbackUpdate(ctx, current, oldHosts, oldDomains, domainsChanged, cause)
+		return fail(domainsChanged, cause)
 	}
 
 	if domainsChanged {
 		finalHosts, err := s.hostsFor(ctx, current.ID, newDomains)
 		if err != nil {
 			cause := fmt.Errorf("sites: rebuild hosts for %q: %w", current.Name, err)
-			return model.Site{}, s.rollbackUpdate(ctx, current, oldHosts, oldDomains, true, cause)
+			return fail(true, cause)
 		}
 		if err := s.syncHosts(ctx, finalHosts); err != nil {
 			cause := fmt.Errorf("sites: remove old hosts for %q: %w", current.Name, err)
-			return model.Site{}, s.rollbackUpdate(ctx, current, oldHosts, oldDomains, true, cause)
+			return fail(true, cause)
 		}
+	}
+
+	if phpUpdate.applied {
+		if updated.PHPConfigHash != "" {
+			if err := s.saveAppliedPHPConfigLocked(ctx, updated); err != nil {
+				cause := fmt.Errorf("sites: save PHP configuration for %q: %w", current.Name, err)
+				return fail(domainsChanged, cause)
+			}
+		}
+		s.commitPHPFilesBestEffortLocked(ctx, updated)
 	}
 
 	s.emitEvent(ctx, current.ID, "site.updated", fmt.Sprintf("site %s updated", updated.Name))

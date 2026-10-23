@@ -136,11 +136,14 @@ func (s *Service) renderPHPFilesLocked(ctx context.Context, site model.Site, bui
 		ListenHost:   "127.0.0.1",
 		ListenPort:   site.FastCGIPort,
 		DocumentRoot: documentRoot,
-		ErrorLog:     filepath.Join(generationDir, "php-fpm.log"),
-		PIDFile:      filepath.Join(generationDir, "php-fpm.pid"),
-		User:         "",
-		Group:        "",
-		Env:          cloneEnv(site.Env),
+		// The supervisor wires php-fpm's stderr to the site log stream, so
+		// fd 2 merges master and pool output (with redaction) into
+		// `devstack logs`. Only the PID file is generation-local.
+		ErrorLog: "/proc/self/fd/2",
+		PIDFile:  filepath.Join(generationDir, "php-fpm.pid"),
+		User:     "",
+		Group:    "",
+		Env:      cloneEnv(site.Env),
 	})
 	if err != nil {
 		return phpRendered{}, fmt.Errorf("sites: render php-fpm.conf for %q: %w", site.Name, err)
@@ -409,13 +412,21 @@ func (s *Service) phpSiteDir(siteID string) (string, error) {
 	if home == "" {
 		return "", errors.New("sites: config home is not set")
 	}
-	if siteID == "" || !filepath.IsLocal(siteID) || strings.ContainsAny(siteID, `/\`) {
+	// filepath.IsLocal accepts "." and trailing separators, which would make
+	// the site directory the sites root and let RemoveAll wipe every site.
+	cleaned := filepath.Clean(siteID)
+	if siteID == "" ||
+		cleaned == "." ||
+		cleaned == ".." ||
+		cleaned != siteID ||
+		!filepath.IsLocal(cleaned) ||
+		strings.ContainsAny(siteID, `/\`) {
 		return "", fmt.Errorf("sites: invalid PHP site id %q", siteID)
 	}
 	root := config.NewPaths(home).Sites
-	dir := filepath.Join(root, siteID)
+	dir := filepath.Join(root, cleaned)
 	rel, err := filepath.Rel(root, dir)
-	if err != nil || rel != siteID {
+	if err != nil || rel != cleaned {
 		return "", fmt.Errorf("sites: invalid PHP site id %q", siteID)
 	}
 	return dir, nil

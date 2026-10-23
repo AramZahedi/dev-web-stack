@@ -327,6 +327,87 @@ func (s *Service) stopPHPProcessLocked(ctx context.Context, siteID string) error
 	return nil
 }
 
+// phpUpdatePlan describes generation work performed for a PHP update. The new
+// generation is written before the row is published and removed again if the
+// update fails; the previous generation is always preserved.
+type phpUpdatePlan struct {
+	applied         bool
+	generationDir   string
+	removeOnFailure bool
+}
+
+// cleanup removes only a generation directory created by this update.
+func (p phpUpdatePlan) cleanup() {
+	if p.removeOnFailure && p.generationDir != "" {
+		_ = os.RemoveAll(p.generationDir)
+	}
+}
+
+// preparePHPUpdateLocked recomposes a PHP generation when the document root or
+// environment changed. It does not start or restart the master; the running
+// master keeps the generation it was started with, and the next start uses the
+// new files.
+func (s *Service) preparePHPUpdateLocked(ctx context.Context, current model.Site, updated *model.Site) (phpUpdatePlan, error) {
+	if updated == nil || updated.Kind != model.SitePHP {
+		return phpUpdatePlan{}, nil
+	}
+	documentRootChanged := strings.TrimSpace(current.DocumentRoot) != strings.TrimSpace(updated.DocumentRoot)
+	environmentChanged := !sameStringMap(current.Env, updated.Env)
+	if !documentRootChanged && !environmentChanged {
+		return phpUpdatePlan{}, nil
+	}
+	if updated.FastCGIPort == 0 {
+		// No applied generation exists; the next start composes with the new
+		// values and allocates a port.
+		updated.PHPConfigHash = ""
+		return phpUpdatePlan{}, nil
+	}
+
+	build, err := s.phpBuildForSiteLocked(ctx, *updated)
+	if err != nil {
+		return phpUpdatePlan{}, err
+	}
+	files, err := s.composePHPFilesLocked(ctx, *updated, build)
+	if err != nil {
+		return phpUpdatePlan{}, err
+	}
+	newDir, err := s.phpGenerationDir(updated.ID, files.Hash)
+	if err != nil {
+		return phpUpdatePlan{}, err
+	}
+	existing := phpGenerationComplete(newDir)
+	updated.PHPConfigHash = files.Hash
+	generationDir, err := s.writePHPFilesLocked(updated.ID, files)
+	if err != nil {
+		return phpUpdatePlan{}, err
+	}
+	if err := s.validatePHPFilesLocked(ctx, *updated, build, generationDir); err != nil {
+		if !existing {
+			_ = os.RemoveAll(generationDir)
+		}
+		return phpUpdatePlan{}, err
+	}
+	return phpUpdatePlan{
+		applied:         true,
+		generationDir:   generationDir,
+		removeOnFailure: !existing,
+	}, nil
+}
+
+// sameStringMap compares two environment maps as unordered key/value sets.
+func sameStringMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		other, ok := b[key]
+		if !ok || other != value {
+			return false
+		}
+	}
+	return true
+}
+
 // ensurePHPConfigLocked returns a usable site configuration for PHPExec,
 // composing and persisting one when the stored generation is missing.
 func (s *Service) ensurePHPConfigLocked(ctx context.Context, site model.Site) (model.Site, model.RuntimeBuild, error) {

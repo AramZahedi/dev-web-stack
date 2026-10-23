@@ -2,10 +2,12 @@ package sites
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -284,11 +286,14 @@ func TestCreatePHPComposesIniFPMAndStoresSnapshot(t *testing.T) {
 	if !strings.Contains(fpm, `chdir = "`+filepath.Clean(fakes.root)+`"`) {
 		t.Fatalf("document root missing from php-fpm.conf:\n%s", fpm)
 	}
-	if !strings.Contains(fpm, `error_log = "`+filepath.Join(genDir, "php-fpm.log")+`"`) {
-		t.Fatalf("generation error log missing from php-fpm.conf:\n%s", fpm)
+	if !strings.Contains(fpm, `error_log = "/proc/self/fd/2"`) {
+		t.Fatalf("php-fpm stderr is not the site log stream:\n%s", fpm)
 	}
-	if strings.Contains(fpm, "/proc/self/fd/2") {
-		t.Fatalf("php-fpm.conf uses a process fd for logging:\n%s", fpm)
+	if strings.Contains(fpm, "php-fpm.log") {
+		t.Fatalf("php-fpm.conf bypasses the site log stream with a log file:\n%s", fpm)
+	}
+	if !strings.Contains(fpm, `pid = "`+filepath.Join(genDir, "php-fpm.pid")+`"`) {
+		t.Fatalf("generation-local PID file missing from php-fpm.conf:\n%s", fpm)
 	}
 	if !strings.Contains(fpm, `env[APP_ENV] = "local"`) {
 		t.Fatalf("environment missing from php-fpm.conf:\n%s", fpm)
@@ -796,28 +801,25 @@ func TestStartPHPRequiresAnInstalledBuild(t *testing.T) {
 	}
 }
 
-func TestUpdatePHPFrontControllerAndDocumentRootWithoutRestart(t *testing.T) {
+func TestUpdatePHPFrontControllerOnlyDoesNotRecompose(t *testing.T) {
 	svc, fakes := newTestService(t)
 	useServingMode(svc, fakes, "nginx")
 	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
-	if err := os.MkdirAll(filepath.Join(fakes.root, "public"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
 	hash := site.PHPConfigHash
 	lint, fpm := fakes.php.counts()
 	startCalls := fakes.backend.startCount()
 
 	front := true
-	updated, err := svc.Update(ctx, site.ID, UpdateRequest{FrontController: &front, DocumentRoot: "public"})
+	updated, err := svc.Update(ctx, site.ID, UpdateRequest{FrontController: &front})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !updated.FrontController || updated.DocumentRoot != "public" {
+	if !updated.FrontController {
 		t.Fatalf("updated site = %+v", updated)
 	}
 	if updated.FastCGIPort != site.FastCGIPort || updated.PHPConfigHash != hash {
-		t.Fatalf("PHP config changed on an update: %+v", updated)
+		t.Fatalf("PHP config changed on a front-controller-only update: %+v", updated)
 	}
 	if gotLint, gotFPM := fakes.php.counts(); gotLint != lint || gotFPM != fpm {
 		t.Fatal("validators ran on a PHP front-controller update")
@@ -829,7 +831,7 @@ func TestUpdatePHPFrontControllerAndDocumentRootWithoutRestart(t *testing.T) {
 	if !ok {
 		t.Fatal("route missing")
 	}
-	if !route.FrontController || route.DocumentRoot != filepath.Join(fakes.root, "public") {
+	if !route.FrontController || route.DocumentRoot != filepath.Clean(fakes.root) {
 		t.Fatalf("route = %+v", route)
 	}
 	if route.Kind != proxy.KindPHP || route.Upstream != "127.0.0.1:"+strconv.Itoa(site.FastCGIPort) {
@@ -839,9 +841,228 @@ func TestUpdatePHPFrontControllerAndDocumentRootWithoutRestart(t *testing.T) {
 	if !ok || len(req.Sites) != 1 {
 		t.Fatalf("vhost request = %+v", req)
 	}
-	if !req.Sites[0].FrontController || req.Sites[0].DocumentRoot != filepath.Join(fakes.root, "public") {
+	if !req.Sites[0].FrontController || req.Sites[0].DocumentRoot != filepath.Clean(fakes.root) {
 		t.Fatalf("vhost site = %+v", req.Sites[0])
 	}
+	if got := phpGenerationDirs(t, fakes, site.ID); !reflect.DeepEqual(got, []string{hash}) {
+		t.Fatalf("generations = %v, want only %s", got, hash)
+	}
+}
+
+func TestUpdatePHPDocumentRootRecomposesGeneration(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	public := filepath.Join(fakes.root, "public")
+	if err := os.MkdirAll(public, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	oldHash := site.PHPConfigHash
+	oldDir := phpGenerationDir(t, fakes, site)
+	lint, fpm := fakes.php.counts()
+	startCalls := fakes.backend.startCount()
+
+	updated, err := svc.Update(ctx, site.ID, UpdateRequest{DocumentRoot: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DocumentRoot != "public" || updated.PHPConfigHash == oldHash {
+		t.Fatalf("updated site = %+v (old hash %s)", updated, oldHash)
+	}
+	if updated.FastCGIPort != site.FastCGIPort {
+		t.Fatalf("FastCGI port changed: %d -> %d", site.FastCGIPort, updated.FastCGIPort)
+	}
+	if gotLint, gotFPM := fakes.php.counts(); gotLint != lint+1 || gotFPM != fpm+1 {
+		t.Fatalf("generation was not recomposed: lint %d->%d fpm %d->%d", lint, gotLint, fpm, gotFPM)
+	}
+	if fakes.backend.startCount() != startCalls {
+		t.Fatal("FPM restarted on a document-root update")
+	}
+	if _, err := os.Stat(oldDir); err != nil {
+		t.Fatalf("old generation removed: %v", err)
+	}
+	newDir := filepath.Join(fakes.config.Home, "sites", site.ID, updated.PHPConfigHash)
+	fpmConfig := string(readFile(t, filepath.Join(newDir, "php-fpm.conf")))
+	if !strings.Contains(fpmConfig, `chdir = "`+public+`"`) {
+		t.Fatalf("new generation uses the old document root:\n%s", fpmConfig)
+	}
+	active := string(readFile(t, filepath.Join(fakes.config.Home, "sites", site.ID, "php-fpm.conf")))
+	if !strings.Contains(active, `chdir = "`+public+`"`) {
+		t.Fatalf("active copy was not committed:\n%s", active)
+	}
+	snapshot, err := fakes.store.GetSitePHPConfig(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ConfigHash != updated.PHPConfigHash {
+		t.Fatalf("snapshot hash = %q, want %q", snapshot.ConfigHash, updated.PHPConfigHash)
+	}
+
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	spec, ok := fakes.backend.lastPrepared()
+	if !ok {
+		t.Fatal("backend was not prepared")
+	}
+	if spec.PHPIniPath != filepath.Join(newDir, "php.ini") || spec.FPMConfigPath != filepath.Join(newDir, "php-fpm.conf") {
+		t.Fatalf("restarted master does not use the new generation: %+v", spec)
+	}
+	if spec.DocumentRoot != "public" {
+		t.Fatalf("restarted master document root = %q", spec.DocumentRoot)
+	}
+	if spec.FastCGIPort != site.FastCGIPort {
+		t.Fatalf("restarted master port = %d", spec.FastCGIPort)
+	}
+}
+
+func TestUpdatePHPEnvironmentRecomposesGeneration(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{
+		Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4",
+		Env: map[string]string{"APP_ENV": "local"},
+	})
+	oldHash := site.PHPConfigHash
+	oldDir := phpGenerationDir(t, fakes, site)
+	startCalls := fakes.backend.startCount()
+
+	updated, err := svc.Update(ctx, site.ID, UpdateRequest{
+		Env: map[string]string{"APP_ENV": "prod", "FEATURE_X": "on"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.PHPConfigHash == oldHash {
+		t.Fatal("environment update did not change the config hash")
+	}
+	if !reflect.DeepEqual(updated.Env, map[string]string{"APP_ENV": "prod", "FEATURE_X": "on"}) {
+		t.Fatalf("env = %v", updated.Env)
+	}
+	if fakes.backend.startCount() != startCalls {
+		t.Fatal("FPM restarted on an environment update")
+	}
+	if _, err := os.Stat(oldDir); err != nil {
+		t.Fatalf("old generation removed: %v", err)
+	}
+	fpmConfig := string(readFile(t, filepath.Join(phpGenerationDir(t, fakes, updated), "php-fpm.conf")))
+	if !strings.Contains(fpmConfig, `env[APP_ENV] = "prod"`) || !strings.Contains(fpmConfig, `env[FEATURE_X] = "on"`) {
+		t.Fatalf("new generation uses the old environment:\n%s", fpmConfig)
+	}
+	if strings.Contains(fpmConfig, `env[APP_ENV] = "local"`) {
+		t.Fatalf("old environment remains in the new generation:\n%s", fpmConfig)
+	}
+}
+
+func TestUpdatePHPWithoutAPortClearsTheHash(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	public := filepath.Join(fakes.root, "public")
+	if err := os.MkdirAll(public, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.FastCGIPort = 0
+	if err := fakes.store.UpdateSite(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	lint, fpm := fakes.php.counts()
+
+	updated, err := svc.Update(ctx, site.ID, UpdateRequest{DocumentRoot: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.PHPConfigHash != "" {
+		t.Fatalf("hash = %q, want cleared without a port", updated.PHPConfigHash)
+	}
+	if gotLint, gotFPM := fakes.php.counts(); gotLint != lint || gotFPM != fpm {
+		t.Fatal("generation was composed before a port existed")
+	}
+	if got := phpGenerationDirs(t, fakes, site.ID); len(got) != 1 {
+		t.Fatalf("generations = %v, want only the previous generation", got)
+	}
+
+	if err := svc.Start(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	started := mustGet(t, svc, site.ID)
+	if started.PHPConfigHash == "" || started.FastCGIPort == 0 {
+		t.Fatalf("start did not compose a generation: %+v", started)
+	}
+	spec, _ := fakes.backend.lastPrepared()
+	if spec.DocumentRoot != "public" {
+		t.Fatalf("start used document root %q", spec.DocumentRoot)
+	}
+	fpmConfig := string(readFile(t, filepath.Join(phpGenerationDir(t, fakes, started), "php-fpm.conf")))
+	if !strings.Contains(fpmConfig, `chdir = "`+public+`"`) {
+		t.Fatalf("recomposed generation uses the old document root:\n%s", fpmConfig)
+	}
+}
+
+func TestUpdatePHPRollsBackANewGenerationOnFailure(t *testing.T) {
+	t.Run("validation failure", func(t *testing.T) {
+		svc, fakes := newTestService(t)
+		fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+		if err := os.MkdirAll(filepath.Join(fakes.root, "public"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+		oldHash := site.PHPConfigHash
+		fakes.php.lintErr = errors.New("syntax error on line 4")
+
+		if _, err := svc.Update(ctx, site.ID, UpdateRequest{DocumentRoot: "public"}); err == nil {
+			t.Fatal("want error")
+		} else if !strings.Contains(err.Error(), "syntax error") {
+			t.Fatalf("error = %v", err)
+		}
+		stored, err := fakes.store.GetSite(ctx, site.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.PHPConfigHash != oldHash || stored.DocumentRoot != "." {
+			t.Fatalf("row changed after a failed update: %+v", stored)
+		}
+		if got := phpGenerationDirs(t, fakes, site.ID); !reflect.DeepEqual(got, []string{oldHash}) {
+			t.Fatalf("generations = %v, want only %s", got, oldHash)
+		}
+	})
+
+	t.Run("route publication failure", func(t *testing.T) {
+		svc, fakes := newTestService(t)
+		fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+		if err := os.MkdirAll(filepath.Join(fakes.root, "public"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+		oldHash := site.PHPConfigHash
+		fakes.certs.loadErr = errors.New("certificate load failed")
+
+		if _, err := svc.Update(ctx, site.ID, UpdateRequest{DocumentRoot: "public"}); err == nil {
+			t.Fatal("want error")
+		} else if !strings.Contains(err.Error(), "certificate load failed") {
+			t.Fatalf("error = %v", err)
+		}
+		stored, err := fakes.store.GetSite(ctx, site.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.PHPConfigHash != oldHash || stored.DocumentRoot != "." {
+			t.Fatalf("row not rolled back: %+v", stored)
+		}
+		if got := phpGenerationDirs(t, fakes, site.ID); !reflect.DeepEqual(got, []string{oldHash}) {
+			t.Fatalf("generations = %v, want only %s", got, oldHash)
+		}
+	})
 }
 
 func TestUpdatePHPRejectsAnEscapingDocumentRoot(t *testing.T) {
@@ -1152,6 +1373,62 @@ func readFile(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// phpGenerationDirs returns the hash-named generation directories for a site.
+func phpGenerationDirs(t *testing.T, fakes *testFakes, siteID string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(fakes.config.Home, "sites", siteID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	directories := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || len(name) != 64 {
+			continue
+		}
+		if _, err := hex.DecodeString(name); err != nil {
+			continue
+		}
+		directories = append(directories, name)
+	}
+	sort.Strings(directories)
+	return directories
+}
+
+func TestPHPConfigDirectoryRejectsTheSitesRoot(t *testing.T) {
+	svc, fakes := newTestService(t)
+	sitesRoot := filepath.Join(fakes.config.Home, "sites")
+	if err := os.MkdirAll(sitesRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(sitesRoot, "keep.txt")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, siteID := range []string{".", "./", "..", "site/.", "site/..", ""} {
+		t.Run(strconv.Quote(siteID), func(t *testing.T) {
+			if dir, err := svc.phpSiteDir(siteID); err == nil {
+				t.Fatalf("phpSiteDir(%q) = %q, want error", siteID, dir)
+			}
+			if err := svc.removePHPConfigLocked(siteID); err == nil {
+				t.Fatalf("removePHPConfigLocked(%q) succeeded", siteID)
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("sites root content removed: %v", err)
+			}
+		})
+	}
+	for _, siteID := range []string{"site", "site-2", "0123456789abcdef0123456789abcdef"} {
+		if _, err := svc.phpSiteDir(siteID); err != nil {
+			t.Fatalf("phpSiteDir(%q): %v", siteID, err)
+		}
+	}
 }
 
 func assertNoPHPConfigDir(t *testing.T, fakes *testFakes, siteID string) {
