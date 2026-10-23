@@ -147,7 +147,32 @@ func startDaemon(t *testing.T, opts Options) *runningDaemon {
 	run := &runningDaemon{cancel: cancel, done: done}
 	t.Cleanup(func() { run.stop(t) })
 	waitForSocket(t, SocketPath(opts.Home), done)
+	waitForReady(t, ReadyPath(opts.Home), done)
 	return run
+}
+
+// waitForReady blocks until the daemon has finished publishing routes and
+// written its readiness marker. The control socket appears before routes are
+// published, so shutdown tests must not cancel the daemon merely because the
+// socket accepts connections; under the race detector that window is wide
+// enough to make startup fail with context cancellation.
+func waitForReady(t *testing.T, ready string, done <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		select {
+		case err := <-done:
+			t.Fatalf("daemon exited before readiness: %v", err)
+		default:
+		}
+		if _, err := os.Stat(ready); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon readiness marker %s did not appear", ready)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (r *runningDaemon) stop(t *testing.T) {
