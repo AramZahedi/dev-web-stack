@@ -153,17 +153,28 @@ func writeApacheRedirectVHost(b *strings.Builder, s SiteSpec, tls bool, scheme s
 	b.WriteString("\n")
 	b.WriteString("    RewriteEngine On\n")
 
-	targetPort := ports.http
-	if scheme == "https" {
-		targetPort = ports.https
+	sourceScheme := "http"
+	if tls {
+		sourceScheme = "https"
 	}
-	if targetPort == schemeDefaultPort(scheme) {
+	sourcePort := apacheVHostPort(ports, tls)
+	targetPort := apacheVHostPort(ports, scheme == "https")
+	targetDefault := schemeDefaultPort(scheme)
+
+	if sourcePort == schemeDefaultPort(sourceScheme) && targetPort == targetDefault {
+		// Production 80/443 output stays byte-identical to the original file.
 		fmt.Fprintf(b, "    RewriteRule ^ %s://%%{HTTP_HOST}%%{REQUEST_URI} [R=308,L]\n", scheme)
 	} else {
 		// HTTP_HOST carries the source listener's port, so capture only the
-		// host and append the configured target port explicitly.
+		// host and append the target port only when it is not the scheme
+		// default. This also fixes mixed-port setups where the source is high
+		// but the target is the standard port.
 		b.WriteString("    RewriteCond %{HTTP_HOST} ^([^:]+)\n")
-		fmt.Fprintf(b, "    RewriteRule ^ %s://%%1:%d%%{REQUEST_URI} [R=308,L]\n", scheme, targetPort)
+		if targetPort == targetDefault {
+			fmt.Fprintf(b, "    RewriteRule ^ %s://%%1%%{REQUEST_URI} [R=308,L]\n", scheme)
+		} else {
+			fmt.Fprintf(b, "    RewriteRule ^ %s://%%1:%d%%{REQUEST_URI} [R=308,L]\n", scheme, targetPort)
+		}
 	}
 	b.WriteString("</VirtualHost>\n")
 }

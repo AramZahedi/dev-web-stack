@@ -122,6 +122,84 @@ func TestRenderApacheRedirectsPreservePath(t *testing.T) {
 	}
 }
 
+func TestRenderApacheMixedPortRedirects(t *testing.T) {
+	tests := []struct {
+		name       string
+		httpPort   int
+		httpsPort  int
+		forceHTTPS bool
+		tls        bool
+		wantRule   string
+	}{
+		{
+			name:       "force https source high target default",
+			httpPort:   18080,
+			httpsPort:  443,
+			forceHTTPS: true,
+			tls:        true,
+			wantRule:   "RewriteRule ^ https://%1%{REQUEST_URI} [R=308,L]",
+		},
+		{
+			name:      "tls off source default target high",
+			httpPort:  80,
+			httpsPort: 18443,
+			tls:       false,
+			wantRule:  "RewriteRule ^ http://%1%{REQUEST_URI} [R=308,L]",
+		},
+		{
+			name:       "force https source default target high",
+			httpPort:   80,
+			httpsPort:  18443,
+			forceHTTPS: true,
+			tls:        true,
+			wantRule:   "RewriteRule ^ https://%1:18443%{REQUEST_URI} [R=308,L]",
+		},
+		{
+			name:      "tls off source high target default",
+			httpPort:  18080,
+			httpsPort: 443,
+			tls:       false,
+			wantRule:  "RewriteRule ^ http://%1:18080%{REQUEST_URI} [R=308,L]",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			site := staticSite()
+			site.TLS = tc.tls
+			if !tc.tls {
+				site.CertPEM = nil
+				site.KeyPEM = nil
+			}
+			site.ForceHTTPS = tc.forceHTTPS
+
+			set := testSet(ServerApache, 0)
+			set.Sites = []SiteSpec{site}
+			set.HTTPListenPort = tc.httpPort
+			set.HTTPSListenPort = tc.httpsPort
+
+			files, err := Render(set)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			data := files["blog-s1.conf"]
+			if len(data) == 0 {
+				t.Fatal("site config was not rendered")
+			}
+			if !bytes.Contains(data, []byte("RewriteCond %{HTTP_HOST} ^([^:]+)\n")) {
+				t.Errorf("site does not capture the host without the source port:\n%s", data)
+			}
+			if !bytes.Contains(data, []byte(tc.wantRule)) {
+				t.Errorf("site is missing %q:\n%s", tc.wantRule, data)
+			}
+			if bytes.Contains(data, []byte("RewriteRule ^ http://%{HTTP_HOST}%{REQUEST_URI}")) ||
+				bytes.Contains(data, []byte("RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI}")) {
+				t.Errorf("site still uses the source HTTP_HOST authority:\n%s", data)
+			}
+		})
+	}
+}
+
 func TestRenderEscapesApachePaths(t *testing.T) {
 	tests := []struct {
 		name string
