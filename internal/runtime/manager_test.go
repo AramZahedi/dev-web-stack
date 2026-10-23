@@ -822,6 +822,78 @@ func TestEnsureBuildInstallsPinnedRevision(t *testing.T) {
 	}
 }
 
+func TestEnsureBuildPrefersIntactInstalledBuildOverCatalog(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newAnyFixtureServer(t, archive)
+	cat := catalogFor(t, phpEntryFor(t, archive, srv.URL+"/php-8.4.4-r1-linux-x64.tar.gz", 1))
+	m, st, home, _ := newManagerWithCatalogFor(t, cat, srv.Client())
+
+	build, err := m.Install(context.Background(), "php@8.4.4-r1")
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// The build is no longer in the catalog of a later release, but the
+	// installed row must remain usable for rollback.
+	withoutPHP := catalogFor(t, offlineEntry(t))
+	m2 := NewManagerWithCatalog(st, home, srv.Client(), withoutPHP)
+	retained, err := m2.EnsureBuild(context.Background(), build.ID)
+	if err != nil {
+		t.Fatalf("EnsureBuild without catalog entry: %v", err)
+	}
+	if retained.Path != build.Path || retained.Checksum != build.Checksum {
+		t.Fatalf("retained build = %+v, want %+v", retained, build)
+	}
+
+	// A catalog load failure is irrelevant when the row is already intact.
+	m3 := newManager(st, home, srv.Client(), catalog.Catalog{}, errors.New("catalog exploded"))
+	retained, err = m3.EnsureBuild(context.Background(), build.ID)
+	if err != nil {
+		t.Fatalf("EnsureBuild with catalog load failure: %v", err)
+	}
+	if retained.Path != build.Path {
+		t.Fatalf("retained path = %q, want %q", retained.Path, build.Path)
+	}
+	if got := srv.requests.Load(); got != 1 {
+		t.Fatalf("downloads = %d, want 1 (no reinstall)", got)
+	}
+}
+
+func TestEnsureBuildStaleInstallFallsThroughToCatalog(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newAnyFixtureServer(t, archive)
+	cat := catalogFor(t, phpEntryFor(t, archive, srv.URL+"/php-8.4.4-r1-linux-x64.tar.gz", 1))
+	m, st, home, _ := newManagerWithCatalogFor(t, cat, srv.Client())
+
+	build, err := m.Install(context.Background(), "php@8.4.4-r1")
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := os.RemoveAll(build.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	broken := newManager(st, home, srv.Client(), catalog.Catalog{}, errors.New("catalog exploded"))
+	if _, err := broken.EnsureBuild(context.Background(), build.ID); err == nil ||
+		!strings.Contains(err.Error(), "catalog exploded") {
+		t.Fatalf("EnsureBuild stale row with catalog failure = %v, want catalog error", err)
+	}
+
+	repaired, err := m.EnsureBuild(context.Background(), build.ID)
+	if err != nil {
+		t.Fatalf("EnsureBuild repair: %v", err)
+	}
+	if repaired.Path != build.Path {
+		t.Fatalf("repaired path = %q, want %q", repaired.Path, build.Path)
+	}
+	if err := m.Verify(context.Background(), build.ID); err != nil {
+		t.Fatalf("Verify after repair: %v", err)
+	}
+	if got := srv.requests.Load(); got != 2 {
+		t.Fatalf("downloads = %d, want 2", got)
+	}
+}
+
 func TestInstalledForLineOrdersNewestFirst(t *testing.T) {
 	m, st, _, _ := newManagerFor(t, offlineEntry(t), nil)
 	rows := []model.RuntimeBuild{

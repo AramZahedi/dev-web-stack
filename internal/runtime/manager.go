@@ -434,9 +434,10 @@ func (m *Manager) Ensure(ctx context.Context, kind, version string) (model.Runti
 	return m.Install(ctx, entry.ID)
 }
 
-// EnsureBuild returns an intact installed build for the exact catalog id, or
-// installs that pinned entry. It is the backend's exact-build entry point; the
-// catalog id carries any PHP revision.
+// EnsureBuild returns an intact installed build for the exact id, or installs
+// the pinned catalog entry. An intact row is returned without consulting the
+// catalog, so a retained build remains usable after it leaves the embedded
+// catalog and a catalog load failure cannot break rollback.
 func (m *Manager) EnsureBuild(ctx context.Context, buildID string) (model.RuntimeBuild, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -448,25 +449,36 @@ func (m *Manager) EnsureBuild(ctx context.Context, buildID string) (model.Runtim
 		return model.RuntimeBuild{}, errors.New("runtime: no store configured")
 	}
 
-	entry, err := m.entryByID(buildID)
-	if err != nil {
-		return model.RuntimeBuild{}, err
-	}
-	target, err := m.targetPath(entry)
-	if err != nil {
-		return model.RuntimeBuild{}, err
-	}
 	existing, err := m.stores.GetRuntime(ctx, buildID)
 	switch {
 	case err == nil:
-		if m.installedBuildMatches(existing, entry, target) {
+		if m.intactInstalledBuild(existing) {
 			return existing, nil
 		}
 	case errors.Is(err, store.ErrNotFound):
 	default:
 		return model.RuntimeBuild{}, fmt.Errorf("runtime: ensure build %q: %w", buildID, err)
 	}
+
+	entry, err := m.entryByID(buildID)
+	if err != nil {
+		return model.RuntimeBuild{}, err
+	}
 	return m.installEntry(ctx, entry, "")
+}
+
+// intactInstalledBuild reports whether a store row still describes a complete
+// managed installation. It deliberately does not require a catalog entry.
+func (m *Manager) intactInstalledBuild(build model.RuntimeBuild) bool {
+	parsed, err := catalog.ParseID(build.ID)
+	if err != nil || build.Backend != model.BackendLocal ||
+		parsed.Kind != build.Kind || parsed.Version != build.Version {
+		return false
+	}
+	if err := m.checkBuildPath(build); err != nil {
+		return false
+	}
+	return m.installedBuildAt(build.Path)
 }
 
 // InstalledForLine returns installed builds for a runtime kind and major.minor
