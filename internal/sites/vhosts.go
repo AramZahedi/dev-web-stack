@@ -32,6 +32,12 @@ func (s *Service) externalServing() bool {
 	return s.servingMode() != config.ServingModeBuiltin
 }
 
+// siteNeedsBackend reports whether a site kind is served by a supervised
+// process in the current mode. External static sites have no process.
+func (s *Service) siteNeedsBackend(site model.Site) bool {
+	return site.Kind != model.SiteStatic || !s.externalServing()
+}
+
 // ServingMode returns the currently effective serving mode. It reflects a
 // runtime switch saved by SetServingMode.
 func (s *Service) ServingMode() string {
@@ -216,7 +222,7 @@ func (s *Service) switchBuiltinToExternal(ctx context.Context, mode string, req 
 		return errors.Join(fmt.Errorf("sites: switch helper to %q: %w", mode, err), restore)
 	}
 
-	if err := s.saveServingModeLocked(mode); err != nil {
+	if err := s.saveServingModeLocked(ctx, mode); err != nil {
 		var errs []error
 		errs = append(errs, fmt.Errorf("sites: save serving mode: %w", err))
 		if _, herr := s.deps.Vhosts.SetServingMode(ctx, config.ServingModeBuiltin, helperproto.VHostSyncRequest{}); herr != nil {
@@ -232,7 +238,7 @@ func (s *Service) switchBuiltinToExternal(ctx context.Context, mode string, req 
 
 func (s *Service) switchExternalToBuiltin(ctx context.Context, previous string) error {
 	if s.deps.Proxy != nil {
-		if err := s.deps.Proxy.Start(ctx); err != nil {
+		if err := s.deps.Proxy.Start(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("sites: start built-in proxy: %w", err)
 		}
 	}
@@ -258,7 +264,7 @@ func (s *Service) switchExternalToBuiltin(ctx context.Context, previous string) 
 		return errors.Join(errs...)
 	}
 
-	if err := s.saveServingModeLocked(config.ServingModeBuiltin); err != nil {
+	if err := s.saveServingModeLocked(ctx, config.ServingModeBuiltin); err != nil {
 		return errors.Join(
 			fmt.Errorf("sites: save serving mode: %w", err),
 			s.restoreExternalModeLocked(ctx, previous),
@@ -286,7 +292,7 @@ func (s *Service) switchExternal(ctx context.Context, previous, mode string, req
 	if _, err := s.deps.Vhosts.SetServingMode(ctx, mode, req); err != nil {
 		return fmt.Errorf("sites: switch helper to %q: %w", mode, err)
 	}
-	if err := s.saveServingModeLocked(mode); err != nil {
+	if err := s.saveServingModeLocked(ctx, mode); err != nil {
 		errs := []error{fmt.Errorf("sites: save serving mode: %w", err)}
 		oldReq, buildErr := s.buildVhostRequestLocked(ctx, previous, "")
 		if buildErr != nil {
@@ -314,14 +320,15 @@ func (s *Service) restoreExternalModeLocked(ctx context.Context, previous string
 			errs = append(errs, fmt.Errorf("rollback: stop built-in proxy: %w", err))
 		}
 	}
-	if err := s.saveServingModeLocked(previous); err != nil {
+	if err := s.saveServingModeLocked(ctx, previous); err != nil {
 		errs = append(errs, fmt.Errorf("rollback: restore saved serving mode: %w", err))
 	}
 	return errors.Join(errs...)
 }
 
-func (s *Service) saveServingModeLocked(mode string) error {
+func (s *Service) saveServingModeLocked(ctx context.Context, mode string) error {
 	cfg := s.deps.Config
+	previous := cfg.ServingMode
 	cfg.ServingMode = mode
 	if strings.TrimSpace(cfg.Home) == "" {
 		return errors.New("config home is not set")
@@ -330,6 +337,20 @@ func (s *Service) saveServingModeLocked(mode string) error {
 		return err
 	}
 	s.deps.Config.ServingMode = mode
+	if s.deps.Store != nil {
+		if err := s.deps.Store.SetSetting(ctx, "serving_mode", mode); err != nil {
+			// Keep config.yaml and the in-memory mode consistent with the last
+			// successfully persisted setting.
+			s.deps.Config.ServingMode = previous
+			restore := s.deps.Config
+			restore.ServingMode = previous
+			restoreErr := restore.Save()
+			return errors.Join(
+				fmt.Errorf("sites: persist serving_mode setting: %w", err),
+				restoreErr,
+			)
+		}
+	}
 	return nil
 }
 
@@ -338,7 +359,10 @@ func (s *Service) saveServingModeLocked(mode string) error {
 func (s *Service) restoreBuiltinRuntimeLocked(ctx context.Context) error {
 	var errs []error
 	if s.deps.Proxy != nil {
-		if err := s.deps.Proxy.Start(ctx); err != nil {
+		// The proxy must outlive the request that triggered the mode switch.
+		// proxy.Server.Start watches its context and stops the listeners when
+		// it is canceled.
+		if err := s.deps.Proxy.Start(context.WithoutCancel(ctx)); err != nil {
 			errs = append(errs, fmt.Errorf("rollback: start built-in proxy: %w", err))
 		}
 	}
@@ -475,6 +499,14 @@ func (s *Service) vhostSiteSpecLocked(ctx context.Context, site model.Site) (hel
 	switch site.Kind {
 	case model.SiteStatic:
 		spec.BackendPort = 0
+		// A running static site whose root disappeared must not break the
+		// whole vhost set. Serve a branded 503 while the stored desired state
+		// stays running so Get/List can report the error.
+		if site.DesiredState == model.DesiredRunning {
+			if err := staticRootError(site); err != nil {
+				spec.DesiredState = string(model.DesiredStopped)
+			}
+		}
 	case model.SiteNode:
 		spec.BackendPort = site.HTTPPort
 	default:
@@ -623,7 +655,7 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 	if err != nil {
 		return err
 	}
-	if s.deps.Backend != nil {
+	if s.deps.Backend != nil && s.siteNeedsBackend(site) {
 		if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil {
 			return fmt.Errorf("sites: stop %q: %w", site.Name, err)
 		}

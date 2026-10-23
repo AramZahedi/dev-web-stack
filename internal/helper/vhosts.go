@@ -856,24 +856,27 @@ func (m *VhostManager) validateSite(site helperproto.VHostSite, ids, hosts map[s
 	}
 
 	resolvedBackend := ""
-	switch {
-	case site.BackendPath != "":
-		var err error
-		resolvedBackend, err = validateBackendPath(site.BackendPath)
-		if err != nil {
-			return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: %v", helperproto.ErrInvalidRequest, site.ID, err)
+	stoppedStatic := kind == model.SiteStatic && model.DesiredState(site.DesiredState) == model.DesiredStopped
+	if !stoppedStatic {
+		switch {
+		case site.BackendPath != "":
+			var err error
+			resolvedBackend, err = validateBackendPath(site.BackendPath)
+			if err != nil {
+				return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: %v", helperproto.ErrInvalidRequest, site.ID, err)
+			}
+		case kind == model.SiteStatic || site.DocumentRoot != "":
+			return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: a backend path is required", helperproto.ErrInvalidRequest, site.ID)
 		}
-	case kind == model.SiteStatic || site.DocumentRoot != "":
-		return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: a backend path is required", helperproto.ErrInvalidRequest, site.ID)
-	}
-	if site.DocumentRoot != "" {
-		resolvedRoot, err := validateContainedDocumentRoot(site.DocumentRoot, resolvedBackend)
-		if err != nil {
-			return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: %v", helperproto.ErrInvalidRequest, site.ID, err)
+		if site.DocumentRoot != "" {
+			resolvedRoot, err := validateContainedDocumentRoot(site.DocumentRoot, resolvedBackend)
+			if err != nil {
+				return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: %v", helperproto.ErrInvalidRequest, site.ID, err)
+			}
+			spec.DocumentRoot = resolvedRoot
+		} else if kind == model.SiteStatic {
+			return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: static sites require a document root", helperproto.ErrInvalidRequest, site.ID)
 		}
-		spec.DocumentRoot = resolvedRoot
-	} else if kind == model.SiteStatic {
-		return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: static sites require a document root", helperproto.ErrInvalidRequest, site.ID)
 	}
 
 	names := []string{site.Domain}

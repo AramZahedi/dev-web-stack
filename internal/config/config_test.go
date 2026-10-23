@@ -168,6 +168,9 @@ func TestValidatePorts(t *testing.T) {
 		{"serving apache", func(c *Config) { c.ServingMode = ServingModeApache }, true},
 		{"serving empty", func(c *Config) { c.ServingMode = "" }, false},
 		{"serving unknown", func(c *Config) { c.ServingMode = "caddy" }, false},
+		{"serving builtin custom ui", func(c *Config) { c.ServingMode = ServingModeBuiltin; c.UIPort = 7071 }, true},
+		{"serving nginx custom ui", func(c *Config) { c.ServingMode = ServingModeNginx; c.UIPort = 7071 }, false},
+		{"serving apache custom ui", func(c *Config) { c.ServingMode = ServingModeApache; c.UIPort = 7071 }, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -193,6 +196,19 @@ func TestValidateErrorNamesTheField(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ui_port") {
 		t.Fatalf("error %q does not name ui_port", err)
+	}
+}
+
+func TestValidateExternalModeRequiresDashboardPort(t *testing.T) {
+	cfg := Default()
+	cfg.ServingMode = ServingModeNginx
+	cfg.UIPort = 8081
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if !strings.Contains(err.Error(), "serving_mode") || !strings.Contains(err.Error(), "ui_port") || !strings.Contains(err.Error(), "7070") {
+		t.Fatalf("error %q is not actionable", err)
 	}
 }
 

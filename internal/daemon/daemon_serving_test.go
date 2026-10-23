@@ -182,6 +182,95 @@ func TestDaemonExternalSkipsProxyAndReconciles(t *testing.T) {
 	}
 }
 
+func TestDaemonModeSwitchKeepsProxyAndSettingsFresh(t *testing.T) {
+	useBuiltBinary(t)
+	home := t.TempDir()
+	setConfigServingMode(t, home, config.ServingModeNginx)
+	opts := testOptions(t, home, startVhostTestHelper(t))
+	requireDefaultUIPort(t)
+	opts.UIPort = 7070
+	run := startDaemon(t, opts)
+	defer run.stop(t)
+
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	resp, data := apiRequest(t, client, http.MethodPost, "/api/v1/vhosts/mode", map[string]string{"mode": "builtin"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("switch to builtin = %d %s", resp.StatusCode, data)
+	}
+	var status helperproto.VhostStatusResponse
+	if err := json.Unmarshal(data, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != "builtin" {
+		t.Fatalf("mode status = %+v", status)
+	}
+
+	resp, data = apiRequest(t, client, http.MethodGet, "/api/v1/settings", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("settings = %d %s", resp.StatusCode, data)
+	}
+	var settings struct {
+		ServingMode string `json:"serving_mode"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.ServingMode != "builtin" {
+		t.Fatalf("settings serving_mode = %q, want builtin", settings.ServingMode)
+	}
+
+	// The request context that triggered the switch is canceled once the
+	// response is consumed. The built-in proxy must outlive it.
+	time.Sleep(300 * time.Millisecond)
+	for _, port := range []int{opts.HTTPPort, opts.HTTPSPort} {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+		if err != nil {
+			t.Fatalf("built-in proxy port %d stopped after the mode switch: %v", port, err)
+		}
+		_ = conn.Close()
+	}
+}
+
+func TestDaemonStartupWithBrokenStaticRoot(t *testing.T) {
+	useBuiltBinary(t)
+	home := t.TempDir()
+	setConfigServingMode(t, home, config.ServingModeNginx)
+	opts := testOptions(t, home, startVhostTestHelper(t))
+	requireDefaultUIPort(t)
+	opts.UIPort = 7070
+
+	run := startDaemon(t, opts)
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "index.html"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	site := createStaticSite(t, client, "blog", project)
+	run.stop(t)
+	if err := os.RemoveAll(project); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := startDaemon(t, opts)
+	defer restarted.stop(t)
+	client = unixHTTPClient(SocketPath(home), 5*time.Second)
+	getHealth(t, client)
+	if status := vhostStatusRequest(t, client); status.Mode != "nginx" {
+		t.Fatalf("status after restart = %+v", status)
+	}
+	resp, data := apiRequest(t, client, http.MethodGet, "/api/v1/sites/"+site.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get broken site = %d %s", resp.StatusCode, data)
+	}
+	var stored model.Site
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != model.StatusError {
+		t.Fatalf("broken site status = %q, want error", stored.Status)
+	}
+}
+
 func TestRenewExternalSyncsVhosts(t *testing.T) {
 	useBuiltBinary(t)
 	previous := renewInterval

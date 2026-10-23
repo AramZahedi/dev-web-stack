@@ -247,6 +247,13 @@ func TestValidateSiteSpec(t *testing.T) {
 	validNoTLS.KeyPEM = nil
 	validStopped := staticSite()
 	validStopped.DesiredState = model.DesiredStopped
+	validStoppedNoRoot := staticSite()
+	validStoppedNoRoot.DesiredState = model.DesiredStopped
+	validStoppedNoRoot.DocumentRoot = ""
+	validStoppedNodeNoPort := nodeSite()
+	validStoppedNodeNoPort.DesiredState = model.DesiredStopped
+	validStoppedNodeNoPort.BackendPort = 0
+	validStoppedNodeNoPort.DocumentRoot = ""
 	validNodeLow := nodeSite()
 	validNodeLow.BackendPort = 41000
 	validNodeHigh := nodeSite()
@@ -261,6 +268,8 @@ func TestValidateSiteSpec(t *testing.T) {
 		{name: "valid static", spec: valid},
 		{name: "valid static without tls", spec: validNoTLS},
 		{name: "valid stopped", spec: validStopped},
+		{name: "valid stopped static without root", spec: validStoppedNoRoot},
+		{name: "valid stopped node without port", spec: validStoppedNodeNoPort},
 		{name: "valid node low port", spec: validNodeLow},
 		{name: "valid node high port", spec: validNodeHigh},
 		{
@@ -490,6 +499,25 @@ func TestValidateSiteSpecAllowsStoppedNodeWithoutDocumentRoot(t *testing.T) {
 
 	if err := ValidateSiteSpec(spec); err != nil {
 		t.Fatalf("ValidateSiteSpec: %v", err)
+	}
+}
+
+func TestStoppedStaticRendersWithoutDocumentRoot(t *testing.T) {
+	for _, server := range []Server{ServerNginx, ServerApache} {
+		spec := staticSite()
+		spec.DesiredState = model.DesiredStopped
+		spec.DocumentRoot = ""
+
+		if err := ValidateSiteSpec(spec); err != nil {
+			t.Fatalf("%s: ValidateSiteSpec: %v", server, err)
+		}
+		data, err := RenderSite(server, spec)
+		if err != nil {
+			t.Fatalf("%s: RenderSite: %v", server, err)
+		}
+		if !bytes.Contains(data, []byte("503")) {
+			t.Fatalf("%s: stopped vhost does not serve 503:\n%s", server, data)
+		}
 	}
 }
 

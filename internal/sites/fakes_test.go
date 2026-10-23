@@ -143,6 +143,7 @@ type fakeBackend struct {
 	stopped       map[string]bool
 	status        map[string]model.SiteStatus
 	runtimeCalls  []string
+	stopCalls     int
 	prepareErr    error
 	startErr      error
 	stopErr       error
@@ -180,6 +181,7 @@ func (f *fakeBackend) Start(_ context.Context, id string) (backend.ProcessInfo, 
 func (f *fakeBackend) Stop(_ context.Context, id string, _ bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.stopCalls++
 	if f.stopErr != nil {
 		return f.stopErr
 	}
@@ -255,6 +257,12 @@ func (f *fakeBackend) statusFor(id string) model.SiteStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.status[id]
+}
+
+func (f *fakeBackend) stopCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopCalls
 }
 
 // fakeHosts records every SyncHosts call. failAt fails the Nth call (1-based)

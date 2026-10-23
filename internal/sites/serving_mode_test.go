@@ -88,6 +88,9 @@ func TestCreateRollsBackWhenVhostSyncFails(t *testing.T) {
 	if fakes.backend.started["site"] {
 		t.Fatal("backend left running")
 	}
+	if got := fakes.backend.stopCount(); got != 0 {
+		t.Fatalf("external static rollback called Backend.Stop %d times", got)
+	}
 	if fakes.hosts.has("blog.test") {
 		t.Fatal("hosts entry left behind")
 	}
@@ -149,6 +152,32 @@ func TestExternalStaticStartStopAndObservedStatus(t *testing.T) {
 	}
 	if broken.Status != model.StatusError {
 		t.Fatalf("status with missing root = %q, want error", broken.Status)
+	}
+	// A running site with a missing root is published as a 503 without
+	// changing the stored desired state.
+	if err := svc.SyncVhosts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	req, _ = fakes.vhosts.lastSync()
+	if req.Sites[0].DesiredState != "stopped" {
+		t.Fatalf("broken running site sync state = %q, want stopped", req.Sites[0].DesiredState)
+	}
+	stored, err := fakes.store.GetSite(context.Background(), site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DesiredState != model.DesiredRunning {
+		t.Fatalf("stored desired state = %q, want running", stored.DesiredState)
+	}
+	if err := svc.Stop(context.Background(), site.ID); err != nil {
+		t.Fatalf("stop after root deletion: %v", err)
+	}
+	req, _ = fakes.vhosts.lastSync()
+	if req.Sites[0].DesiredState != "stopped" {
+		t.Fatalf("stop sync state = %q", req.Sites[0].DesiredState)
+	}
+	if got := fakes.backend.stopCount(); got != 0 {
+		t.Fatalf("external static lifecycle called Backend.Stop %d times", got)
 	}
 }
 
@@ -216,8 +245,12 @@ func TestExternalDeleteSyncsRemainingSetBeforeCertDelete(t *testing.T) {
 
 	fakes.vhosts.err = errors.New("sync failed")
 	baseline := fakes.vhosts.syncCount()
+	stopsBefore := fakes.backend.stopCount()
 	if err := svc.Delete(context.Background(), site.ID); err == nil {
 		t.Fatal("want error")
+	}
+	if got := fakes.backend.stopCount(); got != stopsBefore {
+		t.Fatalf("external static delete called Backend.Stop %d times", got-stopsBefore)
 	}
 	if _, err := fakes.store.GetSite(context.Background(), site.ID); err != nil {
 		t.Fatalf("row removed after failed vhost sync: %v", err)
@@ -232,8 +265,12 @@ func TestExternalDeleteSyncsRemainingSetBeforeCertDelete(t *testing.T) {
 
 	fakes.vhosts.err = nil
 	*fakes.order = nil
+	stopsBefore = fakes.backend.stopCount()
 	if err := svc.Delete(context.Background(), site.ID); err != nil {
 		t.Fatal(err)
+	}
+	if got := fakes.backend.stopCount(); got != stopsBefore {
+		t.Fatalf("external static delete called Backend.Stop %d times", got-stopsBefore)
 	}
 	order := strings.Join(*fakes.order, ",")
 	syncIndex := strings.Index(order, "vhost-sync")
@@ -561,5 +598,18 @@ func assertSavedMode(t *testing.T, svc *Service, want string) {
 	}
 	if got.ServingMode != want {
 		t.Fatalf("saved serving mode = %q, want %q", got.ServingMode, want)
+	}
+	if svc.deps.Store != nil {
+		stored, err := svc.deps.Store.GetSetting(context.Background(), "serving_mode")
+		switch {
+		case err == nil:
+			if stored != want {
+				t.Fatalf("stored serving_mode setting = %q, want %q", stored, want)
+			}
+		case errors.Is(err, store.ErrNotFound):
+			// A switch that never succeeded has no persisted setting.
+		default:
+			t.Fatal(err)
+		}
 	}
 }

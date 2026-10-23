@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -121,6 +122,7 @@ func TestVhostErrorMapping(t *testing.T) {
 		{"config", helperproto.ErrVhostConfigInvalid, http.StatusUnprocessableEntity, "VHOST_CONFIG_INVALID"},
 		{"reload", helperproto.ErrServerReloadFailed, http.StatusBadGateway, "SERVER_RELOAD_FAILED"},
 		{"sync", helperproto.ErrVhostSyncFailed, http.StatusInternalServerError, "VHOST_SYNC_FAILED"},
+		{"invalid", helperproto.ErrInvalidRequest, http.StatusBadRequest, "INVALID_REQUEST"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -129,6 +131,16 @@ func TestVhostErrorMapping(t *testing.T) {
 			rec := fx.request(t, http.MethodPost, "/api/v1/vhosts/sync", nil)
 			assertError(t, rec, tt.status, tt.code)
 		})
+	}
+}
+
+func TestVhostInvalidRequestKeepsHelperMessage(t *testing.T) {
+	_, fx := newTestAPIWithFakes(t)
+	fx.vhosts.syncErr = fmt.Errorf("%w: dashboard backend port must be 7070", helperproto.ErrInvalidRequest)
+	rec := fx.request(t, http.MethodPost, "/api/v1/vhosts/sync", nil)
+	assertError(t, rec, http.StatusBadRequest, "INVALID_REQUEST")
+	if !strings.Contains(rec.Body.String(), "dashboard backend port") {
+		t.Fatalf("helper message missing: %s", rec.Body.String())
 	}
 }
 

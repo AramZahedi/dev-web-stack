@@ -830,7 +830,7 @@ func (s *Service) refreshExternalStaticLocked(ctx context.Context, site model.Si
 // the original error joined with any rollback failures.
 func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts []string, certIssued bool, port int, cause error) error {
 	errs := []error{cause}
-	if s.deps.Backend != nil {
+	if s.deps.Backend != nil && s.siteNeedsBackend(site) {
 		if err := s.deps.Backend.Stop(ctx, site.ID, false); err != nil {
 			errs = append(errs, fmt.Errorf("rollback: stop %q: %w", site.Name, err))
 		}

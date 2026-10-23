@@ -143,6 +143,10 @@ func (c Config) Validate() error {
 		return fmt.Errorf("serving_mode %q must be one of %s, %s, or %s", c.ServingMode,
 			ServingModeBuiltin, ServingModeNginx, ServingModeApache)
 	}
+	if c.ServingMode != ServingModeBuiltin && c.UIPort != 7070 {
+		return fmt.Errorf("serving_mode %q requires ui_port 7070 for the helper-managed dashboard, got %d",
+			c.ServingMode, c.UIPort)
+	}
 	return nil
 }
 

@@ -687,6 +687,8 @@ func classifyError(err error) (int, string, string, any) {
 		return http.StatusBadGateway, codeServerReloadFailed, err.Error(), nil
 	case errors.Is(err, helperproto.ErrVhostSyncFailed):
 		return http.StatusInternalServerError, codeVhostSyncFailed, err.Error(), nil
+	case errors.Is(err, helperproto.ErrInvalidRequest):
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
 	}
 	if errors.Is(err, helperproto.ErrUnauthorized) ||
 		errors.Is(err, helperproto.ErrProtocolMismatch) ||

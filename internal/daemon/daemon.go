@@ -405,6 +405,10 @@ func (d *daemon) writeReady() error {
 // persistSettings mirrors the effective machine configuration into the store so
 // GET /api/v1/settings reports the values the daemon is actually using.
 func (d *daemon) persistSettings(ctx context.Context) {
+	servingMode := d.cfg.ServingMode
+	if d.sites != nil {
+		servingMode = d.sites.ServingMode()
+	}
 	values := map[string]string{
 		"home":                  d.cfg.Home,
 		"wsl_distro":            d.cfg.WSLDistro,
@@ -412,7 +416,7 @@ func (d *daemon) persistSettings(ctx context.Context) {
 		"https_port":            strconv.Itoa(d.cfg.HTTPSPort),
 		"ui_port":               strconv.Itoa(d.cfg.UIPort),
 		"auto_start_sites":      strconv.FormatBool(d.cfg.AutoStartSites),
-		"serving_mode":          d.cfg.ServingMode,
+		"serving_mode":          servingMode,
 		"graceful_stop_seconds": strconv.Itoa(d.cfg.GracefulStopSeconds),
 		"max_request_body_mb":   strconv.Itoa(d.cfg.MaxRequestBodyMB),
 		"log_max_mb":            strconv.Itoa(d.cfg.LogMaxMB),

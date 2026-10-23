@@ -645,6 +645,31 @@ func TestSyncRejectsBackendContainmentViolations(t *testing.T) {
 	}
 }
 
+func TestSyncAllowsStoppedStaticWithMissingRoot(t *testing.T) {
+	for _, root := range []string{"", filepath.Join("backend", "missing")} {
+		t.Run(root, func(t *testing.T) {
+			env := newVhostTestEnv(t)
+			req := env.request("nginx")
+			req.Sites[0].DesiredState = string(model.DesiredStopped)
+			if root != "" {
+				req.Sites[0].DocumentRoot = filepath.Join(env.backend, "missing")
+			} else {
+				req.Sites[0].DocumentRoot = ""
+			}
+			if _, err := env.manager.Sync(context.Background(), req); err != nil {
+				t.Fatalf("sync stopped static site: %v", err)
+			}
+			data, err := os.ReadFile(filepath.Join(env.manager.serverTree("nginx"), "current", "blog-"+req.Sites[0].ID+".conf"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(data, []byte("503")) {
+				t.Fatalf("stopped vhost does not serve 503:\n%s", data)
+			}
+		})
+	}
+}
+
 func TestSyncAllowsContainedSymlinkAndNodeWithoutRoot(t *testing.T) {
 	env := newVhostTestEnv(t)
 	realRoot := filepath.Join(env.backend, "real", "public")

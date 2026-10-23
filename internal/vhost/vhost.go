@@ -110,15 +110,19 @@ func ValidateSiteSpec(s SiteSpec) error {
 
 	switch s.Kind {
 	case model.SiteStatic:
-		if s.DocumentRoot == "" {
+		if s.DesiredState == model.DesiredRunning && s.DocumentRoot == "" {
 			return fmt.Errorf("vhost: site %q: static sites require a document root", s.ID)
 		}
 		if s.BackendPort != 0 {
 			return fmt.Errorf("vhost: site %q: static site backend port must be 0, got %d", s.ID, s.BackendPort)
 		}
 	case model.SiteNode:
-		if s.BackendPort < minNodePort || s.BackendPort > maxNodePort {
-			return fmt.Errorf("vhost: site %q: node backend port %d is outside %d-%d", s.ID, s.BackendPort, minNodePort, maxNodePort)
+		// A stopped Node vhost renders a branded 503 and never dials the
+		// backend, so a zero port is acceptable only while stopped.
+		if s.BackendPort != 0 || s.DesiredState == model.DesiredRunning {
+			if s.BackendPort < minNodePort || s.BackendPort > maxNodePort {
+				return fmt.Errorf("vhost: site %q: node backend port %d is outside %d-%d", s.ID, s.BackendPort, minNodePort, maxNodePort)
+			}
 		}
 	default:
 		return fmt.Errorf("vhost: site %q: unsupported site kind %q", s.ID, s.Kind)
