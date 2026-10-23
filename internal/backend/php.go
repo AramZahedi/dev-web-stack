@@ -40,6 +40,10 @@ var (
 	phpReadyTimeout  = 30 * time.Second
 	phpHealthTimeout = 30 * time.Second
 	phpHealthPoll    = 100 * time.Millisecond
+	// phpHealthAttemptTimeout caps one FastCGI health request so a master that
+	// accepts TCP but never answers cannot consume the whole readiness budget
+	// in a single attempt.
+	phpHealthAttemptTimeout = 2 * time.Second
 )
 
 var _ PHPStager = (*Local)(nil)
@@ -441,35 +445,72 @@ func mostRecentGeneration(generations map[string]preparedSite) string {
 	return best
 }
 
-// waitPHPHealth polls the FastCGI health script until it returns "ok".
+// waitPHPHealth polls the FastCGI health script until it returns "ok". The
+// overall budget is fixed at phpHealthTimeout and every attempt is bounded by
+// both that budget and phpHealthAttemptTimeout, so a master that accepts TCP
+// but never answers cannot block Start past the deadline.
 func waitPHPHealth(ctx context.Context, port int, script string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	deadline := time.NewTimer(phpHealthTimeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(phpHealthPoll)
-	defer ticker.Stop()
+	overallCtx, cancel := context.WithTimeout(ctx, phpHealthTimeout)
+	defer cancel()
 
 	var last error
 	for {
-		body, err := phpHealthRequest(ctx, port, script)
+		deadline, _ := overallCtx.Deadline()
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+
+		budget := phpHealthAttemptTimeout
+		if budget <= 0 || budget > remaining {
+			budget = remaining
+		}
+		attemptCtx, attemptCancel := context.WithTimeout(overallCtx, budget)
+		body, err := phpHealthRequest(attemptCtx, port, script)
+		attemptCancel()
+
 		switch {
 		case err == nil && body == "ok":
 			return nil
 		case err == nil:
 			last = fmt.Errorf("health script returned %q", body)
+		case ctx.Err() != nil:
+			// The caller's context, not the readiness deadline, ended the
+			// attempt; report cancellation rather than a health failure.
+			return ctx.Err()
+		case overallCtx.Err() != nil:
+			// The readiness deadline elapsed during this attempt. The timeout
+			// is reported below with the last attempt error.
 		default:
 			last = err
 		}
+		if overallCtx.Err() != nil {
+			break
+		}
+
+		pause := phpHealthPoll
+		if remaining := time.Until(deadline); pause > remaining {
+			pause = remaining
+		}
+		if pause <= 0 {
+			break
+		}
+		timer := time.NewTimer(pause)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-deadline.C:
-			return fmt.Errorf("health check did not pass within %s: %w", phpHealthTimeout, last)
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
+
+	if last == nil {
+		last = context.DeadlineExceeded
+	}
+	return fmt.Errorf("health check did not pass within %s: %w", phpHealthTimeout, last)
 }
 
 // phpHealthRequest sends one FastCGI GET for the health script.

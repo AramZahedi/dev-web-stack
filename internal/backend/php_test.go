@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -211,6 +213,148 @@ func TestLocalEnsureRuntimeBuildDelegates(t *testing.T) {
 	if _, err := unconfigured.EnsureRuntimeBuild(ctx, build.ID); err == nil {
 		t.Fatal("EnsureRuntimeBuild succeeded without a runtime provider")
 	}
+}
+
+func TestWaitPHPHealthUnresponsiveMasterRespectsDeadline(t *testing.T) {
+	listener := listenSilentFastCGI(t, 0)
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	oldTimeout, oldPoll, oldAttempt := phpHealthTimeout, phpHealthPoll, phpHealthAttemptTimeout
+	phpHealthTimeout, phpHealthPoll, phpHealthAttemptTimeout = 300*time.Millisecond, 10*time.Millisecond, 40*time.Millisecond
+	t.Cleanup(func() { phpHealthTimeout, phpHealthPoll, phpHealthAttemptTimeout = oldTimeout, oldPoll, oldAttempt })
+
+	script := filepath.Join(t.TempDir(), "health.php")
+	result := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		result <- waitPHPHealth(context.Background(), port, script)
+	}()
+
+	select {
+	case err := <-result:
+		elapsed := time.Since(started)
+		if err == nil {
+			t.Fatal("waitPHPHealth accepted a master that never answers")
+		}
+		if elapsed > 2*time.Second {
+			t.Fatalf("waitPHPHealth took %s, want about %s", elapsed, phpHealthTimeout)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("waitPHPHealth error = %v, want context deadline exceeded", err)
+		}
+		if !strings.Contains(err.Error(), "did not pass") {
+			t.Fatalf("waitPHPHealth error = %v, want the readiness timeout message", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("waitPHPHealth hung on a master that accepts TCP but never answers")
+	}
+}
+
+func TestLocalPHPStartDoesNotHangOnUnresponsiveMaster(t *testing.T) {
+	b, _ := newTestLocal(t)
+	ctx := context.Background()
+
+	oldTimeout, oldPoll, oldAttempt := phpHealthTimeout, phpHealthPoll, phpHealthAttemptTimeout
+	phpHealthTimeout, phpHealthPoll, phpHealthAttemptTimeout = 400*time.Millisecond, 20*time.Millisecond, 60*time.Millisecond
+	t.Cleanup(func() { phpHealthTimeout, phpHealthPoll, phpHealthAttemptTimeout = oldTimeout, oldPoll, oldAttempt })
+
+	build := filepath.Join(t.TempDir(), "php")
+	writeExecutable(t, filepath.Join(build, "bin"), "php", "exit 0")
+	pidFile := filepath.Join(b.cfg.Home, "fake-fpm.pid")
+	writeExecutable(t, filepath.Join(build, "sbin"), "php-fpm",
+		fmt.Sprintf("echo $$ > %q\nexec sleep 120", pidFile))
+
+	port := freePHPCPort(t)
+	listener := listenSilentFastCGI(t, port)
+	spec := phpTestSpec(t, b.cfg.Home, build, "php@8.4.4-r1", port)
+	if _, err := b.Prepare(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Stop(context.Background(), spec.ID, true) })
+	if _, err := b.logs.Writer(spec.ID, "fpm").Write([]byte("hung master marker\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	type startResult struct {
+		info ProcessInfo
+		err  error
+	}
+	result := make(chan startResult, 1)
+	started := time.Now()
+	go func() {
+		info, err := b.Start(ctx, spec.ID)
+		result <- startResult{info: info, err: err}
+	}()
+
+	select {
+	case got := <-result:
+		elapsed := time.Since(started)
+		if got.err == nil {
+			t.Fatalf("Start accepted a master that never answers health: %+v", got.info)
+		}
+		if elapsed > 3*time.Second {
+			t.Fatalf("Start took %s, want about %s", elapsed, phpHealthTimeout)
+		}
+		if !strings.Contains(got.err.Error(), "did not become healthy") ||
+			!strings.Contains(got.err.Error(), "hung master marker") {
+			t.Fatalf("Start error = %v, want readiness failure and the log tail", got.err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("Start hung on a master that accepts TCP but never answers")
+	}
+
+	pid := waitPIDFile(t, pidFile, 2*time.Second)
+	waitProcessGone(t, pid, 5*time.Second)
+	status, err := b.Status(ctx, spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != model.StatusStopped || status.PID != 0 {
+		t.Fatalf("status after health hang = %+v", status)
+	}
+	_ = listener.Close()
+	waitPortClosed(t, port, 5*time.Second)
+}
+
+// listenSilentFastCGI accepts connections and never reads or answers, modelling
+// an FPM master that is listening but wedged.
+func listenSilentFastCGI(t *testing.T, port int) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		mu     sync.Mutex
+		conns  []net.Conn
+		closed bool
+	)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			if closed {
+				mu.Unlock()
+				_ = conn.Close()
+				return
+			}
+			conns = append(conns, conn)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		mu.Lock()
+		closed = true
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+		mu.Unlock()
+	})
+	return listener
 }
 
 func TestLocalPHPHealthFailureStopsMaster(t *testing.T) {
