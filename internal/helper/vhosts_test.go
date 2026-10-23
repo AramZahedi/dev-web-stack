@@ -878,6 +878,108 @@ func TestRemoveRefusesEditedOwnedBridge(t *testing.T) {
 	}
 }
 
+func TestSetModeBetweenExternalServersRefusesEditedOldBridge(t *testing.T) {
+	env := newVhostTestEnv(t)
+	ctx := context.Background()
+	if _, err := env.manager.SetMode(ctx, "nginx", env.request("nginx")); err != nil {
+		t.Fatalf("SetMode nginx: %v", err)
+	}
+	edited := []byte(vhostGeneratedHeader + "\n\ninclude /tmp/evil/*.conf;\n")
+	bridge := env.bridge("nginx")
+	if err := os.WriteFile(bridge, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.fn = apacheRunner(t, true)
+	if _, err := env.manager.SetMode(ctx, "apache", env.request("apache")); !errors.Is(err, helperproto.ErrVhostIncludeMissing) {
+		t.Fatalf("error = %v, want VHOST_INCLUDE_MISSING", err)
+	}
+	data, err := os.ReadFile(bridge)
+	if err != nil {
+		t.Fatalf("edited nginx bridge was removed: %v", err)
+	}
+	if !bytes.Equal(data, edited) {
+		t.Fatalf("edited nginx bridge changed:\n%s", data)
+	}
+	if _, err := os.Stat(env.bridge("apache")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("apache bridge was created after refusal: %v", err)
+	}
+	status, err := env.manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != "nginx" {
+		t.Fatalf("mode = %q, want nginx", status.Mode)
+	}
+}
+
+func TestRemoveLegacyBridgeWithoutHash(t *testing.T) {
+	clearHash := func(t *testing.T, env *vhostTestEnv) {
+		t.Helper()
+		state, err := env.manager.readState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.BridgeHash = ""
+		if err := env.manager.writeState(state); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("edited header bridge is refused", func(t *testing.T) {
+		env := newVhostTestEnv(t)
+		ctx := context.Background()
+		if _, err := env.manager.SetMode(ctx, "nginx", env.request("nginx")); err != nil {
+			t.Fatalf("SetMode nginx: %v", err)
+		}
+		clearHash(t, env)
+		edited := []byte(vhostGeneratedHeader + "\n\ninclude /tmp/evil/*.conf;\n")
+		bridge := env.bridge("nginx")
+		if err := os.WriteFile(bridge, edited, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := env.manager.Remove(ctx); !errors.Is(err, helperproto.ErrVhostIncludeMissing) {
+			t.Fatalf("error = %v, want VHOST_INCLUDE_MISSING", err)
+		}
+		data, err := os.ReadFile(bridge)
+		if err != nil {
+			t.Fatalf("legacy edited bridge was removed: %v", err)
+		}
+		if !bytes.Equal(data, edited) {
+			t.Fatalf("legacy edited bridge changed:\n%s", data)
+		}
+		status, err := env.manager.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Mode != "nginx" {
+			t.Fatalf("mode = %q, want nginx", status.Mode)
+		}
+	})
+
+	t.Run("matching generated bridge is removed", func(t *testing.T) {
+		env := newVhostTestEnv(t)
+		ctx := context.Background()
+		if _, err := env.manager.SetMode(ctx, "nginx", env.request("nginx")); err != nil {
+			t.Fatalf("SetMode nginx: %v", err)
+		}
+		clearHash(t, env)
+		bridge := env.bridge("nginx")
+		if err := env.manager.Remove(ctx); err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+		if _, err := os.Stat(bridge); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("matching legacy bridge was not removed: %v", err)
+		}
+		status, err := env.manager.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Mode != "builtin" {
+			t.Fatalf("mode = %q, want builtin", status.Mode)
+		}
+	})
+}
+
 func TestSyncBridgeMigrationOwnership(t *testing.T) {
 	t.Run("matching bridge is adopted", func(t *testing.T) {
 		env := newVhostTestEnv(t)
