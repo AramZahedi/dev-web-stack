@@ -125,6 +125,41 @@ func TestChecksumMismatchLeavesNoRuntime(t *testing.T) {
 	assertNoPartialOrTempFiles(t, home)
 }
 
+func TestExtractionLimits(t *testing.T) {
+	tests := []struct {
+		name   string
+		limits archiveLimits
+	}{
+		{
+			name:   "entry count",
+			limits: archiveLimits{maxEntries: 2, maxBytes: defaultArchiveLimits.maxBytes},
+		},
+		{
+			name:   "expanded bytes",
+			limits: archiveLimits{maxEntries: defaultArchiveLimits.maxEntries, maxBytes: 8},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m, _, home, _ := newManagerFor(t, offlineEntry(t), nil)
+			m.limits = test.limits
+
+			_, err := m.InstallFile(context.Background(), testID, filepath.Join("testdata", "valid.tar.gz"))
+			if err == nil || !errors.Is(err, ErrUnsafeArchive) {
+				t.Fatalf("InstallFile error = %v, want ErrUnsafeArchive", err)
+			}
+			if builds, _ := m.List(context.Background()); len(builds) != 0 {
+				t.Fatalf("runtime registered after limit failure: %+v", builds)
+			}
+			if _, err := os.Stat(filepath.Join(home, "runtimes", "node", testVersion+"-"+testBuild)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("target directory exists after limit failure: %v", err)
+			}
+			assertNoPartialOrTempFiles(t, home)
+		})
+	}
+}
+
 func TestExtractionRejectsTraversalAndSymlink(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -135,6 +170,8 @@ func TestExtractionRejectsTraversalAndSymlink(t *testing.T) {
 		{name: "absolute symlink", fixture: "symlink.tar.gz"},
 		{name: "escaping symlink", fixture: "symlink-escape.tar.gz"},
 		{name: "ancestor symlink", fixture: "symlink-ancestor.tar.gz"},
+		{name: "symlink chain escapes", fixture: "symlink-chain.tar.gz"},
+		{name: "write through symlink chain", fixture: "symlink-chain-write.tar.gz"},
 		{name: "wrapper-relative symlink escapes after strip", fixture: "wrapped-symlink-escape.tar.gz"},
 		{name: "hardlink", fixture: "hardlink.tar.gz"},
 		{name: "device", fixture: "device.tar.gz"},
@@ -166,6 +203,41 @@ func TestExtractionRejectsTraversalAndSymlink(t *testing.T) {
 			}
 			if matches := filesNamed(t, home, "devstack-absolute-escape.txt"); len(matches) != 0 {
 				t.Fatalf("absolute path was written: %v", matches)
+			}
+			assertNoPartialOrTempFiles(t, home)
+		})
+	}
+}
+
+func TestExtractionRejectsSymlinkChainWithoutWritingOutside(t *testing.T) {
+	for _, fixture := range []string{"symlink-chain.tar.gz", "symlink-chain-write.tar.gz"} {
+		t.Run(fixture, func(t *testing.T) {
+			archive := fixtureData(t, fixture)
+			entry := entryFor(t, archive, "https://nodejs.org/dist/v"+testVersion+"/"+testArchive)
+			m, _, home, _ := newManagerFor(t, entry, nil)
+
+			_, err := m.InstallFile(context.Background(), testID, filepath.Join("testdata", fixture))
+			if err == nil || !errors.Is(err, ErrUnsafeArchive) {
+				t.Fatalf("InstallFile error = %v, want ErrUnsafeArchive", err)
+			}
+			wantErr := "traverses symlink"
+			if fixture == "symlink-chain.tar.gz" {
+				// The chain-only fixture has no file entry under the link, so
+				// this failure must come from the post-extraction chain check.
+				wantErr = "target escapes"
+			}
+			if !strings.Contains(err.Error(), wantErr) {
+				t.Fatalf("InstallFile error = %q, want it to contain %q", err, wantErr)
+			}
+			if builds, _ := m.List(context.Background()); len(builds) != 0 {
+				t.Fatalf("runtime registered after symlink chain: %+v", builds)
+			}
+			if _, err := os.Stat(filepath.Join(home, "runtimes", "node", testVersion+"-"+testBuild)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("target directory exists after symlink chain: %v", err)
+			}
+			pwned := filepath.Join(filepath.Dir(home), "outside", "pwned.txt")
+			if _, err := os.Stat(pwned); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("extraction wrote through the symlink chain: %v", err)
 			}
 			assertNoPartialOrTempFiles(t, home)
 		})
@@ -415,6 +487,46 @@ func TestVerifyDetectsTampering(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsSymlinkChainEscape(t *testing.T) {
+	m, _, _, _ := installValidOffline(t)
+	builds, err := m.List(context.Background())
+	if err != nil || len(builds) != 1 {
+		t.Fatalf("List = %+v, %v; want one build", builds, err)
+	}
+	build := builds[0]
+
+	// Build the same two-link chain used by the extraction fixture directly in
+	// the installed tree, then record it in the manifest so Verify must apply
+	// the same resolution rather than only checking lexical paths.
+	chainDir := filepath.Join(build.Path, "d1", "d2", "a")
+	if err := os.MkdirAll(chainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../../other", filepath.Join(chainDir, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("x/../../../../outside", filepath.Join(chainDir, "y")); err != nil {
+		t.Fatal(err)
+	}
+
+	var document manifest
+	if err := readJSONFile(filepath.Join(build.Path, manifestName), &document); err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	document.Links = append(document.Links,
+		manifestLink{Path: "d1/d2/a/x", Target: "../../../other"},
+		manifestLink{Path: "d1/d2/a/y", Target: "x/../../../../outside"},
+	)
+	if err := writeManifest(build.Path, document); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	err = m.Verify(context.Background(), testID)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "target escapes") {
+		t.Fatalf("Verify error = %v, want symlink chain escape rejection", err)
+	}
+}
+
 func TestVerifyDetectsMissingManifest(t *testing.T) {
 	m, _, _, _ := installValidOffline(t)
 	builds, err := m.List(context.Background())
@@ -429,8 +541,8 @@ func TestVerifyDetectsMissingManifest(t *testing.T) {
 	}
 }
 
-func TestRemoveContainmentAndNotFound(t *testing.T) {
-	t.Run("removes managed build", func(t *testing.T) {
+func TestRemoveContainmentAndIdempotency(t *testing.T) {
+	t.Run("removes managed build and is idempotent", func(t *testing.T) {
 		m, _, _, _ := installValidOffline(t)
 		builds, _ := m.List(context.Background())
 		build := builds[0]
@@ -444,8 +556,67 @@ func TestRemoveContainmentAndNotFound(t *testing.T) {
 		if _, err := m.stores.GetRuntime(context.Background(), testID); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("GetRuntime after Remove = %v, want ErrNotFound", err)
 		}
-		if err := m.Remove(context.Background(), testID); !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("second Remove = %v, want ErrNotFound", err)
+		if err := m.Remove(context.Background(), testID); err != nil {
+			t.Fatalf("second Remove = %v, want nil", err)
+		}
+	})
+
+	t.Run("removes row when files are already absent", func(t *testing.T) {
+		entry := offlineEntry(t)
+		m, st, home, _ := newManagerFor(t, entry, nil)
+		path := filepath.Join(home, "runtimes", "node", testVersion+"-"+testBuild)
+		upsertRuntime(t, st, "node@absent", path)
+
+		if err := m.Remove(context.Background(), "node@absent"); err != nil {
+			t.Fatalf("Remove with absent files = %v, want nil", err)
+		}
+		if _, err := st.GetRuntime(context.Background(), "node@absent"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("row still exists after Remove: %v", err)
+		}
+	})
+
+	t.Run("refuses kind directory", func(t *testing.T) {
+		entry := offlineEntry(t)
+		m, st, home, _ := newManagerFor(t, entry, nil)
+		kindDir := filepath.Join(home, "runtimes", "node")
+		if err := os.MkdirAll(kindDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		victim := filepath.Join(kindDir, "unrelated-build")
+		if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		upsertRuntime(t, st, "node@kind-dir", kindDir)
+
+		if err := m.Remove(context.Background(), "node@kind-dir"); !errors.Is(err, ErrUnsafePath) {
+			t.Fatalf("Remove error = %v, want ErrUnsafePath", err)
+		}
+		if _, err := os.Stat(victim); err != nil {
+			t.Fatalf("Remove deleted an unrelated managed path: %v", err)
+		}
+		if _, err := st.GetRuntime(context.Background(), "node@kind-dir"); err != nil {
+			t.Fatalf("row was deleted for an invalid path: %v", err)
+		}
+	})
+
+	t.Run("refuses path for another version", func(t *testing.T) {
+		entry := offlineEntry(t)
+		m, st, home, _ := newManagerFor(t, entry, nil)
+		other := filepath.Join(home, "runtimes", "node", "24.98.0-"+testBuild)
+		if err := os.MkdirAll(other, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		victim := filepath.Join(other, "keep.txt")
+		if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		upsertRuntime(t, st, "node@other-version", other)
+
+		if err := m.Remove(context.Background(), "node@other-version"); !errors.Is(err, ErrUnsafePath) {
+			t.Fatalf("Remove error = %v, want ErrUnsafePath", err)
+		}
+		if _, err := os.Stat(victim); err != nil {
+			t.Fatalf("Remove deleted another build's directory: %v", err)
 		}
 	})
 

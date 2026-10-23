@@ -50,6 +50,24 @@ var (
 
 const manifestName = "manifest.json"
 
+// archiveLimits bound how much a decompressed tarball may produce. They are
+// defensive limits: every runtime archive is checksum-pinned, but a corrupt or
+// malicious archive must not be able to exhaust memory or disk during
+// extraction.
+type archiveLimits struct {
+	maxEntries int
+	maxBytes   int64
+}
+
+var defaultArchiveLimits = archiveLimits{
+	maxEntries: 200_000,
+	maxBytes:   2 << 30, // 2 GiB
+}
+
+// errDecompressionLimit is returned by limitedReader when the archive expands
+// beyond the configured budget.
+var errDecompressionLimit = errors.New("archive decompression limit exceeded")
+
 // manifest records every regular file produced by an extraction. Verify uses it
 // to detect deleted, added, mode-changed, and modified files. Relative symlinks
 // are recorded separately so npm/npx/corepack links can be checked as well.
@@ -87,6 +105,7 @@ type Manager struct {
 	client       *http.Client
 	catalog      catalog.Catalog
 	catalogErr   error
+	limits       archiveLimits
 	mu           *sync.RWMutex
 }
 
@@ -116,6 +135,7 @@ func newManager(stores *store.Store, home string, client *http.Client, cat catal
 		client:       client,
 		catalog:      cat,
 		catalogErr:   loadErr,
+		limits:       defaultArchiveLimits,
 		mu:           lockForHome(resolved),
 	}
 }
@@ -276,11 +296,11 @@ func (m *Manager) installEntry(ctx context.Context, entry catalog.Entry, source 
 		}
 	}()
 
-	wrapper, err := scanArchive(source)
+	wrapper, err := scanArchive(source, m.limits)
 	if err != nil {
 		return model.RuntimeBuild{}, err
 	}
-	files, links, err := extractArchive(source, tempDir, wrapper)
+	files, links, err := extractArchive(source, tempDir, wrapper, m.limits)
 	if err != nil {
 		return model.RuntimeBuild{}, err
 	}
@@ -328,8 +348,10 @@ func (m *Manager) installEntry(ctx context.Context, entry catalog.Entry, source 
 	return build, nil
 }
 
-// Remove deletes an installed build and its store row. It refuses paths outside
-// the managed runtime root and returns store.ErrNotFound for an unknown build.
+// Remove deletes an installed build and its store row. Removing an already
+// absent build is a no-op so cleanup is idempotent. It refuses paths outside the
+// managed runtime root and paths that are not an exact
+// <root>/<kind>/<version>-<build> directory.
 func (m *Manager) Remove(ctx context.Context, buildID string) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -343,7 +365,7 @@ func (m *Manager) Remove(ctx context.Context, buildID string) error {
 
 	build, err := m.stores.GetRuntime(ctx, buildID)
 	if errors.Is(err, store.ErrNotFound) {
-		return fmt.Errorf("runtime: remove %q: %w", buildID, store.ErrNotFound)
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("runtime: remove %q: %w", buildID, err)
@@ -352,13 +374,13 @@ func (m *Manager) Remove(ctx context.Context, buildID string) error {
 }
 
 func (m *Manager) removeLocked(ctx context.Context, build model.RuntimeBuild) error {
-	if err := m.checkManagedPath(build.Path); err != nil {
+	if err := m.checkBuildPath(build); err != nil {
 		return fmt.Errorf("runtime: remove %q: %w", build.ID, err)
 	}
 	if err := os.RemoveAll(build.Path); err != nil {
 		return fmt.Errorf("runtime: remove %q files: %w", build.ID, err)
 	}
-	if err := m.stores.DeleteRuntime(ctx, build.ID); err != nil {
+	if err := m.stores.DeleteRuntime(ctx, build.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("runtime: remove %q row: %w", build.ID, err)
 	}
 	return nil
@@ -482,6 +504,56 @@ func safeComponent(value string) error {
 	return nil
 }
 
+// checkBuildPath requires the row to describe exactly one managed build:
+// <root>/<kind>/<version>-<build>. This prevents a corrupt row that points at
+// the runtime root or a kind directory from deleting unrelated builds.
+func (m *Manager) checkBuildPath(build model.RuntimeBuild) error {
+	if err := m.checkManagedPath(build.Path); err != nil {
+		return err
+	}
+	if err := safeComponent(build.Kind); err != nil {
+		return err
+	}
+	if err := safeComponent(build.Version); err != nil {
+		return err
+	}
+
+	abs, err := filepath.Abs(build.Path)
+	if err != nil {
+		return fmt.Errorf("%w: resolve %q: %v", ErrUnsafePath, build.Path, err)
+	}
+	rel, err := filepath.Rel(m.runtimesRoot, filepath.Clean(abs))
+	if err != nil {
+		return fmt.Errorf("%w: %q is not below %q", ErrUnsafePath, build.Path, m.runtimesRoot)
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) != 2 {
+		return fmt.Errorf("%w: runtime %q path %q is not <root>/<kind>/<version>-<build>",
+			ErrUnsafePath, build.ID, build.Path)
+	}
+	kind, leaf := parts[0], parts[1]
+	if kind != build.Kind {
+		return fmt.Errorf("%w: runtime %q path kind %q does not match row kind %q",
+			ErrUnsafePath, build.ID, kind, build.Kind)
+	}
+	if err := safeComponent(leaf); err != nil {
+		return err
+	}
+	prefix := build.Version + "-"
+	if !strings.HasPrefix(leaf, prefix) {
+		return fmt.Errorf("%w: runtime %q path %q does not start with version %q",
+			ErrUnsafePath, build.ID, build.Path, build.Version)
+	}
+	buildPart := strings.TrimPrefix(leaf, prefix)
+	if buildPart == "" {
+		return fmt.Errorf("%w: runtime %q path %q has no build suffix", ErrUnsafePath, build.ID, build.Path)
+	}
+	if err := safeComponent(buildPart); err != nil {
+		return err
+	}
+	return nil
+}
+
 // checkManagedPath requires p to be strictly below the runtime root and every
 // existing component to be a real directory rather than a symlink.
 func (m *Manager) checkManagedPath(p string) error {
@@ -568,8 +640,8 @@ func verifyArchiveFile(source string, entry catalog.Entry) error {
 // directory. Official Node tarballs put everything below
 // node-vX-linux-x64/; a tarball whose roots are already bin/, lib/, or another
 // standard entry is left untouched.
-func scanArchive(archivePath string) (string, error) {
-	stream, err := openTarStream(archivePath)
+func scanArchive(archivePath string, limits archiveLimits) (string, error) {
+	stream, err := openTarStream(archivePath, limits)
 	if err != nil {
 		return "", err
 	}
@@ -580,13 +652,17 @@ func scanArchive(archivePath string) (string, error) {
 	roots := map[string]struct{}{}
 	var firstRoot string
 	nested := false
+	budget := archiveBudget{limits: limits}
 	for {
 		header, err := stream.tar.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return "", fmt.Errorf("%w: read %s: %v", ErrUnsafeArchive, archivePath, err)
+			return "", archiveReadError(archivePath, err)
+		}
+		if err := budget.add(header); err != nil {
+			return "", err
 		}
 		clean, err := validateHeader(header)
 		if err != nil {
@@ -627,8 +703,8 @@ var standardRootEntries = map[string]struct{}{
 // extractArchive extracts a validated tarball into dest, optionally removing a
 // shared wrapper directory. It returns manifest entries for every regular file
 // and safely-contained symlink written.
-func extractArchive(archivePath, dest, wrapper string) ([]manifestFile, []manifestLink, error) {
-	stream, err := openTarStream(archivePath)
+func extractArchive(archivePath, dest, wrapper string, limits archiveLimits) ([]manifestFile, []manifestLink, error) {
+	stream, err := openTarStream(archivePath, limits)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -638,13 +714,17 @@ func extractArchive(archivePath, dest, wrapper string) ([]manifestFile, []manife
 
 	var files []manifestFile
 	var links []manifestLink
+	budget := archiveBudget{limits: limits}
 	for {
 		header, err := stream.tar.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("%w: read %s: %v", ErrUnsafeArchive, archivePath, err)
+			return nil, nil, archiveReadError(archivePath, err)
+		}
+		if err := budget.add(header); err != nil {
+			return nil, nil, err
 		}
 		clean, err := validateHeader(header)
 		if err != nil {
@@ -692,6 +772,10 @@ func extractArchive(archivePath, dest, wrapper string) ([]manifestFile, []manife
 			written, copyErr := io.Copy(io.MultiWriter(out, hash), stream.tar)
 			closeErr := out.Close()
 			if copyErr != nil {
+				if errors.Is(copyErr, errDecompressionLimit) {
+					return nil, nil, fmt.Errorf("%w: archive %s exceeds the decompression limit",
+						ErrUnsafeArchive, archivePath)
+				}
 				return nil, nil, fmt.Errorf("runtime: extract %s: %w", target, copyErr)
 			}
 			if closeErr != nil {
@@ -713,11 +797,12 @@ func extractArchive(archivePath, dest, wrapper string) ([]manifestFile, []manife
 		case tar.TypeSymlink:
 			// Node's bin/npm, bin/npx, and bin/corepack are relative links
 			// into lib/node_modules. Absolute links and links that resolve
-			// outside the extraction root are rejected.
-			if err := validateLinkTarget(rel, header.Linkname); err != nil {
+			// outside the extraction root are rejected, including links that
+			// only escape after following another link.
+			if err := mkdirAllNoSymlink(dest, filepath.Dir(target)); err != nil {
 				return nil, nil, err
 			}
-			if err := mkdirAllNoSymlink(dest, filepath.Dir(target)); err != nil {
+			if err := resolveLinkTarget(dest, rel, header.Linkname); err != nil {
 				return nil, nil, err
 			}
 			if _, err := os.Lstat(target); err == nil {
@@ -735,6 +820,13 @@ func extractArchive(archivePath, dest, wrapper string) ([]manifestFile, []manife
 		default:
 			return nil, nil, fmt.Errorf("%w: unsupported entry type for %q", ErrUnsafeArchive, header.Name)
 		}
+	}
+
+	// A link created before its target could become unsafe once later entries
+	// exist (for example a link whose target path itself becomes a symlink).
+	// Re-resolve every link against the complete tree before publishing it.
+	if err := validateExtractedLinks(dest, links); err != nil {
+		return nil, nil, err
 	}
 
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
@@ -778,10 +870,24 @@ func mkdirAllNoSymlink(root, dir string) error {
 	return nil
 }
 
-// validateLinkTarget permits only relative symlinks whose lexical resolution
-// stays inside the extraction root and does not point at an ancestor of the
-// link itself.
-func validateLinkTarget(rel, linkname string) error {
+// validateExtractedLinks re-resolves every link against the complete tree. A
+// link created before its target could become unsafe once later entries exist.
+func validateExtractedLinks(root string, links []manifestLink) error {
+	for _, link := range links {
+		if err := resolveLinkTarget(root, link.Path, link.Target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const maxSymlinkHops = 40
+
+// resolveLinkTarget follows rel's target component-by-component against the
+// current tree. Following existing links before interpreting ".." is essential:
+// a lexical path.Clean can hide an escape that the kernel will take after a
+// symlink hop.
+func resolveLinkTarget(root, rel, linkname string) error {
 	if linkname == "" {
 		return fmt.Errorf("%w: symlink %q has an empty target", ErrUnsafeArchive, rel)
 	}
@@ -791,14 +897,107 @@ func validateLinkTarget(rel, linkname string) error {
 	if path.IsAbs(linkname) || strings.HasPrefix(linkname, "/") {
 		return fmt.Errorf("%w: symlink %q is absolute", ErrUnsafeArchive, rel)
 	}
-	resolved := path.Clean(path.Join(path.Dir(rel), linkname))
-	if resolved == "." || resolved == ".." || strings.HasPrefix(resolved, "../") || path.IsAbs(resolved) {
-		return fmt.Errorf("%w: symlink %q escapes the extraction root", ErrUnsafeArchive, rel)
+
+	var parts []string
+	base := path.Dir(rel)
+	if base != "." && base != "" {
+		parts = append(parts, strings.Split(base, "/")...)
 	}
-	if resolved == rel || strings.HasPrefix(rel, resolved+"/") {
+	parts = append(parts, strings.Split(linkname, "/")...)
+
+	resolved, err := resolveLinkComponents(root, parts)
+	if err != nil {
+		return fmt.Errorf("%w: symlink %q target %q: %v", ErrUnsafeArchive, rel, linkname, err)
+	}
+	if resolved == "" || resolved == rel || strings.HasPrefix(rel, resolved+"/") {
 		return fmt.Errorf("%w: symlink %q points at itself or an ancestor", ErrUnsafeArchive, rel)
 	}
 	return nil
+}
+
+func resolveLinkComponents(root string, parts []string) (string, error) {
+	resolved := ""
+	hops := 0
+	for len(parts) > 0 {
+		component := parts[0]
+		parts = parts[1:]
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if resolved == "" {
+				return "", errors.New("target escapes the extraction root")
+			}
+			resolved = path.Dir(resolved)
+			if resolved == "." {
+				resolved = ""
+			}
+			continue
+		}
+
+		candidate := component
+		if resolved != "" {
+			candidate = resolved + "/" + component
+		}
+		full := filepath.Join(root, filepath.FromSlash(candidate))
+		info, err := os.Lstat(full)
+		if errors.Is(err, fs.ErrNotExist) {
+			// Everything from here is dangling. Resolve the remainder
+			// lexically but still reject any attempt to leave the root.
+			return resolveMissingLinkComponents(resolved, append([]string{component}, parts...))
+		}
+		if err != nil {
+			return "", fmt.Errorf("inspect %q: %v", candidate, err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			hops++
+			if hops > maxSymlinkHops {
+				return "", fmt.Errorf("more than %d symlink hops", maxSymlinkHops)
+			}
+			target, err := os.Readlink(full)
+			if err != nil {
+				return "", fmt.Errorf("read symlink %q: %v", candidate, err)
+			}
+			if target == "" || strings.ContainsRune(target, 0) || strings.Contains(target, "\\") {
+				return "", fmt.Errorf("link %q has an invalid target", candidate)
+			}
+			if path.IsAbs(target) || strings.HasPrefix(target, "/") {
+				return "", fmt.Errorf("link %q has an absolute target", candidate)
+			}
+			parts = append(strings.Split(target, "/"), parts...)
+			continue
+		}
+		if !info.IsDir() && len(parts) > 0 {
+			return "", fmt.Errorf("component %q is not a directory", candidate)
+		}
+		resolved = candidate
+	}
+	return resolved, nil
+}
+
+func resolveMissingLinkComponents(base string, parts []string) (string, error) {
+	resolved := base
+	for _, component := range parts {
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if resolved == "" {
+				return "", errors.New("target escapes the extraction root")
+			}
+			resolved = path.Dir(resolved)
+			if resolved == "." {
+				resolved = ""
+			}
+		default:
+			if resolved == "" {
+				resolved = component
+			} else {
+				resolved += "/" + component
+			}
+		}
+	}
+	return resolved, nil
 }
 
 func regularFileMode(header *tar.Header) fs.FileMode {
@@ -871,7 +1070,65 @@ type tarStream struct {
 	tar  *tar.Reader
 }
 
-func openTarStream(archivePath string) (*tarStream, error) {
+// limitedReader caps the number of decompressed bytes read from gzip. Tar
+// metadata overhead is covered by a small per-entry allowance in addition to
+// the payload budget.
+type limitedReader struct {
+	reader    io.Reader
+	remaining int64
+}
+
+func (l *limitedReader) Read(p []byte) (int, error) {
+	if l.remaining <= 0 {
+		return 0, errDecompressionLimit
+	}
+	if int64(len(p)) > l.remaining {
+		p = p[:l.remaining]
+	}
+	n, err := l.reader.Read(p)
+	l.remaining -= int64(n)
+	return n, err
+}
+
+// archiveBudget enforces the per-archive entry and uncompressed-size limits
+// before any member is written.
+type archiveBudget struct {
+	limits  archiveLimits
+	entries int
+	bytes   int64
+}
+
+func (b *archiveBudget) add(header *tar.Header) error {
+	b.entries++
+	if b.limits.maxEntries > 0 && b.entries > b.limits.maxEntries {
+		return fmt.Errorf("%w: archive has more than %d entries",
+			ErrUnsafeArchive, b.limits.maxEntries)
+	}
+	if header.Size < 0 {
+		return fmt.Errorf("%w: entry %q has a negative size", ErrUnsafeArchive, header.Name)
+	}
+	if b.limits.maxBytes > 0 {
+		if header.Size > b.limits.maxBytes-b.bytes {
+			return fmt.Errorf("%w: archive expands beyond the %d byte limit",
+				ErrUnsafeArchive, b.limits.maxBytes)
+		}
+		b.bytes += header.Size
+	}
+	return nil
+}
+
+func (l archiveLimits) decompressionLimit() int64 {
+	if l.maxBytes <= 0 {
+		return 1 << 30
+	}
+	overhead := int64(l.maxEntries) * 1024
+	if overhead < 1<<20 {
+		overhead = 1 << 20
+	}
+	return l.maxBytes + overhead
+}
+
+func openTarStream(archivePath string, limits archiveLimits) (*tarStream, error) {
 	file, err := os.Open(archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("runtime: open archive %s: %w", archivePath, err)
@@ -881,7 +1138,15 @@ func openTarStream(archivePath string) (*tarStream, error) {
 		_ = file.Close()
 		return nil, fmt.Errorf("%w: open gzip %s: %v", ErrUnsafeArchive, archivePath, err)
 	}
-	return &tarStream{file: file, gzip: reader, tar: tar.NewReader(reader)}, nil
+	limited := &limitedReader{reader: reader, remaining: limits.decompressionLimit()}
+	return &tarStream{file: file, gzip: reader, tar: tar.NewReader(limited)}, nil
+}
+
+func archiveReadError(archivePath string, err error) error {
+	if errors.Is(err, errDecompressionLimit) {
+		return fmt.Errorf("%w: archive %s exceeds the decompression limit", ErrUnsafeArchive, archivePath)
+	}
+	return fmt.Errorf("%w: read %s: %v", ErrUnsafeArchive, archivePath, err)
 }
 
 func (s *tarStream) Close() error {
@@ -992,7 +1257,7 @@ func verifyInstalled(build model.RuntimeBuild) error {
 			if got != want {
 				issues = append(issues, fmt.Sprintf("symlink %q targets %q, want %q", rel, got, want))
 			}
-			if err := validateLinkTarget(rel, got); err != nil {
+			if err := resolveLinkTarget(build.Path, rel, got); err != nil {
 				issues = append(issues, err.Error())
 			}
 			return nil
