@@ -324,11 +324,18 @@ func TestCertCRUD(t *testing.T) {
 	}
 }
 
-func TestCertRequiresSite(t *testing.T) {
+func TestCertCanExistWithoutSite(t *testing.T) {
 	s := openTemp(t)
 	cert := model.CertRecord{SiteID: "missing", Serial: "01"}
-	if err := s.SaveCert(ctx, cert); err == nil {
-		t.Fatal("want foreign key error")
+	if err := s.SaveCert(ctx, cert); err != nil {
+		t.Fatalf("save pre-site/dashboard certificate: %v", err)
+	}
+	got, err := s.GetCertBySite(ctx, "missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Serial != "01" {
+		t.Fatalf("serial = %q", got.Serial)
 	}
 }
 
@@ -435,8 +442,8 @@ func TestSchemaAndPragmas(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 1 {
-		t.Fatalf("schema version = %d, want 1", version)
+	if version != 2 {
+		t.Fatalf("schema version = %d, want 2", version)
 	}
 }
 
