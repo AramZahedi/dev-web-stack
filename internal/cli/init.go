@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -73,8 +74,16 @@ func (a *App) runInit(cmd *cobra.Command) error {
 		targets = []trust.Target{}
 	}
 
+	// Publish the dashboard host before the daemon starts so it can answer at
+	// devstack.test immediately, then replace the block with the full set after
+	// existing sites are discovered.
+	if err := helper.SyncHosts(ctx, []string{"devstack.test"}); err != nil {
+		return helperCallError(err, socket)
+	}
+
 	if err := ensureRunning(ctx, daemon.Options{Home: home, HelperSocket: socket}); err != nil {
-		return wrapError(err, "DAEMON_UNAVAILABLE", "Inspect ~/.devstack/run/daemon.log, then rerun `devstack init`.")
+		logPath := filepath.Join(home, "run", "daemon.log")
+		return wrapError(err, "DAEMON_UNAVAILABLE", fmt.Sprintf("Inspect %s, then rerun `devstack init`.", logPath))
 	}
 	c, err := a.newClient(home)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 
 // uninstallResult is the JSON report printed by `devstack uninstall --json`.
 type uninstallResult struct {
+	Status              string   `json:"status"`
 	Uninstalled         bool     `json:"uninstalled"`
 	DaemonStopped       bool     `json:"daemon_stopped"`
 	Command             string   `json:"command"`
@@ -41,30 +42,43 @@ func (a *App) runUninstall(cmd *cobra.Command) error {
 		}
 	}
 
-	stopped, err := stopDaemon(ctx, home)
-	if err != nil {
-		return err
-	}
-
-	socket := a.helperSocketPath()
-	helper, err := dialHelper(socket)
-	if err != nil {
-		return wrapError(fmt.Errorf("connect to devstack-helper at %s: %w", socket, err), "HELPER_UNAVAILABLE", "Ensure devstack-helper is running, or remove its unit manually using the printed commands.")
-	}
-	defer func() { _ = helper.Close() }()
-	uninstallErr := helperCallError(helper.Uninstall(ctx), socket)
-
+	stopped, stopErr := stopDaemon(ctx, home)
 	result := uninstallResult{
-		Uninstalled:   uninstallErr == nil,
+		Status:        "complete",
+		Uninstalled:   true,
 		DaemonStopped: stopped,
 		Command:       elevatedRemovalCommand,
 		Checklist: []string{
 			"Run the elevated command above to remove the devstack-helper unit and system binaries.",
 			"Remove the per-user devstack binary from your PATH if the installer added one.",
-			"Review ~/.devstack and remove it manually only if you no longer need configuration or logs.",
+			fmt.Sprintf("Review %s and remove it manually only if you no longer need configuration or logs.", home),
 			"Project files were left untouched; no site directories were removed.",
 		},
 		ProjectFilesRemoved: false,
+	}
+
+	var uninstallErr error
+	if stopErr != nil {
+		// Do not remove helper-owned integration while the daemon may still be
+		// running. The instructions below still tell the user how to finish.
+		uninstallErr = stopErr
+	} else {
+		socket := a.helperSocketPath()
+		helper, err := dialHelper(socket)
+		if err != nil {
+			uninstallErr = wrapError(
+				fmt.Errorf("connect to devstack-helper at %s: %w", socket, err),
+				"HELPER_UNAVAILABLE",
+				"Ensure devstack-helper is running, then rerun `devstack uninstall --yes`.",
+			)
+		} else {
+			defer func() { _ = helper.Close() }()
+			uninstallErr = helperCallError(helper.Uninstall(ctx), socket)
+		}
+	}
+	if uninstallErr != nil {
+		result.Status = "incomplete"
+		result.Uninstalled = false
 	}
 
 	if a.jsonOutput {
@@ -74,10 +88,17 @@ func (a *App) runUninstall(cmd *cobra.Command) error {
 		return uninstallErr
 	}
 	out := cmd.OutOrStdout()
-	fmt.Fprintln(out, "Uninstalled devstack integration.")
-	if stopped {
-		fmt.Fprintln(out, "Daemon: stopped")
+	if uninstallErr == nil {
+		fmt.Fprintln(out, "Uninstalled devstack integration.")
 	} else {
+		fmt.Fprintln(out, "Uninstall incomplete.")
+	}
+	switch {
+	case stopErr != nil:
+		fmt.Fprintf(out, "Daemon: stop failed: %v\n", stopErr)
+	case stopped:
+		fmt.Fprintln(out, "Daemon: stopped")
+	default:
 		fmt.Fprintln(out, "Daemon: was not running")
 	}
 	fmt.Fprintln(out)
@@ -90,6 +111,9 @@ func (a *App) runUninstall(cmd *cobra.Command) error {
 	}
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Project files were left untouched.")
+	if uninstallErr != nil {
+		fmt.Fprintf(out, "Uninstall did not complete: %v\n", uninstallErr)
+	}
 	return uninstallErr
 }
 

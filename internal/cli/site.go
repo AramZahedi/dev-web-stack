@@ -409,7 +409,7 @@ func (a *App) newSiteRemoveCmd() *cobra.Command {
 
 func (a *App) newSiteLogsCmd() *cobra.Command {
 	var (
-		follow = true
+		follow bool
 		tail   int
 	)
 	cmd := &cobra.Command{
@@ -425,10 +425,10 @@ func (a *App) newSiteLogsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return streamSiteLogs(ctx, c, args[0], follow, tail, cmd.OutOrStdout())
+			return streamSiteLogs(ctx, c, args[0], follow, tail, cmd.OutOrStdout(), a.jsonOutput)
 		},
 	}
-	cmd.Flags().BoolVar(&follow, "follow", true, "keep streaming new lines")
+	cmd.Flags().BoolVar(&follow, "follow", false, "keep streaming new lines instead of printing a snapshot")
 	cmd.Flags().IntVar(&tail, "tail", 0, "show only the last N lines")
 	return cmd
 }
@@ -496,16 +496,16 @@ func listingURL(site model.Site) string {
 	return "https://" + host
 }
 
-// streamSiteLogs renders the daemon's SSE log stream. A finite tail reads one
-// snapshot; a follow with a tail first prints the snapshot and then switches to
-// the live subscription.
-func streamSiteLogs(ctx context.Context, c Client, ref string, follow bool, tail int, out io.Writer) error {
+// streamSiteLogs renders the daemon's SSE log stream. A finite snapshot is the
+// default; --follow keeps the live subscription open. A follow with a tail
+// first prints the snapshot and then switches to the live subscription.
+func streamSiteLogs(ctx context.Context, c Client, ref string, follow bool, tail int, out io.Writer, jsonOutput bool) error {
 	if tail > 0 {
 		body, err := c.Logs(ctx, ref, false)
 		if err != nil {
 			return err
 		}
-		err = copyLogLines(body, out, tail)
+		err = copyLogLines(body, out, tail, jsonOutput)
 		_ = body.Close()
 		if err != nil {
 			return err
@@ -520,12 +520,19 @@ func streamSiteLogs(ctx context.Context, c Client, ref string, follow bool, tail
 	}
 	defer func() { _ = body.Close() }()
 	if follow && tail > 0 {
-		return copyLogLines(body, out, 0)
+		return copyLogLines(body, out, 0, jsonOutput)
 	}
-	return copyLogLines(body, out, tail)
+	return copyLogLines(body, out, tail, jsonOutput)
 }
 
-func copyLogLines(reader io.Reader, out io.Writer, tail int) error {
+// logLineJSON is the JSONL record emitted by `site logs --json`.
+type logLineJSON struct {
+	Time   string `json:"time"`
+	Source string `json:"source"`
+	Text   string `json:"text"`
+}
+
+func copyLogLines(reader io.Reader, out io.Writer, tail int, jsonOutput bool) error {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	var kept []string
@@ -539,17 +546,33 @@ func copyLogLines(reader io.Reader, out io.Writer, tail int) error {
 			continue
 		}
 		var record logs.Line
-		text := payload
-		if err := json.Unmarshal([]byte(payload), &record); err == nil {
-			text = formatLogLine(record)
+		parsed := json.Unmarshal([]byte(payload), &record) == nil
+		var rendered string
+		switch {
+		case jsonOutput:
+			item := logLineJSON{Text: payload}
+			if parsed {
+				item.Time = formatLogTime(record.Time)
+				item.Source = record.Source
+				item.Text = record.Text
+			}
+			data, err := json.Marshal(item)
+			if err != nil {
+				return err
+			}
+			rendered = string(data)
+		case parsed:
+			rendered = formatLogLine(record)
+		default:
+			rendered = payload
 		}
 		if tail <= 0 {
-			if _, err := fmt.Fprintln(out, text); err != nil {
+			if _, err := fmt.Fprintln(out, rendered); err != nil {
 				return err
 			}
 			continue
 		}
-		kept = append(kept, text)
+		kept = append(kept, rendered)
 		if len(kept) > tail {
 			kept = kept[1:]
 		}
@@ -567,10 +590,17 @@ func copyLogLines(reader io.Reader, out io.Writer, tail int) error {
 	return nil
 }
 
+func formatLogTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
 func formatLogLine(line logs.Line) string {
 	parts := make([]string, 0, 3)
-	if !line.Time.IsZero() {
-		parts = append(parts, line.Time.UTC().Format(time.RFC3339))
+	if stamp := formatLogTime(line.Time); stamp != "" {
+		parts = append(parts, stamp)
 	}
 	if line.Source != "" {
 		parts = append(parts, line.Source)

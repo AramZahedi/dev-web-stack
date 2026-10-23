@@ -100,6 +100,13 @@ func (a *App) newTrustActionCmd(action string) *cobra.Command {
 		Short: titleAction(action) + " CA trust",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if action == "remove" && !a.assumeYes {
+				return &Error{
+					Code:        "CONFIRMATION_REQUIRED",
+					Message:     "removing the local CA from trust stores requires confirmation",
+					Remediation: "Re-run `devstack trust remove --yes`.",
+				}
+			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
 			if err != nil {
@@ -120,28 +127,40 @@ func (a *App) newTrustActionCmd(action string) *cobra.Command {
 			if targets == nil {
 				targets = []trust.Target{}
 			}
-			if a.jsonOutput {
-				return a.writeJSON(cmd, targets)
-			}
-			rows := make([][]string, 0, len(targets))
 			failures := 0
 			for _, target := range targets {
 				if !target.OK {
 					failures++
 				}
+			}
+			if a.jsonOutput {
+				if err := a.writeJSON(cmd, targets); err != nil {
+					return err
+				}
+				if failures != 0 {
+					return trustFailedError(failures)
+				}
+				return nil
+			}
+			rows := make([][]string, 0, len(targets))
+			for _, target := range targets {
 				rows = append(rows, []string{target.Name, fmt.Sprintf("%t", target.OK), defaultString(target.Detail, "-")})
 			}
 			if err := writeTable(cmd, []string{"TARGET", "OK", "DETAIL"}, rows); err != nil {
 				return err
 			}
 			if failures != 0 {
-				return &Error{
-					Code:        "TRUST_FAILED",
-					Message:     fmt.Sprintf("%d trust target(s) need attention", failures),
-					Remediation: "Run `devstack trust repair`, then rerun `devstack trust status`.",
-				}
+				return trustFailedError(failures)
 			}
 			return nil
 		},
+	}
+}
+
+func trustFailedError(failures int) error {
+	return &Error{
+		Code:        "TRUST_FAILED",
+		Message:     fmt.Sprintf("%d trust target(s) need attention", failures),
+		Remediation: "Run `devstack trust repair`, then rerun `devstack trust status`.",
 	}
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,11 @@ import (
 )
 
 const daemonStopTimeout = 10 * time.Second
+
+// readProcCmdline is a test seam for the daemon-stop ownership check.
+var readProcCmdline = func(pid int) ([]byte, error) {
+	return os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+}
 
 // daemonStatus is the JSON shape reported by `daemon status`.
 type daemonStatus struct {
@@ -148,14 +154,32 @@ func readDaemonStatus(home string) daemonStatus {
 }
 
 // daemonStop sends SIGTERM to the pid in home and waits for the process to
-// exit. A missing or already-dead process reports false without an error.
+// exit. The pid is verified as a devstack process first so a stale pid file can
+// never signal an unrelated process. A missing or already-dead process reports
+// false without an error.
 func daemonStop(ctx context.Context, home string) (bool, error) {
 	pid, err := readPID(daemon.PidPath(home))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
-		return false, wrapError(err, "DAEMON_STOP_FAILED", "Inspect ~/.devstack/run/daemon.pid.")
+		return false, wrapError(err, "DAEMON_STOP_FAILED", fmt.Sprintf("Inspect %s.", daemon.PidPath(home)))
+	}
+	if pid == 1 {
+		return false, daemonStopRefused(home, "refusing to signal pid 1")
+	}
+	cmdline, err := readProcCmdline(pid)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, wrapError(fmt.Errorf("inspect pid %d: %w", pid, err), "DAEMON_STOP_FAILED", fmt.Sprintf("Inspect %s.", daemon.PidPath(home)))
+	}
+	if len(cmdline) == 0 {
+		return false, nil
+	}
+	if !isDevstackCmdline(cmdline) {
+		return false, daemonStopRefused(home, fmt.Sprintf("pid %d does not belong to devstack", pid))
 	}
 	if err := signalProcess(pid, syscall.SIGTERM); err != nil {
 		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
@@ -183,6 +207,28 @@ func daemonStop(ctx context.Context, home string) (bool, error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return true, nil
+}
+
+func daemonStopRefused(home, message string) error {
+	return &Error{
+		Code:        "DAEMON_STOP_REFUSED",
+		Message:     message,
+		Remediation: fmt.Sprintf("Remove the stale pid file %s only after confirming no devstack daemon is running.", daemon.PidPath(home)),
+	}
+}
+
+// isDevstackCmdline reports whether argv[0] is the devstack or devstack-helper
+// binary. /proc/<pid>/cmdline separates arguments with NUL bytes.
+func isDevstackCmdline(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	argv0 := data
+	if index := bytes.IndexByte(data, 0); index >= 0 {
+		argv0 = data[:index]
+	}
+	base := filepath.Base(strings.TrimSpace(string(argv0)))
+	return base == "devstack" || base == "devstack-helper"
 }
 
 func readPID(path string) (int, error) {

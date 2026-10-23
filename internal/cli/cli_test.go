@@ -495,6 +495,38 @@ func TestCLIDoctorFailureExitCode(t *testing.T) {
 	}
 }
 
+func TestCLITrustJSONFailureExitsNonZero(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{trust: []trust.Target{{Name: "system", OK: false, Detail: "missing"}}}
+	code, stdout, stderr := runCLIExit(t, fake, "trust", "status", "--json")
+	if code == 0 {
+		t.Fatal("want non-zero exit when a trust target fails")
+	}
+	var got []trust.Target
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %q: %v", stdout, err)
+	}
+	if len(got) != 1 || got[0].OK {
+		t.Fatalf("targets = %+v", got)
+	}
+	for _, want := range []string{"TRUST_FAILED", `"remediation"`} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, missing %q", stderr, want)
+		}
+	}
+}
+
+func TestCLITrustRemoveRequiresYes(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{trust: []trust.Target{{Name: "system", OK: true, Detail: "removed"}}}
+
+	code, _, stderr := runCLIExit(t, fake, "trust", "remove")
+	if code == 0 || !strings.Contains(stderr, "--yes") {
+		t.Fatalf("code=%d stderr=%q, want --yes error", code, stderr)
+	}
+	runCLI(t, fake, "trust", "remove", "--yes")
+}
+
 func TestCLIInit(t *testing.T) {
 	useTestSeams(t)
 	helper, socket := startFakeHelper(t)
@@ -509,9 +541,18 @@ func TestCLIInit(t *testing.T) {
 	t.Cleanup(func() { userHomeDir = oldHome })
 
 	var ensured daemon.Options
+	var eventsMu sync.Mutex
+	var events []string
+	recordEvent := func(value string) {
+		eventsMu.Lock()
+		events = append(events, value)
+		eventsMu.Unlock()
+	}
+	helper.onRequest = recordEvent
 	oldEnsure := ensureRunning
 	ensureRunning = func(_ context.Context, opts daemon.Options) error {
 		ensured = opts
+		recordEvent("ensure")
 		return nil
 	}
 	t.Cleanup(func() { ensureRunning = oldEnsure })
@@ -558,9 +599,24 @@ func TestCLIInit(t *testing.T) {
 		helperproto.PathForwarders,
 		helperproto.PathTrustInstall,
 		helperproto.PathHostsSync,
+		helperproto.PathHostsSync,
 	}
 	if got := callPaths(calls); !reflect.DeepEqual(got, wantPaths) {
 		t.Fatalf("helper calls = %v, want %v", got, wantPaths)
+	}
+	eventsMu.Lock()
+	gotEvents := append([]string(nil), events...)
+	eventsMu.Unlock()
+	wantEvents := []string{
+		helperproto.PathEnsureCA,
+		helperproto.PathForwarders,
+		helperproto.PathTrustInstall,
+		helperproto.PathHostsSync,
+		"ensure",
+		helperproto.PathHostsSync,
+	}
+	if !reflect.DeepEqual(gotEvents, wantEvents) {
+		t.Fatalf("events = %v, want baseline hosts sync before daemon startup", gotEvents)
 	}
 	var forward helperproto.ForwardersRequest
 	if err := json.Unmarshal([]byte(calls[1].Body), &forward); err != nil {
@@ -576,8 +632,15 @@ func TestCLIInit(t *testing.T) {
 	if install.UserHome != userHome {
 		t.Fatalf("trust user home = %q, want %q", install.UserHome, userHome)
 	}
+	var baseline helperproto.HostsSyncRequest
+	if err := json.Unmarshal([]byte(calls[3].Body), &baseline); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(baseline.Domains, []string{"devstack.test"}) {
+		t.Fatalf("baseline domains = %v, want [devstack.test]", baseline.Domains)
+	}
 	var sync helperproto.HostsSyncRequest
-	if err := json.Unmarshal([]byte(calls[3].Body), &sync); err != nil {
+	if err := json.Unmarshal([]byte(calls[4].Body), &sync); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"devstack.test", "blog.test", "www.blog.test"} {
@@ -621,6 +684,35 @@ func TestCLIInitHelperError(t *testing.T) {
 	}
 }
 
+func TestCLIInitDaemonErrorUsesResolvedHome(t *testing.T) {
+	useTestSeams(t)
+	_, socket := startFakeHelper(t)
+	home := t.TempDir()
+
+	oldDial := dialHelper
+	dialHelper = func(string) (*helperclient.Client, error) { return helperclient.Dial(socket) }
+	t.Cleanup(func() { dialHelper = oldDial })
+	oldEnsure := ensureRunning
+	ensureRunning = func(context.Context, daemon.Options) error { return errors.New("daemon failed to start") }
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExit(t, fake, "init", "--home", home, "--helper-socket", socket)
+	if code == 0 {
+		t.Fatal("want non-zero exit")
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	wantLog := filepath.Join(home, "run", "daemon.log")
+	if !strings.Contains(stderr, wantLog) {
+		t.Fatalf("stderr = %q, want resolved log path %q", stderr, wantLog)
+	}
+	if strings.Contains(stderr, "~/.devstack") {
+		t.Fatalf("stderr = %q, must not contain a hardcoded home", stderr)
+	}
+}
+
 func TestCLIUninstall(t *testing.T) {
 	useTestSeams(t)
 	helper, socket := startFakeHelper(t)
@@ -661,6 +753,9 @@ func TestCLIUninstall(t *testing.T) {
 	if !result.Uninstalled || !result.DaemonStopped {
 		t.Fatalf("result = %+v", result)
 	}
+	if result.Status != "complete" {
+		t.Fatalf("status = %q, want complete", result.Status)
+	}
 	if !strings.Contains(result.Command, "sudo") {
 		t.Fatalf("elevated command = %q", result.Command)
 	}
@@ -669,6 +764,9 @@ func TestCLIUninstall(t *testing.T) {
 	}
 	if !containsFold(result.Checklist, "project files") {
 		t.Fatalf("checklist = %v", result.Checklist)
+	}
+	if !containsFold(result.Checklist, home) || containsFold(result.Checklist, "~/.devstack") {
+		t.Fatalf("checklist = %v, want resolved home %q and no hardcoded path", result.Checklist, home)
 	}
 	if !reflect.DeepEqual(callPaths(helper.snapshot()), []string{helperproto.PathUninstall}) {
 		t.Fatalf("helper calls = %v", callPaths(helper.snapshot()))
@@ -692,7 +790,117 @@ func TestCLIUninstall(t *testing.T) {
 	})
 }
 
-func TestCLISiteLogsFollowAndTail(t *testing.T) {
+func TestCLIUninstallHelperUnavailable(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+
+	var stopped bool
+	oldStop := stopDaemon
+	stopDaemon = func(_ context.Context, gotHome string) (bool, error) {
+		if gotHome != home {
+			t.Errorf("stop home = %q, want %q", gotHome, home)
+		}
+		stopped = true
+		return true, nil
+	}
+	t.Cleanup(func() { stopDaemon = oldStop })
+	oldDial := dialHelper
+	dialHelper = func(string) (*helperclient.Client, error) { return nil, errors.New("helper socket is missing") }
+	t.Cleanup(func() { dialHelper = oldDial })
+
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExit(t, fake, "uninstall", "--home", home, "--yes")
+	if code == 0 {
+		t.Fatal("want non-zero exit")
+	}
+	if !stopped {
+		t.Fatal("daemon was not stopped before the helper failure")
+	}
+	for _, want := range []string{"Uninstall incomplete.", "To remove the helper unit", "sudo", "Checklist:", "Project files were left untouched", home} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, missing %q", stdout, want)
+		}
+	}
+	if !strings.Contains(stderr, "HELPER_UNAVAILABLE") || !strings.Contains(stderr, "Remediation:") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	if strings.Contains(stdout, "Uninstalled devstack integration.") {
+		t.Fatalf("stdout = %q, must not report success", stdout)
+	}
+}
+
+func TestCLIUninstallHelperError(t *testing.T) {
+	useTestSeams(t)
+	helper, socket := startFakeHelper(t)
+	helper.failPath = helperproto.PathUninstall
+	helper.failCode = helperproto.CodeInternal
+	helper.failMessage = "uninstall blew up"
+	home := t.TempDir()
+
+	oldDial := dialHelper
+	dialHelper = func(string) (*helperclient.Client, error) { return helperclient.Dial(socket) }
+	t.Cleanup(func() { dialHelper = oldDial })
+	oldStop := stopDaemon
+	stopDaemon = func(context.Context, string) (bool, error) { return true, nil }
+	t.Cleanup(func() { stopDaemon = oldStop })
+
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExit(t, fake, "uninstall", "--home", home, "--yes", "--json")
+	if code == 0 {
+		t.Fatal("want non-zero exit")
+	}
+	var result uninstallResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is not JSON: %q: %v", stdout, err)
+	}
+	if result.Status != "incomplete" || result.Uninstalled {
+		t.Fatalf("result = %+v, want incomplete and not uninstalled", result)
+	}
+	if !strings.Contains(result.Command, "sudo") || !containsFold(result.Checklist, home) {
+		t.Fatalf("instructions = %+v", result)
+	}
+	for _, want := range []string{"INTERNAL", "uninstall blew up", `"remediation"`} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, missing %q", stderr, want)
+		}
+	}
+	if !reflect.DeepEqual(callPaths(helper.snapshot()), []string{helperproto.PathUninstall}) {
+		t.Fatalf("helper calls = %v", callPaths(helper.snapshot()))
+	}
+}
+
+func TestCLIUninstallDaemonStopFailureStillPrintsInstructions(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	oldStop := stopDaemon
+	stopDaemon = func(context.Context, string) (bool, error) { return false, errors.New("daemon is wedged") }
+	t.Cleanup(func() { stopDaemon = oldStop })
+	oldDial := dialHelper
+	dialHelper = func(string) (*helperclient.Client, error) {
+		t.Fatal("helper must not be dialed after a daemon stop failure")
+		return nil, nil
+	}
+	t.Cleanup(func() { dialHelper = oldDial })
+
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExit(t, fake, "uninstall", "--home", home, "--yes")
+	if code == 0 {
+		t.Fatal("want non-zero exit")
+	}
+	for _, want := range []string{"Uninstall incomplete.", "Daemon: stop failed", "sudo", "Checklist:", "Project files were left untouched", home} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, missing %q", stdout, want)
+		}
+	}
+	if strings.Contains(stdout, "Uninstalled devstack integration.") {
+		t.Fatalf("stdout = %q, must not report success", stdout)
+	}
+	if !strings.Contains(stderr, "daemon is wedged") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestCLISiteLogsDefaultFollowAndTail(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{
 		sites: []model.Site{{Name: "blog", Domain: "blog.test"}},
@@ -700,7 +908,18 @@ func TestCLISiteLogsFollowAndTail(t *testing.T) {
 			"data: {\"time\":\"2026-10-23T10:00:01Z\",\"source\":\"app\",\"text\":\"two\"}\n\n" +
 			"data: {\"time\":\"2026-10-23T10:00:02Z\",\"source\":\"app\",\"text\":\"three\"}\n\n",
 	}
-	out := runCLI(t, fake, "site", "logs", "blog", "--follow")
+
+	out := runCLI(t, fake, "site", "logs", "blog")
+	if fake.logsFollow {
+		t.Fatal("default Logs follow = true, want a finite snapshot")
+	}
+	for _, want := range []string{"one", "two", "three"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, missing %q", out, want)
+		}
+	}
+
+	out = runCLI(t, fake, "site", "logs", "blog", "--follow")
 	if !fake.logsFollow || fake.logsRef != "blog" {
 		t.Fatalf("Logs(%q, follow=%v), want blog/true", fake.logsRef, fake.logsFollow)
 	}
@@ -710,9 +929,9 @@ func TestCLISiteLogsFollowAndTail(t *testing.T) {
 		}
 	}
 
-	out = runCLI(t, fake, "site", "logs", "blog", "--follow=false", "--tail", "2")
+	out = runCLI(t, fake, "site", "logs", "blog", "--tail", "2")
 	if fake.logsFollow {
-		t.Fatal("Logs follow = true, want false with --follow=false")
+		t.Fatal("Logs follow = true, want a finite snapshot with --tail")
 	}
 	if strings.Contains(out, "one") {
 		t.Fatalf("output = %q, want only the last two lines", out)
@@ -722,6 +941,57 @@ func TestCLISiteLogsFollowAndTail(t *testing.T) {
 			t.Fatalf("output = %q, missing %q", out, want)
 		}
 	}
+}
+
+func TestCLISiteLogsJSON(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{
+		sites: []model.Site{{Name: "blog", Domain: "blog.test"}},
+		logsData: "data: {\"time\":\"2026-10-23T10:00:00Z\",\"source\":\"app\",\"text\":\"one\"}\n\n" +
+			"data: {\"time\":\"2026-10-23T10:00:01Z\",\"source\":\"app\",\"text\":\"two\"}\n\n" +
+			"data: {\"time\":\"2026-10-23T10:00:02Z\",\"source\":\"app\",\"text\":\"three\"}\n\n",
+	}
+
+	out := runCLI(t, fake, "site", "logs", "blog", "--json")
+	lines := nonEmptyLines(out)
+	if len(lines) != 3 {
+		t.Fatalf("JSONL lines = %d (%q), want 3", len(lines), out)
+	}
+	wantText := []string{"one", "two", "three"}
+	for i, line := range lines {
+		var record logLineJSON
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("line %d is not JSON: %q: %v", i, line, err)
+		}
+		if record.Text != wantText[i] || record.Source != "app" || record.Time == "" {
+			t.Fatalf("record %d = %+v", i, record)
+		}
+	}
+
+	out = runCLI(t, fake, "site", "logs", "blog", "--json", "--tail", "2")
+	lines = nonEmptyLines(out)
+	if len(lines) != 2 {
+		t.Fatalf("JSONL lines = %d (%q), want 2", len(lines), out)
+	}
+	for i, line := range lines {
+		var record logLineJSON
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("line %d is not JSON: %q: %v", i, line, err)
+		}
+		if record.Text != wantText[i+1] {
+			t.Fatalf("record %d = %+v, want text %q", i, record, wantText[i+1])
+		}
+	}
+}
+
+func nonEmptyLines(value string) []string {
+	var lines []string
+	for _, line := range strings.Split(value, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 func TestCLIHumanErrorIncludesCodeMessageRemediation(t *testing.T) {
@@ -849,6 +1119,83 @@ func TestCLIDaemonStatusStopped(t *testing.T) {
 	}
 	if got.Running {
 		t.Fatalf("status = %+v", got)
+	}
+}
+
+func TestCLIDaemonStopRejectsPidOne(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(daemon.PidPath(home), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldStop := stopDaemon
+	stopDaemon = daemonStop
+	t.Cleanup(func() { stopDaemon = oldStop })
+
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "daemon", "stop", "--home", home)
+	if code == 0 {
+		t.Fatal("want non-zero exit for pid 1")
+	}
+	for _, want := range []string{"DAEMON_STOP_REFUSED", "pid 1"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, missing %q", stderr, want)
+		}
+	}
+}
+
+func TestDaemonStopRejectsForeignPID(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(daemon.PidPath(home), []byte("4242\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldRead := readProcCmdline
+	readProcCmdline = func(pid int) ([]byte, error) {
+		if pid != 4242 {
+			t.Fatalf("readProcCmdline(%d), want 4242", pid)
+		}
+		return []byte("/usr/bin/python3\x00script.py\x00"), nil
+	}
+	t.Cleanup(func() { readProcCmdline = oldRead })
+
+	stopped, err := daemonStop(context.Background(), home)
+	if err == nil || stopped {
+		t.Fatalf("daemonStop = (%v, %v), want refusal", stopped, err)
+	}
+	converted := asError(err)
+	for _, want := range []string{"DAEMON_STOP_REFUSED", "does not belong to devstack"} {
+		if !strings.Contains(converted.Error(), want) {
+			t.Fatalf("error = %q, missing %q", converted, want)
+		}
+	}
+	if !strings.Contains(converted.Remediation, daemon.PidPath(home)) {
+		t.Fatalf("remediation = %q, want pid path %q", converted.Remediation, daemon.PidPath(home))
+	}
+}
+
+func TestIsDevstackCmdline(t *testing.T) {
+	tests := []struct {
+		name    string
+		cmdline string
+		want    bool
+	}{
+		{"daemon", "/usr/local/bin/devstack\x00daemon\x00run\x00", true},
+		{"helper", "/usr/local/lib/devstack/devstack-helper\x00", true},
+		{"foreign", "/usr/bin/python3\x00devstack.py\x00", false},
+		{"empty", "", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isDevstackCmdline([]byte(test.cmdline)); got != test.want {
+				t.Fatalf("isDevstackCmdline(%q) = %v, want %v", test.cmdline, got, test.want)
+			}
+		})
 	}
 }
 
