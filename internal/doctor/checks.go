@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -553,7 +552,7 @@ func errorDetail(err error) string {
 // vhost check; an external mode without a vhost status fails only the
 // serving-mode check and skips the rest because their inputs are unavailable.
 func (s *Service) checkVhosts(ctx context.Context) []Check {
-	mode := s.configuredServingMode()
+	mode := s.effectiveServingMode()
 	checks := []Check{
 		{ID: "serving-mode", Title: "Serving mode"},
 		{ID: "vhost-server", Title: "Vhost server"},
@@ -572,7 +571,7 @@ func (s *Service) checkVhosts(ctx context.Context) []Check {
 
 	if mode == config.ServingModeBuiltin {
 		checks[0].Status = StatusOK
-		checks[0].Detail = "the built-in proxy serves sites on ports 80 and 443"
+		checks[0].Detail = "builtin mode: the built-in proxy serves sites on ports 80 and 443"
 		checks[0].Remediation = "No action is required."
 		skipRest(1, "the built-in proxy is serving sites, so external vhosts are not in use")
 		return checks
@@ -655,8 +654,14 @@ func (s *Service) checkVhosts(ctx context.Context) []Check {
 	return checks
 }
 
-// configuredServingMode treats an empty value as builtin, matching the daemon.
-func (s *Service) configuredServingMode() string {
+// effectiveServingMode prefers the daemon's live mode so a runtime switch is
+// reflected without a restart, then falls back to the startup configuration.
+func (s *Service) effectiveServingMode() string {
+	if s.deps.Vhosts != nil {
+		if mode := strings.ToLower(strings.TrimSpace(s.deps.Vhosts.ServingMode())); mode != "" {
+			return mode
+		}
+	}
 	mode := strings.ToLower(strings.TrimSpace(s.deps.Config.ServingMode))
 	if mode == "" {
 		return config.ServingModeBuiltin
@@ -713,7 +718,9 @@ func (s *Service) checkVhostFreshness(ctx context.Context, lastSync time.Time) C
 	return check
 }
 
-// checkVhostTLS verifies permissions only. Key contents are never read.
+// checkVhostTLS verifies the metadata reported by the root helper. Key and
+// certificate contents are never read, and doctor never opens the TLS
+// directory itself because it is root-only in a healthy install.
 func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
 	check := Check{ID: "vhost-tls", Title: "Vhost TLS permissions"}
 	if strings.TrimSpace(status.CurrentRelease) == "" {
@@ -723,21 +730,10 @@ func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
 		return check
 	}
 
-	dir := strings.TrimSpace(s.deps.VhostTLSDir)
-	if dir == "" {
-		dir = defaultVhostTLSDir
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
+	if status.TLSDirMode == 0 {
 		check.Status = StatusFail
-		check.Detail = fmt.Sprintf("cannot inspect %s: %v", dir, err)
-		check.Remediation = fmt.Sprintf("Recreate %s with mode 0700 (`install -d -m 0700 %s`, or `chmod 700 %s` after creating it), then rerun `devstack doctor`.", dir, dir, dir)
-		return check
-	}
-	if !info.IsDir() {
-		check.Status = StatusFail
-		check.Detail = fmt.Sprintf("%s is not a directory", dir)
-		check.Remediation = fmt.Sprintf("Remove the file at %s and run `devstack vhost sync` to recreate the TLS directory.", dir)
+		check.Detail = fmt.Sprintf("the helper reports no TLS directory; expected %s with mode 0700", defaultVhostTLSDir)
+		check.Remediation = fmt.Sprintf("Run `devstack vhost sync` to recreate %s, then `chmod 700 %s` if needed and rerun `devstack doctor`.", defaultVhostTLSDir, defaultVhostTLSDir)
 		return check
 	}
 
@@ -749,53 +745,33 @@ func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
 		keyFiles  int
 		certFiles int
 	)
-	if perm := info.Mode().Perm(); perm != 0o700 {
+	if status.TLSDirMode != 0o700 {
 		dirBad = true
-		bad = append(bad, fmt.Sprintf("%s has mode %04o (want 0700)", dir, perm))
+		bad = append(bad, fmt.Sprintf("%s has mode %04o (want 0700)", defaultVhostTLSDir, status.TLSDirMode))
 	}
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		check.Status = StatusFail
-		check.Detail = fmt.Sprintf("cannot read %s: %v", dir, err)
-		check.Remediation = fmt.Sprintf("Restore read access to %s, then rerun `devstack doctor`.", dir)
-		return check
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		var want os.FileMode
+	for _, file := range status.TLSFiles {
+		var want uint32
 		switch {
-		case strings.HasSuffix(name, ".key"):
+		case strings.HasSuffix(file.Name, ".key"):
 			want = 0o600
 			keyFiles++
-		case strings.HasSuffix(name, ".crt"):
+		case strings.HasSuffix(file.Name, ".crt"):
 			want = 0o644
 			certFiles++
 		default:
 			continue
 		}
-		path := filepath.Join(dir, name)
-		entryInfo, err := entry.Info()
-		if err != nil {
-			bad = append(bad, fmt.Sprintf("%s cannot be inspected: %v", path, err))
-			if want == 0o600 {
-				keyBad = true
-			} else {
-				certBad = true
-			}
-			continue
+		path := defaultVhostTLSDir + "/" + file.Name
+		badFile := false
+		if !file.Regular {
+			bad = append(bad, path+" is not a regular file")
+			badFile = true
+		} else if file.Mode != want {
+			bad = append(bad, fmt.Sprintf("%s has mode %04o (want %04o)", path, file.Mode, want))
+			badFile = true
 		}
-		if !entryInfo.Mode().IsRegular() {
-			bad = append(bad, fmt.Sprintf("%s is not a regular file", path))
-			if want == 0o600 {
-				keyBad = true
-			} else {
-				certBad = true
-			}
-			continue
-		}
-		if perm := entryInfo.Mode().Perm(); perm != want {
-			bad = append(bad, fmt.Sprintf("%s has mode %04o (want %04o)", path, perm, want))
+		if badFile {
 			if want == 0o600 {
 				keyBad = true
 			} else {
@@ -809,27 +785,27 @@ func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
 		check.Detail = "TLS material is unsafe: " + strings.Join(bad, "; ")
 		var fixes []string
 		if dirBad {
-			fixes = append(fixes, fmt.Sprintf("`chmod 700 %s`", dir))
+			fixes = append(fixes, fmt.Sprintf("`chmod 700 %s`", defaultVhostTLSDir))
 		}
 		if keyBad {
-			fixes = append(fixes, fmt.Sprintf("`chmod 600 %s/*.key`", dir))
+			fixes = append(fixes, fmt.Sprintf("`chmod 600 %s/*.key`", defaultVhostTLSDir))
 		}
 		if certBad {
-			fixes = append(fixes, fmt.Sprintf("`chmod 644 %s/*.crt`", dir))
+			fixes = append(fixes, fmt.Sprintf("`chmod 644 %s/*.crt`", defaultVhostTLSDir))
 		}
 		check.Remediation = "Run " + strings.Join(fixes, ", ") + ", then rerun `devstack doctor`."
 		return check
 	}
 
-	if keyFiles == 0 && certFiles == 0 {
+	if certFiles == 0 {
 		check.Status = StatusWarn
-		check.Detail = fmt.Sprintf("no TLS key or certificate files are present in %s", dir)
+		check.Detail = fmt.Sprintf("no TLS certificate files are present in %s", defaultVhostTLSDir)
 		check.Remediation = "Run `devstack vhost sync` to install certificates for TLS sites."
 		return check
 	}
 
 	check.Status = StatusOK
-	check.Detail = fmt.Sprintf("%d key(s) are 0600 and %d certificate(s) are 0644 in %s", keyFiles, certFiles, dir)
+	check.Detail = fmt.Sprintf("%d key(s) are 0600 and %d certificate(s) are 0644 in %s", keyFiles, certFiles, defaultVhostTLSDir)
 	return check
 }
 

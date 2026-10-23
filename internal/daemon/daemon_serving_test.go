@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helper"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -326,4 +328,73 @@ func TestRenewExternalSyncsVhosts(t *testing.T) {
 	if !renewed.NotAfter.After(rec.NotAfter.Add(24 * time.Hour)) {
 		t.Fatalf("certificate was not renewed: %v", renewed.NotAfter)
 	}
+}
+
+func TestDaemonDoctorReflectsRuntimeServingMode(t *testing.T) {
+	useBuiltBinary(t)
+	home := t.TempDir()
+	opts := testOptions(t, home, startVhostTestHelper(t))
+	requireDefaultUIPort(t)
+	opts.UIPort = 7070
+	run := startDaemon(t, opts)
+	defer run.stop(t)
+
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	getHealth(t, client)
+
+	assertDoctorServingMode(t, client, config.ServingModeBuiltin, true)
+
+	resp, data := apiRequest(t, client, http.MethodPost, "/api/v1/vhosts/mode", map[string]string{"mode": config.ServingModeNginx})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("switch to nginx = %d %s", resp.StatusCode, data)
+	}
+	assertDoctorServingMode(t, client, config.ServingModeNginx, false)
+
+	resp, data = apiRequest(t, client, http.MethodPost, "/api/v1/vhosts/mode", map[string]string{"mode": config.ServingModeBuiltin})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("switch to builtin = %d %s", resp.StatusCode, data)
+	}
+	assertDoctorServingMode(t, client, config.ServingModeBuiltin, true)
+}
+
+func assertDoctorServingMode(t *testing.T, client *http.Client, want string, vhostServerSkipped bool) {
+	t.Helper()
+	resp, data := apiRequest(t, client, http.MethodGet, "/api/v1/doctor", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("doctor = %d %s", resp.StatusCode, data)
+	}
+	var report doctor.Report
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+
+	serving := findDoctorCheck(t, report, "serving-mode")
+	if serving.Status != doctor.StatusOK {
+		t.Fatalf("serving-mode = %+v, want ok for %s", serving, want)
+	}
+	if !strings.Contains(serving.Detail, want) {
+		t.Fatalf("serving-mode detail = %q, want it to mention %s", serving.Detail, want)
+	}
+
+	server := findDoctorCheck(t, report, "vhost-server")
+	if skipped := server.Status == doctor.StatusSkipped; skipped != vhostServerSkipped {
+		t.Fatalf("vhost-server = %+v, skipped = %v, want skipped = %v", server, skipped, vhostServerSkipped)
+	}
+	if !vhostServerSkipped {
+		tlsCheck := findDoctorCheck(t, report, "vhost-tls")
+		if tlsCheck.Status != doctor.StatusOK {
+			t.Fatalf("vhost-tls = %+v, want ok from the helper metadata", tlsCheck)
+		}
+	}
+}
+
+func findDoctorCheck(t *testing.T, report doctor.Report, id string) doctor.Check {
+	t.Helper()
+	for _, check := range report.Checks {
+		if check.ID == id {
+			return check
+		}
+	}
+	t.Fatalf("doctor report has no %s check: %+v", id, report.Checks)
+	return doctor.Check{}
 }

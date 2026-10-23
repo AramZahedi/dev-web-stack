@@ -88,4 +88,16 @@ type VhostStatusResponse struct {
 	ConfigOK       bool      `json:"config_ok"`
 	LastError      string    `json:"last_error,omitempty"`
 	LastSync       time.Time `json:"last_sync"`
+
+	// TLSDirMode and TLSFiles expose root-only TLS metadata to the unprivileged
+	// daemon. Contents are never read; Mode holds permission bits only.
+	TLSDirMode uint32         `json:"tls_dir_mode"`
+	TLSFiles   []VhostTLSFile `json:"tls_files,omitempty"`
+}
+
+// VhostTLSFile is one entry in the helper-managed TLS directory.
+type VhostTLSFile struct {
+	Name    string `json:"name"`
+	Mode    uint32 `json:"mode"`
+	Regular bool   `json:"regular"`
 }

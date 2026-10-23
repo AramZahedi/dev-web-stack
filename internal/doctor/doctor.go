@@ -56,9 +56,6 @@ type Deps struct {
 	// Vhosts reports the helper's external serving state. It may be nil in
 	// builtin mode; an external mode without it fails the serving-mode check.
 	Vhosts Vhosts
-	// VhostTLSDir is the TLS material directory inspected by doctor. An empty
-	// value uses /etc/devstack/tls. Tests point it at a temporary directory.
-	VhostTLSDir string
 	// HostsPath is the hosts file inspected by the hosts check. An empty value
 	// uses /etc/hosts. Tests point it at a temporary file.
 	HostsPath string
@@ -91,9 +88,12 @@ type DiskChecker interface {
 	FreeBytes(path string) (uint64, error)
 }
 
-// Vhosts reports the helper-managed external serving state.
+// Vhosts reports the helper-managed external serving state and the daemon's
+// current serving mode. ServingMode is read live so a runtime switch is not
+// masked by the startup Config snapshot.
 type Vhosts interface {
 	VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error)
+	ServingMode() string
 }
 
 // Service runs doctor checks and repairs against a fixed set of dependencies.

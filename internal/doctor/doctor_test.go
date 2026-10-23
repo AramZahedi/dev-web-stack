@@ -32,7 +32,6 @@ type testFakes struct {
 	store     *store.Store
 	hostsPath string
 	home      string
-	tlsDir    string
 }
 
 // newTestDoctor builds a Service against a temporary SQLite database and hosts
@@ -91,7 +90,6 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 		store:     st,
 		hostsPath: hostsPath,
 		home:      filepath.Join(dir, "user"),
-		tlsDir:    filepath.Join(dir, "tls"),
 	}
 	fakes.helper = &fakeHelper{
 		status: helperproto.StatusResponse{
@@ -107,17 +105,16 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 	cfg.Home = dir
 
 	svc := NewService(Deps{
-		Config:      cfg,
-		Home:        fakes.home,
-		Store:       st,
-		Helper:      fakes.helper,
-		Trust:       fakes.trust,
-		Ports:       fakes.ports,
-		Runtimes:    fakes.runtimes,
-		Disk:        fakes.disk,
-		Vhosts:      fakes.vhosts,
-		VhostTLSDir: fakes.tlsDir,
-		HostsPath:   hostsPath,
+		Config:    cfg,
+		Home:      fakes.home,
+		Store:     st,
+		Helper:    fakes.helper,
+		Trust:     fakes.trust,
+		Ports:     fakes.ports,
+		Runtimes:  fakes.runtimes,
+		Disk:      fakes.disk,
+		Vhosts:    fakes.vhosts,
+		HostsPath: hostsPath,
 	})
 	return svc, fakes
 }
@@ -818,7 +815,6 @@ func TestDoctorVhostChecksSkippedInBuiltin(t *testing.T) {
 func TestDoctorHealthyExternalVhosts(t *testing.T) {
 	svc, fakes := newTestDoctor(t)
 	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
-	writeTestTLS(t, fakes.tlsDir, 0o600, 0o644)
 
 	rep, err := svc.Run(context.Background())
 	if err != nil {
@@ -979,26 +975,88 @@ func TestDoctorVhostStatusReadFailure(t *testing.T) {
 	}
 }
 
+func TestDoctorUsesLiveServingMode(t *testing.T) {
+	t.Run("runtime switch to external", func(t *testing.T) {
+		svc, fakes := newTestDoctor(t)
+		// Config still says builtin, matching a daemon started before the
+		// runtime switch. The live mode must win.
+		svc.deps.Config.ServingMode = config.ServingModeBuiltin
+		fakes.vhosts.servingMode = config.ServingModeNginx
+		fakes.vhosts.status = externalVhostStatus(config.ServingModeNginx)
+
+		rep, err := svc.Run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		check, ok := checkByID(rep, "serving-mode")
+		if !ok || check.Status != StatusOK {
+			t.Fatalf("serving-mode = %+v", check)
+		}
+		if !strings.Contains(check.Detail, "nginx") {
+			t.Fatalf("serving-mode detail = %q, want the live nginx mode", check.Detail)
+		}
+		if hasCheck(rep, "vhost-server", StatusSkipped) {
+			t.Fatalf("vhost-server must not be skipped after a runtime switch: %+v", rep.Checks)
+		}
+	})
+
+	t.Run("runtime switch to builtin", func(t *testing.T) {
+		svc, fakes := newTestDoctor(t)
+		svc.deps.Config.ServingMode = config.ServingModeNginx
+		fakes.vhosts.servingMode = config.ServingModeBuiltin
+		fakes.vhosts.status = helperproto.VhostStatusResponse{Mode: "builtin", ConfigOK: true}
+
+		rep, err := svc.Run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		check, ok := checkByID(rep, "serving-mode")
+		if !ok || check.Status != StatusOK {
+			t.Fatalf("serving-mode = %+v", check)
+		}
+		if !strings.Contains(check.Detail, "builtin") {
+			t.Fatalf("serving-mode detail = %q, want builtin", check.Detail)
+		}
+		if !hasCheck(rep, "vhost-server", StatusSkipped) {
+			t.Fatalf("vhost-server should be skipped in live builtin mode: %+v", rep.Checks)
+		}
+	})
+}
+
+func TestDoctorBuiltinWithoutVhosts(t *testing.T) {
+	svc, _ := newTestDoctor(t)
+	svc.deps.Config.ServingMode = config.ServingModeBuiltin
+	svc.deps.Vhosts = nil
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCheck(rep, "serving-mode", StatusOK) {
+		t.Fatalf("serving-mode should pass without Vhosts in builtin mode: %+v", rep.Checks)
+	}
+	if !hasCheck(rep, "vhost-server", StatusSkipped) {
+		t.Fatalf("vhost-server should be skipped: %+v", rep.Checks)
+	}
+}
+
 func TestDoctorVhostTLS(t *testing.T) {
 	tests := []struct {
 		name       string
-		setup      func(t *testing.T, dir string)
+		mutate     func(*helperproto.VhostStatusResponse)
 		want       Status
 		detailPart string
 		remedyPart string
 	}{
 		{
-			name: "healthy",
-			setup: func(t *testing.T, dir string) {
-				writeTestTLS(t, dir, 0o600, 0o644)
-			},
+			name:       "healthy",
 			want:       StatusOK,
 			detailPart: "0600",
 		},
 		{
 			name: "bad key mode",
-			setup: func(t *testing.T, dir string) {
-				writeTestTLS(t, dir, 0o644, 0o644)
+			mutate: func(status *helperproto.VhostStatusResponse) {
+				setTLSFileMode(status, "blog.key", 0o644)
 			},
 			want:       StatusFail,
 			detailPart: "blog.key",
@@ -1006,8 +1064,8 @@ func TestDoctorVhostTLS(t *testing.T) {
 		},
 		{
 			name: "bad cert mode",
-			setup: func(t *testing.T, dir string) {
-				writeTestTLS(t, dir, 0o600, 0o600)
+			mutate: func(status *helperproto.VhostStatusResponse) {
+				setTLSFileMode(status, "blog.crt", 0o600)
 			},
 			want:       StatusFail,
 			detailPart: "blog.crt",
@@ -1015,46 +1073,49 @@ func TestDoctorVhostTLS(t *testing.T) {
 		},
 		{
 			name: "bad directory mode",
-			setup: func(t *testing.T, dir string) {
-				if err := os.MkdirAll(dir, 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(dir, 0o755); err != nil {
-					t.Fatal(err)
-				}
+			mutate: func(status *helperproto.VhostStatusResponse) {
+				status.TLSDirMode = 0o755
 			},
 			want:       StatusFail,
 			detailPart: "mode",
 			remedyPart: "chmod 700",
 		},
 		{
-			name:       "missing directory",
-			setup:      func(t *testing.T, dir string) {},
+			name: "missing directory",
+			mutate: func(status *helperproto.VhostStatusResponse) {
+				status.TLSDirMode = 0
+				status.TLSFiles = nil
+			},
 			want:       StatusFail,
-			detailPart: "cannot inspect",
+			detailPart: "no TLS directory",
+		},
+		{
+			name: "non-regular key",
+			mutate: func(status *helperproto.VhostStatusResponse) {
+				setTLSFileRegular(status, "blog.key", false)
+			},
+			want:       StatusFail,
+			detailPart: "not a regular file",
+			remedyPart: "chmod 600",
 		},
 		{
 			name: "no certificate files",
-			setup: func(t *testing.T, dir string) {
-				if err := os.MkdirAll(dir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(dir, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ignore me"), 0o644); err != nil {
-					t.Fatal(err)
+			mutate: func(status *helperproto.VhostStatusResponse) {
+				status.TLSFiles = []helperproto.VhostTLSFile{
+					{Name: "blog.key", Mode: 0o600, Regular: true},
 				}
 			},
 			want:       StatusWarn,
-			detailPart: "no TLS",
+			detailPart: "no TLS certificate",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, fakes := newTestDoctor(t)
 			enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
-			tt.setup(t, fakes.tlsDir)
+			if tt.mutate != nil {
+				tt.mutate(&fakes.vhosts.status)
+			}
 
 			rep, err := svc.Run(context.Background())
 			if err != nil {
@@ -1098,7 +1159,12 @@ func TestDoctorVhostTLSSkippedWithoutRelease(t *testing.T) {
 func enableExternalVhosts(t *testing.T, svc *Service, fakes *testFakes, mode string) {
 	t.Helper()
 	svc.deps.Config.ServingMode = mode
-	fakes.vhosts.status = helperproto.VhostStatusResponse{
+	fakes.vhosts.servingMode = mode
+	fakes.vhosts.status = externalVhostStatus(mode)
+}
+
+func externalVhostStatus(mode string) helperproto.VhostStatusResponse {
+	return helperproto.VhostStatusResponse{
 		Mode:           mode,
 		Server:         mode,
 		ServerVersion:  "1.26.1",
@@ -1107,37 +1173,39 @@ func enableExternalVhosts(t *testing.T, svc *Service, fakes *testFakes, mode str
 		CurrentRelease: filepath.Join("/etc/devstack/vhosts", mode, "releases", "20261023T120000Z"),
 		ConfigOK:       true,
 		LastSync:       time.Date(2026, 10, 23, 12, 30, 0, 0, time.UTC),
+		TLSDirMode:     0o700,
+		TLSFiles: []helperproto.VhostTLSFile{
+			{Name: "__dashboard__.crt", Mode: 0o644, Regular: true},
+			{Name: "__dashboard__.key", Mode: 0o600, Regular: true},
+			{Name: "blog.crt", Mode: 0o644, Regular: true},
+			{Name: "blog.key", Mode: 0o600, Regular: true},
+		},
 	}
 }
 
-func writeTestTLS(t *testing.T, dir string, keyMode, certMode os.FileMode) {
-	t.Helper()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
+func setTLSFileMode(status *helperproto.VhostStatusResponse, name string, mode uint32) {
+	for i := range status.TLSFiles {
+		if status.TLSFiles[i].Name == name {
+			status.TLSFiles[i].Mode = mode
+			return
+		}
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	keyPath := filepath.Join(dir, "blog.key")
-	if err := os.WriteFile(keyPath, []byte("test key material"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(keyPath, keyMode); err != nil {
-		t.Fatal(err)
-	}
-	certPath := filepath.Join(dir, "blog.crt")
-	if err := os.WriteFile(certPath, []byte("test cert material"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(certPath, certMode); err != nil {
-		t.Fatal(err)
+}
+
+func setTLSFileRegular(status *helperproto.VhostStatusResponse, name string, regular bool) {
+	for i := range status.TLSFiles {
+		if status.TLSFiles[i].Name == name {
+			status.TLSFiles[i].Regular = regular
+			return
+		}
 	}
 }
 
 type fakeVhosts struct {
-	status helperproto.VhostStatusResponse
-	err    error
-	calls  int
+	status      helperproto.VhostStatusResponse
+	servingMode string
+	err         error
+	calls       int
 }
 
 func (f *fakeVhosts) VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error) {
@@ -1149,4 +1217,8 @@ func (f *fakeVhosts) VhostStatus(ctx context.Context) (helperproto.VhostStatusRe
 		return helperproto.VhostStatusResponse{}, f.err
 	}
 	return f.status, nil
+}
+
+func (f *fakeVhosts) ServingMode() string {
+	return f.servingMode
 }

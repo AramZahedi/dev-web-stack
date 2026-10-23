@@ -500,6 +500,177 @@ func TestStatusMissingStateIsBuiltin(t *testing.T) {
 	}
 }
 
+func TestStatusAndSyncReportTLSMetadata(t *testing.T) {
+	env := newVhostTestEnv(t)
+	synced, err := env.manager.Sync(context.Background(), env.request("nginx"))
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	assertTLSMetadata(t, synced)
+
+	status, err := env.manager.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	assertTLSMetadata(t, status)
+
+	other := newVhostTestEnv(t)
+	switched, err := other.manager.SetMode(context.Background(), "nginx", other.request("nginx"))
+	if err != nil {
+		t.Fatalf("SetMode: %v", err)
+	}
+	assertTLSMetadata(t, switched)
+}
+
+func TestStatusTLSMetadataMissingDir(t *testing.T) {
+	t.Run("before any external release", func(t *testing.T) {
+		env := newVhostTestEnv(t)
+		status, err := env.manager.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.TLSDirMode != 0 || len(status.TLSFiles) != 0 {
+			t.Fatalf("metadata = %04o %+v, want empty", status.TLSDirMode, status.TLSFiles)
+		}
+	})
+
+	t.Run("after the TLS directory is removed", func(t *testing.T) {
+		env := newVhostTestEnv(t)
+		if _, err := env.manager.Sync(context.Background(), env.request("nginx")); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if err := os.RemoveAll(env.manager.tlsDir()); err != nil {
+			t.Fatal(err)
+		}
+		status, err := env.manager.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.TLSDirMode != 0 || len(status.TLSFiles) != 0 {
+			t.Fatalf("metadata = %04o %+v, want empty", status.TLSDirMode, status.TLSFiles)
+		}
+	})
+}
+
+func TestStatusTLSMetadataReportsBadModes(t *testing.T) {
+	env := newVhostTestEnv(t)
+	if _, err := env.manager.Sync(context.Background(), env.request("nginx")); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	tlsDir := env.manager.tlsDir()
+	if err := os.Chmod(tlsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(tlsDir, "s-1.key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(tlsDir, "s-1.crt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := env.manager.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.TLSDirMode != 0o755 {
+		t.Fatalf("TLS dir mode = %04o, want 0755", status.TLSDirMode)
+	}
+	assertTLSMetadataFile(t, status.TLSFiles, "s-1.key", 0o644, true)
+	assertTLSMetadataFile(t, status.TLSFiles, "s-1.crt", 0o600, true)
+}
+
+func TestStatusTLSMetadataIsSorted(t *testing.T) {
+	env := newVhostTestEnv(t)
+	if _, err := env.manager.Sync(context.Background(), env.request("nginx")); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	tlsDir := env.manager.tlsDir()
+	for _, name := range []string{"zzz.key", "aaa.crt", "mmm.txt"} {
+		path := filepath.Join(tlsDir, name)
+		if err := os.WriteFile(path, []byte("metadata only"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	status, err := env.manager.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	names := make([]string, 0, len(status.TLSFiles))
+	for i, file := range status.TLSFiles {
+		names = append(names, file.Name)
+		if i > 0 && status.TLSFiles[i-1].Name > file.Name {
+			t.Fatalf("TLS metadata is not sorted: %v", names)
+		}
+	}
+	if len(names) != 7 {
+		t.Fatalf("TLS metadata names = %v, want seven entries", names)
+	}
+}
+
+func TestStatusTLSMetadataDoesNotReadKeyContents(t *testing.T) {
+	env := newVhostTestEnv(t)
+	if _, err := env.manager.Sync(context.Background(), env.request("nginx")); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	keyPath := filepath.Join(env.manager.tlsDir(), "s-1.key")
+	sentinel := []byte("this is not a private key and must never be parsed")
+	if err := os.WriteFile(keyPath, sentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(keyPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := env.manager.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status must not need key contents: %v", err)
+	}
+	assertTLSMetadataFile(t, status.TLSFiles, "s-1.key", 0o000, true)
+
+	if err := os.Chmod(keyPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, sentinel) {
+		t.Fatalf("key contents changed: %q", data)
+	}
+}
+
+func assertTLSMetadata(t *testing.T, status helperproto.VhostStatusResponse) {
+	t.Helper()
+	if status.TLSDirMode != 0o700 {
+		t.Fatalf("TLS dir mode = %04o, want 0700", status.TLSDirMode)
+	}
+	for _, name := range []string{"__dashboard__.crt", "__dashboard__.key", "s-1.crt", "s-1.key"} {
+		wantMode := uint32(0o644)
+		if strings.HasSuffix(name, ".key") {
+			wantMode = 0o600
+		}
+		assertTLSMetadataFile(t, status.TLSFiles, name, wantMode, true)
+	}
+}
+
+func assertTLSMetadataFile(t *testing.T, files []helperproto.VhostTLSFile, name string, mode uint32, regular bool) {
+	t.Helper()
+	for _, file := range files {
+		if file.Name != name {
+			continue
+		}
+		if file.Mode != mode || file.Regular != regular {
+			t.Fatalf("%s metadata = mode %04o regular %v, want mode %04o regular %v", name, file.Mode, file.Regular, mode, regular)
+		}
+		return
+	}
+	t.Fatalf("missing TLS metadata for %s in %+v", name, files)
+}
+
 func TestSyncRejectsBadCertificates(t *testing.T) {
 	tests := []struct {
 		name   string

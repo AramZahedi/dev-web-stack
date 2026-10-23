@@ -143,6 +143,7 @@ func (m *VhostManager) statusFromState(state vhostState) helperproto.VhostStatus
 			includePresent = true
 		}
 	}
+	dirMode, files := m.tlsMetadata()
 	return helperproto.VhostStatusResponse{
 		Mode:           state.Mode,
 		Server:         state.Server,
@@ -153,7 +154,39 @@ func (m *VhostManager) statusFromState(state vhostState) helperproto.VhostStatus
 		ConfigOK:       state.ConfigOK,
 		LastError:      state.LastError,
 		LastSync:       state.LastSync,
+		TLSDirMode:     dirMode,
+		TLSFiles:       files,
 	}
+}
+
+// tlsMetadata reports the TLS directory mode and entry metadata without ever
+// opening a key or certificate. The helper runs as root, so this is the only
+// safe way for the unprivileged daemon to inspect /etc/devstack/tls.
+func (m *VhostManager) tlsMetadata() (uint32, []helperproto.VhostTLSFile) {
+	dir := m.tlsDir()
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		return 0, nil
+	}
+	dirMode := uint32(info.Mode().Perm())
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return dirMode, nil
+	}
+	files := make([]helperproto.VhostTLSFile, 0, len(entries))
+	for _, entry := range entries {
+		entryInfo, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, helperproto.VhostTLSFile{
+			Name:    entry.Name(),
+			Mode:    uint32(entryInfo.Mode().Perm()),
+			Regular: entryInfo.Mode().IsRegular(),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	return dirMode, files
 }
 
 func (m *VhostManager) readState() (vhostState, error) {
