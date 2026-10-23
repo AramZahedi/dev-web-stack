@@ -30,8 +30,9 @@ type Config struct {
 	Env map[string]string
 }
 
-// Suite exercises Prepare, Start, Status, Logs, Exec, Stop, and Health. It is
-// safe for any Backend implementation and cleans up the site on failure.
+// Suite exercises Prepare, Start, Status, Logs, Exec, Stop, Health, and
+// EnsureRuntimeBuild's input validation. It is safe for any Backend
+// implementation and cleans up the site on failure.
 func Suite(t *testing.T, b backend.Backend, cfg Config) {
 	t.Helper()
 	if b == nil {
@@ -53,6 +54,9 @@ func Suite(t *testing.T, b backend.Backend, cfg Config) {
 
 	if err := b.Health(ctx); err != nil {
 		t.Fatalf("Health: %v", err)
+	}
+	if _, err := b.EnsureRuntimeBuild(ctx, ""); err == nil {
+		t.Fatal("EnsureRuntimeBuild accepted an empty build id")
 	}
 
 	spec := backend.SiteSpec{

@@ -26,6 +26,16 @@ type SiteSpec struct {
 	SPAFallback     bool
 	FrontController bool
 	RuntimeVersion  string
+
+	// PHP fields describe one prepared PHP site. PHPBuildPath is the
+	// revision-pinned build root, and the three paths are the generated
+	// configuration the master must use.
+	PHPVersion      string
+	PHPBuild        string
+	PHPBuildPath    string
+	PHPIniPath      string
+	FPMConfigPath   string
+	PHPHealthScript string
 }
 
 // PreparedSite reports where a prepared site will be reachable. BackendHost is
@@ -63,7 +73,18 @@ type Result struct {
 // or checksums.
 type RuntimeProvider interface {
 	Ensure(ctx context.Context, kind, version string) (model.RuntimeBuild, error)
+	// EnsureBuild installs or returns the exact pinned build id.
+	EnsureBuild(ctx context.Context, buildID string) (model.RuntimeBuild, error)
 	Remove(ctx context.Context, buildID string) error
+}
+
+// PHPStager is the generation-aware PHP process path. A site can keep its
+// default master running while a candidate generation starts on another port;
+// the active generation is the one Status and callers should observe.
+type PHPStager interface {
+	PreparePHP(ctx context.Context, siteID, generation string, spec SiteSpec) (PreparedSite, error)
+	StartPHP(ctx context.Context, siteID, generation string) (ProcessInfo, error)
+	StopPHP(ctx context.Context, siteID, generation string) error
 }
 
 // Backend is one execution namespace for site processes.
@@ -86,6 +107,8 @@ type Backend interface {
 	Exec(ctx context.Context, id string, argv []string, env map[string]string) (Result, error)
 	// EnsureRuntime installs or returns the requested runtime build.
 	EnsureRuntime(ctx context.Context, kind, version string) (model.RuntimeBuild, error)
+	// EnsureRuntimeBuild installs or returns the exact pinned build id.
+	EnsureRuntimeBuild(ctx context.Context, buildID string) (model.RuntimeBuild, error)
 	// RemoveRuntime deletes an installed runtime build.
 	RemoveRuntime(ctx context.Context, buildID string) error
 	// InstallCA combines the provided root certificate with the system trust

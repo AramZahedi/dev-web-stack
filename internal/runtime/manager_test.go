@@ -742,6 +742,7 @@ func TestConcurrentInstallsSameID(t *testing.T) {
 }
 
 func TestInstallKeepsPHPRevisionsSeparate(t *testing.T) {
+	stubPHPSmoke(t)
 	archive := fixtureData(t, "valid.tar.gz")
 	srv := newAnyFixtureServer(t, archive)
 	cat := catalogFor(t,
@@ -775,6 +776,7 @@ func TestInstallKeepsPHPRevisionsSeparate(t *testing.T) {
 }
 
 func TestEnsureBuildInstallsPinnedRevision(t *testing.T) {
+	stubPHPSmoke(t)
 	archive := fixtureData(t, "valid.tar.gz")
 	srv := newAnyFixtureServer(t, archive)
 	cat := catalogFor(t,
@@ -823,6 +825,7 @@ func TestEnsureBuildInstallsPinnedRevision(t *testing.T) {
 }
 
 func TestEnsureBuildPrefersIntactInstalledBuildOverCatalog(t *testing.T) {
+	stubPHPSmoke(t)
 	archive := fixtureData(t, "valid.tar.gz")
 	srv := newAnyFixtureServer(t, archive)
 	cat := catalogFor(t, phpEntryFor(t, archive, srv.URL+"/php-8.4.4-r1-linux-x64.tar.gz", 1))
@@ -860,6 +863,7 @@ func TestEnsureBuildPrefersIntactInstalledBuildOverCatalog(t *testing.T) {
 }
 
 func TestEnsureBuildStaleInstallFallsThroughToCatalog(t *testing.T) {
+	stubPHPSmoke(t)
 	archive := fixtureData(t, "valid.tar.gz")
 	srv := newAnyFixtureServer(t, archive)
 	cat := catalogFor(t, phpEntryFor(t, archive, srv.URL+"/php-8.4.4-r1-linux-x64.tar.gz", 1))

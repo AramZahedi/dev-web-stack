@@ -185,7 +185,7 @@ func TestLocalPrepareValidation(t *testing.T) {
 		t.Fatal("Prepare accepted a node site without a port")
 	}
 	if _, err := b.Prepare(ctx, SiteSpec{ID: "php", Kind: "php", BackendPath: root, HTTPPort: freePort(t)}); err == nil {
-		t.Fatal("Prepare accepted a PHP site before Plan 2")
+		t.Fatal("Prepare accepted a PHP site without a build")
 	}
 }
 
@@ -675,6 +675,7 @@ type fakeRuntime struct {
 	err     error
 	ensured []runtimeCall
 	removed []string
+	builds  []string
 }
 
 type runtimeCall struct{ kind, version string }
@@ -683,6 +684,16 @@ func (f *fakeRuntime) Ensure(_ context.Context, kind, version string) (model.Run
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ensured = append(f.ensured, runtimeCall{kind, version})
+	if f.err != nil {
+		return model.RuntimeBuild{}, f.err
+	}
+	return f.build, nil
+}
+
+func (f *fakeRuntime) EnsureBuild(_ context.Context, buildID string) (model.RuntimeBuild, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.builds = append(f.builds, buildID)
 	if f.err != nil {
 		return model.RuntimeBuild{}, f.err
 	}
@@ -700,4 +711,10 @@ func (f *fakeRuntime) ensuredCalls() []runtimeCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]runtimeCall(nil), f.ensured...)
+}
+
+func (f *fakeRuntime) buildCallsForTest() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.builds...)
 }

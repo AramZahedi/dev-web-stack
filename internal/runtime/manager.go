@@ -328,6 +328,16 @@ func (m *Manager) installEntry(ctx context.Context, entry catalog.Entry, source 
 	if err := ctx.Err(); err != nil {
 		return model.RuntimeBuild{}, err
 	}
+
+	// A PHP build is only registered after its own FPM master has started and
+	// answered a FastCGI request. The check runs against the complete temporary
+	// tree, so a failure removes the temp directory and leaves no runtime row.
+	if entry.Kind == "php" {
+		if err := phpSmoke(ctx, tempDir); err != nil {
+			return model.RuntimeBuild{}, fmt.Errorf("runtime: php smoke test %q: %w", entry.ID, err)
+		}
+	}
+
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return model.RuntimeBuild{}, fmt.Errorf("runtime: create %s: %w", filepath.Dir(target), err)
 	}

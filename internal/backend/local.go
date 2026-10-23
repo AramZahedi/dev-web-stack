@@ -64,6 +64,8 @@ type Local struct {
 
 	mu       sync.Mutex
 	prepared map[string]preparedSite
+	staged   map[string]*stagedSite
+	startSeq uint64
 }
 
 var _ Backend = (*Local)(nil)
@@ -75,6 +77,16 @@ type preparedSite struct {
 	documentRoot string
 	workingDir   string
 	nodeRoot     string
+	// started is the backend-wide start sequence for a PHP generation. Zero
+	// means the generation has not started or has been stopped.
+	started uint64
+}
+
+// stagedSite holds every prepared generation for one PHP site. active names
+// the generation Status currently reports; empty means none is running.
+type stagedSite struct {
+	generations map[string]preparedSite
+	active      string
 }
 
 // NewLocal returns a local backend rooted at cfg.Home. stores is retained for
@@ -125,6 +137,7 @@ func NewLocal(cfg config.Config, stores *store.Store, logStore *logs.Store, runt
 		selfBin:    selfBin,
 		supervisor: mgr,
 		prepared:   make(map[string]preparedSite),
+		staged:     make(map[string]*stagedSite),
 	}, nil
 }
 
@@ -188,7 +201,7 @@ func (l *Local) Prepare(ctx context.Context, spec SiteSpec) (PreparedSite, error
 		}
 
 	case string(model.SitePHP):
-		return PreparedSite{}, fmt.Errorf("backend: PHP sites are not supported before Plan 2 (site %q)", spec.ID)
+		return l.preparePHP(ctx, spec.ID, defaultPHPGeneration, spec)
 
 	default:
 		return PreparedSite{}, fmt.Errorf("backend: site %q has unknown kind %q", spec.ID, spec.Kind)
@@ -213,6 +226,10 @@ func (l *Local) Start(ctx context.Context, id string) (ProcessInfo, error) {
 	}
 	if err := ctx.Err(); err != nil {
 		return ProcessInfo{}, err
+	}
+
+	if l.hasStagedSite(id) {
+		return l.startPHP(ctx, id, defaultPHPGeneration)
 	}
 
 	l.mu.Lock()
@@ -247,14 +264,39 @@ func (l *Local) Start(ctx context.Context, id string) (ProcessInfo, error) {
 // Stop delegates termination to the supervisor. The supervisor always sends
 // SIGTERM first and escalates to SIGKILL after the configured grace period;
 // Plan 1 has no separate forced path, so graceful is retained for backends that
-// can honour it.
+// can honour it. PHP sites stop every prepared generation, including the
+// default master.
 func (l *Local) Stop(ctx context.Context, id string, graceful bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	_ = graceful
+
+	generations, staged := l.stagedGenerations(id)
+	var errs []error
+	for _, generation := range generations {
+		if err := l.supervisor.Stop(ctx, generationProcessID(id, generation)); err != nil {
+			errs = append(errs, fmt.Errorf("backend: stop php site %q generation %q: %w", id, generation, err))
+		}
+	}
+	// Also stop the bare site id: the default generation uses it, and a PHP
+	// site whose in-memory staging was lost must still not leak a master.
 	if err := l.supervisor.Stop(ctx, id); err != nil {
-		return fmt.Errorf("backend: stop site %q: %w", id, err)
+		errs = append(errs, fmt.Errorf("backend: stop site %q: %w", id, err))
+	}
+	if staged {
+		l.mu.Lock()
+		if site := l.staged[id]; site != nil {
+			site.active = ""
+			for generation, p := range site.generations {
+				p.started = 0
+				site.generations[generation] = p
+			}
+		}
+		l.mu.Unlock()
+	}
+	if len(errs) != 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -283,6 +325,9 @@ func (l *Local) Status(ctx context.Context, id string) (Status, error) {
 	}
 	if err := ctx.Err(); err != nil {
 		return Status{}, err
+	}
+	if site, ok := l.stagedStatus(id); ok {
+		return site, nil
 	}
 	st, ok := l.supervisor.Status(id)
 	if !ok {
@@ -353,6 +398,15 @@ func (l *Local) Exec(ctx context.Context, id string, argv []string, env map[stri
 
 	l.mu.Lock()
 	p, ok := l.prepared[id]
+	if !ok {
+		if site := l.staged[id]; site != nil {
+			if active, activeOK := site.generations[site.active]; activeOK {
+				p, ok = active, true
+			} else if def, defOK := site.generations[defaultPHPGeneration]; defOK {
+				p, ok = def, true
+			}
+		}
+	}
 	l.mu.Unlock()
 	if !ok {
 		return Result{}, fmt.Errorf("backend: site %q is not prepared", id)
@@ -405,6 +459,29 @@ func (l *Local) EnsureRuntime(ctx context.Context, kind, version string) (model.
 	build, err := l.runtimes.Ensure(ctx, kind, version)
 	if err != nil {
 		return model.RuntimeBuild{}, fmt.Errorf("backend: ensure runtime %s %s: %w", kind, version, err)
+	}
+	return build, nil
+}
+
+// EnsureRuntimeBuild delegates exact-build installation to the runtime
+// provider. Unlike EnsureRuntime it pins the revision instead of resolving a
+// version line.
+func (l *Local) EnsureRuntimeBuild(ctx context.Context, buildID string) (model.RuntimeBuild, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	if strings.TrimSpace(buildID) == "" {
+		return model.RuntimeBuild{}, errors.New("backend: runtime build id is required")
+	}
+	if l.runtimes == nil {
+		return model.RuntimeBuild{}, errors.New("backend: runtime provider is not configured")
+	}
+	build, err := l.runtimes.EnsureBuild(ctx, buildID)
+	if err != nil {
+		return model.RuntimeBuild{}, fmt.Errorf("backend: ensure runtime build %q: %w", buildID, err)
 	}
 	return build, nil
 }
@@ -534,6 +611,16 @@ func (l *Local) caBundlePath() string {
 
 // resolveDocumentRoot returns the absolute directory served by a static site.
 func resolveDocumentRoot(spec SiteSpec) (string, error) {
+	return resolveSiteDocumentRoot(spec, "static")
+}
+
+// resolvePHPDocumentRoot returns the absolute document root and working
+// directory for a PHP site.
+func resolvePHPDocumentRoot(spec SiteSpec) (string, error) {
+	return resolveSiteDocumentRoot(spec, "php")
+}
+
+func resolveSiteDocumentRoot(spec SiteSpec, kind string) (string, error) {
 	project := strings.TrimSpace(spec.BackendPath)
 	if project == "" {
 		project = strings.TrimSpace(spec.HostPath)
@@ -544,17 +631,17 @@ func resolveDocumentRoot(spec SiteSpec) (string, error) {
 	switch {
 	case documentRoot == "":
 		if project == "" {
-			return "", fmt.Errorf("backend: static site %q requires a project path or document root", spec.ID)
+			return "", fmt.Errorf("backend: %s site %q requires a project path or document root", kind, spec.ID)
 		}
 		resolved = project
 	case filepath.IsAbs(documentRoot):
 		resolved = documentRoot
 	default:
 		if !filepath.IsLocal(documentRoot) {
-			return "", fmt.Errorf("backend: static site %q document root %q escapes the project", spec.ID, documentRoot)
+			return "", fmt.Errorf("backend: %s site %q document root %q escapes the project", kind, spec.ID, documentRoot)
 		}
 		if project == "" {
-			return "", fmt.Errorf("backend: static site %q has a relative document root but no project path", spec.ID)
+			return "", fmt.Errorf("backend: %s site %q has a relative document root but no project path", kind, spec.ID)
 		}
 		resolved = filepath.Join(project, documentRoot)
 	}
@@ -565,10 +652,10 @@ func resolveDocumentRoot(spec SiteSpec) (string, error) {
 	}
 	info, err := os.Stat(abs)
 	if err != nil {
-		return "", fmt.Errorf("backend: static site %q document root %s: %w", spec.ID, abs, err)
+		return "", fmt.Errorf("backend: %s site %q document root %s: %w", kind, spec.ID, abs, err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("backend: static site %q document root %s is not a directory", spec.ID, abs)
+		return "", fmt.Errorf("backend: %s site %q document root %s is not a directory", kind, spec.ID, abs)
 	}
 	return abs, nil
 }
@@ -641,11 +728,17 @@ func nodeEnvironment(port int, nodeRoot, caBundle string, siteEnv map[string]str
 }
 
 // execEnvironment returns the environment for an Exec call. Node sites get the
-// same runtime PATH, PORT, and CA variables as their supervised process.
+// same runtime PATH, PORT, and CA variables as their supervised process. PHP
+// sites get the build's bin directory, a cleared scan directory, and PHPRC
+// pointing at the generated php.ini.
 func (l *Local) execEnvironment(p preparedSite, callEnv map[string]string) map[string]string {
 	siteEnv := p.spec.Env
-	if p.spec.Kind == string(model.SiteNode) {
+	switch p.spec.Kind {
+	case string(model.SiteNode):
 		siteEnv = nodeEnvironment(p.spec.HTTPPort, p.nodeRoot, l.caBundlePath(), p.spec.Env)
+	case string(model.SitePHP):
+		siteEnv = phpEnvironment(p.spec.PHPBuildPath, p.spec.Env)
+		siteEnv["PHPRC"] = p.spec.PHPIniPath
 	}
 	return mergedEnv(siteEnv, callEnv)
 }

@@ -138,17 +138,19 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 type fakeBackend struct {
 	mu sync.Mutex
 
-	prepared      []backend.SiteSpec
-	started       map[string]bool
-	stopped       map[string]bool
-	status        map[string]model.SiteStatus
-	runtimeCalls  []string
-	stopCalls     int
-	prepareErr    error
-	startErr      error
-	stopErr       error
-	statusErr     error
-	ensureRTError error
+	prepared       []backend.SiteSpec
+	started        map[string]bool
+	stopped        map[string]bool
+	status         map[string]model.SiteStatus
+	runtimeCalls   []string
+	buildCalls     []string
+	stopCalls      int
+	prepareErr     error
+	startErr       error
+	stopErr        error
+	statusErr      error
+	ensureRTError  error
+	ensureBuildErr error
 }
 
 var _ backend.Backend = (*fakeBackend)(nil)
@@ -223,6 +225,28 @@ func (f *fakeBackend) EnsureRuntime(_ context.Context, kind, version string) (mo
 		Kind:    kind,
 		Version: version,
 		Path:    filepath.Join("/fake", kind, version),
+	}, nil
+}
+
+func (f *fakeBackend) EnsureRuntimeBuild(_ context.Context, buildID string) (model.RuntimeBuild, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.buildCalls = append(f.buildCalls, buildID)
+	if f.ensureBuildErr != nil {
+		return model.RuntimeBuild{}, f.ensureBuildErr
+	}
+	kind, version := "", ""
+	if at := strings.Index(buildID, "@"); at > 0 {
+		kind, version = buildID[:at], buildID[at+1:]
+		if rev := strings.LastIndex(version, "-r"); rev > 0 {
+			version = version[:rev]
+		}
+	}
+	return model.RuntimeBuild{
+		ID:      buildID,
+		Kind:    kind,
+		Version: version,
+		Path:    filepath.Join("/fake", kind, buildID),
 	}, nil
 }
 
