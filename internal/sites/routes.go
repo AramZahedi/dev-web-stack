@@ -81,18 +81,27 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("sites: route for %q: %w", site.Name, err)
 		}
-		if site.HTTPPort > 0 {
-			upstream := net.JoinHostPort("127.0.0.1", strconv.Itoa(site.HTTPPort))
+		upstreamPort := site.HTTPPort
+		if site.Kind == model.SitePHP {
+			upstreamPort = site.FastCGIPort
+		}
+		if upstreamPort > 0 {
+			upstream := net.JoinHostPort("127.0.0.1", strconv.Itoa(upstreamPort))
+			route := proxy.Route{
+				SiteID:     site.ID,
+				Kind:       kind,
+				Upstream:   upstream,
+				ForceHTTPS: site.ForceHTTPS,
+				TLS:        site.TLS,
+			}
+			if site.Kind == model.SitePHP {
+				route.DocumentRoot = absoluteDocumentRoot(site)
+				route.FrontController = site.FrontController
+			}
 			for _, host := range siteDomains(site) {
 				host = strings.ToLower(host)
-				routes[host] = proxy.Route{
-					SiteID:     site.ID,
-					Host:       host,
-					Kind:       kind,
-					Upstream:   upstream,
-					ForceHTTPS: site.ForceHTTPS,
-					TLS:        site.TLS,
-				}
+				route.Host = host
+				routes[host] = route
 			}
 		}
 
@@ -131,6 +140,8 @@ func proxyKind(kind model.SiteKind) (proxy.Kind, error) {
 		return proxy.KindStatic, nil
 	case model.SiteNode:
 		return proxy.KindNode, nil
+	case model.SitePHP:
+		return proxy.KindPHP, nil
 	default:
 		return "", fmt.Errorf("unsupported site kind %q", kind)
 	}

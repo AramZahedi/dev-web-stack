@@ -15,12 +15,14 @@ import (
 )
 
 // Kind is the backend kind behind a route. Static upstreams are served by the
-// internal static server; Node upstreams are long-lived development servers.
+// internal static server; Node upstreams are long-lived development servers;
+// PHP upstreams are FastCGI pools served by the FastCGI transport.
 type Kind string
 
 const (
 	KindStatic Kind = "static"
 	KindNode   Kind = "node"
+	KindPHP    Kind = "php"
 )
 
 const (
@@ -30,14 +32,18 @@ const (
 	nodeResponseHeaderTimeout   = 120 * time.Second
 )
 
-// Route is the immutable description of one site listener.
+// Route is the immutable description of one site listener. DocumentRoot and
+// FrontController are carried for PHP routes so the FastCGI transport can
+// resolve script paths; the static and Node transports ignore them.
 type Route struct {
-	SiteID     string
-	Host       string
-	Kind       Kind
-	Upstream   string
-	ForceHTTPS bool
-	TLS        bool
+	SiteID          string
+	Host            string
+	Kind            Kind
+	Upstream        string
+	DocumentRoot    string
+	FrontController bool
+	ForceHTTPS      bool
+	TLS             bool
 }
 
 // Snapshot is the complete routing table and certificate set at one point in

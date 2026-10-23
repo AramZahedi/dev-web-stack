@@ -591,6 +591,8 @@ func (s *Service) vhostSiteSpecLocked(ctx context.Context, site model.Site) (hel
 		}
 	case model.SiteNode:
 		spec.BackendPort = site.HTTPPort
+	case model.SitePHP:
+		spec.BackendPort = site.FastCGIPort
 	default:
 		spec.BackendPort = site.HTTPPort
 	}
@@ -660,6 +662,9 @@ func validateVhostSiteForSync(site model.Site) error {
 	}
 	if site.Kind == model.SiteStatic {
 		return staticRootError(site)
+	}
+	if site.Kind == model.SitePHP && (site.FastCGIPort < 43000 || site.FastCGIPort > 43999) {
+		return fmt.Errorf("FastCGI port %d is outside 43000-43999", site.FastCGIPort)
 	}
 	return nil
 }
@@ -759,12 +764,12 @@ func (s *Service) PreviewVhost(ctx context.Context, ref, server string) (string,
 }
 
 // absoluteDocumentRoot resolves a site document root against its backend path.
-// Static sites with an empty or "." root serve the backend path itself; an
-// empty Node document root stays empty.
+// Static and PHP sites with an empty or "." root serve the backend path itself;
+// an empty Node document root stays empty.
 func absoluteDocumentRoot(site model.Site) string {
 	root := strings.TrimSpace(site.DocumentRoot)
 	if root == "" || root == "." {
-		if site.Kind == model.SiteStatic {
+		if site.Kind == model.SiteStatic || site.Kind == model.SitePHP {
 			return filepath.Clean(site.BackendPath)
 		}
 		return ""
@@ -818,9 +823,21 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 	if err != nil {
 		return err
 	}
-	if s.deps.Backend != nil && s.siteNeedsBackend(site) {
-		if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil {
-			return fmt.Errorf("sites: stop %q: %w", site.Name, err)
+	if s.siteNeedsBackend(site) {
+		switch {
+		case site.Kind == model.SitePHP:
+			if s.deps.PHPBackend == nil {
+				return fmt.Errorf("sites: stop %q: PHP backend is not configured", site.Name)
+			}
+			if err := s.stopPHPProcessLocked(ctx, site.ID); err != nil {
+				return fmt.Errorf("sites: stop %q: %w", site.Name, err)
+			}
+		default:
+			if s.deps.Backend != nil {
+				if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil {
+					return fmt.Errorf("sites: stop %q: %w", site.Name, err)
+				}
+			}
 		}
 	}
 
@@ -855,8 +872,15 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 	if site.FastCGIPort != 0 {
 		s.deps.Ports.Release(site.FastCGIPort)
 	}
+	var removeErr error
+	if site.Kind == model.SitePHP {
+		removeErr = s.removePHPConfigLocked(site.ID)
+	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
-		return fmt.Errorf("sites: publish routes after deleting %q: %w", site.Name, err)
+		return errors.Join(fmt.Errorf("sites: publish routes after deleting %q: %w", site.Name, err), removeErr)
+	}
+	if removeErr != nil {
+		return fmt.Errorf("sites: remove PHP config for %q: %w", site.Name, removeErr)
 	}
 	return nil
 }
@@ -874,13 +898,33 @@ func (s *Service) restoreExternalDelete(ctx context.Context, site model.Site, ol
 	if err := s.syncHosts(ctx, oldHosts); err != nil {
 		errs = append(errs, fmt.Errorf("rollback: restore hosts for %q: %w", site.Name, err))
 	}
-	if site.DesiredState == model.DesiredRunning && site.Kind == model.SiteNode && s.deps.Backend != nil {
-		if _, err := s.deps.Backend.Prepare(ctx, backendSpec(site)); err == nil {
-			if _, err := s.deps.Backend.Start(ctx, site.ID); err != nil {
+	if site.DesiredState == model.DesiredRunning {
+		switch site.Kind {
+		case model.SiteNode:
+			if s.deps.Backend != nil {
+				if _, err := s.deps.Backend.Prepare(ctx, backendSpec(site)); err == nil {
+					if _, err := s.deps.Backend.Start(ctx, site.ID); err != nil {
+						errs = append(errs, fmt.Errorf("rollback: restart %q: %w", site.Name, err))
+					}
+				} else {
+					errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", site.Name, err))
+				}
+			}
+		case model.SitePHP:
+			if s.deps.PHPBackend == nil {
+				errs = append(errs, fmt.Errorf("rollback: restart %q: PHP backend is not configured", site.Name))
+				break
+			}
+			spec, err := s.phpSiteSpecLocked(ctx, site)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", site.Name, err))
+				break
+			}
+			if _, err := s.deps.PHPBackend.PreparePHP(ctx, site.ID, phpDefaultGeneration, spec); err != nil {
+				errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", site.Name, err))
+			} else if _, err := s.deps.PHPBackend.StartPHP(ctx, site.ID, phpDefaultGeneration); err != nil {
 				errs = append(errs, fmt.Errorf("rollback: restart %q: %w", site.Name, err))
 			}
-		} else {
-			errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", site.Name, err))
 		}
 	}
 	if s.externalServing() {

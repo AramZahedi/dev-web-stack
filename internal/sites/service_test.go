@@ -583,7 +583,7 @@ func TestCreateRejectsInvalidAndDuplicateSites(t *testing.T) {
 		{name: "reserved domain", req: CreateRequest{Name: "devstack", Kind: "static"}, want: "reserved"},
 		{name: "relative path", req: CreateRequest{Name: "blog", Path: "relative", Kind: "static"}, want: "absolute"},
 		{name: "missing path", req: CreateRequest{Name: "blog", Path: missing, Kind: "static"}, want: "resolve project path"},
-		{name: "unsupported kind", req: CreateRequest{Name: "blog", Kind: "php"}, want: "unsupported site kind"},
+		{name: "unsupported kind", req: CreateRequest{Name: "blog", Kind: "perl"}, want: "unsupported site kind"},
 		{name: "node missing version", req: CreateRequest{Name: "blog", Kind: "node", Command: "npm run dev"}, want: "requires a version"},
 		{name: "node missing command", req: CreateRequest{Name: "blog", Kind: "node", NodeVersion: "24"}, want: "requires a command"},
 		{name: "missing document root", req: CreateRequest{Name: "blog", Kind: "static", DocumentRoot: "public"}, want: "document root"},

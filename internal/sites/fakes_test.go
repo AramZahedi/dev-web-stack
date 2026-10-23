@@ -30,6 +30,7 @@ import (
 type testFakes struct {
 	store   *store.Store
 	backend *fakeBackend
+	php     *fakePHPCommands
 	hosts   *fakeHosts
 	certs   *fakeCerts
 	vhosts  *fakeVhosts
@@ -38,6 +39,7 @@ type testFakes struct {
 	ports   *domain.PortAllocator
 	config  config.Config
 	root    string
+	dbPath  string
 	order   *[]string
 }
 
@@ -47,7 +49,8 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 	t.Helper()
 
 	dir := t.TempDir()
-	st, err := store.Open(filepath.Join(dir, "state.db"))
+	dbPath := filepath.Join(dir, "state.db")
+	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -69,9 +72,10 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 	}
 
 	fb := &fakeBackend{
-		started: make(map[string]bool),
-		stopped: make(map[string]bool),
-		status:  make(map[string]model.SiteStatus),
+		started:     make(map[string]bool),
+		stopped:     make(map[string]bool),
+		status:      make(map[string]model.SiteStatus),
+		startedGens: make(map[string]bool),
 	}
 	fh := &fakeHosts{}
 	fc := &fakeCerts{
@@ -84,6 +88,7 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 	}
 	fv := &fakeVhosts{}
 	fp := &fakeProxy{}
+	fphp := &fakePHPCommands{}
 	order := []string{}
 	fc.order = &order
 	fv.order = &order
@@ -113,6 +118,7 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 		Ports:   ports,
 		Config:  cfg,
 		Logs:    logStore,
+		PHP:     fphp,
 		Now: func() time.Time {
 			return time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 		},
@@ -122,6 +128,7 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 	return svc, &testFakes{
 		store:   st,
 		backend: fb,
+		php:     fphp,
 		hosts:   fh,
 		certs:   fc,
 		vhosts:  fv,
@@ -130,11 +137,12 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 		ports:   ports,
 		config:  cfg,
 		root:    root,
+		dbPath:  dbPath,
 		order:   &order,
 	}
 }
 
-// fakeBackend is an in-memory backend.Backend.
+// fakeBackend is an in-memory backend.Backend and backend.PHPStager.
 type fakeBackend struct {
 	mu sync.Mutex
 
@@ -144,6 +152,9 @@ type fakeBackend struct {
 	status         map[string]model.SiteStatus
 	runtimeCalls   []string
 	buildCalls     []string
+	execCalls      []fakeExecCall
+	startedGens    map[string]bool
+	startCalls     int
 	stopCalls      int
 	prepareErr     error
 	startErr       error
@@ -151,9 +162,21 @@ type fakeBackend struct {
 	statusErr      error
 	ensureRTError  error
 	ensureBuildErr error
+	execResult     backend.Result
+	execErr        error
 }
 
-var _ backend.Backend = (*fakeBackend)(nil)
+// fakeExecCall records one Backend.Exec invocation.
+type fakeExecCall struct {
+	ID   string
+	Argv []string
+	Env  map[string]string
+}
+
+var (
+	_ backend.Backend   = (*fakeBackend)(nil)
+	_ backend.PHPStager = (*fakeBackend)(nil)
+)
 
 func (f *fakeBackend) Prepare(_ context.Context, spec backend.SiteSpec) (backend.PreparedSite, error) {
 	f.mu.Lock()
@@ -175,6 +198,7 @@ func (f *fakeBackend) Start(_ context.Context, id string) (backend.ProcessInfo, 
 	if f.startErr != nil {
 		return backend.ProcessInfo{}, f.startErr
 	}
+	f.startCalls++
 	f.started[id] = true
 	f.status[id] = model.StatusRunning
 	return backend.ProcessInfo{PID: 4242, StartedAt: time.Now()}, nil
@@ -209,8 +233,58 @@ func (f *fakeBackend) Logs(context.Context, string, bool) (io.ReadCloser, error)
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
-func (f *fakeBackend) Exec(context.Context, string, []string, map[string]string) (backend.Result, error) {
-	return backend.Result{}, nil
+func (f *fakeBackend) Exec(_ context.Context, id string, argv []string, env map[string]string) (backend.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execCalls = append(f.execCalls, fakeExecCall{ID: id, Argv: append([]string(nil), argv...), Env: cloneEnv(env)})
+	if f.execErr != nil {
+		return backend.Result{}, f.execErr
+	}
+	return f.execResult, nil
+}
+
+// PreparePHP records a staged PHP generation. It shares the recorder with
+// Prepare so tests can inspect the last prepared spec regardless of path.
+func (f *fakeBackend) PreparePHP(_ context.Context, siteID, generation string, spec backend.SiteSpec) (backend.PreparedSite, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	spec.ID = siteID
+	f.prepared = append(f.prepared, spec)
+	if f.prepareErr != nil {
+		return backend.PreparedSite{}, f.prepareErr
+	}
+	return backend.PreparedSite{
+		BackendHost: "127.0.0.1",
+		FastCGIPort: spec.FastCGIPort,
+	}, nil
+}
+
+// StartPHP starts a staged PHP generation.
+func (f *fakeBackend) StartPHP(_ context.Context, siteID, generation string) (backend.ProcessInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return backend.ProcessInfo{}, f.startErr
+	}
+	f.startCalls++
+	f.started[siteID] = true
+	f.startedGens[siteID+"#"+generation] = true
+	f.status[siteID] = model.StatusRunning
+	return backend.ProcessInfo{PID: 4242, StartedAt: time.Now()}, nil
+}
+
+// StopPHP stops one PHP generation.
+func (f *fakeBackend) StopPHP(_ context.Context, siteID, generation string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCalls++
+	if f.stopErr != nil {
+		return f.stopErr
+	}
+	f.stopped[siteID] = true
+	f.startedGens[siteID+"#"+generation] = false
+	f.status[siteID] = model.StatusStopped
+	return nil
 }
 
 func (f *fakeBackend) EnsureRuntime(_ context.Context, kind, version string) (model.RuntimeBuild, error) {
@@ -648,4 +722,123 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// installPHPBuild creates a minimal installed PHP build tree and upserts its
+// runtime row, so build selection and config composition can run against real
+// paths.
+func (f *testFakes) installPHPBuild(id, version string) model.RuntimeBuild {
+	buildRoot := filepath.Join(f.config.Home, "runtimes", id)
+	for _, dir := range []string{
+		filepath.Join(buildRoot, "bin"),
+		filepath.Join(buildRoot, "sbin"),
+		filepath.Join(buildRoot, "etc"),
+		filepath.Join(buildRoot, "lib", "php", "extensions", "no-debug-non-zts-20240924"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			panic(err)
+		}
+	}
+	for _, file := range []struct {
+		path string
+		mode os.FileMode
+		body string
+	}{
+		{filepath.Join(buildRoot, "bin", "php"), 0o755, "#!/bin/sh\nexit 0\n"},
+		{filepath.Join(buildRoot, "sbin", "php-fpm"), 0o755, "#!/bin/sh\nexit 0\n"},
+		{filepath.Join(buildRoot, "etc", "php.ini"), 0o644, "; base build configuration\nmemory_limit = 128M\n"},
+		{filepath.Join(buildRoot, "lib", "php", "extensions", "no-debug-non-zts-20240924", "opcache.so"), 0o644, "so"},
+	} {
+		if err := os.WriteFile(file.path, []byte(file.body), file.mode); err != nil {
+			panic(err)
+		}
+	}
+	build := model.RuntimeBuild{
+		ID:          id,
+		Kind:        "php",
+		Version:     version,
+		Backend:     model.BackendLocal,
+		Path:        buildRoot,
+		InstalledAt: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC),
+	}
+	if err := f.store.UpsertRuntime(context.Background(), build); err != nil {
+		panic(err)
+	}
+	return build
+}
+
+// fakePHPCommands records validator calls and returns injected failures.
+type fakePHPCommands struct {
+	mu sync.Mutex
+
+	lintCalls int
+	fpmCalls  int
+	lintErr   error
+	fpmErr    error
+
+	lintPHPBin string
+	lintIni    string
+	fpmBin     string
+	fpmConfig  string
+	fpmIni     string
+}
+
+var _ PHPCommands = (*fakePHPCommands)(nil)
+
+func (f *fakePHPCommands) Lint(_ context.Context, phpBin, iniPath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lintCalls++
+	f.lintPHPBin = phpBin
+	f.lintIni = iniPath
+	return f.lintErr
+}
+
+func (f *fakePHPCommands) ValidateFPM(_ context.Context, fpmBin, configPath, iniPath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fpmCalls++
+	f.fpmBin = fpmBin
+	f.fpmConfig = configPath
+	f.fpmIni = iniPath
+	return f.fpmErr
+}
+
+func (f *fakePHPCommands) counts() (lint, fpm int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lintCalls, f.fpmCalls
+}
+
+func (f *fakePHPCommands) lastLint() (phpBin, iniPath string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lintPHPBin, f.lintIni
+}
+
+func (f *fakePHPCommands) lastFPM() (fpmBin, configPath, iniPath string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fpmBin, f.fpmConfig, f.fpmIni
+}
+
+func (f *fakeBackend) execList() []fakeExecCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeExecCall(nil), f.execCalls...)
+}
+
+func (f *fakeBackend) lastExec() (fakeExecCall, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.execCalls) == 0 {
+		return fakeExecCall{}, false
+	}
+	return f.execCalls[len(f.execCalls)-1], true
+}
+
+func (f *fakeBackend) startCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.startCalls
 }

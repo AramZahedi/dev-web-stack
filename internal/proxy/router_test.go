@@ -114,6 +114,25 @@ func TestRouterCertificateSelectsBySNI(t *testing.T) {
 	}
 }
 
+func TestRouterPreservesPHPRouteFields(t *testing.T) {
+	r := NewRouter()
+	r.Replace(Snapshot{Routes: map[string]Route{"blog.test": {
+		SiteID:          "php-site",
+		Host:            "blog.test",
+		Kind:            KindPHP,
+		Upstream:        "127.0.0.1:43000",
+		DocumentRoot:    "/srv/blog/public",
+		FrontController: true,
+	}}})
+	route, ok := r.Lookup("blog.test")
+	if !ok {
+		t.Fatal("PHP route missing")
+	}
+	if route.Kind != KindPHP || route.DocumentRoot != "/srv/blog/public" || !route.FrontController {
+		t.Fatalf("route = %+v", route)
+	}
+}
+
 func TestRouterUpstreamTimeouts(t *testing.T) {
 	r := NewRouter()
 	if got := r.staticTransport.ResponseHeaderTimeout; got != staticResponseHeaderTimeout {

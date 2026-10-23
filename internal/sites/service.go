@@ -20,34 +20,43 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/phpini"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
 
-// CreateRequest describes a new site. The domain is derived from Name.
+// CreateRequest describes a new site. The domain is derived from Name. PHP
+// options are rejected for static and Node sites.
 type CreateRequest struct {
 	Name, Path, Kind, NodeVersion, Command, DocumentRoot string
-	WWW, TLS, ForceHTTPS, SPAFallback                    bool
+	PHPVersion, PHPBuild                                 string
+	PHPExtensions                                        map[string]bool
+	PHPIni                                               map[string]string
+	PHPIniRaw                                            string
+	WWW, TLS, ForceHTTPS, SPAFallback, FrontController   bool
 	Env                                                  map[string]string
 }
 
 // UpdateRequest describes a partial site update. Empty strings and nil
 // pointers leave the corresponding field unchanged; a non-nil Env replaces the
-// site environment (an empty map clears it).
+// site environment (an empty map clears it). FrontController is accepted for
+// PHP sites only.
 type UpdateRequest struct {
-	Domain       string
-	WWW          *bool
-	TLS          *bool
-	ForceHTTPS   *bool
-	SPAFallback  *bool
-	Command      string
-	DocumentRoot string
-	Env          map[string]string
+	Domain          string
+	WWW             *bool
+	TLS             *bool
+	ForceHTTPS      *bool
+	SPAFallback     *bool
+	FrontController *bool
+	Command         string
+	DocumentRoot    string
+	Env             map[string]string
 }
 
 // Hosts synchronizes the helper-managed hosts block.
@@ -82,18 +91,21 @@ type ProxyControl interface {
 // Deps is the complete set of service dependencies. Now and NewID are optional
 // and default to the wall clock and a random 128-bit hex id.
 type Deps struct {
-	Store   *store.Store
-	Backend backend.Backend
-	Helper  Hosts
-	Certs   Certs
-	Vhosts  Vhosts
-	Proxy   ProxyControl
-	Router  *proxy.Router
-	Ports   *domain.PortAllocator
-	Config  config.Config
-	Logs    *logs.Store
-	Now     func() time.Time
-	NewID   func() string
+	Store       *store.Store
+	Backend     backend.Backend
+	Helper      Hosts
+	Certs       Certs
+	Vhosts      Vhosts
+	Proxy       ProxyControl
+	Router      *proxy.Router
+	Ports       *domain.PortAllocator
+	Config      config.Config
+	Logs        *logs.Store
+	PHP         PHPCommands
+	PHPBackend  backend.PHPStager
+	PHPManifest *catalog.PHPManifest
+	Now         func() time.Time
+	NewID       func() string
 }
 
 // Service owns site lifecycle operations. Mutating operations and status
@@ -102,6 +114,11 @@ type Deps struct {
 type Service struct {
 	deps Deps
 	mu   sync.Mutex
+
+	// phpManifest caches the lazily loaded embedded PHP manifest. It is only
+	// accessed while mu is held.
+	phpManifest    *catalog.PHPManifest
+	phpManifestErr error
 }
 
 // NewService returns a service and reserves every port already recorded for a
@@ -117,6 +134,16 @@ func NewService(deps Deps) *Service {
 	}
 	if deps.Ports == nil {
 		deps.Ports = domain.NewPortAllocator()
+	}
+	if deps.PHP == nil {
+		deps.PHP = defaultPHPCommands{}
+	}
+	// The production local backend is also the generation-aware PHP stager.
+	// Reuse it when no separate stager was supplied.
+	if deps.PHPBackend == nil {
+		if stager, ok := deps.Backend.(backend.PHPStager); ok {
+			deps.PHPBackend = stager
+		}
 	}
 	svc := &Service{deps: deps}
 	svc.reserveExistingPorts()
@@ -150,7 +177,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	}
 
 	var port int
-	if site.Kind == model.SiteNode || !s.externalServing() {
+	switch {
+	case site.Kind == model.SitePHP:
+		// PHP sites use only a FastCGI port, allocated before any external
+		// side effects.
+	case site.Kind == model.SiteNode || !s.externalServing():
 		port, err = s.deps.Ports.Allocate(domain.PortHTTP)
 		if err != nil {
 			return model.Site{}, fmt.Errorf("sites: allocate HTTP port for %q: %w", site.Name, err)
@@ -168,6 +199,35 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		}
 	}
 
+	var phpBuild model.RuntimeBuild
+	if site.Kind == model.SitePHP {
+		if err := s.checkPHPBackend(); err != nil {
+			return model.Site{}, err
+		}
+		fastCGIPort, err := s.deps.Ports.Allocate(domain.PortFastCGI)
+		if err != nil {
+			return model.Site{}, fmt.Errorf("sites: allocate FastCGI port for %q: %w", site.Name, err)
+		}
+		site.FastCGIPort = fastCGIPort
+
+		phpBuild, err = s.phpBuildForSiteLocked(ctx, site)
+		if err != nil {
+			return fail(err, false)
+		}
+		files, err := s.composePHPFilesLocked(ctx, site, phpBuild)
+		if err != nil {
+			return fail(err, false)
+		}
+		site.PHPConfigHash = files.Hash
+		generationDir, err := s.writePHPFilesLocked(site.ID, files)
+		if err != nil {
+			return fail(err, false)
+		}
+		if err := s.validatePHPFilesLocked(ctx, site, phpBuild, generationDir); err != nil {
+			return fail(err, false)
+		}
+	}
+
 	if err := s.syncHosts(ctx, newHosts); err != nil {
 		return fail(fmt.Errorf("sites: sync hosts for %q: %w", site.Name, err), false)
 	}
@@ -182,6 +242,36 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	site.UpdatedAt = site.CreatedAt
 	if err := s.deps.Store.CreateSite(ctx, site); err != nil {
 		return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
+	}
+
+	if site.Kind == model.SitePHP {
+		if err := s.saveAppliedPHPConfigLocked(ctx, site); err != nil {
+			return fail(fmt.Errorf("sites: save PHP configuration for %q: %w", site.Name, err), true)
+		}
+		spec, err := s.phpSiteSpecFromBuildLocked(site, phpBuild)
+		if err != nil {
+			return fail(err, true)
+		}
+		if _, err := s.deps.PHPBackend.PreparePHP(ctx, site.ID, phpDefaultGeneration, spec); err != nil {
+			return fail(fmt.Errorf("sites: prepare %q: %w", site.Name, err), true)
+		}
+		if _, err := s.deps.PHPBackend.StartPHP(ctx, site.ID, phpDefaultGeneration); err != nil {
+			return fail(fmt.Errorf("sites: start %q: %w", site.Name, err), true)
+		}
+		site.Status = model.StatusRunning
+		site.UpdatedAt = s.currentTime()
+		if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
+			return fail(fmt.Errorf("sites: record running state for %q: %w", site.Name, err), true)
+		}
+		s.commitPHPFilesBestEffortLocked(ctx, site)
+		if err := s.rebuildRoutesLocked(ctx); err != nil {
+			return fail(fmt.Errorf("sites: publish routes for %q: %w", site.Name, err), true)
+		}
+		if err := s.syncVhostsLocked(ctx, ""); err != nil {
+			return fail(fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err), true)
+		}
+		s.emitStatus(ctx, site, "", model.StatusRunning, "")
+		return site, nil
 	}
 
 	// External static sites are served directly by nginx/Apache: no backend
@@ -494,9 +584,16 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	if site.FastCGIPort != 0 {
 		s.deps.Ports.Release(site.FastCGIPort)
 	}
+	var removeErr error
+	if site.Kind == model.SitePHP {
+		removeErr = s.removePHPConfigLocked(site.ID)
+	}
 
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		return fmt.Errorf("sites: publish routes after deleting %q: %w", site.Name, err)
+	}
+	if removeErr != nil {
+		return fmt.Errorf("sites: remove PHP config for %q: %w", site.Name, removeErr)
 	}
 	return nil
 }
@@ -515,9 +612,14 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 
 	kind := model.SiteKind(strings.ToLower(strings.TrimSpace(req.Kind)))
 	switch kind {
-	case model.SiteStatic, model.SiteNode:
+	case model.SiteStatic, model.SiteNode, model.SitePHP:
 	default:
 		return model.Site{}, fmt.Errorf("sites: unsupported site kind %q", req.Kind)
+	}
+	if kind != model.SitePHP {
+		if err := rejectPHPOnlyCreateFields(req); err != nil {
+			return model.Site{}, err
+		}
 	}
 
 	siteDomain := domain.DomainFor(name)
@@ -562,6 +664,41 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		if site.Command == "" {
 			return model.Site{}, errors.New("sites: node site requires a command")
 		}
+	case model.SitePHP:
+		site.PHPVersion = strings.TrimSpace(req.PHPVersion)
+		site.PHPBuild = strings.TrimSpace(req.PHPBuild)
+		if site.PHPVersion == "" {
+			return model.Site{}, errors.New("sites: php site requires a version")
+		}
+		if !supportedPHPLine(site.PHPVersion) {
+			return model.Site{}, fmt.Errorf("sites: unsupported PHP version %q (want 8.2, 8.3, 8.4, or 8.5)", site.PHPVersion)
+		}
+		site.PHPExtensions = cloneBoolMap(req.PHPExtensions)
+		site.PHPIni = cloneStringMap(req.PHPIni)
+		site.PHPIniRaw = req.PHPIniRaw
+		site.FrontController = req.FrontController
+		site.DocumentRoot, err = validateDocumentRoot(project, req.DocumentRoot)
+		if err != nil {
+			return model.Site{}, err
+		}
+		if err := phpini.ValidateOverrides(site.PHPIni); err != nil {
+			return model.Site{}, fmt.Errorf("sites: php.ini overrides: %w", err)
+		}
+		if err := phpini.ValidateRaw(site.PHPIniRaw); err != nil {
+			return model.Site{}, fmt.Errorf("sites: raw php.ini: %w", err)
+		}
+		manifest, err := s.phpCatalog()
+		if err != nil {
+			return model.Site{}, err
+		}
+		if _, err := manifest.Resolve(site.PHPVersion, site.PHPExtensions); err != nil {
+			return model.Site{}, fmt.Errorf("sites: PHP extensions: %w", err)
+		}
+		build, err := s.resolvePHPBuildLocked(ctx, site.PHPVersion, site.PHPBuild)
+		if err != nil {
+			return model.Site{}, err
+		}
+		site.PHPBuild = build.ID
 	}
 
 	if err := s.ensureDomainsAvailable(ctx, "", siteDomains(site)); err != nil {
@@ -574,6 +711,22 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 	}
 	site.ID = id
 	return site, nil
+}
+
+// rejectPHPOnlyCreateFields keeps PHP options from silently configuring a
+// static or Node site.
+func rejectPHPOnlyCreateFields(req CreateRequest) error {
+	if strings.TrimSpace(req.PHPVersion) != "" ||
+		strings.TrimSpace(req.PHPBuild) != "" ||
+		len(req.PHPExtensions) != 0 ||
+		len(req.PHPIni) != 0 ||
+		req.PHPIniRaw != "" {
+		return errors.New("sites: PHP options require a php site")
+	}
+	if req.FrontController {
+		return errors.New("sites: front controller requires a php site")
+	}
+	return nil
 }
 
 // applyUpdate validates and applies the partial update without touching the
@@ -605,14 +758,21 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 	if strings.TrimSpace(req.Command) != "" {
 		updated.Command = strings.TrimSpace(req.Command)
 	}
+	if req.FrontController != nil {
+		if updated.Kind != model.SitePHP {
+			return model.Site{}, errors.New("sites: front controller requires a php site")
+		}
+		updated.FrontController = *req.FrontController
+	}
 	if strings.TrimSpace(req.DocumentRoot) != "" {
-		if updated.Kind == model.SiteStatic {
+		switch updated.Kind {
+		case model.SiteStatic, model.SitePHP:
 			root, err := validateDocumentRoot(updated.HostPath, req.DocumentRoot)
 			if err != nil {
 				return model.Site{}, err
 			}
 			updated.DocumentRoot = root
-		} else {
+		default:
 			updated.DocumentRoot = strings.TrimSpace(req.DocumentRoot)
 		}
 	}
@@ -635,6 +795,9 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 // startLocked allocates a port if the row has none, prepares and starts the
 // backend, and persists the running state. The caller must hold s.mu.
 func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	if site.Kind == model.SitePHP {
+		return s.startPHPLocked(ctx, site)
+	}
 	if s.externalServing() && site.Kind == model.SiteStatic {
 		return s.startExternalStaticLocked(ctx, site)
 	}
@@ -686,6 +849,9 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 // stopLocked stops the backend and persists the stopped state. It is
 // idempotent. The caller must hold s.mu.
 func (s *Service) stopLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	if site.Kind == model.SitePHP {
+		return s.stopPHPLocked(ctx, site)
+	}
 	if s.externalServing() && site.Kind == model.SiteStatic {
 		return s.stopExternalStaticLocked(ctx, site)
 	}
@@ -756,11 +922,33 @@ func (s *Service) stopExternalStaticLocked(ctx context.Context, site model.Site)
 // released.
 func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current model.Site) error {
 	var errs []error
-	if s.deps.Backend != nil {
+	if current.Kind == model.SitePHP {
+		if err := s.stopPHPProcessLocked(ctx, current.ID); err != nil {
+			errs = append(errs, fmt.Errorf("rollback: stop %q: %w", current.Name, err))
+		}
+	} else if s.deps.Backend != nil {
 		if err := s.deps.Backend.Stop(ctx, current.ID, true); err != nil {
 			errs = append(errs, fmt.Errorf("rollback: stop %q: %w", current.Name, err))
 		}
-		if previous.DesiredState == model.DesiredRunning {
+	}
+	if previous.DesiredState == model.DesiredRunning {
+		switch {
+		case previous.Kind == model.SitePHP:
+			if s.deps.PHPBackend == nil {
+				errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", previous.Name, errors.New("PHP backend is not configured")))
+				break
+			}
+			spec, err := s.phpSiteSpecLocked(ctx, previous)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", previous.Name, err))
+				break
+			}
+			if _, err := s.deps.PHPBackend.PreparePHP(ctx, previous.ID, phpDefaultGeneration, spec); err != nil {
+				errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", previous.Name, err))
+			} else if _, err := s.deps.PHPBackend.StartPHP(ctx, previous.ID, phpDefaultGeneration); err != nil {
+				errs = append(errs, fmt.Errorf("rollback: start %q: %w", previous.Name, err))
+			}
+		case s.deps.Backend != nil:
 			if _, err := s.deps.Backend.Prepare(ctx, backendSpec(previous)); err != nil {
 				errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", previous.Name, err))
 			} else if _, err := s.deps.Backend.Start(ctx, previous.ID); err != nil {
@@ -775,6 +963,9 @@ func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current 
 	}
 	if previous.HTTPPort == 0 && current.HTTPPort != 0 && s.deps.Ports != nil {
 		s.deps.Ports.Release(current.HTTPPort)
+	}
+	if previous.FastCGIPort == 0 && current.FastCGIPort != 0 && s.deps.Ports != nil {
+		s.deps.Ports.Release(current.FastCGIPort)
 	}
 	return errors.Join(errs...)
 }
@@ -831,7 +1022,13 @@ func (s *Service) refreshExternalStaticLocked(ctx context.Context, site model.Si
 func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts []string, certIssued bool, port int, cause error) error {
 	errs := []error{cause}
 	if s.deps.Backend != nil && s.siteNeedsBackend(site) {
-		if err := s.deps.Backend.Stop(ctx, site.ID, false); err != nil {
+		if site.Kind == model.SitePHP {
+			if s.deps.PHPBackend != nil {
+				if err := s.deps.PHPBackend.StopPHP(ctx, site.ID, phpDefaultGeneration); err != nil {
+					errs = append(errs, fmt.Errorf("rollback: stop %q: %w", site.Name, err))
+				}
+			}
+		} else if err := s.deps.Backend.Stop(ctx, site.ID, false); err != nil {
 			errs = append(errs, fmt.Errorf("rollback: stop %q: %w", site.Name, err))
 		}
 	}
@@ -852,6 +1049,14 @@ func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts 
 	}
 	if port != 0 && s.deps.Ports != nil {
 		s.deps.Ports.Release(port)
+	}
+	if site.Kind == model.SitePHP {
+		if err := s.removePHPConfigLocked(site.ID); err != nil {
+			errs = append(errs, fmt.Errorf("rollback: remove PHP config for %q: %w", site.Name, err))
+		}
+		if site.FastCGIPort != 0 && s.deps.Ports != nil {
+			s.deps.Ports.Release(site.FastCGIPort)
+		}
 	}
 	if s.externalServing() {
 		if err := s.syncVhostsLocked(ctx, ""); err != nil {
@@ -1040,6 +1245,7 @@ func backendSpec(site model.Site) backend.SiteSpec {
 		SPAFallback:     site.SPAFallback,
 		FrontController: site.FrontController,
 		RuntimeVersion:  runtimeVersion,
+		PHPVersion:      site.PHPVersion,
 	}
 }
 
