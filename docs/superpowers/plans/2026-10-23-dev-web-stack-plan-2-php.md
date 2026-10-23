@@ -12,7 +12,17 @@
 
 **Depends on:** `docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-foundation.md` (implemented). Plan 2 preserves every Plan 1 behavior: host allowlist, CSRF/session checks, peer-UID helper, vhost validation, supervisor semantics, and the dashboard design system.
 
-> **Implementation status (2026-10-24):** Tasks 1–4 are complete and reviewed. Task 5 is the next task and has not been started. Tasks 5–12 remain. See `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`.
+> **Implementation status (2026-10-24):** Tasks 1–6 are complete and reviewed. Task 7 is the next task. Tasks 7–12 remain. See `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`.
+
+> **Implementation rulings made while executing Tasks 5–6:**
+> - Task 5 adds `proxy.KindPHP` and `Route.DocumentRoot`/`Route.FrontController` in `internal/proxy/router.go` so the Task 5 routes compile; FastCGI transport stays in Task 7.
+> - FPM `error_log` is `/proc/self/fd/2`; the supervisor supplies a pipe, so FPM output merges into the site log stream with source `fpm`. A generation-local error-log file does not meet the log contract.
+> - `phpSiteDir` rejects `"."` (and any non-local/separator id) so `removePHPConfigLocked` can never remove the sites root.
+> - Task 6 allocates the new FastCGI port **before** composing/validating a running apply, because the FPM render and config hash embed the port. The plan's prose order cannot work.
+> - A successful running apply stops both the `default` generation and the previous hash generation (when different), then releases the old port. A failed stop keeps the old port reserved and reports an event.
+> - A target config hash equal to the current hash is a no-op apply; a stopped site with no port allocates and persists one for rendering without starting a master.
+> - `startPHPLocked` is idempotent after a staged apply: it does not start a second `default` master when the site and backend report running.
+> - `SavePHPDefaults` reports per-site failures in `PHPDefaultsResult.Sites`; only invalid defaults or a failed defaults-store write returns an error. `CheckRuntimeRemoval` returns `store.ErrNotFound` for an absent build.
 
 **Build-artifact dependency (honest gate):** `internal/catalog/catalog.json` contains **no PHP entries until a release publishes real artifacts**. The CI matrix in Task 11 builds, smoke-tests, checksums, SBOMs, and uploads each archive; only then does the release job generate a `php@<version>-r<revision>` entry from the published URL and checksum. Unit and integration tests use fixture catalogs and tarballs; acceptance uses this machine's real `/usr/local/php` when present and skips cleanly when absent. No production PHP URL or checksum is invented in this plan.
 
