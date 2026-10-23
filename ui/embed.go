@@ -1,6 +1,6 @@
 // Package ui embeds the built dashboard. The dist directory is populated by
-// `npm run build`; only a .gitkeep placeholder is tracked until Task 19 wires
-// the final embedding.
+// `npm run build`; only a .gitkeep placeholder is tracked, so a checkout that
+// has not built the dashboard still compiles.
 package ui
 
 import (

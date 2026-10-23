@@ -438,7 +438,7 @@
                     oninput={() => clearError('path')}
                     onblur={() => validateField('path')}
                   />
-                  <Button variant="secondary" onclick={() => (pathOpen = true)}>
+                  <Button variant="secondary" onclick={() => (pathOpen = true)} disabled={runtimesLoading}>
                     <FolderOpen size={14} strokeWidth={1.9} aria-hidden="true" />
                     Browse
                   </Button>

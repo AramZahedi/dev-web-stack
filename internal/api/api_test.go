@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +36,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
+	uiembed "github.com/AramZahedi/dev-web-stack/ui"
 )
 
 // testSessionValue is a valid 32-byte session value expressed as hex.
@@ -858,6 +860,73 @@ func TestSPAFallbackAndAssetMIME(t *testing.T) {
 
 	rec = fx.request(t, "GET", "/api/v1/does-not-exist", nil)
 	assertError(t, rec, http.StatusNotFound, codeNotFound)
+}
+
+// TestEmbeddedDashboardServesBuiltDist exercises the real //go:embed archive
+// instead of the MapFS used above. A clean checkout has no dashboard build, so
+// the test skips rather than failing until `npm run build` has run.
+func TestEmbeddedDashboardServesBuiltDist(t *testing.T) {
+	dist := uiembed.Dist()
+	if _, err := fs.Stat(dist, "index.html"); err != nil {
+		t.Skip("ui/dist has no index.html; run `npm run build` in ui/ first")
+	}
+
+	fx := newFixture(t, Config{UI: dist})
+	raw := fx.raw
+
+	rec := httptest.NewRecorder()
+	raw.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("index status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("index content-type = %q", ct)
+	}
+	if !strings.Contains(rec.Body.String(), `id="app"`) {
+		t.Fatalf("embedded index body = %q", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	raw.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1/sites/blog", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `id="app"`) {
+		t.Fatalf("embedded SPA fallback = %d %q", rec.Code, rec.Body.String())
+	}
+
+	var jsAsset string
+	err := fs.WalkDir(dist, "assets", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && strings.HasSuffix(name, ".js") {
+			jsAsset = name
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk embedded assets: %v", err)
+	}
+	if jsAsset == "" {
+		t.Fatal("embedded dashboard has no JavaScript asset")
+	}
+
+	rec = httptest.NewRecorder()
+	raw.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1/"+jsAsset, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("asset %q status = %d body=%s", jsAsset, rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("asset %q content-type = %q", jsAsset, ct)
+	}
+	if cache := rec.Header().Get("Cache-Control"); !strings.Contains(cache, "immutable") {
+		t.Fatalf("asset %q cache-control = %q", jsAsset, cache)
+	}
+
+	rec = fx.request(t, "GET", "/api/v1/definitely-not-found", nil)
+	assertError(t, rec, http.StatusNotFound, codeNotFound)
+	if strings.Contains(rec.Body.String(), `id="app"`) {
+		t.Fatal("API 404 fell back to the dashboard index")
+	}
 }
 
 func TestFSBrowserConfinedToUserHome(t *testing.T) {
