@@ -1,0 +1,1137 @@
+openapi: 3.1.0
+info:
+  title: devstack local API
+  version: 0.1.0
+  description: |
+    Loopback-only REST API for the devstack daemon. Every request must use an
+    allowed Host header (127.0.0.1, localhost, or devstack.test, with any
+    numeric port); foreign hosts receive 403 before authentication or routing.
+
+    Browser requests use the `devstack_session` cookie. `GET /api/v1/session`
+    creates the cookie when absent and returns the CSRF token required by every
+    mutating request. CLI requests over the Unix domain socket are authenticated
+    by peer credentials through `WithSocketAuth` and do not need the cookie or
+    the CSRF header.
+
+    Server-sent events (logs and events) use `data: <json>\n\n` frames with
+    comment keepalives every 15 seconds.
+servers:
+  - url: http://127.0.0.1:7070
+    description: Dashboard/API listener
+  - url: http://localhost:7070
+    description: Dashboard/API listener (localhost)
+  - url: http://devstack.test
+    description: Dashboard host through the local proxy
+tags:
+  - name: health
+  - name: session
+  - name: sites
+  - name: events
+  - name: runtimes
+  - name: trust
+  - name: doctor
+  - name: filesystem
+  - name: settings
+  - name: dashboard
+paths:
+  /api/v1/health:
+    get:
+      tags: [health]
+      summary: Report daemon health and version
+      operationId: health
+      security: []
+      responses:
+        "200":
+          description: The daemon is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+
+  /api/v1/session:
+    get:
+      tags: [session]
+      summary: Create or read the dashboard session
+      description: |
+        Sets the `devstack_session` cookie when absent and returns the CSRF
+        token for the presented session. The cookie is HttpOnly, SameSite=Strict,
+        and Secure when the request is TLS or carries X-Forwarded-Proto https.
+      operationId: getSession
+      security: []
+      responses:
+        "200":
+          description: The session's CSRF token.
+          headers:
+            Set-Cookie:
+              description: Present only when a new session was created.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+
+  /api/v1/sites:
+    get:
+      tags: [sites]
+      summary: List sites
+      operationId: listSites
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Sites ordered by name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Site"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [sites]
+      summary: Create and start a site
+      operationId: createSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSiteRequest"
+      responses:
+        "201":
+          description: The created site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Domain conflict, hosts-sync failure, or port conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: Request body exceeds the configured limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    get:
+      tags: [sites]
+      summary: Get one site
+      operationId: getSite
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The requested site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [sites]
+      summary: Partially update a site
+      operationId: updateSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSiteRequest"
+      responses:
+        "200":
+          description: The updated site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Domain conflict or hosts-sync failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [sites]
+      summary: Stop and delete a site
+      operationId: deleteSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "204":
+          description: The site was deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Hosts synchronization failed; the stopped row was kept for retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/start:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites]
+      summary: Start a site
+      operationId: startSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "202":
+          description: The start action completed.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/stop:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites]
+      summary: Stop a site
+      operationId: stopSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "202":
+          description: The stop action completed.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/restart:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites]
+      summary: Restart a site
+      operationId: restartSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "202":
+          description: The restart action completed.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/logs/stream:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    get:
+      tags: [sites]
+      summary: Stream new log lines for a site
+      description: |
+        Server-sent event stream. Each data frame is a LogLine. The
+        subscription ends when the client disconnects.
+      operationId: streamSiteLogs
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: A text/event-stream of log lines.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+            X-Accel-Buffering:
+              schema:
+                type: string
+                enum: ["no"]
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/LogLine"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/events:
+    get:
+      tags: [events]
+      summary: Stream daemon diagnostic events
+      description: |
+        Server-sent event stream. The store is polled once per second and new
+        events are emitted in ascending ID order. Keepalive comments are sent
+        every 15 seconds.
+      operationId: streamEvents
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: A text/event-stream of events.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+            X-Accel-Buffering:
+              schema:
+                type: string
+                enum: ["no"]
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/runtimes:
+    get:
+      tags: [runtimes]
+      summary: List installed runtime builds
+      operationId: listRuntimes
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Installed builds ordered by kind and version.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RuntimeBuild"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/runtimes/available:
+    get:
+      tags: [runtimes]
+      summary: List catalog builds that can be installed
+      operationId: availableRuntimes
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Checksum-pinned catalog entries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CatalogEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/runtimes/install:
+    post:
+      tags: [runtimes]
+      summary: Download, verify, and install a runtime build
+      operationId: installRuntime
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstallRuntimeRequest"
+      responses:
+        "201":
+          description: The installed build.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeBuild"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The requested build is not in the pinned catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/runtimes/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Installed runtime build id.
+        schema:
+          type: string
+    delete:
+      tags: [runtimes]
+      summary: Remove an installed runtime build
+      operationId: removeRuntime
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "204":
+          description: The build was removed (or was already absent).
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/trust:
+    get:
+      tags: [trust]
+      summary: Report CA trust per target
+      operationId: trustStatus
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: One result per trust store or browser profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustTargets"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/HelperUnavailable"
+    delete:
+      tags: [trust]
+      summary: Remove the devstack CA from user trust stores
+      operationId: removeTrust
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: One result per trust store or browser profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustTargets"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/HelperUnavailable"
+
+  /api/v1/trust/repair:
+    post:
+      tags: [trust]
+      summary: Install the devstack CA into user trust stores
+      operationId: repairTrust
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: One result per trust store or browser profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustTargets"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/HelperUnavailable"
+
+  /api/v1/doctor:
+    get:
+      tags: [doctor]
+      summary: Run doctor checks
+      operationId: runDoctorChecks
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The doctor report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/doctor/run:
+    post:
+      tags: [doctor]
+      summary: Run doctor checks
+      operationId: runDoctor
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: The doctor report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorReport"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/doctor/repair:
+    post:
+      tags: [doctor]
+      summary: Re-apply idempotent repairs and rerun checks
+      operationId: repairDoctor
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: The refreshed doctor report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorReport"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/fs:
+    get:
+      tags: [filesystem]
+      summary: List subdirectories for the project picker
+      description: |
+        Absolute directories only. Files are never listed and file contents are
+        never returned. When the server has a configured user home, paths are
+        resolved through symlinks and confined to that home.
+      operationId: browseFilesystem
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: path
+          in: query
+          required: true
+          description: Absolute directory path.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sorted child directories.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsListing"
+        "400":
+          description: Missing, relative, non-directory, or unreadable path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Path is outside the configured user home.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/settings:
+    get:
+      tags: [settings]
+      summary: Report machine settings
+      operationId: getSettings
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Effective machine settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /:
+    get:
+      tags: [dashboard]
+      summary: Serve the dashboard SPA
+      description: |
+        Serves index.html for application routes and static files that exist in
+        the embedded dashboard. Assets under /assets/ are served separately.
+      operationId: dashboardIndex
+      security: []
+      responses:
+        "200":
+          description: Dashboard HTML or a static file.
+          content:
+            text/html:
+              schema:
+                type: string
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          description: The dashboard build is not present.
+
+  /assets/{path}:
+    get:
+      tags: [dashboard]
+      summary: Serve a hashed dashboard asset
+      operationId: dashboardAsset
+      security: []
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Asset path below /assets/.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The asset with its MIME type.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          description: The asset does not exist.
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: devstack_session
+      description: Random 32-byte session value created by GET /api/v1/session.
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: HMAC-SHA256(server secret, session) returned by GET /api/v1/session.
+    socketPeerAuth:
+      type: apiKey
+      in: header
+      name: X-Devstack-Socket
+      description: |
+        Documentation-only marker for the Unix-socket transport. The server
+        authenticates socket peers with SO_PEERCRED via WithSocketAuth and does
+        not read this header.
+
+  parameters:
+    SiteRef:
+      name: ref
+      in: path
+      required: true
+      description: Site id or unique site name.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Invalid JSON, missing field, or failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: The dashboard session cookie is missing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: CSRF token is missing or invalid, or the Host header is not allowed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ForbiddenHost:
+      description: The Host header is not in the loopback allowlist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: Unexpected daemon failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    HelperUnavailable:
+      description: The privileged helper is unreachable or rejected the request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          examples:
+            - INVALID_REQUEST
+            - NOT_FOUND
+            - DOMAIN_CONFLICT
+            - HOSTS_SYNC_FAILED
+            - RUNTIME_MISSING
+            - TRUST_MISSING
+            - PORT_IN_USE
+            - PAYLOAD_TOO_LARGE
+            - FORBIDDEN
+            - UNAUTHORIZED
+            - HELPER_UNAVAILABLE
+            - INTERNAL
+        message:
+          type: string
+          description: Human-readable explanation.
+        details:
+          description: Optional structured context.
+
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          examples: [ok]
+        version:
+          type: string
+          examples: [dev]
+
+    Session:
+      type: object
+      required: [csrf_token]
+      properties:
+        csrf_token:
+          type: string
+          description: HMAC-SHA256(server secret, session) in lowercase hex.
+
+    SiteKind:
+      type: string
+      enum: [static, php, node]
+
+    BackendKind:
+      type: string
+      enum: [local, wsl]
+
+    DesiredState:
+      type: string
+      enum: [running, stopped]
+
+    SiteStatus:
+      type: string
+      enum: [stopped, starting, running, stopping, crashed, error]
+
+    Site:
+      type: object
+      required:
+        - id
+        - name
+        - domain
+        - www
+        - backend
+        - host_path
+        - backend_path
+        - kind
+        - desired_state
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        domain:
+          type: string
+          examples: [blog.test]
+        www:
+          type: boolean
+        backend:
+          $ref: "#/components/schemas/BackendKind"
+        host_path:
+          type: string
+        backend_path:
+          type: string
+        kind:
+          $ref: "#/components/schemas/SiteKind"
+        php_version:
+          type: string
+        php_extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+        php_ini:
+          type: object
+          additionalProperties:
+            type: string
+        node_version:
+          type: string
+        command:
+          type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        document_root:
+          type: string
+        front_controller:
+          type: boolean
+        spa_fallback:
+          type: boolean
+        tls:
+          type: boolean
+        force_https:
+          type: boolean
+        desired_state:
+          $ref: "#/components/schemas/DesiredState"
+        status:
+          $ref: "#/components/schemas/SiteStatus"
+        http_port:
+          type: integer
+          minimum: 0
+        fastcgi_port:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateSiteRequest:
+      type: object
+      required: [name, path, kind]
+      properties:
+        name:
+          type: string
+          description: Unique site name; the domain is derived as <name>.test.
+        path:
+          type: string
+          description: Absolute project directory on the host.
+        host_path:
+          type: string
+          description: Alias for path, accepted for the M1 appendix shape.
+        kind:
+          $ref: "#/components/schemas/SiteKind"
+        node_version:
+          type: string
+        command:
+          type: string
+        document_root:
+          type: string
+        www:
+          type: boolean
+        tls:
+          type: boolean
+        force_https:
+          type: boolean
+        spa_fallback:
+          type: boolean
+        env:
+          type: object
+          additionalProperties:
+            type: string
+
+    UpdateSiteRequest:
+      type: object
+      description: Omitted scalar fields are unchanged. An empty env object clears the environment.
+      properties:
+        domain:
+          type: string
+        www:
+          type: boolean
+        tls:
+          type: boolean
+        force_https:
+          type: boolean
+        spa_fallback:
+          type: boolean
+        command:
+          type: string
+        document_root:
+          type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+
+    RuntimeBuild:
+      type: object
+      required: [id, kind, version, backend, path, checksum, installed_at]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          examples: [node, php]
+        version:
+          type: string
+        backend:
+          $ref: "#/components/schemas/BackendKind"
+        path:
+          type: string
+        checksum:
+          type: string
+        installed_at:
+          type: string
+          format: date-time
+
+    CatalogEntry:
+      type: object
+      required: [id, kind, version, build, url, sha256, size]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        version:
+          type: string
+        build:
+          type: string
+          examples: [linux-x64]
+        url:
+          type: string
+          format: uri
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        size:
+          type: integer
+          format: int64
+
+    InstallRuntimeRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: Catalog entry id.
+
+    CheckStatus:
+      type: string
+      enum: [ok, warn, fail, skipped]
+
+    DoctorCheck:
+      type: object
+      required: [id, title, status, detail, remediation]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        status:
+          $ref: "#/components/schemas/CheckStatus"
+        detail:
+          type: string
+        remediation:
+          type: string
+
+    DoctorReport:
+      type: object
+      required: [checks, ok]
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DoctorCheck"
+        ok:
+          type: boolean
+
+    TrustTarget:
+      type: object
+      required: [name, ok, detail]
+      properties:
+        name:
+          type: string
+        ok:
+          type: boolean
+        detail:
+          type: string
+
+    TrustTargets:
+      type: array
+      items:
+        $ref: "#/components/schemas/TrustTarget"
+
+    FsEntry:
+      type: object
+      required: [name, path]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+
+    FsListing:
+      type: object
+      required: [path, entries]
+      properties:
+        path:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/FsEntry"
+
+    Settings:
+      type: object
+      required:
+        - home
+        - user_home
+        - wsl_distro
+        - http_port
+        - https_port
+        - ui_port
+        - auto_start_sites
+        - graceful_stop_seconds
+        - max_request_body_mb
+        - log_max_mb
+        - log_keep
+      properties:
+        home:
+          type: string
+          description: Machine root under which devstack keeps state.
+        user_home:
+          type: string
+        wsl_distro:
+          type: string
+        http_port:
+          type: integer
+        https_port:
+          type: integer
+        ui_port:
+          type: integer
+        auto_start_sites:
+          type: boolean
+        graceful_stop_seconds:
+          type: integer
+        max_request_body_mb:
+          type: integer
+        log_max_mb:
+          type: integer
+        log_keep:
+          type: integer
+
+    LogLine:
+      type: object
+      required: [time, site_id, source, text]
+      properties:
+        time:
+          type: string
+          format: date-time
+        site_id:
+          type: string
+        source:
+          type: string
+          examples: [app, fpm, proxy, supervisor]
+        text:
+          type: string
+
+    Event:
+      type: object
+      required: [id, type, message, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        site_id:
+          type: string
+        type:
+          type: string
+          examples: [site.running, site.stopped, doctor.repaired]
+        message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
