@@ -258,6 +258,24 @@ test('Settings Serving switches modes, syncs, and previews vhosts', async ({ pag
   await previewButton.click();
   const drawer = page.getByRole('dialog', { name: 'blog vhost preview' });
   await expect(drawer).toBeVisible();
+  const closePreview = drawer.getByRole('button', { name: 'Close vhost preview' });
+  await expect(closePreview).toBeFocused();
+
+  await page.keyboard.press('Tab');
+  const nginxTab = drawer.getByRole('tab', { name: 'nginx' });
+  await expect(nginxTab).toBeFocused();
+  const focusRing = await nginxTab.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      focusVisible: element.matches(':focus-visible'),
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+    };
+  });
+  expect(focusRing.focusVisible).toBe(true);
+  expect(focusRing.outlineStyle).not.toBe('none');
+  expect(parseFloat(focusRing.outlineWidth)).toBeGreaterThanOrEqual(2);
+
   await expect(drawer.locator('pre')).toContainText('server_name blog.test;');
   await expect(drawer.locator('pre')).toContainText('root /home/dev/projects/blog/public;');
 

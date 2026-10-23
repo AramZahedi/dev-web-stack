@@ -218,7 +218,6 @@
         id="vhost-preview-panel"
         role="tabpanel"
         aria-labelledby={`vhost-tab-${server}`}
-        tabindex="0"
       >
         {#if loading}
           <div class="loading" aria-busy="true" aria-label="Loading vhost preview">
@@ -398,10 +397,6 @@
     overscroll-behavior: contain;
   }
 
-  .body:focus {
-    outline: none;
-  }
-
   .loading {
     display: flex;
     flex-direction: column;
@@ -438,11 +433,6 @@
     overflow: auto;
     max-width: 100%;
     tab-size: 4;
-  }
-
-  pre:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
   }
 
   .empty {

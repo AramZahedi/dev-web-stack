@@ -309,26 +309,79 @@ let vhostStatus: VhostStatus = {
   last_sync: '',
 };
 
-function renderVhost(site: Site, server: 'nginx' | 'apache'): string {
-  const names = [
-    `    ServerName ${site.domain}`,
-    ...(site.www ? [`    ServerAlias www.${site.domain}`] : []),
-  ].join('\n');
-  const serverNames = [site.domain, ...(site.www ? [`www.${site.domain}`] : [])].join(' ');
-  const owner = site.id || site.name;
-  const certPath = `/etc/devstack/tls/${owner}.crt`;
-  const keyPath = `/etc/devstack/tls/${owner}.key`;
-  const backendPort = site.http_port || 41_000;
-  const root =
-    site.document_root && site.document_root !== '.'
-      ? `${site.backend_path.replace(/\/+$/, '')}/${site.document_root.replace(/^\/+/, '')}`
-      : site.backend_path;
-  const redirect = site.tls && site.force_https;
+const mockMaintenanceHTML =
+  '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Site unavailable - devstack</title><body><h1>Site unavailable</h1><p>This site is stopped. Start it from the devstack dashboard or CLI, then reload the page.</p></body></html>';
 
-  const nginxHandler =
-    site.kind === 'node'
-      ? `    location / {
-        proxy_pass http://127.0.0.1:${backendPort};
+const mockMaxBodyBytes = 1_073_741_824;
+
+function nginxValue(value: string): string {
+  if (/^[A-Za-z0-9/._~:+-]+$/.test(value)) return value;
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function apacheQuote(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function mockDocumentRoot(site: Site): string {
+  const root = site.document_root.trim();
+  if (!root || root === '.') return site.backend_path;
+  if (root.startsWith('/')) return root;
+  return `${site.backend_path.replace(/\/+$/, '')}/${root.replace(/^\/+/, '')}`;
+}
+
+function nginxTLS(certPath: string, keyPath: string): string {
+  return `    ssl_certificate     ${nginxValue(certPath)};
+    ssl_certificate_key ${nginxValue(keyPath)};
+    ssl_protocols TLSv1.2 TLSv1.3;
+`;
+}
+
+function nginxServer(
+  listen: string,
+  serverNames: string,
+  certPath: string | null,
+  keyPath: string | null,
+  body: string,
+): string {
+  return `server {
+    listen ${listen};
+    server_name ${serverNames};
+${certPath && keyPath ? nginxTLS(certPath, keyPath) : ''}${body}}
+`;
+}
+
+function nginxStaticBody(root: string, spa: boolean): string {
+  return `
+    client_max_body_size ${mockMaxBodyBytes};
+
+    root ${nginxValue(root)};
+    index index.html;
+    autoindex off;
+    add_header Cache-Control "no-store" always;
+
+    location / {
+        try_files $uri $uri/ ${spa ? '/index.html' : '=404'};
+    }
+
+    location ~ /\\. {
+        deny all;
+    }
+
+    location ^~ /_devstack {
+        deny all;
+    }
+`;
+}
+
+function nginxNodeBody(port: number): string {
+  return `
+    client_max_body_size ${mockMaxBodyBytes};
+
+    error_page 502 503 504 =503 /_devstack/503.html;
+
+    location / {
+        proxy_pass http://127.0.0.1:${port};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -337,96 +390,182 @@ function renderVhost(site: Site, server: 'nginx' | 'apache'): string {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
         proxy_read_timeout 120s;
-    }`
-      : `    root ${root};
-    index index.html;
-    autoindex off;
+        proxy_intercept_errors on;
+    }
 
-    location / {
-        try_files $uri $uri/ ${site.spa_fallback ? '/index.html' : '=404'};
-    }`;
+    location = /_devstack/503.html {
+        internal;
+        default_type text/html;
+        return 200 ${nginxValue(mockMaintenanceHTML)};
+    }
 
-  const apacheHandler =
-    site.kind === 'node'
-      ? `    ProxyPass / http://127.0.0.1:${backendPort}/ upgrade=websocket connectiontimeout=5 timeout=120
-    ProxyPassReverse / http://127.0.0.1:${backendPort}/`
-      : `    DocumentRoot "${root}"
-    <Directory "${root}">
+    location ~ /\\. {
+        deny all;
+    }
+
+    location ^~ /_devstack {
+        deny all;
+    }
+`;
+}
+
+function nginxServingBody(site: Site, root: string): string {
+  return site.kind === 'node'
+    ? nginxNodeBody(site.http_port || 41_000)
+    : nginxStaticBody(root, site.spa_fallback);
+}
+
+function nginxStoppedBody(): string {
+  return `
+    default_type text/html;
+
+    return 503 ${nginxValue(mockMaintenanceHTML)};
+`;
+}
+
+function nginxRedirectBody(scheme: 'http' | 'https'): string {
+  return `
+    return 308 ${scheme}://$host$request_uri;
+`;
+}
+
+function apacheTLS(certPath: string, keyPath: string): string {
+  return `    SSLEngine on
+    SSLCertificateFile ${apacheQuote(certPath)}
+    SSLCertificateKeyFile ${apacheQuote(keyPath)}
+    SSLProtocol -all +TLSv1.2 +TLSv1.3
+`;
+}
+
+function apacheVHost(
+  port: number,
+  site: Site,
+  certPath: string | null,
+  keyPath: string | null,
+  body: string,
+): string {
+  return `<VirtualHost *:${port}>
+    ServerName ${site.domain}
+${site.www ? `    ServerAlias www.${site.domain}\n` : ''}${certPath && keyPath ? apacheTLS(certPath, keyPath) : ''}
+${body}</VirtualHost>
+`;
+}
+
+function apacheStaticBody(root: string, spa: boolean): string {
+  return `    LimitRequestBody ${mockMaxBodyBytes}
+
+    DocumentRoot ${apacheQuote(root)}
+    <Directory ${apacheQuote(root)}>
         Options -Indexes
         AllowOverride None
         Require all granted
-${site.spa_fallback ? '        FallbackResource /index.html\n' : ''}    </Directory>
+${spa ? '        FallbackResource /index.html\n' : ''}    </Directory>
+
     <FilesMatch "^\\.">
         Require all denied
     </FilesMatch>
-    Header always set Cache-Control "no-store"`;
+
+    <LocationMatch "^/_devstack(/|$)">
+        Require all denied
+    </LocationMatch>
+
+    Header always set Cache-Control "no-store"
+`;
+}
+
+function apacheNodeBody(port: number, scheme: 'http' | 'https'): string {
+  const upstream = `http://127.0.0.1:${port}/`;
+  return `    LimitRequestBody ${mockMaxBodyBytes}
+
+    ProxyPreserveHost On
+    ProxyAddHeaders Off
+    ProxyPass "/" ${apacheQuote(upstream)} upgrade=websocket connectiontimeout=5 timeout=120
+    ProxyPassReverse "/" ${apacheQuote(upstream)}
+
+    RewriteEngine On
+    RewriteCond %{HTTP_HOST} ^(.+)$
+    RewriteRule ^ - [E=DEVSTACK_HOST:%1]
+    RewriteCond %{REMOTE_ADDR} ^(.+)$
+    RewriteRule ^ - [E=DEVSTACK_REMOTE:%1]
+
+    RequestHeader set Host "%{DEVSTACK_HOST}e"
+    RequestHeader set X-Forwarded-For "%{DEVSTACK_REMOTE}e"
+    RequestHeader set X-Forwarded-Proto ${apacheQuote(scheme)}
+    RequestHeader set X-Forwarded-Host "%{DEVSTACK_HOST}e"
+
+    ErrorDocument 503 ${apacheQuote(mockMaintenanceHTML)}
+
+    <LocationMatch "^/_devstack(/|$)">
+        Require all denied
+    </LocationMatch>
+`;
+}
+
+function apacheStoppedBody(): string {
+  return `    ErrorDocument 503 ${apacheQuote(mockMaintenanceHTML)}
+    RewriteEngine On
+    RewriteRule ^ - [R=503,L]
+`;
+}
+
+function apacheRedirectBody(scheme: 'http' | 'https'): string {
+  return `    RewriteEngine On
+    RewriteRule ^ ${scheme}://%{HTTP_HOST}%{REQUEST_URI} [R=308,L]
+`;
+}
+
+function renderVhost(site: Site, server: 'nginx' | 'apache'): string {
+  const serverNames = [site.domain, ...(site.www ? [`www.${site.domain}`] : [])].join(' ');
+  const owner = site.id || site.name;
+  const siteCert = `/etc/devstack/tls/${owner}.crt`;
+  const siteKey = `/etc/devstack/tls/${owner}.key`;
+  const dashboardCert = '/etc/devstack/tls/__dashboard__.crt';
+  const dashboardKey = '/etc/devstack/tls/__dashboard__.key';
+  const certPath = site.tls ? siteCert : dashboardCert;
+  const keyPath = site.tls ? siteKey : dashboardKey;
+  const root = mockDocumentRoot(site);
+  const stopped = site.desired_state === 'stopped';
 
   if (server === 'nginx') {
-    const http = redirect
-      ? `server {
-    listen 80;
-    server_name ${serverNames};
-    return 308 https://$host$request_uri;
-}
-
-`
-      : '';
-    const tls = site.tls
-      ? `server {
-    listen 443 ssl;
-    http2 on;
-    server_name ${serverNames};
-
-    ssl_certificate     ${certPath};
-    ssl_certificate_key ${keyPath};
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-${nginxHandler}
-}
-
-`
-      : '';
-    const plain = site.tls
-      ? ''
-      : `server {
-    listen 80;
-    server_name ${serverNames};
-
-${nginxHandler}
-}
-`;
-    return `# Generated by devstack. Do not edit.
-${http}${tls}${plain}`;
+    const blocks: string[] = [];
+    const servingBody = nginxServingBody(site, root);
+    if (stopped) {
+      blocks.push(nginxServer('80', serverNames, null, null, nginxStoppedBody()));
+      blocks.push(nginxServer('443 ssl http2', serverNames, certPath, keyPath, nginxStoppedBody()));
+    } else if (site.tls && site.force_https) {
+      blocks.push(nginxServer('80', serverNames, null, null, nginxRedirectBody('https')));
+      blocks.push(nginxServer('443 ssl http2', serverNames, certPath, keyPath, servingBody));
+    } else if (site.tls) {
+      blocks.push(nginxServer('80', serverNames, null, null, servingBody));
+      blocks.push(nginxServer('443 ssl http2', serverNames, certPath, keyPath, servingBody));
+    } else {
+      blocks.push(nginxServer('80', serverNames, null, null, servingBody));
+      blocks.push(
+        nginxServer('443 ssl http2', serverNames, dashboardCert, dashboardKey, nginxRedirectBody('http')),
+      );
+    }
+    return `# Generated by devstack. Do not edit.\n\n${blocks.join('\n')}`;
   }
 
-  const apacheHttp = redirect
-    ? `<VirtualHost *:80>
-${names}
-    Redirect permanent / https://${site.domain}/
-</VirtualHost>
-
-`
-    : '';
-  const apacheTls = site.tls
-    ? `<VirtualHost *:443>
-${names}
-${apacheHandler}
-    SSLEngine on
-    SSLCertificateFile ${certPath}
-    SSLCertificateKeyFile ${keyPath}
-    SSLProtocol -all +TLSv1.2 +TLSv1.3
-</VirtualHost>
-`
-    : '';
-  const apachePlain = site.tls
-    ? ''
-    : `<VirtualHost *:80>
-${names}
-${apacheHandler}
-</VirtualHost>
-`;
-  return `# Generated by devstack. Do not edit.
-${apacheHttp}${apacheTls}${apachePlain}`;
+  const servingBody = (scheme: 'http' | 'https'): string =>
+    site.kind === 'node'
+      ? apacheNodeBody(site.http_port || 41_000, scheme)
+      : apacheStaticBody(root, site.spa_fallback);
+  const blocks: string[] = [];
+  if (stopped) {
+    blocks.push(apacheVHost(80, site, null, null, apacheStoppedBody()));
+    blocks.push(apacheVHost(443, site, certPath, keyPath, apacheStoppedBody()));
+  } else if (site.tls && site.force_https) {
+    blocks.push(apacheVHost(80, site, null, null, apacheRedirectBody('https')));
+    blocks.push(apacheVHost(443, site, certPath, keyPath, servingBody('https')));
+  } else if (site.tls) {
+    blocks.push(apacheVHost(80, site, null, null, servingBody('http')));
+    blocks.push(apacheVHost(443, site, certPath, keyPath, servingBody('https')));
+  } else {
+    blocks.push(apacheVHost(80, site, null, null, servingBody('http')));
+    blocks.push(apacheVHost(443, site, dashboardCert, dashboardKey, apacheRedirectBody('http')));
+  }
+  return `# Generated by devstack. Do not edit.\n\n${blocks.join('\n')}`;
 }
 
 const directories: Record<string, string[]> = {
