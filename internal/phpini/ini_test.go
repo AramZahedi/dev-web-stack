@@ -148,8 +148,8 @@ func TestComposeNormalizesBaseAndRaw(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(got)
-	if !strings.HasPrefix(text, "base = 1\n"+BeginDefaultsMarker+"\n") {
-		t.Fatalf("base not normalized:\n%s", text)
+	if !strings.HasPrefix(text, "base = 1\n[PHP]\n"+BeginDefaultsMarker+"\n") {
+		t.Fatalf("base not normalized or not reset to [PHP]:\n%s", text)
 	}
 	raw, err := ExtractSiteSection(got)
 	if err != nil {
@@ -168,6 +168,76 @@ func TestComposeNormalizesBaseAndRaw(t *testing.T) {
 	}
 	if !bytes.Contains(got, []byte(EndSiteMarker)) {
 		t.Fatalf("site marker missing:\n%s", text)
+	}
+}
+
+func TestComposeIgnoresBaseAndRawForCASuppression(t *testing.T) {
+	got, err := Compose(Config{
+		Base:   []byte("openssl.cafile = /base/ca.pem\n"),
+		Raw:    "curl.cainfo = /raw/ca.pem\n",
+		CAFile: "/devstack/ca.pem",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`curl.cainfo = "/devstack/ca.pem"`,
+		`openssl.cafile = "/devstack/ca.pem"`,
+		"openssl.cafile = /base/ca.pem",
+		"curl.cainfo = /raw/ca.pem",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+}
+
+func TestComposeOverrideSuppressesCAAlias(t *testing.T) {
+	got, err := Compose(Config{
+		Overrides: map[string]string{"openssl.cafile": "/site/ca.pem"},
+		CAFile:    "/devstack/ca.pem",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Count(text, "openssl.cafile") != 1 {
+		t.Fatalf("overridden openssl.cafile was duplicated:\n%s", text)
+	}
+	if !strings.Contains(text, "openssl.cafile = /site/ca.pem") {
+		t.Fatalf("site openssl.cafile lost:\n%s", text)
+	}
+	if !strings.Contains(text, `curl.cainfo = "/devstack/ca.pem"`) {
+		t.Fatalf("curl.cainfo alias missing:\n%s", text)
+	}
+}
+
+func TestComposeResetsSectionScope(t *testing.T) {
+	got, err := Compose(Config{
+		Base:            []byte("[PATH=/base]\nbase.foo = bar\n"),
+		VersionDefaults: map[string]string{"memory_limit": "256M"},
+		Raw:             "[HOST=example.test]\ncustom.foo = bar\n",
+		Extensions:      []Extension{{Name: "opcache", Type: "zend_extension", SO: "opcache.so"}},
+		ExtensionDir:    "/opt/php/lib/php/extensions",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	defaultsAt := strings.Index(text, BeginDefaultsMarker)
+	firstReset := strings.Index(text, "[PHP]\n")
+	if firstReset < 0 || defaultsAt < 0 || firstReset > defaultsAt {
+		t.Fatalf("no [PHP] reset between base and defaults:\n%s", text)
+	}
+	endSiteAt := strings.Index(text, EndSiteMarker)
+	extensionsAt := strings.Index(text, BeginExtensionsMarker)
+	if endSiteAt < 0 || extensionsAt < 0 {
+		t.Fatalf("markers missing:\n%s", text)
+	}
+	secondReset := strings.Index(text[endSiteAt:], "[PHP]\n")
+	if secondReset < 0 || endSiteAt+secondReset > extensionsAt {
+		t.Fatalf("no [PHP] reset between raw and managed extensions:\n%s", text)
 	}
 }
 
@@ -326,8 +396,9 @@ func TestValidateRawRejectsAllManagedMarkers(t *testing.T) {
 }
 
 func TestLintReportsLine(t *testing.T) {
-	runner := fakeRunner{out: []byte("PHP: syntax error in /tmp/php.ini on line 12")}
-	err := Lint(ctx, runner, "/opt/php/bin/php", "/tmp/php.ini")
+	iniPath := writeTempIni(t, "memory_limit = 1G\n")
+	runner := fakeRunner{out: []byte("PHP: syntax error in " + iniPath + " on line 12")}
+	err := Lint(ctx, runner, "/opt/php/bin/php", iniPath)
 	var lint *LintError
 	if !errors.As(err, &lint) || lint.Line != 12 {
 		t.Fatalf("err = %v", err)
@@ -338,8 +409,9 @@ func TestLintReportsLine(t *testing.T) {
 }
 
 func TestLintInvocationAndSuccess(t *testing.T) {
+	iniPath := writeTempIni(t, "memory_limit = 256M\n")
 	runner := &recordingRunner{}
-	if err := Lint(ctx, runner, "/opt/php/bin/php", "/tmp/php.ini"); err != nil {
+	if err := Lint(ctx, runner, "/opt/php/bin/php", iniPath); err != nil {
 		t.Fatal(err)
 	}
 	if len(runner.calls) != 1 {
@@ -349,7 +421,7 @@ func TestLintInvocationAndSuccess(t *testing.T) {
 	if call.name != "/opt/php/bin/php" {
 		t.Fatalf("name = %q", call.name)
 	}
-	wantArgs := []string{"-c", "/tmp/php.ini", "-r", "exit(0);"}
+	wantArgs := []string{"-c", iniPath, "-r", "exit(0);"}
 	if strings.Join(call.args, "\x00") != strings.Join(wantArgs, "\x00") {
 		t.Fatalf("args = %q", call.args)
 	}
@@ -359,12 +431,13 @@ func TestLintInvocationAndSuccess(t *testing.T) {
 }
 
 func TestLintTreatsWarningsAndFailuresAsErrors(t *testing.T) {
+	iniPath := writeTempIni(t, "memory_limit = 256M\n")
 	for _, runner := range []Runner{
 		fakeRunner{out: []byte("Warning: Invalid \"memory_limit\" setting in Unknown on line 0")},
 		fakeRunner{out: []byte("Failed loading /nope.so\n"), err: errors.New("exit status 1")},
 		fakeRunner{err: errors.New("exit status 1")},
 	} {
-		err := Lint(ctx, runner, "/opt/php/bin/php", "/tmp/php.ini")
+		err := Lint(ctx, runner, "/opt/php/bin/php", iniPath)
 		var lint *LintError
 		if !errors.As(err, &lint) {
 			t.Fatalf("err = %v, want *LintError", err)
@@ -376,11 +449,41 @@ func TestLintTreatsWarningsAndFailuresAsErrors(t *testing.T) {
 }
 
 func TestLintRejectsEmptyInputs(t *testing.T) {
-	if err := Lint(ctx, fakeRunner{}, "", "/tmp/php.ini"); !errors.Is(err, ErrInvalidConfig) {
+	iniPath := writeTempIni(t, "memory_limit = 256M\n")
+	if err := Lint(ctx, fakeRunner{}, "", iniPath); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("empty php binary: %v", err)
 	}
 	if err := Lint(ctx, fakeRunner{}, "/opt/php/bin/php", ""); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("empty ini path: %v", err)
+	}
+}
+
+func TestLintRequiresReadableIni(t *testing.T) {
+	runner := &recordingRunner{}
+	missing := filepath.Join(t.TempDir(), "missing.ini")
+	err := Lint(ctx, runner, "/opt/php/bin/php", missing)
+	var lint *LintError
+	if !errors.As(err, &lint) || !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("missing ini err = %v", err)
+	}
+	if !strings.Contains(lint.Output, "missing.ini") {
+		t.Fatalf("missing ini output = %q", lint.Output)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("runner was called for a missing ini (%d calls)", len(runner.calls))
+	}
+
+	directory := t.TempDir()
+	err = Lint(ctx, runner, "/opt/php/bin/php", directory)
+	lint = nil
+	if !errors.As(err, &lint) || !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("directory ini err = %v", err)
+	}
+	if !strings.Contains(lint.Output, "regular file") {
+		t.Fatalf("directory ini output = %q", lint.Output)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatal("runner was called for a directory")
 	}
 }
 
@@ -460,6 +563,53 @@ func TestLintRealPHPComposedIni(t *testing.T) {
 	if err := Lint(ctx, ExecRunner{}, phpBin, path); err != nil {
 		t.Fatalf("composed ini rejected by %s:\n%s\nerror: %v", phpBin, composed, err)
 	}
+}
+
+func TestLintRealPHPMissingIni(t *testing.T) {
+	phpBin := findPHP(t)
+	missing := filepath.Join(t.TempDir(), "missing.ini")
+	err := Lint(ctx, ExecRunner{}, phpBin, missing)
+	var lint *LintError
+	if !errors.As(err, &lint) || !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("missing ini err = %v, want *LintError wrapping ErrInvalidConfig", err)
+	}
+	if !strings.Contains(lint.Output, "missing.ini") {
+		t.Fatalf("missing ini output = %q", lint.Output)
+	}
+}
+
+func TestComposeManagedExtensionsGlobalAfterPathSection(t *testing.T) {
+	phpBin := findPHP(t)
+	composed, err := Compose(Config{
+		Base:       []byte("[PATH=/base]\n"),
+		Overrides:  map[string]string{"memory_limit": "256M"},
+		Raw:        "[PATH=/srv/raw]\ncustom.foo = bar\n",
+		Extensions: []Extension{{Name: "opcache", Type: "zend_extension", SO: "opcache.so"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "php.ini")
+	if err := os.WriteFile(path, composed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := `echo extension_loaded("Zend OPcache") ? "loaded" : "missing";`
+	out, err := (ExecRunner{}).Run(ctx, phpBin, []string{"-c", path, "-r", probe}, []string{"PHP_INI_SCAN_DIR="})
+	if err != nil {
+		t.Fatalf("opcache probe failed: %v (%s)", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "loaded" {
+		t.Fatalf("opcache was path-scoped, not global:\n%s\nprobe output: %q", composed, out)
+	}
+}
+
+func writeTempIni(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "php.ini")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func findPHP(t *testing.T) string {

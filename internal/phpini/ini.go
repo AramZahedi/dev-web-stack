@@ -69,20 +69,15 @@ func Compose(cfg Config) ([]byte, error) {
 		return nil, err
 	}
 
-	// Add the CA aliases only when no effective lower layer already sets them.
+	// Add the CA aliases unless the effective version defaults or site
+	// overrides already set them. Base and raw are deliberately excluded: a
+	// build base must not suppress the devstack CA bundle, and raw is written
+	// after the defaults so it can still override naturally.
 	set := make(map[string]bool, len(cfg.VersionDefaults)+len(cfg.Overrides))
 	for key := range cfg.VersionDefaults {
 		set[key] = true
 	}
 	for key := range cfg.Overrides {
-		set[key] = true
-	}
-	baseValues, _ := parseValues(cfg.Base, false)
-	for key := range baseValues {
-		set[key] = true
-	}
-	rawValues, _ := parseValues([]byte(cfg.Raw), false)
-	for key := range rawValues {
 		set[key] = true
 	}
 
@@ -91,6 +86,11 @@ func Compose(cfg Config) ([]byte, error) {
 	if base := normalizeBase(cfg.Base); len(base) > 0 {
 		b.Write(base)
 	}
+
+	// PHP sections such as [PATH=...] and [HOST=...] scope every following
+	// directive. Reset to the global [PHP] section so a section at the end of
+	// the build base cannot swallow the generated defaults and site overrides.
+	b.WriteString("[PHP]\n")
 
 	defaults := make(map[string]string, len(cfg.VersionDefaults)+2)
 	for key, value := range cfg.VersionDefaults {
@@ -119,6 +119,10 @@ func Compose(cfg Config) ([]byte, error) {
 	}
 	b.WriteString(EndSiteMarker + "\n")
 
+	// Raw may end inside [PATH=...] or [HOST=...]; scope it back to [PHP] so
+	// the managed extension block is always global. Without this reset PHP
+	// silently treats extension_dir and every extension line as path-scoped.
+	b.WriteString("[PHP]\n")
 	b.WriteString(BeginExtensionsMarker + "\n")
 	if cfg.ExtensionDir != "" {
 		fmt.Fprintf(&b, "extension_dir = %s\n", quoteIni(cfg.ExtensionDir))
@@ -162,10 +166,10 @@ func ExtractSiteSection(generated []byte) (string, error) {
 // comments, section headers, and inline comments are ignored. A malformed
 // directive line fails with a line-numbered ValidationError.
 func Parse(data []byte) (map[string]string, error) {
-	return parseValues(data, true)
+	return parseValues(data)
 }
 
-func parseValues(data []byte, strict bool) (map[string]string, error) {
+func parseValues(data []byte) (map[string]string, error) {
 	values := make(map[string]string)
 	for index, line := range strings.Split(string(data), "\n") {
 		number := index + 1
@@ -175,18 +179,13 @@ func parseValues(data []byte, strict bool) (map[string]string, error) {
 		}
 		if strings.HasPrefix(trimmed, "[") {
 			if err := validateSectionHeader(stripInlineComment(trimmed)); err != nil {
-				if strict {
-					return nil, &ValidationError{Line: number, Message: err.Error()}
-				}
+				return nil, &ValidationError{Line: number, Message: err.Error()}
 			}
 			continue
 		}
 		key, value, ok := splitDirective(trimmed)
 		if !ok || !directiveKeyPattern.MatchString(key) {
-			if strict {
-				return nil, &ValidationError{Line: number, Message: "expected a key = value directive"}
-			}
-			continue
+			return nil, &ValidationError{Line: number, Message: "expected a key = value directive"}
 		}
 		values[key] = value
 	}

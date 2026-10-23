@@ -176,9 +176,11 @@ func (ExecRunner) Run(ctx context.Context, name string, args, env []string) ([]b
 	return cmd.CombinedOutput()
 }
 
-// Lint validates iniPath with the build's PHP binary. It runs
-// `php -c <ini> -r 'exit(0);'` with PHP_INI_SCAN_DIR cleared so no scan
-// directory contributes settings, and treats both a non-zero exit and any
+// Lint validates iniPath with the build's PHP binary. The path must be a
+// readable regular file first: PHP 8.4 exits successfully and silently when
+// -c points at a missing file, which would otherwise bypass validation. It
+// then runs `php -c <ini> -r 'exit(0);'` with PHP_INI_SCAN_DIR cleared so no
+// scan directory contributes settings, and treats both a non-zero exit and any
 // PHP warning or syntax diagnostic as a failure. The run is bounded to ten
 // seconds.
 func Lint(ctx context.Context, runner Runner, phpBin, iniPath string) error {
@@ -190,6 +192,9 @@ func Lint(ctx context.Context, runner Runner, phpBin, iniPath string) error {
 	}
 	if strings.TrimSpace(iniPath) == "" {
 		return &ValidationError{Message: "php.ini path is required"}
+	}
+	if err := checkIniFile(iniPath); err != nil {
+		return err
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -217,6 +222,24 @@ func Lint(ctx context.Context, runner Runner, phpBin, iniPath string) error {
 		}
 	}
 	return &LintError{Line: line, Output: output}
+}
+
+func checkIniFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return &LintError{Output: fmt.Sprintf("php.ini %q is not readable: %v", path, err)}
+	}
+	if !info.Mode().IsRegular() {
+		return &LintError{Output: fmt.Sprintf("php.ini %q is not a regular file", path)}
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return &LintError{Output: fmt.Sprintf("php.ini %q is not readable: %v", path, err)}
+	}
+	if err := file.Close(); err != nil {
+		return &LintError{Output: fmt.Sprintf("php.ini %q is not readable: %v", path, err)}
+	}
+	return nil
 }
 
 func validateSectionHeader(line string) error {
