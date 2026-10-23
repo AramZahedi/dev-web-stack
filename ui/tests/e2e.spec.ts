@@ -252,6 +252,13 @@ test.describe('375px viewport', () => {
       },
     },
     {
+      name: 'Runtimes',
+      hash: '#/runtimes',
+      ready: async (page: Page) => {
+        await expect(page.getByRole('heading', { name: 'Verified Node runtimes' })).toBeVisible();
+      },
+    },
+    {
       name: 'Settings',
       hash: '#/settings',
       ready: async (page: Page) => {
@@ -287,6 +294,7 @@ test.describe('375px viewport', () => {
     await expect(sidebar).toBeVisible();
     await expect(sidebar.getByRole('link', { name: 'Sites' })).toBeVisible();
     await expect(page.locator('.backdrop')).toBeVisible();
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
 
     await page.keyboard.press('Escape');
     await expect(sidebar).toBeHidden();

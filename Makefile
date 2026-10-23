@@ -7,7 +7,7 @@ LDFLAGS := -s -w \
 
 .PHONY: build test lint ui clean
 
-build:
+build: ui
 	mkdir -p dist
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o dist/devstack ./cmd/devstack
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o dist/devstack-helper ./cmd/devstack-helper

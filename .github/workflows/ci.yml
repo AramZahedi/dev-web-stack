@@ -22,6 +22,25 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: UI install, check, test, and build
+        working-directory: ui
+        run: npm ci && npm run check && npm test && npm run build
+
+      - name: Install Playwright Chromium
+        working-directory: ui
+        run: npx playwright install --with-deps chromium
+
+      - name: UI end-to-end
+        working-directory: ui
+        run: npm run test:e2e
+
       - name: Vet
         run: go vet ./...
 

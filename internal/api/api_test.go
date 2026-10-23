@@ -863,18 +863,29 @@ func TestSPAFallbackAndAssetMIME(t *testing.T) {
 }
 
 // TestEmbeddedDashboardServesBuiltDist exercises the real //go:embed archive
-// instead of the MapFS used above. A clean checkout has no dashboard build, so
-// the test skips rather than failing until `npm run build` has run.
+// instead of the MapFS used above. A clean local checkout has no dashboard
+// build and may skip, but CI must build ui/dist before go test.
 func TestEmbeddedDashboardServesBuiltDist(t *testing.T) {
 	dist := uiembed.Dist()
 	if _, err := fs.Stat(dist, "index.html"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("ui/dist/index.html is missing in CI; build the dashboard before go test: %v", err)
+		}
 		t.Skip("ui/dist has no index.html; run `npm run build` in ui/ first")
+	}
+
+	// The zero Config path must also use the embedded dashboard.
+	defaultFx := newFixture(t, Config{})
+	rec := httptest.NewRecorder()
+	defaultFx.raw.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1/", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `id="app"`) {
+		t.Fatalf("default embedded index = %d %q", rec.Code, rec.Body.String())
 	}
 
 	fx := newFixture(t, Config{UI: dist})
 	raw := fx.raw
 
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	raw.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1/", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("index status = %d body=%s", rec.Code, rec.Body.String())
