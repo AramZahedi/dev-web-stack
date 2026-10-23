@@ -166,7 +166,16 @@ func writeNginxRedirectServer(b *strings.Builder, s SiteSpec, names string, tls 
 		writeNginxSiteTLS(b, s, tlsDir)
 	}
 	b.WriteString("\n")
-	fmt.Fprintf(b, "    return 308 %s://$host$request_uri;\n", scheme)
+
+	targetPort := ports.http
+	if scheme == "https" {
+		targetPort = ports.https
+	}
+	authority := "$host"
+	if targetPort != schemeDefaultPort(scheme) {
+		authority = fmt.Sprintf("$host:%d", targetPort)
+	}
+	fmt.Fprintf(b, "    return 308 %s://%s$request_uri;\n", scheme, authority)
 	b.WriteString("}\n")
 }
 

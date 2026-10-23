@@ -775,16 +775,22 @@ func TestRenderHighListenPortsStoppedAndRedirect(t *testing.T) {
 			stopped.Domain = "stopped.test"
 			stopped.DesiredState = model.DesiredStopped
 
-			redirect := staticSite()
-			redirect.ID = "plain"
-			redirect.Name = "plain"
-			redirect.Domain = "plain.test"
-			redirect.TLS = false
-			redirect.CertPEM = nil
-			redirect.KeyPEM = nil
+			tlsOff := staticSite()
+			tlsOff.ID = "plain"
+			tlsOff.Name = "plain"
+			tlsOff.Domain = "plain.test"
+			tlsOff.TLS = false
+			tlsOff.CertPEM = nil
+			tlsOff.KeyPEM = nil
+
+			forced := staticSite()
+			forced.ID = "force"
+			forced.Name = "forced"
+			forced.Domain = "forced.test"
+			forced.ForceHTTPS = true
 
 			set := testSet(server, 0)
-			set.Sites = []SiteSpec{stopped, redirect}
+			set.Sites = []SiteSpec{stopped, tlsOff, forced}
 			set.HTTPListenPort = 18080
 			set.HTTPSListenPort = 18443
 
@@ -796,6 +802,7 @@ func TestRenderHighListenPortsStoppedAndRedirect(t *testing.T) {
 			for name, data := range map[string][]byte{
 				"stopped-stop.conf": files["stopped-stop.conf"],
 				"plain-plain.conf":  files["plain-plain.conf"],
+				"forced-force.conf": files["forced-force.conf"],
 			} {
 				if len(data) == 0 {
 					t.Fatalf("%s was not rendered", name)
@@ -809,6 +816,34 @@ func TestRenderHighListenPortsStoppedAndRedirect(t *testing.T) {
 					bytes.Contains(data, []byte("<VirtualHost *:443>")) {
 					t.Errorf("%s still uses production ports:\n%s", name, data)
 				}
+			}
+
+			assertContains := func(name string, data []byte, want string) {
+				t.Helper()
+				if !bytes.Contains(data, []byte(want)) {
+					t.Errorf("%s is missing %q:\n%s", name, want, data)
+				}
+			}
+			assertNotContains := func(name string, data []byte, unwanted string) {
+				t.Helper()
+				if bytes.Contains(data, []byte(unwanted)) {
+					t.Errorf("%s still contains %q:\n%s", name, unwanted, data)
+				}
+			}
+
+			switch server {
+			case ServerNginx:
+				assertContains("tls off", files["plain-plain.conf"], "return 308 http://$host:18080$request_uri;")
+				assertContains("force https", files["forced-force.conf"], "return 308 https://$host:18443$request_uri;")
+				assertNotContains("tls off", files["plain-plain.conf"], "return 308 http://$host$request_uri;")
+				assertNotContains("force https", files["forced-force.conf"], "return 308 https://$host$request_uri;")
+			case ServerApache:
+				assertContains("tls off", files["plain-plain.conf"], "RewriteCond %{HTTP_HOST} ^([^:]+)\n")
+				assertContains("tls off", files["plain-plain.conf"], "RewriteRule ^ http://%1:18080%{REQUEST_URI} [R=308,L]")
+				assertNotContains("tls off", files["plain-plain.conf"], "RewriteRule ^ http://%{HTTP_HOST}%{REQUEST_URI}")
+				assertContains("force https", files["forced-force.conf"], "RewriteCond %{HTTP_HOST} ^([^:]+)\n")
+				assertContains("force https", files["forced-force.conf"], "RewriteRule ^ https://%1:18443%{REQUEST_URI} [R=308,L]")
+				assertNotContains("force https", files["forced-force.conf"], "RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI}")
 			}
 		})
 	}

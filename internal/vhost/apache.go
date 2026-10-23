@@ -152,7 +152,19 @@ func writeApacheRedirectVHost(b *strings.Builder, s SiteSpec, tls bool, scheme s
 	}
 	b.WriteString("\n")
 	b.WriteString("    RewriteEngine On\n")
-	fmt.Fprintf(b, "    RewriteRule ^ %s://%%{HTTP_HOST}%%{REQUEST_URI} [R=308,L]\n", scheme)
+
+	targetPort := ports.http
+	if scheme == "https" {
+		targetPort = ports.https
+	}
+	if targetPort == schemeDefaultPort(scheme) {
+		fmt.Fprintf(b, "    RewriteRule ^ %s://%%{HTTP_HOST}%%{REQUEST_URI} [R=308,L]\n", scheme)
+	} else {
+		// HTTP_HOST carries the source listener's port, so capture only the
+		// host and append the configured target port explicitly.
+		b.WriteString("    RewriteCond %{HTTP_HOST} ^([^:]+)\n")
+		fmt.Fprintf(b, "    RewriteRule ^ %s://%%1:%d%%{REQUEST_URI} [R=308,L]\n", scheme, targetPort)
+	}
 	b.WriteString("</VirtualHost>\n")
 }
 

@@ -43,6 +43,8 @@ HOSTS_FILE="${TMP}/hosts"
 TRUST_DIR="${TMP}/trust"
 SITE_ROOT="${TMP}/site"
 RESPONSE="${TMP}/response.html"
+REDIRECT_ROOT="${TMP}/redirect-site"
+REDIRECT_HEADERS="${LOG_DIR}/redirect-headers.txt"
 NODE_ROOT="${TMP}/node-site"
 
 VHOST_ROOT="${TMP}/vhost-root"
@@ -57,6 +59,7 @@ TOOL_BIN="${TMP}/bin"
 VHOST_STATUS_LOG="${LOG_DIR}/vhost-status.log"
 VHOST_USE_LOG="${LOG_DIR}/vhost-use.log"
 VHOST_PREVIEW_LOG="${LOG_DIR}/vhost-preview.log"
+REDIRECT_ADD_LOG="${LOG_DIR}/redirect-add.log"
 NODE_ADD_LOG="${LOG_DIR}/node-add.log"
 NGINX_LOG="${LOG_DIR}/nginx.log"
 
@@ -67,7 +70,7 @@ SELECTED_PORTS=" "
 PICKED_PORT=""
 EXTERNAL_MODE_AVAILABLE=0
 
-mkdir -p "${LOG_DIR}" "${E2E_HOME}" "${HELPER_RUN}" "${SITE_ROOT}" \
+mkdir -p "${LOG_DIR}" "${E2E_HOME}" "${HELPER_RUN}" "${SITE_ROOT}" "${REDIRECT_ROOT}" \
 	"${VHOST_ROOT}" "${NGINX_INCLUDE}" "${APACHE_INCLUDE}" "${TOOL_BIN}"
 printf '127.0.0.1 localhost\n' >"${HOSTS_FILE}"
 
@@ -78,6 +81,7 @@ export DEVSTACK_HOME
 
 dump_logs() {
 	set +e
+	trap - ERR
 	printf '\n---- helper log ----\n' >&2
 	tail -n 80 "${HELPER_LOG}" 2>/dev/null >&2
 	printf '\n---- daemon log ----\n' >&2
@@ -92,6 +96,10 @@ dump_logs() {
 	tail -n 40 "${VHOST_STATUS_LOG}" 2>/dev/null >&2
 	printf '\n---- vhost preview log ----\n' >&2
 	tail -n 60 "${VHOST_PREVIEW_LOG}" 2>/dev/null >&2
+	printf '\n---- redirect site log ----\n' >&2
+	tail -n 60 "${REDIRECT_ADD_LOG}" 2>/dev/null >&2
+	printf '\n---- redirect headers ----\n' >&2
+	cat "${REDIRECT_HEADERS}" 2>/dev/null >&2
 	printf '\n---- node site log ----\n' >&2
 	tail -n 60 "${NODE_ADD_LOG}" 2>/dev/null >&2
 	printf '\n---- nginx log ----\n' >&2
@@ -160,8 +168,10 @@ cleanup() {
 	# failed startup. Use a literal command-line prefix so unrelated servers are
 	# never matched.
 	pkill -TERM -f -- "serve-static --root ${SITE_ROOT}" 2>/dev/null
+	pkill -TERM -f -- "serve-static --root ${REDIRECT_ROOT}" 2>/dev/null
 	sleep 0.2
 	pkill -KILL -f -- "serve-static --root ${SITE_ROOT}" 2>/dev/null
+	pkill -KILL -f -- "serve-static --root ${REDIRECT_ROOT}" 2>/dev/null
 
 	rm -rf "${TMP}"
 }
@@ -496,6 +506,30 @@ else
 
 	assert_serve_static_groups 0 ||
 		fail "serve-static is still running while nginx owns the vhost"
+
+	# A force-HTTPS vhost must redirect to the configured high HTTPS port, not
+	# the scheme default 443. The Location header carries the regression.
+	cat >"${REDIRECT_ROOT}/index.html" <<'HTML'
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>redirect</title></head><body>redirect</body></html>
+HTML
+	run_cli site add --name redirect --path "${REDIRECT_ROOT}" --force-https >"${REDIRECT_ADD_LOG}" 2>&1 ||
+		fail "force-HTTPS site add failed"
+	redirect_ok=0
+	for ((attempt = 0; attempt < 100; attempt++)); do
+		curl --silent --show-error --http1.1 --noproxy '*' --max-time 15 \
+			--resolve "redirect.test:${VHOST_HTTP_PORT}:127.0.0.1" \
+			--dump-header "${REDIRECT_HEADERS}" \
+			"http://redirect.test:${VHOST_HTTP_PORT}/probe" >/dev/null 2>>"${LOG_DIR}/curl.log" || true
+		if grep -q '^HTTP/1.1 308' "${REDIRECT_HEADERS}" 2>/dev/null &&
+			grep -qi "^Location: https://redirect.test:${VHOST_HTTPS_PORT}/probe" "${REDIRECT_HEADERS}" 2>/dev/null; then
+			redirect_ok=1
+			break
+		fi
+		sleep 0.1
+	done
+	[ "${redirect_ok}" = "1" ] ||
+		fail "nginx force-HTTPS redirect did not target the configured HTTPS port ${VHOST_HTTPS_PORT}"
+	printf 'e2e: nginx force-HTTPS redirect targeted https://redirect.test:%s\n' "${VHOST_HTTPS_PORT}"
 
 	run_cli vhost preview blog --server nginx >"${VHOST_PREVIEW_LOG}" 2>&1 ||
 		fail "vhost preview failed"

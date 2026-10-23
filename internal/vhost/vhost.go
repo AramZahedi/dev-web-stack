@@ -112,6 +112,14 @@ func ValidateListenPorts(httpPort, httpsPort int) error {
 	return err
 }
 
+// schemeDefaultPort returns the default port for a redirect target scheme.
+func schemeDefaultPort(scheme string) int {
+	if scheme == "https" {
+		return defaultHTTPSListenPort
+	}
+	return defaultHTTPListenPort
+}
+
 func resolveListenPorts(httpPort, httpsPort int) (listenPorts, error) {
 	if httpPort == 0 {
 		httpPort = defaultHTTPListenPort
