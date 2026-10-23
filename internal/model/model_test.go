@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestEnumValues(t *testing.T) {
@@ -44,8 +45,11 @@ func TestSiteJSONRoundTrip(t *testing.T) {
 		BackendPath:     "/home/aram/code/blog",
 		Kind:            SitePHP,
 		PHPVersion:      "8.5",
+		PHPBuild:        "php@8.5.1-r2",
 		PHPExtensions:   map[string]bool{"xdebug": true},
 		PHPIni:          map[string]string{"memory_limit": "512M"},
+		PHPIniRaw:       "memory_limit = 512M\n",
+		PHPConfigHash:   "hash-8.5",
 		NodeVersion:     "",
 		Command:         "",
 		Env:             map[string]string{"APP_ENV": "local"},
@@ -71,7 +75,8 @@ func TestSiteJSONRoundTrip(t *testing.T) {
 	}
 	for _, key := range []string{
 		"id", "name", "domain", "www", "backend", "host_path", "backend_path",
-		"kind", "php_version", "php_extensions", "php_ini", "node_version",
+		"kind", "php_version", "php_build", "php_ini", "php_ini_raw",
+		"php_config_hash", "php_extensions", "node_version",
 		"command", "env", "document_root", "front_controller", "spa_fallback",
 		"tls", "force_https", "desired_state", "status", "http_port",
 		"fastcgi_port", "created_at", "updated_at",
@@ -90,6 +95,49 @@ func TestSiteJSONRoundTrip(t *testing.T) {
 	}
 	if got.Kind != SitePHP || got.Backend != BackendLocal || got.Status != StatusRunning {
 		t.Fatalf("round trip = %+v", got)
+	}
+}
+
+func TestPHPConfigJSONRoundTrip(t *testing.T) {
+	defaults := PHPDefaults{
+		Version:    "8.4",
+		Ini:        map[string]string{"memory_limit": "256M"},
+		Extensions: map[string]bool{"xdebug": false, "opcache": true},
+	}
+	data, err := json.Marshal(defaults)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotDefaults PHPDefaults
+	if err := json.Unmarshal(data, &gotDefaults); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDefaults, defaults) {
+		t.Fatalf("PHPDefaults round trip = %+v, want %+v", gotDefaults, defaults)
+	}
+
+	applied := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	cfg := SitePHPConfig{
+		SiteID:     "s1",
+		Ini:        defaults.Ini,
+		Extensions: defaults.Extensions,
+		ConfigHash: "hash",
+		AppliedAt:  applied,
+	}
+	data, err = json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotConfig SitePHPConfig
+	if err := json.Unmarshal(data, &gotConfig); err != nil {
+		t.Fatal(err)
+	}
+	if !gotConfig.AppliedAt.Equal(applied) {
+		t.Fatalf("AppliedAt = %v, want %v", gotConfig.AppliedAt, applied)
+	}
+	gotConfig.AppliedAt = cfg.AppliedAt
+	if !reflect.DeepEqual(gotConfig, cfg) {
+		t.Fatalf("SitePHPConfig round trip = %+v, want %+v", gotConfig, cfg)
 	}
 }
 

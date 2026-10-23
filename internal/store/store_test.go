@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -400,6 +401,191 @@ func TestEvents(t *testing.T) {
 	}
 }
 
+func TestSitePHPFieldsRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	site := model.Site{ID: "s1", Name: "blog", Domain: "blog.test", Kind: model.SitePHP,
+		PHPVersion: "8.4", PHPBuild: "php@8.4.4-r1",
+		PHPIniRaw: "memory_limit = 512M\n", PHPConfigHash: "abc123",
+		PHPExtensions: map[string]bool{"xdebug": true},
+		PHPIni:        map[string]string{"memory_limit": "512M"}}
+	if err := s.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetSite(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PHPBuild != site.PHPBuild || got.PHPIniRaw != site.PHPIniRaw || got.PHPConfigHash != site.PHPConfigHash {
+		t.Fatalf("PHP fields = %+v", got)
+	}
+
+	site.PHPBuild = "php@8.4.4-r2"
+	site.PHPIniRaw = "memory_limit = 1G\n"
+	site.PHPConfigHash = "def456"
+	if err := s.UpdateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetSite(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PHPBuild != site.PHPBuild || got.PHPIniRaw != site.PHPIniRaw || got.PHPConfigHash != site.PHPConfigHash {
+		t.Fatalf("updated PHP fields = %+v", got)
+	}
+}
+
+func TestPHPDefaultsAndAppliedConfigRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.GetPHPDefaults(ctx, "8.4"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing defaults error = %v", err)
+	}
+	d := model.PHPDefaults{Version: "8.4", Ini: map[string]string{"memory_limit": "256M"}, Extensions: map[string]bool{"xdebug": false}}
+	if err := s.SavePHPDefaults(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetPHPDefaults(ctx, "8.4")
+	if err != nil || got.Ini["memory_limit"] != "256M" || got.Extensions["xdebug"] != false {
+		t.Fatalf("%+v %v", got, err)
+	}
+
+	d.Ini["memory_limit"] = "512M"
+	d.Extensions["redis"] = true
+	if err := s.SavePHPDefaults(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetPHPDefaults(ctx, "8.4")
+	if err != nil || got.Ini["memory_limit"] != "512M" || !got.Extensions["redis"] {
+		t.Fatalf("updated defaults %+v %v", got, err)
+	}
+
+	other := model.PHPDefaults{Version: "8.2", Ini: map[string]string{"memory_limit": "128M"}}
+	if err := s.SavePHPDefaults(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := s.ListPHPDefaults(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaults) != 2 || defaults[0].Version != "8.2" || defaults[1].Version != "8.4" {
+		t.Fatalf("ListPHPDefaults = %+v", defaults)
+	}
+
+	if err := s.CreateSite(ctx, model.Site{ID: "s1", Name: "blog", Domain: "blog.test", Kind: model.SitePHP}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetSitePHPConfig(ctx, "s1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing site config error = %v", err)
+	}
+	cfg := model.SitePHPConfig{SiteID: "s1", Ini: d.Ini, Extensions: d.Extensions, ConfigHash: "hash", AppliedAt: time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)}
+	if err := s.SaveSitePHPConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	gotCfg, err := s.GetSitePHPConfig(ctx, "s1")
+	if err != nil || gotCfg.ConfigHash != "hash" || !gotCfg.AppliedAt.Equal(cfg.AppliedAt) {
+		t.Fatalf("%+v %v", gotCfg, err)
+	}
+	if gotCfg.Ini["memory_limit"] != "512M" || !gotCfg.Extensions["redis"] {
+		t.Fatalf("site config JSON = %+v", gotCfg)
+	}
+
+	cfg.ConfigHash = "hash2"
+	cfg.AppliedAt = cfg.AppliedAt.Add(time.Hour)
+	if err := s.SaveSitePHPConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	gotCfg, err = s.GetSitePHPConfig(ctx, "s1")
+	if err != nil || gotCfg.ConfigHash != "hash2" || !gotCfg.AppliedAt.Equal(cfg.AppliedAt) {
+		t.Fatalf("updated site config %+v %v", gotCfg, err)
+	}
+
+	if err := s.DeleteSite(ctx, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetSitePHPConfig(ctx, "s1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("site config survived site deletion: %v", err)
+	}
+}
+
+func TestMigration0003UpgradesExistingDatabase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations {
+		if m.version > 2 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, m.script); err != nil {
+			t.Fatalf("apply migration %04d: %v", m.version, err)
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+			m.version, time.Now().Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO sites (id, name, domain, kind) VALUES ('s1', 'blog', 'blog.test', 'static')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO site_php_config (site_id, ini_overrides_json, extension_overrides_json, config_hash)
+		 VALUES ('s1', '{}', '{}', 'legacy')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open upgraded database: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = s.Close()
+	})
+
+	got, err := s.GetSite(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PHPBuild != "" || got.PHPIniRaw != "" || got.PHPConfigHash != "" {
+		t.Fatalf("new columns = %q %q %q, want empty defaults",
+			got.PHPBuild, got.PHPIniRaw, got.PHPConfigHash)
+	}
+	cfg, err := s.GetSitePHPConfig(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConfigHash != "legacy" {
+		t.Fatalf("legacy config hash = %q, want legacy", cfg.ConfigHash)
+	}
+	if !cfg.AppliedAt.Equal(time.Unix(0, 0).UTC()) {
+		t.Fatalf("legacy applied_at = %v, want Unix epoch default", cfg.AppliedAt)
+	}
+
+	var version int
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 3 {
+		t.Fatalf("schema version = %d, want 3", version)
+	}
+}
+
 func TestSchemaAndPragmas(t *testing.T) {
 	s := openTemp(t)
 	for _, table := range []string{
@@ -442,8 +628,8 @@ func TestSchemaAndPragmas(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
-		t.Fatalf("schema version = %d, want 2", version)
+	if version != 3 {
+		t.Fatalf("schema version = %d, want 3", version)
 	}
 }
 

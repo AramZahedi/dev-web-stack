@@ -70,7 +70,8 @@ func (s *Store) Close() error {
 }
 
 const siteColumns = `id, name, domain, www_alias, backend, host_path, backend_path, kind,
-	php_version, php_extensions_json, php_ini_json, node_version, command, env_json,
+	php_version, php_extensions_json, php_ini_json, php_build, php_ini_raw, php_config_hash,
+	node_version, command, env_json,
 	document_root, front_controller, spa_fallback, tls, force_https, desired_state,
 	status, http_port, fastcgi_port, created_at, updated_at`
 
@@ -81,7 +82,7 @@ func (s *Store) CreateSite(ctx context.Context, site model.Site) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO sites (`+siteColumns+`) VALUES (
-		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
 	if err != nil {
 		return fmt.Errorf("create site %q: %w", site.ID, err)
 	}
@@ -98,6 +99,7 @@ func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE sites SET
 		name = ?, domain = ?, www_alias = ?, backend = ?, host_path = ?, backend_path = ?,
 		kind = ?, php_version = ?, php_extensions_json = ?, php_ini_json = ?,
+		php_build = ?, php_ini_raw = ?, php_config_hash = ?,
 		node_version = ?, command = ?, env_json = ?, document_root = ?,
 		front_controller = ?, spa_fallback = ?, tls = ?, force_https = ?,
 		desired_state = ?, status = ?, http_port = ?, fastcgi_port = ?,
@@ -105,7 +107,8 @@ func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
 		WHERE id = ?`,
 		site.Name, site.Domain, boolInt(site.WWW), string(site.Backend),
 		site.HostPath, site.BackendPath, string(site.Kind), site.PHPVersion,
-		phpExtensions, phpIni, site.NodeVersion, site.Command, env,
+		phpExtensions, phpIni, site.PHPBuild, site.PHPIniRaw, site.PHPConfigHash,
+		site.NodeVersion, site.Command, env,
 		site.DocumentRoot, boolInt(site.FrontController), boolInt(site.SPAFallback),
 		boolInt(site.TLS), boolInt(site.ForceHTTPS), string(site.DesiredState),
 		string(site.Status), site.HTTPPort, site.FastCGIPort,
@@ -322,6 +325,181 @@ func (s *Store) DeleteCertBySite(ctx context.Context, siteID string) error {
 	return requireAffected(res, "certificate", siteID)
 }
 
+const phpDefaultsColumns = `php_version, ini_json, extensions_json`
+
+// SavePHPDefaults inserts or replaces the editable defaults for a PHP version
+// line. Nil maps are stored as empty JSON objects.
+func (s *Store) SavePHPDefaults(ctx context.Context, d model.PHPDefaults) error {
+	if d.Version == "" {
+		return errors.New("save php defaults: empty version")
+	}
+	ini, err := marshalPHPStringMap(d.Ini)
+	if err != nil {
+		return fmt.Errorf("encode php %s ini defaults: %w", d.Version, err)
+	}
+	extensions, err := marshalPHPBoolMap(d.Extensions)
+	if err != nil {
+		return fmt.Errorf("encode php %s extension defaults: %w", d.Version, err)
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO php_defaults (`+phpDefaultsColumns+`)
+		VALUES (?, ?, ?)
+		ON CONFLICT(php_version) DO UPDATE SET
+			ini_json = excluded.ini_json,
+			extensions_json = excluded.extensions_json`,
+		d.Version, ini, extensions)
+	if err != nil {
+		return fmt.Errorf("save php %s defaults: %w", d.Version, err)
+	}
+	return nil
+}
+
+// GetPHPDefaults returns the defaults for a PHP version line. It returns
+// ErrNotFound when the version has no saved defaults yet.
+func (s *Store) GetPHPDefaults(ctx context.Context, version string) (model.PHPDefaults, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+phpDefaultsColumns+` FROM php_defaults WHERE php_version = ?`, version)
+	d, err := scanPHPDefaults(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.PHPDefaults{}, ErrNotFound
+	}
+	if err != nil {
+		return model.PHPDefaults{}, fmt.Errorf("get php %s defaults: %w", version, err)
+	}
+	return d, nil
+}
+
+// ListPHPDefaults returns all saved version defaults ordered by version line.
+func (s *Store) ListPHPDefaults(ctx context.Context) ([]model.PHPDefaults, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+phpDefaultsColumns+` FROM php_defaults ORDER BY php_version`)
+	if err != nil {
+		return nil, fmt.Errorf("list php defaults: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	defaults := []model.PHPDefaults{}
+	for rows.Next() {
+		d, err := scanPHPDefaults(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list php defaults: %w", err)
+		}
+		defaults = append(defaults, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list php defaults: %w", err)
+	}
+	return defaults, nil
+}
+
+const sitePHPConfigColumns = `site_id, ini_overrides_json, extension_overrides_json, config_hash, applied_at`
+
+// SaveSitePHPConfig inserts or replaces the applied PHP configuration snapshot
+// for a site.
+func (s *Store) SaveSitePHPConfig(ctx context.Context, cfg model.SitePHPConfig) error {
+	if cfg.SiteID == "" {
+		return errors.New("save site php config: empty site id")
+	}
+	ini, err := marshalPHPStringMap(cfg.Ini)
+	if err != nil {
+		return fmt.Errorf("encode site %q php ini: %w", cfg.SiteID, err)
+	}
+	extensions, err := marshalPHPBoolMap(cfg.Extensions)
+	if err != nil {
+		return fmt.Errorf("encode site %q php extensions: %w", cfg.SiteID, err)
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO site_php_config (`+sitePHPConfigColumns+`)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(site_id) DO UPDATE SET
+			ini_overrides_json = excluded.ini_overrides_json,
+			extension_overrides_json = excluded.extension_overrides_json,
+			config_hash = excluded.config_hash,
+			applied_at = excluded.applied_at`,
+		cfg.SiteID, ini, extensions, cfg.ConfigHash, cfg.AppliedAt.Unix())
+	if err != nil {
+		return fmt.Errorf("save site %q php config: %w", cfg.SiteID, err)
+	}
+	return nil
+}
+
+// GetSitePHPConfig returns the applied PHP configuration snapshot for a site.
+// It returns ErrNotFound when no snapshot has been saved.
+func (s *Store) GetSitePHPConfig(ctx context.Context, siteID string) (model.SitePHPConfig, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+sitePHPConfigColumns+` FROM site_php_config WHERE site_id = ?`, siteID)
+	cfg, err := scanSitePHPConfig(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.SitePHPConfig{}, ErrNotFound
+	}
+	if err != nil {
+		return model.SitePHPConfig{}, fmt.Errorf("get site %q php config: %w", siteID, err)
+	}
+	return cfg, nil
+}
+
+func scanPHPDefaults(scanner rowScanner) (model.PHPDefaults, error) {
+	var (
+		d                  model.PHPDefaults
+		ini, extensionsRaw string
+	)
+	if err := scanner.Scan(&d.Version, &ini, &extensionsRaw); err != nil {
+		return model.PHPDefaults{}, err
+	}
+	if err := json.Unmarshal([]byte(ini), &d.Ini); err != nil {
+		return model.PHPDefaults{}, fmt.Errorf("decode php %s ini defaults: %w", d.Version, err)
+	}
+	if err := json.Unmarshal([]byte(extensionsRaw), &d.Extensions); err != nil {
+		return model.PHPDefaults{}, fmt.Errorf("decode php %s extension defaults: %w", d.Version, err)
+	}
+	if d.Ini == nil {
+		d.Ini = map[string]string{}
+	}
+	if d.Extensions == nil {
+		d.Extensions = map[string]bool{}
+	}
+	return d, nil
+}
+
+func scanSitePHPConfig(scanner rowScanner) (model.SitePHPConfig, error) {
+	var (
+		cfg                model.SitePHPConfig
+		ini, extensionsRaw string
+		appliedAt          int64
+	)
+	if err := scanner.Scan(&cfg.SiteID, &ini, &extensionsRaw, &cfg.ConfigHash, &appliedAt); err != nil {
+		return model.SitePHPConfig{}, err
+	}
+	if err := json.Unmarshal([]byte(ini), &cfg.Ini); err != nil {
+		return model.SitePHPConfig{}, fmt.Errorf("decode site %q php ini: %w", cfg.SiteID, err)
+	}
+	if err := json.Unmarshal([]byte(extensionsRaw), &cfg.Extensions); err != nil {
+		return model.SitePHPConfig{}, fmt.Errorf("decode site %q php extensions: %w", cfg.SiteID, err)
+	}
+	if cfg.Ini == nil {
+		cfg.Ini = map[string]string{}
+	}
+	if cfg.Extensions == nil {
+		cfg.Extensions = map[string]bool{}
+	}
+	cfg.AppliedAt = time.Unix(appliedAt, 0).UTC()
+	return cfg, nil
+}
+
+func marshalPHPStringMap(value map[string]string) (string, error) {
+	if value == nil {
+		value = map[string]string{}
+	}
+	return marshalJSON(value)
+}
+
+func marshalPHPBoolMap(value map[string]bool) (string, error) {
+	if value == nil {
+		value = map[string]bool{}
+	}
+	return marshalJSON(value)
+}
+
 // SetSetting writes a key/value setting, replacing an existing value.
 func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?)
@@ -408,7 +586,8 @@ func siteInsertArgs(site model.Site) ([]any, error) {
 	return []any{
 		site.ID, site.Name, site.Domain, boolInt(site.WWW), string(site.Backend),
 		site.HostPath, site.BackendPath, string(site.Kind), site.PHPVersion,
-		phpExtensions, phpIni, site.NodeVersion, site.Command, env,
+		phpExtensions, phpIni, site.PHPBuild, site.PHPIniRaw, site.PHPConfigHash,
+		site.NodeVersion, site.Command, env,
 		site.DocumentRoot, boolInt(site.FrontController), boolInt(site.SPAFallback),
 		boolInt(site.TLS), boolInt(site.ForceHTTPS), string(site.DesiredState),
 		string(site.Status), site.HTTPPort, site.FastCGIPort,
@@ -456,6 +635,7 @@ func scanSite(scanner rowScanner, label, value string) (model.Site, error) {
 	err := scanner.Scan(
 		&site.ID, &site.Name, &site.Domain, &www, &site.Backend, &site.HostPath,
 		&site.BackendPath, &site.Kind, &site.PHPVersion, &phpExtensions, &phpIni,
+		&site.PHPBuild, &site.PHPIniRaw, &site.PHPConfigHash,
 		&site.NodeVersion, &site.Command, &env, &site.DocumentRoot,
 		&frontController, &spaFallback, &tlsEnabled, &forceHTTPS,
 		&site.DesiredState, &site.Status, &site.HTTPPort, &site.FastCGIPort,

@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -88,7 +89,7 @@ func TestLoadFromValidatesEntries(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid", mutate: func(*Entry) {}},
-		{name: "wrong kind", mutate: func(e *Entry) { e.Kind = "php"; e.ID = "php@" + e.Version }, wantErr: "kind"},
+		{name: "wrong kind", mutate: func(e *Entry) { e.Kind = "ruby"; e.ID = "ruby@" + e.Version }, wantErr: "kind"},
 		{name: "kind case", mutate: func(e *Entry) { e.Kind = "Node" }, wantErr: "kind"},
 		{name: "bad version", mutate: func(e *Entry) { e.Version = "v24.99.0" }, wantErr: "version"},
 		{name: "short version", mutate: func(e *Entry) { e.Version = "24.99" }, wantErr: "version"},
@@ -139,6 +140,162 @@ func TestLoadFromRejectsDuplicateEntriesAndEmptyCatalog(t *testing.T) {
 	if _, err := LoadFrom(bytes.NewReader([]byte(`not json`))); err == nil {
 		t.Fatal("LoadFrom accepted malformed JSON")
 	}
+}
+
+func TestParseIDRevisions(t *testing.T) {
+	for _, tc := range []struct {
+		raw, kind, version string
+		rev                int
+		ok                 bool
+	}{
+		{"node@24.22.1", "node", "24.22.1", 0, true},
+		{"php@8.4.4-r1", "php", "8.4.4", 1, true},
+		{"php@8.4.4-r12", "php", "8.4.4", 12, true},
+		{"php@8.4.4", "", "", 0, false},
+		{"node@24.22.1-r1", "", "", 0, false},
+		{"php@8.4.4-r0", "", "", 0, false},
+		{"php@8.4.4-r01", "", "", 0, false},
+		{"ruby@3.4.0", "", "", 0, false},
+		{"php@8.4-r1", "", "", 0, false},
+		{"", "", "", 0, false},
+	} {
+		got, err := ParseID(tc.raw)
+		if tc.ok == (err != nil) {
+			t.Fatalf("%q: err = %v, want ok = %v", tc.raw, err, tc.ok)
+		}
+		if tc.ok && (got.Kind != tc.kind || got.Version != tc.version || got.Revision != tc.rev) {
+			t.Fatalf("%q = %+v", tc.raw, got)
+		}
+	}
+
+	if got := FormatID("php", "8.4.4", 1); got != "php@8.4.4-r1" {
+		t.Fatalf("FormatID(php) = %q", got)
+	}
+	if got := FormatID("node", "24.22.1", 0); got != "node@24.22.1" {
+		t.Fatalf("FormatID(node) = %q", got)
+	}
+}
+
+func TestCatalogSelectsNewestRevision(t *testing.T) {
+	cat := catalogFor(t, phpEntry("8.4.4", 1), phpEntry("8.4.4", 2), phpEntry("8.4.3", 9))
+	e, ok := cat.ForKindVersion("php", "8.4.4")
+	if !ok || e.Revision != 2 {
+		t.Fatalf("ForKindVersion = %+v, %v", e, ok)
+	}
+	e, ok = cat.NewestForLine("php", "8.4")
+	if !ok || e.Revision != 2 || e.Version != "8.4.4" {
+		t.Fatalf("NewestForLine = %+v, %v", e, ok)
+	}
+	e, ok = cat.ForKindVersion("php", "8.4.3")
+	if !ok || e.Revision != 9 {
+		t.Fatalf("ForKindVersion older version = %+v, %v", e, ok)
+	}
+	if _, ok := cat.NewestForLine("php", "8.5"); ok {
+		t.Fatal("NewestForLine returned a missing line")
+	}
+	if _, ok := cat.NewestForLine("node", "8.4"); ok {
+		t.Fatal("NewestForLine returned a missing kind")
+	}
+}
+
+func TestPHPEntryRequiresPinnedHTTPSArtifact(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Entry)
+		wantErr string
+	}{
+		{name: "valid", mutate: func(*Entry) {}},
+		{name: "http url", mutate: func(e *Entry) {
+			e.URL = strings.Replace(e.URL, "https://", "http://", 1)
+		}, wantErr: "https"},
+		{name: "wrong filename", mutate: func(e *Entry) {
+			e.URL = "https://example.test/dist/php-8.4.4-linux-x64.tar.gz"
+		}, wantErr: "filename"},
+		{name: "node filename", mutate: func(e *Entry) {
+			e.URL = "https://example.test/dist/node-v8.4.4-linux-x64.tar.gz"
+		}, wantErr: "filename"},
+		{name: "missing revision", mutate: func(e *Entry) {
+			e.ID = "php@8.4.4"
+			e.Revision = 0
+			e.URL = "https://example.test/dist/php-8.4.4-linux-x64.tar.gz"
+		}, wantErr: "revision"},
+		{name: "zero revision", mutate: func(e *Entry) {
+			e.Revision = 0
+			e.URL = "https://example.test/dist/php-8.4.4-linux-x64.tar.gz"
+		}, wantErr: "revision"},
+		{name: "revision mismatch", mutate: func(e *Entry) {
+			e.Revision = 2
+		}, wantErr: "id"},
+		{name: "uppercase sha256", mutate: func(e *Entry) {
+			e.SHA256 = strings.ToUpper(e.SHA256)
+		}, wantErr: "sha256"},
+		{name: "query string", mutate: func(e *Entry) {
+			e.URL += "?download=1"
+		}, wantErr: "query"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			entry := phpEntry("8.4.4", 1)
+			test.mutate(&entry)
+			_, err := loadEntries(entry)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("loadEntries: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("loadEntries accepted invalid PHP entry, want error containing %q", test.wantErr)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), test.wantErr) {
+				t.Fatalf("loadEntries error = %q, want it to contain %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestNodeEntryRejectsRevision(t *testing.T) {
+	entry := validEntry()
+	entry.Revision = 1
+	entry.ID = "node@24.99.0-r1"
+	if _, err := loadEntries(entry); err == nil || !strings.Contains(err.Error(), "revision") {
+		t.Fatalf("loadEntries error = %v, want node revision rejection", err)
+	}
+}
+
+func TestLineOf(t *testing.T) {
+	for version, want := range map[string]string{
+		"8.4.4":   "8.4",
+		"8.2.29":  "8.2",
+		"24.22.1": "24.22",
+		"8.4":     "8.4",
+	} {
+		if got := LineOf(version); got != want {
+			t.Errorf("LineOf(%q) = %q, want %q", version, got, want)
+		}
+	}
+}
+
+func phpEntry(version string, revision int) Entry {
+	return Entry{
+		ID:       FormatID("php", version, revision),
+		Kind:     "php",
+		Version:  version,
+		Build:    "linux-x64",
+		Revision: revision,
+		URL:      fmt.Sprintf("https://example.test/dist/php-%s-r%d-linux-x64.tar.gz", version, revision),
+		SHA256:   strings.Repeat("b", 64),
+		Size:     1234,
+	}
+}
+
+func catalogFor(t *testing.T, entries ...Entry) Catalog {
+	t.Helper()
+	cat, err := loadEntries(entries...)
+	if err != nil {
+		t.Fatalf("loadEntries: %v", err)
+	}
+	return cat
 }
 
 func TestParseMatchesLoad(t *testing.T) {

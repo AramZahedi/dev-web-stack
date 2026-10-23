@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -565,12 +566,12 @@ func TestRemoveContainmentAndIdempotency(t *testing.T) {
 		entry := offlineEntry(t)
 		m, st, home, _ := newManagerFor(t, entry, nil)
 		path := filepath.Join(home, "runtimes", "node", testVersion+"-"+testBuild)
-		upsertRuntime(t, st, "node@absent", path)
+		upsertRuntime(t, st, testID, path)
 
-		if err := m.Remove(context.Background(), "node@absent"); err != nil {
+		if err := m.Remove(context.Background(), testID); err != nil {
 			t.Fatalf("Remove with absent files = %v, want nil", err)
 		}
-		if _, err := st.GetRuntime(context.Background(), "node@absent"); !errors.Is(err, store.ErrNotFound) {
+		if _, err := st.GetRuntime(context.Background(), testID); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("row still exists after Remove: %v", err)
 		}
 	})
@@ -740,6 +741,173 @@ func TestConcurrentInstallsSameID(t *testing.T) {
 	assertNoPartialOrTempFiles(t, home)
 }
 
+func TestInstallKeepsPHPRevisionsSeparate(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newAnyFixtureServer(t, archive)
+	cat := catalogFor(t,
+		phpEntryFor(t, archive, srv.URL+"/php-8.4.4-r1-linux-x64.tar.gz", 1),
+		phpEntryFor(t, archive, srv.URL+"/php-8.4.4-r2-linux-x64.tar.gz", 2))
+	m, _, _, _ := newManagerWithCatalogFor(t, cat, srv.Client())
+
+	b1, err := m.Install(context.Background(), "php@8.4.4-r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, err := m.Install(context.Background(), "php@8.4.4-r2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b1.Path == b2.Path {
+		t.Fatalf("both revisions installed at %s", b1.Path)
+	}
+	if filepath.Base(b1.Path) != "8.4.4-r1-linux-x64" {
+		t.Fatalf("path = %s", b1.Path)
+	}
+	if filepath.Base(b2.Path) != "8.4.4-r2-linux-x64" {
+		t.Fatalf("path = %s", b2.Path)
+	}
+	if err := m.Verify(context.Background(), b1.ID); err != nil {
+		t.Fatalf("Verify r1: %v", err)
+	}
+	if err := m.Verify(context.Background(), b2.ID); err != nil {
+		t.Fatalf("Verify r2: %v", err)
+	}
+}
+
+func TestEnsureBuildInstallsPinnedRevision(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newAnyFixtureServer(t, archive)
+	cat := catalogFor(t,
+		phpEntryFor(t, archive, srv.URL+"/php-8.4.4-r1-linux-x64.tar.gz", 1),
+		phpEntryFor(t, archive, srv.URL+"/php-8.4.4-r2-linux-x64.tar.gz", 2))
+	m, _, _, _ := newManagerWithCatalogFor(t, cat, srv.Client())
+
+	build, err := m.EnsureBuild(context.Background(), "php@8.4.4-r2")
+	if err != nil {
+		t.Fatalf("EnsureBuild: %v", err)
+	}
+	if build.ID != "php@8.4.4-r2" || filepath.Base(build.Path) != "8.4.4-r2-linux-x64" {
+		t.Fatalf("EnsureBuild = %+v", build)
+	}
+	again, err := m.EnsureBuild(context.Background(), "php@8.4.4-r2")
+	if err != nil {
+		t.Fatalf("second EnsureBuild: %v", err)
+	}
+	if again.Path != build.Path {
+		t.Fatalf("second EnsureBuild path = %q, want %q", again.Path, build.Path)
+	}
+	if got := srv.requests.Load(); got != 1 {
+		t.Fatalf("downloads = %d, want 1", got)
+	}
+	if builds, err := m.List(context.Background()); err != nil || len(builds) != 1 {
+		t.Fatalf("List = %+v, %v; want only the pinned revision", builds, err)
+	}
+
+	if _, err := m.EnsureBuild(context.Background(), "php@8.4.4-r3"); !errors.Is(err, ErrNoCatalogEntry) {
+		t.Fatalf("EnsureBuild unknown revision = %v, want ErrNoCatalogEntry", err)
+	}
+
+	if err := os.RemoveAll(build.Path); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := m.EnsureBuild(context.Background(), "php@8.4.4-r2")
+	if err != nil {
+		t.Fatalf("EnsureBuild after deletion: %v", err)
+	}
+	if repaired.Path != build.Path {
+		t.Fatalf("repaired path = %q, want %q", repaired.Path, build.Path)
+	}
+	if got := srv.requests.Load(); got != 2 {
+		t.Fatalf("downloads after repair = %d, want 2", got)
+	}
+}
+
+func TestInstalledForLineOrdersNewestFirst(t *testing.T) {
+	m, st, _, _ := newManagerFor(t, offlineEntry(t), nil)
+	rows := []model.RuntimeBuild{
+		{ID: "php@8.4.4-r1", Kind: "php", Version: "8.4.4", Backend: model.BackendLocal, Path: "/runtimes/php/8.4.4-r1-linux-x64"},
+		{ID: "php@8.4.4-r2", Kind: "php", Version: "8.4.4", Backend: model.BackendLocal, Path: "/runtimes/php/8.4.4-r2-linux-x64"},
+		{ID: "php@8.4.3-r9", Kind: "php", Version: "8.4.3", Backend: model.BackendLocal, Path: "/runtimes/php/8.4.3-r9-linux-x64"},
+		{ID: "php@8.5.0-r1", Kind: "php", Version: "8.5.0", Backend: model.BackendLocal, Path: "/runtimes/php/8.5.0-r1-linux-x64"},
+		{ID: "node@24.22.1", Kind: "node", Version: "24.22.1", Backend: model.BackendLocal, Path: "/runtimes/node/24.22.1-linux-x64"},
+	}
+	for _, row := range rows {
+		if err := st.UpsertRuntime(context.Background(), row); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	builds, err := m.InstalledForLine(context.Background(), "php", "8.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"php@8.4.4-r2", "php@8.4.4-r1", "php@8.4.3-r9"}
+	if len(builds) != len(want) {
+		t.Fatalf("InstalledForLine = %+v", builds)
+	}
+	for i, id := range want {
+		if builds[i].ID != id {
+			t.Fatalf("InstalledForLine[%d] = %q, want %q", i, builds[i].ID, id)
+		}
+	}
+
+	none, err := m.InstalledForLine(context.Background(), "php", "8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("InstalledForLine missing line = %+v", none)
+	}
+}
+
+func TestCheckBuildPathRequiresExactRevision(t *testing.T) {
+	tests := []struct {
+		name     string
+		build    model.RuntimeBuild
+		wantLeaf string
+	}{
+		{
+			name: "php revision mismatch",
+			build: model.RuntimeBuild{
+				ID: "php@8.4.4-r2", Kind: "php", Version: "8.4.4",
+			},
+			wantLeaf: "8.4.4-r1-linux-x64",
+		},
+		{
+			name: "node path carries revision",
+			build: model.RuntimeBuild{
+				ID: "node@24.99.0", Kind: "node", Version: "24.99.0",
+			},
+			wantLeaf: "24.99.0-r1-linux-x64",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m, st, home, _ := newManagerFor(t, offlineEntry(t), nil)
+			dir := filepath.Join(home, "runtimes", test.build.Kind, test.wantLeaf)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			victim := filepath.Join(dir, "keep.txt")
+			if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			test.build.Backend = model.BackendLocal
+			test.build.Path = dir
+			if err := st.UpsertRuntime(context.Background(), test.build); err != nil {
+				t.Fatal(err)
+			}
+			err := m.Remove(context.Background(), test.build.ID)
+			if !errors.Is(err, ErrUnsafePath) {
+				t.Fatalf("Remove error = %v, want ErrUnsafePath", err)
+			}
+			if _, statErr := os.Stat(victim); statErr != nil {
+				t.Fatalf("Remove touched a mismatched build: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestEnsureUsesInstalledBuildOrCatalog(t *testing.T) {
 	archive := fixtureData(t, "valid.tar.gz")
 	srv := newFixtureServer(t, archive)
@@ -903,12 +1071,17 @@ func offlineEntry(t *testing.T) catalog.Entry {
 func newManagerFor(t *testing.T, entry catalog.Entry, client *http.Client) (*Manager, *store.Store, string, catalog.Catalog) {
 	t.Helper()
 	cat := catalogFor(t, entry)
+	return newManagerWithCatalogFor(t, cat, client)
+}
+
+func newManagerWithCatalogFor(t *testing.T, cat catalog.Catalog, client *http.Client) (*Manager, *store.Store, string, catalog.Catalog) {
+	t.Helper()
 	home := t.TempDir()
 	st := openTestStore(t, home)
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	return newManager(st, home, client, cat, nil), st, home, cat
+	return NewManagerWithCatalog(st, home, client, cat), st, home, cat
 }
 
 func openTestStore(t *testing.T, home string) *store.Store {
@@ -947,6 +1120,21 @@ func entryFor(t *testing.T, archive []byte, url string) catalog.Entry {
 		URL:     url,
 		SHA256:  hex.EncodeToString(sum[:]),
 		Size:    int64(len(archive)),
+	}
+}
+
+func phpEntryFor(t *testing.T, archive []byte, url string, revision int) catalog.Entry {
+	t.Helper()
+	sum := sha256.Sum256(archive)
+	return catalog.Entry{
+		ID:       fmt.Sprintf("php@%s-r%d", "8.4.4", revision),
+		Kind:     "php",
+		Version:  "8.4.4",
+		Build:    testBuild,
+		Revision: revision,
+		URL:      url,
+		SHA256:   hex.EncodeToString(sum[:]),
+		Size:     int64(len(archive)),
 	}
 }
 
@@ -1044,6 +1232,18 @@ func newFixtureServer(t *testing.T, archive []byte) *fixtureServer {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(fs.Close)
+	return fs
+}
+
+func newAnyFixtureServer(t *testing.T, archive []byte) *fixtureServer {
+	t.Helper()
+	fs := &fixtureServer{}
+	fs.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fs.requests.Add(1)
 		w.Header().Set("Content-Type", "application/gzip")
 		_, _ = w.Write(archive)
 	}))

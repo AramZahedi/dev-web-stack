@@ -20,6 +20,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +120,12 @@ var homeLocks sync.Map // map[string]*sync.RWMutex
 func NewManager(stores *store.Store, home string, client *http.Client) *Manager {
 	cat, err := catalog.Load()
 	return newManager(stores, home, client, cat, err)
+}
+
+// NewManagerWithCatalog returns a manager using an explicit catalog. It is the
+// seam used by tests and by callers that already hold a validated catalog.
+func NewManagerWithCatalog(stores *store.Store, home string, client *http.Client, cat catalog.Catalog) *Manager {
+	return newManager(stores, home, client, cat, nil)
 }
 
 // newManager is the test seam that accepts a fixture catalog or a deliberate
@@ -427,6 +434,102 @@ func (m *Manager) Ensure(ctx context.Context, kind, version string) (model.Runti
 	return m.Install(ctx, entry.ID)
 }
 
+// EnsureBuild returns an intact installed build for the exact catalog id, or
+// installs that pinned entry. It is the backend's exact-build entry point; the
+// catalog id carries any PHP revision.
+func (m *Manager) EnsureBuild(ctx context.Context, buildID string) (model.RuntimeBuild, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	if m.stores == nil {
+		return model.RuntimeBuild{}, errors.New("runtime: no store configured")
+	}
+
+	entry, err := m.entryByID(buildID)
+	if err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	target, err := m.targetPath(entry)
+	if err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	existing, err := m.stores.GetRuntime(ctx, buildID)
+	switch {
+	case err == nil:
+		if m.installedBuildMatches(existing, entry, target) {
+			return existing, nil
+		}
+	case errors.Is(err, store.ErrNotFound):
+	default:
+		return model.RuntimeBuild{}, fmt.Errorf("runtime: ensure build %q: %w", buildID, err)
+	}
+	return m.installEntry(ctx, entry, "")
+}
+
+// InstalledForLine returns installed builds for a runtime kind and major.minor
+// line, newest version first and newest revision first within a version.
+func (m *Manager) InstalledForLine(ctx context.Context, kind, line string) ([]model.RuntimeBuild, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.stores == nil {
+		return nil, errors.New("runtime: no store configured")
+	}
+	builds, err := m.stores.ListRuntimes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: list installed builds: %w", err)
+	}
+	installed := make([]model.RuntimeBuild, 0, len(builds))
+	for _, build := range builds {
+		if build.Kind != kind || catalog.LineOf(build.Version) != line {
+			continue
+		}
+		parsed, err := catalog.ParseID(build.ID)
+		if err != nil || parsed.Kind != kind || parsed.Version != build.Version {
+			continue
+		}
+		installed = append(installed, build)
+	}
+	sort.SliceStable(installed, func(i, j int) bool {
+		if cmp := compareRuntimeVersions(installed[i].Version, installed[j].Version); cmp != 0 {
+			return cmp > 0
+		}
+		return runtimeRevision(installed[i].ID) > runtimeRevision(installed[j].ID)
+	})
+	return installed, nil
+}
+
+func compareRuntimeVersions(a, b string) int {
+	ap, bp := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(ap) || i < len(bp); i++ {
+		var av, bv int
+		if i < len(ap) {
+			av, _ = strconv.Atoi(ap[i])
+		}
+		if i < len(bp) {
+			bv, _ = strconv.Atoi(bp[i])
+		}
+		if av < bv {
+			return -1
+		}
+		if av > bv {
+			return 1
+		}
+	}
+	return 0
+}
+
+func runtimeRevision(id string) int {
+	parsed, err := catalog.ParseID(id)
+	if err != nil {
+		return 0
+	}
+	return parsed.Revision
+}
+
 // Verify re-hashes every file recorded in the build's manifest and reports
 // missing, extra, mode-changed, symlinked, and modified files.
 func (m *Manager) Verify(ctx context.Context, buildID string) error {
@@ -481,14 +584,26 @@ func (m *Manager) installedBuildAt(dir string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-// targetPath derives and validates the managed install path for entry.
+// targetPath derives and validates the managed install path for entry. PHP
+// revisions get their own leaf so two revisions of one version never collide.
 func (m *Manager) targetPath(entry catalog.Entry) (string, error) {
 	for _, component := range []string{entry.Kind, entry.Version, entry.Build} {
 		if err := safeComponent(component); err != nil {
 			return "", err
 		}
 	}
-	target := filepath.Join(m.runtimesRoot, entry.Kind, entry.Version+"-"+entry.Build)
+	parsed, err := catalog.ParseID(entry.ID)
+	if err != nil {
+		return "", fmt.Errorf("%w: install %q: %v", ErrUnsafePath, entry.ID, err)
+	}
+	if parsed.Kind != entry.Kind || parsed.Version != entry.Version || parsed.Revision != entry.Revision {
+		return "", fmt.Errorf("%w: install %q: id does not match entry identity", ErrUnsafePath, entry.ID)
+	}
+	leaf := entry.Version + "-" + entry.Build
+	if entry.Revision > 0 {
+		leaf = fmt.Sprintf("%s-r%d-%s", entry.Version, entry.Revision, entry.Build)
+	}
+	target := filepath.Join(m.runtimesRoot, entry.Kind, leaf)
 	if err := m.checkManagedPath(target); err != nil {
 		return "", fmt.Errorf("runtime: install %q: %w", entry.ID, err)
 	}
@@ -505,8 +620,9 @@ func safeComponent(value string) error {
 }
 
 // checkBuildPath requires the row to describe exactly one managed build:
-// <root>/<kind>/<version>-<build>. This prevents a corrupt row that points at
-// the runtime root or a kind directory from deleting unrelated builds.
+// <root>/<kind>/<version>[-r<revision>]-<build>. The revision prefix comes from
+// the row id, so a row cannot claim revision 2 while pointing at revision 1's
+// directory.
 func (m *Manager) checkBuildPath(build model.RuntimeBuild) error {
 	if err := m.checkManagedPath(build.Path); err != nil {
 		return err
@@ -516,6 +632,14 @@ func (m *Manager) checkBuildPath(build model.RuntimeBuild) error {
 	}
 	if err := safeComponent(build.Version); err != nil {
 		return err
+	}
+	parsed, err := catalog.ParseID(build.ID)
+	if err != nil {
+		return fmt.Errorf("%w: runtime %q: %v", ErrUnsafePath, build.ID, err)
+	}
+	if parsed.Kind != build.Kind || parsed.Version != build.Version {
+		return fmt.Errorf("%w: runtime %q id does not match row kind/version %s/%s",
+			ErrUnsafePath, build.ID, build.Kind, build.Version)
 	}
 
 	abs, err := filepath.Abs(build.Path)
@@ -539,10 +663,13 @@ func (m *Manager) checkBuildPath(build model.RuntimeBuild) error {
 	if err := safeComponent(leaf); err != nil {
 		return err
 	}
-	prefix := build.Version + "-"
+	prefix := parsed.Version + "-"
+	if parsed.Revision > 0 {
+		prefix = fmt.Sprintf("%s-r%d-", parsed.Version, parsed.Revision)
+	}
 	if !strings.HasPrefix(leaf, prefix) {
-		return fmt.Errorf("%w: runtime %q path %q does not start with version %q",
-			ErrUnsafePath, build.ID, build.Path, build.Version)
+		return fmt.Errorf("%w: runtime %q path %q does not start with %q",
+			ErrUnsafePath, build.ID, build.Path, prefix)
 	}
 	buildPart := strings.TrimPrefix(leaf, prefix)
 	if buildPart == "" {
@@ -551,7 +678,24 @@ func (m *Manager) checkBuildPath(build model.RuntimeBuild) error {
 	if err := safeComponent(buildPart); err != nil {
 		return err
 	}
+	if parsed.Revision == 0 && hasRevisionPrefix(buildPart) {
+		return fmt.Errorf("%w: runtime %q path %q carries a revision for a node build",
+			ErrUnsafePath, build.ID, build.Path)
+	}
 	return nil
+}
+
+// hasRevisionPrefix reports whether a build suffix starts with r<digits>-.
+func hasRevisionPrefix(value string) bool {
+	if !strings.HasPrefix(value, "r") {
+		return false
+	}
+	rest := value[1:]
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	return digits > 0 && digits < len(rest) && rest[digits] == '-'
 }
 
 // checkManagedPath requires p to be strictly below the runtime root and every

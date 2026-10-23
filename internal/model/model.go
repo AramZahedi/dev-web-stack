@@ -53,8 +53,11 @@ type Site struct {
 	Kind        SiteKind    `json:"kind"`
 
 	PHPVersion    string            `json:"php_version"`
+	PHPBuild      string            `json:"php_build"`
 	PHPExtensions map[string]bool   `json:"php_extensions"`
 	PHPIni        map[string]string `json:"php_ini"`
+	PHPIniRaw     string            `json:"php_ini_raw"`
+	PHPConfigHash string            `json:"php_config_hash"`
 
 	NodeVersion string            `json:"node_version"`
 	Command     string            `json:"command"`
@@ -77,6 +80,23 @@ type Site struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// PHPDefaults holds the editable per-version php.ini directives and extension
+// defaults. Every site on the version inherits these unless it overrides them.
+type PHPDefaults struct {
+	Version    string            `json:"version"`
+	Ini        map[string]string `json:"ini"`
+	Extensions map[string]bool   `json:"extensions"`
+}
+
+// SitePHPConfig is the last applied per-site PHP configuration snapshot.
+type SitePHPConfig struct {
+	SiteID     string            `json:"site_id"`
+	Ini        map[string]string `json:"ini"`
+	Extensions map[string]bool   `json:"extensions"`
+	ConfigHash string            `json:"config_hash"`
+	AppliedAt  time.Time         `json:"applied_at"`
 }
 
 // RuntimeBuild is an installed PHP or Node distribution.
