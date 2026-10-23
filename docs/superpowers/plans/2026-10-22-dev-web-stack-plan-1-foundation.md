@@ -8,13 +8,15 @@
 
 **Tech Stack:** Go 1.26+, `modernc.org/sqlite`, `spf13/cobra`, stdlib `net/http`/`crypto/tls`/`crypto/x509`, Svelte 5 + TypeScript + Vite, systemd, nginx/Apache (optional external serving), Linux x86_64.
 
+> **Implementation status (2026-10-23):** Tasks 1–25 are implemented and reviewed; Task 26 is the acceptance pass. The implementation notes in the external-vhosts design are binding corrections.
+
 **Specs:** `docs/superpowers/specs/2026-10-22-dev-web-stack-m1-design.md` (Plan 1 implements §§5–9, 10.1, 10.3, 12–15, and 17–19 for static/Node on Linux, including install/uninstall but not upgrade; PHP is Plan 2, Windows/WSL is Plan 3, packaging is Plan 4.) and `docs/superpowers/specs/2026-10-22-external-vhosts-design.md` (helper-managed nginx/Apache vhosts; static/Node in Plan 1, PHP in Plan 2).
 
 ## Global Constraints
 
 - Go 1.26+; module path `github.com/AramZahedi/dev-web-stack`.
 - Target: systemd-based Linux x86_64, glibc 2.35+, one installing user per machine.
-- No Docker/Podman, no nginx/Apache integration.
+- No Docker/Podman. External nginx/Apache serving is optional, helper-managed, and never auto-installed (Tasks 21–26).
 - Local domains are `<name>.test`; `devstack.test` is reserved for the dashboard.
 - Proxy listens on `127.0.0.1:8080` (HTTP) and `127.0.0.1:8443` (HTTPS); UI on `127.0.0.1:7070`; helper forwards 80/443 to the proxy.
 - Backend ports: `41000–42999` for HTTP upstreams, `43000–43999` for FastCGI (FastCGI is used in Plan 2; reserve it now).
@@ -1629,7 +1631,7 @@ Expected: FAIL (undefined: Render).
 
 - [ ] **Step 3: Implement**
 
-Render nginx and Apache vhosts from `Set`: static `root`/`DocumentRoot` + `try_files`/`FallbackResource`, Node proxy to `BackendPort` with WebSocket upgrade and forwarded headers, dashboard vhost to `127.0.0.1:<UIPort>`, default 404, branded 503, and the full TLS/force-HTTPS matrix from the vhost spec. PHP returns `ErrPHPUnsupported`. Validate domains with `domain.ValidateDomain` (allow `devstack.test`), roots as absolute/symlink-resolved directories, ports in `41000–42999`, IDs/names `[a-z0-9-]`, and reject newlines/NUL/quotes in every interpolated value. Escape Apache paths as quoted arguments. Emit a generated-file header. Golden files cover static running/stopped, SPA, TLS on/off, force-HTTPS, www, Node, dashboard, default 404, and maintenance 503.
+Render nginx and Apache vhosts from `Set`: static `root`/`DocumentRoot` + `try_files`/`FallbackResource`, Node proxy to `BackendPort` with WebSocket upgrade and forwarded headers, dashboard vhost to `127.0.0.1:<UIPort>`, default 404, branded 503, and the full TLS/force-HTTPS matrix from the vhost spec. PHP returns `ErrPHPUnsupported`. Validate domains with `domain.ValidateSiteDomain` for sites (the dashboard uses `domain.ValidateDomain`), roots syntactically as absolute/clean paths while Task 22/helper enforces existence and symlink containment, ports in `41000–42999`, IDs/names `[a-z0-9-]`, and reject newlines/NUL in every interpolated value. Use the dashboard certificate for `tls=false` HTTPS redirects and `listen <port> ssl http2;` for nginx 1.24 compatibility. Escape Apache paths as quoted arguments. Emit a generated-file header. Golden files cover static running/stopped, SPA, TLS on/off, force-HTTPS, www, Node, dashboard, default 404, and maintenance 503.
 
 - [ ] **Step 4: Run tests**
 
@@ -1701,7 +1703,7 @@ Expected: FAIL (undefined: NewVhostManager).
 
 - [ ] **Step 3: Implement**
 
-`Sync` validates the request (mode, domains, IDs, roots, ports, PEMs), renders via `internal/vhost`, writes a timestamped release under `<root>/<server>/releases/`, writes TLS files atomically (key `0600`, cert `0644`, fsynced), ensures the bridge include in the detected standard directory, swaps `current` with `os.Rename`, runs the fixed config test (`nginx -t` or `apachectl configtest`), reloads (`systemctl reload nginx|apache2|httpd`), and prunes to the last two releases. On test or reload failure, swap `current` back, re-run the test, and return `VHOST_CONFIG_INVALID`/`SERVER_RELOAD_FAILED` with scrubbed stderr. `SetMode` stops/starts forwarders through the existing `SetForwarders` path and performs the same rollback; `Remove` deletes only our bridge/releases/TLS files and restores forwarders. Detect the server binary, version, include directory, and Apache modules; unsupported layouts return `VHOST_INCLUDE_MISSING`/`SERVING_MODE_UNAVAILABLE`. Serialize syncs with a mutex. Reject payloads over 8 MiB. `Authority.VerifyLeaf` checks chain, key match, SAN set, and expiry.
+`Sync` validates the request (mode, domains, IDs, roots/`BackendPath` containment, ports, PEMs), renders via `internal/vhost` with optional high listen ports (default 80/443), writes a timestamped release under `<root>/<server>/releases/`, writes TLS files atomically (key `0600`, cert `0644`, fsynced), ensures the bridge include in the detected standard directory, swaps `current` with `os.Rename`, runs the fixed config test (`nginx -t` or `apachectl configtest`), reloads (`systemctl reload nginx|apache2|httpd`), and prunes to the last two releases. On test or reload failure, swap `current` back, re-run the test, and return `VHOST_CONFIG_INVALID`/`SERVER_RELOAD_FAILED` with scrubbed stderr. `SetMode` stops/starts forwarders through the existing `SetForwarders` path and performs the same rollback; `Remove` deletes only our bridge/releases/TLS files and restores forwarders. Suppress `auto_forward` when persisted state is external, and use the bridge content hash for ownership checks. Detect the server binary, version, include directory, and Apache modules; unsupported layouts return `VHOST_INCLUDE_MISSING`/`SERVING_MODE_UNAVAILABLE`. Serialize syncs with a mutex. Reject payloads over 8 MiB. `Authority.VerifyLeaf` checks chain, key match, SAN set, and expiry.
 
 - [ ] **Step 4: Run tests**
 
@@ -1777,7 +1779,7 @@ Expected: FAIL (undefined: ServingMode / SyncVhosts).
 
 - [ ] **Step 3: Implement**
 
-Add `serving_mode` to config defaults/validation. In external mode, static sites skip `Backend.Prepare`/`Start`; `Start` validates the root and syncs a running vhost, `Stop` syncs a 503 vhost, and `Get`/`List` derive status from desired state + root readability. Node/PHP keep supervised backends; every mutation and cert renewal calls `SyncVhosts`, and a failure rolls back like a hosts failure. Daemon startup reconciles helper state with config, syncs the full set, and skips the proxy listeners in external mode (API/UI stays on 7070). Add the four API handlers with session/CSRF/Host checks and the client methods. `PreviewVhost` renders without installing.
+Add `serving_mode` to config defaults/validation; external mode requires `ui_port: 7070`. Add the helperclient vhost methods and `Certs.PEM` so the service can build absolute-root/PEM sync requests. In external mode, static sites skip `Backend.Prepare`/`Start`; `Start` validates the root and syncs a running vhost, `Stop` syncs a 503 vhost, and `Get`/`List` derive status from desired state + root readability. Node/PHP keep supervised backends; every mutation and cert renewal calls `SyncVhosts`, and a failure rolls back like a hosts failure. Daemon startup reconciles helper state with config, syncs the full set, and skips the proxy listeners in external mode (API/UI stays on 7070). Runtime mode switches stop/start the proxy and static backends with rollback; a failed sync re-ensures the old certificate before re-syncing the old set. Add the four API handlers with session/CSRF/Host checks and the client methods. `PreviewVhost` renders without installing.
 
 - [ ] **Step 4: Run tests**
 
@@ -1869,7 +1871,7 @@ test('vhost mode switch sends CSRF and confirms impact', async () => {
 })
 ```
 
-Extend `test/e2e/linux.sh`: after the builtin HTTPS checks, run `devstack vhost use nginx --yes` (skip with a clear message if nginx is absent), assert `nginx -t`, curl a static and a Node site through the vhost, then `devstack vhost use builtin --yes` and assert the forwarders/proxy serve again.
+Extend `test/e2e/linux.sh`: after the builtin HTTPS checks, run `devstack vhost use nginx --yes` (skip with a clear message if nginx or port 7070 is unavailable), assert the installed vhosts/config test, curl a static site through the high-port test vhost, then `devstack vhost use builtin --yes` and assert the forwarders/proxy serve again. A Node-vhost check may skip when no Node runtime is installed.
 
 - [ ] **Step 2: Run tests to verify they fail**
 

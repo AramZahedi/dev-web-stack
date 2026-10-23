@@ -437,3 +437,33 @@ server {
     SSLProtocol -all +TLSv1.2 +TLSv1.3
 </VirtualHost>
 ```
+
+## 17. Implementation notes (2026-10-23)
+
+These are the binding corrections that emerged during implementation. They refine,
+but do not replace, the design above.
+
+- `VHostSite` includes `BackendPath`; document roots are resolved and must be
+  contained inside it. Static sites require a readable root while running; a
+  stopped static vhost may omit a missing root and still serve the branded 503.
+- `tls=false` sites use the dashboard certificate for their HTTPS listener and
+  redirect to HTTP; the helper always installs the dashboard certificate.
+- nginx renders `listen <https> ssl http2;` rather than `http2 on;` so nginx 1.24
+  (Ubuntu 24.04) and newer both pass the config test.
+- Apache module detection uses `httpd -M`/`apache2 -M` with `apachectl -M`
+  fallback because Fedora's wrapper rejects `-M`.
+- `POST /v1/vhosts/mode` takes `{"mode":"builtin|nginx|apache","sync":{...}}`;
+  `sync` is required for external targets.
+- `VhostStatusResponse` reports `tls_dir_mode` and `tls_files` (name, mode,
+  regular-file flag) so the unprivileged Doctor can inspect TLS custody without
+  reading the root-only directory. It also reports the live mode after a runtime
+  switch.
+- External mode requires `ui_port: 7070`, matching the helper's fixed dashboard
+  backend. `Config.Validate` rejects other UI ports while external.
+- The helper suppresses `auto_forward` when persisted state says nginx/Apache,
+  so a helper restart never steals 80/443 from the external server.
+- `vhost.Set` and the helper config expose optional high listen ports for the
+  unprivileged E2E. Production defaults remain 80/443; redirect targets include a
+  non-default port, including Apache mixed source/target ports.
+- The helper status carries the bridge content hash; a user-edited bridge is
+  never overwritten or removed in sync, teardown, or mode switches.
