@@ -53,6 +53,12 @@ type Deps struct {
 	Ports    PortChecker
 	Runtimes RuntimeChecker
 	Disk     DiskChecker
+	// Vhosts reports the helper's external serving state. It may be nil in
+	// builtin mode; an external mode without it fails the serving-mode check.
+	Vhosts Vhosts
+	// VhostTLSDir is the TLS material directory inspected by doctor. An empty
+	// value uses /etc/devstack/tls. Tests point it at a temporary directory.
+	VhostTLSDir string
 	// HostsPath is the hosts file inspected by the hosts check. An empty value
 	// uses /etc/hosts. Tests point it at a temporary file.
 	HostsPath string
@@ -83,6 +89,11 @@ type RuntimeChecker interface {
 // DiskChecker reports the free bytes available at path.
 type DiskChecker interface {
 	FreeBytes(path string) (uint64, error)
+}
+
+// Vhosts reports the helper-managed external serving state.
+type Vhosts interface {
+	VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error)
 }
 
 // Service runs doctor checks and repairs against a fixed set of dependencies.
@@ -116,6 +127,7 @@ func (s *Service) Run(ctx context.Context) (Report, error) {
 		s.checkDisk(),
 		s.checkWSL(),
 	}
+	checks = append(checks, s.checkVhosts(ctx)...)
 	return newReport(checks), nil
 }
 

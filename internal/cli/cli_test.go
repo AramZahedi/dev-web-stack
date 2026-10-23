@@ -52,6 +52,14 @@ type fakeClient struct {
 	lastHome     string
 	newClientErr error
 	err          error
+
+	vhostStatus    helperproto.VhostStatusResponse
+	servingModeSet bool
+	servingMode    string
+	vhostSyncs     int
+	previewRef     string
+	previewServer  string
+	previewContent string
 }
 
 func (f *fakeClient) maybeErr() error { return f.err }
@@ -213,6 +221,44 @@ func (f *fakeClient) RemoveRuntime(_ context.Context, buildID string) error {
 	return nil
 }
 
+func (f *fakeClient) VhostStatus(_ context.Context) (helperproto.VhostStatusResponse, error) {
+	if err := f.maybeErr(); err != nil {
+		return helperproto.VhostStatusResponse{}, err
+	}
+	status := f.vhostStatus
+	if strings.TrimSpace(status.Mode) == "" {
+		status.Mode = "builtin"
+	}
+	return status, nil
+}
+
+func (f *fakeClient) SetServingMode(_ context.Context, mode string) (helperproto.VhostStatusResponse, error) {
+	if err := f.maybeErr(); err != nil {
+		return helperproto.VhostStatusResponse{}, err
+	}
+	f.servingModeSet = true
+	f.servingMode = mode
+	f.vhostStatus.Mode = mode
+	return f.vhostStatus, nil
+}
+
+func (f *fakeClient) SyncVhosts(_ context.Context) (helperproto.VhostStatusResponse, error) {
+	if err := f.maybeErr(); err != nil {
+		return helperproto.VhostStatusResponse{}, err
+	}
+	f.vhostSyncs++
+	return f.vhostStatus, nil
+}
+
+func (f *fakeClient) PreviewVhost(_ context.Context, ref, server string) (string, error) {
+	if err := f.maybeErr(); err != nil {
+		return "", err
+	}
+	f.previewRef = ref
+	f.previewServer = server
+	return f.previewContent, nil
+}
+
 // useTestSeams replaces every seam that would touch the host. Tests that need
 // to observe a seam override it again after calling this helper; cleanups run
 // in LIFO order and restore the original values.
@@ -254,11 +300,16 @@ func runCLI(t *testing.T, fake *fakeClient, args ...string) string {
 
 func runCLIExit(t *testing.T, fake *fakeClient, args ...string) (int, string, string) {
 	t.Helper()
+	return runCLIExitInput(t, fake, "", args...)
+}
+
+func runCLIExitInput(t *testing.T, fake *fakeClient, input string, args ...string) (int, string, string) {
+	t.Helper()
 	root := newTestRoot(fake)
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetIn(strings.NewReader(""))
+	root.SetIn(strings.NewReader(input))
 	root.SetArgs(args)
 	err := root.Execute()
 	if err != nil {
@@ -1304,4 +1355,298 @@ func containsFold(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestCLIVhostStatusAndUse(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{vhostStatus: helperproto.VhostStatusResponse{Mode: "builtin", ServerVersion: "1.26.1"}}
+	out := runCLI(t, fake, "vhost", "status")
+	if !strings.Contains(out, "builtin") || !strings.Contains(out, "1.26.1") {
+		t.Fatalf("output = %q", out)
+	}
+	out = runCLI(t, fake, "vhost", "use", "nginx", "--yes")
+	if !fake.servingModeSet || fake.servingMode != "nginx" {
+		t.Fatal("mode not switched")
+	}
+	if !strings.Contains(out, "nginx") {
+		t.Fatalf("output = %q, want the refreshed status", out)
+	}
+}
+
+func TestCLIVhostStatusJSON(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{vhostStatus: helperproto.VhostStatusResponse{
+		Mode:           "nginx",
+		Server:         "nginx",
+		ServerVersion:  "1.26.1",
+		BridgePath:     "/etc/nginx/conf.d/devstack-vhosts.conf",
+		IncludePresent: true,
+		CurrentRelease: "/etc/devstack/vhosts/nginx/releases/20261022T214500Z",
+		ConfigOK:       true,
+		LastError:      "previous failure",
+	}}
+	out := runCLI(t, fake, "vhost", "status", "--json")
+	var got helperproto.VhostStatusResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("json: %v (%q)", err, out)
+	}
+	if got.Mode != "nginx" || got.ServerVersion != "1.26.1" || !got.IncludePresent || !got.ConfigOK {
+		t.Fatalf("status = %+v", got)
+	}
+	if got.LastError != "previous failure" {
+		t.Fatalf("last error = %q", got.LastError)
+	}
+}
+
+func TestCLIVhostUseConfirmation(t *testing.T) {
+	useTestSeams(t)
+
+	t.Run("declined", func(t *testing.T) {
+		fake := &fakeClient{}
+		code, stdout, _ := runCLIExitInput(t, fake, "n\n", "vhost", "use", "nginx")
+		if code == 0 {
+			t.Fatal("want non-zero exit when the mode switch is declined")
+		}
+		if fake.servingModeSet {
+			t.Fatal("mode was switched without confirmation")
+		}
+		for _, want := range []string{"80/443", "built-in proxy", "downtime"} {
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("confirmation output = %q, want it to mention %q", stdout, want)
+			}
+		}
+	})
+
+	t.Run("accepted", func(t *testing.T) {
+		fake := &fakeClient{}
+		code, _, _ := runCLIExitInput(t, fake, "y\n", "vhost", "use", "apache")
+		if code != 0 {
+			t.Fatalf("exit = %d", code)
+		}
+		if !fake.servingModeSet || fake.servingMode != "apache" {
+			t.Fatalf("serving mode = %q (set %v)", fake.servingMode, fake.servingModeSet)
+		}
+	})
+
+	t.Run("builtin warning", func(t *testing.T) {
+		fake := &fakeClient{vhostStatus: helperproto.VhostStatusResponse{Mode: "nginx"}}
+		code, stdout, _ := runCLIExitInput(t, fake, "n\n", "vhost", "use", "builtin")
+		if code == 0 {
+			t.Fatal("want non-zero exit when the mode switch is declined")
+		}
+		for _, want := range []string{"forwarders", "removes", "downtime"} {
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("confirmation output = %q, want it to mention %q", stdout, want)
+			}
+		}
+	})
+
+	t.Run("json requires yes", func(t *testing.T) {
+		fake := &fakeClient{}
+		code, stdout, stderr := runCLIExitInput(t, fake, "y\n", "vhost", "use", "nginx", "--json")
+		if code == 0 {
+			t.Fatal("want non-zero exit without --yes in JSON mode")
+		}
+		if fake.servingModeSet {
+			t.Fatal("mode was switched without --yes")
+		}
+		if strings.TrimSpace(stdout) != "" {
+			t.Fatalf("stdout = %q, want no JSON on failure", stdout)
+		}
+		if !strings.Contains(stderr, "CONFIRMATION_REQUIRED") || !strings.Contains(stderr, "--yes") {
+			t.Fatalf("stderr = %q", stderr)
+		}
+	})
+
+	t.Run("json with yes", func(t *testing.T) {
+		fake := &fakeClient{}
+		out := runCLI(t, fake, "vhost", "use", "apache", "--json", "--yes")
+		var got helperproto.VhostStatusResponse
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("json: %v (%q)", err, out)
+		}
+		if got.Mode != "apache" {
+			t.Fatalf("status = %+v", got)
+		}
+	})
+
+	t.Run("invalid mode", func(t *testing.T) {
+		fake := &fakeClient{}
+		code, _, stderr := runCLIExit(t, fake, "vhost", "use", "caddy", "--yes")
+		if code == 0 || fake.servingModeSet {
+			t.Fatalf("code=%d set=%v", code, fake.servingModeSet)
+		}
+		if !strings.Contains(stderr, "INVALID_ARGUMENT") || !strings.Contains(stderr, "builtin, nginx, or apache") {
+			t.Fatalf("stderr = %q", stderr)
+		}
+	})
+}
+
+func TestCLIVhostSync(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{vhostStatus: helperproto.VhostStatusResponse{
+		Mode:           "nginx",
+		Server:         "nginx",
+		ServerVersion:  "1.26.1",
+		IncludePresent: true,
+		ConfigOK:       true,
+	}}
+	out := runCLI(t, fake, "vhost", "sync")
+	if fake.vhostSyncs != 1 {
+		t.Fatalf("sync calls = %d, want 1", fake.vhostSyncs)
+	}
+	if !strings.Contains(out, "nginx") || !strings.Contains(out, "1.26.1") {
+		t.Fatalf("output = %q, want the refreshed status", out)
+	}
+}
+
+func TestCLIVhostPreview(t *testing.T) {
+	useTestSeams(t)
+	const rendered = "server {\n    server_name blog.test;\n}\n"
+
+	t.Run("defaults to the active external server", func(t *testing.T) {
+		fake := &fakeClient{
+			vhostStatus:    helperproto.VhostStatusResponse{Mode: "apache", Server: "apache"},
+			previewContent: rendered,
+		}
+		out := runCLI(t, fake, "vhost", "preview", "blog")
+		if fake.previewRef != "blog" || fake.previewServer != "apache" {
+			t.Fatalf("preview = %q/%q", fake.previewRef, fake.previewServer)
+		}
+		if out != rendered {
+			t.Fatalf("output = %q, want %q", out, rendered)
+		}
+	})
+
+	t.Run("defaults to nginx in builtin mode", func(t *testing.T) {
+		fake := &fakeClient{
+			vhostStatus:    helperproto.VhostStatusResponse{Mode: "builtin"},
+			previewContent: rendered,
+		}
+		_ = runCLI(t, fake, "vhost", "preview", "blog")
+		if fake.previewServer != "nginx" {
+			t.Fatalf("server = %q, want nginx", fake.previewServer)
+		}
+	})
+
+	t.Run("flag overrides the active server", func(t *testing.T) {
+		fake := &fakeClient{
+			vhostStatus:    helperproto.VhostStatusResponse{Mode: "apache", Server: "apache"},
+			previewContent: rendered,
+		}
+		_ = runCLI(t, fake, "vhost", "preview", "blog", "--server", "nginx")
+		if fake.previewServer != "nginx" {
+			t.Fatalf("server = %q, want nginx", fake.previewServer)
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		fake := &fakeClient{
+			vhostStatus:    helperproto.VhostStatusResponse{Mode: "builtin"},
+			previewContent: rendered,
+		}
+		out := runCLI(t, fake, "vhost", "preview", "blog", "--server", "apache", "--json")
+		var got struct {
+			Server  string `json:"server"`
+			Site    string `json:"site"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("json: %v (%q)", err, out)
+		}
+		if got.Server != "apache" || got.Site != "blog" || got.Content != rendered {
+			t.Fatalf("preview = %+v", got)
+		}
+	})
+
+	t.Run("invalid server", func(t *testing.T) {
+		fake := &fakeClient{}
+		code, _, stderr := runCLIExit(t, fake, "vhost", "preview", "blog", "--server", "caddy")
+		if code == 0 || fake.previewRef != "" {
+			t.Fatalf("code=%d preview ref=%q", code, fake.previewRef)
+		}
+		if !strings.Contains(stderr, "INVALID_ARGUMENT") {
+			t.Fatalf("stderr = %q", stderr)
+		}
+	})
+}
+
+func TestCLIVhostPath(t *testing.T) {
+	useTestSeams(t)
+
+	t.Run("builtin defaults", func(t *testing.T) {
+		fake := &fakeClient{vhostStatus: helperproto.VhostStatusResponse{Mode: "builtin"}}
+		out := runCLI(t, fake, "vhost", "path")
+		for _, want := range []string{
+			"/etc/devstack/vhosts/nginx/current",
+			"/etc/devstack/vhosts/apache/current",
+			"/etc/nginx/conf.d/devstack-vhosts.conf",
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("output = %q, want it to contain %q", out, want)
+			}
+		}
+	})
+
+	t.Run("external derives from the current release", func(t *testing.T) {
+		fake := &fakeClient{vhostStatus: helperproto.VhostStatusResponse{
+			Mode:           "nginx",
+			Server:         "nginx",
+			CurrentRelease: "/opt/devstack/vhosts/nginx/releases/20261022T214500Z",
+			BridgePath:     "/opt/nginx/conf.d/devstack-vhosts.conf",
+		}}
+		out := runCLI(t, fake, "vhost", "path", "--json")
+		var got struct {
+			Mode          string `json:"mode"`
+			Server        string `json:"server"`
+			NginxCurrent  string `json:"nginx_current"`
+			ApacheCurrent string `json:"apache_current"`
+			Bridge        string `json:"bridge"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("json: %v (%q)", err, out)
+		}
+		if got.Mode != "nginx" || got.Server != "nginx" {
+			t.Fatalf("paths = %+v", got)
+		}
+		if got.NginxCurrent != "/opt/devstack/vhosts/nginx/current" {
+			t.Fatalf("nginx current = %q", got.NginxCurrent)
+		}
+		if got.ApacheCurrent != "/etc/devstack/vhosts/apache/current" {
+			t.Fatalf("apache current = %q", got.ApacheCurrent)
+		}
+		if got.Bridge != "/opt/nginx/conf.d/devstack-vhosts.conf" {
+			t.Fatalf("bridge = %q", got.Bridge)
+		}
+	})
+}
+
+func TestCLIVhostErrorRemediations(t *testing.T) {
+	useTestSeams(t)
+	tests := []struct {
+		code string
+		want string
+	}{
+		{"SERVING_MODE_UNAVAILABLE", "nginx or Apache"},
+		{"VHOST_CONFIG_INVALID", "vhost sync"},
+		{"VHOST_SYNC_FAILED", "vhost sync"},
+		{"VHOST_INCLUDE_MISSING", "bridge"},
+		{"SERVER_RELOAD_FAILED", "restart the web server"},
+		{"VHOST_SYNC_BUSY", "Wait"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.code, func(t *testing.T) {
+			fake := &fakeClient{err: &client.Error{Code: tt.code, Message: "vhost failure"}}
+			code, stdout, stderr := runCLIExit(t, fake, "vhost", "status")
+			if code == 0 {
+				t.Fatal("want non-zero exit")
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Fatalf("stdout = %q", stdout)
+			}
+			if !strings.Contains(stderr, tt.code) || !strings.Contains(stderr, "Remediation:") || !strings.Contains(stderr, tt.want) {
+				t.Fatalf("stderr = %q, want code %s and %q", stderr, tt.code, tt.want)
+			}
+		})
+	}
 }

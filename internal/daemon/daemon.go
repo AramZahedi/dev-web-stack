@@ -223,15 +223,17 @@ func Run(ctx context.Context, opts Options) error {
 
 	userHome, _ := os.UserHomeDir()
 	doctorService := doctor.NewService(doctor.Deps{
-		Config:    cfg,
-		Home:      userHome,
-		Store:     st,
-		Helper:    helper,
-		Trust:     helper,
-		Ports:     portProbe{},
-		Runtimes:  runtimeChecker{manager: runtimes},
-		Disk:      diskChecker{},
-		HostsPath: opts.HostsPath,
+		Config:      cfg,
+		Home:        userHome,
+		Store:       st,
+		Helper:      helper,
+		Trust:       helper,
+		Ports:       portProbe{},
+		Runtimes:    runtimeChecker{manager: runtimes},
+		Disk:        diskChecker{},
+		Vhosts:      siteService,
+		VhostTLSDir: "",
+		HostsPath:   opts.HostsPath,
 	})
 
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{

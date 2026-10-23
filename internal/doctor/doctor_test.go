@@ -28,9 +28,11 @@ type testFakes struct {
 	ports     *fakePorts
 	runtimes  *fakeRuntimes
 	disk      *fakeDisk
+	vhosts    *fakeVhosts
 	store     *store.Store
 	hostsPath string
 	home      string
+	tlsDir    string
 }
 
 // newTestDoctor builds a Service against a temporary SQLite database and hosts
@@ -85,9 +87,11 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 		}},
 		runtimes:  &fakeRuntimes{},
 		disk:      &fakeDisk{free: 20 << 30},
+		vhosts:    &fakeVhosts{status: helperproto.VhostStatusResponse{Mode: "builtin", ConfigOK: true}},
 		store:     st,
 		hostsPath: hostsPath,
 		home:      filepath.Join(dir, "user"),
+		tlsDir:    filepath.Join(dir, "tls"),
 	}
 	fakes.helper = &fakeHelper{
 		status: helperproto.StatusResponse{
@@ -103,15 +107,17 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 	cfg.Home = dir
 
 	svc := NewService(Deps{
-		Config:    cfg,
-		Home:      fakes.home,
-		Store:     st,
-		Helper:    fakes.helper,
-		Trust:     fakes.trust,
-		Ports:     fakes.ports,
-		Runtimes:  fakes.runtimes,
-		Disk:      fakes.disk,
-		HostsPath: hostsPath,
+		Config:      cfg,
+		Home:        fakes.home,
+		Store:       st,
+		Helper:      fakes.helper,
+		Trust:       fakes.trust,
+		Ports:       fakes.ports,
+		Runtimes:    fakes.runtimes,
+		Disk:        fakes.disk,
+		Vhosts:      fakes.vhosts,
+		VhostTLSDir: fakes.tlsDir,
+		HostsPath:   hostsPath,
 	})
 	return svc, fakes
 }
@@ -646,7 +652,8 @@ func TestEveryNonOKCheckHasRemediationAndNoSudo(t *testing.T) {
 			t.Errorf("%s remediation uses sudo: %q", check.ID, check.Remediation)
 		}
 	}
-	for _, id := range []string{"helper", "ca", "hosts", "trust", "ports", "runtimes", "disk", "wsl"} {
+	for _, id := range []string{"helper", "ca", "hosts", "trust", "ports", "runtimes", "disk", "wsl",
+		"serving-mode", "vhost-server", "vhost-include", "vhost-config", "vhost-freshness", "vhost-tls"} {
 		if _, ok := checkByID(rep, id); !ok {
 			t.Errorf("missing %s check: %+v", id, rep.Checks)
 		}
@@ -787,4 +794,359 @@ func (f *fakeDisk) FreeBytes(path string) (uint64, error) {
 	f.calls++
 	f.path = path
 	return f.free, f.err
+}
+
+func TestDoctorVhostChecksSkippedInBuiltin(t *testing.T) {
+	svc, _ := newTestDoctor(t)
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCheck(rep, "serving-mode", StatusOK) {
+		t.Fatalf("serving-mode should pass in builtin mode: %+v", rep.Checks)
+	}
+	for _, id := range []string{"vhost-server", "vhost-include", "vhost-config", "vhost-freshness", "vhost-tls"} {
+		if !hasCheck(rep, id, StatusSkipped) {
+			t.Fatalf("%s should be skipped in builtin mode: %+v", id, rep.Checks)
+		}
+	}
+	if !rep.OK {
+		t.Fatalf("builtin vhost checks must not fail the report: %+v", rep.Checks)
+	}
+}
+
+func TestDoctorHealthyExternalVhosts(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	writeTestTLS(t, fakes.tlsDir, 0o600, 0o644)
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"serving-mode", "vhost-server", "vhost-include", "vhost-config", "vhost-freshness", "vhost-tls"} {
+		if !hasCheck(rep, id, StatusOK) {
+			t.Fatalf("%s should pass: %+v", id, rep.Checks)
+		}
+	}
+	if !rep.OK {
+		t.Fatalf("healthy external report: %+v", rep.Checks)
+	}
+}
+
+func TestDoctorVhostModeMismatchFails(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	fakes.vhosts.status.Mode = config.ServingModeApache
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "serving-mode")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("serving-mode = %+v (found %v)", check, ok)
+	}
+	if !strings.Contains(check.Remediation, "devstack vhost use nginx") || !strings.Contains(check.Remediation, "doctor") {
+		t.Fatalf("serving-mode remediation = %q", check.Remediation)
+	}
+	if rep.OK {
+		t.Fatal("a mode mismatch must fail the report")
+	}
+}
+
+func TestDoctorVhostMissingVersionAndIncludeFail(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	fakes.vhosts.status.ServerVersion = ""
+	fakes.vhosts.status.IncludePresent = false
+	fakes.vhosts.status.CurrentRelease = ""
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCheck(rep, "vhost-server", StatusFail) {
+		t.Fatalf("vhost-server should fail without a version: %+v", rep.Checks)
+	}
+	include, ok := checkByID(rep, "vhost-include")
+	if !ok || include.Status != StatusFail {
+		t.Fatalf("vhost-include = %+v", include)
+	}
+	if !strings.Contains(include.Detail, fakes.vhosts.status.BridgePath) {
+		t.Fatalf("vhost-include detail = %q, want the bridge path", include.Detail)
+	}
+}
+
+func TestDoctorReportsVhostConfigFailure(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	fakes.vhosts.status.ConfigOK = false
+	fakes.vhosts.status.LastError = "nginx: [emerg] unknown directive"
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasCheck(rep, "vhost-config", StatusOK) {
+		t.Fatalf("%+v", rep.Checks)
+	}
+	check, ok := checkByID(rep, "vhost-config")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("vhost-config = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "unknown directive") {
+		t.Fatalf("vhost-config detail = %q, want the last error", check.Detail)
+	}
+	if !strings.Contains(check.Remediation, "vhost sync") {
+		t.Fatalf("vhost-config remediation = %q", check.Remediation)
+	}
+}
+
+func TestDoctorVhostStaleReleaseFails(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	fakes.vhosts.status.LastSync = time.Date(2026, 10, 23, 11, 0, 0, 0, time.UTC)
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "vhost-freshness")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("vhost-freshness = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "vhost release is older than site state") {
+		t.Fatalf("vhost-freshness detail = %q", check.Detail)
+	}
+}
+
+func TestDoctorVhostFreshnessWithoutStoreIsSkipped(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	svc.deps.Store = nil
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCheck(rep, "vhost-freshness", StatusSkipped) {
+		t.Fatalf("vhost-freshness should be skipped without a store: %+v", rep.Checks)
+	}
+}
+
+func TestDoctorVhostStatusNotConfigured(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	svc.deps.Vhosts = nil
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "serving-mode")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("serving-mode = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "vhost status is not configured") {
+		t.Fatalf("serving-mode detail = %q", check.Detail)
+	}
+	for _, id := range []string{"vhost-server", "vhost-include", "vhost-config", "vhost-freshness", "vhost-tls"} {
+		if !hasCheck(rep, id, StatusSkipped) {
+			t.Fatalf("%s should be skipped: %+v", id, rep.Checks)
+		}
+	}
+}
+
+func TestDoctorVhostStatusReadFailure(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	fakes.vhosts.err = errors.New("helper is down")
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "serving-mode")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("serving-mode = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "helper is down") {
+		t.Fatalf("serving-mode detail = %q", check.Detail)
+	}
+	if !hasCheck(rep, "vhost-tls", StatusSkipped) {
+		t.Fatalf("vhost-tls should be skipped: %+v", rep.Checks)
+	}
+}
+
+func TestDoctorVhostTLS(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, dir string)
+		want       Status
+		detailPart string
+		remedyPart string
+	}{
+		{
+			name: "healthy",
+			setup: func(t *testing.T, dir string) {
+				writeTestTLS(t, dir, 0o600, 0o644)
+			},
+			want:       StatusOK,
+			detailPart: "0600",
+		},
+		{
+			name: "bad key mode",
+			setup: func(t *testing.T, dir string) {
+				writeTestTLS(t, dir, 0o644, 0o644)
+			},
+			want:       StatusFail,
+			detailPart: "blog.key",
+			remedyPart: "chmod 600",
+		},
+		{
+			name: "bad cert mode",
+			setup: func(t *testing.T, dir string) {
+				writeTestTLS(t, dir, 0o600, 0o600)
+			},
+			want:       StatusFail,
+			detailPart: "blog.crt",
+			remedyPart: "chmod 644",
+		},
+		{
+			name: "bad directory mode",
+			setup: func(t *testing.T, dir string) {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:       StatusFail,
+			detailPart: "mode",
+			remedyPart: "chmod 700",
+		},
+		{
+			name:       "missing directory",
+			setup:      func(t *testing.T, dir string) {},
+			want:       StatusFail,
+			detailPart: "cannot inspect",
+		},
+		{
+			name: "no certificate files",
+			setup: func(t *testing.T, dir string) {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ignore me"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:       StatusWarn,
+			detailPart: "no TLS",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, fakes := newTestDoctor(t)
+			enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+			tt.setup(t, fakes.tlsDir)
+
+			rep, err := svc.Run(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			check, ok := checkByID(rep, "vhost-tls")
+			if !ok {
+				t.Fatalf("missing vhost-tls check: %+v", rep.Checks)
+			}
+			if check.Status != tt.want {
+				t.Fatalf("vhost-tls = %+v", check)
+			}
+			if !strings.Contains(check.Detail, tt.detailPart) {
+				t.Fatalf("vhost-tls detail = %q, want %q", check.Detail, tt.detailPart)
+			}
+			if tt.remedyPart != "" && !strings.Contains(check.Remediation, tt.remedyPart) {
+				t.Fatalf("vhost-tls remediation = %q, want %q", check.Remediation, tt.remedyPart)
+			}
+		})
+	}
+}
+
+func TestDoctorVhostTLSSkippedWithoutRelease(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	fakes.vhosts.status.CurrentRelease = ""
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "vhost-tls")
+	if !ok {
+		t.Fatalf("missing vhost-tls check: %+v", rep.Checks)
+	}
+	if check.Status != StatusSkipped && check.Status != StatusWarn {
+		t.Fatalf("vhost-tls = %+v, want skipped or warn without a release", check)
+	}
+}
+
+func enableExternalVhosts(t *testing.T, svc *Service, fakes *testFakes, mode string) {
+	t.Helper()
+	svc.deps.Config.ServingMode = mode
+	fakes.vhosts.status = helperproto.VhostStatusResponse{
+		Mode:           mode,
+		Server:         mode,
+		ServerVersion:  "1.26.1",
+		BridgePath:     "/etc/" + mode + "/conf.d/devstack-vhosts.conf",
+		IncludePresent: true,
+		CurrentRelease: filepath.Join("/etc/devstack/vhosts", mode, "releases", "20261023T120000Z"),
+		ConfigOK:       true,
+		LastSync:       time.Date(2026, 10, 23, 12, 30, 0, 0, time.UTC),
+	}
+}
+
+func writeTestTLS(t *testing.T, dir string, keyMode, certMode os.FileMode) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "blog.key")
+	if err := os.WriteFile(keyPath, []byte("test key material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(keyPath, keyMode); err != nil {
+		t.Fatal(err)
+	}
+	certPath := filepath.Join(dir, "blog.crt")
+	if err := os.WriteFile(certPath, []byte("test cert material"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(certPath, certMode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type fakeVhosts struct {
+	status helperproto.VhostStatusResponse
+	err    error
+	calls  int
+}
+
+func (f *fakeVhosts) VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return helperproto.VhostStatusResponse{}, err
+	}
+	f.calls++
+	if f.err != nil {
+		return helperproto.VhostStatusResponse{}, f.err
+	}
+	return f.status, nil
 }

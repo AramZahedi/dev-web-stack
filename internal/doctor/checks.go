@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/hosts"
 )
@@ -26,6 +29,12 @@ const (
 	defaultHTTPPort  = 8080
 	defaultHTTPSPort = 8443
 	defaultUIPort    = 7070
+
+	// defaultVhostTLSDir holds the helper-managed vhost certificates.
+	defaultVhostTLSDir = "/etc/devstack/tls"
+	// Documented bridge paths, used when the helper reports no path.
+	defaultNginxBridge  = "/etc/nginx/conf.d/devstack-vhosts.conf"
+	defaultApacheBridge = "/etc/apache2/conf-enabled/devstack-vhosts.conf"
 )
 
 var (
@@ -537,4 +546,306 @@ func errorDetail(err error) string {
 		return message[:limit] + "..."
 	}
 	return message
+}
+
+// checkVhosts reports the external serving mode, server, bridge, config-test,
+// release freshness, and TLS material state. Builtin mode skips every external
+// vhost check; an external mode without a vhost status fails only the
+// serving-mode check and skips the rest because their inputs are unavailable.
+func (s *Service) checkVhosts(ctx context.Context) []Check {
+	mode := s.configuredServingMode()
+	checks := []Check{
+		{ID: "serving-mode", Title: "Serving mode"},
+		{ID: "vhost-server", Title: "Vhost server"},
+		{ID: "vhost-include", Title: "Vhost include"},
+		{ID: "vhost-config", Title: "Vhost config test"},
+		{ID: "vhost-freshness", Title: "Vhost release freshness"},
+		{ID: "vhost-tls", Title: "Vhost TLS permissions"},
+	}
+	skipRest := func(from int, detail string) {
+		for i := from; i < len(checks); i++ {
+			checks[i].Status = StatusSkipped
+			checks[i].Detail = detail
+			checks[i].Remediation = "No action is required."
+		}
+	}
+
+	if mode == config.ServingModeBuiltin {
+		checks[0].Status = StatusOK
+		checks[0].Detail = "the built-in proxy serves sites on ports 80 and 443"
+		checks[0].Remediation = "No action is required."
+		skipRest(1, "the built-in proxy is serving sites, so external vhosts are not in use")
+		return checks
+	}
+	if !config.ValidServingMode(mode) {
+		checks[0].Status = StatusFail
+		checks[0].Detail = fmt.Sprintf("config.yaml selects unsupported serving mode %q", mode)
+		checks[0].Remediation = "Set serving_mode to builtin, nginx, or apache in config.yaml, then restart the daemon."
+		skipRest(1, "the configured serving mode is invalid")
+		return checks
+	}
+	if s.deps.Vhosts == nil {
+		checks[0].Status = StatusFail
+		checks[0].Detail = "vhost status is not configured"
+		checks[0].Remediation = "Run `devstack init` to restart the daemon with vhost support, then rerun `devstack doctor`."
+		skipRest(1, "vhost status is not configured")
+		return checks
+	}
+
+	status, err := s.deps.Vhosts.VhostStatus(ctx)
+	if err != nil {
+		checks[0].Status = StatusFail
+		checks[0].Detail = fmt.Sprintf("cannot read the helper's vhost status for %s mode: %s", mode, errorDetail(err))
+		checks[0].Remediation = "Run `devstack vhost status` to inspect the helper, then rerun `devstack doctor`."
+		skipRest(1, "the helper's vhost status could not be read")
+		return checks
+	}
+
+	helperMode := strings.ToLower(strings.TrimSpace(status.Mode))
+	if helperMode == "" {
+		helperMode = config.ServingModeBuiltin
+	}
+	if helperMode == mode {
+		checks[0].Status = StatusOK
+		checks[0].Detail = fmt.Sprintf("config.yaml and the helper both select %s", mode)
+	} else {
+		checks[0].Status = StatusFail
+		checks[0].Detail = fmt.Sprintf("config.yaml selects %s but the helper reports %s", mode, helperMode)
+		checks[0].Remediation = fmt.Sprintf("Run `devstack vhost use %s` to reconcile the helper, then rerun `devstack doctor`.", mode)
+	}
+
+	server := strings.ToLower(strings.TrimSpace(status.Server))
+	if server == "" {
+		server = mode
+	}
+	version := strings.TrimSpace(status.ServerVersion)
+	if version == "" {
+		checks[1].Status = StatusFail
+		checks[1].Detail = fmt.Sprintf("%s is selected but its version could not be detected", server)
+		checks[1].Remediation = fmt.Sprintf("Install %s and start its service, then run `devstack vhost sync`.", server)
+	} else {
+		checks[1].Status = StatusOK
+		checks[1].Detail = fmt.Sprintf("%s %s is available", server, version)
+	}
+
+	bridge := vhostBridgePath(status, mode)
+	if status.IncludePresent {
+		checks[2].Status = StatusOK
+		checks[2].Detail = "the server includes the devstack bridge " + bridge
+	} else {
+		checks[2].Status = StatusFail
+		checks[2].Detail = "the server does not include the devstack bridge " + bridge
+		checks[2].Remediation = "Add the devstack bridge to the server's include directory (see `devstack vhost path`), then run `devstack vhost sync`."
+	}
+
+	if status.ConfigOK {
+		checks[3].Status = StatusOK
+		checks[3].Detail = "the server configuration test passed"
+	} else {
+		checks[3].Status = StatusFail
+		checks[3].Detail = "the server configuration test failed"
+		if lastError := strings.TrimSpace(status.LastError); lastError != "" {
+			checks[3].Detail += ": " + errorDetail(errors.New(lastError))
+		}
+		checks[3].Remediation = "Fix the reported server configuration error, then run `devstack vhost sync`."
+	}
+
+	checks[4] = s.checkVhostFreshness(ctx, status.LastSync)
+	checks[5] = s.checkVhostTLS(status)
+	return checks
+}
+
+// configuredServingMode treats an empty value as builtin, matching the daemon.
+func (s *Service) configuredServingMode() string {
+	mode := strings.ToLower(strings.TrimSpace(s.deps.Config.ServingMode))
+	if mode == "" {
+		return config.ServingModeBuiltin
+	}
+	return mode
+}
+
+// checkVhostFreshness compares the last successful helper sync with the newest
+// registered site update. Missing inputs are skipped rather than guessed.
+func (s *Service) checkVhostFreshness(ctx context.Context, lastSync time.Time) Check {
+	check := Check{ID: "vhost-freshness", Title: "Vhost release freshness"}
+	if s.deps.Store == nil {
+		check.Status = StatusSkipped
+		check.Detail = "the site store is not configured, so release freshness cannot be checked"
+		check.Remediation = "No action is required."
+		return check
+	}
+	sites, err := s.deps.Store.ListSites(ctx)
+	if err != nil {
+		check.Status = StatusSkipped
+		check.Detail = "cannot list registered sites: " + errorDetail(err)
+		check.Remediation = "No action is required."
+		return check
+	}
+
+	var newest time.Time
+	for _, site := range sites {
+		if site.UpdatedAt.After(newest) {
+			newest = site.UpdatedAt
+		}
+	}
+	if newest.IsZero() {
+		check.Status = StatusSkipped
+		check.Detail = "no registered site has an update timestamp"
+		check.Remediation = "No action is required."
+		return check
+	}
+	if lastSync.IsZero() {
+		check.Status = StatusSkipped
+		check.Detail = "the helper has not recorded a vhost sync timestamp"
+		check.Remediation = "Run `devstack vhost sync` after the external mode is active."
+		return check
+	}
+
+	if lastSync.Before(newest) {
+		check.Status = StatusFail
+		check.Detail = fmt.Sprintf("the vhost release is older than site state (last sync %s, newest site update %s)",
+			vhostTime(lastSync), vhostTime(newest))
+		check.Remediation = "Run `devstack vhost sync` to publish the latest site state."
+		return check
+	}
+	check.Status = StatusOK
+	check.Detail = fmt.Sprintf("the vhost release is newer than the newest site update (%s)", vhostTime(newest))
+	return check
+}
+
+// checkVhostTLS verifies permissions only. Key contents are never read.
+func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
+	check := Check{ID: "vhost-tls", Title: "Vhost TLS permissions"}
+	if strings.TrimSpace(status.CurrentRelease) == "" {
+		check.Status = StatusSkipped
+		check.Detail = "no vhost release is installed, so TLS material cannot be inspected"
+		check.Remediation = "Run `devstack vhost sync` after an external mode is active."
+		return check
+	}
+
+	dir := strings.TrimSpace(s.deps.VhostTLSDir)
+	if dir == "" {
+		dir = defaultVhostTLSDir
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		check.Status = StatusFail
+		check.Detail = fmt.Sprintf("cannot inspect %s: %v", dir, err)
+		check.Remediation = fmt.Sprintf("Recreate %s with mode 0700 (`install -d -m 0700 %s`, or `chmod 700 %s` after creating it), then rerun `devstack doctor`.", dir, dir, dir)
+		return check
+	}
+	if !info.IsDir() {
+		check.Status = StatusFail
+		check.Detail = fmt.Sprintf("%s is not a directory", dir)
+		check.Remediation = fmt.Sprintf("Remove the file at %s and run `devstack vhost sync` to recreate the TLS directory.", dir)
+		return check
+	}
+
+	var (
+		bad       []string
+		dirBad    bool
+		keyBad    bool
+		certBad   bool
+		keyFiles  int
+		certFiles int
+	)
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		dirBad = true
+		bad = append(bad, fmt.Sprintf("%s has mode %04o (want 0700)", dir, perm))
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		check.Status = StatusFail
+		check.Detail = fmt.Sprintf("cannot read %s: %v", dir, err)
+		check.Remediation = fmt.Sprintf("Restore read access to %s, then rerun `devstack doctor`.", dir)
+		return check
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		var want os.FileMode
+		switch {
+		case strings.HasSuffix(name, ".key"):
+			want = 0o600
+			keyFiles++
+		case strings.HasSuffix(name, ".crt"):
+			want = 0o644
+			certFiles++
+		default:
+			continue
+		}
+		path := filepath.Join(dir, name)
+		entryInfo, err := entry.Info()
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("%s cannot be inspected: %v", path, err))
+			if want == 0o600 {
+				keyBad = true
+			} else {
+				certBad = true
+			}
+			continue
+		}
+		if !entryInfo.Mode().IsRegular() {
+			bad = append(bad, fmt.Sprintf("%s is not a regular file", path))
+			if want == 0o600 {
+				keyBad = true
+			} else {
+				certBad = true
+			}
+			continue
+		}
+		if perm := entryInfo.Mode().Perm(); perm != want {
+			bad = append(bad, fmt.Sprintf("%s has mode %04o (want %04o)", path, perm, want))
+			if want == 0o600 {
+				keyBad = true
+			} else {
+				certBad = true
+			}
+		}
+	}
+
+	if len(bad) != 0 {
+		check.Status = StatusFail
+		check.Detail = "TLS material is unsafe: " + strings.Join(bad, "; ")
+		var fixes []string
+		if dirBad {
+			fixes = append(fixes, fmt.Sprintf("`chmod 700 %s`", dir))
+		}
+		if keyBad {
+			fixes = append(fixes, fmt.Sprintf("`chmod 600 %s/*.key`", dir))
+		}
+		if certBad {
+			fixes = append(fixes, fmt.Sprintf("`chmod 644 %s/*.crt`", dir))
+		}
+		check.Remediation = "Run " + strings.Join(fixes, ", ") + ", then rerun `devstack doctor`."
+		return check
+	}
+
+	if keyFiles == 0 && certFiles == 0 {
+		check.Status = StatusWarn
+		check.Detail = fmt.Sprintf("no TLS key or certificate files are present in %s", dir)
+		check.Remediation = "Run `devstack vhost sync` to install certificates for TLS sites."
+		return check
+	}
+
+	check.Status = StatusOK
+	check.Detail = fmt.Sprintf("%d key(s) are 0600 and %d certificate(s) are 0644 in %s", keyFiles, certFiles, dir)
+	return check
+}
+
+func vhostBridgePath(status helperproto.VhostStatusResponse, mode string) string {
+	if bridge := strings.TrimSpace(status.BridgePath); bridge != "" {
+		return bridge
+	}
+	if mode == config.ServingModeApache {
+		return defaultApacheBridge
+	}
+	return defaultNginxBridge
+}
+
+func vhostTime(value time.Time) string {
+	if value.IsZero() {
+		return "never"
+	}
+	return value.UTC().Format(time.RFC3339)
 }

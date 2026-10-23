@@ -54,6 +54,10 @@ type Client interface {
 	AvailableRuntimes(ctx context.Context) ([]catalog.Entry, error)
 	InstallRuntime(ctx context.Context, id string) (model.RuntimeBuild, error)
 	RemoveRuntime(ctx context.Context, buildID string) error
+	VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error)
+	SetServingMode(ctx context.Context, mode string) (helperproto.VhostStatusResponse, error)
+	SyncVhosts(ctx context.Context) (helperproto.VhostStatusResponse, error)
+	PreviewVhost(ctx context.Context, ref, server string) (string, error)
 }
 
 // Package-level seams. Tests replace these so no command touches a real
@@ -101,6 +105,7 @@ func NewRootCmd(newClient func(home string) (Client, error)) *cobra.Command {
 		app.newSiteCmd(),
 		app.newRuntimeCmd(),
 		app.newTrustCmd(),
+		app.newVhostCmd(),
 		app.newUICmd(),
 		app.newUninstallCmd(),
 		newVersionCmd(),
@@ -244,6 +249,18 @@ func apiRemediation(code string) string {
 		return "Run `devstack trust repair` to install the local CA."
 	case "PAYLOAD_TOO_LARGE":
 		return "Reduce the request size and try again."
+	case helperproto.CodeServingModeUnavailable:
+		return "Install nginx or Apache and start its service, then run `devstack vhost sync`."
+	case helperproto.CodeVhostConfigInvalid:
+		return "Fix the reported server configuration error, then run `devstack vhost sync`."
+	case helperproto.CodeVhostSyncFailed:
+		return "Run `devstack vhost sync` to reinstall the vhost set; if it persists, run `devstack doctor`."
+	case helperproto.CodeVhostIncludeMissing:
+		return "Ensure the server includes the devstack bridge file shown by `devstack vhost path`, then run `devstack vhost sync`."
+	case helperproto.CodeServerReloadFailed:
+		return "Start or restart the web server, then run `devstack vhost sync`."
+	case helperproto.CodeVhostSyncBusy:
+		return "Wait for the running vhost sync to finish, then retry."
 	default:
 		return "Run `devstack doctor` for diagnostics."
 	}
@@ -259,6 +276,18 @@ func helperRemediation(code string) string {
 		return "Update devstack and devstack-helper to the same version, then run `devstack init`."
 	case helperproto.CodeInvalidRequest:
 		return "Check the command arguments and try again."
+	case helperproto.CodeServingModeUnavailable:
+		return "Install nginx or Apache and start its service, then run `devstack vhost sync`."
+	case helperproto.CodeVhostConfigInvalid:
+		return "Fix the reported server configuration error, then run `devstack vhost sync`."
+	case helperproto.CodeVhostSyncFailed:
+		return "Run `devstack vhost sync` to reinstall the vhost set; if it persists, run `devstack doctor`."
+	case helperproto.CodeVhostIncludeMissing:
+		return "Ensure the server includes the devstack bridge file shown by `devstack vhost path`, then run `devstack vhost sync`."
+	case helperproto.CodeServerReloadFailed:
+		return "Start or restart the web server, then run `devstack vhost sync`."
+	case helperproto.CodeVhostSyncBusy:
+		return "Wait for the running vhost sync to finish, then retry."
 	default:
 		return "Ensure the devstack-helper service is running, then run `devstack init`."
 	}
