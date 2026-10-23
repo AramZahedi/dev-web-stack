@@ -84,6 +84,17 @@ type Config struct {
 	// reboot restores 80/443 without another `devstack init`; embedding
 	// callers leave it false unless they want that behavior.
 	AutoForward bool
+	// VhostRoot is the parent directory owning the vhost release tree and TLS
+	// material, normally /etc/devstack. When set, the helper vhost manager is
+	// wired automatically at <VhostRoot>/vhosts with TLS in <VhostRoot>/tls.
+	VhostRoot string
+	// VhostStatePath is the helper's vhost state file. It defaults to
+	// <VhostRoot>/vhosts.json when empty.
+	VhostStatePath string
+	// NginxIncludeDir and ApacheIncludeDir override the detected bridge
+	// include directories. Empty values auto-detect.
+	NginxIncludeDir  string
+	ApacheIncludeDir string
 	// Logger receives server diagnostics. A nil logger uses slog.Default.
 	Logger *slog.Logger
 	// Service contains the privileged operations exposed by the helper. When
@@ -103,6 +114,10 @@ type Service struct {
 	RemoveTrust     func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
 	TrustStatus     func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
 	SetForwarders   func(context.Context, helperproto.ForwardersRequest) error
+	VhostStatus     func(context.Context) (helperproto.VhostStatusResponse, error)
+	VhostSync       func(context.Context, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+	VhostSetMode    func(context.Context, string, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+	VhostRemove     func(context.Context) error
 	Uninstall       func(context.Context, helperproto.UninstallRequest) error
 }
 
@@ -112,6 +127,7 @@ type Server struct {
 	logger *slog.Logger
 
 	authority *Authority
+	vhosts    *VhostManager
 
 	hostsMu sync.Mutex
 
@@ -152,6 +168,20 @@ func NewServer(cfg Config) (*Server, error) {
 		}
 		s.authority = authority
 	}
+	if cfg.VhostRoot != "" {
+		statePath := cfg.VhostStatePath
+		if statePath == "" {
+			statePath = filepath.Join(cfg.VhostRoot, "vhosts.json")
+		}
+		manager := NewVhostManager(filepath.Join(cfg.VhostRoot, "vhosts"), statePath, s.authority, cfg.Runner, logger)
+		manager.TLSDir = filepath.Join(cfg.VhostRoot, "tls")
+		manager.NginxIncludeDir = cfg.NginxIncludeDir
+		manager.ApacheIncludeDir = cfg.ApacheIncludeDir
+		manager.Forwarders = func(ctx context.Context, enable bool) error {
+			return s.setForwarders(ctx, helperproto.ForwardersRequest{Enable: enable})
+		}
+		s.vhosts = manager
+	}
 	s.cfg.Service = s.wireService(s.cfg.Service)
 	return s, nil
 }
@@ -182,6 +212,20 @@ func (s *Server) wireService(service Service) Service {
 	}
 	if service.SetForwarders == nil {
 		service.SetForwarders = s.setForwarders
+	}
+	if s.vhosts != nil {
+		if service.VhostStatus == nil {
+			service.VhostStatus = s.vhosts.Status
+		}
+		if service.VhostSync == nil {
+			service.VhostSync = s.vhosts.Sync
+		}
+		if service.VhostSetMode == nil {
+			service.VhostSetMode = s.vhosts.SetMode
+		}
+		if service.VhostRemove == nil {
+			service.VhostRemove = s.vhosts.Remove
+		}
 	}
 	if service.Uninstall == nil {
 		service.Uninstall = s.uninstall
@@ -379,6 +423,14 @@ func (s *Server) setForwarders(ctx context.Context, req helperproto.ForwardersRe
 func (s *Server) uninstall(ctx context.Context, _ helperproto.UninstallRequest) error {
 	var errs []error
 
+	// Remove managed vhosts before stopping the forwarders so the external
+	// server is reloaded without our bridge first.
+	if s.vhosts != nil {
+		if err := s.vhosts.Remove(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("remove vhosts: %w", err))
+		}
+	}
+
 	s.forwardersMu.Lock()
 	stoppedForwarders := s.forwarders != nil
 	if s.forwarders != nil {
@@ -522,7 +574,18 @@ func (s *Server) Start(ctx context.Context) error {
 	// waiting for a CLI call. Start binds them before the HTTP server is
 	// published so a bind failure is a visible startup failure (and systemd
 	// restarts or reports it) rather than a silently missing 80/443 path.
-	if s.cfg.AutoForward {
+	autoForward := s.cfg.AutoForward
+	if autoForward && s.vhosts != nil {
+		mode, modeErr := s.vhosts.persistedMode()
+		switch {
+		case modeErr != nil:
+			s.logger.Warn("helper: cannot read vhost state; enabling automatic forwarders", "error", modeErr)
+		case mode == vhostModeNginx || mode == vhostModeApache:
+			autoForward = false
+			s.logger.Info("helper: skipping automatic forwarders because an external server owns the privileged ports", "mode", mode)
+		}
+	}
+	if autoForward {
 		httpListen, httpsListen, httpTarget, httpsTarget, portErr := s.forwarderPorts()
 		if portErr != nil {
 			cleanup()
@@ -614,6 +677,10 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST "+helperproto.PathTrustRemove, s.handleTrustRemove)
 	mux.HandleFunc("POST "+helperproto.PathTrustStatus, s.handleTrustStatus)
 	mux.HandleFunc("POST "+helperproto.PathForwarders, s.handleForwarders)
+	mux.HandleFunc("GET "+helperproto.PathVhostsStatus, s.handleVhostsStatus)
+	mux.HandleFunc("POST "+helperproto.PathVhostsSync, s.handleVhostsSync)
+	mux.HandleFunc("POST "+helperproto.PathVhostsMode, s.handleVhostsMode)
+	mux.HandleFunc("DELETE "+helperproto.PathVhosts, s.handleVhostsRemove)
 	mux.HandleFunc("POST "+helperproto.PathUninstall, s.handleUninstall)
 	return s.authenticate(mux)
 }
@@ -783,6 +850,85 @@ func (s *Server) handleForwarders(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleVhostsStatus(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.VhostStatus == nil {
+		s.notImplemented(w, "VhostStatus")
+		return
+	}
+	resp, err := s.cfg.Service.VhostStatus(r.Context())
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleVhostsSync(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.VhostSync == nil {
+		s.notImplemented(w, "VhostSync")
+		return
+	}
+	var req helperproto.VHostSyncRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	resp, err := s.cfg.Service.VhostSync(r.Context(), req)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleVhostsMode(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.VhostSetMode == nil {
+		s.notImplemented(w, "VhostSetMode")
+		return
+	}
+	var req helperproto.VhostModeRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	switch req.Mode {
+	case vhostModeBuiltin:
+	case vhostModeNginx, vhostModeApache:
+		if req.Sync == nil {
+			s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest,
+				fmt.Sprintf("sync is required when switching to %s", req.Mode))
+			return
+		}
+		req.Sync.Mode = req.Mode
+	default:
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest,
+			fmt.Sprintf("unsupported serving mode %q", req.Mode))
+		return
+	}
+	syncReq := helperproto.VHostSyncRequest{}
+	if req.Sync != nil {
+		syncReq = *req.Sync
+	}
+	resp, err := s.cfg.Service.VhostSetMode(r.Context(), req.Mode, syncReq)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleVhostsRemove(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.VhostRemove == nil {
+		s.notImplemented(w, "VhostRemove")
+		return
+	}
+	if err := s.cfg.Service.VhostRemove(r.Context()); err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleUninstall(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Service.Uninstall == nil {
 		s.notImplemented(w, "Uninstall")
@@ -813,6 +959,18 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
 	case errors.Is(err, helperproto.ErrUnauthorized):
 		s.writeError(w, http.StatusForbidden, helperproto.CodeUnauthorized, err.Error())
+	case errors.Is(err, helperproto.ErrServingModeUnavailable):
+		s.writeError(w, http.StatusConflict, helperproto.CodeServingModeUnavailable, err.Error())
+	case errors.Is(err, helperproto.ErrVhostIncludeMissing):
+		s.writeError(w, http.StatusConflict, helperproto.CodeVhostIncludeMissing, err.Error())
+	case errors.Is(err, helperproto.ErrVhostSyncBusy):
+		s.writeError(w, http.StatusConflict, helperproto.CodeVhostSyncBusy, err.Error())
+	case errors.Is(err, helperproto.ErrVhostConfigInvalid):
+		s.writeError(w, http.StatusUnprocessableEntity, helperproto.CodeVhostConfigInvalid, err.Error())
+	case errors.Is(err, helperproto.ErrServerReloadFailed):
+		s.writeError(w, http.StatusBadGateway, helperproto.CodeServerReloadFailed, err.Error())
+	case errors.Is(err, helperproto.ErrVhostSyncFailed):
+		s.writeError(w, http.StatusInternalServerError, helperproto.CodeVhostSyncFailed, err.Error())
 	default:
 		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
 	}

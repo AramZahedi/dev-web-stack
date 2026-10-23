@@ -648,3 +648,58 @@ func TestRenderedConfigsNeverEmitHSTS(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderCustomTLSDir(t *testing.T) {
+	custom := "/srv/devstack/tls-custom"
+	for _, server := range []Server{ServerNginx, ServerApache} {
+		t.Run(string(server), func(t *testing.T) {
+			set := testSet(server, 0)
+			set.TLSDir = custom
+			files, err := Render(set)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			blog := files["blog-1a2b3c4d.conf"]
+			dashboard := files["_devstack.test.conf"]
+			notFound := files["_default.conf"]
+			if !bytes.Contains(blog, []byte(custom+"/1a2b3c4d-0000-4000-8000-000000000001.crt")) {
+				t.Errorf("%s site config does not use the custom TLS directory:\n%s", server, blog)
+			}
+			if !bytes.Contains(blog, []byte(custom+"/1a2b3c4d-0000-4000-8000-000000000001.key")) {
+				t.Errorf("%s site config does not use the custom TLS key:\n%s", server, blog)
+			}
+			if !bytes.Contains(dashboard, []byte(custom+"/__dashboard__.crt")) {
+				t.Errorf("%s dashboard config does not use the custom TLS directory:\n%s", server, dashboard)
+			}
+			if !bytes.Contains(notFound, []byte(custom+"/__dashboard__.crt")) {
+				t.Errorf("%s default config does not use the custom TLS directory:\n%s", server, notFound)
+			}
+		})
+	}
+}
+
+func TestRenderRejectsInvalidTLSDir(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{name: "relative", dir: "tls", want: "absolute"},
+		{name: "unclean", dir: "/etc/devstack/../tls", want: "clean"},
+		{name: "trailing slash", dir: "/etc/devstack/tls/", want: "clean"},
+		{name: "NUL", dir: "/etc/devstack/tls\x00", want: "NUL"},
+		{name: "newline", dir: "/etc/devstack/tls\nserver", want: "newline"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := testSet(ServerNginx, 0)
+			set.TLSDir = tc.dir
+			_, err := Render(set)
+			if err == nil {
+				t.Fatalf("Render accepted TLS dir %q", tc.dir)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err, tc.want)
+			}
+		})
+	}
+}

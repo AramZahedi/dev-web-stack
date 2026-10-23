@@ -30,6 +30,11 @@ type fileConfig struct {
 	ProxyHTTPSPort   *int  `yaml:"proxy_https_port"`
 	AutoForward      *bool `yaml:"auto_forward"`
 
+	VhostRoot        *string `yaml:"vhost_root"`
+	VhostState       *string `yaml:"vhost_state"`
+	NginxIncludeDir  *string `yaml:"nginx_include_dir"`
+	ApacheIncludeDir *string `yaml:"apache_include_dir"`
+
 	LogLevel *string `yaml:"log_level"`
 }
 
@@ -133,6 +138,18 @@ func (cfg fileConfig) apply(opts *options) {
 	}
 	if cfg.AutoForward != nil {
 		opts.autoForward = *cfg.AutoForward
+	}
+	if cfg.VhostRoot != nil {
+		opts.vhostRoot = *cfg.VhostRoot
+	}
+	if cfg.VhostState != nil {
+		opts.vhostState = *cfg.VhostState
+	}
+	if cfg.NginxIncludeDir != nil {
+		opts.nginxIncludeDir = *cfg.NginxIncludeDir
+	}
+	if cfg.ApacheIncludeDir != nil {
+		opts.apacheIncludeDir = *cfg.ApacheIncludeDir
 	}
 	if cfg.LogLevel != nil {
 		opts.logLevel = *cfg.LogLevel

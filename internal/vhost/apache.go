@@ -8,28 +8,28 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
-func renderApacheSite(s SiteSpec, maxBody int64) []byte {
+func renderApacheSite(s SiteSpec, maxBody int64, tlsDir string) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
 
 	switch {
 	case s.DesiredState == model.DesiredStopped:
-		writeApacheStoppedVHost(&b, s, false)
+		writeApacheStoppedVHost(&b, s, false, tlsDir)
 		b.WriteString("\n")
-		writeApacheStoppedVHost(&b, s, true)
+		writeApacheStoppedVHost(&b, s, true, tlsDir)
 	case s.TLS && s.ForceHTTPS:
-		writeApacheRedirectVHost(&b, s, false, "https")
+		writeApacheRedirectVHost(&b, s, false, "https", tlsDir)
 		b.WriteString("\n")
-		writeApacheServingVHost(&b, s, maxBody, true)
+		writeApacheServingVHost(&b, s, maxBody, true, tlsDir)
 	case s.TLS:
-		writeApacheServingVHost(&b, s, maxBody, false)
+		writeApacheServingVHost(&b, s, maxBody, false, tlsDir)
 		b.WriteString("\n")
-		writeApacheServingVHost(&b, s, maxBody, true)
+		writeApacheServingVHost(&b, s, maxBody, true, tlsDir)
 	default:
-		writeApacheServingVHost(&b, s, maxBody, false)
+		writeApacheServingVHost(&b, s, maxBody, false, tlsDir)
 		b.WriteString("\n")
-		writeApacheRedirectVHost(&b, s, true, "http")
+		writeApacheRedirectVHost(&b, s, true, "http", tlsDir)
 	}
 	return []byte(b.String())
 }
@@ -49,19 +49,19 @@ func writeApacheTLSDirectives(b *strings.Builder, certPath, keyPath string) {
 	b.WriteString("    SSLProtocol -all +TLSv1.2 +TLSv1.3\n")
 }
 
-func writeApacheSiteTLS(b *strings.Builder, s SiteSpec) {
-	certPath, keyPath := siteCertificatePaths(s)
+func writeApacheSiteTLS(b *strings.Builder, s SiteSpec, tlsDir string) {
+	certPath, keyPath := siteCertificatePaths(s, tlsDir)
 	writeApacheTLSDirectives(b, certPath, keyPath)
 }
 
-func writeApacheServingVHost(b *strings.Builder, s SiteSpec, maxBody int64, tls bool) {
+func writeApacheServingVHost(b *strings.Builder, s SiteSpec, maxBody int64, tls bool, tlsDir string) {
 	port := 80
 	if tls {
 		port = 443
 	}
 	writeApacheVHostOpen(b, port, s)
 	if tls {
-		writeApacheSiteTLS(b, s)
+		writeApacheSiteTLS(b, s, tlsDir)
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(b, "    LimitRequestBody %d\n", maxBody)
@@ -130,14 +130,14 @@ func writeApacheProxyConfig(b *strings.Builder, port int, scheme string) {
 	b.WriteString("    RequestHeader set X-Forwarded-Host \"%{DEVSTACK_HOST}e\"\n")
 }
 
-func writeApacheStoppedVHost(b *strings.Builder, s SiteSpec, tls bool) {
+func writeApacheStoppedVHost(b *strings.Builder, s SiteSpec, tls bool, tlsDir string) {
 	port := 80
 	if tls {
 		port = 443
 	}
 	writeApacheVHostOpen(b, port, s)
 	if tls {
-		writeApacheSiteTLS(b, s)
+		writeApacheSiteTLS(b, s, tlsDir)
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(b, "    ErrorDocument 503 %s\n", apacheQuote(maintenanceHTML))
@@ -146,14 +146,14 @@ func writeApacheStoppedVHost(b *strings.Builder, s SiteSpec, tls bool) {
 	b.WriteString("</VirtualHost>\n")
 }
 
-func writeApacheRedirectVHost(b *strings.Builder, s SiteSpec, tls bool, scheme string) {
+func writeApacheRedirectVHost(b *strings.Builder, s SiteSpec, tls bool, scheme string, tlsDir string) {
 	port := 80
 	if tls {
 		port = 443
 	}
 	writeApacheVHostOpen(b, port, s)
 	if tls {
-		writeApacheSiteTLS(b, s)
+		writeApacheSiteTLS(b, s, tlsDir)
 	}
 	b.WriteString("\n")
 	b.WriteString("    RewriteEngine On\n")
@@ -161,14 +161,15 @@ func writeApacheRedirectVHost(b *strings.Builder, s SiteSpec, tls bool, scheme s
 	b.WriteString("</VirtualHost>\n")
 }
 
-func renderApacheDashboard(d DashboardSpec, maxBody int64) []byte {
+func renderApacheDashboard(d DashboardSpec, maxBody int64, tlsDir string) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
 
 	fmt.Fprintf(&b, "<VirtualHost *:443>\n")
 	fmt.Fprintf(&b, "    ServerName %s\n", d.Domain)
-	writeApacheTLSDirectives(&b, dashboardCertPath, dashboardKeyPath)
+	certPath, keyPath := dashboardCertificatePaths(tlsDir)
+	writeApacheTLSDirectives(&b, certPath, keyPath)
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "    LimitRequestBody %d\n", maxBody)
 	b.WriteString("\n")
@@ -177,7 +178,7 @@ func renderApacheDashboard(d DashboardSpec, maxBody int64) []byte {
 	return []byte(b.String())
 }
 
-func renderApacheDefault() []byte {
+func renderApacheDefault(tlsDir string) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
@@ -191,7 +192,8 @@ func renderApacheDefault() []byte {
 		fmt.Fprintf(&b, "<VirtualHost *:%d>\n", port)
 		b.WriteString("    ServerName devstack.invalid\n")
 		if tls {
-			writeApacheTLSDirectives(&b, dashboardCertPath, dashboardKeyPath)
+			certPath, keyPath := dashboardCertificatePaths(tlsDir)
+			writeApacheTLSDirectives(&b, certPath, keyPath)
 		}
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "    ErrorDocument 404 %s\n", apacheQuote(notFoundHTML))

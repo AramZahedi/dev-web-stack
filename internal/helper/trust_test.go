@@ -40,8 +40,25 @@ func (r *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte
 	return nil, nil
 }
 
-func (r *fakeRunner) called(name string) bool {
-	return r.count(name) > 0
+func (r *fakeRunner) called(name string, args ...string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.calls {
+		if c.name != name || len(args) > len(c.args) {
+			continue
+		}
+		matches := true
+		for i, arg := range args {
+			if c.args[i] != arg {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *fakeRunner) count(name string) int {

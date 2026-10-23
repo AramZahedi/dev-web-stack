@@ -26,4 +26,14 @@ proxy_https_port: 8443
 # forwarders explicitly.
 auto_forward: true
 
+# Helper-managed nginx/Apache vhosts. vhost_root owns the vhosts/ and tls/
+# trees; vhost_state records mode, releases, and owned TLS files.
+vhost_root: /etc/devstack
+vhost_state: /var/lib/devstack-helper/vhosts.json
+
+# Bridge include directories. Empty auto-detects and verifies that the main
+# server config actually loads the directory.
+nginx_include_dir: ""
+apache_include_dir: ""
+
 log_level: info

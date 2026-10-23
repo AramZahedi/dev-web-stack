@@ -28,6 +28,10 @@ forward_https_port: 20443
 proxy_http_port: 21080
 proxy_https_port: 21443
 auto_forward: false
+vhost_root: /tmp/config/vhosts
+vhost_state: /tmp/config/vhost-state.json
+nginx_include_dir: /tmp/config/nginx.d
+apache_include_dir: /tmp/config/apache.d
 log_level: debug
 `)
 
@@ -36,18 +40,22 @@ log_level: debug
 		t.Fatal(err)
 	}
 	want := options{
-		configPath:     path,
-		socket:         "/tmp/config/helper.sock",
-		stateDir:       "/tmp/config/state",
-		hosts:          "/tmp/config/hosts",
-		trustDir:       "/tmp/config/trust",
-		allowUID:       4242,
-		httpPort:       20080,
-		httpsPort:      20443,
-		proxyHTTPPort:  21080,
-		proxyHTTPSPort: 21443,
-		autoForward:    false,
-		logLevel:       "debug",
+		configPath:       path,
+		socket:           "/tmp/config/helper.sock",
+		stateDir:         "/tmp/config/state",
+		hosts:            "/tmp/config/hosts",
+		trustDir:         "/tmp/config/trust",
+		allowUID:         4242,
+		httpPort:         20080,
+		httpsPort:        20443,
+		proxyHTTPPort:    21080,
+		proxyHTTPSPort:   21443,
+		autoForward:      false,
+		vhostRoot:        "/tmp/config/vhosts",
+		vhostState:       "/tmp/config/vhost-state.json",
+		nginxIncludeDir:  "/tmp/config/nginx.d",
+		apacheIncludeDir: "/tmp/config/apache.d",
+		logLevel:         "debug",
 	}
 	if opts != want {
 		t.Fatalf("options = %+v, want %+v", opts, want)
@@ -84,6 +92,10 @@ log_level: warn
 		"--socket", "/tmp/flag/helper.sock",
 		"--allow-uid", "77",
 		"--proxy-http", "22080",
+		"--vhost-root", "/tmp/flag/vhosts",
+		"--vhost-state", "/tmp/flag/vhost-state.json",
+		"--nginx-include-dir", "/tmp/flag/nginx.d",
+		"--apache-include-dir", "/tmp/flag/apache.d",
 		"--auto-forward=true",
 		"--log-level", "error",
 	})
@@ -98,6 +110,12 @@ log_level: warn
 	}
 	if opts.proxyHTTPPort != 22080 {
 		t.Fatalf("proxyHTTPPort = %d", opts.proxyHTTPPort)
+	}
+	if opts.vhostRoot != "/tmp/flag/vhosts" || opts.vhostState != "/tmp/flag/vhost-state.json" {
+		t.Fatalf("vhost paths = %q, %q", opts.vhostRoot, opts.vhostState)
+	}
+	if opts.nginxIncludeDir != "/tmp/flag/nginx.d" || opts.apacheIncludeDir != "/tmp/flag/apache.d" {
+		t.Fatalf("include dirs = %q, %q", opts.nginxIncludeDir, opts.apacheIncludeDir)
 	}
 	if opts.logLevel != "error" {
 		t.Fatalf("logLevel = %q", opts.logLevel)
@@ -125,6 +143,9 @@ func TestParseOptionsEmptyConfigKeepsDefaults(t *testing.T) {
 	}
 	if !opts.autoForward {
 		t.Fatal("autoForward = false, want true by default")
+	}
+	if opts.vhostRoot != defaultVhostRoot || opts.vhostState != defaultVhostState {
+		t.Fatalf("vhost defaults = %q, %q", opts.vhostRoot, opts.vhostState)
 	}
 }
 

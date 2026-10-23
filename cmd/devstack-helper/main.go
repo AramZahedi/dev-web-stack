@@ -20,9 +20,11 @@ import (
 )
 
 const (
-	defaultSocket   = "/run/devstack-helper/helper.sock"
-	defaultStateDir = "/var/lib/devstack-helper"
-	defaultHosts    = "/etc/hosts"
+	defaultSocket     = "/run/devstack-helper/helper.sock"
+	defaultStateDir   = "/var/lib/devstack-helper"
+	defaultHosts      = "/etc/hosts"
+	defaultVhostRoot  = "/etc/devstack"
+	defaultVhostState = "/var/lib/devstack-helper/vhosts.json"
 
 	defaultHTTPPort       = 80
 	defaultHTTPSPort      = 443
@@ -34,18 +36,22 @@ const (
 // defaults, are optionally replaced by --config, and are finally overridden by
 // explicit command-line flags.
 type options struct {
-	configPath     string
-	socket         string
-	stateDir       string
-	hosts          string
-	trustDir       string
-	allowUID       int
-	httpPort       int
-	httpsPort      int
-	proxyHTTPPort  int
-	proxyHTTPSPort int
-	autoForward    bool
-	logLevel       string
+	configPath       string
+	socket           string
+	stateDir         string
+	hosts            string
+	trustDir         string
+	allowUID         int
+	httpPort         int
+	httpsPort        int
+	proxyHTTPPort    int
+	proxyHTTPSPort   int
+	autoForward      bool
+	vhostRoot        string
+	vhostState       string
+	nginxIncludeDir  string
+	apacheIncludeDir string
+	logLevel         string
 }
 
 func (o options) caDir() string {
@@ -66,6 +72,8 @@ func parseOptions(args []string) (options, error) {
 		proxyHTTPPort:  defaultProxyHTTPPort,
 		proxyHTTPSPort: defaultProxyHTTPSPort,
 		autoForward:    true,
+		vhostRoot:      defaultVhostRoot,
+		vhostState:     defaultVhostState,
 		logLevel:       "info",
 	}
 
@@ -95,6 +103,10 @@ func parseOptions(args []string) (options, error) {
 	flags.IntVar(&opts.proxyHTTPPort, "proxy-http", opts.proxyHTTPPort, "daemon HTTP proxy port")
 	flags.IntVar(&opts.proxyHTTPSPort, "proxy-https", opts.proxyHTTPSPort, "daemon HTTPS proxy port")
 	flags.BoolVar(&opts.autoForward, "auto-forward", opts.autoForward, "bind the privileged forwarders at startup")
+	flags.StringVar(&opts.vhostRoot, "vhost-root", opts.vhostRoot, "parent directory owning the vhosts and TLS trees")
+	flags.StringVar(&opts.vhostState, "vhost-state", opts.vhostState, "helper vhost state file")
+	flags.StringVar(&opts.nginxIncludeDir, "nginx-include-dir", opts.nginxIncludeDir, "nginx bridge include directory (empty detects)")
+	flags.StringVar(&opts.apacheIncludeDir, "apache-include-dir", opts.apacheIncludeDir, "Apache bridge include directory (empty detects)")
 	flags.StringVar(&opts.logLevel, "log-level", opts.logLevel, "debug, info, warn, or error")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
@@ -110,6 +122,12 @@ func parseOptions(args []string) (options, error) {
 	}
 	if opts.allowUID < 0 {
 		return options{}, fmt.Errorf(`allow_uid %d must not be negative (config key "allow_uid" or --allow-uid)`, opts.allowUID)
+	}
+	if strings.TrimSpace(opts.vhostRoot) == "" {
+		return options{}, errors.New(`vhost_root must not be empty (config key "vhost_root" or --vhost-root)`)
+	}
+	if strings.TrimSpace(opts.vhostState) == "" {
+		return options{}, errors.New(`vhost_state must not be empty (config key "vhost_state" or --vhost-state)`)
 	}
 	return opts, nil
 }
@@ -128,6 +146,10 @@ func newHelperServer(opts options, logger *slog.Logger) (*helper.Server, error) 
 		ProxyHTTPPort:    opts.proxyHTTPPort,
 		ProxyHTTPSPort:   opts.proxyHTTPSPort,
 		AutoForward:      opts.autoForward,
+		VhostRoot:        opts.vhostRoot,
+		VhostStatePath:   opts.vhostState,
+		NginxIncludeDir:  opts.nginxIncludeDir,
+		ApacheIncludeDir: opts.apacheIncludeDir,
 		Logger:           logger,
 	})
 }
