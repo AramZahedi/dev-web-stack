@@ -1,0 +1,881 @@
+package runtime
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/catalog"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/store"
+)
+
+var _ backend.RuntimeProvider = (*Manager)(nil)
+
+const (
+	testVersion = "24.99.0"
+	testID      = "node@" + testVersion
+	testBuild   = "linux-x64"
+	testArchive = "node-v24.99.0-linux-x64.tar.gz"
+)
+
+func TestInstallVerifiesChecksumAndExtractsSafely(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newFixtureServer(t, archive)
+	entry := entryFor(t, archive, srv.URL+"/"+testArchive)
+	m, st, home, _ := newManagerFor(t, entry, srv.Client())
+
+	build, err := m.Install(context.Background(), testID)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	wantPath := filepath.Join(home, "runtimes", "node", testVersion+"-"+testBuild)
+	if build.Path != wantPath {
+		t.Errorf("build.Path = %q, want %q", build.Path, wantPath)
+	}
+	if build.ID != testID || build.Kind != "node" || build.Version != testVersion {
+		t.Errorf("unexpected build identity: %+v", build)
+	}
+	if build.Backend != model.BackendLocal {
+		t.Errorf("build.Backend = %q, want local", build.Backend)
+	}
+	if build.Checksum != entry.SHA256 {
+		t.Errorf("build.Checksum = %q, want %q", build.Checksum, entry.SHA256)
+	}
+	if build.InstalledAt.IsZero() {
+		t.Error("build.InstalledAt is zero")
+	}
+
+	info, err := os.Stat(filepath.Join(build.Path, "bin", "node"))
+	if err != nil {
+		t.Fatalf("stat installed bin/node: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("bin/node mode = %04o, want executable", info.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(build.Path, manifestName)); err != nil {
+		t.Fatalf("stat manifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(build.Path, "node-v"+testVersion+"-linux-x64")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("wrapper directory was not stripped: %v", err)
+	}
+
+	builds, err := m.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(builds) != 1 || builds[0].ID != testID {
+		t.Fatalf("List = %+v, want one %s", builds, testID)
+	}
+	got, err := st.GetRuntime(context.Background(), testID)
+	if err != nil {
+		t.Fatalf("GetRuntime: %v", err)
+	}
+	if got.Path != build.Path {
+		t.Errorf("stored path = %q, want %q", got.Path, build.Path)
+	}
+	if err := m.Verify(context.Background(), testID); err != nil {
+		t.Fatalf("Verify after install: %v", err)
+	}
+
+	assertNoPartialOrTempFiles(t, home)
+}
+
+func TestChecksumMismatchLeavesNoRuntime(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	corrupt := append([]byte(nil), archive...)
+	corrupt[len(corrupt)-1] ^= 0xff
+	srv := newFixtureServer(t, corrupt)
+	entry := entryFor(t, archive, srv.URL+"/"+testArchive)
+	m, _, home, _ := newManagerFor(t, entry, srv.Client())
+
+	_, err := m.Install(context.Background(), testID)
+	if err == nil {
+		t.Fatal("Install accepted a tarball with the wrong checksum")
+	}
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("Install error = %v, want ErrChecksumMismatch", err)
+	}
+
+	builds, err := m.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(builds) != 0 {
+		t.Fatalf("runtime registered after checksum failure: %+v", builds)
+	}
+	if _, err := os.Stat(filepath.Join(home, "runtimes", "node", testVersion+"-"+testBuild)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("target directory exists after checksum failure: %v", err)
+	}
+	assertNoPartialOrTempFiles(t, home)
+}
+
+func TestExtractionRejectsTraversalAndSymlink(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+	}{
+		{name: "parent traversal", fixture: "traversal.tar.gz"},
+		{name: "absolute path", fixture: "absolute.tar.gz"},
+		{name: "absolute symlink", fixture: "symlink.tar.gz"},
+		{name: "escaping symlink", fixture: "symlink-escape.tar.gz"},
+		{name: "ancestor symlink", fixture: "symlink-ancestor.tar.gz"},
+		{name: "wrapper-relative symlink escapes after strip", fixture: "wrapped-symlink-escape.tar.gz"},
+		{name: "hardlink", fixture: "hardlink.tar.gz"},
+		{name: "device", fixture: "device.tar.gz"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archive := fixtureData(t, test.fixture)
+			srv := newFixtureServer(t, archive)
+			entry := entryFor(t, archive, srv.URL+"/"+testArchive)
+			m, _, home, _ := newManagerFor(t, entry, srv.Client())
+
+			_, err := m.Install(context.Background(), testID)
+			if err == nil {
+				t.Fatal("Install accepted an unsafe archive")
+			}
+			if !errors.Is(err, ErrUnsafeArchive) {
+				t.Fatalf("Install error = %v, want ErrUnsafeArchive", err)
+			}
+			builds, listErr := m.List(context.Background())
+			if listErr != nil {
+				t.Fatalf("List: %v", listErr)
+			}
+			if len(builds) != 0 {
+				t.Fatalf("runtime registered after unsafe archive: %+v", builds)
+			}
+			if matches := filesNamed(t, home, "escape.txt"); len(matches) != 0 {
+				t.Fatalf("traversal wrote outside the extraction root: %v", matches)
+			}
+			if matches := filesNamed(t, home, "devstack-absolute-escape.txt"); len(matches) != 0 {
+				t.Fatalf("absolute path was written: %v", matches)
+			}
+			assertNoPartialOrTempFiles(t, home)
+		})
+	}
+}
+
+func TestInstallAcceptsSafeRelativeSymlink(t *testing.T) {
+	archive := fixtureData(t, "symlink-safe.tar.gz")
+	entry := entryFor(t, archive, "https://nodejs.org/dist/v"+testVersion+"/"+testArchive)
+	m, _, _, _ := newManagerFor(t, entry, nil)
+
+	build, err := m.InstallFile(context.Background(), testID, filepath.Join("testdata", "symlink-safe.tar.gz"))
+	if err != nil {
+		t.Fatalf("InstallFile: %v", err)
+	}
+	link := filepath.Join(build.Path, "bin", "npm")
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat bin/npm: %v", err)
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		t.Fatalf("bin/npm mode = %v, want symlink", info.Mode())
+	}
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("readlink bin/npm: %v", err)
+	}
+	if target != "../lib/npm.js" {
+		t.Fatalf("bin/npm target = %q, want ../lib/npm.js", target)
+	}
+	if err := m.Verify(context.Background(), testID); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	// Replacing the managed link with one that points outside must fail
+	// verification.
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc/passwd", link); err != nil {
+		t.Fatal(err)
+	}
+	err = m.Verify(context.Background(), testID)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "symlink") {
+		t.Fatalf("Verify after symlink tampering = %v, want symlink error", err)
+	}
+}
+
+func TestWrapperDirectoryStripsSymlinkTargets(t *testing.T) {
+	archive := fixtureData(t, "wrapped-symlink.tar.gz")
+	entry := entryFor(t, archive, "https://nodejs.org/dist/v"+testVersion+"/"+testArchive)
+	m, _, _, _ := newManagerFor(t, entry, nil)
+
+	build, err := m.InstallFile(context.Background(), testID, filepath.Join("testdata", "wrapped-symlink.tar.gz"))
+	if err != nil {
+		t.Fatalf("InstallFile: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(build.Path, "bin", "node")); err != nil {
+		t.Fatalf("stat bin/node: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(build.Path, "node-v"+testVersion+"-linux-x64")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("wrapper directory survived: %v", err)
+	}
+	target, err := os.Readlink(filepath.Join(build.Path, "bin", "npm"))
+	if err != nil {
+		t.Fatalf("readlink bin/npm: %v", err)
+	}
+	if target != "../lib/npm.js" {
+		t.Fatalf("bin/npm target = %q, want ../lib/npm.js", target)
+	}
+	if err := m.Verify(context.Background(), testID); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
+func TestWrapperDirectoryIsStrippedOnlyForWrappers(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+	}{
+		{name: "standard roots kept", fixture: "valid.tar.gz"},
+		{name: "single standard root kept", fixture: "binonly.tar.gz"},
+		{name: "node wrapper stripped", fixture: "wrapped.tar.gz"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archive := fixtureData(t, test.fixture)
+			entry := entryFor(t, archive, "https://nodejs.org/dist/v"+testVersion+"/"+testArchive)
+			m, _, _, _ := newManagerFor(t, entry, nil)
+
+			build, err := m.InstallFile(context.Background(), testID, filepath.Join("testdata", test.fixture))
+			if err != nil {
+				t.Fatalf("InstallFile: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(build.Path, "bin", "node")); err != nil {
+				t.Fatalf("stat bin/node: %v", err)
+			}
+			wrapper := filepath.Join(build.Path, "node-v"+testVersion+"-linux-x64")
+			if _, statErr := os.Stat(wrapper); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("wrapper directory survived extraction: %v", statErr)
+			}
+
+			var manifest manifest
+			if err := readJSONFile(filepath.Join(build.Path, manifestName), &manifest); err != nil {
+				t.Fatalf("read manifest: %v", err)
+			}
+			for _, file := range manifest.Files {
+				if strings.HasPrefix(file.Path, "node-v") {
+					t.Errorf("manifest contains wrapper path %q", file.Path)
+				}
+			}
+		})
+	}
+}
+
+func TestInstallFileOfflineAndIdempotent(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	entry := entryFor(t, archive, "https://nodejs.org/dist/v"+testVersion+"/"+testArchive)
+	m, _, _, _ := newManagerFor(t, entry, nil)
+	source := filepath.Join("testdata", "valid.tar.gz")
+
+	build, err := m.InstallFile(context.Background(), testID, source)
+	if err != nil {
+		t.Fatalf("InstallFile: %v", err)
+	}
+	if err := m.Verify(context.Background(), testID); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	builds, err := m.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(builds) != 1 {
+		t.Fatalf("List returned %d builds, want 1", len(builds))
+	}
+
+	// A second offline install of the same id is a no-op even when the source
+	// file no longer exists.
+	again, err := m.InstallFile(context.Background(), testID, filepath.Join(t.TempDir(), "missing.tar.gz"))
+	if err != nil {
+		t.Fatalf("second InstallFile: %v", err)
+	}
+	if again.Path != build.Path || again.Checksum != build.Checksum {
+		t.Fatalf("idempotent install changed the build: %+v", again)
+	}
+}
+
+func TestInstallFileChecksumMismatchLeavesNoRuntime(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	entry := entryFor(t, archive, "https://nodejs.org/dist/v"+testVersion+"/"+testArchive)
+	m, _, home, _ := newManagerFor(t, entry, nil)
+
+	corrupt := append([]byte(nil), archive...)
+	corrupt[len(corrupt)-1] ^= 0xff
+	source := filepath.Join(t.TempDir(), testArchive)
+	if err := os.WriteFile(source, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.InstallFile(context.Background(), testID, source); !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("InstallFile error = %v, want ErrChecksumMismatch", err)
+	}
+	if builds, _ := m.List(context.Background()); len(builds) != 0 {
+		t.Fatalf("runtime registered after checksum failure: %+v", builds)
+	}
+	assertNoPartialOrTempFiles(t, home)
+}
+
+func TestVerifyDetectsTampering(t *testing.T) {
+	tests := []struct {
+		name    string
+		tamper  func(t *testing.T, build model.RuntimeBuild)
+		wantErr string
+	}{
+		{
+			name: "content tampered",
+			tamper: func(t *testing.T, build model.RuntimeBuild) {
+				path := filepath.Join(build.Path, "bin", "node")
+				if err := os.WriteFile(path, []byte("#!/bin/sh\necho tampered\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "checksum",
+		},
+		{
+			name: "file missing",
+			tamper: func(t *testing.T, build model.RuntimeBuild) {
+				if err := os.Remove(filepath.Join(build.Path, "lib", "readme.txt")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "missing",
+		},
+		{
+			name: "extra file",
+			tamper: func(t *testing.T, build model.RuntimeBuild) {
+				if err := os.WriteFile(filepath.Join(build.Path, "extra.txt"), []byte("extra"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "unexpected",
+		},
+		{
+			name: "mode changed",
+			tamper: func(t *testing.T, build model.RuntimeBuild) {
+				if err := os.Chmod(filepath.Join(build.Path, "bin", "node"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "mode",
+		},
+		{
+			name: "file replaced by symlink",
+			tamper: func(t *testing.T, build model.RuntimeBuild) {
+				path := filepath.Join(build.Path, "lib", "readme.txt")
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("/etc/passwd", path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "symlink",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m, _, _, _ := installValidOffline(t)
+			builds, err := m.List(context.Background())
+			if err != nil || len(builds) != 1 {
+				t.Fatalf("List = %+v, %v; want one build", builds, err)
+			}
+			if err := m.Verify(context.Background(), testID); err != nil {
+				t.Fatalf("Verify before tampering: %v", err)
+			}
+			test.tamper(t, builds[0])
+			err = m.Verify(context.Background(), testID)
+			if err == nil {
+				t.Fatal("Verify accepted a tampered runtime")
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), test.wantErr) {
+				t.Fatalf("Verify error = %q, want it to contain %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestVerifyDetectsMissingManifest(t *testing.T) {
+	m, _, _, _ := installValidOffline(t)
+	builds, err := m.List(context.Background())
+	if err != nil || len(builds) != 1 {
+		t.Fatalf("List: %v", err)
+	}
+	if err := os.Remove(filepath.Join(builds[0].Path, manifestName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Verify(context.Background(), testID); err == nil || !strings.Contains(err.Error(), "manifest") {
+		t.Fatalf("Verify error = %v, want missing manifest", err)
+	}
+}
+
+func TestRemoveContainmentAndNotFound(t *testing.T) {
+	t.Run("removes managed build", func(t *testing.T) {
+		m, _, _, _ := installValidOffline(t)
+		builds, _ := m.List(context.Background())
+		build := builds[0]
+
+		if err := m.Remove(context.Background(), testID); err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+		if _, err := os.Stat(build.Path); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("runtime path still exists: %v", err)
+		}
+		if _, err := m.stores.GetRuntime(context.Background(), testID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("GetRuntime after Remove = %v, want ErrNotFound", err)
+		}
+		if err := m.Remove(context.Background(), testID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("second Remove = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("refuses path outside root", func(t *testing.T) {
+		entry := offlineEntry(t)
+		m, st, home, _ := newManagerFor(t, entry, nil)
+		outside := filepath.Join(home, "outside")
+		if err := os.MkdirAll(outside, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		victim := filepath.Join(outside, "keep.txt")
+		if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		upsertRuntime(t, st, "node@outside", outside)
+
+		err := m.Remove(context.Background(), "node@outside")
+		if !errors.Is(err, ErrUnsafePath) {
+			t.Fatalf("Remove error = %v, want ErrUnsafePath", err)
+		}
+		if _, err := os.Stat(victim); err != nil {
+			t.Fatalf("Remove touched a path outside the runtime root: %v", err)
+		}
+		if _, err := st.GetRuntime(context.Background(), "node@outside"); err != nil {
+			t.Fatalf("row was deleted for outside path: %v", err)
+		}
+	})
+
+	t.Run("refuses runtime root itself", func(t *testing.T) {
+		entry := offlineEntry(t)
+		m, st, home, _ := newManagerFor(t, entry, nil)
+		root := filepath.Join(home, "runtimes")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		upsertRuntime(t, st, "node@root", root)
+
+		if err := m.Remove(context.Background(), "node@root"); !errors.Is(err, ErrUnsafePath) {
+			t.Fatalf("Remove error = %v, want ErrUnsafePath", err)
+		}
+		if _, err := os.Stat(root); err != nil {
+			t.Fatalf("runtime root was removed: %v", err)
+		}
+	})
+
+	t.Run("refuses symlinked parent", func(t *testing.T) {
+		entry := offlineEntry(t)
+		m, st, home, _ := newManagerFor(t, entry, nil)
+		runtimes := filepath.Join(home, "runtimes")
+		if err := os.MkdirAll(runtimes, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		outside := filepath.Join(home, "outside-link")
+		managed := filepath.Join(outside, testVersion+"-"+testBuild)
+		if err := os.MkdirAll(managed, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		victim := filepath.Join(managed, "keep.txt")
+		if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		kindDir := filepath.Join(runtimes, "node")
+		if err := os.Symlink(outside, kindDir); err != nil {
+			t.Fatal(err)
+		}
+		upsertRuntime(t, st, "node@linked", filepath.Join(kindDir, testVersion+"-"+testBuild))
+
+		if err := m.Remove(context.Background(), "node@linked"); !errors.Is(err, ErrUnsafePath) {
+			t.Fatalf("Remove error = %v, want ErrUnsafePath", err)
+		}
+		if _, err := os.Stat(victim); err != nil {
+			t.Fatalf("Remove followed a symlinked parent: %v", err)
+		}
+	})
+}
+
+func TestConcurrentInstallsSameID(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newFixtureServer(t, archive)
+	entry := entryFor(t, archive, srv.URL+"/"+testArchive)
+	m1, st, home, cat := newManagerFor(t, entry, srv.Client())
+	m2 := newManager(st, home, srv.Client(), cat, nil)
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	builds := make([]model.RuntimeBuild, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			m := m1
+			if i%2 == 1 {
+				m = m2
+			}
+			builds[i], errs[i] = m.Install(context.Background(), testID)
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < workers; i++ {
+		if errs[i] != nil {
+			t.Fatalf("worker %d: %v", i, errs[i])
+		}
+		if builds[i].Path != builds[0].Path {
+			t.Fatalf("worker %d path = %q, want %q", i, builds[i].Path, builds[0].Path)
+		}
+		if builds[i].Checksum != entry.SHA256 {
+			t.Fatalf("worker %d checksum = %q", i, builds[i].Checksum)
+		}
+	}
+	if got := srv.requests.Load(); got != 1 {
+		t.Fatalf("downloads = %d, want 1", got)
+	}
+	if list, err := m1.List(context.Background()); err != nil || len(list) != 1 {
+		t.Fatalf("List = %+v, %v; want one row", list, err)
+	}
+	if err := m1.Verify(context.Background(), testID); err != nil {
+		t.Fatalf("Verify after concurrent install: %v", err)
+	}
+	assertNoPartialOrTempFiles(t, home)
+}
+
+func TestEnsureUsesInstalledBuildOrCatalog(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newFixtureServer(t, archive)
+	entry := entryFor(t, archive, srv.URL+"/"+testArchive)
+	m, _, _, _ := newManagerFor(t, entry, srv.Client())
+
+	first, err := m.Ensure(context.Background(), "node", testVersion)
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if first.ID != testID {
+		t.Fatalf("Ensure id = %q, want %q", first.ID, testID)
+	}
+	second, err := m.Ensure(context.Background(), "node", testVersion)
+	if err != nil {
+		t.Fatalf("second Ensure: %v", err)
+	}
+	if second.Path != first.Path {
+		t.Fatalf("second Ensure path = %q, want %q", second.Path, first.Path)
+	}
+	if got := srv.requests.Load(); got != 1 {
+		t.Fatalf("downloads = %d, want 1", got)
+	}
+
+	if _, err := m.Ensure(context.Background(), "node", "24.98.0"); !errors.Is(err, ErrNoCatalogEntry) {
+		t.Fatalf("Ensure unknown version = %v, want ErrNoCatalogEntry", err)
+	} else if !strings.Contains(err.Error(), "no catalog entry") {
+		t.Fatalf("Ensure unknown version error = %q, want clear message", err)
+	}
+	if _, err := m.Ensure(context.Background(), "php", "8.3.0"); !errors.Is(err, ErrNoCatalogEntry) {
+		t.Fatalf("Ensure unknown kind = %v, want ErrNoCatalogEntry", err)
+	}
+
+	// A registered build whose directory disappeared is repaired.
+	if err := os.RemoveAll(first.Path); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := m.Ensure(context.Background(), "node", testVersion)
+	if err != nil {
+		t.Fatalf("Ensure after deletion: %v", err)
+	}
+	if repaired.Path != first.Path {
+		t.Fatalf("repaired path = %q, want %q", repaired.Path, first.Path)
+	}
+	if got := srv.requests.Load(); got != 2 {
+		t.Fatalf("downloads after repair = %d, want 2", got)
+	}
+}
+
+func TestEnsureReportsCatalogLoadFailure(t *testing.T) {
+	home := t.TempDir()
+	st := openTestStore(t, home)
+	m := newManager(st, home, nil, catalog.Catalog{}, errors.New("catalog exploded"))
+
+	if _, err := m.Ensure(context.Background(), "node", testVersion); err == nil || !strings.Contains(err.Error(), "catalog exploded") {
+		t.Fatalf("Ensure error = %v, want catalog load failure", err)
+	}
+}
+
+func TestAvailableReturnsCatalog(t *testing.T) {
+	entry := offlineEntry(t)
+	m, _, _, _ := newManagerFor(t, entry, nil)
+	available := m.Available()
+	if len(available) != 1 || available[0].ID != testID {
+		t.Fatalf("Available = %+v, want one %s entry", available, testID)
+	}
+	available[0].ID = "mutated"
+	if again := m.Available(); again[0].ID != testID {
+		t.Fatalf("Available returned an aliased slice: %+v", again)
+	}
+}
+
+func TestInstallUnknownID(t *testing.T) {
+	m, _, _, _ := newManagerFor(t, offlineEntry(t), nil)
+	if _, err := m.Install(context.Background(), "node@1.2.3"); !errors.Is(err, ErrNoCatalogEntry) {
+		t.Fatalf("Install unknown id = %v, want ErrNoCatalogEntry", err)
+	}
+}
+
+func TestInstallCancelledContextWritesNothing(t *testing.T) {
+	m, _, home, _ := newManagerFor(t, offlineEntry(t), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := m.Install(ctx, testID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Install error = %v, want context.Canceled", err)
+	}
+	if builds, _ := m.List(context.Background()); len(builds) != 0 {
+		t.Fatalf("runtime registered after cancellation: %+v", builds)
+	}
+	assertNoPartialOrTempFiles(t, home)
+}
+
+func TestInstallFileMissingSource(t *testing.T) {
+	m, _, home, _ := newManagerFor(t, offlineEntry(t), nil)
+	if _, err := m.InstallFile(context.Background(), testID, filepath.Join(t.TempDir(), "missing.tar.gz")); err == nil {
+		t.Fatal("InstallFile accepted a missing source")
+	}
+	if builds, _ := m.List(context.Background()); len(builds) != 0 {
+		t.Fatalf("runtime registered after missing source: %+v", builds)
+	}
+	assertNoPartialOrTempFiles(t, home)
+}
+
+func TestManifestRecordsEveryRegularFile(t *testing.T) {
+	m, _, _, _ := installValidOffline(t)
+	builds, err := m.List(context.Background())
+	if err != nil || len(builds) != 1 {
+		t.Fatalf("List: %v", err)
+	}
+	var manifest manifest
+	if err := readJSONFile(filepath.Join(builds[0].Path, manifestName), &manifest); err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+
+	want := map[string]uint32{
+		"bin/node":       0o755,
+		"lib/readme.txt": 0o644,
+		"LICENSE":        0o644,
+	}
+	if len(manifest.Files) != len(want) {
+		t.Fatalf("manifest files = %+v, want %d entries", manifest.Files, len(want))
+	}
+	for _, file := range manifest.Files {
+		mode, ok := want[file.Path]
+		if !ok {
+			t.Errorf("unexpected manifest file %q", file.Path)
+			continue
+		}
+		if file.Mode != mode {
+			t.Errorf("%s mode = %04o, want %04o", file.Path, file.Mode, mode)
+		}
+		if len(file.SHA256) != 64 {
+			t.Errorf("%s sha256 = %q, want 64 hex characters", file.Path, file.SHA256)
+		}
+		sum := sha256.Sum256(mustReadFile(t, filepath.Join(builds[0].Path, filepath.FromSlash(file.Path))))
+		if hex.EncodeToString(sum[:]) != file.SHA256 {
+			t.Errorf("%s sha256 does not match file contents", file.Path)
+		}
+	}
+	if manifest.ID != testID || manifest.Kind != "node" || manifest.Version != testVersion {
+		t.Errorf("manifest identity = %+v", manifest)
+	}
+}
+
+func installValidOffline(t *testing.T) (*Manager, *store.Store, string, catalog.Catalog) {
+	t.Helper()
+	entry := offlineEntry(t)
+	m, st, home, cat := newManagerFor(t, entry, nil)
+	if _, err := m.InstallFile(context.Background(), testID, filepath.Join("testdata", "valid.tar.gz")); err != nil {
+		t.Fatalf("InstallFile: %v", err)
+	}
+	return m, st, home, cat
+}
+
+func offlineEntry(t *testing.T) catalog.Entry {
+	t.Helper()
+	archive := fixtureData(t, "valid.tar.gz")
+	return entryFor(t, archive, "https://nodejs.org/dist/v"+testVersion+"/"+testArchive)
+}
+
+func newManagerFor(t *testing.T, entry catalog.Entry, client *http.Client) (*Manager, *store.Store, string, catalog.Catalog) {
+	t.Helper()
+	cat := catalogFor(t, entry)
+	home := t.TempDir()
+	st := openTestStore(t, home)
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	return newManager(st, home, client, cat, nil), st, home, cat
+}
+
+func openTestStore(t *testing.T, home string) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+	return st
+}
+
+func catalogFor(t *testing.T, entries ...catalog.Entry) catalog.Catalog {
+	t.Helper()
+	data, err := json.Marshal(catalog.Catalog{Entries: entries})
+	if err != nil {
+		t.Fatalf("marshal catalog: %v", err)
+	}
+	cat, err := catalog.LoadFrom(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("catalog.LoadFrom: %v", err)
+	}
+	return cat
+}
+
+func entryFor(t *testing.T, archive []byte, url string) catalog.Entry {
+	t.Helper()
+	sum := sha256.Sum256(archive)
+	return catalog.Entry{
+		ID:      testID,
+		Kind:    "node",
+		Version: testVersion,
+		Build:   testBuild,
+		URL:     url,
+		SHA256:  hex.EncodeToString(sum[:]),
+		Size:    int64(len(archive)),
+	}
+}
+
+func fixtureData(t *testing.T, name string) []byte {
+	t.Helper()
+	return mustReadFile(t, filepath.Join("testdata", name))
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return data
+}
+
+func readJSONFile(path string, value any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, value)
+}
+
+func upsertRuntime(t *testing.T, st *store.Store, id, path string) {
+	t.Helper()
+	if err := st.UpsertRuntime(context.Background(), model.RuntimeBuild{
+		ID:          id,
+		Kind:        "node",
+		Version:     testVersion,
+		Backend:     model.BackendLocal,
+		Path:        path,
+		Checksum:    strings.Repeat("a", 64),
+		InstalledAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("UpsertRuntime: %v", err)
+	}
+}
+
+func filesNamed(t *testing.T, root, name string) []string {
+	t.Helper()
+	var matches []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Name() == name {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	return matches
+}
+
+func assertNoPartialOrTempFiles(t *testing.T, home string) {
+	t.Helper()
+	cache := filepath.Join(home, "cache")
+	if entries, err := os.ReadDir(cache); err == nil {
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".part") {
+				t.Errorf("leftover partial download %s", filepath.Join(cache, entry.Name()))
+			}
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("read cache: %v", err)
+	}
+
+	runtimes := filepath.Join(home, "runtimes")
+	if entries, err := os.ReadDir(runtimes); err == nil {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".install-") {
+				t.Errorf("leftover extraction directory %s", filepath.Join(runtimes, entry.Name()))
+			}
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("read runtimes: %v", err)
+	}
+}
+
+type fixtureServer struct {
+	*httptest.Server
+	requests atomic.Int32
+}
+
+func newFixtureServer(t *testing.T, archive []byte) *fixtureServer {
+	t.Helper()
+	fs := &fixtureServer{}
+	fs.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fs.requests.Add(1)
+		if r.URL.Path != "/"+testArchive {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(fs.Close)
+	return fs
+}
