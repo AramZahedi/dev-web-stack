@@ -10,7 +10,7 @@ import (
 
 // Render produces one complete php-fpm.conf for cfg. Values are validated
 // before rendering; paths and environment values are double-quoted with
-// backslashes and quotes escaped.
+// backslashes, quotes, and dollar signs escaped.
 func Render(cfg Config) ([]byte, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
@@ -61,15 +61,17 @@ func Render(cfg Config) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// quote renders a php-fpm double-quoted string. Backslashes and double quotes
-// are escaped; control characters were rejected by validation.
+// quote renders a php-fpm double-quoted string. Backslashes, double quotes,
+// and dollar signs are escaped; php-fpm expands ${...} in quoted values, so a
+// literal dollar must be written as \$. Control characters were rejected by
+// validation.
 func quote(value string) string {
 	var builder strings.Builder
 	builder.Grow(len(value) + 2)
 	builder.WriteByte('"')
 	for _, r := range value {
 		switch r {
-		case '\\', '"':
+		case '\\', '"', '$':
 			builder.WriteByte('\\')
 			builder.WriteRune(r)
 		default:

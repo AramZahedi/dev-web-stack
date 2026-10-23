@@ -23,8 +23,10 @@ func Argv(fpmBin, configPath, iniPath string) []string {
 // Validate runs `php-fpm -t -y <config> -c <ini>` with PHP_INI_SCAN_DIR
 // cleared and a ten-second timeout. Both files must exist and be readable:
 // php-fpm silently ignores a missing -c file, which would otherwise let a bad
-// ini path pass validation. Every failure wraps ErrConfigInvalid and includes
-// the trimmed command output.
+// ini path pass validation. A zero exit code is not sufficient either: real
+// php-fpm prints PHP ini parser errors and still exits 0, so the output is
+// scanned for fatal markers as well. Every failure wraps ErrConfigInvalid and
+// includes the trimmed command output.
 func Validate(ctx context.Context, fpmBin, configPath, iniPath string) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -59,11 +61,16 @@ func Validate(ctx context.Context, fpmBin, configPath, iniPath string) error {
 	command := exec.CommandContext(runCtx, fpmBin, "-t", "-y", configPath, "-c", iniPath)
 	command.Env = withEnv(os.Environ(), "PHP_INI_SCAN_DIR", "")
 	output, err := command.CombinedOutput()
+	message := strings.TrimSpace(string(output))
 	if err == nil {
+		if fpmFailure(message) != "" {
+			// php-fpm 8.4 exits 0 after printing a PHP ini syntax error from
+			// the -c file. Treat that output as a failed validation.
+			return fmt.Errorf("%w: %s", ErrConfigInvalid, message)
+		}
 		return nil
 	}
 
-	message := strings.TrimSpace(string(output))
 	switch {
 	case runCtx.Err() != nil && message != "":
 		message += "\n" + runCtx.Err().Error()
@@ -75,6 +82,35 @@ func Validate(ctx context.Context, fpmBin, configPath, iniPath string) error {
 		message += "\n" + err.Error()
 	}
 	return fmt.Errorf("%w: %s", ErrConfigInvalid, message)
+}
+
+// fpmFailure returns the first line of php-fpm output that reports a fatal
+// problem. The successful path prints only a timestamped NOTICE line, so
+// notices and warnings are deliberately not matched. PHP ini parse errors are
+// not timestamped and begin with "PHP:"; php-fpm's own errors are prefixed
+// with "ERROR:" after the timestamp.
+func fpmFailure(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "PHP:") ||
+			strings.HasPrefix(trimmed, "ERROR:") ||
+			strings.Contains(trimmed, "] ERROR:") {
+			return trimmed
+		}
+		// Defensive matching for PHP builds that do not use the "PHP:" prefix.
+		// Timestamped php-fpm lines are excluded so a path containing these
+		// words cannot fail an otherwise successful test.
+		if !strings.HasPrefix(trimmed, "[") {
+			lower := strings.ToLower(trimmed)
+			if strings.Contains(lower, "syntax error") || strings.Contains(lower, "parse error") {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }
 
 // readableFile verifies that path is an existing regular file that can be

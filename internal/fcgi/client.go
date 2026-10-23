@@ -313,22 +313,57 @@ func (c *Client) readResponse(ctx context.Context, conn net.Conn, writer *io.Pip
 	}
 }
 
+// Response header limits. A single line may not grow beyond maxHeaderLineBytes,
+// and the whole block may not exceed maxHeaderBytes. Both are enforced while
+// reading, before any unbounded buffering can happen.
+const (
+	maxHeaderBytes     = 1 << 20
+	maxHeaderLineBytes = 256 << 10
+)
+
+// readHeaderLine reads one newline-terminated header line with bounded memory.
+// ReadSlice returns bufio.ErrBufferFull for a fragment without a delimiter, so
+// a line far larger than the reader's buffer is rejected as soon as it passes
+// maxHeaderLineBytes instead of being buffered in full. A partial line at EOF
+// is returned together with io.EOF.
+func readHeaderLine(reader *bufio.Reader, total *int) (string, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			if len(line)+len(fragment) > maxHeaderLineBytes {
+				return "", fmt.Errorf("fcgi: response header line exceeds %d bytes", maxHeaderLineBytes)
+			}
+			if *total+len(fragment) > maxHeaderBytes {
+				return "", errors.New("fcgi: response headers exceed 1 MiB")
+			}
+			*total += len(fragment)
+			line = append(line, fragment...)
+		}
+		switch {
+		case err == nil:
+			return string(line), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			return string(line), io.EOF
+		default:
+			return "", err
+		}
+	}
+}
+
 // readResponseHead parses CGI headers from the beginning of the STDOUT
 // stream. The Status header selects the HTTP status and is not copied into
 // Header.
 func readResponseHead(reader *bufio.Reader) (*Response, error) {
 	header := make(http.Header)
-	const maxHeaderBytes = 1 << 20
 	total := 0
 	statusLine := ""
 	lastKey := ""
 
 	for {
-		line, err := reader.ReadString('\n')
-		total += len(line)
-		if total > maxHeaderBytes {
-			return nil, errors.New("fcgi: response headers exceed 1 MiB")
-		}
+		line, err := readHeaderLine(reader, &total)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if line == "" {

@@ -679,6 +679,99 @@ func TestFastCGIMalformedHeadersAndStatus(t *testing.T) {
 	}
 }
 
+func TestFastCGIReadsLargeHeaderLine(t *testing.T) {
+	// A line larger than the 32 KiB bufio buffer but below the per-line cap
+	// must be reassembled from ReadSlice fragments rather than rejected.
+	value := strings.Repeat("v", 200<<10)
+	addr, stop := startFakeServer(t, func(e *fakeExchange) error {
+		head := "Status: 200 OK\r\nX-Large: " + value + "\r\n\r\nok"
+		if err := e.WriteStdoutChunked([]byte(head), 32*1024); err != nil {
+			return err
+		}
+		return e.EndRequest(0, protocolRequestComplete)
+	})
+	defer stop()
+
+	client, err := Dial(testContext, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	resp, err := client.Do(testContext, Request{Params: map[string]string{"REQUEST_METHOD": "GET"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("X-Large"); len(got) != len(value) {
+		t.Fatalf("X-Large length = %d, want %d", len(got), len(value))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", body)
+	}
+}
+
+func TestFastCGIHeaderLineCap(t *testing.T) {
+	addr, stop := startFakeServer(t, func(e *fakeExchange) error {
+		// One header line with no newline at all, larger than a megabyte.
+		// The client must reject it without buffering the whole line.
+		_ = e.WriteStdoutChunked(bytes.Repeat([]byte("A"), maxHeaderBytes+1), 32*1024)
+		return nil
+	})
+	defer stop()
+
+	client, err := Dial(testContext, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	start := time.Now()
+	_, err = client.Do(testContext, Request{Params: map[string]string{"REQUEST_METHOD": "GET"}})
+	if err == nil {
+		t.Fatal("Do accepted a newline-free header line larger than the cap")
+	}
+	if !strings.Contains(err.Error(), "header line exceeds") {
+		t.Fatalf("error = %v, want a header line cap error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Do returned after %v, want the line cap enforced promptly", elapsed)
+	}
+}
+
+func TestFastCGIHeaderBlockCap(t *testing.T) {
+	line := "X-Fill: " + strings.Repeat("v", 900) + "\r\n"
+	addr, stop := startFakeServer(t, func(e *fakeExchange) error {
+		var block bytes.Buffer
+		for block.Len() <= maxHeaderBytes {
+			block.WriteString(line)
+		}
+		// No blank line: the block cap must stop parsing even though every
+		// individual line is well below the per-line cap.
+		_ = e.WriteStdoutChunked(block.Bytes(), 32*1024)
+		return nil
+	})
+	defer stop()
+
+	client, err := Dial(testContext, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	_, err = client.Do(testContext, Request{Params: map[string]string{"REQUEST_METHOD": "GET"}})
+	if err == nil {
+		t.Fatal("Do accepted a header block larger than 1 MiB")
+	}
+	if !strings.Contains(err.Error(), "headers exceed 1 MiB") {
+		t.Fatalf("error = %v, want the header block cap error", err)
+	}
+}
+
 func TestFastCGIDialRejectsInvalidAddress(t *testing.T) {
 	if _, err := Dial(testContext, "not-a-host-port"); err == nil {
 		t.Fatal("Dial accepted an address without a port")

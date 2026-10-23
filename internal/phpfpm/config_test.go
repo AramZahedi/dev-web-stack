@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,6 +80,33 @@ func TestRenderFPMConfigQuotesEscapesAndSortsEnv(t *testing.T) {
 		strings.Index(text, "env[EMPTY]") < strings.Index(text, "env[WITH_EQ]") &&
 		strings.Index(text, "env[WITH_EQ]") < strings.Index(text, "env[ZED]")) {
 		t.Fatalf("env lines are not sorted:\n%s", text)
+	}
+}
+
+func TestRenderFPMConfigEscapesDollarExpansion(t *testing.T) {
+	cfg := validConfig()
+	cfg.DocumentRoot = "/home/u/site/${HOME}"
+	cfg.Env = map[string]string{
+		"LITERAL":   "literal ${HOME} value",
+		"DOLLAR":    "price $5",
+		"BACKSLASH": `a \ path`,
+		"BOTH":      `a \$ b`,
+	}
+	got, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`chdir = "/home/u/site/\${HOME}"`,
+		`env[LITERAL] = "literal \${HOME} value"`,
+		`env[DOLLAR] = "price \$5"`,
+		`env[BACKSLASH] = "a \\ path"`,
+		`env[BOTH] = "a \\\$ b"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
 	}
 }
 
@@ -287,6 +315,45 @@ func TestValidateInvokesFPMAndClearsScanDir(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsPHPErrorWithZeroExit(t *testing.T) {
+	dir := t.TempDir()
+	configPath, iniPath := writeValidateInputs(t, dir)
+	script := filepath.Join(dir, "php-fpm")
+	body := "#!/bin/sh\n" +
+		"printf \"PHP:  syntax error, unexpected '=' in /tmp/php.ini on line 1\\n\" >&2\n" +
+		"printf '[ts] NOTICE: configuration file test is successful\\n' >&2\n" +
+		"exit 0\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Validate(testContext, script, configPath, iniPath)
+	if !errors.Is(err, ErrConfigInvalid) {
+		t.Fatalf("Validate error = %v, want ErrConfigInvalid", err)
+	}
+	for _, want := range []string{"PHP:", "syntax error", "test is successful"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not include %q", err, want)
+		}
+	}
+}
+
+func TestValidateAcceptsNoticeOnlyZeroExit(t *testing.T) {
+	dir := t.TempDir()
+	configPath, iniPath := writeValidateInputs(t, dir)
+	script := filepath.Join(dir, "php-fpm")
+	body := "#!/bin/sh\n" +
+		"printf '[23-Oct-2026 00:00:00] NOTICE: configuration file test is successful\\n' >&2\n" +
+		"exit 0\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Validate(testContext, script, configPath, iniPath); err != nil {
+		t.Fatalf("notice-only output was rejected: %v", err)
+	}
+}
+
 func TestValidateTimesOut(t *testing.T) {
 	old := validateTimeout
 	validateTimeout = 150 * time.Millisecond
@@ -361,6 +428,113 @@ func TestValidateRealFPM(t *testing.T) {
 	if !strings.Contains(err.Error(), "daemonize") {
 		t.Fatalf("invalid config error = %v, want php-fpm output", err)
 	}
+}
+
+func TestValidateRealFPMMalformedIni(t *testing.T) {
+	fpmBin := findFPM(t)
+	dir := t.TempDir()
+	iniPath := filepath.Join(dir, "malformed.ini")
+	if err := os.WriteFile(iniPath, []byte("= value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		SiteID:       "site",
+		BuildRoot:    filepath.Dir(filepath.Dir(fpmBin)),
+		PHPIni:       iniPath,
+		ListenHost:   "127.0.0.1",
+		ListenPort:   43996,
+		DocumentRoot: dir,
+		ErrorLog:     filepath.Join(dir, "error.log"),
+		PIDFile:      filepath.Join(dir, "php-fpm.pid"),
+	}
+	rendered, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "php-fpm.conf")
+	if err := os.WriteFile(configPath, rendered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = Validate(testContext, fpmBin, configPath, iniPath)
+	if !errors.Is(err, ErrConfigInvalid) {
+		t.Fatalf("malformed ini error = %v, want ErrConfigInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "syntax error") {
+		t.Fatalf("malformed ini error = %v, want PHP syntax error output", err)
+	}
+}
+
+// TestRenderFPMConfigDollarValuesSurviveRealFPM uses php-fpm's -tt config dump
+// to prove that escaped dollars are parsed literally: a site env value such as
+// ${HOME} or a document root containing ${HOME} must not be expanded.
+func TestRenderFPMConfigDollarValuesSurviveRealFPM(t *testing.T) {
+	fpmBin := findFPM(t)
+	dir := t.TempDir()
+	iniPath := filepath.Join(dir, "php.ini")
+	if err := os.WriteFile(iniPath, []byte("memory_limit = 256M\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	documentRoot := filepath.Join(dir, "${HOME}")
+	if err := os.Mkdir(documentRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		SiteID:       "site",
+		BuildRoot:    filepath.Dir(filepath.Dir(fpmBin)),
+		PHPIni:       iniPath,
+		ListenHost:   "127.0.0.1",
+		ListenPort:   43997,
+		DocumentRoot: documentRoot,
+		ErrorLog:     filepath.Join(dir, "error.log"),
+		PIDFile:      filepath.Join(dir, "php-fpm.pid"),
+		Env: map[string]string{
+			"LITERAL":   "literal ${HOME} value",
+			"DOLLAR":    "price $5",
+			"BACKSLASH": `a \ path`,
+			"BOTH":      `a \$ b`,
+		},
+	}
+	rendered, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "php-fpm.conf")
+	if err := os.WriteFile(configPath, rendered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command(fpmBin, "-tt", "-y", configPath, "-c", iniPath)
+	command.Env = withEnv(os.Environ(), "PHP_INI_SCAN_DIR", "")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("php-fpm -tt failed: %v\n%s", err, output)
+	}
+	text := string(output)
+	for _, want := range []string{
+		"chdir = " + documentRoot,
+		"env[LITERAL] = literal ${HOME} value",
+		"env[DOLLAR] = price $5",
+		`env[BACKSLASH] = a \ path`,
+		`env[BOTH] = a \$ b`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("php-fpm -tt output missing %q in:\n%s", want, text)
+		}
+	}
+}
+
+func writeValidateInputs(t *testing.T, dir string) (configPath, iniPath string) {
+	t.Helper()
+	configPath = filepath.Join(dir, "php-fpm.conf")
+	iniPath = filepath.Join(dir, "php.ini")
+	if err := os.WriteFile(configPath, []byte("[global]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(iniPath, []byte("memory_limit = 256M\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return configPath, iniPath
 }
 
 func findFPM(t *testing.T) string {
