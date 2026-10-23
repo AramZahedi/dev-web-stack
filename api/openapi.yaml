@@ -284,12 +284,23 @@ paths:
   /api/v1/sites/{ref}/logs/stream:
     parameters:
       - $ref: "#/components/parameters/SiteRef"
+      - name: follow
+        in: query
+        required: false
+        description: |
+          When true (the default), keep the subscription open and stream new
+          lines. When false, return the recent buffered lines and close the
+          response immediately.
+        schema:
+          type: boolean
+          default: true
     get:
       tags: [sites]
-      summary: Stream new log lines for a site
+      summary: Stream or snapshot log lines for a site
       description: |
-        Server-sent event stream. Each data frame is a LogLine. The
-        subscription ends when the client disconnects.
+        Server-sent event stream. Each data frame is a LogLine. With
+        follow=true the subscription ends when the client disconnects; with
+        follow=false the response contains the recent snapshot and ends.
       operationId: streamSiteLogs
       security: []
       responses:
@@ -308,6 +319,8 @@ paths:
             text/event-stream:
               schema:
                 $ref: "#/components/schemas/LogLine"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":

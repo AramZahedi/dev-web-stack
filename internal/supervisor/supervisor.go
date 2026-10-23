@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -254,6 +255,43 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 		m.finishStopped(p)
 	}
 	return nil
+}
+
+// StopAll terminates every process currently owned by the manager. Each
+// process gets its own stop budget, so one stubborn process cannot consume the
+// time available to the others. It is safe to call with a manager that owns no
+// processes.
+func (m *Manager) StopAll(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m == nil {
+		return nil
+	}
+
+	m.mu.Lock()
+	ids := make([]string, 0, len(m.procs))
+	for id := range m.procs {
+		ids = append(ids, id)
+	}
+	m.mu.Unlock()
+	sort.Strings(ids)
+
+	var errs []error
+	for _, id := range ids {
+		stopCtx, cancel := context.WithTimeout(ctx, m.stopBudget())
+		err := m.Stop(stopCtx, id)
+		cancel()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("supervisor: stop all %q: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// stopBudget bounds one Stop call, including SIGTERM grace and SIGKILL.
+func (m *Manager) stopBudget() time.Duration {
+	return m.stopGrace() + killWait + cleanupKillWait + 2*time.Second
 }
 
 // Status returns a snapshot for id. The boolean is false when id is not known

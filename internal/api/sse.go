@@ -6,10 +6,16 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
+
+// logSnapshotLines is the number of recent log lines returned by
+// follow=false. It matches the backend's tail size.
+const logSnapshotLines = 5000
 
 // sseHeaders applies the headers every event stream needs.
 func sseHeaders(w http.ResponseWriter) {
@@ -18,9 +24,10 @@ func sseHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Accel-Buffering", "no")
 }
 
-// handleLogsStream streams new log lines for one site. The subscription is
-// created before the response headers are flushed, so a client that observes
-// the stream is guaranteed to receive every line written afterwards.
+// handleLogsStream returns recent log lines for follow=false and streams new
+// lines for follow=true (the default). The live subscription is created before
+// the response headers are flushed, so a client that observes the stream is
+// guaranteed to receive every line written afterwards.
 func (s *Server) handleLogsStream(w http.ResponseWriter, r *http.Request) {
 	if s.logs == nil {
 		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "log store is not available", nil)
@@ -31,10 +38,15 @@ func (s *Server) handleLogsStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "site reference is required", nil)
 		return
 	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, codeInternal, "streaming is not supported", nil)
-		return
+
+	follow := true
+	if raw := strings.TrimSpace(r.URL.Query().Get("follow")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, codeInvalidRequest, "follow must be true or false", nil)
+			return
+		}
+		follow = parsed
 	}
 
 	// Site routes accept an id or a name. Resolve when possible so a CLI
@@ -46,6 +58,30 @@ func (s *Server) handleLogsStream(w http.ResponseWriter, r *http.Request) {
 		if site, err := s.sites.Get(r.Context(), ref); err == nil && site.ID != "" {
 			streamID = site.ID
 		}
+	}
+
+	if !follow {
+		lines, err := s.logs.Tail(streamID, logSnapshotLines)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "logs are unavailable: "+err.Error(), nil)
+			return
+		}
+		sseHeaders(w)
+		w.WriteHeader(http.StatusOK)
+		for _, line := range lines {
+			data, err := json.Marshal(line)
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+		}
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, codeInternal, "streaming is not supported", nil)
+		return
 	}
 
 	lines, unsubscribe := s.logs.Subscribe(streamID)

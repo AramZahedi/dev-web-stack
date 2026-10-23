@@ -243,7 +243,7 @@ func TestLogsSSEStreamsLines(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/sites/s1/logs/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/sites/s1/logs/stream?follow=true", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,6 +270,57 @@ func TestLogsSSEStreamsLines(t *testing.T) {
 	n, _ := resp.Body.Read(buf)
 	if !strings.Contains(string(buf[:n]), "hello") {
 		t.Fatalf("stream = %q", buf[:n])
+	}
+}
+
+func TestLogsSnapshotFollowFalse(t *testing.T) {
+	h, fake := newTestAPIWithFakes(t)
+	writer := fake.logs.Writer("s1", "app")
+	if _, err := io.WriteString(writer, "one\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(writer, "two\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/v1/sites/s1/logs/stream?follow=false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("snapshot status = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("snapshot content-type = %q", ct)
+	}
+
+	// ReadAll must return: follow=false is a finite snapshot, not a live
+	// stream.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `"text":"one"`) || !strings.Contains(text, `"text":"two"`) {
+		t.Fatalf("snapshot body = %q", text)
+	}
+	if strings.Count(text, "data: ") != 2 {
+		t.Fatalf("snapshot frames = %q", text)
+	}
+}
+
+func TestLogsStreamRejectsInvalidFollow(t *testing.T) {
+	h, _ := newTestAPIWithFakes(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1/api/v1/sites/s1/logs/stream?follow=maybe", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid follow status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_REQUEST") {
+		t.Fatalf("invalid follow body = %s", rec.Body.String())
 	}
 }
 

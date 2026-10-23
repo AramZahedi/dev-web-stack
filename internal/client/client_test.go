@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -24,6 +25,7 @@ type fakeAPI struct {
 	sites  map[string]model.Site
 	routes []recordedRequest
 	err    error
+	delay  time.Duration
 }
 
 type recordedRequest struct {
@@ -110,6 +112,9 @@ func (f *fakeAPI) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/sites", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
+		if f.delay > 0 {
+			time.Sleep(f.delay)
+		}
 		f.writeErrorOr(w, func() {
 			f.mu.Lock()
 			list := make([]model.Site, 0, len(f.sites))
@@ -315,6 +320,20 @@ func TestClientRoutesAndPayloads(t *testing.T) {
 		t.Fatalf("logs query = %q", logReq.query)
 	}
 
+	live, err := c.Logs(ctx, site.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err = io.ReadAll(live)
+	_ = live.Close()
+	if err != nil || !strings.Contains(string(stream), "hello") {
+		t.Fatalf("live logs = %q %v", stream, err)
+	}
+	liveReq := api.last(t, http.MethodGet, "/api/v1/sites/"+site.ID+"/logs/stream")
+	if !strings.Contains(liveReq.query, "follow=true") {
+		t.Fatalf("live logs query = %q", liveReq.query)
+	}
+
 	if report, err := c.Doctor(ctx); err != nil || !report.OK {
 		t.Fatalf("doctor = %+v %v", report, err)
 	}
@@ -408,5 +427,54 @@ func TestClientActionValidation(t *testing.T) {
 	defer func() { _ = c.Close() }()
 	if err := c.SiteAction(context.Background(), "site-1", "explode"); err == nil {
 		t.Fatal("SiteAction accepted an unknown action")
+	}
+}
+
+func TestClientNewResolvesEnvironmentHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DEVSTACK_HOME", home)
+	startFakeAPI(t, home, &fakeAPI{sites: map[string]model.Site{}})
+
+	c, err := New("")
+	if err != nil {
+		t.Fatalf("New with DEVSTACK_HOME: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if got, want := c.SocketPath(), daemon.SocketPath(home); got != want {
+		t.Fatalf("socket = %q, want %q", got, want)
+	}
+}
+
+func TestClientNewResolvesUserHomeDefault(t *testing.T) {
+	userHome := t.TempDir()
+	t.Setenv("DEVSTACK_HOME", "")
+	t.Setenv("HOME", userHome)
+	home := filepath.Join(userHome, ".devstack")
+	startFakeAPI(t, home, &fakeAPI{sites: map[string]model.Site{}})
+
+	c, err := New("")
+	if err != nil {
+		t.Fatalf("New with HOME: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if got, want := c.SocketPath(), daemon.SocketPath(home); got != want {
+		t.Fatalf("socket = %q, want %q", got, want)
+	}
+}
+
+func TestClientNonStreamingRequestTimeout(t *testing.T) {
+	home := t.TempDir()
+	startFakeAPI(t, home, &fakeAPI{sites: map[string]model.Site{}, delay: 300 * time.Millisecond})
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	c.timeout = 50 * time.Millisecond
+
+	if _, err := c.ListSites(context.Background()); err == nil {
+		t.Fatal("ListSites did not time out")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "deadline") {
+		t.Fatalf("timeout error = %v", err)
 	}
 }

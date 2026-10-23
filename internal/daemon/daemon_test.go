@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helper"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
@@ -312,12 +313,30 @@ func readSiteFromStore(t *testing.T, home string) model.Site {
 
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		if err := ln.Close(); err != nil {
+			t.Fatal(err)
+		}
+		// Never hand out the backend upstream/FastCGI ranges.
+		if port >= 41000 && port <= 43999 {
+			continue
+		}
+		return port
 	}
-	defer func() { _ = ln.Close() }()
-	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func TestFreePortOutsideBackendRange(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		port := freePort(t)
+		if port >= 41000 && port <= 43999 {
+			t.Fatalf("freePort returned reserved backend port %d", port)
+		}
+	}
 }
 
 func TestDaemonServesAndRestartsCleanly(t *testing.T) {
@@ -383,10 +402,16 @@ func TestRunRefusesToReplaceNonSocket(t *testing.T) {
 	if err := os.WriteFile(SocketPath(home), sentinel, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(ReadyPath(home), []byte("999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	err := Run(context.Background(), testOptions(t, home, startTestHelper(t)))
 	if err == nil {
 		t.Fatal("Run replaced a non-socket file")
+	}
+	if _, err := os.Stat(ReadyPath(home)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed startup left a readiness marker: %v", err)
 	}
 	data, readErr := os.ReadFile(SocketPath(home))
 	if readErr != nil {
@@ -477,8 +502,50 @@ func TestEnsureRunningStartsDaemonAndReturnsWhenRunning(t *testing.T) {
 	}
 	pid := readPIDFile(t, PidPath(home))
 	t.Cleanup(func() { terminateAndWait(t, pid) })
+	if info, err := os.Stat(PidPath(home)); err != nil {
+		t.Fatalf("stat pid file: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("pid file permissions = %04o, want 0600", info.Mode().Perm())
+	}
+	if info, err := os.Stat(LockPath(home)); err != nil {
+		t.Fatalf("stat lifetime lock: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("lifetime lock permissions = %04o, want 0600", info.Mode().Perm())
+	}
 	waitForSocket(t, SocketPath(home), nil)
-	getHealth(t, unixHTTPClient(SocketPath(home), 5*time.Second))
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	getHealth(t, client)
+
+	// EnsureRunning must not return before the ready marker, pid file, and
+	// store-backed settings are all available.
+	ready, err := os.ReadFile(ReadyPath(home))
+	if err != nil {
+		t.Fatalf("readiness marker: %v", err)
+	}
+	if got, err := strconv.Atoi(strings.TrimSpace(string(ready))); err != nil || got != pid {
+		t.Fatalf("readiness marker = %q, want pid %d", ready, pid)
+	}
+	if info, err := os.Stat(ReadyPath(home)); err != nil {
+		t.Fatalf("stat readiness marker: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("readiness marker permissions = %04o, want 0600", info.Mode().Perm())
+	}
+	if info, err := os.Stat(filepath.Join(home, "run")); err != nil {
+		t.Fatalf("stat run directory: %v", err)
+	} else if info.Mode().Perm() != 0o700 {
+		t.Fatalf("run directory permissions = %04o, want 0700", info.Mode().Perm())
+	}
+	resp, data := apiRequest(t, client, http.MethodGet, "/api/v1/settings", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("settings after EnsureRunning = %d %s", resp.StatusCode, data)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings["home"] != home {
+		t.Fatalf("settings home = %v, want %s", settings["home"], home)
+	}
 
 	started := time.Now()
 	if err := EnsureRunning(ctx, opts); err != nil {
@@ -519,6 +586,385 @@ func TestEnsureRunningReportsFailureLogTail(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom: cannot start") {
 		t.Fatalf("error does not include the daemon log tail: %v", err)
+	}
+}
+
+func TestRunFailsFastWhenLifetimeLockIsHeld(t *testing.T) {
+	home := t.TempDir()
+	if err := prepareRunDir(home); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireLifetimeLock(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+
+	err = Run(context.Background(), Options{Home: home, LogLevel: "error"})
+	if !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("Run error = %v, want ErrAlreadyRunning", err)
+	}
+}
+
+func TestEnsureRunningConcurrentCallsStartOneDaemon(t *testing.T) {
+	useBuiltBinary(t)
+	home := t.TempDir()
+	opts := testOptions(t, home, startTestHelper(t))
+
+	const callers = 4
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			errs[index] = EnsureRunning(context.Background(), opts)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("EnsureRunning caller %d: %v", i, err)
+		}
+	}
+	pid := readPIDFile(t, PidPath(home))
+	t.Cleanup(func() { terminateAndWait(t, pid) })
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	getHealth(t, client)
+	ready, err := os.ReadFile(ReadyPath(home))
+	if err != nil {
+		t.Fatalf("readiness marker: %v", err)
+	}
+	if got, err := strconv.Atoi(strings.TrimSpace(string(ready))); err != nil || got != pid {
+		t.Fatalf("readiness marker = %q, want pid %d", ready, pid)
+	}
+
+	// The daemon owns the lock, so a direct in-process Run must fail fast
+	// rather than binding a second socket or a second set of listeners.
+	if err := Run(context.Background(), opts); !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("second Run error = %v, want ErrAlreadyRunning", err)
+	}
+}
+
+func TestShutdownOverlapKeepsReplacementDaemonResources(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is not available")
+	}
+	useBuiltBinary(t)
+	home := t.TempDir()
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A short grace keeps the overlap test fast while still forcing shutdown to
+	// wait on a process that ignores SIGTERM.
+	cfg.GracefulStopSeconds = 1
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions(t, home, startTestHelper(t))
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	site := seedNodeSite(t, home, "overlap", root, freePort(t), `trap '' TERM; exec python3 -m http.server "$PORT"`)
+
+	first := startDaemon(t, opts)
+	waitDaemonReady(t, home)
+	oldPID := readPIDFile(t, PidPath(home))
+	if body := fetchSiteBody(t, site.HTTPPort); !strings.Contains(body, "replacement") {
+		t.Fatalf("seed site body = %q", body)
+	}
+
+	// Begin the old daemon's shutdown and wait until it has retired readiness
+	// but is still stopping the TERM-ignoring backend. EnsureRunning must wait
+	// on the lifetime lock, then spawn a replacement without the old instance
+	// deleting its socket or pid file on the way out.
+	first.cancel()
+	first.cancel = nil
+	oldDone := first.done
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ReadyPath(home)); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("old daemon did not retire its readiness marker")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ensureDone := make(chan error, 1)
+	go func() { ensureDone <- EnsureRunning(context.Background(), opts) }()
+
+	select {
+	case err := <-ensureDone:
+		if err != nil {
+			t.Fatalf("EnsureRunning during shutdown: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("EnsureRunning did not return during daemon shutdown overlap")
+	}
+	select {
+	case err := <-oldDone:
+		if err != nil {
+			t.Fatalf("old daemon shutdown: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("old daemon did not finish shutting down")
+	}
+
+	newPID := readPIDFile(t, PidPath(home))
+	if newPID == oldPID {
+		t.Fatalf("replacement daemon reused pid %d", newPID)
+	}
+	t.Cleanup(func() { terminateAndWait(t, newPID) })
+
+	if info, err := os.Stat(SocketPath(home)); err != nil {
+		t.Fatalf("replacement socket was removed: %v", err)
+	} else if info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("replacement socket is not a socket: %v", info.Mode())
+	}
+	if data, err := os.ReadFile(ReadyPath(home)); err != nil {
+		t.Fatalf("replacement readiness marker: %v", err)
+	} else if got, err := strconv.Atoi(strings.TrimSpace(string(data))); err != nil || got != newPID {
+		t.Fatalf("replacement readiness marker = %q, want pid %d", data, newPID)
+	}
+	replacementClient := unixHTTPClient(SocketPath(home), 5*time.Second)
+	getHealth(t, replacementClient)
+
+	resp, data := apiRequest(t, replacementClient, http.MethodGet, "/api/v1/sites/"+site.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("replacement site lookup = %d %s", resp.StatusCode, data)
+	}
+	var restarted model.Site
+	if err := json.Unmarshal(data, &restarted); err != nil {
+		t.Fatal(err)
+	}
+	if restarted.Status != model.StatusRunning {
+		t.Fatalf("replacement site status = %q, want running", restarted.Status)
+	}
+	if body := fetchSiteBody(t, restarted.HTTPPort); body != "replacement" {
+		t.Fatalf("replacement site body = %q", body)
+	}
+}
+
+func TestDaemonShutdownStopsDesiredStoppedBackend(t *testing.T) {
+	useBuiltBinary(t)
+	home := t.TempDir()
+	opts := testOptions(t, home, startTestHelper(t))
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("still running"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := startDaemon(t, opts)
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	site := createStaticSite(t, client, "inconsistent", root)
+	if body := fetchSiteBody(t, site.HTTPPort); body != "still running" {
+		t.Fatalf("site body = %q", body)
+	}
+
+	// Simulate a row that disagrees with the live supervisor. The daemon must
+	// still stop the process, without changing the persisted desired state.
+	st, err := store.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.GetSite(context.Background(), site.ID)
+	if err != nil {
+		_ = st.Close()
+		t.Fatal(err)
+	}
+	stored.DesiredState = model.DesiredStopped
+	stored.Status = model.StatusStopped
+	if err := st.UpdateSite(context.Background(), stored); err != nil {
+		_ = st.Close()
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	run.stop(t)
+	waitTCPClosed(t, site.HTTPPort)
+
+	after := readSiteFromStore(t, home)
+	if after.DesiredState != model.DesiredStopped {
+		t.Fatalf("desired state = %q, want stopped (shutdown must not rewrite it)", after.DesiredState)
+	}
+}
+
+func TestRemoveOwnedSocketKeepsReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = listener.Close()
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeOwnedSocket(path, recorded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("replacement resource was removed: %v", err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned.SetUnlinkOnClose(false)
+	current, err := os.Lstat(path)
+	if err != nil {
+		_ = owned.Close()
+		t.Fatal(err)
+	}
+	_ = owned.Close()
+	if err := removeOwnedSocket(path, current); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned resource still exists: %v", err)
+	}
+}
+
+func TestRemoveOwnedPIDKeepsReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.pid")
+	if err := os.WriteFile(path, []byte("111\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeOwnedPID(path, "222"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("foreign pid file was removed: %v", err)
+	}
+	if err := removeOwnedPID(path, "111"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owned pid file still exists: %v", err)
+	}
+}
+
+func TestRemovableSocketError(t *testing.T) {
+	if !removableSocketError(syscall.ECONNREFUSED) {
+		t.Fatal("ECONNREFUSED should be removable")
+	}
+	if !removableSocketError(syscall.ENOENT) {
+		t.Fatal("ENOENT should be removable")
+	}
+	if removableSocketError(syscall.ETIMEDOUT) {
+		t.Fatal("ETIMEDOUT must not be removable")
+	}
+	if removableSocketError(syscall.EACCES) {
+		t.Fatal("EACCES must not be removable")
+	}
+}
+
+func TestPrepareSocketPathRemovesStaleSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.sock")
+	addr, err := net.ResolveUnixAddr("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.ListenUnix("unix", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.SetUnlinkOnClose(false)
+	_ = listener.Close()
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("stale socket was not left behind: %v", err)
+	}
+	if err := prepareSocketPath(path); err != nil {
+		t.Fatalf("prepareSocketPath: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale socket still exists: %v", err)
+	}
+}
+
+func TestPrepareSocketPathRefusesLiveSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	if err := prepareSocketPath(path); err == nil {
+		t.Fatal("prepareSocketPath removed a live socket")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("live socket was removed: %v", err)
+	}
+}
+
+// seedNodeSite inserts a desired-running Node row before the daemon starts.
+// It avoids the site service's runtime install path while still exercising a
+// real supervised process on a real port.
+func seedNodeSite(t *testing.T, home, name, root string, port int, command string) model.Site {
+	t.Helper()
+	paths := config.NewPaths(home)
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(paths.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	now := time.Now().UTC()
+	site := model.Site{
+		ID:           "seed-" + name,
+		Name:         name,
+		Domain:       name + ".test",
+		Backend:      model.BackendLocal,
+		HostPath:     root,
+		BackendPath:  root,
+		Kind:         model.SiteNode,
+		Command:      command,
+		DesiredState: model.DesiredRunning,
+		Status:       model.StatusStopped,
+		HTTPPort:     port,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := st.CreateSite(context.Background(), site); err != nil {
+		t.Fatal(err)
+	}
+	return site
+}
+
+func waitDaemonReady(t *testing.T, home string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		data, err := os.ReadFile(ReadyPath(home))
+		if err == nil {
+			pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if convErr == nil && processAlive(pid) && socketReachable(SocketPath(home)) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon never became ready: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

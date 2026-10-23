@@ -259,6 +259,22 @@ func (l *Local) Stop(ctx context.Context, id string, graceful bool) error {
 	return nil
 }
 
+// StopAll terminates every process owned by this backend, regardless of the
+// persisted desired state. It is used by daemon shutdown to avoid leaving
+// supervised processes behind when the database row and the process disagree.
+func (l *Local) StopAll(ctx context.Context) error {
+	if l == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := l.supervisor.StopAll(ctx); err != nil {
+		return fmt.Errorf("backend: stop all sites: %w", err)
+	}
+	return nil
+}
+
 // Status returns the supervisor's snapshot. Sites that have never been started
 // are reported as stopped.
 func (l *Local) Status(ctx context.Context, id string) (Status, error) {

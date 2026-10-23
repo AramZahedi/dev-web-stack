@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ const (
 	baseURL         = "http://devstack.test"
 	maxResponseBody = 8 << 20
 	dialTimeout     = 5 * time.Second
+	defaultTimeout  = 30 * time.Second
 )
 
 // Error is a structured API error response.
@@ -54,14 +56,20 @@ func (e *Error) Error() string {
 // Client talks to one daemon over its Unix socket. It is safe for concurrent
 // use.
 type Client struct {
-	socket string
-	http   *http.Client
+	socket  string
+	http    *http.Client
+	timeout time.Duration
 }
 
-// New returns a client for the daemon at home. It verifies that the control
-// socket exists and is a socket; it does not connect yet.
+// New returns a client for the daemon at home. An empty home follows
+// $DEVSTACK_HOME, then ~/.devstack, matching config.Load. It verifies that the
+// control socket exists and is a socket; it does not connect yet.
 func New(home string) (*Client, error) {
-	socket := daemon.SocketPath(home)
+	resolved, err := resolveHome(home)
+	if err != nil {
+		return nil, err
+	}
+	socket := daemon.SocketPath(resolved)
 	info, err := os.Stat(socket)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -82,9 +90,30 @@ func New(home string) (*Client, error) {
 		IdleConnTimeout: 30 * time.Second,
 	}
 	return &Client{
-		socket: socket,
-		http:   &http.Client{Transport: transport},
+		socket:  socket,
+		http:    &http.Client{Transport: transport},
+		timeout: defaultTimeout,
 	}, nil
+}
+
+// resolveHome applies the same precedence as config.Load without creating
+// anything.
+func resolveHome(home string) (string, error) {
+	if home == "" {
+		home = os.Getenv("DEVSTACK_HOME")
+	}
+	if home == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home: %w", err)
+		}
+		home = filepath.Join(userHome, ".devstack")
+	}
+	abs, err := filepath.Abs(home)
+	if err != nil {
+		return "", fmt.Errorf("resolve devstack home %q: %w", home, err)
+	}
+	return abs, nil
 }
 
 // Close releases idle connections held by the client.
@@ -177,9 +206,9 @@ func (c *Client) DeleteSite(ctx context.Context, ref string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/sites/"+url.PathEscape(ref), nil, nil)
 }
 
-// Logs opens the site's log stream. The API exposes a live SSE stream; the
-// boolean is forwarded as the follow query value so a future snapshot mode can
-// be added without changing this method.
+// Logs opens the site's log stream. follow=false requests a finite SSE
+// snapshot of the recent lines; follow=true keeps the live subscription open
+// until the caller closes the body or cancels ctx.
 func (c *Client) Logs(ctx context.Context, ref string, follow bool) (io.ReadCloser, error) {
 	path := "/api/v1/sites/" + url.PathEscape(ref) + "/logs/stream?follow=" + strconv.FormatBool(follow)
 	return c.doStream(ctx, http.MethodGet, path)
@@ -268,7 +297,17 @@ func (c *Client) RemoveRuntime(ctx context.Context, buildID string) error {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, in, out any) error {
-	resp, err := c.do(ctx, method, path, in)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	resp, err := c.do(requestCtx, method, path, in)
 	if err != nil {
 		return err
 	}

@@ -130,6 +130,40 @@ func TestLocalStaticDocumentRootRelativeToProject(t *testing.T) {
 	}
 }
 
+func TestLocalStopAllStopsEveryProcess(t *testing.T) {
+	b, root := newTestLocal(t)
+	rootFile(t, root, "index.html", "hello")
+	ids := []string{"all-a", "all-b"}
+	ports := make(map[string]int, len(ids))
+	for _, id := range ids {
+		port := freePort(t)
+		ports[id] = port
+		spec := SiteSpec{ID: id, Kind: "static", HostPath: root, BackendPath: root, HTTPPort: port}
+		if _, err := b.Prepare(context.Background(), spec); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := b.Start(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := b.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	for _, id := range ids {
+		status, err := b.Status(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.State != model.StatusStopped {
+			t.Fatalf("%s status = %q, want stopped", id, status.State)
+		}
+		if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", ports[id]), 100*time.Millisecond); err == nil {
+			_ = conn.Close()
+			t.Fatalf("%s port %d is still open", id, ports[id])
+		}
+	}
+}
+
 func TestLocalPrepareValidation(t *testing.T) {
 	b, root := newTestLocal(t)
 	ctx := context.Background()

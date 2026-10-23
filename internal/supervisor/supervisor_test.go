@@ -70,6 +70,43 @@ func TestCleanupOrphansKillsOnlyOurProcesses(t *testing.T) {
 	}
 }
 
+func TestStopAllStopsEveryProcessWithIndividualBudgets(t *testing.T) {
+	m := NewManager(t.TempDir(), slog.Default())
+	m.StopGrace = 50 * time.Millisecond
+	ids := []string{"slow-a", "slow-b", "slow-c"}
+	pids := make(map[string]int, len(ids))
+	for _, id := range ids {
+		st, err := m.Start(ctx, ProcessSpec{
+			ID:    id,
+			Argv:  []string{"sh", "-c", "trap '' TERM; while :; do sleep 1; done"},
+			Ready: ReadyCheck{Timeout: time.Second},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pids[id] = st.PID
+	}
+	// Let each shell install its TERM trap before shutdown starts.
+	time.Sleep(150 * time.Millisecond)
+
+	started := time.Now()
+	if err := m.StopAll(ctx); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("StopAll took %s for %d processes", elapsed, len(ids))
+	}
+	for _, id := range ids {
+		status, ok := m.Status(id)
+		if !ok || status.State != model.StatusStopped {
+			t.Fatalf("%s status = %+v (known=%v), want stopped", id, status, ok)
+		}
+		if err := syscall.Kill(-pids[id], 0); err == nil {
+			t.Fatalf("%s process group is still alive", id)
+		}
+	}
+}
+
 func TestStatusReportsRunningThenStopped(t *testing.T) {
 	m := NewManager(t.TempDir(), slog.Default())
 	st, err := m.Start(ctx, ProcessSpec{ID: "ok", Argv: []string{"sh", "-c", "sleep 30"}, Ready: ReadyCheck{Timeout: time.Second}})

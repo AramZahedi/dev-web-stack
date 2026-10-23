@@ -93,6 +93,23 @@ func parseOptions(args []string) (options, error) {
 	return opts, nil
 }
 
+// newHelperServer builds the server from parsed flags. It is shared with the
+// startup test so temp-dir/high-port behavior is exercised directly.
+func newHelperServer(opts options, logger *slog.Logger) (*helper.Server, error) {
+	return helper.NewServer(helper.Config{
+		SocketPath:       opts.socket,
+		HostsPath:        opts.hosts,
+		AllowUID:         opts.allowUID,
+		CADir:            opts.caDir(),
+		TrustDir:         opts.trustDir,
+		ForwardHTTPPort:  opts.httpPort,
+		ForwardHTTPSPort: opts.httpsPort,
+		ProxyHTTPPort:    opts.proxyHTTPPort,
+		ProxyHTTPSPort:   opts.proxyHTTPSPort,
+		Logger:           logger,
+	})
+}
+
 func main() {
 	opts, err := parseOptions(os.Args[1:])
 	if err != nil {
@@ -106,19 +123,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg := helper.Config{
-		SocketPath:       opts.socket,
-		HostsPath:        opts.hosts,
-		AllowUID:         opts.allowUID,
-		CADir:            opts.caDir(),
-		TrustDir:         opts.trustDir,
-		ForwardHTTPPort:  opts.httpPort,
-		ForwardHTTPSPort: opts.httpsPort,
-		ProxyHTTPPort:    opts.proxyHTTPPort,
-		ProxyHTTPSPort:   opts.proxyHTTPSPort,
-		Logger:           logger,
-	}
-	server, err := helper.NewServer(cfg)
+	server, err := newHelperServer(opts, logger)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "devstack-helper:", err)
 		os.Exit(1)

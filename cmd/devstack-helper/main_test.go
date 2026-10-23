@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -67,5 +69,71 @@ func TestParseOptionsDefaults(t *testing.T) {
 func TestParseOptionsRejectsUnknownFlag(t *testing.T) {
 	if _, err := parseOptions([]string{"--nope"}); err == nil {
 		t.Fatal("parseOptions accepted an unknown flag")
+	}
+}
+
+func TestServerStartsWithTempDirsAndHighPorts(t *testing.T) {
+	dir := t.TempDir()
+	hosts := filepath.Join(dir, "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := options{
+		socket:         filepath.Join(dir, "run", "helper.sock"),
+		stateDir:       filepath.Join(dir, "state"),
+		hosts:          hosts,
+		trustDir:       filepath.Join(dir, "trust"),
+		allowUID:       os.Getuid(),
+		httpPort:       helperFreePort(t),
+		httpsPort:      helperFreePort(t),
+		proxyHTTPPort:  helperFreePort(t),
+		proxyHTTPSPort: helperFreePort(t),
+		logLevel:       "error",
+	}
+	logger, err := newLogger(opts.logLevel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := newHelperServer(opts, logger)
+	if err != nil {
+		t.Fatalf("new helper server: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("start helper server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	info, err := os.Stat(opts.socket)
+	if err != nil {
+		t.Fatalf("stat helper socket: %v", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("helper socket mode = %v", info.Mode())
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("helper socket permissions = %04o, want 0600", perm)
+	}
+	if _, err := os.Stat(filepath.Join(opts.stateDir, "pki")); err != nil {
+		t.Fatalf("CA directory was not created: %v", err)
+	}
+}
+
+func helperFreePort(t *testing.T) int {
+	t.Helper()
+	for {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if port >= 41000 && port <= 43999 {
+			continue
+		}
+		return port
 	}
 }

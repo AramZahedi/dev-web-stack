@@ -113,13 +113,34 @@ func Run(ctx context.Context, opts Options) error {
 	if err := paths.Ensure(); err != nil {
 		return fmt.Errorf("daemon: prepare home: %w", err)
 	}
+	if err := prepareRunDir(cfg.Home); err != nil {
+		return err
+	}
+	slog.SetDefault(logger)
+
+	// The lifetime lock serialises daemon instances and is held until shutdown
+	// has removed this daemon's socket, pid file, and readiness marker.
+	lock, err := acquireLifetimeLock(cfg.Home)
+	if err != nil {
+		if errors.Is(err, ErrAlreadyRunning) {
+			return fmt.Errorf("%w: %s", ErrAlreadyRunning, cfg.Home)
+		}
+		return err
+	}
+	defer lock.release()
+
+	// A marker without the lock is always stale; the previous instance either
+	// crashed or is the one that failed to start.
+	if err := os.Remove(ReadyPath(cfg.Home)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		logger.Warn("daemon: remove stale readiness marker", "error", err)
+	}
 
 	d := &daemon{
 		cfg:        cfg,
-		paths:      paths,
 		logger:     logger,
 		socketPath: SocketPath(cfg.Home),
 		pidPath:    PidPath(cfg.Home),
+		readyPath:  ReadyPath(cfg.Home),
 		serveErr:   make(chan error, 2),
 	}
 	defer d.shutdown()
@@ -229,6 +250,9 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("daemon: publish routes: %w", err)
 	}
 	d.startDesiredSites(ctx)
+	if err := d.writeReady(); err != nil {
+		return err
+	}
 
 	logger.Info("daemon started",
 		"home", cfg.Home,
@@ -257,7 +281,6 @@ func Run(ctx context.Context, opts Options) error {
 // dependency order.
 type daemon struct {
 	cfg    config.Config
-	paths  config.Paths
 	logger *slog.Logger
 
 	store  *store.Store
@@ -271,14 +294,13 @@ type daemon struct {
 
 	apiTCP   *http.Server
 	apiUnix  *http.Server
-	tcpLn    net.Listener
-	unixLn   net.Listener
 	serveErr chan error
-	socket   bool
-	pidFile  bool
 
 	socketPath string
+	socketInfo os.FileInfo
 	pidPath    string
+	pidValue   string
+	readyPath  string
 
 	shutdownOnce sync.Once
 }
@@ -291,7 +313,6 @@ func (d *daemon) startAPI(handler http.Handler) error {
 	if err != nil {
 		return fmt.Errorf("daemon: listen on dashboard port %d: %w", d.cfg.UIPort, err)
 	}
-	d.tcpLn = tcpLn
 	d.apiTCP = &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -311,8 +332,13 @@ func (d *daemon) startAPI(handler http.Handler) error {
 		_ = os.Remove(d.socketPath)
 		return fmt.Errorf("daemon: set socket permissions: %w", err)
 	}
-	d.unixLn = unixLn
-	d.socket = true
+	info, err := os.Lstat(d.socketPath)
+	if err != nil {
+		_ = unixLn.Close()
+		_ = os.Remove(d.socketPath)
+		return fmt.Errorf("daemon: inspect socket: %w", err)
+	}
+	d.socketInfo = info
 	d.apiUnix = &http.Server{
 		Handler:           api.WithSocketAuth(handler),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -332,14 +358,20 @@ func (d *daemon) serve(server *http.Server, listener net.Listener, name string) 
 }
 
 func (d *daemon) writePID() error {
-	data := []byte(strconv.Itoa(os.Getpid()) + "\n")
-	if err := os.WriteFile(d.pidPath, data, 0o600); err != nil {
+	value := strconv.Itoa(os.Getpid())
+	if err := writeAtomic(d.pidPath, []byte(value+"\n"), 0o600); err != nil {
 		return fmt.Errorf("daemon: write pid file: %w", err)
 	}
-	if err := os.Chmod(d.pidPath, 0o600); err != nil {
-		return fmt.Errorf("daemon: set pid file permissions: %w", err)
+	d.pidValue = value
+	return nil
+}
+
+// writeReady publishes the readiness marker only after the proxy, API,
+// orphan cleanup, routes, and desired sites are all reconciled.
+func (d *daemon) writeReady() error {
+	if err := writeAtomic(d.readyPath, []byte(d.pidValue+"\n"), 0o600); err != nil {
+		return fmt.Errorf("daemon: write readiness marker: %w", err)
 	}
-	d.pidFile = true
 	return nil
 }
 
@@ -403,6 +435,14 @@ func (d *daemon) renew(parent context.Context) {
 // their desired state, and releases the remaining resources. It is idempotent.
 func (d *daemon) shutdown() {
 	d.shutdownOnce.Do(func() {
+		// Retire readiness first. EnsureRunning must not treat a shutting-down
+		// daemon as ready while its backends are still terminating.
+		if d.readyPath != "" {
+			if err := os.Remove(d.readyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				d.logger.Warn("daemon: remove readiness marker", "error", err)
+			}
+		}
+
 		apiCtx, cancelAPI := context.WithTimeout(context.Background(), apiShutdownTimeout)
 		for _, server := range []*http.Server{d.apiUnix, d.apiTCP} {
 			if server == nil {
@@ -422,9 +462,9 @@ func (d *daemon) shutdown() {
 			cancelProxy()
 		}
 
-		stopCtx, cancelStop := context.WithTimeout(context.Background(), d.shutdownBudget())
-		d.stopBackends(stopCtx)
-		cancelStop()
+		// The Run context is already cancelled at this point. Backends need
+		// their own budgets, so detach from cancellation and bound each stop.
+		d.stopBackends(context.WithoutCancel(context.Background()))
 
 		if d.helper != nil {
 			_ = d.helper.Close()
@@ -440,20 +480,16 @@ func (d *daemon) shutdown() {
 			}
 		}
 
-		if d.socket {
-			if err := removeIfSocket(d.socketPath); err != nil {
-				d.logger.Warn("daemon: remove socket", "error", err)
-			}
+		if err := removeOwnedSocket(d.socketPath, d.socketInfo); err != nil {
+			d.logger.Warn("daemon: remove socket", "error", err)
 		}
-		if d.pidFile {
-			if err := os.Remove(d.pidPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				d.logger.Warn("daemon: remove pid file", "error", err)
-			}
+		if err := removeOwnedPID(d.pidPath, d.pidValue); err != nil {
+			d.logger.Warn("daemon: remove pid file", "error", err)
 		}
 	})
 }
 
-func (d *daemon) shutdownBudget() time.Duration {
+func (d *daemon) perProcessStopBudget() time.Duration {
 	grace := d.cfg.GracefulStopSeconds
 	if grace <= 0 {
 		grace = 10
@@ -461,24 +497,30 @@ func (d *daemon) shutdownBudget() time.Duration {
 	return time.Duration(grace)*time.Second + 10*time.Second
 }
 
-// stopBackends terminates every site whose desired state is running. It
-// deliberately bypasses sites.Service.Stop, which would persist DesiredStopped.
+// stopBackends terminates every supervised process, independent of the
+// persisted desired state. StopAll catches processes whose rows were deleted or
+// whose state disagrees with the live supervisor; ListSites is attempted first
+// only to stop known sites individually with their own budgets.
 func (d *daemon) stopBackends(ctx context.Context) {
-	if d.store == nil || d.backend == nil {
+	if d.backend == nil {
 		return
 	}
-	stored, err := d.store.ListSites(ctx)
-	if err != nil {
-		d.logger.Warn("daemon: list sites for shutdown", "error", err)
-		return
+	if d.store != nil {
+		stored, err := d.store.ListSites(ctx)
+		if err != nil {
+			d.logger.Warn("daemon: list sites for shutdown; stopping all supervised processes", "error", err)
+		} else {
+			for _, site := range stored {
+				stopCtx, cancel := context.WithTimeout(ctx, d.perProcessStopBudget())
+				if err := d.backend.Stop(stopCtx, site.ID, true); err != nil {
+					d.logger.Warn("daemon: stop site", "site", site.Name, "error", err)
+				}
+				cancel()
+			}
+		}
 	}
-	for _, site := range stored {
-		if site.DesiredState != model.DesiredRunning {
-			continue
-		}
-		if err := d.backend.Stop(ctx, site.ID, true); err != nil {
-			d.logger.Warn("daemon: stop site", "site", site.Name, "error", err)
-		}
+	if err := d.backend.StopAll(ctx); err != nil {
+		d.logger.Warn("daemon: stop all supervised processes", "error", err)
 	}
 }
 
@@ -519,16 +561,18 @@ func dialHelper(ctx context.Context, socket string, logger *slog.Logger) (*helpe
 	}
 }
 
-// prepareSocketPath removes a stale socket but never a live one or a
-// non-socket file.
+// prepareSocketPath removes a stale socket but never a live one, a non-socket
+// file, or a socket whose probe failed for an ambiguous reason (timeout or
+// permission). The inode is checked again before removal to avoid racing a
+// replacement listener.
 func prepareSocketPath(path string) error {
-	info, err := os.Lstat(path)
+	first, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return nil
 	case err != nil:
 		return fmt.Errorf("daemon: inspect socket %s: %w", path, err)
-	case info.Mode()&os.ModeSocket == 0:
+	case first.Mode()&os.ModeSocket == 0:
 		return fmt.Errorf("daemon: refusing to replace non-socket %s", path)
 	}
 
@@ -537,29 +581,32 @@ func prepareSocketPath(path string) error {
 		_ = conn.Close()
 		return fmt.Errorf("daemon: socket %s is already in use", path)
 	}
+	if !removableSocketError(dialErr) {
+		return fmt.Errorf("daemon: socket %s is not safely removable: %w", path, dialErr)
+	}
+
+	second, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	case err != nil:
+		return fmt.Errorf("daemon: re-inspect socket %s: %w", path, err)
+	case !os.SameFile(first, second):
+		return fmt.Errorf("daemon: socket %s changed while checking for staleness", path)
+	case second.Mode()&os.ModeSocket == 0:
+		return fmt.Errorf("daemon: refusing to replace non-socket %s", path)
+	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("daemon: remove stale socket %s: %w", path, err)
 	}
 	return nil
 }
 
-func removeIfSocket(path string) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return nil
-	}
-	return os.Remove(path)
-}
-
-// EnsureRunning returns immediately when the daemon socket is live. Otherwise
-// it spawns `devstack daemon run` in a new session, redirects its output to
-// <home>/run/daemon.log, and waits up to ten seconds for the socket.
+// EnsureRunning returns when a ready daemon owns the machine. Otherwise it
+// coordinates through the lifetime lock: a free lock means this invocation may
+// spawn one detached `devstack daemon run`, while a busy lock means another
+// instance is starting or running and must be waited for. It never reports
+// success before the readiness marker exists.
 func EnsureRunning(ctx context.Context, opts Options) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -568,16 +615,98 @@ func EnsureRunning(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("daemon: load config: %w", err)
 	}
-	socket := SocketPath(cfg.Home)
-	if socketReachable(socket) {
-		return nil
+	if err := prepareRunDir(cfg.Home); err != nil {
+		return err
+	}
+	home := cfg.Home
+	logPath := filepath.Join(home, "run", "daemon.log")
+	deadline := time.Now().Add(ensureStartTimeout)
+
+	var (
+		cmd       *exec.Cmd
+		waitCh    <-chan error
+		childDone bool
+		childErr  error
+	)
+	terminateChild := func() {
+		if cmd == nil || childDone {
+			return
+		}
+		terminateCommand(cmd, waitCh)
+		childDone = true
 	}
 
+	for {
+		if daemonReady(home) {
+			return nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			terminateChild()
+			return fmt.Errorf("daemon: waiting for startup: %w", ctxErr)
+		}
+		if time.Now().After(deadline) {
+			terminateChild()
+			return fmt.Errorf("daemon did not become ready within %s\n%s", ensureStartTimeout, tailFile(logPath))
+		}
+
+		if cmd == nil {
+			lock, lockErr := acquireLifetimeLock(home)
+			switch {
+			case lockErr == nil:
+				lock.release()
+				if err := os.Remove(ReadyPath(home)); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("daemon: remove stale readiness marker: %w", err)
+				}
+				cmd, waitCh, err = spawnDaemon(home, opts)
+				if err != nil {
+					return err
+				}
+			case errors.Is(lockErr, ErrAlreadyRunning):
+				// Another instance is starting or running. Its readiness
+				// marker will release this waiter without spawning a duplicate.
+			default:
+				return fmt.Errorf("daemon: inspect lifetime lock: %w", lockErr)
+			}
+			if cmd == nil {
+				if err := sleepContext(ctx, 25*time.Millisecond); err != nil {
+					return fmt.Errorf("daemon: waiting for startup: %w", err)
+				}
+			}
+			continue
+		}
+
+		if childDone {
+			// Our child lost the race to another daemon. Wait for that daemon
+			// instead of treating the duplicate's exit as a failure.
+			if lockHeld(home) {
+				if err := sleepContext(ctx, 25*time.Millisecond); err != nil {
+					return fmt.Errorf("daemon: waiting for startup: %w", err)
+				}
+				continue
+			}
+			return fmt.Errorf("daemon exited before becoming ready: %v\n%s", childErr, tailFile(logPath))
+		}
+
+		select {
+		case err := <-waitCh:
+			childDone = true
+			childErr = err
+			waitCh = nil
+		case <-ctx.Done():
+			terminateChild()
+			return fmt.Errorf("daemon: waiting for startup: %w", ctx.Err())
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+// spawnDaemon starts the detached daemon process and a bounded Wait observer.
+func spawnDaemon(home string, opts Options) (*exec.Cmd, <-chan error, error) {
 	selfBin, err := selfExecutable()
 	if err != nil {
-		return fmt.Errorf("daemon: locate devstack binary: %w", err)
+		return nil, nil, fmt.Errorf("daemon: locate devstack binary: %w", err)
 	}
-	args := []string{"daemon", "run", "--home", cfg.Home}
+	args := []string{"daemon", "run", "--home", home}
 	if opts.HelperSocket != "" {
 		args = append(args, "--helper-socket", opts.HelperSocket)
 	}
@@ -597,60 +726,84 @@ func EnsureRunning(ctx context.Context, opts Options) error {
 		args = append(args, "--log-level", opts.LogLevel)
 	}
 
-	logPath := filepath.Join(cfg.Home, "run", "daemon.log")
+	logPath := filepath.Join(home, "run", "daemon.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return fmt.Errorf("daemon: open daemon log: %w", err)
+		return nil, nil, fmt.Errorf("daemon: open daemon log: %w", err)
 	}
-	if err := os.Chmod(logPath, 0o600); err != nil {
+	if err := logFile.Chmod(0o600); err != nil {
 		_ = logFile.Close()
-		return fmt.Errorf("daemon: set daemon log permissions: %w", err)
+		return nil, nil, fmt.Errorf("daemon: set daemon log permissions: %w", err)
 	}
 
 	cmd := exec.Command(selfBin, args...)
-	cmd.Dir = cfg.Home
+	cmd.Dir = home
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.Env = daemonEnvironment(cfg.Home)
+	cmd.Env = daemonEnvironment(home)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	startErr := cmd.Start()
 	closeErr := logFile.Close()
 	if startErr != nil {
-		return fmt.Errorf("daemon: start background daemon: %w", startErr)
+		return nil, nil, fmt.Errorf("daemon: start background daemon: %w", startErr)
 	}
 	if closeErr != nil {
 		_ = cmd.Process.Kill()
-		return fmt.Errorf("daemon: close daemon log: %w", closeErr)
+		waitCommand(cmd, 2*time.Second)
+		return nil, nil, fmt.Errorf("daemon: close daemon log: %w", closeErr)
 	}
 
-	deadline := time.Now().Add(ensureStartTimeout)
-	for {
-		if socketReachable(socket) {
-			// Detach: the daemon must outlive this CLI invocation.
-			_ = cmd.Process.Release()
-			return nil
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return fmt.Errorf("daemon: waiting for startup: %w", ctxErr)
-		}
-		if !processAlive(cmd.Process.Pid) {
-			waitErr := cmd.Wait()
-			return fmt.Errorf("daemon exited before the socket appeared: %v\n%s", waitErr, tailFile(logPath))
-		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Signal(syscall.SIGTERM)
-			_ = cmd.Wait()
-			return fmt.Errorf("daemon did not start within %s\n%s", ensureStartTimeout, tailFile(logPath))
-		}
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+	return cmd, waitCh, nil
+}
+
+// terminateCommand sends SIGTERM, waits a bounded grace period, then escalates
+// to SIGKILL. It never waits on the process without a deadline.
+func terminateCommand(cmd *exec.Cmd, waitCh <-chan error) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	if waitCh != nil {
 		select {
-		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return fmt.Errorf("daemon: waiting for startup: %w", ctx.Err())
-		case <-time.After(25 * time.Millisecond):
+		case <-waitCh:
+			return
+		case <-time.After(3 * time.Second):
 		}
+	}
+	_ = cmd.Process.Kill()
+	if waitCh == nil {
+		waitCommand(cmd, 2*time.Second)
+		return
+	}
+	select {
+	case <-waitCh:
+	case <-time.After(2 * time.Second):
+	}
+}
+
+// waitCommand waits for an already-started command with a deadline.
+func waitCommand(cmd *exec.Cmd, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
