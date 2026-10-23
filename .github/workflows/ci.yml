@@ -12,6 +12,7 @@ jobs:
   test:
     name: Test and build
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -41,11 +42,31 @@ jobs:
         working-directory: ui
         run: npm run test:e2e
 
+      # nginx, Apache, and certutil are not used by the Plan 1 E2E yet. They are
+      # installed here so later external-vhost and browser-trust tests run on the
+      # same Ubuntu 24.04 image. Services are stopped: devstack owns its ports.
+      - name: Install Linux E2E tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            apache2 curl libnss3-tools nginx
+          sudo systemctl stop nginx apache2 || true
+          sudo systemctl disable nginx apache2 || true
+
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test ./...
+      - name: Test with race detector
+        run: go test -race ./...
 
-      - name: Build
+      - name: Compile check
         run: go build ./...
+
+      - name: Build release binaries
+        run: make build
+
+      # The script uses temporary HOME/state/hosts/trust paths and high ports.
+      # It never binds 80/443 or modifies the real trust stores, so no sudo is
+      # needed for the E2E flow.
+      - name: Linux installer and daemon E2E
+        run: E2E_SKIP_BUILD=1 bash test/e2e/linux.sh

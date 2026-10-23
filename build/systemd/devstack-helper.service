@@ -1,0 +1,36 @@
+[Unit]
+Description=devstack privileged helper
+Documentation=https://github.com/AramZahedi/dev-web-stack/blob/master/docs/install.md
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/lib/devstack/devstack-helper --config /etc/devstack/helper.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+UMask=0077
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+StateDirectory=devstack-helper
+StateDirectoryMode=0755
+RuntimeDirectory=devstack-helper
+RuntimeDirectoryMode=0755
+# The helper updates /etc/hosts atomically (a temp file in /etc plus rename),
+# so /etc must be writable while /usr and /boot remain read-only. The trust
+# directories outside /etc are optional on different distributions.
+ReadWritePaths=/etc /var/lib/devstack-helper /run/devstack-helper
+ReadWritePaths=-/usr/local/share/ca-certificates
+ReadWritePaths=-/var/lib/ca-certificates
+
+[Install]
+WantedBy=multi-user.target

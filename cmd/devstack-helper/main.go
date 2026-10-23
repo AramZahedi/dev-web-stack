@@ -30,8 +30,11 @@ const (
 	defaultProxyHTTPSPort = 8443
 )
 
-// options holds the parsed helper command line.
+// options holds the parsed helper configuration. Values start at the built-in
+// defaults, are optionally replaced by --config, and are finally overridden by
+// explicit command-line flags.
 type options struct {
+	configPath     string
 	socket         string
 	stateDir       string
 	hosts          string
@@ -48,8 +51,9 @@ func (o options) caDir() string {
 	return filepath.Join(o.stateDir, "pki")
 }
 
-// parseOptions parses the helper's flags. Defaults target the production
-// install; tests and unprivileged runs override every path and port.
+// parseOptions parses the helper's configuration file and flags. Defaults
+// target the production install; tests and unprivileged runs override every
+// path and port. The file is loaded before the flags so explicit flags win.
 func parseOptions(args []string) (options, error) {
 	opts := options{
 		socket:         defaultSocket,
@@ -63,8 +67,22 @@ func parseOptions(args []string) (options, error) {
 		logLevel:       "info",
 	}
 
+	configPath, err := findConfigPath(args)
+	if err != nil {
+		return options{}, err
+	}
+	if configPath != "" {
+		fileCfg, err := loadFileConfig(configPath)
+		if err != nil {
+			return options{}, err
+		}
+		fileCfg.apply(&opts)
+		opts.configPath = configPath
+	}
+
 	flags := flag.NewFlagSet("devstack-helper", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.configPath, "config", opts.configPath, "YAML configuration file")
 	flags.StringVar(&opts.socket, "socket", opts.socket, "Unix socket path")
 	flags.StringVar(&opts.stateDir, "state-dir", opts.stateDir, "helper state directory")
 	flags.StringVar(&opts.hosts, "hosts", opts.hosts, "hosts file to manage")
