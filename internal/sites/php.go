@@ -217,6 +217,17 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 	if err != nil {
 		return site, err
 	}
+	// A previously applied site serves from a hash generation, not "default".
+	// Start is idempotent: never stage a second master when one is running.
+	if previous.Status == model.StatusRunning && previous.FastCGIPort != 0 && s.deps.Backend != nil {
+		status, err := s.deps.Backend.Status(ctx, site.ID)
+		if err != nil {
+			return site, fmt.Errorf("sites: status for %q: %w", site.Name, err)
+		}
+		if status.State == model.StatusRunning {
+			return site, nil
+		}
+	}
 
 	allocated := 0
 	if site.FastCGIPort == 0 {

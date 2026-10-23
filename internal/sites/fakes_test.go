@@ -72,10 +72,16 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 	}
 
 	fb := &fakeBackend{
-		started:     make(map[string]bool),
-		stopped:     make(map[string]bool),
-		status:      make(map[string]model.SiteStatus),
-		startedGens: make(map[string]bool),
+		started:        make(map[string]bool),
+		stopped:        make(map[string]bool),
+		status:         make(map[string]model.SiteStatus),
+		startedGens:    make(map[string]bool),
+		phpSpecs:       make(map[string]backend.SiteSpec),
+		phpSequences:   make(map[string]int),
+		phpActive:      make(map[string]string),
+		phpPrepareErrs: make(map[string]error),
+		phpStartErrs:   make(map[string]error),
+		phpStopErrs:    make(map[string]error),
 	}
 	fh := &fakeHosts{}
 	fc := &fakeCerts{
@@ -92,6 +98,7 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 	order := []string{}
 	fc.order = &order
 	fv.order = &order
+	fb.order = &order
 
 	cfg := config.Default()
 	cfg.Home = dir
@@ -154,16 +161,38 @@ type fakeBackend struct {
 	buildCalls     []string
 	execCalls      []fakeExecCall
 	startedGens    map[string]bool
+	phpSpecs       map[string]backend.SiteSpec
+	phpSequences   map[string]int
+	phpActive      map[string]string
+	phpEvents      []fakePHPOperation
+	phpPrepareErrs map[string]error
+	phpStartErrs   map[string]error
+	phpStopErrs    map[string]error
+	phpStartSeq    int
+	order          *[]string
 	startCalls     int
 	stopCalls      int
 	prepareErr     error
 	startErr       error
+	startPHPErr    error
+	preparePHPErr  error
+	stopPHPErr     error
 	stopErr        error
 	statusErr      error
 	ensureRTError  error
 	ensureBuildErr error
 	execResult     backend.Result
 	execErr        error
+}
+
+// fakePHPOperation records one PHP staging transition. Sequence is the
+// start order assigned to a successful start and is zero for other operations.
+type fakePHPOperation struct {
+	Op         string
+	SiteID     string
+	Generation string
+	Sequence   int
+	Port       int
 }
 
 // fakeExecCall records one Backend.Exec invocation.
@@ -213,6 +242,15 @@ func (f *fakeBackend) Stop(_ context.Context, id string, _ bool) error {
 	}
 	f.stopped[id] = true
 	f.status[id] = model.StatusStopped
+	// Local.Stop terminates every staged PHP generation, including generations
+	// left behind by an earlier apply.
+	prefix := id + "#"
+	for key, started := range f.startedGens {
+		if started && strings.HasPrefix(key, prefix) {
+			f.startedGens[key] = false
+		}
+	}
+	f.phpActive[id] = ""
 	return nil
 }
 
@@ -221,6 +259,9 @@ func (f *fakeBackend) Status(_ context.Context, id string) (backend.Status, erro
 	defer f.mu.Unlock()
 	if f.statusErr != nil {
 		return backend.Status{}, f.statusErr
+	}
+	if generation := f.phpActive[id]; generation != "" && f.startedGens[id+"#"+generation] {
+		return backend.Status{State: model.StatusRunning}, nil
 	}
 	state, ok := f.status[id]
 	if !ok {
@@ -248,43 +289,149 @@ func (f *fakeBackend) Exec(_ context.Context, id string, argv []string, env map[
 func (f *fakeBackend) PreparePHP(_ context.Context, siteID, generation string, spec backend.SiteSpec) (backend.PreparedSite, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ensurePHPMapsLocked()
+	key := phpFakeKey(siteID, generation)
 	spec.ID = siteID
 	f.prepared = append(f.prepared, spec)
-	if f.prepareErr != nil {
-		return backend.PreparedSite{}, f.prepareErr
+	f.phpEvents = append(f.phpEvents, fakePHPOperation{
+		Op:         "prepare",
+		SiteID:     siteID,
+		Generation: generation,
+		Port:       spec.FastCGIPort,
+	})
+	f.recordOrderLocked("php-prepare:" + key)
+	if err := f.phpFailureLocked(f.phpPrepareErrs[key], f.preparePHPErr, f.prepareErr); err != nil {
+		return backend.PreparedSite{}, err
 	}
+	f.phpSpecs[key] = spec
 	return backend.PreparedSite{
 		BackendHost: "127.0.0.1",
 		FastCGIPort: spec.FastCGIPort,
 	}, nil
 }
 
-// StartPHP starts a staged PHP generation.
+// StartPHP starts a prepared PHP generation and makes it active.
 func (f *fakeBackend) StartPHP(_ context.Context, siteID, generation string) (backend.ProcessInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.startErr != nil {
-		return backend.ProcessInfo{}, f.startErr
+	f.ensurePHPMapsLocked()
+	key := phpFakeKey(siteID, generation)
+	f.phpEvents = append(f.phpEvents, fakePHPOperation{
+		Op:         "start",
+		SiteID:     siteID,
+		Generation: generation,
+		Port:       f.phpSpecs[key].FastCGIPort,
+	})
+	f.recordOrderLocked("php-start:" + key)
+	if err := f.phpFailureLocked(f.phpStartErrs[key], f.startPHPErr, f.startErr); err != nil {
+		return backend.ProcessInfo{}, err
 	}
+	if _, ok := f.phpSpecs[key]; !ok {
+		return backend.ProcessInfo{}, fmt.Errorf("fake backend: generation %q is not prepared for site %q", generation, siteID)
+	}
+	if f.startedGens[key] {
+		return backend.ProcessInfo{}, fmt.Errorf("fake backend: generation %q is already running for site %q", generation, siteID)
+	}
+	f.phpStartSeq++
+	f.phpSequences[key] = f.phpStartSeq
 	f.startCalls++
 	f.started[siteID] = true
-	f.startedGens[siteID+"#"+generation] = true
+	f.startedGens[key] = true
+	f.phpActive[siteID] = generation
 	f.status[siteID] = model.StatusRunning
 	return backend.ProcessInfo{PID: 4242, StartedAt: time.Now()}, nil
 }
 
-// StopPHP stops one PHP generation.
+// StopPHP stops one PHP generation. Stopping the active generation promotes
+// the most recently started remaining generation, mirroring the local backend.
 func (f *fakeBackend) StopPHP(_ context.Context, siteID, generation string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.ensurePHPMapsLocked()
+	key := phpFakeKey(siteID, generation)
 	f.stopCalls++
-	if f.stopErr != nil {
-		return f.stopErr
+	f.phpEvents = append(f.phpEvents, fakePHPOperation{
+		Op:         "stop",
+		SiteID:     siteID,
+		Generation: generation,
+		Port:       f.phpSpecs[key].FastCGIPort,
+	})
+	f.recordOrderLocked("php-stop:" + key)
+	if err := f.phpFailureLocked(f.phpStopErrs[key], f.stopPHPErr, f.stopErr); err != nil {
+		return err
+	}
+	if _, ok := f.phpSpecs[key]; !ok {
+		return nil
+	}
+	if f.startedGens[key] {
+		f.startedGens[key] = false
+	}
+	if f.phpActive[siteID] == generation {
+		f.phpActive[siteID] = f.mostRecentGenerationLocked(siteID)
 	}
 	f.stopped[siteID] = true
-	f.startedGens[siteID+"#"+generation] = false
-	f.status[siteID] = model.StatusStopped
+	if f.phpActive[siteID] == "" {
+		f.status[siteID] = model.StatusStopped
+	} else {
+		f.status[siteID] = model.StatusRunning
+	}
 	return nil
+}
+
+// ensurePHPMapsLocked initialises the PHP staging maps for fakes built by hand.
+func (f *fakeBackend) ensurePHPMapsLocked() {
+	if f.phpSpecs == nil {
+		f.phpSpecs = make(map[string]backend.SiteSpec)
+	}
+	if f.phpSequences == nil {
+		f.phpSequences = make(map[string]int)
+	}
+	if f.phpActive == nil {
+		f.phpActive = make(map[string]string)
+	}
+	if f.phpPrepareErrs == nil {
+		f.phpPrepareErrs = make(map[string]error)
+	}
+	if f.phpStartErrs == nil {
+		f.phpStartErrs = make(map[string]error)
+	}
+	if f.phpStopErrs == nil {
+		f.phpStopErrs = make(map[string]error)
+	}
+}
+
+func (f *fakeBackend) phpFailureLocked(overrides ...error) error {
+	for _, err := range overrides {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *fakeBackend) mostRecentGenerationLocked(siteID string) string {
+	active := ""
+	sequence := 0
+	for key, started := range f.startedGens {
+		if !started || !strings.HasPrefix(key, siteID+"#") {
+			continue
+		}
+		if f.phpSequences[key] >= sequence {
+			active = strings.TrimPrefix(key, siteID+"#")
+			sequence = f.phpSequences[key]
+		}
+	}
+	return active
+}
+
+func (f *fakeBackend) recordOrderLocked(event string) {
+	if f.order != nil {
+		*f.order = append(*f.order, event)
+	}
+}
+
+func phpFakeKey(siteID, generation string) string {
+	return siteID + "#" + generation
 }
 
 func (f *fakeBackend) EnsureRuntime(_ context.Context, kind, version string) (model.RuntimeBuild, error) {
@@ -775,6 +922,8 @@ type fakePHPCommands struct {
 	fpmCalls  int
 	lintErr   error
 	fpmErr    error
+	lintFunc  func(ctx context.Context, phpBin, iniPath string) error
+	fpmFunc   func(ctx context.Context, fpmBin, configPath, iniPath string) error
 
 	lintPHPBin string
 	lintIni    string
@@ -785,23 +934,33 @@ type fakePHPCommands struct {
 
 var _ PHPCommands = (*fakePHPCommands)(nil)
 
-func (f *fakePHPCommands) Lint(_ context.Context, phpBin, iniPath string) error {
+func (f *fakePHPCommands) Lint(ctx context.Context, phpBin, iniPath string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.lintCalls++
 	f.lintPHPBin = phpBin
 	f.lintIni = iniPath
-	return f.lintErr
+	hook := f.lintFunc
+	err := f.lintErr
+	f.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, phpBin, iniPath)
+	}
+	return err
 }
 
-func (f *fakePHPCommands) ValidateFPM(_ context.Context, fpmBin, configPath, iniPath string) error {
+func (f *fakePHPCommands) ValidateFPM(ctx context.Context, fpmBin, configPath, iniPath string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.fpmCalls++
 	f.fpmBin = fpmBin
 	f.fpmConfig = configPath
 	f.fpmIni = iniPath
-	return f.fpmErr
+	hook := f.fpmFunc
+	err := f.fpmErr
+	f.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, fpmBin, configPath, iniPath)
+	}
+	return err
 }
 
 func (f *fakePHPCommands) counts() (lint, fpm int) {
@@ -841,4 +1000,33 @@ func (f *fakeBackend) startCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.startCalls
+}
+
+// phpSpec returns the spec staged for one generation.
+func (f *fakeBackend) phpSpec(siteID, generation string) (backend.SiteSpec, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	spec, ok := f.phpSpecs[phpFakeKey(siteID, generation)]
+	return spec, ok
+}
+
+// phpActiveGeneration returns the generation Status reports as active.
+func (f *fakeBackend) phpActiveGeneration(siteID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.phpActive[siteID]
+}
+
+// phpStarted reports whether one generation is running.
+func (f *fakeBackend) phpStarted(siteID, generation string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.startedGens[phpFakeKey(siteID, generation)]
+}
+
+// phpEventList returns a copy of every staging transition in order.
+func (f *fakeBackend) phpEventList() []fakePHPOperation {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakePHPOperation(nil), f.phpEvents...)
 }
