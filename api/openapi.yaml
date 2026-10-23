@@ -1318,6 +1318,33 @@ components:
         last_sync:
           type: string
           format: date-time
+        service_active:
+          type: boolean
+          description: Whether the selected nginx/Apache systemd service is active.
+        default_server_conflict:
+          type: boolean
+          description: A foreign server configuration already declares default_server on the devstack listen ports; the devstack 404 vhost is installed without the marker.
+        tls_dir:
+          type: string
+          description: Helper-managed TLS directory reported by the helper.
+        tls_dir_mode:
+          type: integer
+          format: uint32
+          description: Permission bits of the TLS directory.
+        tls_files:
+          type: array
+          description: Metadata for files in the helper-managed TLS directory.
+          items:
+            type: object
+            required: [name, mode, regular]
+            properties:
+              name:
+                type: string
+              mode:
+                type: integer
+                format: uint32
+              regular:
+                type: boolean
 
     VhostModeRequest:
       type: object

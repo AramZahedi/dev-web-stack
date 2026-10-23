@@ -194,17 +194,21 @@ func renderNginxDashboard(d DashboardSpec, maxBody int64, tlsDir string, ports l
 	return []byte(b.String())
 }
 
-func renderNginxDefault(tlsDir string, ports listenPorts) []byte {
+func renderNginxDefault(tlsDir string, ports listenPorts, suppressDefaultServer bool) []byte {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n\n")
 
+	marker := " default_server"
+	if suppressDefaultServer {
+		marker = ""
+	}
 	for _, tls := range []bool{false, true} {
 		if tls {
-			writeNginxServerOpen(&b, nginxListenValue(ports.https, true)+" default_server", "_")
+			writeNginxServerOpen(&b, nginxListenValue(ports.https, true)+marker, "_")
 			writeNginxDashboardTLS(&b, tlsDir)
 		} else {
-			writeNginxServerOpen(&b, nginxListenValue(ports.http, false)+" default_server", "_")
+			writeNginxServerOpen(&b, nginxListenValue(ports.http, false)+marker, "_")
 		}
 		b.WriteString("\n")
 		b.WriteString("    error_page 404 =404 /_devstack/404.html;\n")

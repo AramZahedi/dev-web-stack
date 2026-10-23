@@ -14,6 +14,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
 
@@ -100,9 +101,23 @@ func (s *Service) syncVhostsLocked(ctx context.Context, excludeID string) error 
 	if s.deps.Vhosts == nil {
 		return errors.New("sites: vhost helper is not configured")
 	}
-	req, err := s.buildVhostRequestLocked(ctx, s.servingMode(), excludeID)
+	mode := s.servingMode()
+	req, err := s.buildVhostRequestLocked(ctx, mode, excludeID)
 	if err != nil {
 		return err
+	}
+	// A plain sync only installs configs; it does not stop forwarders. If the
+	// helper is still builtin (for example after a failed startup reconcile),
+	// use SetServingMode so 80/443 ownership is handled atomically.
+	helperMode, err := s.helperModeLocked(ctx)
+	if err != nil {
+		return err
+	}
+	if helperMode != mode {
+		if _, err := s.deps.Vhosts.SetServingMode(ctx, mode, req); err != nil {
+			return fmt.Errorf("sites: switch external vhosts to %q: %w", mode, err)
+		}
+		return nil
 	}
 	if err := s.deps.Vhosts.SyncVhosts(ctx, req); err != nil {
 		return fmt.Errorf("sites: sync external vhosts: %w", err)
@@ -173,26 +188,45 @@ func (s *Service) SetServingMode(ctx context.Context, mode string) error {
 	defer s.mu.Unlock()
 
 	current := s.servingMode()
-	if mode == current {
-		if current == config.ServingModeBuiltin {
+	if s.deps.Vhosts == nil {
+		if mode == current && mode == config.ServingModeBuiltin {
 			return nil
 		}
-		return s.syncVhostsLocked(ctx, "")
-	}
-	if s.deps.Vhosts == nil {
 		return errors.New("sites: vhost helper is not configured")
 	}
 	if strings.TrimSpace(s.deps.Config.Home) == "" {
 		return errors.New("sites: config home is not set")
 	}
 
+	// config.yaml is not trustworthy on its own: the helper may have been
+	// switched out of band, or a previous save may have failed after the helper
+	// changed. Read the live helper mode under the lock and repair a mismatch
+	// with SetServingMode even when the requested mode equals the config.
+	helperMode, err := s.helperModeLocked(ctx)
+	if err != nil {
+		return err
+	}
+
 	var target helperproto.VHostSyncRequest
-	var err error
 	if mode != config.ServingModeBuiltin {
 		target, err = s.buildVhostRequestLocked(ctx, mode, "")
 		if err != nil {
 			return err
 		}
+	}
+
+	if mode == current {
+		if helperMode == mode {
+			if current == config.ServingModeBuiltin {
+				return nil
+			}
+			return s.syncVhostsLocked(ctx, "")
+		}
+		// The config already names the target but the helper disagrees.
+		if mode == config.ServingModeBuiltin {
+			return s.switchExternalToBuiltin(ctx, helperMode)
+		}
+		return s.switchExternal(ctx, helperMode, mode, target)
 	}
 
 	switch {
@@ -203,6 +237,23 @@ func (s *Service) SetServingMode(ctx context.Context, mode string) error {
 	default:
 		return s.switchExternal(ctx, current, mode, target)
 	}
+}
+
+// helperModeLocked returns the helper's persisted mode, treating an old helper
+// without vhost support as builtin. The caller must hold s.mu.
+func (s *Service) helperModeLocked(ctx context.Context) (string, error) {
+	status, err := s.deps.Vhosts.VhostStatus(ctx)
+	if err != nil {
+		if errors.Is(err, helperproto.ErrNotImplemented) {
+			return config.ServingModeBuiltin, nil
+		}
+		return "", fmt.Errorf("sites: read vhost status: %w", err)
+	}
+	mode := strings.TrimSpace(status.Mode)
+	if mode == "" {
+		return config.ServingModeBuiltin, nil
+	}
+	return mode, nil
 }
 
 func (s *Service) switchBuiltinToExternal(ctx context.Context, mode string, req helperproto.VHostSyncRequest) error {
@@ -237,10 +288,8 @@ func (s *Service) switchBuiltinToExternal(ctx context.Context, mode string, req 
 }
 
 func (s *Service) switchExternalToBuiltin(ctx context.Context, previous string) error {
-	if s.deps.Proxy != nil {
-		if err := s.deps.Proxy.Start(context.WithoutCancel(ctx)); err != nil {
-			return fmt.Errorf("sites: start built-in proxy: %w", err)
-		}
+	if err := s.startBuiltinProxyLocked(ctx); err != nil {
+		return fmt.Errorf("sites: start built-in proxy: %w", err)
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		var errs []error
@@ -358,18 +407,28 @@ func (s *Service) saveServingModeLocked(ctx context.Context, mode string) error 
 // whose desired state is running. The configured mode is already builtin.
 func (s *Service) restoreBuiltinRuntimeLocked(ctx context.Context) error {
 	var errs []error
-	if s.deps.Proxy != nil {
-		// The proxy must outlive the request that triggered the mode switch.
-		// proxy.Server.Start watches its context and stops the listeners when
-		// it is canceled.
-		if err := s.deps.Proxy.Start(context.WithoutCancel(ctx)); err != nil {
-			errs = append(errs, fmt.Errorf("rollback: start built-in proxy: %w", err))
-		}
+	if err := s.startBuiltinProxyLocked(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("rollback: start built-in proxy: %w", err))
 	}
 	if err := s.startStaticBackendsLocked(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("rollback: restart static backends: %w", err))
 	}
 	return errors.Join(errs...)
+}
+
+// startBuiltinProxyLocked starts the proxy unless it is already running. The
+// proxy must outlive the request that triggered the mode switch;
+// proxy.Server.Start watches its context and stops the listeners when it is
+// canceled.
+func (s *Service) startBuiltinProxyLocked(ctx context.Context) error {
+	if s.deps.Proxy == nil {
+		return nil
+	}
+	err := s.deps.Proxy.Start(context.WithoutCancel(ctx))
+	if err != nil && !errors.Is(err, proxy.ErrAlreadyStarted) {
+		return err
+	}
+	return nil
 }
 
 // stopStaticBackendsLocked stops every static site process without changing
@@ -461,8 +520,16 @@ func (s *Service) buildVhostRequestLocked(ctx context.Context, mode, excludeID s
 			continue
 		}
 		spec, err := s.vhostSiteSpecLocked(ctx, site)
+		if err == nil {
+			err = validateVhostSiteForSync(site)
+		}
 		if err != nil {
-			return helperproto.VHostSyncRequest{}, err
+			// One broken site must not poison the whole set. Publish it as a
+			// stopped 503 vhost so every other site still syncs, and record
+			// the reason as a site event.
+			spec = degradedVhostSite(site)
+			s.emitEvent(ctx, site.ID, "site.error",
+				fmt.Sprintf("site %s is served as a stopped 503 vhost: %v", site.Name, err))
 		}
 		sites = append(sites, spec)
 	}
@@ -525,6 +592,87 @@ func (s *Service) vhostSiteSpecLocked(ctx context.Context, site model.Site) (hel
 		spec.KeyPEM = keyPEM
 	}
 	return spec, nil
+}
+
+// degradedVhostSite returns a valid stopped vhost for a site whose paths or
+// certificate are unusable. It keeps the host name so the branded 503 is shown
+// instead of the default 404, and drops TLS so no broken certificate is used.
+func degradedVhostSite(site model.Site) helperproto.VHostSite {
+	kind := site.Kind
+	if kind != model.SiteStatic && kind != model.SiteNode {
+		// A stopped 503 vhost has no backend behavior, so an unsupported kind
+		// (for example a legacy PHP row) can still be represented as static.
+		kind = model.SiteStatic
+	}
+	return helperproto.VHostSite{
+		ID:           site.ID,
+		Name:         site.Name,
+		Domain:       site.Domain,
+		WWW:          site.WWW,
+		Kind:         string(kind),
+		DesiredState: string(model.DesiredStopped),
+	}
+}
+
+// validateVhostSiteForSync checks the filesystem conditions that the helper
+// enforces for a complete sync. Building the request must detect these before
+// the helper rejects the whole set, so a single bad site can be degraded.
+func validateVhostSiteForSync(site model.Site) error {
+	if site.DesiredState != model.DesiredRunning {
+		return nil
+	}
+	backend := strings.TrimSpace(site.BackendPath)
+	if backend == "" {
+		return errors.New("backend path is empty")
+	}
+	resolvedBackend, err := resolveVhostDirectory("backend path", backend)
+	if err != nil {
+		return err
+	}
+	root := absoluteDocumentRoot(site)
+	if root == "" {
+		if site.Kind == model.SiteStatic {
+			return errors.New("document root is empty")
+		}
+		return nil
+	}
+	resolvedRoot, err := resolveVhostDirectory("document root", root)
+	if err != nil {
+		return err
+	}
+	if !vhostPathContained(resolvedRoot, resolvedBackend) {
+		return fmt.Errorf("document root %q resolves outside backend path %q", root, backend)
+	}
+	if site.Kind == model.SiteStatic {
+		return staticRootError(site)
+	}
+	return nil
+}
+
+func resolveVhostDirectory(kind, value string) (string, error) {
+	if !filepath.IsAbs(value) {
+		return "", fmt.Errorf("%s %q must be absolute", kind, value)
+	}
+	resolved, err := filepath.EvalSymlinks(value)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s %q: %w", kind, value, err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stat %s %q: %w", kind, value, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s %q is not a directory", kind, value)
+	}
+	return resolved, nil
+}
+
+func vhostPathContained(path, parent string) bool {
+	rel, err := filepath.Rel(parent, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // PreviewVhost renders one site's vhost without installing it or calling the

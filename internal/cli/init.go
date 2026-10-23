@@ -63,8 +63,22 @@ func (a *App) runInit(cmd *cobra.Command) error {
 	if err != nil {
 		return helperCallError(err, socket)
 	}
-	if err := helper.SetForwarders(ctx, cfg.HTTPPort, cfg.HTTPSPort, true); err != nil {
-		return helperCallError(err, socket)
+
+	// External modes let nginx/Apache own 80/443. Enabling the built-in
+	// forwarders would either fail with EADDRINUSE or steal the ports from the
+	// server. The daemon reconciles helper state from config.yaml after it
+	// starts, so init only needs to avoid forcing the forwarders on.
+	helperExternal := false
+	if status, statusErr := helper.VhostStatus(ctx); statusErr == nil {
+		switch strings.ToLower(strings.TrimSpace(status.Mode)) {
+		case "nginx", "apache":
+			helperExternal = true
+		}
+	}
+	if !helperExternal && cfg.ServingMode == config.ServingModeBuiltin {
+		if err := helper.SetForwarders(ctx, cfg.HTTPPort, cfg.HTTPSPort, true); err != nil {
+			return helperCallError(err, socket)
+		}
 	}
 	targets, err := helper.InstallTrust(ctx, userHome)
 	if err != nil {
@@ -96,6 +110,14 @@ func (a *App) runInit(cmd *cobra.Command) error {
 	domains := dashboardDomains(sites)
 	if err := helper.SyncHosts(ctx, domains); err != nil {
 		return helperCallError(err, socket)
+	}
+	if cfg.ServingMode != config.ServingModeBuiltin {
+		// The daemon reconciles the helper during startup; syncing once more
+		// here surfaces a broken vhost set to init instead of leaving it hidden
+		// behind an otherwise healthy daemon.
+		if _, err := c.SyncVhosts(ctx); err != nil {
+			return err
+		}
 	}
 	report, err := c.Doctor(ctx)
 	if err != nil {

@@ -250,18 +250,19 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
-	// Reconcile helper state with config.yaml before any static site process
-	// exists. The built-in proxy is already listening, so a builtin switch can
-	// restore its forwarders safely.
-	if err := siteService.ReconcileServingMode(ctx); err != nil {
-		return fmt.Errorf("daemon: reconcile serving mode: %w", err)
-	}
-
+	// Publish the API and socket before touching serving state. A broken helper
+	// vhost configuration must never lock the user out of `vhost use builtin`,
+	// Doctor, or site removal. The built-in proxy, when applicable, is already
+	// listening, so a builtin switch can restore its forwarders safely.
 	if err := d.startAPI(apiServer.Handler()); err != nil {
 		return err
 	}
 	if err := d.writePID(); err != nil {
 		return err
+	}
+	if err := siteService.ReconcileServingMode(ctx); err != nil {
+		d.reconcileErr = err
+		logger.Error("daemon: reconcile serving mode; continuing so the API can repair it", "error", err)
 	}
 
 	// A previous daemon may have died without stopping its supervised
@@ -311,9 +312,10 @@ type daemon struct {
 	cfg    config.Config
 	logger *slog.Logger
 
-	store  *store.Store
-	logs   *logs.Store
-	helper *helperclient.Client
+	store        *store.Store
+	logs         *logs.Store
+	helper       *helperclient.Client
+	reconcileErr error
 
 	backend *backend.Local
 	certs   *certs.Manager
@@ -410,6 +412,10 @@ func (d *daemon) persistSettings(ctx context.Context) {
 	if d.sites != nil {
 		servingMode = d.sites.ServingMode()
 	}
+	servingModeError := ""
+	if d.reconcileErr != nil {
+		servingModeError = d.reconcileErr.Error()
+	}
 	values := map[string]string{
 		"home":                  d.cfg.Home,
 		"wsl_distro":            d.cfg.WSLDistro,
@@ -418,6 +424,7 @@ func (d *daemon) persistSettings(ctx context.Context) {
 		"ui_port":               strconv.Itoa(d.cfg.UIPort),
 		"auto_start_sites":      strconv.FormatBool(d.cfg.AutoStartSites),
 		"serving_mode":          servingMode,
+		"serving_mode_error":    servingModeError,
 		"graceful_stop_seconds": strconv.Itoa(d.cfg.GracefulStopSeconds),
 		"max_request_body_mb":   strconv.Itoa(d.cfg.MaxRequestBodyMB),
 		"log_max_mb":            strconv.Itoa(d.cfg.LogMaxMB),

@@ -106,11 +106,13 @@ export PATH="$HOME/.local/bin:$PATH"
 devstack init
 ```
 
-`init` asks the helper for its CA, re-applies the privileged 80/443
-forwarders, installs the CA in the operating-system and browser trust stores,
-writes the managed hosts block, starts the daemon (through the installed user
-unit when available), and runs the diagnostic checks. It prints the dashboard
-URL and a loopback fallback.
+`init` asks the helper for its CA, installs the CA in the operating-system and
+browser trust stores, writes the managed hosts block, starts the daemon
+(through the installed user unit when available), and runs the diagnostic
+checks. In builtin mode it also re-applies the privileged 80/443 forwarders.
+When `config.yaml` or the helper already selects nginx/Apache, `init` leaves the
+forwarders off so the external server keeps 80/443, and asks the daemon to sync
+the vhost set. It prints the dashboard URL and a loopback fallback.
 
 Open <https://devstack.test>. If anything fails, run:
 

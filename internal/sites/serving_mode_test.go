@@ -11,6 +11,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
 
@@ -178,6 +179,88 @@ func TestExternalStaticStartStopAndObservedStatus(t *testing.T) {
 	}
 	if got := fakes.backend.stopCount(); got != 0 {
 		t.Fatalf("external static lifecycle called Backend.Stop %d times", got)
+	}
+}
+
+func TestSyncDegradesBrokenSitesInsteadOfFailing(t *testing.T) {
+	svc, fakes := newTestService(t)
+	useServingMode(svc, fakes, config.ServingModeNginx)
+	ctx := context.Background()
+
+	good, err := svc.Create(ctx, CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	badNode, err := svc.Create(ctx, CreateRequest{
+		Name: "shop", Path: fakes.root, Kind: "node", NodeVersion: "24", Command: "node server.js",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "index.html"), []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badStatic, err := svc.Create(ctx, CreateRequest{
+		Name: "docs", Path: fakes.root, Kind: "static", DocumentRoot: outside,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Break the Node site's recorded backend path after creation.
+	stored, err := fakes.store.GetSite(ctx, badNode.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.BackendPath = filepath.Join(t.TempDir(), "missing")
+	if err := fakes.store.UpdateSite(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.SyncVhosts(ctx); err != nil {
+		t.Fatalf("one broken site poisoned the sync: %v", err)
+	}
+	req, ok := fakes.vhosts.lastSync()
+	if !ok {
+		t.Fatal("vhosts were not synced")
+	}
+	if len(req.Sites) != 3 {
+		t.Fatalf("sync request has %d sites, want 3: %+v", len(req.Sites), req.Sites)
+	}
+
+	byID := make(map[string]helperproto.VHostSite, len(req.Sites))
+	for _, site := range req.Sites {
+		byID[site.ID] = site
+	}
+	for _, broken := range []model.Site{badNode, badStatic} {
+		spec := byID[broken.ID]
+		if spec.DesiredState != string(model.DesiredStopped) {
+			t.Errorf("broken site %s desired state = %q, want stopped", broken.Name, spec.DesiredState)
+		}
+		if spec.TLS || spec.ForceHTTPS || spec.DocumentRoot != "" || spec.BackendPort != 0 {
+			t.Errorf("broken site %s was not degraded: %+v", broken.Name, spec)
+		}
+		if spec.Domain == "" {
+			t.Errorf("broken site %s lost its domain, so it would not serve the 503 vhost", broken.Name)
+		}
+	}
+	if spec := byID[good.ID]; spec.DesiredState != string(model.DesiredRunning) {
+		t.Errorf("healthy site = %+v, want running", spec)
+	}
+
+	events, err := fakes.store.ListEvents(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := 0
+	for _, event := range events {
+		if event.Type == "site.error" {
+			failed++
+		}
+	}
+	if failed < 2 {
+		t.Fatalf("site.error events = %d, want at least one per broken site: %+v", failed, events)
 	}
 }
 
@@ -440,6 +523,77 @@ func TestSwitchFailureRollsBackRuntimeAndConfig(t *testing.T) {
 			t.Fatalf("in-memory mode = %q", svc.deps.Config.ServingMode)
 		}
 	})
+}
+
+func TestSetServingModeRepairsHelperMismatch(t *testing.T) {
+	t.Run("config builtin but helper external", func(t *testing.T) {
+		svc, fakes := newTestService(t)
+		fakes.vhosts.status.Mode = config.ServingModeNginx
+		fakes.proxy.started = true
+		fakes.proxy.startErr = proxy.ErrAlreadyStarted
+
+		if err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin); err != nil {
+			t.Fatal(err)
+		}
+		calls := fakes.vhosts.modeCalls
+		if len(calls) != 1 || calls[0] != config.ServingModeBuiltin {
+			t.Fatalf("helper mode calls = %v, want one builtin switch", calls)
+		}
+		if !fakes.proxy.isStarted() {
+			t.Fatal("builtin proxy is not running after the repair")
+		}
+		assertSavedMode(t, svc, config.ServingModeBuiltin)
+	})
+
+	t.Run("config external but helper builtin", func(t *testing.T) {
+		svc, fakes := newTestService(t)
+		persistServingMode(t, svc, config.ServingModeNginx)
+		fakes.vhosts.status.Mode = config.ServingModeBuiltin
+		if _, err := svc.Create(context.Background(), CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"}); err != nil {
+			t.Fatal(err)
+		}
+		// Simulate a helper that was switched to builtin out of band.
+		fakes.vhosts.status.Mode = config.ServingModeBuiltin
+		callsBefore := len(fakes.vhosts.modeCalls)
+		if err := svc.SetServingMode(context.Background(), config.ServingModeNginx); err != nil {
+			t.Fatal(err)
+		}
+		calls := fakes.vhosts.modeCalls[callsBefore:]
+		if len(calls) != 1 || calls[0] != config.ServingModeNginx {
+			t.Fatalf("helper mode calls = %v, want one nginx switch", calls)
+		}
+		req := fakes.vhosts.modeRequests[len(fakes.vhosts.modeRequests)-1]
+		if req.Mode != config.ServingModeNginx || len(req.Sites) != 1 {
+			t.Fatalf("repair request = %+v", req)
+		}
+		assertSavedMode(t, svc, config.ServingModeNginx)
+	})
+}
+
+func TestSyncVhostsRepairsHelperModeMismatch(t *testing.T) {
+	svc, fakes := newTestService(t)
+	useServingMode(svc, fakes, config.ServingModeNginx)
+	if _, err := svc.Create(context.Background(), CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"}); err != nil {
+		t.Fatal(err)
+	}
+	fakes.vhosts.status.Mode = config.ServingModeBuiltin
+	syncsBefore := fakes.vhosts.syncCount()
+	modesBefore := len(fakes.vhosts.modeCalls)
+
+	if err := svc.SyncVhosts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := fakes.vhosts.syncCount(); got != syncsBefore {
+		t.Fatalf("plain syncs = %d, want no plain sync when the helper is builtin", got-syncsBefore)
+	}
+	calls := fakes.vhosts.modeCalls[modesBefore:]
+	if len(calls) != 1 || calls[0] != config.ServingModeNginx {
+		t.Fatalf("mode calls = %v, want one nginx switch", calls)
+	}
+	req := fakes.vhosts.modeRequests[len(fakes.vhosts.modeRequests)-1]
+	if req.Mode != config.ServingModeNginx || len(req.Sites) != 1 {
+		t.Fatalf("repair request = %+v", req)
+	}
 }
 
 func TestReconcileServingMode(t *testing.T) {

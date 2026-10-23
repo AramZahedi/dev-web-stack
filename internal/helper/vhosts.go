@@ -42,17 +42,18 @@ var releaseNamePattern = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z(?:-[0-9]+)?$`)
 // vhostState is the persisted helper-owned vhost state. The configured state
 // file is root-only and rewritten atomically after every change.
 type vhostState struct {
-	Mode           string    `json:"mode"`
-	Server         string    `json:"server,omitempty"`
-	ServerVersion  string    `json:"server_version,omitempty"`
-	BridgePath     string    `json:"bridge_path,omitempty"`
-	BridgeHash     string    `json:"bridge_hash,omitempty"`
-	CurrentRelease string    `json:"current_release,omitempty"`
-	ReloadService  string    `json:"reload_service,omitempty"`
-	ConfigOK       bool      `json:"config_ok"`
-	LastError      string    `json:"last_error,omitempty"`
-	LastSync       time.Time `json:"last_sync"`
-	TLSOwners      []string  `json:"tls_owners,omitempty"`
+	Mode                  string    `json:"mode"`
+	Server                string    `json:"server,omitempty"`
+	ServerVersion         string    `json:"server_version,omitempty"`
+	BridgePath            string    `json:"bridge_path,omitempty"`
+	BridgeHash            string    `json:"bridge_hash,omitempty"`
+	CurrentRelease        string    `json:"current_release,omitempty"`
+	ReloadService         string    `json:"reload_service,omitempty"`
+	ConfigOK              bool      `json:"config_ok"`
+	LastError             string    `json:"last_error,omitempty"`
+	LastSync              time.Time `json:"last_sync"`
+	DefaultServerConflict bool      `json:"default_server_conflict,omitempty"`
+	TLSOwners             []string  `json:"tls_owners,omitempty"`
 }
 
 func builtinState() vhostState {
@@ -129,7 +130,8 @@ func (m *VhostManager) currentTime() time.Time {
 	return time.Now().UTC()
 }
 
-// Status returns the persisted state without invoking any command.
+// Status returns the persisted state plus live service state. The only command
+// it runs is a fixed `systemctl is-active` probe for the external server.
 func (m *VhostManager) Status(ctx context.Context) (helperproto.VhostStatusResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return helperproto.VhostStatusResponse{}, err
@@ -138,7 +140,31 @@ func (m *VhostManager) Status(ctx context.Context) (helperproto.VhostStatusRespo
 	if err != nil {
 		return helperproto.VhostStatusResponse{}, fmt.Errorf("%w: read vhost state: %v", helperproto.ErrVhostSyncFailed, err)
 	}
-	return m.statusFromState(state), nil
+	status := m.statusFromState(state)
+	status.ServiceActive = m.serviceActive(ctx, state)
+	return status, nil
+}
+
+// serviceActive asks systemd whether the external server is running. A missing
+// systemd, inactive unit, or probe error all report false; Doctor turns that
+// into an actionable check rather than failing the status call.
+func (m *VhostManager) serviceActive(ctx context.Context, state vhostState) bool {
+	if state.Mode != vhostModeNginx && state.Mode != vhostModeApache {
+		return false
+	}
+	service := state.ReloadService
+	if service == "" {
+		if state.Mode == vhostModeNginx {
+			service = "nginx"
+		} else {
+			service = "apache2"
+		}
+	}
+	out, err := m.runner.Run(ctx, "systemctl", "is-active", service)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "active"
 }
 
 func (m *VhostManager) statusFromState(state vhostState) helperproto.VhostStatusResponse {
@@ -150,17 +176,19 @@ func (m *VhostManager) statusFromState(state vhostState) helperproto.VhostStatus
 	}
 	dirMode, files := m.tlsMetadata()
 	return helperproto.VhostStatusResponse{
-		Mode:           state.Mode,
-		Server:         state.Server,
-		ServerVersion:  state.ServerVersion,
-		BridgePath:     state.BridgePath,
-		IncludePresent: includePresent,
-		CurrentRelease: state.CurrentRelease,
-		ConfigOK:       state.ConfigOK,
-		LastError:      state.LastError,
-		LastSync:       state.LastSync,
-		TLSDirMode:     dirMode,
-		TLSFiles:       files,
+		Mode:                  state.Mode,
+		Server:                state.Server,
+		ServerVersion:         state.ServerVersion,
+		BridgePath:            state.BridgePath,
+		IncludePresent:        includePresent,
+		CurrentRelease:        state.CurrentRelease,
+		ConfigOK:              state.ConfigOK,
+		LastError:             state.LastError,
+		LastSync:              state.LastSync,
+		DefaultServerConflict: state.DefaultServerConflict,
+		TLSDir:                m.tlsDir(),
+		TLSDirMode:            dirMode,
+		TLSFiles:              files,
 	}
 }
 
@@ -665,14 +693,24 @@ func (m *VhostManager) syncLocked(ctx context.Context, req helperproto.VHostSync
 	}
 	bridgePath := filepath.Join(includeDir, bridgeFilename)
 
+	// Stock nginx installations often declare their own default_server. Our
+	// default 404 vhost must then omit the marker or the config test fails.
+	// Detection is best-effort: a failure to inspect existing configs must not
+	// stop a sync that would otherwise pass.
+	defaultConflict := m.detectDefaultServerConflict(ctx, mode)
+	if defaultConflict {
+		m.logger.Warn("helper: foreign nginx default_server detected; installing the devstack 404 vhost without the marker")
+	}
+
 	files, err := vhost.Render(vhost.Set{
-		Server:          server,
-		Sites:           prepared.sites,
-		Dashboard:       prepared.dashboard,
-		MaxBodyBytes:    req.MaxBodyBytes,
-		TLSDir:          m.tlsDir(),
-		HTTPListenPort:  m.HTTPListenPort,
-		HTTPSListenPort: m.HTTPSListenPort,
+		Server:                server,
+		Sites:                 prepared.sites,
+		Dashboard:             prepared.dashboard,
+		MaxBodyBytes:          req.MaxBodyBytes,
+		TLSDir:                m.tlsDir(),
+		HTTPListenPort:        m.HTTPListenPort,
+		HTTPSListenPort:       m.HTTPSListenPort,
+		SuppressDefaultServer: defaultConflict,
 	})
 	if err != nil {
 		return helperproto.VhostStatusResponse{}, fmt.Errorf("%w: render vhosts: %v", helperproto.ErrInvalidRequest, err)
@@ -791,16 +829,17 @@ func (m *VhostManager) syncLocked(ctx context.Context, req helperproto.VHostSync
 		return helperproto.VhostStatusResponse{}, err
 	}
 	state := vhostState{
-		Mode:           mode,
-		Server:         mode,
-		ServerVersion:  runtime.version,
-		BridgePath:     bridgePath,
-		BridgeHash:     bridgeHash,
-		CurrentRelease: filepath.Join(m.serverTree(mode), "releases", releaseName),
-		ReloadService:  runtime.reloadService,
-		ConfigOK:       true,
-		LastSync:       m.currentTime(),
-		TLSOwners:      append([]string(nil), prepared.owners...),
+		Mode:                  mode,
+		Server:                mode,
+		ServerVersion:         runtime.version,
+		BridgePath:            bridgePath,
+		BridgeHash:            bridgeHash,
+		CurrentRelease:        filepath.Join(m.serverTree(mode), "releases", releaseName),
+		ReloadService:         runtime.reloadService,
+		ConfigOK:              true,
+		LastSync:              m.currentTime(),
+		DefaultServerConflict: defaultConflict,
+		TLSOwners:             append([]string(nil), prepared.owners...),
 	}
 	if err := m.writeState(state); err != nil {
 		return helperproto.VhostStatusResponse{}, fmt.Errorf("%w: %v", helperproto.ErrVhostSyncFailed, err)
@@ -914,6 +953,11 @@ func (m *VhostManager) validateSite(site helperproto.VHostSite, ids, hosts map[s
 				return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: %v", helperproto.ErrInvalidRequest, site.ID, err)
 			}
 			spec.DocumentRoot = resolvedRoot
+			if kind == model.SiteStatic && model.DesiredState(site.DesiredState) == model.DesiredRunning && os.Geteuid() == 0 {
+				if err := staticRootWorkerError(resolvedRoot); err != nil {
+					return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: %v", helperproto.ErrInvalidRequest, site.ID, err)
+				}
+			}
 		} else if kind == model.SiteStatic {
 			return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: static sites require a document root", helperproto.ErrInvalidRequest, site.ID)
 		}

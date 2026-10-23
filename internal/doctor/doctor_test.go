@@ -830,6 +830,116 @@ func TestDoctorHealthyExternalVhosts(t *testing.T) {
 	}
 }
 
+func TestDoctorExternalServiceInactiveFails(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	fakes.vhosts.status.ServiceActive = false
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "vhost-server")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("vhost-server = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "service is not active") {
+		t.Fatalf("vhost-server detail = %q", check.Detail)
+	}
+	if !strings.Contains(check.Remediation, "systemctl start nginx") {
+		t.Fatalf("vhost-server remediation = %q", check.Remediation)
+	}
+	if rep.OK {
+		t.Fatal("an inactive external server must fail the report")
+	}
+}
+
+func TestDoctorDefaultServerConflictWarns(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	fakes.vhosts.status.DefaultServerConflict = true
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "vhost-default-server")
+	if !ok || check.Status != StatusWarn {
+		t.Fatalf("vhost-default-server = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "default_server") {
+		t.Fatalf("vhost-default-server detail = %q", check.Detail)
+	}
+	if !strings.Contains(check.Remediation, "vhost sync") {
+		t.Fatalf("vhost-default-server remediation = %q", check.Remediation)
+	}
+	if !rep.OK {
+		t.Fatal("a default-server conflict must warn, not fail")
+	}
+}
+
+func TestDoctorExternalPorts(t *testing.T) {
+	t.Run("external mode expects proxy ports free", func(t *testing.T) {
+		svc, fakes := newTestDoctor(t)
+		enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+
+		rep, err := svc.Run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		check, ok := checkByID(rep, "ports")
+		if !ok || check.Status != StatusOK {
+			t.Fatalf("ports = %+v", check)
+		}
+		if !strings.Contains(check.Detail, "nginx server") || !strings.Contains(check.Detail, "8080, 8443 are free") {
+			t.Fatalf("ports detail = %q", check.Detail)
+		}
+	})
+
+	t.Run("occupied proxy port warns in external mode", func(t *testing.T) {
+		svc, fakes := newTestDoctor(t)
+		enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+		fakes.ports.errs[":8080"] = syscall.EADDRINUSE
+
+		rep, err := svc.Run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		check, ok := checkByID(rep, "ports")
+		if !ok || check.Status != StatusWarn {
+			t.Fatalf("ports = %+v", check)
+		}
+		if !strings.Contains(check.Detail, "port 8080 is in use") {
+			t.Fatalf("ports detail = %q", check.Detail)
+		}
+		if !rep.OK {
+			t.Fatal("port diagnostics must never fail the report")
+		}
+	})
+}
+
+func TestDoctorVhostTLSUsesReportedDir(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
+	fakes.vhosts.status.TLSDir = "/srv/devstack/tls"
+	setTLSFileMode(&fakes.vhosts.status, "blog.key", 0o644)
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "vhost-tls")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("vhost-tls = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "/srv/devstack/tls/blog.key") {
+		t.Fatalf("vhost-tls detail = %q, want the reported TLS dir", check.Detail)
+	}
+	if !strings.Contains(check.Remediation, "/srv/devstack/tls") {
+		t.Fatalf("vhost-tls remediation = %q, want the reported TLS dir", check.Remediation)
+	}
+}
+
 func TestDoctorVhostModeMismatchFails(t *testing.T) {
 	svc, fakes := newTestDoctor(t)
 	enableExternalVhosts(t, svc, fakes, config.ServingModeNginx)
@@ -1161,6 +1271,9 @@ func enableExternalVhosts(t *testing.T, svc *Service, fakes *testFakes, mode str
 	svc.deps.Config.ServingMode = mode
 	fakes.vhosts.servingMode = mode
 	fakes.vhosts.status = externalVhostStatus(mode)
+	// External mode expects the built-in proxy ports to be unused.
+	delete(fakes.ports.errs, ":8080")
+	delete(fakes.ports.errs, ":8443")
 }
 
 func externalVhostStatus(mode string) helperproto.VhostStatusResponse {
@@ -1173,6 +1286,8 @@ func externalVhostStatus(mode string) helperproto.VhostStatusResponse {
 		CurrentRelease: filepath.Join("/etc/devstack/vhosts", mode, "releases", "20261023T120000Z"),
 		ConfigOK:       true,
 		LastSync:       time.Date(2026, 10, 23, 12, 30, 0, 0, time.UTC),
+		ServiceActive:  true,
+		TLSDir:         "/etc/devstack/tls",
 		TLSDirMode:     0o700,
 		TLSFiles: []helperproto.VhostTLSFile{
 			{Name: "__dashboard__.crt", Mode: 0o644, Regular: true},

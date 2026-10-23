@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -548,7 +549,7 @@ func TestSyncPrunesToTwoReleases(t *testing.T) {
 	}
 }
 
-func TestSyncPersistsStateAndStatusUsesNoCommands(t *testing.T) {
+func TestSyncPersistsStateAndStatusUsesOnlyServiceProbe(t *testing.T) {
 	env := newVhostTestEnv(t)
 	first, err := env.manager.Sync(context.Background(), env.request("nginx"))
 	if err != nil {
@@ -576,17 +577,262 @@ func TestSyncPersistsStateAndStatusUsesNoCommands(t *testing.T) {
 		t.Fatalf("persisted TLS owners = %v", persisted.TLSOwners)
 	}
 
-	before := env.runner.count("nginx") + env.runner.count("systemctl") + env.runner.count("apachectl")
+	nginxBefore := env.runner.count("nginx")
+	apacheBefore := env.runner.count("apachectl")
+	systemctlBefore := env.runner.count("systemctl")
 	st, err := env.manager.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	after := env.runner.count("nginx") + env.runner.count("systemctl") + env.runner.count("apachectl")
-	if before != after {
-		t.Fatal("Status invoked a command")
+	if env.runner.count("nginx") != nginxBefore || env.runner.count("apachectl") != apacheBefore {
+		t.Fatal("Status ran a server config command")
+	}
+	if got := env.runner.count("systemctl") - systemctlBefore; got != 1 {
+		t.Fatalf("Status ran %d systemctl commands, want one is-active probe", got)
+	}
+	if !env.runner.called("systemctl", "is-active", "nginx") {
+		t.Fatal("Status did not probe the nginx service")
 	}
 	if st.Mode != "nginx" || st.CurrentRelease != first.CurrentRelease || !st.IncludePresent || !st.ConfigOK {
 		t.Fatalf("status = %+v", st)
+	}
+	if st.TLSDir != env.manager.tlsDir() {
+		t.Fatalf("status TLS dir = %q, want %q", st.TLSDir, env.manager.tlsDir())
+	}
+}
+
+func TestStatusReportsServiceActive(t *testing.T) {
+	env := newVhostTestEnv(t)
+	if _, err := env.manager.Sync(context.Background(), env.request("nginx")); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	env.runner.fn = func(name string, args []string) ([]byte, error) {
+		if name == "systemctl" && len(args) == 2 && args[0] == "is-active" && args[1] == "nginx" {
+			return []byte("active\n"), nil
+		}
+		return nil, nil
+	}
+	status, err := env.manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.ServiceActive {
+		t.Fatalf("ServiceActive = false, status = %+v", status)
+	}
+
+	env.runner.fn = func(name string, args []string) ([]byte, error) {
+		if name == "systemctl" && len(args) == 2 && args[0] == "is-active" {
+			return []byte("inactive\n"), nil
+		}
+		return nil, nil
+	}
+	status, err = env.manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ServiceActive {
+		t.Fatalf("ServiceActive = true for an inactive unit, status = %+v", status)
+	}
+}
+
+func TestSyncSuppressesDefaultServerOnForeignConflict(t *testing.T) {
+	env := newVhostTestEnv(t)
+	env.runner.fn = func(name string, args []string) ([]byte, error) {
+		if name == "nginx" && len(args) == 1 && args[0] == "-T" {
+			return []byte(strings.Join([]string{
+				"# configuration file /etc/nginx/nginx.conf:",
+				"events {}",
+				"# configuration file /etc/nginx/conf.d/default.conf:",
+				"server { listen 80 default_server; }",
+				"# configuration file " + filepath.Join(env.root, "nginx", "releases", "x", "_default.conf") + ":",
+				"server { listen 443 ssl http2 default_server; }",
+			}, "\n")), nil
+		}
+		return nil, nil
+	}
+
+	status, err := env.manager.Sync(context.Background(), env.request("nginx"))
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if !status.DefaultServerConflict {
+		t.Fatalf("status does not report the foreign default: %+v", status)
+	}
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "_default.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("default_server")) {
+		t.Fatalf("default vhost still declares default_server:\n%s", data)
+	}
+	if !bytes.Contains(data, []byte("listen 80;")) {
+		t.Fatalf("default vhost lost its HTTP listen directive:\n%s", data)
+	}
+
+	persisted, err := env.manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.DefaultServerConflict {
+		t.Fatalf("persisted status lost the conflict: %+v", persisted)
+	}
+}
+
+func TestSyncFallsBackToConfigScanWhenNginxTDumpFails(t *testing.T) {
+	env := newVhostTestEnv(t)
+	if err := os.MkdirAll(env.manager.NginxIncludeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	foreignPath := filepath.Join(env.manager.NginxIncludeDir, "stock-default.conf")
+	if err := os.WriteFile(foreignPath, []byte("server { listen 80 default_server; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.runner.fn = func(name string, args []string) ([]byte, error) {
+		if name == "nginx" && len(args) == 1 && args[0] == "-T" {
+			return nil, errors.New("nginx: configuration test failed")
+		}
+		return nil, nil
+	}
+
+	status, err := env.manager.Sync(context.Background(), env.request("nginx"))
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if !status.DefaultServerConflict {
+		t.Fatalf("fallback scan did not detect the foreign default: %+v", status)
+	}
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "_default.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("default_server")) {
+		t.Fatalf("default vhost still declares default_server after the fallback scan:\n%s", data)
+	}
+}
+
+func TestSyncIgnoresOwnDefaultServer(t *testing.T) {
+	env := newVhostTestEnv(t)
+	env.runner.fn = func(name string, args []string) ([]byte, error) {
+		if name == "nginx" && len(args) == 1 && args[0] == "-T" {
+			return []byte("# configuration file " +
+				filepath.Join(env.root, "nginx", "releases", "x", "_default.conf") + ":\n" +
+				"server { listen 80 default_server; }\n"), nil
+		}
+		return nil, nil
+	}
+
+	status, err := env.manager.Sync(context.Background(), env.request("nginx"))
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if status.DefaultServerConflict {
+		t.Fatalf("devstack's own default_server was treated as foreign: %+v", status)
+	}
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "_default.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("listen 80 default_server;")) {
+		t.Fatalf("default vhost lost its marker without a foreign default:\n%s", data)
+	}
+}
+
+func TestStaticRootWorkerError(t *testing.T) {
+	base := t.TempDir()
+	// t.TempDir creates a 0700 parent below the system temp directory; make
+	// both it and the test root traversable so the assertion starts from a
+	// readable tree.
+	if err := os.Chmod(filepath.Dir(base), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(base, "public")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := staticRootWorkerError(root); err != nil {
+		t.Fatalf("readable root rejected: %v", err)
+	}
+
+	if err := os.Chmod(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := staticRootWorkerError(root)
+	if err == nil || !strings.Contains(err.Error(), "cannot traverse") || !strings.Contains(err.Error(), base) {
+		t.Fatalf("0700 ancestor error = %v", err)
+	}
+
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err = staticRootWorkerError(root)
+	if err == nil || !strings.Contains(err.Error(), "cannot read") || !strings.Contains(err.Error(), "chmod o+rx") {
+		t.Fatalf("0700 root error = %v, want actionable read remediation", err)
+	}
+
+	// An access ACL can authorize the server worker even when world bits are
+	// withheld. Skip when the filesystem does not support POSIX ACLs.
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Setxattr(base, posixACLAccessXattr, posixACLGroupExecute(), 0); err == nil {
+		if err := staticRootWorkerError(root); err != nil {
+			t.Fatalf("group execute ACL was not honored: %v", err)
+		}
+		_ = syscall.Removexattr(base, posixACLAccessXattr)
+	}
+}
+
+func posixACLGroupExecute() []byte {
+	entries := []struct {
+		tag  uint16
+		perm uint16
+	}{
+		{0x01, 0o7}, // user::rwx
+		{0x04, 0o1}, // group::--x
+		{0x10, 0o1}, // mask::--x
+		{0x20, 0o0}, // other::---
+	}
+	buf := make([]byte, 4, 4+len(entries)*8)
+	buf[0] = 2 // ACL version 2, little-endian
+	for _, entry := range entries {
+		buf = append(buf,
+			byte(entry.tag), byte(entry.tag>>8),
+			byte(entry.perm), byte(entry.perm>>8),
+			0xff, 0xff, 0xff, 0xff,
+		)
+	}
+	return buf
+}
+
+func TestSyncAllowsStoppedNodeWithoutBackendPath(t *testing.T) {
+	env := newVhostTestEnv(t)
+	req := env.request("nginx")
+	req.Sites[0] = helperproto.VHostSite{
+		ID:           "s-1",
+		Name:         "blog",
+		Domain:       "blog.test",
+		Kind:         string(model.SiteNode),
+		DesiredState: string(model.DesiredStopped),
+	}
+
+	if _, err := env.manager.Sync(context.Background(), req); err != nil {
+		t.Fatalf("Sync stopped node without backend path: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog-s-1.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("return 503 ")) {
+		t.Fatalf("stopped node vhost did not render a 503:\n%s", data)
 	}
 }
 

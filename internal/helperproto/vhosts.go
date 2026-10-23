@@ -89,8 +89,18 @@ type VhostStatusResponse struct {
 	LastError      string    `json:"last_error,omitempty"`
 	LastSync       time.Time `json:"last_sync"`
 
-	// TLSDirMode and TLSFiles expose root-only TLS metadata to the unprivileged
-	// daemon. Contents are never read; Mode holds permission bits only.
+	// ServiceActive reports whether the external server's systemd service is
+	// active. The helper probes it with a fixed `systemctl is-active` command
+	// when Status is called.
+	ServiceActive bool `json:"service_active"`
+	// DefaultServerConflict reports that a foreign server configuration
+	// already declares default_server on our listen ports, so the devstack
+	// default vhost was installed without the marker.
+	DefaultServerConflict bool `json:"default_server_conflict"`
+	// TLSDir is the helper-managed TLS directory. TLSDirMode and TLSFiles
+	// expose root-only metadata to the unprivileged daemon. Contents are never
+	// read; Mode holds permission bits only.
+	TLSDir     string         `json:"tls_dir"`
 	TLSDirMode uint32         `json:"tls_dir_mode"`
 	TLSFiles   []VhostTLSFile `json:"tls_files,omitempty"`
 }

@@ -34,7 +34,9 @@ systemctl status apache2
 
 The selected server must own ports 80 and 443 after the switch. Stop any other
 service that is using them. The built-in forwarders are stopped as part of the
-mode switch, so they do not need to be stopped by hand.
+mode switch, so they do not need to be stopped by hand. The server's systemd
+service must also be active; `devstack doctor` checks it and reports the exact
+`systemctl start` command when it is not.
 
 ### Apache modules
 
@@ -118,6 +120,31 @@ If the distribution uses an unsupported layout, the switch fails with
 `VHOST_INCLUDE_MISSING` and returns instructions instead of rewriting the main
 configuration.
 
+The installed helper unit grants write access to these bridge directories
+(`-/etc/nginx/conf.d`, `-/etc/apache2/conf-enabled`, `-/etc/httpd/conf.d`) in
+addition to `/etc/devstack`. The leading `-` keeps the unit valid when a server
+or a custom include directory is absent. If you edit the unit, keep these
+entries or external mode cannot write the bridge under `ProtectSystem=strict`.
+
+### Default server conflicts
+
+Stock nginx packages usually install a default site that declares
+`listen 80 default_server;`. nginx permits only one default server per listen
+port, so emitting our own marker would make the config test fail. Before each
+sync the helper inspects `nginx -T` (falling back to a scan of the fixed nginx
+configuration directories) and ignores markers that come from devstack's own
+release tree. When a foreign marker exists:
+
+- `_default.conf` is rendered without `default_server`;
+- `devstack vhost status` reports `default_server_conflict: true`;
+- `devstack doctor` warns under `vhost-default-server`.
+
+Unknown host names then receive the distribution's default page instead of the
+devstack branded 404. To restore the branded page, remove `default_server` from
+the conflicting vhost (usually the distribution's default site) and run
+`devstack vhost sync`. This is a warning, not a mode-switch failure; the
+selected sites still work normally.
+
 ## TLS custody
 
 The daemon continues to issue and renew per-site certificates. On every sync it
@@ -188,9 +215,29 @@ complete set from the registered sites and certificates, writes a new release,
 tests it, reloads, and prunes old releases. Site create, update, delete, start,
 stop, and certificate renewal trigger the same sync automatically.
 
+One broken site does not block the rest of the set. A running site whose
+document root, backend path, or certificate is missing or outside its recorded
+backend is published as a stopped vhost (branded 503, no TLS redirect), a
+`site.error` event is recorded, and every healthy site is still synced. Fix the
+path or certificate, then run `devstack vhost sync`. A stopped Node site may
+omit `backend_path` and its backend port because its vhost only serves the 503
+page.
+
+The root worker-readability preflight described under [Custom document
+roots](#custom-document-roots) is different: permissions are a server
+configuration problem, so the sync fails with the exact directory and a
+`chmod`/worker remediation instead of silently serving 503. Fix the permission
+and resync.
+
 Preview renders from the site record without writing anything. It never exposes
 key material: only certificate paths appear in the generated text. The dashboard
 drawer shows nginx and Apache tabs with a copy button.
+
+`devstack vhost status` also reports service-active, TLS-directory, and
+default-server-conflict fields. Doctor uses the same status: in external mode it
+expects 80/443 to belong to the selected server, expects the built-in proxy
+ports (8080/8443 by default) to be free, warns about a foreign
+`default_server`, and reads TLS modes from the reported helper directory.
 
 ## Rollback behavior
 
@@ -251,6 +298,18 @@ journalctl -u apache2 -n 100
 Fix the service problem and retry the sync. If the server cannot be recovered,
 switch back with `devstack vhost use builtin --yes`.
 
+### Daemon starts but serving mode is broken
+
+Daemon startup reconciles the helper before starting sites, but a failed
+reconcile is non-fatal: the dashboard/API, Doctor, site removal, and
+`devstack vhost use builtin` stay available. The failure is logged, stored in
+the `serving_mode_error` setting, and visible through the helper/Doctor status.
+Fix the vhost problem and run `devstack vhost sync`, or return to builtin with:
+
+```sh
+devstack vhost use builtin --yes
+```
+
 ### `VHOST_SYNC_BUSY`
 
 Only one sync or mode switch runs at a time. Wait for the current operation to
@@ -279,6 +338,24 @@ A document root may be relative to the project or absolute, but it must:
 - be readable by the server,
 - resolve without a symlink escape outside the site's registered backend path,
 - not contain `..` or NUL bytes.
+
+The helper runs as root, so it also checks that the **server worker** can reach
+the root. For a running static site, every ancestor directory must grant world
+execute (`o+x`) and the root itself must grant world read and execute (`o+rx`).
+A POSIX access ACL that grants the same access to a group or named user is
+accepted. When the check fails, the sync returns an actionable message such as:
+
+```text
+the nginx/Apache worker cannot traverse directory "/home/you" (mode 0700);
+grant world execute (for example `sudo chmod o+x /home/you`), or run the server
+worker as the site owner, then run `devstack vhost sync` again
+```
+
+On Fedora and RHEL, home directories are commonly `0700`; either grant
+`o+x` on the home (not the whole tree) or configure nginx/Apache to run its
+worker as the site owner. The check is enforced only when the helper runs as
+root; unprivileged helper tests and the E2E suite skip it because they cannot
+know the distribution's worker account.
 
 If a root moved, update the site (or remove and re-add it) before the next sync.
 A failed sync restores the previous vhosts but does not change the site record.

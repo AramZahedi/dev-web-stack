@@ -76,6 +76,12 @@ type Set struct {
 	// production always uses 80/443.
 	HTTPListenPort  int
 	HTTPSListenPort int
+	// SuppressDefaultServer renders the nginx default 404 vhost without the
+	// default_server marker. The helper sets it when the installed server
+	// already has a foreign default vhost on the rendered listen ports, which
+	// would otherwise make nginx reject the duplicate marker. The flag is
+	// ignored for Apache.
+	SuppressDefaultServer bool
 }
 
 // listenPorts is the resolved pair of ports used while rendering one set.
@@ -327,7 +333,7 @@ func Render(set Set) (map[string][]byte, error) {
 		return nil, err
 	}
 	files["_devstack.test.conf"] = dashboard
-	files["_default.conf"] = renderDefault(set.Server, tlsDir, ports)
+	files["_default.conf"] = renderDefault(set.Server, tlsDir, ports, set.SuppressDefaultServer)
 	files["_maintenance.html"] = maintenanceFile()
 	return files, nil
 }
@@ -378,10 +384,10 @@ func renderDashboard(server Server, d DashboardSpec, maxBody int64, tlsDir strin
 	}
 }
 
-func renderDefault(server Server, tlsDir string, ports listenPorts) []byte {
+func renderDefault(server Server, tlsDir string, ports listenPorts, suppressDefaultServer bool) []byte {
 	switch server {
 	case ServerNginx:
-		return renderNginxDefault(tlsDir, ports)
+		return renderNginxDefault(tlsDir, ports, suppressDefaultServer)
 	case ServerApache:
 		return renderApacheDefault(tlsDir, ports)
 	default:

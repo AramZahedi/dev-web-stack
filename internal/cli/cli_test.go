@@ -19,6 +19,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/client"
+	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
@@ -647,6 +648,7 @@ func TestCLIInit(t *testing.T) {
 	calls := helper.snapshot()
 	wantPaths := []string{
 		helperproto.PathEnsureCA,
+		helperproto.PathVhostsStatus,
 		helperproto.PathForwarders,
 		helperproto.PathTrustInstall,
 		helperproto.PathHostsSync,
@@ -660,6 +662,7 @@ func TestCLIInit(t *testing.T) {
 	eventsMu.Unlock()
 	wantEvents := []string{
 		helperproto.PathEnsureCA,
+		helperproto.PathVhostsStatus,
 		helperproto.PathForwarders,
 		helperproto.PathTrustInstall,
 		helperproto.PathHostsSync,
@@ -670,34 +673,68 @@ func TestCLIInit(t *testing.T) {
 		t.Fatalf("events = %v, want baseline hosts sync before daemon startup", gotEvents)
 	}
 	var forward helperproto.ForwardersRequest
-	if err := json.Unmarshal([]byte(calls[1].Body), &forward); err != nil {
+	if err := json.Unmarshal([]byte(calls[2].Body), &forward); err != nil {
 		t.Fatal(err)
 	}
 	if !forward.Enable || forward.HTTPPort != 8080 || forward.HTTPSPort != 8443 {
 		t.Fatalf("forwarders = %+v", forward)
 	}
 	var install helperproto.TrustRequest
-	if err := json.Unmarshal([]byte(calls[2].Body), &install); err != nil {
+	if err := json.Unmarshal([]byte(calls[3].Body), &install); err != nil {
 		t.Fatal(err)
 	}
 	if install.UserHome != userHome {
 		t.Fatalf("trust user home = %q, want %q", install.UserHome, userHome)
 	}
 	var baseline helperproto.HostsSyncRequest
-	if err := json.Unmarshal([]byte(calls[3].Body), &baseline); err != nil {
+	if err := json.Unmarshal([]byte(calls[4].Body), &baseline); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(baseline.Domains, []string{"devstack.test"}) {
 		t.Fatalf("baseline domains = %v, want [devstack.test]", baseline.Domains)
 	}
 	var sync helperproto.HostsSyncRequest
-	if err := json.Unmarshal([]byte(calls[4].Body), &sync); err != nil {
+	if err := json.Unmarshal([]byte(calls[5].Body), &sync); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"devstack.test", "blog.test", "www.blog.test"} {
 		if !contains(sync.Domains, want) {
 			t.Fatalf("synced domains = %v, missing %q", sync.Domains, want)
 		}
+	}
+}
+
+func TestCLIInitExternalModeSkipsForwarders(t *testing.T) {
+	useTestSeams(t)
+	helper, socket := startFakeHelper(t)
+	helper.vhostStatus = helperproto.VhostStatusResponse{Mode: config.ServingModeNginx, Server: "nginx", ConfigOK: true}
+	home := t.TempDir()
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ServingMode = config.ServingModeNginx
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDial := dialHelper
+	dialHelper = func(string) (*helperclient.Client, error) { return helperclient.Dial(socket) }
+	t.Cleanup(func() { dialHelper = oldDial })
+	oldEnsure := ensureRunning
+	ensureRunning = func(context.Context, daemon.Options) error { return nil }
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{
+		doctorReport: doctor.Report{OK: true, Checks: []doctor.Check{}},
+	}
+	runCLI(t, fake, "init", "--home", home, "--helper-socket", socket, "--json")
+
+	if got := callPaths(helper.snapshot()); contains(got, helperproto.PathForwarders) {
+		t.Fatalf("init enabled the built-in forwarders in external mode: %v", got)
+	}
+	if fake.vhostSyncs != 1 {
+		t.Fatalf("vhost syncs = %d, want 1 after external-mode init", fake.vhostSyncs)
 	}
 }
 
@@ -1259,6 +1296,7 @@ type fakeHelper struct {
 	failCode    string
 	failMessage string
 	onRequest   func(path string)
+	vhostStatus helperproto.VhostStatusResponse
 }
 
 type helperCall struct {
@@ -1271,6 +1309,7 @@ func (f *fakeHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.calls = append(f.calls, helperCall{Path: r.URL.Path, Body: string(body)})
 	failPath, failCode, failMessage, onRequest := f.failPath, f.failCode, f.failMessage, f.onRequest
+	vhostStatus := f.vhostStatus
 	f.mu.Unlock()
 	if onRequest != nil {
 		onRequest(r.URL.Path)
@@ -1287,6 +1326,11 @@ func (f *fakeHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeHelperJSON(w, http.StatusOK, helperproto.EnsureCAResponse{RootPEM: []byte("test-root-pem"), Fingerprint: "test-fingerprint"})
 	case helperproto.PathForwarders, helperproto.PathUninstall:
 		writeHelperJSON(w, http.StatusOK, struct{}{})
+	case helperproto.PathVhostsStatus:
+		if strings.TrimSpace(vhostStatus.Mode) == "" {
+			vhostStatus.Mode = "builtin"
+		}
+		writeHelperJSON(w, http.StatusOK, vhostStatus)
 	case helperproto.PathHostsSync:
 		writeHelperJSON(w, http.StatusOK, helperproto.HostsSyncResponse{Changed: true})
 	case helperproto.PathTrustInstall, helperproto.PathTrustRemove, helperproto.PathTrustStatus:

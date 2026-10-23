@@ -3,9 +3,12 @@ package helper
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 )
@@ -369,4 +372,247 @@ func (m *VhostManager) reloadServer(ctx context.Context, server, service string)
 		return fmt.Errorf("%w: reload %s: %s", helperproto.ErrServerReloadFailed, service, scrubVhostOutput(output))
 	}
 	return nil
+}
+
+// staticRootWorkerError verifies that the distribution's nginx/Apache worker
+// can traverse to a running static document root and read it. The helper runs
+// as root, so os.Stat alone would approve paths the unprivileged worker cannot
+// enter (for example a 0700 home directory). The worker account differs by
+// distribution, so this checks world traversal/read bits and treats a POSIX ACL
+// grant to any group or named user as sufficient.
+//
+// Callers enforce this only when os.Geteuid()==0 so unprivileged tests and E2E
+// runs, where the helper cannot know the server worker identity, are unaffected.
+func staticRootWorkerError(root string) error {
+	if _, err := os.Stat(root); err != nil {
+		return err
+	}
+	for dir := root; ; {
+		read := dir == root
+		if err := workerDirectoryAccessError(dir, read); err != nil {
+			return err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
+		dir = parent
+	}
+}
+
+func workerDirectoryAccessError(dir string, read bool) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%q is not a directory", dir)
+	}
+	want := os.FileMode(0o001)
+	action := "traverse"
+	if read {
+		want |= 0o004
+		action = "read"
+	}
+	if info.Mode().Perm()&want == want {
+		return nil
+	}
+	if posixACLGrants(dir, read) {
+		return nil
+	}
+	remediation := "grant world execute (for example `sudo chmod o+x " + dir + "`)"
+	if read {
+		remediation = "grant world read and execute (for example `sudo chmod o+rx " + dir + "`)"
+	}
+	return fmt.Errorf(
+		"the nginx/Apache worker cannot %s directory %q (mode %04o); %s, or run the server worker as the site owner, then run `devstack vhost sync` again",
+		action, dir, info.Mode().Perm(), remediation)
+}
+
+const posixACLAccessXattr = "system.posix_acl_access"
+
+// posixACLGrants reports whether an access ACL grants the requested access to
+// a group or named user. The ACL mask is applied. This avoids rejecting an
+// ACL-based deployment that intentionally withholds world permissions.
+func posixACLGrants(path string, read bool) bool {
+	size, err := syscall.Getxattr(path, posixACLAccessXattr, nil)
+	if err != nil || size < 4 {
+		return false
+	}
+	buf := make([]byte, size)
+	n, err := syscall.Getxattr(path, posixACLAccessXattr, buf)
+	if err != nil || n < 4 {
+		return false
+	}
+	buf = buf[:n]
+
+	type aclEntry struct {
+		tag  uint16
+		perm uint16
+	}
+	mask := uint16(0o7)
+	entries := make([]aclEntry, 0, (len(buf)-4)/8)
+	for offset := 4; offset+8 <= len(buf); offset += 8 {
+		entry := aclEntry{
+			tag:  uint16(buf[offset]) | uint16(buf[offset+1])<<8,
+			perm: uint16(buf[offset+2]) | uint16(buf[offset+3])<<8,
+		}
+		entries = append(entries, entry)
+		if entry.tag == 0x10 {
+			mask = entry.perm
+		}
+	}
+	want := uint16(0o1)
+	if read {
+		want |= 0o4
+	}
+	for _, entry := range entries {
+		switch entry.tag {
+		case 0x02, 0x04, 0x08, 0x20: // named user, owning group, named group, other
+			if entry.perm&mask&want == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// detectDefaultServerConflict reports whether an existing nginx configuration
+// already declares default_server on one of the listen ports devstack renders.
+// It prefers `nginx -T`, which labels each file, and falls back to scanning
+// fixed configuration locations when the server refuses to dump its config.
+// Lines from devstack's own vhost tree are ignored.
+func (m *VhostManager) detectDefaultServerConflict(ctx context.Context, mode string) bool {
+	if mode != vhostModeNginx {
+		return false
+	}
+	wantPorts := map[int]struct{}{
+		resolveVhostPort(m.HTTPListenPort, 80):   {},
+		resolveVhostPort(m.HTTPSListenPort, 443): {},
+	}
+	ownTree := m.serverTree(vhostModeNginx)
+
+	if out, err := m.runner.Run(ctx, "nginx", "-T"); err == nil {
+		return nginxDumpHasForeignDefault(string(out), ownTree, wantPorts)
+	}
+	return scanNginxConfigsForDefault(ownTree, wantPorts, m.NginxIncludeDir)
+}
+
+func resolveVhostPort(port, fallback int) int {
+	if port == 0 {
+		return fallback
+	}
+	return port
+}
+
+func nginxDumpHasForeignDefault(dump, ownTree string, wantPorts map[int]struct{}) bool {
+	currentFile := ""
+	for _, line := range strings.Split(dump, "\n") {
+		if strings.HasPrefix(line, "# configuration file ") && strings.HasSuffix(strings.TrimSpace(line), ":") {
+			currentFile = strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(line, "# configuration file ")), ":")
+			continue
+		}
+		if currentFile == "" || pathInside(currentFile, ownTree) {
+			continue
+		}
+		if port, ok := nginxDefaultServerPort(line); ok {
+			if _, wanted := wantPorts[port]; wanted {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func scanNginxConfigsForDefault(ownTree string, wantPorts map[int]struct{}, extraDirs ...string) bool {
+	roots := []string{
+		"/etc/nginx",
+		"/usr/local/etc/nginx",
+		"/usr/local/nginx/conf",
+	}
+	for _, dir := range extraDirs {
+		if strings.TrimSpace(dir) != "" {
+			roots = append(roots, dir)
+		}
+	}
+	seen := map[string]struct{}{}
+	for _, root := range roots {
+		info, err := os.Stat(root)
+		if err != nil {
+			continue
+		}
+		if !info.IsDir() {
+			continue
+		}
+		found := false
+		_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil || found {
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if !strings.HasSuffix(entry.Name(), ".conf") || pathInside(path, ownTree) {
+				return nil
+			}
+			if _, ok := seen[path]; ok {
+				return nil
+			}
+			seen[path] = struct{}{}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				if port, ok := nginxDefaultServerPort(line); ok {
+					if _, wanted := wantPorts[port]; wanted {
+						found = true
+						return fs.SkipAll
+					}
+				}
+			}
+			return nil
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func nginxDefaultServerPort(line string) (int, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return 0, false
+	}
+	fields := strings.Fields(line)
+	listenAt := -1
+	for i, field := range fields {
+		if field == "listen" {
+			listenAt = i
+			break
+		}
+	}
+	if listenAt < 0 || listenAt+1 >= len(fields) {
+		return 0, false
+	}
+	hasDefault := false
+	for _, field := range fields[listenAt+1:] {
+		if strings.TrimSuffix(field, ";") == "default_server" {
+			hasDefault = true
+			break
+		}
+	}
+	if !hasDefault {
+		return 0, false
+	}
+	address := strings.TrimSuffix(fields[listenAt+1], ";")
+	if index := strings.LastIndex(address, ":"); index >= 0 {
+		address = address[index+1:]
+	}
+	port, err := strconv.Atoi(address)
+	if err != nil {
+		return 0, false
+	}
+	return port, true
 }

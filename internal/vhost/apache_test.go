@@ -284,6 +284,7 @@ func TestRenderApacheStaticHardening(t *testing.T) {
 		"AllowOverride None",
 		"Require all granted",
 		`<FilesMatch "^\.">`,
+		`<LocationMatch "(^|/)\.">`,
 		`<LocationMatch "^/_devstack(/|$)">`,
 		`Header always set Cache-Control "no-store"`,
 	} {

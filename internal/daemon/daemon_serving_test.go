@@ -29,14 +29,17 @@ func (vhostTestRunner) Run(_ context.Context, name string, args ...string) ([]by
 	case "nginx":
 		return []byte("nginx version: nginx/1.26.0"), nil
 	case "systemctl":
+		if len(args) == 2 && args[0] == "is-active" {
+			return []byte("active\n"), nil
+		}
 		return []byte("ok"), nil
 	}
 	return nil, fmt.Errorf("unexpected command %s %v", name, args)
 }
 
-// startVhostTestHelper runs a real helper with the vhost manager enabled, a
-// temporary release/include tree, and a fake command runner.
-func startVhostTestHelper(t *testing.T) string {
+// vhostTestHelperConfig returns the helper configuration used by the vhost
+// daemon tests. Tests may adjust paths before starting the helper.
+func vhostTestHelperConfig(t *testing.T) helper.Config {
 	t.Helper()
 	dir := t.TempDir()
 	hosts := filepath.Join(dir, "hosts")
@@ -47,7 +50,7 @@ func startVhostTestHelper(t *testing.T) string {
 	if err := os.MkdirAll(allowHome, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := helper.Config{
+	return helper.Config{
 		SocketPath:       filepath.Join(dir, "run", "helper.sock"),
 		HostsPath:        hosts,
 		AllowUID:         os.Getuid(),
@@ -62,6 +65,17 @@ func startVhostTestHelper(t *testing.T) string {
 		NginxIncludeDir:  filepath.Join(dir, "nginx-includes"),
 		Runner:           vhostTestRunner{},
 	}
+}
+
+// startVhostTestHelper runs a real helper with the vhost manager enabled, a
+// temporary release/include tree, and a fake command runner.
+func startVhostTestHelper(t *testing.T) string {
+	t.Helper()
+	return startVhostTestHelperWithConfig(t, vhostTestHelperConfig(t))
+}
+
+func startVhostTestHelperWithConfig(t *testing.T, cfg helper.Config) string {
+	t.Helper()
 	srv, err := helper.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("new vhost helper: %v", err)
@@ -270,6 +284,52 @@ func TestDaemonStartupWithBrokenStaticRoot(t *testing.T) {
 	}
 	if stored.Status != model.StatusError {
 		t.Fatalf("broken site status = %q, want error", stored.Status)
+	}
+}
+
+func TestDaemonStartsAndRecoversWhenServingReconcileFails(t *testing.T) {
+	useBuiltBinary(t)
+	home := t.TempDir()
+	setConfigServingMode(t, home, config.ServingModeNginx)
+	helperCfg := vhostTestHelperConfig(t)
+	// A user-managed bridge without the devstack header makes the initial
+	// external sync fail. The daemon must still publish its API so the user can
+	// recover with `vhost use builtin`.
+	if err := os.MkdirAll(helperCfg.NginxIncludeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(helperCfg.NginxIncludeDir, "devstack-vhosts.conf"),
+		[]byte("server { listen 80; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions(t, home, startVhostTestHelperWithConfig(t, helperCfg))
+	requireDefaultUIPort(t)
+	opts.UIPort = 7070
+
+	run := startDaemon(t, opts)
+	defer run.stop(t)
+
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+	getHealth(t, client)
+	if status := vhostStatusRequest(t, client); status.Mode != config.ServingModeBuiltin {
+		t.Fatalf("helper mode after failed reconcile = %+v", status)
+	}
+
+	// Doctor and the mode switch must remain usable.
+	resp, data := apiRequest(t, client, http.MethodGet, "/api/v1/doctor", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("doctor after failed reconcile = %d %s", resp.StatusCode, data)
+	}
+	resp, data = apiRequest(t, client, http.MethodPost, "/api/v1/vhosts/mode", map[string]string{"mode": config.ServingModeBuiltin})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("recover to builtin = %d %s", resp.StatusCode, data)
+	}
+	var status helperproto.VhostStatusResponse
+	if err := json.Unmarshal(data, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != config.ServingModeBuiltin {
+		t.Fatalf("recovered mode = %+v", status)
 	}
 }
 

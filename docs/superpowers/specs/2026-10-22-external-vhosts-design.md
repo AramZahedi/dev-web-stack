@@ -467,3 +467,23 @@ but do not replace, the design above.
   non-default port, including Apache mixed source/target ports.
 - The helper status carries the bridge content hash; a user-edited bridge is
   never overwritten or removed in sync, teardown, or mode switches.
+- Before rendering nginx, the helper inspects `nginx -T` (with a fixed
+  configuration-directory scan as fallback) for a foreign `default_server` on
+  the rendered listen ports, ignoring its own release tree. When one exists,
+  `_default.conf` omits the marker and status/Doctor report
+  `default_server_conflict`; the switch still succeeds.
+- When the helper runs as root, running static roots are preflighted for server
+  worker traversal/read (world bits or a POSIX ACL) and the sync returns the
+  failing directory with a `chmod`/worker remediation. Non-root helper tests
+  and E2E skip this check.
+- A site whose document root, backend path, or certificate cannot be used is
+  rendered by the daemon as a stopped 503 vhost and produces a `site.error`
+  event instead of failing the whole sync.
+- Daemon startup publishes the API/socket before reconciling vhosts. Reconcile
+  failures are logged and stored in `serving_mode_error`, so `vhost use
+  builtin`, Doctor, and site removal remain available.
+- Helper status reports `service_active` (fixed `systemctl is-active` probe),
+  `tls_dir`, and `default_server_conflict`. Doctor uses these for mode-aware
+  port, service, and TLS-directory checks.
+- Apache static vhosts deny dot path segments as well as dotfile basenames so
+  `/project/.git/config` cannot be served.

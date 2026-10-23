@@ -101,6 +101,12 @@ func writeApacheStaticBody(b *strings.Builder, s SiteSpec) {
 	b.WriteString("        Require all denied\n")
 	b.WriteString("    </FilesMatch>\n")
 	b.WriteString("\n")
+	// FilesMatch only inspects the basename, so it misses /project/.git/config.
+	// Deny any URL path segment that starts with a dot as well.
+	b.WriteString("    <LocationMatch \"(^|/)\\.\">\n")
+	b.WriteString("        Require all denied\n")
+	b.WriteString("    </LocationMatch>\n")
+	b.WriteString("\n")
 	writeApacheDenyLocation(b)
 	b.WriteString("\n")
 	b.WriteString("    Header always set Cache-Control \"no-store\"\n")

@@ -66,6 +66,10 @@ func NewServer(cfg ServerConfig) *Server {
 // Start binds the configured listeners and begins serving in the background.
 // Bind errors are returned synchronously and no partial listener set is left
 // open.
+// ErrAlreadyStarted reports a duplicate Start call. Callers that ensure the
+// built-in proxy is running can treat it as success.
+var ErrAlreadyStarted = errors.New("proxy: server already started")
+
 func (s *Server) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -77,7 +81,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.started {
-		return errors.New("proxy: server already started")
+		return ErrAlreadyStarted
 	}
 	if s.cfg.Router == nil {
 		return errors.New("proxy: router is required")

@@ -320,12 +320,17 @@ func (s *Service) checkTrust(ctx context.Context, caFingerprint string) Check {
 type portSpec struct {
 	port  int
 	owner string
+	// free inverts the expectation: external mode expects the built-in proxy
+	// ports to be unused because nginx/Apache owns 80/443.
+	free bool
 }
 
 // checkPorts diagnoses the expected listeners rather than requiring free
 // ports. The helper normally owns 80/443 and the daemon owns the dashboard and
-// proxy ports, so an occupied port is healthy. Free ports, permission-denied
-// probes, and unexpected probe failures are warnings, never failures.
+// proxy ports, so an occupied port is healthy. In external mode the server
+// owns 80/443 and the built-in proxy ports must be free. Free ports,
+// permission-denied probes, and unexpected probe failures are warnings, never
+// failures.
 func (s *Service) checkPorts() Check {
 	check := Check{ID: "ports", Title: "Ports"}
 	if s.deps.Ports == nil {
@@ -335,14 +340,27 @@ func (s *Service) checkPorts() Check {
 		return check
 	}
 
+	external := s.effectiveServingMode() != config.ServingModeBuiltin
 	var (
 		owned    []string
+		free     []string
 		warnings []string
 	)
 	for _, spec := range s.portSpecs() {
 		addr := ":" + strconv.Itoa(spec.port)
 		err := s.deps.Ports.Listenable(addr)
 		switch {
+		case spec.free:
+			switch {
+			case err == nil:
+				free = append(free, strconv.Itoa(spec.port))
+			case isAddrInUse(err):
+				warnings = append(warnings, fmt.Sprintf("port %d is in use; external mode expects the built-in proxy ports to be free", spec.port))
+			case isProbePermission(err):
+				warnings = append(warnings, fmt.Sprintf("cannot probe port %d as this user; external mode expects it to be free", spec.port))
+			default:
+				warnings = append(warnings, fmt.Sprintf("could not probe port %d (%v); external mode expects it to be free", spec.port, err))
+			}
 		case err == nil:
 			warnings = append(warnings, fmt.Sprintf("port %d is free; expected owner is %s", spec.port, spec.owner))
 		case isAddrInUse(err):
@@ -363,11 +381,16 @@ func (s *Service) checkPorts() Check {
 
 	check.Status = StatusOK
 	check.Detail = "ports " + strings.Join(owned, ", ") + " are owned by the expected services"
+	if external && len(free) != 0 {
+		check.Detail += "; built-in proxy ports " + strings.Join(free, ", ") + " are free"
+	}
 	return check
 }
 
 // portSpecs returns the ports doctor inspects, honouring configured proxy and
-// dashboard ports while always checking the privileged 80/443 listeners.
+// dashboard ports while always checking the privileged 80/443 listeners. In
+// external mode 80/443 belong to the selected server and the proxy ports are
+// expected to be free.
 func (s *Service) portSpecs() []portSpec {
 	cfg := s.deps.Config
 	httpPort := cfg.HTTPPort
@@ -383,9 +406,16 @@ func (s *Service) portSpecs() []portSpec {
 		uiPort = defaultUIPort
 	}
 
+	mode := s.effectiveServingMode()
+	external := mode != config.ServingModeBuiltin
+	privilegedOwner := "the helper forwarder"
+	if external {
+		privilegedOwner = "the " + mode + " server"
+	}
+
 	specs := make([]portSpec, 0, 5)
 	seen := make(map[int]struct{}, 5)
-	add := func(port int, owner string) {
+	add := func(port int, owner string, free bool) {
 		if port <= 0 || port > 65535 {
 			return
 		}
@@ -393,13 +423,18 @@ func (s *Service) portSpecs() []portSpec {
 			return
 		}
 		seen[port] = struct{}{}
-		specs = append(specs, portSpec{port: port, owner: owner})
+		specs = append(specs, portSpec{port: port, owner: owner, free: free})
 	}
-	add(80, "the helper forwarder")
-	add(443, "the helper forwarder")
-	add(uiPort, "the devstack dashboard")
-	add(httpPort, "the devstack proxy")
-	add(httpsPort, "the devstack proxy")
+	add(80, privilegedOwner, false)
+	add(443, privilegedOwner, false)
+	add(uiPort, "the devstack dashboard", false)
+	if external {
+		add(httpPort, "the built-in proxy", true)
+		add(httpsPort, "the built-in proxy", true)
+	} else {
+		add(httpPort, "the devstack proxy", false)
+		add(httpsPort, "the devstack proxy", false)
+	}
 	return specs
 }
 
@@ -560,6 +595,7 @@ func (s *Service) checkVhosts(ctx context.Context) []Check {
 		{ID: "vhost-config", Title: "Vhost config test"},
 		{ID: "vhost-freshness", Title: "Vhost release freshness"},
 		{ID: "vhost-tls", Title: "Vhost TLS permissions"},
+		{ID: "vhost-default-server", Title: "Vhost default server"},
 	}
 	skipRest := func(from int, detail string) {
 		for i := from; i < len(checks); i++ {
@@ -618,13 +654,19 @@ func (s *Service) checkVhosts(ctx context.Context) []Check {
 		server = mode
 	}
 	version := strings.TrimSpace(status.ServerVersion)
-	if version == "" {
+	switch {
+	case version == "":
 		checks[1].Status = StatusFail
 		checks[1].Detail = fmt.Sprintf("%s is selected but its version could not be detected", server)
 		checks[1].Remediation = fmt.Sprintf("Install %s and start its service, then run `devstack vhost sync`.", server)
-	} else {
+	case !status.ServiceActive:
+		checks[1].Status = StatusFail
+		checks[1].Detail = fmt.Sprintf("%s %s is installed but its systemd service is not active", server, version)
+		checks[1].Remediation = fmt.Sprintf("Start the %s service (`%s`), then run `devstack vhost sync`.",
+			server, vhostServiceStartCommand(mode))
+	default:
 		checks[1].Status = StatusOK
-		checks[1].Detail = fmt.Sprintf("%s %s is available", server, version)
+		checks[1].Detail = fmt.Sprintf("%s %s is available and its service is active", server, version)
 	}
 
 	bridge := vhostBridgePath(status, mode)
@@ -651,7 +693,28 @@ func (s *Service) checkVhosts(ctx context.Context) []Check {
 
 	checks[4] = s.checkVhostFreshness(ctx, status.LastSync)
 	checks[5] = s.checkVhostTLS(status)
+	checks[6] = checkVhostDefaultServer(status)
 	return checks
+}
+
+func vhostServiceStartCommand(mode string) string {
+	if mode == config.ServingModeApache {
+		return "sudo systemctl start apache2 # or httpd on Fedora/RHEL"
+	}
+	return "sudo systemctl start nginx"
+}
+
+func checkVhostDefaultServer(status helperproto.VhostStatusResponse) Check {
+	check := Check{ID: "vhost-default-server", Title: "Vhost default server"}
+	if status.DefaultServerConflict {
+		check.Status = StatusWarn
+		check.Detail = "another server configuration already declares default_server on the devstack listen ports; the devstack 404 vhost is installed without the marker, so unknown hosts are answered by the distribution default"
+		check.Remediation = "Remove default_server from the conflicting vhost (usually the distribution's default site) and run `devstack vhost sync`; otherwise accept the distribution's 404 page for unknown hosts."
+		return check
+	}
+	check.Status = StatusOK
+	check.Detail = "no foreign default_server conflicts with the devstack vhosts"
+	return check
 }
 
 // effectiveServingMode prefers the daemon's live mode so a runtime switch is
@@ -730,10 +793,14 @@ func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
 		return check
 	}
 
+	tlsDir := strings.TrimSpace(status.TLSDir)
+	if tlsDir == "" {
+		tlsDir = defaultVhostTLSDir
+	}
 	if status.TLSDirMode == 0 {
 		check.Status = StatusFail
-		check.Detail = fmt.Sprintf("the helper reports no TLS directory; expected %s with mode 0700", defaultVhostTLSDir)
-		check.Remediation = fmt.Sprintf("Run `devstack vhost sync` to recreate %s, then `chmod 700 %s` if needed and rerun `devstack doctor`.", defaultVhostTLSDir, defaultVhostTLSDir)
+		check.Detail = fmt.Sprintf("the helper reports no TLS directory; expected %s with mode 0700", tlsDir)
+		check.Remediation = fmt.Sprintf("Run `devstack vhost sync` to recreate %s, then `chmod 700 %s` if needed and rerun `devstack doctor`.", tlsDir, tlsDir)
 		return check
 	}
 
@@ -747,7 +814,7 @@ func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
 	)
 	if status.TLSDirMode != 0o700 {
 		dirBad = true
-		bad = append(bad, fmt.Sprintf("%s has mode %04o (want 0700)", defaultVhostTLSDir, status.TLSDirMode))
+		bad = append(bad, fmt.Sprintf("%s has mode %04o (want 0700)", tlsDir, status.TLSDirMode))
 	}
 
 	for _, file := range status.TLSFiles {
@@ -762,7 +829,7 @@ func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
 		default:
 			continue
 		}
-		path := defaultVhostTLSDir + "/" + file.Name
+		path := tlsDir + "/" + file.Name
 		badFile := false
 		if !file.Regular {
 			bad = append(bad, path+" is not a regular file")
@@ -785,13 +852,13 @@ func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
 		check.Detail = "TLS material is unsafe: " + strings.Join(bad, "; ")
 		var fixes []string
 		if dirBad {
-			fixes = append(fixes, fmt.Sprintf("`chmod 700 %s`", defaultVhostTLSDir))
+			fixes = append(fixes, fmt.Sprintf("`chmod 700 %s`", tlsDir))
 		}
 		if keyBad {
-			fixes = append(fixes, fmt.Sprintf("`chmod 600 %s/*.key`", defaultVhostTLSDir))
+			fixes = append(fixes, fmt.Sprintf("`chmod 600 %s/*.key`", tlsDir))
 		}
 		if certBad {
-			fixes = append(fixes, fmt.Sprintf("`chmod 644 %s/*.crt`", defaultVhostTLSDir))
+			fixes = append(fixes, fmt.Sprintf("`chmod 644 %s/*.crt`", tlsDir))
 		}
 		check.Remediation = "Run " + strings.Join(fixes, ", ") + ", then rerun `devstack doctor`."
 		return check
@@ -799,13 +866,13 @@ func (s *Service) checkVhostTLS(status helperproto.VhostStatusResponse) Check {
 
 	if certFiles == 0 {
 		check.Status = StatusWarn
-		check.Detail = fmt.Sprintf("no TLS certificate files are present in %s", defaultVhostTLSDir)
+		check.Detail = fmt.Sprintf("no TLS certificate files are present in %s", tlsDir)
 		check.Remediation = "Run `devstack vhost sync` to install certificates for TLS sites."
 		return check
 	}
 
 	check.Status = StatusOK
-	check.Detail = fmt.Sprintf("%d key(s) are 0600 and %d certificate(s) are 0644 in %s", keyFiles, certFiles, defaultVhostTLSDir)
+	check.Detail = fmt.Sprintf("%d key(s) are 0600 and %d certificate(s) are 0644 in %s", keyFiles, certFiles, tlsDir)
 	return check
 }
 

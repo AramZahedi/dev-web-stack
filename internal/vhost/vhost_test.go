@@ -706,6 +706,51 @@ func TestRenderCustomTLSDir(t *testing.T) {
 	}
 }
 
+func TestRenderNginxDefaultServerConflict(t *testing.T) {
+	t.Run("default marker present without a conflict", func(t *testing.T) {
+		files, err := Render(testSet(ServerNginx, 0))
+		if err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		notFound := files["_default.conf"]
+		if !bytes.Contains(notFound, []byte("listen 80 default_server;")) {
+			t.Fatalf("default vhost is missing the HTTP default_server marker:\n%s", notFound)
+		}
+		if !bytes.Contains(notFound, []byte("listen 443 ssl http2 default_server;")) {
+			t.Fatalf("default vhost is missing the HTTPS default_server marker:\n%s", notFound)
+		}
+	})
+
+	t.Run("marker omitted when a foreign default exists", func(t *testing.T) {
+		set := testSet(ServerNginx, 0)
+		set.SuppressDefaultServer = true
+		files, err := Render(set)
+		if err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		notFound := files["_default.conf"]
+		if bytes.Contains(notFound, []byte("default_server")) {
+			t.Fatalf("default vhost still declares default_server:\n%s", notFound)
+		}
+		if !bytes.Contains(notFound, []byte("listen 80;")) ||
+			!bytes.Contains(notFound, []byte("listen 443 ssl http2;")) {
+			t.Fatalf("default vhost lost its listen directives:\n%s", notFound)
+		}
+	})
+
+	t.Run("apache ignores the nginx-only flag", func(t *testing.T) {
+		set := testSet(ServerApache, 0)
+		set.SuppressDefaultServer = true
+		files, err := Render(set)
+		if err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		if !bytes.Contains(files["_default.conf"], []byte("ServerName devstack.invalid")) {
+			t.Fatal("Apache default vhost changed when the nginx flag was set")
+		}
+	})
+}
+
 func TestRenderHighListenPorts(t *testing.T) {
 	for _, server := range []Server{ServerNginx, ServerApache} {
 		t.Run(string(server), func(t *testing.T) {
