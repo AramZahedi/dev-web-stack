@@ -24,37 +24,52 @@ type fileConfig struct {
 	TrustDir *string `yaml:"trust_dir"`
 	AllowUID *int    `yaml:"allow_uid"`
 
-	ForwardHTTPPort  *int `yaml:"forward_http_port"`
-	ForwardHTTPSPort *int `yaml:"forward_https_port"`
-	ProxyHTTPPort    *int `yaml:"proxy_http_port"`
-	ProxyHTTPSPort   *int `yaml:"proxy_https_port"`
+	ForwardHTTPPort  *int  `yaml:"forward_http_port"`
+	ForwardHTTPSPort *int  `yaml:"forward_https_port"`
+	ProxyHTTPPort    *int  `yaml:"proxy_http_port"`
+	ProxyHTTPSPort   *int  `yaml:"proxy_https_port"`
+	AutoForward      *bool `yaml:"auto_forward"`
 
 	LogLevel *string `yaml:"log_level"`
 }
 
 // findConfigPath scans args for --config without consuming or reordering the
-// rest of the command line. The actual flag parse still validates the value
-// and rejects unknown flags.
+// rest of the command line. Only one config file may be supplied; accepting
+// two would make the pre-scan and flag parse disagree about which one wins.
 func findConfigPath(args []string) (string, error) {
+	found := ""
+	seen := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--":
-			return "", nil
+			return found, nil
 		case arg == "--config" || arg == "-config":
 			if i+1 >= len(args) {
 				return "", errors.New("--config requires a file path")
 			}
-			return args[i+1], nil
+			if seen {
+				return "", errors.New("--config may be specified only once")
+			}
+			seen = true
+			found = args[i+1]
 		case arg == "--config=" || arg == "-config=":
 			return "", errors.New("--config requires a file path")
 		case strings.HasPrefix(arg, "--config="):
-			return strings.TrimPrefix(arg, "--config="), nil
+			if seen {
+				return "", errors.New("--config may be specified only once")
+			}
+			seen = true
+			found = strings.TrimPrefix(arg, "--config=")
 		case strings.HasPrefix(arg, "-config="):
-			return strings.TrimPrefix(arg, "-config="), nil
+			if seen {
+				return "", errors.New("--config may be specified only once")
+			}
+			seen = true
+			found = strings.TrimPrefix(arg, "-config=")
 		}
 	}
-	return "", nil
+	return found, nil
 }
 
 // loadFileConfig reads and strictly decodes a YAML helper config. An empty
@@ -115,6 +130,9 @@ func (cfg fileConfig) apply(opts *options) {
 	}
 	if cfg.ProxyHTTPSPort != nil {
 		opts.proxyHTTPSPort = *cfg.ProxyHTTPSPort
+	}
+	if cfg.AutoForward != nil {
+		opts.autoForward = *cfg.AutoForward
 	}
 	if cfg.LogLevel != nil {
 		opts.logLevel = *cfg.LogLevel

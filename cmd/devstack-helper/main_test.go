@@ -39,6 +39,9 @@ func TestParseOptionsFlags(t *testing.T) {
 	if got, want := opts.caDir(), filepath.Join("/tmp/helper-state", "pki"); got != want {
 		t.Fatalf("caDir = %q, want %q", got, want)
 	}
+	if !opts.autoForward {
+		t.Fatal("autoForward = false, want true by default")
+	}
 }
 
 func TestParseOptionsDefaults(t *testing.T) {
@@ -63,6 +66,9 @@ func TestParseOptionsDefaults(t *testing.T) {
 	}
 	if opts.logLevel != "info" {
 		t.Fatalf("log level = %q", opts.logLevel)
+	}
+	if !opts.autoForward {
+		t.Fatal("autoForward = false, want true by default")
 	}
 }
 

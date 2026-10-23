@@ -15,17 +15,20 @@ HELPER_UNIT="/etc/systemd/system/devstack-helper.service"
 USER_UNIT_DIR=""
 USER_UNIT=""
 DRY_RUN=0
+CONFIG_MODE="keep"
 
 usage() {
 	cat <<'EOF'
-Usage: install.sh [--dry-run] [--help]
+Usage: install.sh [--dry-run] [--keep-config | --force-config] [--help]
 
 Build devstack first with `make build` (or `make e2e` for the test build).
 The installer must run as the user who will own devstack, not as root.
 
 Options:
-  --dry-run  Print the installation steps without changing the system.
-  -h, --help Show this help.
+  --dry-run      Print the installation steps without changing the system.
+  --keep-config  Keep an existing /etc/devstack/helper.yaml (the default).
+  --force-config Replace /etc/devstack/helper.yaml with the generated defaults.
+  -h, --help     Show this help.
 EOF
 }
 
@@ -54,6 +57,12 @@ for arg in "$@"; do
 	--dry-run)
 		DRY_RUN=1
 		;;
+	--keep-config)
+		CONFIG_MODE="keep"
+		;;
+	--force-config)
+		CONFIG_MODE="force"
+		;;
 	-h | --help)
 		usage
 		exit 0
@@ -66,11 +75,30 @@ for arg in "$@"; do
 	esac
 done
 
+# --force-config and --keep-config are mutually exclusive only when both were
+# supplied. Detect that from the original argument list, not from the last
+# option processed.
+force_seen=0
+keep_seen=0
+for arg in "$@"; do
+	case "${arg}" in
+	--force-config) force_seen=1 ;;
+	--keep-config) keep_seen=1 ;;
+	esac
+done
+if [ "${force_seen}" -eq 1 ] && [ "${keep_seen}" -eq 1 ]; then
+	die "--force-config and --keep-config cannot be used together"
+fi
+
 if [ "$(uname -s)" != "Linux" ]; then
 	die "devstack installer supports Linux only"
 fi
 if [ ! -d /run/systemd/system ]; then
-	die "systemd is required (PID 1 does not expose /run/systemd/system)"
+	if [ "${DRY_RUN}" -eq 1 ]; then
+		log "warning: systemd is not running; showing a dry run only"
+	else
+		die "systemd is required (PID 1 does not expose /run/systemd/system)"
+	fi
 fi
 if [ "$(id -u)" -eq 0 ]; then
 	die "run install.sh as your normal user; it uses sudo for system changes and records your UID in the helper config"
@@ -89,8 +117,15 @@ if [ -z "${USER_HOME}" ] || [ ! -d "${USER_HOME}" ]; then
 	die "cannot determine the home directory for UID ${USER_UID}"
 fi
 
-USER_UNIT_DIR="${USER_HOME}/.config/systemd/user"
+CONFIG_HOME="${XDG_CONFIG_HOME:-${USER_HOME}/.config}"
+case "${CONFIG_HOME}" in
+/*) ;;
+*) die "XDG_CONFIG_HOME must be an absolute path, got ${CONFIG_HOME}" ;;
+esac
+
+USER_UNIT_DIR="${CONFIG_HOME}/systemd/user"
 USER_UNIT="${USER_UNIT_DIR}/devstack-daemon.service"
+USER_BIN="${USER_HOME}/.local/bin/devstack"
 
 for binary in "${REPO_ROOT}/dist/devstack" "${REPO_ROOT}/dist/devstack-helper"; do
 	if [ ! -x "${binary}" ]; then
@@ -105,19 +140,22 @@ fi
 
 # User-facing CLI and daemon binary.
 run install -d -m 0755 "${USER_HOME}/.local/bin"
-run install -m 0755 "${REPO_ROOT}/dist/devstack" "${USER_HOME}/.local/bin/devstack"
+run install -m 0755 "${REPO_ROOT}/dist/devstack" "${USER_BIN}"
 
 # Root-owned helper binary and configuration.
 run sudo install -d -m 0755 "${HELPER_ROOT}"
 run sudo install -m 0755 "${REPO_ROOT}/dist/devstack-helper" "${HELPER_BINARY}"
 run sudo install -d -m 0755 "${HELPER_CONFIG_DIR}"
 
-config_tmp="$(mktemp "${TMPDIR:-/tmp}/devstack-helper-config.XXXXXX")"
-cleanup_config() {
-	rm -f "${config_tmp}"
-}
-trap cleanup_config EXIT
-cat >"${config_tmp}" <<EOF
+if [ -e "${HELPER_CONFIG}" ] && [ "${CONFIG_MODE}" != "force" ]; then
+	log "keeping existing ${HELPER_CONFIG} (use --force-config to replace it)"
+else
+	config_tmp="$(mktemp "${TMPDIR:-/tmp}/devstack-helper-config.XXXXXX")"
+	cleanup_config() {
+		rm -f "${config_tmp}"
+	}
+	trap cleanup_config EXIT
+	cat >"${config_tmp}" <<EOF
 # Managed by devstack install.sh. Edit and restart devstack-helper after
 # changing ports or paths. Command-line flags override this file.
 socket: /run/devstack-helper/helper.sock
@@ -129,9 +167,11 @@ forward_http_port: 80
 forward_https_port: 443
 proxy_http_port: 8080
 proxy_https_port: 8443
+auto_forward: true
 log_level: info
 EOF
-run sudo install -m 0644 "${config_tmp}" "${HELPER_CONFIG}"
+	run sudo install -m 0644 "${config_tmp}" "${HELPER_CONFIG}"
+fi
 
 # System helper unit. `enable` is idempotent; `restart` picks up a new binary
 # and config on reinstall and starts the service on a first install.
@@ -162,14 +202,31 @@ fi
 run install -d -m 0755 "${USER_UNIT_DIR}"
 run install -m 0644 "${REPO_ROOT}/build/systemd/devstack-daemon.service" "${USER_UNIT}"
 if systemctl --user show-environment >/dev/null 2>&1; then
+	unit_active=0
+	if systemctl --user is-active --quiet devstack-daemon.service 2>/dev/null; then
+		unit_active=1
+	fi
 	run systemctl --user daemon-reload
 	run systemctl --user enable devstack-daemon.service
-	# On upgrade, restart a running unit so it uses the new binary. The unit is
-	# deliberately not started here; `devstack init` owns the first start.
-	run systemctl --user try-restart devstack-daemon.service
+	if [ "${unit_active}" -eq 1 ]; then
+		# The unit owns the daemon; restart it so the new binary and unit are
+		# active immediately.
+		run systemctl --user restart devstack-daemon.service
+	else
+		# A previous `devstack init` may have spawned a detached daemon. Stop it
+		# before the next start so the unit and CLI cannot disagree about which
+		# process owns the home. The unit itself is started by `devstack init`
+		# (or manually), not during a first install.
+		if [ -x "${USER_BIN}" ]; then
+			if ! run "${USER_BIN}" daemon stop; then
+				log "warning: could not stop the detached daemon; run 'devstack daemon stop' manually"
+			fi
+		fi
+	fi
 else
 	log "no user systemd session detected; enable the daemon unit later with:"
 	log "  systemctl --user daemon-reload && systemctl --user enable devstack-daemon.service"
+	log "headless installs: start the daemon with '$USER_BIN daemon run' or start the unit from a login session"
 fi
 
 case ":${PATH}:" in
@@ -182,7 +239,7 @@ esac
 cat <<EOF
 
 Installed:
-  CLI              ${USER_HOME}/.local/bin/devstack
+  CLI              ${USER_BIN}
   helper           ${HELPER_BINARY}
   helper config    ${HELPER_CONFIG}
   helper unit      ${HELPER_UNIT}

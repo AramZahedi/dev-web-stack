@@ -73,14 +73,20 @@ It is safe to re-run and performs these steps:
 | Privileged helper binary | `/usr/local/lib/devstack/devstack-helper` |
 | Helper configuration | `/etc/devstack/helper.yaml` |
 | Helper system unit | `/etc/systemd/system/devstack-helper.service` |
-| Per-user daemon unit | `~/.config/systemd/user/devstack-daemon.service` |
+| Per-user daemon unit | `${XDG_CONFIG_HOME:-~/.config}/systemd/user/devstack-daemon.service` |
 
 The installer writes `allow_uid` in the helper config using your UID, installs
 the helper unit, enables and restarts it, installs the user unit, and enables it
-when a user systemd session is available. Re-running the installer regenerates
-`/etc/devstack/helper.yaml` with the standard defaults, so re-apply any custom
-ports after an upgrade. It does not install packages, configure nginx/Apache, or
+when a user systemd session is available. An existing
+`/etc/devstack/helper.yaml` is kept by default; pass `--force-config` to replace
+it with the generated defaults, or `--keep-config` to make that behavior
+explicit. The installer does not install packages, configure nginx/Apache, or
 run `devstack init`.
+
+On an upgrade, the installer restarts an active user unit, or stops a detached
+daemon left by an earlier `devstack init` before `devstack init` starts the unit
+again. A headless session without a user systemd manager keeps the detached
+fallback used by the CLI.
 
 Preview the steps without changing anything:
 
@@ -100,10 +106,11 @@ export PATH="$HOME/.local/bin:$PATH"
 devstack init
 ```
 
-`init` asks the helper for its CA, enables the privileged 80/443 forwarders,
-installs the CA in the operating-system and browser trust stores, writes the
-managed hosts block, starts the daemon, and runs the diagnostic checks. It
-prints the dashboard URL and a loopback fallback.
+`init` asks the helper for its CA, re-applies the privileged 80/443
+forwarders, installs the CA in the operating-system and browser trust stores,
+writes the managed hosts block, starts the daemon (through the installed user
+unit when available), and runs the diagnostic checks. It prints the dashboard
+URL and a loopback fallback.
 
 Open <https://devstack.test>. If anything fails, run:
 
@@ -125,8 +132,10 @@ sudo journalctl -u devstack-helper -f
 ```
 
 The daemon is a per-user unit. The installer enables it but intentionally does
-not start it on first install; `devstack init` owns the first start so trust and
-hosts are ready first.
+not start it on first install; `devstack init` starts the unit when a user
+systemd manager is available, so trust and hosts are ready first. If no user
+manager is available (for example a headless SSH or container session), the CLI
+falls back to the detached `devstack daemon run` process in the background.
 
 ```sh
 systemctl --user status devstack-daemon
@@ -147,7 +156,10 @@ devstack daemon run --log-level debug
 ```
 
 Do not run two daemons for the same home. `devstack daemon status` reports
-whether the control socket is live.
+whether the control socket is live. If `systemctl --user` is unavailable (no
+`XDG_RUNTIME_DIR` or no user manager), the unit cannot be started; run the
+foreground command under your own supervisor, or start the unit from a login
+session.
 
 ## Configuration
 
@@ -166,6 +178,7 @@ command-line flags override file values. The shipped example is
 | `forward_https_port` | `443` | Privileged HTTPS forwarder |
 | `proxy_http_port` | `8080` | Daemon loopback HTTP proxy |
 | `proxy_https_port` | `8443` | Daemon loopback HTTPS proxy |
+| `auto_forward` | `true` | Bind 80/443 at helper startup |
 | `log_level` | `info` | `debug`, `info`, `warn`, or `error` |
 
 After changing the helper config:
@@ -175,28 +188,36 @@ sudo systemctl restart devstack-helper
 devstack init
 ```
 
+`auto_forward: true` makes the helper restore the forwarders on every start.
+If another server owns 80/443, set it to `false`; `devstack init` then fails at
+`SetForwarders` until the ports are free or the configuration is changed.
+The helper's `proxy_http_port` and `proxy_https_port` must be exactly the
+daemon's `http_port` and `https_port`; `devstack init` rejects a mismatch.
+
 The daemon's own settings live in `~/.devstack/config.yaml` (`http_port`,
 `https_port`, `ui_port`, log rotation, and request limits). The daemon creates
 the file with defaults on first start. Keep the helper proxy ports aligned with
-the daemon HTTP/HTTPS ports when you change them.
+the daemon HTTP/HTTPS ports when you change either side.
 
 ## Logs
 
 - Helper: `journalctl -u devstack-helper`
-- Daemon: `journalctl --user -u devstack-daemon` and
-  `~/.devstack/run/daemon.log`
+- Daemon under systemd: `journalctl --user -u devstack-daemon`
+- Daemon started detached by `devstack init`: `~/.devstack/run/daemon.log`
 - Sites: `devstack site logs <name> --tail 100`, `--follow` to stream, or
   `~/.devstack/logs/<site-id>/current.log`
 - Diagnostic snapshot: `devstack doctor --json`
 
 The daemon log is append-only for the current run. Site logs rotate according to
-`log_max_mb` and `log_keep`.
+`log_max_mb` and `log_keep`. When the user unit is active, its stdout and stderr
+go to the journal; `daemon.log` is only used by the detached fallback.
 
 ## Upgrade
 
 1. Build the new binaries.
-2. Run `./install.sh` again. It replaces the binaries and helper config, and
-   restarts the helper and an already-running user daemon unit.
+2. Run `./install.sh` again. It replaces the binaries and units, keeps an
+   existing helper config unless `--force-config` is used, and restarts an
+   active user daemon unit.
 3. Run `devstack init` to re-apply trust, hosts, and forwarders.
 4. Run `devstack doctor`.
 
@@ -238,7 +259,9 @@ the helper is disabled.
 ## Troubleshooting
 
 **The helper does not start.** Check that ports 80 and 443 are free and that
-your user's UID in `/etc/devstack/helper.yaml` matches `id -u`:
+your user's UID in `/etc/devstack/helper.yaml` matches `id -u`. With
+`auto_forward: true`, a bind failure is a startup failure. Set it to `false` if
+another server owns those ports:
 
 ```sh
 sudo systemctl status devstack-helper --no-pager

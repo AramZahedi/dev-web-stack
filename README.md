@@ -23,8 +23,9 @@ devstack init
 `install.sh` runs as your normal user and uses `sudo` for the helper binary,
 configuration, and system unit. It does not install packages. `devstack init`
 installs the local CA in the OS/browser trust stores, writes the hosts block,
-starts the helper forwarders and daemon, and runs diagnostics. Then open
-<https://devstack.test>.
+starts the helper forwarders and daemon, and runs diagnostics. The helper's
+`auto_forward` setting restores ports 80/443 whenever the service restarts.
+Then open <https://devstack.test>.
 
 Full instructions: [docs/install.md](docs/install.md).
 

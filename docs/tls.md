@@ -13,7 +13,7 @@ accept the sites only after the root CA is trusted.
 | Daemon CA bundle | `~/.devstack/pki/ca-bundle.crt` | your user |
 | Site certificates | `~/.devstack/pki/<site-id>.crt` and `.key` | your user |
 | Managed hosts block | `/etc/hosts` | root (helper) |
-| OS anchor | distribution CA anchor directory | root (helper) |
+| OS anchor | Fedora/RHEL: `/etc/pki/ca-trust/source/anchors`; Debian/Ubuntu: `/usr/local/share/ca-certificates` | root (helper) |
 | Chrome/Firefox trust | NSS databases under your home | helper, run as you |
 
 `devstack init` asks the helper to create the CA if needed, installs the root in
@@ -127,7 +127,6 @@ home), the helper intentionally refuses paths outside your home; import
 
 **`OS` target is not installed or unsupported.** Check that the helper is
 running and that the distribution has a known CA anchor directory:
-
 ```sh
 sudo systemctl status devstack-helper --no-pager
 sudo journalctl -u devstack-helper -n 100 --no-pager

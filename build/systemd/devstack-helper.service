@@ -7,6 +7,8 @@ After=network.target
 Type=simple
 User=root
 Group=root
+ExecStartPre=-/usr/bin/mkdir -p /usr/local/share/ca-certificates
+ExecStartPre=-/usr/bin/mkdir -p /var/lib/devstack-helper
 ExecStart=/usr/local/lib/devstack/devstack-helper --config /etc/devstack/helper.yaml
 Restart=on-failure
 RestartSec=2s
@@ -22,14 +24,19 @@ ProtectControlGroups=yes
 RestrictRealtime=yes
 LockPersonality=yes
 StateDirectory=devstack-helper
-StateDirectoryMode=0755
+StateDirectoryMode=0700
 RuntimeDirectory=devstack-helper
 RuntimeDirectoryMode=0755
-# The helper updates /etc/hosts atomically (a temp file in /etc plus rename),
-# so /etc must be writable while /usr and /boot remain read-only. The trust
-# directories outside /etc are optional on different distributions.
-ReadWritePaths=/etc /var/lib/devstack-helper /run/devstack-helper
+# Keep the writable surface narrow. Atomic hosts updates need the hosts file
+# writable; the helper falls back to an in-place write if the parent /etc mount
+# is read-only. Distribution trust paths are optional and differ between
+# Fedora/RHEL and Debian/Ubuntu.
+ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper
+ReadWritePaths=-/etc/pki/ca-trust/source/anchors
+ReadWritePaths=-/etc/pki/ca-trust/source
+ReadWritePaths=-/etc/pki/ca-trust/extracted
 ReadWritePaths=-/usr/local/share/ca-certificates
+ReadWritePaths=-/etc/ssl/certs
 ReadWritePaths=-/var/lib/ca-certificates
 
 [Install]

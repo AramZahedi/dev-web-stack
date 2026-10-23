@@ -49,7 +49,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            apache2 curl libnss3-tools nginx
+            apache2 curl libnss3-tools nginx shellcheck
           sudo systemctl stop nginx apache2 || true
           sudo systemctl disable nginx apache2 || true
 
@@ -64,6 +64,25 @@ jobs:
 
       - name: Build release binaries
         run: make build
+
+      - name: Shell, installer, and unit checks
+        run: |
+          bash -n install.sh test/e2e/linux.sh
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck --severity=error install.sh test/e2e/linux.sh
+          else
+            echo "shellcheck is unavailable; skipping (bash -n already passed)"
+          fi
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          sed "s|/usr/local/lib/devstack/devstack-helper|$PWD/dist/devstack-helper|" \
+            build/systemd/devstack-helper.service >"$tmp/devstack-helper.service"
+          sed "s|%h/.local/bin/devstack|$PWD/dist/devstack|" \
+            build/systemd/devstack-daemon.service >"$tmp/devstack-daemon.service"
+          systemd-analyze verify "$tmp/devstack-helper.service" "$tmp/devstack-daemon.service"
+
+          ./install.sh --dry-run
 
       # The script uses temporary HOME/state/hosts/trust paths and high ports.
       # It never binds 80/443 or modifies the real trust stores, so no sudo is

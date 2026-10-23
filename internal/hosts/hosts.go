@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 )
@@ -129,6 +130,14 @@ func WriteAtomic(path string, data []byte, mode fs.FileMode) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
+		// systemd's ProtectSystem=strict plus a file-level ReadWritePaths entry
+		// for /etc/hosts makes the file writable while its parent directory
+		// remains read-only. The helper cannot create a sibling temp file in
+		// that namespace, so fall back to an in-place rewrite. The file is
+		// small and this path is only used by the privileged helper.
+		if errors.Is(err, syscall.EROFS) || errors.Is(err, syscall.EACCES) {
+			return writeInPlace(path, data, mode)
+		}
 		return fmt.Errorf("hosts: create temp file in %s: %w", dir, err)
 	}
 	tmp := f.Name()
@@ -161,6 +170,32 @@ func WriteAtomic(path string, data []byte, mode fs.FileMode) error {
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync()
 		_ = d.Close()
+	}
+	return nil
+}
+
+// writeInPlace is the reduced-atomicity fallback for a file-level writable
+// mount whose parent directory is read-only (systemd ProtectSystem=strict with
+// ReadWritePaths=/etc/hosts). It keeps the existing mode and fsyncs the file.
+func writeInPlace(path string, data []byte, mode fs.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("hosts: write %s in place: %w", path, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("hosts: write %s in place: %w", path, err)
+	}
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("hosts: chmod %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("hosts: sync %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("hosts: close %s: %w", path, err)
 	}
 	return nil
 }

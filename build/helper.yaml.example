@@ -20,4 +20,10 @@ forward_https_port: 443
 proxy_http_port: 8080
 proxy_https_port: 8443
 
+# Bind the privileged forwarders at helper startup. This restores 80/443 after
+# a service restart or reboot without running `devstack init` again. Set false
+# when another server owns those ports; `devstack init` can still enable the
+# forwarders explicitly.
+auto_forward: true
+
 log_level: info

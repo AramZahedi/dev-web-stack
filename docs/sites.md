@@ -8,6 +8,10 @@ server; Node sites run your development command on an allocated loopback port.
 Complete [installation](install.md) and `devstack init` first. The daemon must
 be running for site commands; they start it automatically when needed.
 
+The examples below use `$HOME/projects/...`; replace those paths with existing
+project directories on your machine. Create the example static directory with
+`mkdir -p` before adding the site.
+
 ## Add a static site
 
 ```sh
@@ -98,8 +102,10 @@ allocated route and will not be reachable through devstack.
 | `devstack site logs <name> [--tail N] [--follow]` | Read or stream site output |
 | `devstack site open <name>` | Open the site URL in the default browser |
 
-`--json` works on every command and prints only JSON on stdout. The dashboard at
-<https://devstack.test> exposes the same lifecycle actions.
+`--json` is available on the management commands and prints JSON on stdout.
+`site logs --json` emits one JSON object per line rather than a single document;
+`daemon run` ignores the flag because it is a foreground service. The dashboard
+at <https://devstack.test> exposes the same lifecycle actions.
 
 A stopped site keeps its desired state as stopped, so a daemon restart does not
 start it. Running sites are restarted automatically and reconciled after a
@@ -154,9 +160,10 @@ devstack site logs api --follow
 devstack doctor
 ```
 
-Site logs live under `~/.devstack/logs/<site-id>/current.log`. The daemon log is
-`~/.devstack/run/daemon.log`; the helper log is in `journalctl -u
-devstack-helper`.
+Site logs live under `~/.devstack/logs/<site-id>/current.log`. The daemon runs
+under the user unit, so its output goes to `journalctl --user -u
+devstack-daemon`; `~/.devstack/run/daemon.log` is used only by the detached
+fallback. The helper log is in `journalctl -u devstack-helper`.
 
 If a site says running but the URL fails:
 
@@ -164,8 +171,8 @@ If a site says running but the URL fails:
 2. Check `devstack site show <name>` for the allocated backend port and status.
 3. Check `devstack site logs <name>` for a backend crash.
 4. Confirm the daemon's proxy ports in `~/.devstack/config.yaml` match the
-   helper's `proxy_*` values in `/etc/devstack/helper.yaml`, then run
-   `devstack init`.
+   helper's `proxy_*` values in `/etc/devstack/helper.yaml` exactly, then run
+   `devstack init`. A mismatch makes `init` reject the forwarder configuration.
 
 ## Plan 1 limitations
 

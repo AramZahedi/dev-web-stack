@@ -79,6 +79,11 @@ type Config struct {
 	// SetForwarders RPC may only name these configured ports.
 	ProxyHTTPPort  int
 	ProxyHTTPSPort int
+	// AutoForward makes Start begin forwarding the configured privileged
+	// ports immediately. The helper binary enables it so a service restart or
+	// reboot restores 80/443 without another `devstack init`; embedding
+	// callers leave it false unless they want that behavior.
+	AutoForward bool
 	// Logger receives server diagnostics. A nil logger uses slog.Default.
 	Logger *slog.Logger
 	// Service contains the privileged operations exposed by the helper. When
@@ -512,6 +517,29 @@ func (s *Server) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
+
+	// A systemd service restart must restore the privileged forwarders without
+	// waiting for a CLI call. Start binds them before the HTTP server is
+	// published so a bind failure is a visible startup failure (and systemd
+	// restarts or reports it) rather than a silently missing 80/443 path.
+	if s.cfg.AutoForward {
+		httpListen, httpsListen, httpTarget, httpsTarget, portErr := s.forwarderPorts()
+		if portErr != nil {
+			cleanup()
+			return fmt.Errorf("helper: resolve automatic forwarder ports: %w", portErr)
+		}
+		if err := s.setForwarders(ctx, helperproto.ForwardersRequest{Enable: true}); err != nil {
+			cleanup()
+			return fmt.Errorf(
+				"helper: enable automatic forwarders on %d/%d to %d/%d: %w (check that the ports are free or disable auto_forward)",
+				httpListen, httpsListen, httpTarget, httpsTarget, err,
+			)
+		}
+		s.logger.Info("helper: automatic forwarders enabled",
+			"http", httpListen, "https", httpsListen,
+			"proxy_http", httpTarget, "proxy_https", httpsTarget)
+	}
+
 	s.listener = ln
 	s.httpServer = srv
 	s.done = make(chan struct{})

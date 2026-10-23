@@ -137,6 +137,78 @@ func TestHelperForwarders(t *testing.T) {
 	}
 }
 
+func TestHelperAutoForwardStartsConfiguredForwarders(t *testing.T) {
+	httpTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "auto-http-ok")
+	}))
+	defer httpTarget.Close()
+	httpsTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "auto-https-ok")
+	}))
+	defer httpsTarget.Close()
+
+	httpTargetPort := targetPort(t, httpTarget)
+	httpsTargetPort := targetPort(t, httpsTarget)
+	used := map[int]bool{httpTargetPort: true, httpsTargetPort: true}
+	forwardHTTP := helperUniquePort(t, used)
+	forwardHTTPS := helperUniquePort(t, used)
+
+	cfg := forwarderConfig(t, forwardHTTP, forwardHTTPS, httpTargetPort, httpsTargetPort)
+	cfg.AutoForward = true
+	startTestServer(t, cfg)
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	if got := getForwarded(t, client, "http://127.0.0.1:"+strconv.Itoa(forwardHTTP)+"/"); got != "auto-http-ok" {
+		t.Fatalf("auto HTTP forward body = %q", got)
+	}
+	if got := getForwarded(t, client, "http://127.0.0.1:"+strconv.Itoa(forwardHTTPS)+"/"); got != "auto-https-ok" {
+		t.Fatalf("auto HTTPS forward body = %q", got)
+	}
+}
+
+func TestHelperAutoForwardBindFailureIsStartupError(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = occupied.Close() }()
+	conflictPort := occupied.Addr().(*net.TCPAddr).Port
+
+	httpTarget := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer httpTarget.Close()
+	httpsTarget := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer httpsTarget.Close()
+
+	httpTargetPort := targetPort(t, httpTarget)
+	httpsTargetPort := targetPort(t, httpsTarget)
+	used := map[int]bool{httpTargetPort: true, httpsTargetPort: true, conflictPort: true}
+	forwardHTTPS := helperUniquePort(t, used)
+
+	dir := t.TempDir()
+	cfg := forwarderConfig(t, conflictPort, forwardHTTPS, httpTargetPort, httpsTargetPort)
+	cfg.AutoForward = true
+	cfg.SocketPath = filepath.Join(dir, "run", "helper.sock")
+	cfg.HostsPath = filepath.Join(dir, "hosts")
+	server, err := helper.NewServer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Close() }()
+
+	startErr := server.Start(context.Background())
+	if startErr == nil {
+		t.Fatal("Start succeeded with an occupied auto-forward port")
+	}
+	for _, want := range []string{"127.0.0.1:" + strconv.Itoa(conflictPort), "auto_forward"} {
+		if !strings.Contains(startErr.Error(), want) {
+			t.Fatalf("start error = %q, want %q", startErr, want)
+		}
+	}
+	if _, statErr := os.Stat(cfg.SocketPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed auto-forward left socket behind: %v", statErr)
+	}
+}
+
 func TestHelperForwarderBindConflict(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

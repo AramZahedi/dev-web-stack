@@ -54,6 +54,14 @@ const (
 var (
 	selfExecutable     = os.Executable
 	ensureStartTimeout = 10 * time.Second
+
+	// Seams for the systemd user-unit path. Tests replace these so they never
+	// need a live user manager or a real unit file.
+	userHomeDir   = os.UserHomeDir
+	systemctlUser = func(ctx context.Context, args ...string) ([]byte, error) {
+		command := exec.CommandContext(ctx, "systemctl", append([]string{"--user"}, args...)...)
+		return command.CombinedOutput()
+	}
 )
 
 // Options configures one daemon run. Zero ports keep the values loaded from
@@ -622,6 +630,21 @@ func EnsureRunning(ctx context.Context, opts Options) error {
 	logPath := filepath.Join(home, "run", "daemon.log")
 	deadline := time.Now().Add(ensureStartTimeout)
 
+	if daemonReady(home) {
+		return nil
+	}
+	// Prefer the installed user unit when it is present and this invocation
+	// targets the default home and default options. The unit is the durable
+	// path across logins and reboots; a custom --home, custom helper socket, or
+	// a headless session keeps the detached spawn fallback below.
+	if userUnitCompatible(opts) {
+		if started, err := startUserDaemonUnit(ctx, home); err != nil {
+			return err
+		} else if started {
+			return waitForUserDaemonUnit(ctx, home)
+		}
+	}
+
 	var (
 		cmd       *exec.Cmd
 		waitCh    <-chan error
@@ -698,6 +721,117 @@ func EnsureRunning(ctx context.Context, opts Options) error {
 		case <-time.After(25 * time.Millisecond):
 		}
 	}
+}
+
+// userUnitCompatible reports whether the installed unit would reproduce the
+// requested daemon invocation. The unit has no flags, so any override means the
+// detached spawn is the correct path.
+func userUnitCompatible(opts Options) bool {
+	if opts.HostsPath != "" || opts.HTTPPort != 0 || opts.HTTPSPort != 0 || opts.UIPort != 0 {
+		return false
+	}
+	if level := strings.TrimSpace(opts.LogLevel); level != "" && !strings.EqualFold(level, "info") {
+		return false
+	}
+	socket := strings.TrimSpace(opts.HelperSocket)
+	return socket == "" || socket == DefaultHelperSocket
+}
+
+// startUserDaemonUnit starts the installed systemd user unit when that is the
+// right owner for this home. It returns false when the caller should use the
+// detached spawn fallback (no unit, custom home, or no usable user manager).
+func startUserDaemonUnit(ctx context.Context, home string) (bool, error) {
+	unitPath, err := userDaemonUnitPath()
+	if err != nil {
+		// Without a resolvable home there is nothing safe to inspect; preserve
+		// the historical detached-spawn behavior.
+		return false, nil
+	}
+	if _, err := os.Stat(unitPath); err != nil {
+		return false, nil
+	}
+
+	defaultHome, err := defaultDaemonHome()
+	if err != nil || filepath.Clean(home) != filepath.Clean(defaultHome) {
+		return false, nil
+	}
+	if !systemctlUserUsable(ctx) {
+		return false, nil
+	}
+
+	out, err := systemctlUser(ctx, "start", "devstack-daemon.service")
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail != "" {
+			detail = ": " + detail
+		}
+		return false, fmt.Errorf(
+			"daemon: start systemd user unit devstack-daemon.service: %w%s; run `systemctl --user status devstack-daemon.service`",
+			err, detail,
+		)
+	}
+	return true, nil
+}
+
+// waitForUserDaemonUnit waits for a unit-started daemon to publish readiness.
+// Unlike the detached path there is no child process to reap or diagnose, so a
+// timeout points at the unit journal and the configured home.
+func waitForUserDaemonUnit(ctx context.Context, home string) error {
+	deadline := time.Now().Add(ensureStartTimeout)
+	logPath := filepath.Join(home, "run", "daemon.log")
+	for {
+		if daemonReady(home) {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("daemon: waiting for systemd user unit: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf(
+				"daemon: systemd user unit did not become ready within %s; inspect `systemctl --user status devstack-daemon.service` and `journalctl --user -u devstack-daemon`\n%s",
+				ensureStartTimeout, tailFile(logPath),
+			)
+		}
+		if err := sleepContext(ctx, 25*time.Millisecond); err != nil {
+			return fmt.Errorf("daemon: waiting for systemd user unit: %w", err)
+		}
+	}
+}
+
+// userDaemonUnitPath resolves the per-user unit path with the same
+// XDG_CONFIG_HOME precedence the installer uses.
+func userDaemonUnitPath() (string, error) {
+	configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
+	if configHome == "" {
+		home, err := userHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home: %w", err)
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	if !filepath.IsAbs(configHome) {
+		return "", fmt.Errorf("XDG_CONFIG_HOME must be absolute, got %q", configHome)
+	}
+	return filepath.Join(configHome, "systemd", "user", "devstack-daemon.service"), nil
+}
+
+// defaultDaemonHome is the home that the installed unit runs with: the unit
+// has no --home/DEVSTACK_HOME override, so it follows ~/.devstack.
+func defaultDaemonHome() (string, error) {
+	home, err := userHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home: %w", err)
+	}
+	return filepath.Join(home, ".devstack"), nil
+}
+
+// systemctlUserUsable distinguishes a live user manager from a headless or
+// container session where only the detached fallback is possible.
+func systemctlUserUsable(ctx context.Context) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, err := systemctlUser(checkCtx, "show-environment")
+	return err == nil
 }
 
 // spawnDaemon starts the detached daemon process and a bounded Wait observer.

@@ -68,6 +68,39 @@ func TestWriteAtomicDefaultsTo0644(t *testing.T) {
 	}
 }
 
+func TestWriteAtomicFallsBackWhenDirectoryIsReadOnly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can create files in a read-only mode directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hosts")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	if err := WriteAtomic(path, []byte("in-place"), 0); err != nil {
+		t.Fatalf("WriteAtomic in read-only directory: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "in-place" {
+		t.Fatalf("content = %q", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode = %o, want preserved 640", info.Mode().Perm())
+	}
+}
+
 func TestRenderSortsDedupesAndIsIdempotent(t *testing.T) {
 	got, err := Render("", []string{"www.blog.test", "blog.test", "www.blog.test"})
 	if err != nil {

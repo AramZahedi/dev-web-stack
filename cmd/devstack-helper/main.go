@@ -44,6 +44,7 @@ type options struct {
 	httpsPort      int
 	proxyHTTPPort  int
 	proxyHTTPSPort int
+	autoForward    bool
 	logLevel       string
 }
 
@@ -64,6 +65,7 @@ func parseOptions(args []string) (options, error) {
 		httpsPort:      defaultHTTPSPort,
 		proxyHTTPPort:  defaultProxyHTTPPort,
 		proxyHTTPSPort: defaultProxyHTTPSPort,
+		autoForward:    true,
 		logLevel:       "info",
 	}
 
@@ -92,6 +94,7 @@ func parseOptions(args []string) (options, error) {
 	flags.IntVar(&opts.httpsPort, "https-port", opts.httpsPort, "privileged HTTPS listen port")
 	flags.IntVar(&opts.proxyHTTPPort, "proxy-http", opts.proxyHTTPPort, "daemon HTTP proxy port")
 	flags.IntVar(&opts.proxyHTTPSPort, "proxy-https", opts.proxyHTTPSPort, "daemon HTTPS proxy port")
+	flags.BoolVar(&opts.autoForward, "auto-forward", opts.autoForward, "bind the privileged forwarders at startup")
 	flags.StringVar(&opts.logLevel, "log-level", opts.logLevel, "debug, info, warn, or error")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
@@ -100,13 +103,13 @@ func parseOptions(args []string) (options, error) {
 		return options{}, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
 	if strings.TrimSpace(opts.socket) == "" {
-		return options{}, errors.New("--socket is required")
+		return options{}, errors.New(`socket must not be empty (config key "socket" or --socket)`)
 	}
 	if strings.TrimSpace(opts.stateDir) == "" {
-		return options{}, errors.New("--state-dir is required")
+		return options{}, errors.New(`state_dir must not be empty (config key "state_dir" or --state-dir)`)
 	}
 	if opts.allowUID < 0 {
-		return options{}, fmt.Errorf("--allow-uid %d must not be negative", opts.allowUID)
+		return options{}, fmt.Errorf(`allow_uid %d must not be negative (config key "allow_uid" or --allow-uid)`, opts.allowUID)
 	}
 	return opts, nil
 }
@@ -124,6 +127,7 @@ func newHelperServer(opts options, logger *slog.Logger) (*helper.Server, error) 
 		ForwardHTTPSPort: opts.httpsPort,
 		ProxyHTTPPort:    opts.proxyHTTPPort,
 		ProxyHTTPSPort:   opts.proxyHTTPSPort,
+		AutoForward:      opts.autoForward,
 		Logger:           logger,
 	})
 }

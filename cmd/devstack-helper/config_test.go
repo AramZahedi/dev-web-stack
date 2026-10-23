@@ -27,6 +27,7 @@ forward_http_port: 20080
 forward_https_port: 20443
 proxy_http_port: 21080
 proxy_https_port: 21443
+auto_forward: false
 log_level: debug
 `)
 
@@ -45,6 +46,7 @@ log_level: debug
 		httpsPort:      20443,
 		proxyHTTPPort:  21080,
 		proxyHTTPSPort: 21443,
+		autoForward:    false,
 		logLevel:       "debug",
 	}
 	if opts != want {
@@ -73,6 +75,7 @@ state_dir: /tmp/config/state
 allow_uid: 4242
 proxy_http_port: 21080
 proxy_https_port: 21443
+auto_forward: false
 log_level: warn
 `)
 
@@ -81,6 +84,7 @@ log_level: warn
 		"--socket", "/tmp/flag/helper.sock",
 		"--allow-uid", "77",
 		"--proxy-http", "22080",
+		"--auto-forward=true",
 		"--log-level", "error",
 	})
 	if err != nil {
@@ -97,6 +101,9 @@ log_level: warn
 	}
 	if opts.logLevel != "error" {
 		t.Fatalf("logLevel = %q", opts.logLevel)
+	}
+	if !opts.autoForward {
+		t.Fatal("autoForward = false, want the explicit flag value true")
 	}
 	// Omitted flags keep the values from the file.
 	if opts.stateDir != "/tmp/config/state" {
@@ -115,6 +122,9 @@ func TestParseOptionsEmptyConfigKeepsDefaults(t *testing.T) {
 	}
 	if opts.socket != defaultSocket || opts.stateDir != defaultStateDir || opts.allowUID != os.Getuid() {
 		t.Fatalf("defaults not applied: %+v", opts)
+	}
+	if !opts.autoForward {
+		t.Fatal("autoForward = false, want true by default")
 	}
 }
 
@@ -155,6 +165,39 @@ func TestParseOptionsConfigNeedsPath(t *testing.T) {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatalf("parseOptions(%v) accepted an empty config path", args)
 		}
+	}
+}
+
+func TestParseOptionsRejectsDuplicateConfig(t *testing.T) {
+	path := writeHelperConfig(t, "socket: /tmp/duplicate.sock\n")
+	if _, err := parseOptions([]string{"--config", path, "--config", path}); err == nil {
+		t.Fatal("parseOptions accepted duplicate --config flags")
+	}
+	if _, err := parseOptions([]string{"--config=" + path, "-config=" + path}); err == nil {
+		t.Fatal("parseOptions accepted duplicate config flags in equals form")
+	}
+}
+
+func TestParseOptionsZeroValueErrorsNameTheYAMLKey(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		key  string
+	}{
+		{"socket", "socket: \"\"\n", "socket"},
+		{"state dir", "state_dir: \"\"\n", "state_dir"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeHelperConfig(t, tt.body)
+			_, err := parseOptions([]string{"--config", path})
+			if err == nil {
+				t.Fatalf("parseOptions accepted empty %s", tt.key)
+			}
+			if !strings.Contains(err.Error(), tt.key) {
+				t.Fatalf("error %q does not name %s", err, tt.key)
+			}
+		})
 	}
 }
 

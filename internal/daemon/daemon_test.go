@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -489,6 +490,251 @@ func TestDaemonGracefulShutdownStopsBackendsWithoutChangingDesiredState(t *testi
 		t.Fatalf("desired state after graceful stop = %q, want running", stored.DesiredState)
 	}
 	waitTCPClosed(t, stored.HTTPPort)
+}
+
+func TestUserUnitCompatibility(t *testing.T) {
+	if !userUnitCompatible(Options{}) {
+		t.Fatal("default options should use the user unit")
+	}
+	if !userUnitCompatible(Options{HelperSocket: DefaultHelperSocket, LogLevel: "info"}) {
+		t.Fatal("explicit default socket/info level should use the user unit")
+	}
+	for name, opts := range map[string]Options{
+		"custom helper socket": {HelperSocket: "/tmp/helper.sock"},
+		"hosts override":       {HostsPath: "/tmp/hosts"},
+		"http override":        {HTTPPort: 9080},
+		"https override":       {HTTPSPort: 9443},
+		"ui override":          {UIPort: 9070},
+		"debug log":            {LogLevel: "debug"},
+	} {
+		if userUnitCompatible(opts) {
+			t.Fatalf("%s should use the detached fallback", name)
+		}
+	}
+}
+
+func TestEnsureRunningStartsUserUnit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	devHome := filepath.Join(home, ".devstack")
+	if _, err := config.Load(devHome); err != nil {
+		t.Fatal(err)
+	}
+	unitPath := filepath.Join(home, ".config", "systemd", "user", "devstack-daemon.service")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the daemon that systemd would have started: hold the lifetime
+	// lock, listen on the control socket, and publish a live readiness marker.
+	lock, err := acquireLifetimeLock(devHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.release()
+	listener, err := net.Listen("unix", SocketPath(devHome))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	old := systemctlUser
+	t.Cleanup(func() { systemctlUser = old })
+	started := false
+	systemctlUser = func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) == 1 && args[0] == "show-environment" {
+			return nil, nil
+		}
+		if len(args) == 2 && args[0] == "start" && args[1] == "devstack-daemon.service" {
+			started = true
+			return nil, os.WriteFile(ReadyPath(devHome), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
+		}
+		return nil, errors.New("unexpected systemctl args")
+	}
+
+	if err := EnsureRunning(context.Background(), Options{Home: devHome}); err != nil {
+		t.Fatalf("EnsureRunning: %v", err)
+	}
+	if !started {
+		t.Fatal("EnsureRunning did not start the installed user unit")
+	}
+}
+
+func TestStartUserDaemonUnitStartsInstalledUnit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	unitPath := filepath.Join(home, ".config", "systemd", "user", "devstack-daemon.service")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := systemctlUser
+	t.Cleanup(func() { systemctlUser = old })
+	var calls []string
+	systemctlUser = func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return nil, nil
+	}
+
+	started, err := startUserDaemonUnit(context.Background(), filepath.Join(home, ".devstack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !started {
+		t.Fatal("startUserDaemonUnit did not use the installed unit")
+	}
+	want := []string{"show-environment", "start devstack-daemon.service"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("systemctl calls = %v, want %v", calls, want)
+	}
+}
+
+func TestStartUserDaemonUnitHonorsXDGConfigHome(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	unitPath := filepath.Join(configHome, "systemd", "user", "devstack-daemon.service")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := systemctlUser
+	t.Cleanup(func() { systemctlUser = old })
+	var started bool
+	systemctlUser = func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) == 2 && args[0] == "start" {
+			started = true
+		}
+		return nil, nil
+	}
+
+	gotPath, err := userDaemonUnitPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != unitPath {
+		t.Fatalf("unit path = %q, want %q", gotPath, unitPath)
+	}
+	used, err := startUserDaemonUnit(context.Background(), filepath.Join(home, ".devstack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !used || !started {
+		t.Fatal("XDG_CONFIG_HOME unit was not started")
+	}
+}
+
+func TestStartUserDaemonUnitFallbackCases(t *testing.T) {
+	t.Run("no unit", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		old := systemctlUser
+		t.Cleanup(func() { systemctlUser = old })
+		systemctlUser = func(_ context.Context, _ ...string) ([]byte, error) {
+			t.Fatal("systemctl called without an installed unit")
+			return nil, nil
+		}
+		started, err := startUserDaemonUnit(context.Background(), filepath.Join(home, ".devstack"))
+		if err != nil || started {
+			t.Fatalf("started = %v, err = %v; want fallback", started, err)
+		}
+	})
+
+	t.Run("custom home", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		unitPath := filepath.Join(home, ".config", "systemd", "user", "devstack-daemon.service")
+		if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(unitPath, []byte("[Service]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := systemctlUser
+		t.Cleanup(func() { systemctlUser = old })
+		systemctlUser = func(_ context.Context, _ ...string) ([]byte, error) {
+			t.Fatal("systemctl called for a custom home")
+			return nil, nil
+		}
+		started, err := startUserDaemonUnit(context.Background(), filepath.Join(home, "custom"))
+		if err != nil || started {
+			t.Fatalf("started = %v, err = %v; want fallback", started, err)
+		}
+	})
+
+	t.Run("no user manager", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		unitPath := filepath.Join(home, ".config", "systemd", "user", "devstack-daemon.service")
+		if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(unitPath, []byte("[Service]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := systemctlUser
+		t.Cleanup(func() { systemctlUser = old })
+		systemctlUser = func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) != 1 || args[0] != "show-environment" {
+				t.Fatalf("unexpected systemctl call %v", args)
+			}
+			return nil, errors.New("no user manager")
+		}
+		started, err := startUserDaemonUnit(context.Background(), filepath.Join(home, ".devstack"))
+		if err != nil || started {
+			t.Fatalf("started = %v, err = %v; want fallback", started, err)
+		}
+	})
+}
+
+func TestStartUserDaemonUnitReportsStartFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	unitPath := filepath.Join(home, ".config", "systemd", "user", "devstack-daemon.service")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("[Service]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := systemctlUser
+	t.Cleanup(func() { systemctlUser = old })
+	systemctlUser = func(_ context.Context, args ...string) ([]byte, error) {
+		if len(args) == 1 && args[0] == "show-environment" {
+			return nil, nil
+		}
+		return []byte("Job for devstack-daemon.service failed"), errors.New("exit status 1")
+	}
+
+	started, err := startUserDaemonUnit(context.Background(), filepath.Join(home, ".devstack"))
+	if err == nil {
+		t.Fatal("startUserDaemonUnit ignored a systemctl start failure")
+	}
+	if started {
+		t.Fatal("started = true after systemctl start failure")
+	}
+	for _, want := range []string{"devstack-daemon.service", "Job for devstack-daemon.service failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+	}
 }
 
 func TestEnsureRunningStartsDaemonAndReturnsWhenRunning(t *testing.T) {

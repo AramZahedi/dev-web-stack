@@ -81,8 +81,11 @@ cleanup() {
 	set +e
 	trap - ERR EXIT INT TERM
 
+	# Stop whichever daemon owns this test home, including one auto-started by
+	# `devstack site add` if our direct process lost a startup race.
+	"${BIN}" --home "${DEVSTACK_HOME}" --helper-socket "${HELPER_SOCKET}" daemon stop >/dev/null 2>&1
+
 	if [ -n "${DAEMON_PID}" ] && kill -0 "${DAEMON_PID}" 2>/dev/null; then
-		"${BIN}" --home "${DEVSTACK_HOME}" --helper-socket "${HELPER_SOCKET}" daemon stop >/dev/null 2>&1
 		for ((i = 0; i < 100; i++)); do
 			kill -0 "${DAEMON_PID}" 2>/dev/null || break
 			sleep 0.1
@@ -102,15 +105,18 @@ cleanup() {
 	wait "${HELPER_PID}" 2>/dev/null
 
 	# The daemon normally stops these; this is a belt-and-braces cleanup for a
-	# failed startup. Match only servers rooted at this test's site directory.
-	pkill -TERM -f "serve-static.*--root ${SITE_ROOT}" 2>/dev/null
+	# failed startup. Use a literal command-line prefix so unrelated servers are
+	# never matched.
+	pkill -TERM -f -- "serve-static --root ${SITE_ROOT}" 2>/dev/null
 	sleep 0.2
-	pkill -KILL -f "serve-static.*--root ${SITE_ROOT}" 2>/dev/null
+	pkill -KILL -f -- "serve-static --root ${SITE_ROOT}" 2>/dev/null
 
 	rm -rf "${TMP}"
 }
 trap 'on_error ${LINENO}' ERR
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 port_in_use() {
 	local port="$1"
@@ -190,6 +196,28 @@ start_daemon() {
 	DAEMON_PID=$!
 }
 
+start_helper() {
+	"${HELPER_BIN}" --config "${HELPER_CONFIG}" >>"${HELPER_LOG}" 2>&1 &
+	HELPER_PID=$!
+	wait_for_socket "${HELPER_PID}" || fail "helper did not create ${HELPER_SOCKET}"
+	[ -S "${HELPER_SOCKET}" ] || fail "helper socket missing"
+}
+
+curl_site() {
+	local port="$1" output="$2" attempts="${3:-1}"
+	local attempt
+	for ((attempt = 0; attempt < attempts; attempt++)); do
+		if curl --fail --silent --show-error --http1.1 --noproxy '*' --max-time 15 \
+			--resolve "blog.test:${port}:127.0.0.1" \
+			--cacert "${DEVSTACK_HOME}/pki/ca-bundle.crt" \
+			"https://blog.test:${port}/" >"${output}" 2>>"${LOG_DIR}/curl.log"; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
 run_cli() {
 	"${BIN}" --home "${DEVSTACK_HOME}" --helper-socket "${HELPER_SOCKET}" "$@"
 }
@@ -227,13 +255,11 @@ forward_http_port: ${FORWARD_HTTP_PORT}
 forward_https_port: ${FORWARD_HTTPS_PORT}
 proxy_http_port: ${PROXY_HTTP_PORT}
 proxy_https_port: ${PROXY_HTTPS_PORT}
+auto_forward: true
 log_level: debug
 EOF
-"${HELPER_BIN}" --config "${HELPER_CONFIG}" >"${HELPER_LOG}" 2>&1 &
-HELPER_PID=$!
-wait_for_socket "${HELPER_PID}" || fail "helper did not create ${HELPER_SOCKET}"
-[ -S "${HELPER_SOCKET}" ] || fail "helper socket missing"
-printf 'e2e: helper ready\n'
+start_helper
+printf 'e2e: helper ready with automatic forwarders\n'
 
 start_daemon
 wait_for_ready "${DAEMON_PID}" || fail "daemon did not become ready"
@@ -252,15 +278,33 @@ run_cli site add --name blog --path "${SITE_ROOT}" >"${SITE_ADD_LOG}" 2>&1 ||
 	fail "site add failed"
 [ -f "${DEVSTACK_HOME}/pki/ca-bundle.crt" ] || fail "daemon CA bundle missing"
 
-curl --fail --silent --show-error --http1.1 --max-time 15 \
-	--resolve "blog.test:${PROXY_HTTPS_PORT}:127.0.0.1" \
-	--cacert "${DEVSTACK_HOME}/pki/ca-bundle.crt" \
-	"https://blog.test:${PROXY_HTTPS_PORT}/" >"${RESPONSE}" ||
+curl_site "${PROXY_HTTPS_PORT}" "${RESPONSE}" 50 ||
 	fail "HTTPS request through the builtin proxy failed"
 grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "response did not contain the site marker"
 printf 'e2e: static site served at https://blog.test:%s\n' "${PROXY_HTTPS_PORT}"
 
+# The forwarder is the path browsers use on 443, not the daemon proxy. It must
+# work from the helper's startup configuration, without a SetForwarders RPC.
+curl_site "${FORWARD_HTTPS_PORT}" "${RESPONSE}" 50 ||
+	fail "HTTPS request through the helper forwarder failed"
+grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "forwarder response did not contain the site marker"
+printf 'e2e: static site served through helper forwarder https://blog.test:%s\n' "${FORWARD_HTTPS_PORT}"
+
 assert_serve_static_groups 1 || fail "expected exactly one serve-static group before restart"
+
+# A helper restart must restore its auto-forwarders; the daemon stays up.
+OLD_HELPER_PID="${HELPER_PID}"
+kill -TERM "${HELPER_PID}" 2>/dev/null || fail "could not stop the helper"
+wait "${OLD_HELPER_PID}" 2>/dev/null || true
+if kill -0 "${OLD_HELPER_PID}" 2>/dev/null; then
+	fail "old helper process is still running after stop"
+fi
+start_helper
+[ "${HELPER_PID}" != "${OLD_HELPER_PID}" ] || fail "helper pid did not change across restart"
+curl_site "${FORWARD_HTTPS_PORT}" "${RESPONSE}" 100 ||
+	fail "forwarder did not serve after helper restart"
+grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "post-restart forwarder response did not contain the site marker"
+printf 'e2e: helper restarted and forwarder restored automatically\n'
 
 OLD_DAEMON_PID="${DAEMON_PID}"
 run_cli daemon stop >"${STOP_LOG}" 2>&1 || fail "daemon stop failed"
@@ -278,12 +322,12 @@ wait_for_ready "${DAEMON_PID}" || fail "daemon did not become ready after restar
 [ "$(cat "${DEVSTACK_HOME}/run/daemon.ready")" = "${DAEMON_PID}" ] || fail "restarted daemon readiness marker mismatch"
 [ "${DAEMON_PID}" != "${OLD_DAEMON_PID}" ] || fail "daemon pid did not change across restart"
 
-curl --fail --silent --show-error --http1.1 --max-time 15 \
-	--resolve "blog.test:${PROXY_HTTPS_PORT}:127.0.0.1" \
-	--cacert "${DEVSTACK_HOME}/pki/ca-bundle.crt" \
-	"https://blog.test:${PROXY_HTTPS_PORT}/" >"${RESPONSE}" ||
+curl_site "${PROXY_HTTPS_PORT}" "${RESPONSE}" 50 ||
 	fail "site did not serve after daemon restart"
 grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "response after restart did not contain the site marker"
+curl_site "${FORWARD_HTTPS_PORT}" "${RESPONSE}" 50 ||
+	fail "forwarder did not serve after daemon restart"
+grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "forwarder response after restart did not contain the site marker"
 assert_serve_static_groups 1 || fail "expected exactly one serve-static group after restart"
 
 printf 'e2e: PASS (site survived daemon restart; one serve-static process group)\n'
