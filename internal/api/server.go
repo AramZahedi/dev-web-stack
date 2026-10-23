@@ -40,10 +40,12 @@ import (
 )
 
 const (
-	sessionCookieName   = "devstack_session"
-	csrfHeader          = "X-CSRF-Token"
-	sessionValueBytes   = 32
-	defaultMaxBodyBytes = 1 << 20
+	sessionCookieName = "devstack_session"
+	csrfHeader        = "X-CSRF-Token"
+	sessionValueBytes = 32
+	// defaultMaxBodyBytes mirrors config.Default().MaxRequestBodyMB. It is the
+	// API transport guard, configured independently through Config.MaxBodyBytes.
+	defaultMaxBodyBytes = int64(1024) << 20
 	defaultEventPoll    = time.Second
 	defaultKeepAlive    = 15 * time.Second
 )
@@ -65,6 +67,7 @@ const (
 	codePayloadTooLarge    = "PAYLOAD_TOO_LARGE"
 	codeHelperUnavailable  = "HELPER_UNAVAILABLE"
 	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
+	codeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
 )
 
 // SiteService is the site lifecycle surface used by the API.
@@ -102,9 +105,12 @@ type HelperClient interface {
 	TrustStatus(ctx context.Context, userHome string) ([]trust.Target, error)
 }
 
-// Config configures the API server. A nil or empty AllowedHosts uses the
-// loopback defaults, a zero MaxBodyBytes uses 1 MiB, and a nil UI serves the
-// embedded dashboard (when one has been built).
+// Config configures the API server. AllowedHosts is additive to the required
+// loopback hosts (127.0.0.1, localhost, devstack.test). A zero MaxBodyBytes
+// uses the API's 1024 MiB transport default (matching
+// config.Default().MaxRequestBodyMB); MaxBodyBytes is a separate guard from the
+// machine setting returned by GET /settings and should be passed explicitly by
+// the daemon. A nil UI serves the embedded dashboard (when one has been built).
 type Config struct {
 	UI           fs.FS
 	UserHome     string
@@ -184,6 +190,7 @@ func NewServer(
 // before every other layer, including authentication and static hosting.
 func (s *Server) Handler() http.Handler {
 	var h http.Handler = s.mux
+	h = s.apiMethodErrors(h)
 	h = s.bodyLimit(h)
 	h = s.authenticate(h)
 	h = s.securityHeaders(h)
@@ -290,6 +297,8 @@ func (s *Server) handleAPINotFound(w http.ResponseWriter, _ *http.Request) {
 // settingsResponse is the public settings shape returned by GET /settings.
 // The required controller fields are followed by the dashboard's existing
 // identity fields so the checked-in UI can render without optional guards.
+// MaxRequestBodyMB is the machine config value; the API transport guard is
+// Config.MaxBodyBytes and is configured separately.
 type settingsResponse struct {
 	Home                string `json:"home"`
 	UserHome            string `json:"user_home"`
@@ -306,7 +315,9 @@ type settingsResponse struct {
 
 // handleSettings reports the machine configuration. Defaults come from
 // config.Default; the daemon can persist runtime overrides as store settings
-// with the same snake_case keys. This keeps the fixed Config surface small
+// with the same snake_case keys. max_request_body_mb is the machine setting;
+// the API's actual request-body guard is Config.MaxBodyBytes (default 1024 MiB)
+// and is intentionally separate. This keeps the fixed Config surface small
 // while letting Task 17 supply the loaded config.
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.currentSettings(r.Context()))
@@ -557,11 +568,12 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_, _ = w.Write(data)
 }
 
-// apiError is the stable JSON error envelope.
+// apiError is the stable JSON error envelope. Details is always present so
+// clients can rely on a fixed shape; it is null when there is no extra context.
 type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-	Details any    `json:"details,omitempty"`
+	Details any    `json:"details"`
 }
 
 // writeError writes the stable error envelope.
@@ -574,7 +586,7 @@ func writeError(w http.ResponseWriter, status int, code, message string, details
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"code":"INTERNAL","message":"internal error"}`))
+		_, _ = w.Write([]byte(`{"code":"INTERNAL","message":"internal error","details":null}`))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

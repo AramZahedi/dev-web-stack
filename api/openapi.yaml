@@ -7,14 +7,19 @@ info:
     allowed Host header (127.0.0.1, localhost, or devstack.test, with any
     numeric port); foreign hosts receive 403 before authentication or routing.
 
-    Browser requests use the `devstack_session` cookie. `GET /api/v1/session`
-    creates the cookie when absent and returns the CSRF token required by every
-    mutating request. CLI requests over the Unix domain socket are authenticated
-    by peer credentials through `WithSocketAuth` and do not need the cookie or
-    the CSRF header.
+    Read-only API GETs and SSE streams do not require a session cookie: the
+    listener is loopback-only and every request has already passed the Host
+    allowlist. Mutations (POST, PATCH, DELETE) require the `devstack_session`
+    cookie and the matching `X-CSRF-Token`; `GET /api/v1/session` creates the
+    cookie when absent and returns that token. CLI requests over the Unix
+    domain socket are authenticated by peer credentials through
+    `WithSocketAuth` and do not need the cookie or the CSRF header, but they
+    still pass the Host allowlist.
 
     Server-sent events (logs and events) use `data: <json>\n\n` frames with
-    comment keepalives every 15 seconds.
+    comment keepalives every 15 seconds. The API request-body guard is
+    configured separately from the machine's `max_request_body_mb` setting and
+    defaults to 1024 MiB.
 servers:
   - url: http://127.0.0.1:7070
     description: Dashboard/API listener
@@ -22,6 +27,7 @@ servers:
     description: Dashboard/API listener (localhost)
   - url: http://devstack.test
     description: Dashboard host through the local proxy
+security: []
 tags:
   - name: health
   - name: session
@@ -80,8 +86,7 @@ paths:
       tags: [sites]
       summary: List sites
       operationId: listSites
-      security:
-        - sessionCookie: []
+      security: []
       responses:
         "200":
           description: Sites ordered by name.
@@ -143,8 +148,7 @@ paths:
       tags: [sites]
       summary: Get one site
       operationId: getSite
-      security:
-        - sessionCookie: []
+      security: []
       responses:
         "200":
           description: The requested site.
@@ -287,8 +291,7 @@ paths:
         Server-sent event stream. Each data frame is a LogLine. The
         subscription ends when the client disconnects.
       operationId: streamSiteLogs
-      security:
-        - sessionCookie: []
+      security: []
       responses:
         "200":
           description: A text/event-stream of log lines.
@@ -321,8 +324,7 @@ paths:
         events are emitted in ascending ID order. Keepalive comments are sent
         every 15 seconds.
       operationId: streamEvents
-      security:
-        - sessionCookie: []
+      security: []
       responses:
         "200":
           description: A text/event-stream of events.
@@ -351,8 +353,7 @@ paths:
       tags: [runtimes]
       summary: List installed runtime builds
       operationId: listRuntimes
-      security:
-        - sessionCookie: []
+      security: []
       responses:
         "200":
           description: Installed builds ordered by kind and version.
@@ -374,8 +375,7 @@ paths:
       tags: [runtimes]
       summary: List catalog builds that can be installed
       operationId: availableRuntimes
-      security:
-        - sessionCookie: []
+      security: []
       responses:
         "200":
           description: Checksum-pinned catalog entries.
@@ -452,8 +452,7 @@ paths:
       tags: [trust]
       summary: Report CA trust per target
       operationId: trustStatus
-      security:
-        - sessionCookie: []
+      security: []
       responses:
         "200":
           description: One result per trust store or browser profile.
@@ -511,8 +510,7 @@ paths:
       tags: [doctor]
       summary: Run doctor checks
       operationId: runDoctorChecks
-      security:
-        - sessionCookie: []
+      security: []
       responses:
         "200":
           description: The doctor report.
@@ -576,8 +574,7 @@ paths:
         never returned. When the server has a configured user home, paths are
         resolved through symlinks and confined to that home.
       operationId: browseFilesystem
-      security:
-        - sessionCookie: []
+      security: []
       parameters:
         - name: path
           in: query
@@ -614,8 +611,7 @@ paths:
       tags: [settings]
       summary: Report machine settings
       operationId: getSettings
-      security:
-        - sessionCookie: []
+      security: []
       responses:
         "200":
           description: Effective machine settings.
@@ -681,12 +677,16 @@ components:
       type: apiKey
       in: cookie
       name: devstack_session
-      description: Random 32-byte session value created by GET /api/v1/session.
+      description: |
+        Random 32-byte session value created by GET /api/v1/session. Required
+        for mutations; read-only GETs and SSE streams do not need it.
     csrfToken:
       type: apiKey
       in: header
       name: X-CSRF-Token
-      description: HMAC-SHA256(server secret, session) returned by GET /api/v1/session.
+      description: |
+        HMAC-SHA256(server secret, session) returned by GET /api/v1/session.
+        Required for cookie-authenticated mutations.
     socketPeerAuth:
       type: apiKey
       in: header
@@ -748,6 +748,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    MethodNotAllowed:
+      description: The path exists but does not accept this HTTP method.
+      headers:
+        Allow:
+          description: Comma-separated methods supported by the path.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
 
   schemas:
     Error:
@@ -769,6 +780,7 @@ components:
             - FORBIDDEN
             - UNAUTHORIZED
             - HELPER_UNAVAILABLE
+            - METHOD_NOT_ALLOWED
             - INTERNAL
         message:
           type: string
@@ -1098,6 +1110,10 @@ components:
           type: integer
         max_request_body_mb:
           type: integer
+          description: |
+            Machine config value. The API's actual transport guard is
+            Config.MaxBodyBytes, configured separately and defaulting to
+            1024 MiB.
         log_max_mb:
           type: integer
         log_keep:

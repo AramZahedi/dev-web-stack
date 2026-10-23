@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"strconv"
@@ -9,7 +10,8 @@ import (
 )
 
 // defaultAllowedHosts are the only hostnames the loopback dashboard answers
-// on. Ports are ignored during comparison.
+// on. Ports are ignored during comparison. Configured hosts are merged with
+// these, never substituted for them.
 var defaultAllowedHosts = []string{"127.0.0.1", "localhost", "devstack.test"}
 
 // socketAuthKey marks requests that arrived over the Unix socket and were
@@ -95,30 +97,31 @@ func requestHost(raw string) (string, bool) {
 	return host, true
 }
 
-// normalizeAllowedHosts builds the allowlist. An empty configuration uses the
-// loopback defaults.
+// normalizeAllowedHosts builds the allowlist. The required loopback hosts are
+// always present; configured hosts are additive, never a replacement.
 func normalizeAllowedHosts(configured []string) map[string]struct{} {
-	values := configured
-	if len(values) == 0 {
-		values = defaultAllowedHosts
-	}
-	allowed := make(map[string]struct{}, len(values))
-	for _, raw := range values {
+	allowed := make(map[string]struct{}, len(defaultAllowedHosts)+len(configured))
+	for _, raw := range defaultAllowedHosts {
 		if host, ok := requestHost(raw); ok {
 			allowed[host] = struct{}{}
 		}
 	}
-	if len(allowed) == 0 {
-		for _, raw := range defaultAllowedHosts {
-			allowed[raw] = struct{}{}
+	for _, raw := range configured {
+		if host, ok := requestHost(raw); ok {
+			allowed[host] = struct{}{}
 		}
 	}
 	return allowed
 }
 
-// authenticate enforces the browser session and CSRF rules for API routes.
-// Health, session, and UI hosting are exempt; socket-authenticated requests
-// bypass the cookie/CSRF checks entirely.
+// authenticate enforces the mutation session and CSRF rules for API routes.
+//
+// Posture: the API is loopback-only and every request has already passed the
+// Host allowlist, so read-only API requests (including the SSE endpoints) are
+// allowed without a session cookie. Mutations require the session cookie and
+// the exact CSRF HMAC for that session. Socket-authenticated CLI requests
+// bypass the cookie/CSRF checks but still receive the Host guard. Health,
+// session, and UI hosting are exempt.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isAPIPath(r.URL.Path) || socketAuthenticated(r.Context()) || isAuthExempt(r.URL.Path) {
@@ -126,19 +129,20 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 
-		cookie, err := r.Cookie(sessionCookieName)
-		if err != nil || strings.TrimSpace(cookie.Value) == "" {
-			if isMutation(r.Method) {
-				// The brief requires a mutation without a session to be a 403,
-				// matching the CSRF rejection path.
-				writeError(w, http.StatusForbidden, codeForbidden, "missing dashboard session", nil)
-			} else {
-				writeError(w, http.StatusUnauthorized, codeUnauthorized, "a dashboard session is required", nil)
-			}
+		// Read-only API requests and SSE streams intentionally do not need a
+		// session. This avoids racing the dashboard's first GET /session call.
+		if !isMutation(r.Method) {
+			next.ServeHTTP(w, r)
 			return
 		}
 
-		if isMutation(r.Method) && !s.validCSRF(cookie.Value, r.Header.Get(csrfHeader)) {
+		cookie, err := r.Cookie(sessionCookieName)
+		if err != nil || strings.TrimSpace(cookie.Value) == "" {
+			// A mutation without a session is a CSRF-style rejection.
+			writeError(w, http.StatusForbidden, codeForbidden, "missing dashboard session", nil)
+			return
+		}
+		if !s.validCSRF(cookie.Value, r.Header.Get(csrfHeader)) {
 			writeError(w, http.StatusForbidden, codeForbidden, "missing or invalid CSRF token", nil)
 			return
 		}
@@ -147,8 +151,8 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 }
 
 // bodyLimit caps request bodies on API mutations before handlers decode them.
-// It runs after authentication so unauthenticated requests fail as 401/403
-// rather than 413.
+// It runs after authentication so unauthenticated requests fail as 403 rather
+// than 413.
 func (s *Server) bodyLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isAPIPath(r.URL.Path) || !isMutation(r.Method) {
@@ -164,6 +168,69 @@ func (s *Server) bodyLimit(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// apiMethodErrors converts net/http's plain-text 405 for API method
+// mismatches into the stable JSON error envelope. It sits directly around the
+// mux so it never interferes with authentication or SSE writes.
+func (s *Server) apiMethodErrors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isAPIPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writer := &methodErrorWriter{ResponseWriter: w}
+		next.ServeHTTP(writer, r)
+		if writer.intercepted {
+			body, err := json.Marshal(apiError{
+				Code:    codeMethodNotAllowed,
+				Message: "method not allowed",
+				Details: nil,
+			})
+			if err == nil {
+				_, _ = w.Write(body)
+			}
+		}
+	})
+}
+
+// methodErrorWriter swallows the plain-text body net/http writes for a 405 and
+// gives the surrounding middleware a chance to replace it with JSON.
+type methodErrorWriter struct {
+	http.ResponseWriter
+	intercepted bool
+	wroteHeader bool
+}
+
+func (w *methodErrorWriter) WriteHeader(status int) {
+	if status == http.StatusMethodNotAllowed && !w.wroteHeader {
+		w.intercepted = true
+		w.wroteHeader = true
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *methodErrorWriter) Write(p []byte) (int, error) {
+	if w.intercepted {
+		return len(p), nil
+	}
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *methodErrorWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *methodErrorWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 // isAPIPath reports whether path belongs to the /api/v1 subtree.

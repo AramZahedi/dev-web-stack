@@ -396,12 +396,63 @@ func TestSessionCookieAttributesAndCSRF(t *testing.T) {
 		t.Fatalf("valid csrf code = %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	// Reads need the session cookie.
+	// Read-only API GETs are allowed without a session cookie so the dashboard
+	// can load its first page while GET /session is still in flight.
 	rec = httptest.NewRecorder()
 	raw.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1/api/v1/sites", nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated read code = %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cold-start read code = %d body=%s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestReadsAndSSEAllowedWithoutSession(t *testing.T) {
+	home := t.TempDir()
+	fx := newFixture(t, Config{UserHome: home})
+	for _, path := range []string{
+		"/api/v1/sites",
+		"/api/v1/runtimes",
+		"/api/v1/runtimes/available",
+		"/api/v1/settings",
+		"/api/v1/doctor",
+		"/api/v1/trust",
+		"/api/v1/fs?path=" + url.QueryEscape(home),
+	} {
+		rec := httptest.NewRecorder()
+		fx.raw.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1"+path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s without session = %d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+
+	// SSE reads are also unauthenticated on the loopback/Host-checked API.
+	srv := httptest.NewServer(fx.raw)
+	defer srv.Close()
+	for _, path := range []string{"/api/v1/events", "/api/v1/sites/s1/logs/stream"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+path, nil)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			cancel()
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			cancel()
+			t.Fatalf("GET %s without session = %d", path, resp.StatusCode)
+		}
+		_ = resp.Body.Close()
+		cancel()
+	}
+
+	// Mutations still require the session and CSRF token.
+	rec := httptest.NewRecorder()
+	fx.raw.ServeHTTP(rec, httptest.NewRequest("POST", "http://127.0.0.1/api/v1/sites",
+		strings.NewReader(`{"name":"blog","path":"/tmp","kind":"static"}`)))
+	assertError(t, rec, http.StatusForbidden, codeForbidden)
 }
 
 func TestSocketAuthBypassesCSRFButNotHost(t *testing.T) {
@@ -467,6 +518,38 @@ func TestAllowedHostsAcceptPorts(t *testing.T) {
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("host %q code = %d", host, rec.Code)
 		}
+	}
+}
+
+func TestConfiguredAllowedHostsUnionWithLoopback(t *testing.T) {
+	fx := newFixture(t, Config{AllowedHosts: []string{"custom.test"}})
+	for _, host := range []string{"custom.test", "custom.test:7070", "127.0.0.1", "127.0.0.1:7070", "localhost", "devstack.test"} {
+		req := httptest.NewRequest("GET", "http://127.0.0.1/api/v1/health", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		fx.raw.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("allowed host %q code = %d", host, rec.Code)
+		}
+	}
+	req := httptest.NewRequest("GET", "http://127.0.0.1/api/v1/health", nil)
+	req.Host = "evil.test"
+	rec := httptest.NewRecorder()
+	fx.raw.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("foreign host code = %d", rec.Code)
+	}
+}
+
+func TestAPIMethodMismatchReturnsJSON(t *testing.T) {
+	fx := newFixture(t, Config{})
+	rec := fx.request(t, "PUT", "/api/v1/sites", strings.NewReader(`{}`))
+	assertError(t, rec, http.StatusMethodNotAllowed, codeMethodNotAllowed)
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("405 content-type = %q", ct)
+	}
+	if allow := rec.Header().Get("Allow"); allow == "" {
+		t.Fatal("405 response is missing Allow")
 	}
 }
 
@@ -821,6 +904,22 @@ func TestSettingsUsesStoreOverrides(t *testing.T) {
 	}
 }
 
+func TestSettingsDefaultBodyLimit(t *testing.T) {
+	fx := newFixture(t, Config{})
+	if fx.server.cfg.MaxBodyBytes != defaultMaxBodyBytes {
+		t.Fatalf("default body limit = %d, want %d", fx.server.cfg.MaxBodyBytes, defaultMaxBodyBytes)
+	}
+	if defaultMaxBodyBytes != int64(1024)<<20 {
+		t.Fatalf("default body limit = %d, want 1024 MiB", defaultMaxBodyBytes)
+	}
+	rec := fx.request(t, "GET", "/api/v1/settings", nil)
+	var raw map[string]any
+	decode(t, rec, &raw)
+	if raw["max_request_body_mb"].(float64) != 1024 {
+		t.Fatalf("max_request_body_mb = %v", raw["max_request_body_mb"])
+	}
+}
+
 func TestEventsSSEPollsNewEvents(t *testing.T) {
 	fx := newFixture(t, Config{})
 	fx.server.eventPollInterval = 10 * time.Millisecond
@@ -919,6 +1018,13 @@ func assertError(t *testing.T, rec *httptest.ResponseRecorder, status int, code 
 	}
 	if body.Message == "" {
 		t.Fatal("error message is empty")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &fields); err != nil {
+		t.Fatalf("decode error fields: %v body=%s", err, rec.Body.String())
+	}
+	if _, ok := fields["details"]; !ok {
+		t.Fatalf("error envelope is missing details: %s", rec.Body.String())
 	}
 }
 
