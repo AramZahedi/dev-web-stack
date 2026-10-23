@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -74,8 +75,14 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 
 	ft := &fakeTrust{installed: true, targets: healthyTargets()}
 	fakes := &testFakes{
-		trust:     ft,
-		ports:     &fakePorts{errs: map[string]error{}},
+		trust: ft,
+		ports: &fakePorts{errs: map[string]error{
+			":80":   syscall.EADDRINUSE,
+			":443":  syscall.EADDRINUSE,
+			":7070": syscall.EADDRINUSE,
+			":8080": syscall.EADDRINUSE,
+			":8443": syscall.EADDRINUSE,
+		}},
 		runtimes:  &fakeRuntimes{},
 		disk:      &fakeDisk{free: 20 << 30},
 		store:     st,
@@ -130,6 +137,50 @@ func TestReportFailsWhenHelperUnavailable(t *testing.T) {
 	}
 	if !hasCheck(rep, "helper", StatusFail) {
 		t.Fatalf("%+v", rep.Checks)
+	}
+	if !hasCheck(rep, "ca", StatusSkipped) {
+		t.Fatalf("ca should be skipped when the helper is down: %+v", rep.Checks)
+	}
+}
+
+func TestCASucceedsWithFingerprint(t *testing.T) {
+	svc, _ := newTestDoctor(t)
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "ca")
+	if !ok {
+		t.Fatalf("missing ca check: %+v", rep.Checks)
+	}
+	if check.Status != StatusOK {
+		t.Fatalf("ca = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "0123456789abcdef") {
+		t.Fatalf("ca detail does not include the fingerprint: %q", check.Detail)
+	}
+}
+
+func TestCAEmptyFingerprintFails(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	fakes.helper.status.CAFingerprint = ""
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "ca")
+	if !ok {
+		t.Fatalf("missing ca check: %+v", rep.Checks)
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("ca = %+v", check)
+	}
+	if !strings.Contains(check.Remediation, "devstack init") {
+		t.Fatalf("ca remediation = %q", check.Remediation)
+	}
+	if rep.OK {
+		t.Fatal("missing CA must fail the report")
 	}
 }
 
@@ -252,35 +303,124 @@ func TestTrustWithoutBrowserTargetsWarns(t *testing.T) {
 	}
 }
 
+func TestTrustMissingBrowsersWarnsDespiteOKDetails(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	fakes.trust.targets = []trust.Target{
+		{Name: "OS", OK: true, Detail: "installed"},
+		{Name: "Chrome", OK: true, Detail: "not installed"},
+		{Name: "Firefox", OK: true, Detail: "not installed"},
+	}
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "trust")
+	if !ok {
+		t.Fatalf("missing trust check: %+v", rep.Checks)
+	}
+	if check.Status != StatusWarn {
+		t.Fatalf("trust = %+v", check)
+	}
+	if strings.Contains(check.Detail, "trusted by 3 targets") {
+		t.Fatalf("missing browsers were counted as trusted: %q", check.Detail)
+	}
+	if !strings.Contains(check.Detail, "no installed browser") {
+		t.Fatalf("trust detail = %q", check.Detail)
+	}
+	if !rep.OK {
+		t.Fatal("missing browsers must not fail the report")
+	}
+}
+
+func TestTrustInstalledBrowserSucceeds(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	fakes.trust.targets = []trust.Target{
+		{Name: "OS", OK: true, Detail: "installed"},
+		{Name: "Chrome", OK: true, Detail: "not installed"},
+		{Name: "Firefox (default)", OK: true, Detail: "installed"},
+	}
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCheck(rep, "trust", StatusOK) {
+		t.Fatalf("%+v", rep.Checks)
+	}
+}
+
 func TestPortChecks(t *testing.T) {
 	tests := []struct {
-		name string
-		addr string
-		err  error
-		want Status
-		ok   bool
+		name           string
+		mutate         func(*fakePorts)
+		want           Status
+		detailContains string
 	}{
-		{name: "all free", want: StatusOK, ok: true},
-		{name: "required port occupied", addr: ":443", err: syscall.EADDRINUSE, want: StatusFail, ok: false},
-		{name: "proxy port occupied is expected", addr: ":8080", err: syscall.EADDRINUSE, want: StatusWarn, ok: true},
-		{name: "unexpected proxy error fails", addr: ":8443", err: errors.New("permission denied"), want: StatusFail, ok: false},
+		{
+			name:           "expected services own every port",
+			want:           StatusOK,
+			detailContains: "expected services",
+		},
+		{
+			name: "free helper port warns",
+			mutate: func(ports *fakePorts) {
+				delete(ports.errs, ":80")
+			},
+			want:           StatusWarn,
+			detailContains: "port 80 is free",
+		},
+		{
+			name: "free dashboard port warns",
+			mutate: func(ports *fakePorts) {
+				delete(ports.errs, ":7070")
+			},
+			want:           StatusWarn,
+			detailContains: "port 7070 is free",
+		},
+		{
+			name: "probe permission is a warning",
+			mutate: func(ports *fakePorts) {
+				ports.errs[":443"] = syscall.EACCES
+			},
+			want:           StatusWarn,
+			detailContains: "cannot probe port 443",
+		},
+		{
+			name: "unexpected probe error is a warning",
+			mutate: func(ports *fakePorts) {
+				ports.errs[":8080"] = errors.New("network unreachable")
+			},
+			want:           StatusWarn,
+			detailContains: "could not probe port 8080",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, fakes := newTestDoctor(t)
-			if tt.addr != "" {
-				fakes.ports.errs[tt.addr] = tt.err
+			if tt.mutate != nil {
+				tt.mutate(fakes.ports)
 			}
 
 			rep, err := svc.Run(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !hasCheck(rep, "ports", tt.want) {
-				t.Fatalf("%+v", rep.Checks)
+			check, ok := checkByID(rep, "ports")
+			if !ok {
+				t.Fatalf("missing ports check: %+v", rep.Checks)
 			}
-			if rep.OK != tt.ok {
-				t.Fatalf("OK = %v, want %v: %+v", rep.OK, tt.ok, rep.Checks)
+			if check.Status != tt.want {
+				t.Fatalf("ports = %+v", check)
+			}
+			if !strings.Contains(check.Detail, tt.detailContains) {
+				t.Fatalf("ports detail = %q, want it to contain %q", check.Detail, tt.detailContains)
+			}
+			if !rep.OK {
+				t.Fatalf("port diagnostics must never fail the report: %+v", rep.Checks)
+			}
+			if strings.Contains(strings.ToLower(check.Remediation), "stop") {
+				t.Fatalf("remediation must not tell users to stop services: %q", check.Remediation)
 			}
 		})
 	}
@@ -296,6 +436,19 @@ func TestDiskBelowThresholdFails(t *testing.T) {
 	}
 	if !hasCheck(rep, "disk", StatusFail) {
 		t.Fatalf("%+v", rep.Checks)
+	}
+}
+
+func TestDiskAtThresholdFails(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	fakes.disk.free = 1 << 30
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCheck(rep, "disk", StatusFail) {
+		t.Fatalf("exactly 1 GiB must fail when more than 1 GiB is required: %+v", rep.Checks)
 	}
 }
 
@@ -414,13 +567,114 @@ func TestRepairReportsTrustInstallFailure(t *testing.T) {
 	}
 }
 
-func hasCheck(rep Report, id string, status Status) bool {
+func TestRepairSkipsMalformedHostsBlock(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	content := hosts.BeginMarker + "\n127.0.0.1 blog.test\n" +
+		hosts.BeginMarker + "\n127.0.0.1 www.blog.test\n" +
+		hosts.EndMarker + "\n"
+	if err := os.WriteFile(fakes.hostsPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := svc.Repair(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fakes.helper.synced {
+		t.Fatal("repair must not attempt to rewrite a malformed hosts block")
+	}
+	if rep.OK {
+		t.Fatal("malformed hosts must fail the report")
+	}
+	check, ok := checkByID(rep, "hosts")
+	if !ok {
+		t.Fatalf("missing hosts check: %+v", rep.Checks)
+	}
+	if check.Status != StatusFail {
+		t.Fatalf("hosts = %+v", check)
+	}
+	if !strings.Contains(check.Remediation, "Remove the duplicated or unbalanced") {
+		t.Fatalf("hosts remediation = %q", check.Remediation)
+	}
+}
+
+func TestRepairRestoresMissingHostsBlock(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	if err := os.WriteFile(fakes.hostsPath, []byte("127.0.0.1 localhost\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := svc.Repair(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fakes.helper.synced {
+		t.Fatal("repair did not resync a missing managed block")
+	}
+	if !hasCheck(rep, "hosts", StatusOK) {
+		t.Fatalf("hosts should be repaired: %+v", rep.Checks)
+	}
+	if !rep.OK {
+		t.Fatalf("repair report: %+v", rep.Checks)
+	}
+}
+
+func TestEveryNonOKCheckHasRemediationAndNoSudo(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	fakes.helper.err = errors.New("down")
+	writeMalformedHosts(t, fakes)
+	fakes.trust.targets = []trust.Target{
+		{Name: "OS", OK: true, Detail: "installed"},
+		{Name: "Chrome", OK: false, Detail: "certificate missing"},
+	}
+	delete(fakes.ports.errs, ":80")
+	fakes.runtimes.err = errors.New("checksum mismatch")
+	fakes.disk.free = 1 << 30
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.OK {
+		t.Fatal("want a failing report")
+	}
 	for _, check := range rep.Checks {
-		if check.ID == id {
-			return check.Status == status
+		if check.Status != StatusOK && check.Remediation == "" {
+			t.Errorf("%s (%s) has no remediation", check.ID, check.Status)
+		}
+		if strings.Contains(strings.ToLower(check.Remediation), "sudo ") {
+			t.Errorf("%s remediation uses sudo: %q", check.ID, check.Remediation)
 		}
 	}
-	return false
+	for _, id := range []string{"helper", "ca", "hosts", "trust", "ports", "runtimes", "disk", "wsl"} {
+		if _, ok := checkByID(rep, id); !ok {
+			t.Errorf("missing %s check: %+v", id, rep.Checks)
+		}
+	}
+}
+
+func writeMalformedHosts(t *testing.T, fakes *testFakes) {
+	t.Helper()
+	content := hosts.BeginMarker + "\n127.0.0.1 blog.test\n" +
+		hosts.BeginMarker + "\n127.0.0.1 www.blog.test\n" +
+		hosts.EndMarker + "\n"
+	if err := os.WriteFile(fakes.hostsPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hasCheck(rep Report, id string, status Status) bool {
+	check, ok := checkByID(rep, id)
+	return ok && check.Status == status
+}
+
+func checkByID(rep Report, id string) (Check, bool) {
+	for _, check := range rep.Checks {
+		if check.ID == id {
+			return check, true
+		}
+	}
+	return Check{}, false
 }
 
 type fakeHelper struct {

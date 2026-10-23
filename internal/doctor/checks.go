@@ -19,7 +19,8 @@ const (
 	defaultHostsPath = "/etc/hosts"
 	// dashboardDomain is always served by the dashboard and must resolve.
 	dashboardDomain = "devstack.test"
-	// minFreeDiskBytes is the smallest amount of free space doctor accepts.
+	// minFreeDiskBytes is the minimum required free space. Exactly this value
+	// fails because doctor requires strictly more than 1 GiB.
 	minFreeDiskBytes uint64 = 1 << 30
 
 	defaultHTTPPort  = 8080
@@ -27,23 +28,28 @@ const (
 	defaultUIPort    = 7070
 )
 
+var (
+	errManagedBlockMissing   = errors.New("managed block is missing")
+	errManagedBlockMalformed = errors.New("managed block is malformed")
+)
+
 // checkHelper reports whether the privileged helper is reachable and speaks the
 // protocol version this build expects.
-func (s *Service) checkHelper(ctx context.Context) (Check, helperproto.StatusResponse) {
+func (s *Service) checkHelper(ctx context.Context) (Check, helperproto.StatusResponse, bool) {
 	check := Check{ID: "helper", Title: "Helper service"}
 	if s.deps.Helper == nil {
 		check.Status = StatusFail
 		check.Detail = "the privileged helper client is not configured"
-		check.Remediation = "Start the devstack helper with `sudo systemctl start devstack-helper`, then restart the daemon."
-		return check, helperproto.StatusResponse{}
+		check.Remediation = "Run `devstack init` to install and start the helper."
+		return check, helperproto.StatusResponse{}, false
 	}
 
 	status, err := s.deps.Helper.Status(ctx)
 	if err != nil {
 		check.Status = StatusFail
 		check.Detail = "the privileged helper is not reachable: " + errorDetail(err)
-		check.Remediation = "Start the helper with `sudo systemctl start devstack-helper`. If it is not installed, run `devstack init`."
-		return check, helperproto.StatusResponse{}
+		check.Remediation = "Run `devstack init` to install and start the helper."
+		return check, helperproto.StatusResponse{}, false
 	}
 
 	version := status.Version
@@ -58,13 +64,36 @@ func (s *Service) checkHelper(ctx context.Context) (Check, helperproto.StatusRes
 	if status.Version != helperproto.Version {
 		check.Status = StatusWarn
 		check.Detail = fmt.Sprintf("the helper speaks protocol %q but this build requires %q; %s", version, helperproto.Version, ca)
-		check.Remediation = "Restart or reinstall the helper so its protocol version matches the daemon."
-		return check, status
+		check.Remediation = "Run `devstack init` to reinstall matching helper and daemon versions."
+		return check, status, true
 	}
 
 	check.Status = StatusOK
 	check.Detail = fmt.Sprintf("devstack-helper protocol %s is responding; %s", version, ca)
-	return check, status
+	return check, status, true
+}
+
+// checkCA verifies that the helper has created its local certificate authority.
+// When the helper itself is unavailable the helper check already fails, so the
+// CA state is unknown and reported as skipped rather than as a second failure.
+func (s *Service) checkCA(status helperproto.StatusResponse, helperOK bool) Check {
+	check := Check{ID: "ca", Title: "Local certificate authority"}
+	if !helperOK {
+		check.Status = StatusSkipped
+		check.Detail = "the helper is unavailable, so the local CA cannot be inspected"
+		check.Remediation = "No action is required until the helper is reachable."
+		return check
+	}
+	if strings.TrimSpace(status.CAFingerprint) == "" {
+		check.Status = StatusFail
+		check.Detail = "the helper has no local certificate authority"
+		check.Remediation = "Run `devstack init` to create the local CA."
+		return check
+	}
+
+	check.Status = StatusOK
+	check.Detail = "local CA " + shortFingerprint(status.CAFingerprint) + " is available"
+	return check
 }
 
 // checkHosts compares the managed block in HostsPath with the registered site
@@ -78,15 +107,12 @@ func (s *Service) checkHosts(expected []string, expectedErr error) Check {
 		return check
 	}
 
-	path := s.deps.HostsPath
-	if strings.TrimSpace(path) == "" {
-		path = defaultHostsPath
-	}
+	path := s.hostsPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		check.Status = StatusFail
 		check.Detail = fmt.Sprintf("cannot read %s: %v", path, err)
-		check.Remediation = "Run `sudo devstack doctor --repair` so the helper can rewrite the managed hosts block."
+		check.Remediation = "Run `devstack doctor --repair` so the managed hosts block can be written."
 		return check
 	}
 
@@ -94,7 +120,11 @@ func (s *Service) checkHosts(expected []string, expectedErr error) Check {
 	if err != nil {
 		check.Status = StatusFail
 		check.Detail = fmt.Sprintf("the managed block in %s is unusable: %v", path, err)
-		check.Remediation = "Run `sudo devstack doctor --repair` to rewrite the managed hosts block."
+		if errors.Is(err, errManagedBlockMalformed) {
+			check.Remediation = fmt.Sprintf("Remove the duplicated or unbalanced %s block from %s, then rerun `devstack doctor`.", hosts.BeginMarker, path)
+		} else {
+			check.Remediation = "Run `devstack doctor --repair` to add the managed hosts block."
+		}
 		return check
 	}
 
@@ -109,7 +139,7 @@ func (s *Service) checkHosts(expected []string, expectedErr error) Check {
 		}
 		check.Status = StatusFail
 		check.Detail = fmt.Sprintf("the managed block in %s does not match the registered domains (%s)", path, strings.Join(problems, "; "))
-		check.Remediation = "Run `sudo devstack doctor --repair` to resync the hosts block."
+		check.Remediation = "Run `devstack doctor --repair` to resync the hosts block."
 		return check
 	}
 
@@ -139,17 +169,39 @@ func parseManagedHosts(content string) ([]string, error) {
 		}
 	}
 	if begins == 0 && ends == 0 {
-		return nil, errors.New("managed block is missing")
+		return nil, errManagedBlockMissing
 	}
 	if begins != 1 || ends != 1 || begin > end {
-		return nil, fmt.Errorf("expected exactly one begin and one end marker, found %d begin and %d end", begins, ends)
+		return nil, fmt.Errorf("%w: expected exactly one begin and one end marker, found %d begin and %d end", errManagedBlockMalformed, begins, ends)
 	}
 
 	domains, found := hosts.Parse(content)
 	if !found {
-		return nil, errors.New("managed block is incomplete")
+		return nil, fmt.Errorf("%w: incomplete managed block", errManagedBlockMalformed)
 	}
 	return domains, nil
+}
+
+// hostsPath returns the configured hosts file or the system default.
+func (s *Service) hostsPath() string {
+	path := s.deps.HostsPath
+	if strings.TrimSpace(path) == "" {
+		return defaultHostsPath
+	}
+	return path
+}
+
+// hostsBlockMalformed reports whether the hosts file contains duplicated or
+// unbalanced markers. hosts.Render cannot rewrite those blocks, so Repair must
+// leave them for the user to fix manually. A missing block is not malformed: it
+// can be appended safely.
+func (s *Service) hostsBlockMalformed() bool {
+	data, err := os.ReadFile(s.hostsPath())
+	if err != nil {
+		return false
+	}
+	_, err = parseManagedHosts(string(data))
+	return errors.Is(err, errManagedBlockMalformed)
 }
 
 // diffDomains compares domain lists regardless of order and returns the
@@ -211,24 +263,26 @@ func (s *Service) checkTrust(ctx context.Context, caFingerprint string) Check {
 	if err != nil {
 		check.Status = StatusFail
 		check.Detail = "cannot read trust status: " + errorDetail(err)
-		check.Remediation = "Run `sudo devstack trust repair`, then rerun `devstack doctor`."
+		check.Remediation = "Run `devstack trust repair`, then rerun `devstack doctor`."
 		return check
 	}
 	if len(targets) == 0 {
 		check.Status = StatusWarn
 		check.Detail = "the helper reported no trust targets"
-		check.Remediation = "Run `sudo devstack trust repair` to install the local CA."
+		check.Remediation = "Run `devstack trust repair` to install the local CA."
 		return check
 	}
 
 	var failed []string
-	browserTargets := 0
+	installedBrowsers := 0
 	for _, target := range targets {
 		if !target.OK {
 			failed = append(failed, fmt.Sprintf("%s (%s)", target.Name, target.Detail))
 		}
-		if !strings.EqualFold(strings.TrimSpace(target.Name), "OS") {
-			browserTargets++
+		if !strings.EqualFold(strings.TrimSpace(target.Name), "OS") &&
+			target.OK &&
+			!strings.Contains(strings.ToLower(target.Detail), "not installed") {
+			installedBrowsers++
 		}
 	}
 
@@ -239,36 +293,31 @@ func (s *Service) checkTrust(ctx context.Context, caFingerprint string) Check {
 	if len(failed) != 0 {
 		check.Status = StatusFail
 		check.Detail = ca + " is not trusted by " + summarizeList(failed)
-		check.Remediation = "Run `sudo devstack trust repair`, then restart the affected browsers."
+		check.Remediation = "Run `devstack trust repair`, then restart the affected browsers."
+		return check
+	}
+
+	if installedBrowsers == 0 {
+		check.Status = StatusWarn
+		check.Detail = ca + " is in the OS trust store, but no installed browser trust targets were detected"
+		check.Remediation = "Install Chrome or Firefox, then run `devstack trust repair`."
 		return check
 	}
 
 	check.Status = StatusOK
-	check.Detail = fmt.Sprintf("%s is trusted by %d targets", ca, len(targets))
-	if browserTargets == 0 {
-		check.Status = StatusWarn
-		check.Detail += "; no browser trust targets were detected"
-		check.Remediation = "Install Chrome or Firefox, then run `sudo devstack trust repair`."
-	}
+	check.Detail = fmt.Sprintf("%s is trusted by the OS and %d browser profiles", ca, installedBrowsers)
 	return check
 }
 
-// portRequirement distinguishes privileged listeners from the builtin proxy's
-// loopback ports, which are expected to be busy while the daemon runs.
-type portRequirement int
-
-const (
-	requiredPort portRequirement = iota
-	proxyPort
-)
-
 type portSpec struct {
-	port int
-	kind portRequirement
+	port  int
+	owner string
 }
 
-// checkPorts verifies the privileged and dashboard ports are free and treats an
-// occupied proxy port as an expected warning.
+// checkPorts diagnoses the expected listeners rather than requiring free
+// ports. The helper normally owns 80/443 and the daemon owns the dashboard and
+// proxy ports, so an occupied port is healthy. Free ports, permission-denied
+// probes, and unexpected probe failures are warnings, never failures.
 func (s *Service) checkPorts() Check {
 	check := Check{ID: "ports", Title: "Ports"}
 	if s.deps.Ports == nil {
@@ -279,43 +328,33 @@ func (s *Service) checkPorts() Check {
 	}
 
 	var (
-		failures []string
+		owned    []string
 		warnings []string
-		free     []int
 	)
 	for _, spec := range s.portSpecs() {
 		addr := ":" + strconv.Itoa(spec.port)
 		err := s.deps.Ports.Listenable(addr)
-		if err == nil {
-			free = append(free, spec.port)
-			continue
+		switch {
+		case err == nil:
+			warnings = append(warnings, fmt.Sprintf("port %d is free; expected owner is %s", spec.port, spec.owner))
+		case isAddrInUse(err):
+			owned = append(owned, fmt.Sprintf("%d (%s)", spec.port, spec.owner))
+		case isProbePermission(err):
+			warnings = append(warnings, fmt.Sprintf("cannot probe port %d as this user; expected owner is %s", spec.port, spec.owner))
+		default:
+			warnings = append(warnings, fmt.Sprintf("could not probe port %d (%v); expected owner is %s", spec.port, err, spec.owner))
 		}
-		if spec.kind == proxyPort && isAddrInUse(err) {
-			warnings = append(warnings, fmt.Sprintf("port %d is in use (expected while the devstack daemon is running)", spec.port))
-			continue
-		}
-		failures = append(failures, fmt.Sprintf("port %d is unavailable: %v", spec.port, err))
 	}
 
-	switch {
-	case len(failures) != 0:
-		check.Status = StatusFail
-		check.Detail = strings.Join(failures, "; ")
-		if len(warnings) != 0 {
-			check.Detail += "; " + strings.Join(warnings, "; ")
-		}
-		check.Remediation = "Stop the process using the port (`ss -ltnp` shows the owner) or change the port in config.yaml, then restart the daemon."
-	case len(warnings) != 0:
+	if len(warnings) != 0 {
 		check.Status = StatusWarn
 		check.Detail = strings.Join(warnings, "; ")
-		if len(free) != 0 {
-			check.Detail += "; all other required ports are free"
-		}
-		check.Remediation = "No action is needed while the daemon is running. Stop the daemon before starting another service on these ports."
-	default:
-		check.Status = StatusOK
-		check.Detail = fmt.Sprintf("ports %s are available", joinPorts(free))
+		check.Remediation = "No action is required while devstack is running. If it is not running, start it with `devstack init`."
+		return check
 	}
+
+	check.Status = StatusOK
+	check.Detail = "ports " + strings.Join(owned, ", ") + " are owned by the expected services"
 	return check
 }
 
@@ -338,7 +377,7 @@ func (s *Service) portSpecs() []portSpec {
 
 	specs := make([]portSpec, 0, 5)
 	seen := make(map[int]struct{}, 5)
-	add := func(port int, kind portRequirement) {
+	add := func(port int, owner string) {
 		if port <= 0 || port > 65535 {
 			return
 		}
@@ -346,13 +385,13 @@ func (s *Service) portSpecs() []portSpec {
 			return
 		}
 		seen[port] = struct{}{}
-		specs = append(specs, portSpec{port: port, kind: kind})
+		specs = append(specs, portSpec{port: port, owner: owner})
 	}
-	add(80, requiredPort)
-	add(443, requiredPort)
-	add(uiPort, requiredPort)
-	add(httpPort, proxyPort)
-	add(httpsPort, proxyPort)
+	add(80, "the helper forwarder")
+	add(443, "the helper forwarder")
+	add(uiPort, "the devstack dashboard")
+	add(httpPort, "the devstack proxy")
+	add(httpsPort, "the devstack proxy")
 	return specs
 }
 
@@ -403,9 +442,9 @@ func (s *Service) checkDisk() Check {
 		check.Remediation = "Check that the devstack home exists and is readable, then rerun `devstack doctor`."
 		return check
 	}
-	if free < minFreeDiskBytes {
+	if free <= minFreeDiskBytes {
 		check.Status = StatusFail
-		check.Detail = fmt.Sprintf("only %s free at %s; at least 1 GiB is required", humanBytes(free), path)
+		check.Detail = fmt.Sprintf("only %s free at %s; more than 1 GiB is required", humanBytes(free), path)
 		check.Remediation = "Free disk space, then rerun `devstack doctor`."
 		return check
 	}
@@ -439,6 +478,19 @@ func isAddrInUse(err error) bool {
 	return strings.Contains(message, "address already in use") || strings.Contains(message, "eaddrinuse")
 }
 
+// isProbePermission recognises probes that this user is not allowed to perform.
+// Ports below 1024 commonly return EACCES to an unprivileged daemon.
+func isProbePermission(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "permission denied") || strings.Contains(message, "operation not permitted")
+}
+
 func normalizeDomain(domain string) string {
 	return strings.ToLower(strings.TrimSpace(domain))
 }
@@ -460,14 +512,6 @@ func summarizeList(values []string) string {
 		return strings.Join(values, ", ")
 	}
 	return fmt.Sprintf("%s and %d more", strings.Join(values[:limit], ", "), len(values)-limit)
-}
-
-func joinPorts(ports []int) string {
-	values := make([]string, len(ports))
-	for i, port := range ports {
-		values[i] = strconv.Itoa(port)
-	}
-	return strings.Join(values, ", ")
 }
 
 func humanBytes(bytes uint64) string {

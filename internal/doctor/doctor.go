@@ -105,9 +105,10 @@ func (s *Service) Run(ctx context.Context) (Report, error) {
 	ctx = nonNilContext(ctx)
 
 	expected, expectedErr := s.expectedDomains(ctx)
-	helperCheck, helperStatus := s.checkHelper(ctx)
+	helperCheck, helperStatus, helperOK := s.checkHelper(ctx)
 	checks := []Check{
 		helperCheck,
+		s.checkCA(helperStatus, helperOK),
 		s.checkHosts(expected, expectedErr),
 		s.checkTrust(ctx, helperStatus.CAFingerprint),
 		s.checkPorts(),
@@ -134,7 +135,13 @@ func (s *Service) Repair(ctx context.Context) (Report, error) {
 
 	if s.deps.Helper != nil {
 		if domains, err := s.expectedDomains(ctx); err == nil {
-			_ = s.deps.Helper.SyncHosts(ctx, domains)
+			// hosts.Render refuses duplicated or unbalanced markers. Attempting
+			// to sync would fail the same way and hide the manual fix that is
+			// actually required, so leave the file untouched and let Run report
+			// the malformed block.
+			if !s.hostsBlockMalformed() {
+				_ = s.deps.Helper.SyncHosts(ctx, domains)
+			}
 		}
 	}
 
