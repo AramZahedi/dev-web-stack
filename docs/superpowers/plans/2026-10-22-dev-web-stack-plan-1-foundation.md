@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26+, `modernc.org/sqlite`, `spf13/cobra`, stdlib `net/http`/`crypto/tls`/`crypto/x509`, Svelte 5 + TypeScript + Vite, systemd, nginx/Apache (optional external serving), Linux x86_64.
 
-> **Implementation status (2026-10-23):** Tasks 1–25 are implemented and reviewed; Task 26 is the acceptance pass. The implementation notes in the external-vhosts design are binding corrections.
+> **Implementation status (2026-10-23):** Tasks 1–26 are implemented and reviewed; automated acceptance passes. Manual browser/root/Apache/uninstall checks are documented as blocked in the acceptance report. The implementation notes in the external-vhosts design are binding corrections.
 
 **Specs:** `docs/superpowers/specs/2026-10-22-dev-web-stack-m1-design.md` (Plan 1 implements §§5–9, 10.1, 10.3, 12–15, and 17–19 for static/Node on Linux, including install/uninstall but not upgrade; PHP is Plan 2, Windows/WSL is Plan 3, packaging is Plan 4.) and `docs/superpowers/specs/2026-10-22-external-vhosts-design.md` (helper-managed nginx/Apache vhosts; static/Node in Plan 1, PHP in Plan 2).
 
