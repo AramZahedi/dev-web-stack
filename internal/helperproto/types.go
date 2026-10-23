@@ -105,7 +105,10 @@ type TrustResponse struct {
 	Targets []trust.Target `json:"targets"`
 }
 
-// ForwardersRequest configures the privileged 80/443 forwarders.
+// ForwardersRequest enables or disables the privileged listeners. HTTPPort and
+// HTTPSPort must name the helper's configured loopback proxy ports; zero uses
+// the configured values. The privileged listen ports are fixed by the helper's
+// configuration and are never taken from the request.
 type ForwardersRequest struct {
 	HTTPPort  int  `json:"http_port"`
 	HTTPSPort int  `json:"https_port"`

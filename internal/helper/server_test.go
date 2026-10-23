@@ -205,12 +205,6 @@ func TestHelperReportsNotImplemented(t *testing.T) {
 	if _, err := c.TrustStatus(ctx, "/home/user"); !errors.Is(err, helperclient.ErrNotImplemented) {
 		t.Fatalf("TrustStatus error = %v, want ErrNotImplemented", err)
 	}
-	if err := c.SetForwarders(ctx, 8080, 8443, true); !errors.Is(err, helperclient.ErrNotImplemented) {
-		t.Fatalf("SetForwarders error = %v, want ErrNotImplemented", err)
-	}
-	if err := c.Uninstall(ctx); !errors.Is(err, helperclient.ErrNotImplemented) {
-		t.Fatalf("Uninstall error = %v, want ErrNotImplemented", err)
-	}
 }
 
 func TestHelperServiceHooks(t *testing.T) {

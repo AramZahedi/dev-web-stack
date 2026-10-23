@@ -171,7 +171,9 @@ func (c *Client) trust(ctx context.Context, path, userHome string) ([]trust.Targ
 	return resp.Targets, nil
 }
 
-// SetForwarders starts or stops the privileged 80/443 forwarders.
+// SetForwarders starts or stops the privileged 80/443 forwarders. httpPort and
+// httpsPort are the helper's configured loopback proxy ports; the privileged
+// listen ports come from the helper's configuration.
 func (c *Client) SetForwarders(ctx context.Context, httpPort, httpsPort int, enable bool) error {
 	req := helperproto.ForwardersRequest{HTTPPort: httpPort, HTTPSPort: httpsPort, Enable: enable}
 	return c.do(ctx, http.MethodPost, helperproto.PathForwarders, req, nil)

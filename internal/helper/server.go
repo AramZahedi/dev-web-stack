@@ -21,11 +21,21 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
+	"github.com/AramZahedi/dev-web-stack/internal/forwarder"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/hosts"
 )
 
 const maxRequestBody = 8 << 20
+
+// Production forwarder ports. Tests override the four ports in Config so they
+// can bind unprivileged high ports.
+const (
+	defaultForwardHTTPPort  = 80
+	defaultForwardHTTPSPort = 443
+	defaultProxyHTTPPort    = 8080
+	defaultProxyHTTPSPort   = 8443
+)
 
 // Sentinel errors are re-exported for callers that embed the helper server and
 // want to match protocol errors without importing helperproto directly.
@@ -59,6 +69,16 @@ type Config struct {
 	// Runner executes system trust-update commands. A nil runner uses
 	// os/exec.
 	Runner CommandRunner
+	// ForwardHTTPPort and ForwardHTTPSPort are the privileged listener ports
+	// the helper owns. Zero selects the production defaults, 80 and 443.
+	// Tests set high ports so they never need root.
+	ForwardHTTPPort  int
+	ForwardHTTPSPort int
+	// ProxyHTTPPort and ProxyHTTPSPort are the unprivileged loopback proxy
+	// ports that the forwarders target. Zero selects 8080 and 8443. The
+	// SetForwarders RPC may only name these configured ports.
+	ProxyHTTPPort  int
+	ProxyHTTPSPort int
 	// Logger receives server diagnostics. A nil logger uses slog.Default.
 	Logger *slog.Logger
 	// Service contains the privileged operations exposed by the helper. When
@@ -90,6 +110,10 @@ type Server struct {
 
 	hostsMu sync.Mutex
 
+	forwardersMu  sync.Mutex
+	forwarders    *forwarder.Set
+	forwardersKey string
+
 	startMu    sync.Mutex
 	listener   net.Listener
 	httpServer *http.Server
@@ -113,37 +137,49 @@ func NewServer(cfg Config) (*Server, error) {
 		logger = slog.Default()
 	}
 	s := &Server{cfg: cfg, logger: logger}
+	if _, _, _, _, err := s.forwarderPorts(); err != nil {
+		return nil, fmt.Errorf("helper: %w", err)
+	}
 	if cfg.CADir != "" {
 		authority, err := LoadOrCreateAuthority(cfg.CADir, time.Now)
 		if err != nil {
 			return nil, fmt.Errorf("helper: load CA: %w", err)
 		}
 		s.authority = authority
-		s.cfg.Service = s.wireService(s.cfg.Service)
 	}
+	s.cfg.Service = s.wireService(s.cfg.Service)
 	return s, nil
 }
 
-// wireService fills in the CA and trust handlers that the helper owns. Hooks
-// supplied by an embedding caller are left untouched.
+// wireService fills in the privileged handlers that the helper owns. Hooks
+// supplied by an embedding caller are left untouched. CA hooks are only wired
+// when a CA was loaded; without one they keep returning NOT_IMPLEMENTED.
 func (s *Server) wireService(service Service) Service {
-	if service.CAFingerprint == nil {
-		service.CAFingerprint = s.authority.Fingerprint
+	if s.authority != nil {
+		if service.CAFingerprint == nil {
+			service.CAFingerprint = s.authority.Fingerprint
+		}
+		if service.EnsureCA == nil {
+			service.EnsureCA = s.ensureCA
+		}
+		if service.SignCertificate == nil {
+			service.SignCertificate = s.signCertificate
+		}
+		if service.InstallTrust == nil {
+			service.InstallTrust = s.installTrust
+		}
+		if service.RemoveTrust == nil {
+			service.RemoveTrust = s.removeTrust
+		}
+		if service.TrustStatus == nil {
+			service.TrustStatus = s.trustStatus
+		}
 	}
-	if service.EnsureCA == nil {
-		service.EnsureCA = s.ensureCA
+	if service.SetForwarders == nil {
+		service.SetForwarders = s.setForwarders
 	}
-	if service.SignCertificate == nil {
-		service.SignCertificate = s.signCertificate
-	}
-	if service.InstallTrust == nil {
-		service.InstallTrust = s.installTrust
-	}
-	if service.RemoveTrust == nil {
-		service.RemoveTrust = s.removeTrust
-	}
-	if service.TrustStatus == nil {
-		service.TrustStatus = s.trustStatus
+	if service.Uninstall == nil {
+		service.Uninstall = s.uninstall
 	}
 	return service
 }
@@ -226,6 +262,169 @@ func (s *Server) newTrustManager(home string) *TrustManager {
 	return NewTrustManager(s.authority.RootPEM(), home, s.cfg.Runner, s.cfg.TrustDir)
 }
 
+// forwarderPorts resolves the configured listen and target ports and rejects
+// configurations that could bind a loop onto itself. Listen ports come only
+// from the helper's configuration; an RPC cannot choose them.
+func (s *Server) forwarderPorts() (httpListen, httpsListen, httpTarget, httpsTarget int, err error) {
+	httpListen = s.cfg.ForwardHTTPPort
+	if httpListen == 0 {
+		httpListen = defaultForwardHTTPPort
+	}
+	httpsListen = s.cfg.ForwardHTTPSPort
+	if httpsListen == 0 {
+		httpsListen = defaultForwardHTTPSPort
+	}
+	httpTarget = s.cfg.ProxyHTTPPort
+	if httpTarget == 0 {
+		httpTarget = defaultProxyHTTPPort
+	}
+	httpsTarget = s.cfg.ProxyHTTPSPort
+	if httpsTarget == 0 {
+		httpsTarget = defaultProxyHTTPSPort
+	}
+	ports := []struct {
+		name string
+		port int
+	}{
+		{"forward_http_port", httpListen},
+		{"forward_https_port", httpsListen},
+		{"proxy_http_port", httpTarget},
+		{"proxy_https_port", httpsTarget},
+	}
+	for _, p := range ports {
+		if p.port < 1 || p.port > 65535 {
+			return 0, 0, 0, 0, fmt.Errorf("%s %d must be between 1 and 65535", p.name, p.port)
+		}
+	}
+	if httpListen == httpsListen {
+		return 0, 0, 0, 0, fmt.Errorf("forward_http_port and forward_https_port must differ, both are %d", httpListen)
+	}
+	if httpTarget == httpsTarget {
+		return 0, 0, 0, 0, fmt.Errorf("proxy_http_port and proxy_https_port must differ, both are %d", httpTarget)
+	}
+	if httpListen == httpTarget || httpsListen == httpsTarget || httpListen == httpsTarget || httpsListen == httpTarget {
+		return 0, 0, 0, 0, errors.New("forwarder listen and proxy target ports must all differ")
+	}
+	return httpListen, httpsListen, httpTarget, httpsTarget, nil
+}
+
+// setForwarders starts or stops the fixed privileged listeners. The request
+// may only name the configured proxy ports; listen ports and targets are
+// never taken from the request, so a caller cannot forward arbitrary traffic
+// or bind arbitrary privileged ports.
+func (s *Server) setForwarders(ctx context.Context, req helperproto.ForwardersRequest) error {
+	httpListen, httpsListen, httpTarget, httpsTarget, err := s.forwarderPorts()
+	if err != nil {
+		return fmt.Errorf("%w: %v", helperproto.ErrInvalidRequest, err)
+	}
+	if req.HTTPPort != 0 && req.HTTPPort != httpTarget {
+		return fmt.Errorf("%w: http_port %d does not match the configured proxy HTTP port %d",
+			helperproto.ErrInvalidRequest, req.HTTPPort, httpTarget)
+	}
+	if req.HTTPSPort != 0 && req.HTTPSPort != httpsTarget {
+		return fmt.Errorf("%w: https_port %d does not match the configured proxy HTTPS port %d",
+			helperproto.ErrInvalidRequest, req.HTTPSPort, httpsTarget)
+	}
+
+	s.forwardersMu.Lock()
+	defer s.forwardersMu.Unlock()
+
+	if !req.Enable {
+		if s.forwarders == nil {
+			return nil
+		}
+		if err := s.forwarders.Stop(ctx); err != nil {
+			return fmt.Errorf("stop forwarders: %w", err)
+		}
+		s.forwarders = nil
+		s.forwardersKey = ""
+		return nil
+	}
+
+	key := fmt.Sprintf("%d>%d|%d>%d", httpListen, httpTarget, httpsListen, httpsTarget)
+	if s.forwarders != nil {
+		if s.forwardersKey == key {
+			return nil
+		}
+		if err := s.forwarders.Stop(ctx); err != nil {
+			return fmt.Errorf("restart forwarders: %w", err)
+		}
+		s.forwarders = nil
+		s.forwardersKey = ""
+	}
+
+	set := forwarder.New(
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(httpListen)),
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsListen)),
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(httpTarget)),
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsTarget)),
+		s.logger,
+	)
+	if err := set.Start(ctx); err != nil {
+		return fmt.Errorf("start forwarders: %w", err)
+	}
+	s.forwarders = set
+	s.forwardersKey = key
+	return nil
+}
+
+// uninstall reverses the changes the helper owns: privileged listeners, the
+// allowed user's trust, and the managed hosts block. Every step is
+// best-effort and idempotent; errors from independent steps are joined.
+func (s *Server) uninstall(ctx context.Context, _ helperproto.UninstallRequest) error {
+	var errs []error
+
+	s.forwardersMu.Lock()
+	stoppedForwarders := s.forwarders != nil
+	if s.forwarders != nil {
+		if err := s.forwarders.Stop(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop forwarders: %w", err))
+		}
+		s.forwarders = nil
+		s.forwardersKey = ""
+	}
+	s.forwardersMu.Unlock()
+
+	var targets []Target
+	if s.authority != nil {
+		home, err := s.allowedHome()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("resolve allowed user home: %w", err))
+		} else {
+			targets, err = s.newTrustManager(home).Remove(ctx)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("remove trust: %w", err))
+			}
+		}
+	}
+
+	hostsCleared := false
+	if s.cfg.HostsPath != "" {
+		if _, err := s.syncHosts(nil); err != nil {
+			errs = append(errs, fmt.Errorf("clear hosts block: %w", err))
+		} else {
+			hostsCleared = true
+		}
+	}
+
+	failedTargets := 0
+	for _, target := range targets {
+		if !target.OK {
+			failedTargets++
+			s.logger.Warn("helper: trust removal target failed", "target", target.Name, "detail", target.Detail)
+		}
+	}
+	if failedTargets > 0 {
+		errs = append(errs, fmt.Errorf("%d trust target(s) could not be removed", failedTargets))
+	}
+	s.logger.Info("helper: uninstall complete",
+		"forwarders_stopped", stoppedForwarders,
+		"hosts_cleared", hostsCleared,
+		"trust_targets", len(targets),
+		"trust_failures", failedTargets)
+	return errors.Join(errs...)
+}
+
 // authorizeHome rejects trust requests for any directory other than the
 // allowed user's home. The helper must never write into another user's
 // browser or trust stores.
@@ -236,6 +435,21 @@ func (s *Server) authorizeHome(requested string) (string, error) {
 	if !filepath.IsAbs(requested) {
 		return "", fmt.Errorf("%w: user_home must be an absolute path", helperproto.ErrInvalidRequest)
 	}
+	allowed, err := s.allowedHome()
+	if err != nil {
+		return "", err
+	}
+	requested = filepath.Clean(requested)
+	allowed = filepath.Clean(allowed)
+	if requested != allowed {
+		return "", fmt.Errorf("%w: user_home does not match the allowed user's home directory", helperproto.ErrUnauthorized)
+	}
+	return requested, nil
+}
+
+// allowedHome returns the home directory that privileged trust operations may
+// touch. It is the configured override or the allowed UID's account home.
+func (s *Server) allowedHome() (string, error) {
 	allowed := s.cfg.AllowHome
 	if allowed == "" {
 		account, err := user.LookupId(strconv.Itoa(s.cfg.AllowUID))
@@ -247,12 +461,7 @@ func (s *Server) authorizeHome(requested string) (string, error) {
 	if allowed == "" {
 		return "", errors.New("the allowed user has no home directory")
 	}
-	requested = filepath.Clean(requested)
-	allowed = filepath.Clean(allowed)
-	if requested != allowed {
-		return "", fmt.Errorf("%w: user_home does not match the allowed user's home directory", helperproto.ErrUnauthorized)
-	}
-	return requested, nil
+	return filepath.Clean(allowed), nil
 }
 
 // Start creates the socket and begins serving. It returns once the listener is
@@ -326,6 +535,13 @@ func (s *Server) Start(ctx context.Context) error {
 // once.
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
+		s.forwardersMu.Lock()
+		if s.forwarders != nil {
+			_ = s.forwarders.Stop(context.Background())
+			s.forwarders = nil
+			s.forwardersKey = ""
+		}
+		s.forwardersMu.Unlock()
 		if s.httpServer != nil {
 			s.closeErr = s.httpServer.Close()
 		}
@@ -420,9 +636,20 @@ func (s *Server) handleHostsSync(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if s.cfg.HostsPath == "" {
-		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal, "hosts path is not configured")
+	changed, err := s.syncHosts(req.Domains)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
 		return
+	}
+	s.writeJSON(w, http.StatusOK, helperproto.HostsSyncResponse{Changed: changed})
+}
+
+// syncHosts replaces the managed block with domains. An empty list leaves an
+// empty managed block, which is how uninstall removes the mappings without
+// touching the rest of the hosts file.
+func (s *Server) syncHosts(domains []string) (bool, error) {
+	if s.cfg.HostsPath == "" {
+		return false, errors.New("hosts path is not configured")
 	}
 
 	s.hostsMu.Lock()
@@ -430,20 +657,16 @@ func (s *Server) handleHostsSync(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := os.ReadFile(s.cfg.HostsPath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal,
-			fmt.Sprintf("read hosts file: %v", err))
-		return
+		return false, fmt.Errorf("read hosts file: %w", err)
 	}
-	rendered, err := hosts.Render(string(existing), req.Domains)
+	rendered, err := hosts.Render(string(existing), domains)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
-		return
+		return false, err
 	}
 	if err := hosts.WriteAtomic(s.cfg.HostsPath, []byte(rendered), 0); err != nil {
-		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
-		return
+		return false, err
 	}
-	s.writeJSON(w, http.StatusOK, helperproto.HostsSyncResponse{Changed: string(existing) != rendered})
+	return string(existing) != rendered, nil
 }
 
 func (s *Server) handleEnsureCA(w http.ResponseWriter, r *http.Request) {
