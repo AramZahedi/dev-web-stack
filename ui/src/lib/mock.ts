@@ -241,6 +241,7 @@ const sites: Site[] = [
     command: '',
     env: {
       PUBLIC_SITE_URL: 'https://blog.test',
+      SESSION_SECRET: 'blog_dev_7a1c3e5d9f2b',
     },
     document_root: 'public',
     front_controller: false,
@@ -862,7 +863,7 @@ const directories: Record<string, string[]> = {
 };
 
 function findSite(ref: string): Site {
-  const decoded = decodeURIComponent(ref);
+  const decoded = ref;
   const site = sites.find((entry) => entry.id === decoded || entry.name === decoded);
   if (!site) throw new ApiError('NOT_FOUND', `No site named “${decoded}”.`, 404);
   return site;

@@ -84,7 +84,7 @@
   let switchOpen = $state(false);
   let switchBuild = $state('');
 
-  const ref = $derived(params?.ref ? decodeURIComponent(params.ref) : '');
+  const ref = $derived(params?.ref ?? '');
 
   const active = $derived(
     site ? ['running', 'starting', 'stopping'].includes(site.status) : false,
@@ -177,6 +177,17 @@
       error = null;
       notFound = false;
       pollAttempts = 0;
+      revealed = {};
+      copied = false;
+      deleteOpen = false;
+      deleting = false;
+      busyAction = null;
+      switchOpen = false;
+      switchBuild = '';
+      phpApplying = false;
+      previewOpen = false;
+      previewLoading = false;
+      previewReturnFocus = null;
     }
     error = null;
     notFound = false;
@@ -339,18 +350,23 @@
 
   async function previewVhost(event?: MouseEvent): Promise<void> {
     if (!site || previewLoading) return;
+    const previewRef = site.id;
     previewReturnFocus = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null;
     previewLoading = true;
     try {
       const status = await api.getVhostStatus();
+      if (site?.id !== previewRef) return;
       previewServer =
         status.mode === 'apache' || status.server === 'apache' ? 'apache' : 'nginx';
     } catch {
+      if (site?.id !== previewRef) return;
       // The drawer reports the real preview error; builtin defaults to nginx.
       previewServer = 'nginx';
     } finally {
-      previewLoading = false;
-      previewOpen = true;
+      if (site?.id === previewRef) {
+        previewLoading = false;
+        previewOpen = true;
+      }
     }
   }
 
@@ -736,6 +752,7 @@
                 ini={phpInfo.ini}
                 raw={phpInfo.ini_raw}
                 generated={phpInfo.generated_ini}
+                siteRef={site?.id ?? ''}
                 onApply={applyPHP}
                 disabled={phpApplying}
               />

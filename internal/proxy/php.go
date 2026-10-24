@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -86,7 +87,8 @@ func (r *Router) servePHP(w http.ResponseWriter, req *http.Request, route Route)
 	if target.staticPath != "" {
 		if target.staticName == "index.html" && !strings.HasSuffix(requestPath, "/") &&
 			path.Base(requestPath) != "index.html" {
-			location := "/" + strings.TrimPrefix(path.Clean(requestPath), "/") + "/"
+			locationPath := "/" + strings.TrimPrefix(path.Clean(requestPath), "/") + "/"
+			location := (&url.URL{Path: locationPath}).EscapedPath()
 			if req.URL != nil && req.URL.RawQuery != "" {
 				location += "?" + req.URL.RawQuery
 			}

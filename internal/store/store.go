@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -44,6 +45,26 @@ func Open(path string) (*Store, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve database path %q: %w", path, err)
+	}
+
+	// The database contains site environment variables and PHP snapshots.
+	// Create it 0600 before SQLite opens it so the WAL/SHM siblings inherit
+	// owner-only permissions instead of the process umask.
+	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
+		return nil, fmt.Errorf("store: create database directory: %w", err)
+	}
+	f, err := os.OpenFile(abs, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("store: create database %s: %w", abs, err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("store: close database %s: %w", abs, err)
+	}
+	if err := os.Chmod(abs, 0o600); err != nil {
+		return nil, fmt.Errorf("store: set database permissions %s: %w", abs, err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		_ = os.Chmod(abs+suffix, 0o600)
 	}
 
 	dsn := url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}

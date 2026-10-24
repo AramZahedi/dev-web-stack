@@ -1070,7 +1070,8 @@ func assertNginxPHPVhost(t *testing.T, config string, port int, site model.Site)
 	for _, want := range []string{
 		"fastcgi_pass 127.0.0.1:" + strconv.Itoa(port) + ";",
 		"fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;",
-		"fastcgi_param PATH_INFO $fastcgi_path_info;",
+		"set $devstack_path_info $fastcgi_path_info;",
+		"fastcgi_param PATH_INFO $devstack_path_info;",
 		"fastcgi_index index.php;",
 		"index index.php index.html;",
 		`location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|swo|tmp))$`,

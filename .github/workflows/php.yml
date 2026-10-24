@@ -8,7 +8,7 @@ on:
         required: true
         type: string
   push:
-    branches: [main, plan-2-php]
+    branches: [master, plan-2-php]
     paths:
       - "build/php/**"
       - "cmd/phpcatalog/**"

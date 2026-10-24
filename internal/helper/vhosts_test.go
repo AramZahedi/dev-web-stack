@@ -2269,3 +2269,13 @@ func TestVhostRejectsBackendNotOwnedByAllowedUID(t *testing.T) {
 		t.Fatal("accepted a root-owned backend path")
 	}
 }
+
+func TestRemoveForUninstallDoesNotEnableForwarders(t *testing.T) {
+	env := newVhostTestEnv(t)
+	if err := env.manager.RemoveForUninstall(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.forwarders(); len(got) != 0 {
+		t.Fatalf("uninstall enabled forwarders: %v", got)
+	}
+}

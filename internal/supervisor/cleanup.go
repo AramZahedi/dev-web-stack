@@ -173,6 +173,11 @@ func groupMembersHaveToken(pgid int, token string) bool {
 		if err != nil || pgrp != pgid {
 			continue
 		}
+		if state, err := procState(pid); err == nil && state == "Z" {
+			// Zombies have no readable environment; they will be reaped after
+			// the live members are terminated.
+			continue
+		}
 		found = true
 		env, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
 		if err != nil || !bytes.Contains(env, needle) {
@@ -336,6 +341,18 @@ func procStartTicks(pid int) (uint64, error) {
 		return 0, fmt.Errorf("supervisor: parse start time for pid %d: %w", pid, err)
 	}
 	return ticks, nil
+}
+
+// procState returns field 3 (state) from /proc/<pid>/stat.
+func procState(pid int) (string, error) {
+	fields, err := procStatFields(pid)
+	if err != nil {
+		return "", err
+	}
+	if len(fields) == 0 {
+		return "", fmt.Errorf("supervisor: truncated /proc/%d/stat", pid)
+	}
+	return fields[0], nil
 }
 
 // procPgrp returns field 5 (pgrp) from /proc/<pid>/stat.

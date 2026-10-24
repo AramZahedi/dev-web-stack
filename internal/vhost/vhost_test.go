@@ -507,15 +507,6 @@ func TestValidateSiteSpec(t *testing.T) {
 			want: "desired state",
 		},
 		{
-			name: "force https without tls",
-			spec: func() SiteSpec {
-				s := validNoTLS
-				s.ForceHTTPS = true
-				return s
-			}(),
-			want: "force HTTPS",
-		},
-		{
 			name: "tls without certificate",
 			spec: func() SiteSpec { s := valid; s.CertPEM = nil; return s }(),
 			want: "certificate",
@@ -859,8 +850,17 @@ func TestRenderedConfigsNeverEmitHSTS(t *testing.T) {
 			t.Fatalf("Render: %v", err)
 		}
 		for name, data := range files {
-			if bytes.Contains(bytes.ToLower(data), []byte("strict-transport-security")) {
-				t.Errorf("%s emits HSTS", name)
+			for _, line := range strings.Split(string(data), "\n") {
+				lower := strings.ToLower(line)
+				if !strings.Contains(lower, "strict-transport-security") {
+					continue
+				}
+				if strings.Contains(lower, "proxy_hide_header") ||
+					strings.Contains(lower, "fastcgi_hide_header") ||
+					strings.Contains(lower, "header always unset") {
+					continue
+				}
+				t.Errorf("%s emits HSTS: %s", name, line)
 			}
 		}
 	}
@@ -1139,5 +1139,12 @@ func TestRenderRejectsInvalidTLSDir(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestDigitLeadingSiteFilenameSortsAfterDefaults(t *testing.T) {
+	name := siteFilename(SiteSpec{Name: "0shop", ID: "abc12345"})
+	if name <= "_default.conf" {
+		t.Fatalf("%q sorts before _default.conf", name)
 	}
 }

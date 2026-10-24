@@ -126,6 +126,7 @@ func writeNginxProxyLocation(b *strings.Builder, port int, interceptErrors bool)
 	b.WriteString("        proxy_set_header X-Forwarded-For $remote_addr;\n")
 	b.WriteString("        proxy_set_header X-Forwarded-Proto $scheme;\n")
 	b.WriteString("        proxy_set_header X-Forwarded-Host $host;\n")
+	b.WriteString("        proxy_hide_header Strict-Transport-Security;\n")
 	b.WriteString("        proxy_read_timeout 120s;\n")
 	if interceptErrors {
 		b.WriteString("        proxy_intercept_errors on;\n")
@@ -164,15 +165,17 @@ func writeNginxPHPBody(b *strings.Builder, s SiteSpec) {
 func writeNginxPHPLocation(b *strings.Builder, port int) {
 	b.WriteString("    location ~* ^(.+\\.php)(/.*)?$ {\n")
 	b.WriteString("        fastcgi_split_path_info ^(.+\\.php)(/.*)$;\n")
+	b.WriteString("        set $devstack_path_info $fastcgi_path_info;\n")
 	b.WriteString("        try_files $fastcgi_script_name =404;\n")
 	fmt.Fprintf(b, "        fastcgi_pass 127.0.0.1:%d;\n", port)
 	b.WriteString("        fastcgi_index index.php;\n")
 	b.WriteString("        fastcgi_read_timeout 120s;\n")
 	b.WriteString("        fastcgi_buffering off;\n")
+	b.WriteString("        fastcgi_hide_header Strict-Transport-Security;\n")
 	writeNginxFastCGIParams(b,
 		"$document_root$fastcgi_script_name",
 		"$fastcgi_script_name",
-		"$fastcgi_path_info",
+		"$devstack_path_info",
 	)
 	b.WriteString("    }\n")
 }
@@ -183,6 +186,7 @@ func writeNginxPHPFrontControllerLocation(b *strings.Builder, port int, indexPat
 	b.WriteString("        fastcgi_index index.php;\n")
 	b.WriteString("        fastcgi_read_timeout 120s;\n")
 	b.WriteString("        fastcgi_buffering off;\n")
+	b.WriteString("        fastcgi_hide_header Strict-Transport-Security;\n")
 	writeNginxFastCGIParams(b,
 		nginxQuotedValue(indexPath),
 		"/index.php",

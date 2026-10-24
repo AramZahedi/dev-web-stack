@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyPHP,
+  browseFs,
   createSite,
   getPHPDefaults,
   getPHPInfo,
@@ -367,6 +368,30 @@ describe('api client', () => {
     expect(execInit.method).toBe('POST');
     expect(new Headers(execInit.headers).get('X-CSRF-Token')).toBe('csrf-migrate');
     expect(JSON.parse(String(execInit.body))).toEqual({ argv: ['-v'] });
+  });
+});
+
+describe('filesystem browser session', () => {
+  beforeEach(() => resetApiClientForTests());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetApiClientForTests();
+  });
+
+  it('fetches a session before browsing and retries a 403 once', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'token-1' }))
+      .mockResolvedValueOnce(jsonResponse({ code: 'FORBIDDEN', message: 'missing dashboard session' }, 403))
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'token-2' }))
+      .mockResolvedValueOnce(jsonResponse({ path: '/home/dev', entries: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(browseFs('/home/dev')).resolves.toMatchObject({ path: '/home/dev' });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/v1/session');
+    expect((fetchMock.mock.calls[2] as [string])[0]).toBe('/api/v1/session');
+    expect((fetchMock.mock.calls[3] as [string])[0]).toContain('/api/v1/fs?path=');
   });
 });
 

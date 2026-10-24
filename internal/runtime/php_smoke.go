@@ -41,6 +41,27 @@ var phpSmoke = smokePHPBuild
 // FastCGI request against a temporary health script returns "ok". The master
 // runs in its own process group and is always stopped, including on failure.
 func smokePHPBuild(ctx context.Context, buildPath string) error {
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		last = smokePHPBuildOnce(ctx, buildPath)
+		if last == nil || ctx.Err() != nil || !isPHPSmokePortError(last) {
+			return last
+		}
+	}
+	return last
+}
+
+func isPHPSmokePortError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "did not listen") ||
+		strings.Contains(message, "exited before listening") ||
+		strings.Contains(message, "address already in use")
+}
+
+func smokePHPBuildOnce(ctx context.Context, buildPath string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}

@@ -46,7 +46,7 @@ if [[ $(id -u) -eq 0 ]]; then
 	die 'refusing to run as root; run the smoke test as the unprivileged build user'
 fi
 
-for tool in awk find grep jq readlink realpath tar; do
+for tool in awk find grep jq readelf readlink realpath tar; do
 	command -v "$tool" >/dev/null 2>&1 || die "required tool '$tool' is missing"
 done
 
@@ -148,6 +148,15 @@ done <"$link_listing"
 
 [[ -x "$root/bin/php" ]] || die "$top/bin/php is missing or not executable"
 [[ -x "$root/sbin/php-fpm" ]] || die "$top/sbin/php-fpm is missing or not executable"
+
+# The build pipeline requests full RELRO and immediate binding. Verify the
+# artifact rather than trusting that configure/make retained the flags.
+for binary in "$root/bin/php" "$root/sbin/php-fpm"; do
+	readelf -lW "$binary" | grep -q 'GNU_RELRO' ||
+		die "$binary is missing GNU_RELRO"
+	readelf -dW "$binary" | grep -Eq 'BIND_NOW|FLAGS_1.*NOW' ||
+		die "$binary is missing BIND_NOW"
+done
 ext_dir="$root/lib/php/extensions"
 [[ -d $ext_dir ]] || die "$top/lib/php/extensions is missing"
 [[ -f "$root/etc/php.ini" ]] || die "$top/etc/php.ini is missing"

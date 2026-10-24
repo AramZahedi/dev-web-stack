@@ -11,9 +11,9 @@ var (
 		`(?i)\b([A-Za-z0-9_.-]*(?:key|token|secret|password)[A-Za-z0-9_.-]*)\b(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`)
 	authorizationPattern    = regexp.MustCompile(`(?i)\b(authorization)\b(\s*:\s*)([^\r\n]+)`)
 	jsonQuotedSecretPattern = regexp.MustCompile(
-		`(?i)("(?:[^"\\]|\\.)*(?:key|token|secret|password|authorization)(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*")`)
+		`(?i)("(?:[^"\\]|\\.)*(?:key|token|secret|password|authorization|cookie)(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*")`)
 	jsonUnquotedSecretPattern = regexp.MustCompile(
-		`(?i)("(?:[^"\\]|\\.)*(?:key|token|secret|password|authorization)(?:[^"\\]|\\.)*")(\s*:\s*)([^\s,;}]+)`)
+		`(?i)("(?:[^"\\]|\\.)*(?:key|token|secret|password|authorization|cookie)(?:[^"\\]|\\.)*")(\s*:\s*)([^\s,;}"']+)`)
 	uriUserinfoPattern = regexp.MustCompile(
 		`(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@`)
 	cookiePattern = regexp.MustCompile(`(?i)\b((?:set-)?cookie)\b(\s*:\s*)([^\r\n]+)`)

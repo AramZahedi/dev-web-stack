@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -75,6 +76,8 @@ func TestRedactAuthorizationAndVariants(t *testing.T) {
 		{"database url", "DATABASE_URL=postgres://user:s3cret@db.example/app", "s3cret"},
 		{"cookie header", "Cookie: session=abc123; theme=dark", "abc123"},
 		{"set-cookie header", "Set-Cookie: session=xyz789; HttpOnly", "xyz789"},
+		{"json cookie", `{"headers":{"Cookie":"session=abc123"}}`, "abc123"},
+		{"json set-cookie", `{"headers":{"Set-Cookie":"session=xyz789"}}`, "xyz789"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,6 +90,9 @@ func TestRedactAuthorizationAndVariants(t *testing.T) {
 
 	if got, want := Redact("listening on 127.0.0.1:41000"), "listening on 127.0.0.1:41000"; got != want {
 		t.Fatalf("Redact changed non-secret text: %q", got)
+	}
+	if got := Redact(`{"password":"hunter2","user":"me"}`); !json.Valid([]byte(got)) {
+		t.Fatalf("redacted JSON is invalid: %q", got)
 	}
 }
 

@@ -394,6 +394,22 @@ func (s *Service) Update(ctx context.Context, ref string, req UpdateRequest) (mo
 		cause := fmt.Errorf("sites: update %q: %w", current.Name, err)
 		return fail(domainsChanged, cause)
 	}
+	restartNeeded := current.Status == model.StatusRunning && phpUpdate.applied
+	if current.Status == model.StatusRunning && current.Kind != model.SitePHP {
+		restartNeeded = restartNeeded ||
+			current.DocumentRoot != updated.DocumentRoot ||
+			current.Command != updated.Command ||
+			current.SPAFallback != updated.SPAFallback ||
+			!sameStringMap(current.Env, updated.Env)
+	}
+	if restartNeeded {
+		restarted, restartErr := s.restartForUpdateLocked(ctx, updated)
+		if restartErr != nil {
+			cause := fmt.Errorf("sites: apply update to %q: %w", current.Name, restartErr)
+			return fail(domainsChanged, cause)
+		}
+		updated = restarted
+	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		cause := fmt.Errorf("sites: publish routes for %q: %w", current.Name, err)
 		return fail(domainsChanged, cause)
@@ -427,6 +443,16 @@ func (s *Service) Update(ctx context.Context, ref string, req UpdateRequest) (mo
 
 	s.emitEvent(ctx, current.ID, "site.updated", fmt.Sprintf("site %s updated", updated.Name))
 	return updated, nil
+}
+
+// restartForUpdateLocked applies effective field changes to a running backend.
+// The caller has already persisted the new row and holds s.mu.
+func (s *Service) restartForUpdateLocked(ctx context.Context, updated model.Site) (model.Site, error) {
+	stopped, err := s.stopLocked(ctx, updated)
+	if err != nil {
+		return updated, err
+	}
+	return s.startLocked(ctx, stopped)
 }
 
 // Get returns one site after refreshing its observed status from the backend.
@@ -561,7 +587,18 @@ func (s *Service) Restart(ctx context.Context, ref string) error {
 	}
 	site, err = s.startLocked(ctx, site)
 	if err != nil {
-		return err
+		// The stop succeeded but the start did not. Preserve desired=running so
+		// daemon reconciliation retries instead of silently staying stopped.
+		restarting := site
+		restarting.DesiredState = model.DesiredRunning
+		if restarting.Status == "" || restarting.Status == model.StatusStopped {
+			restarting.Status = model.StatusError
+		}
+		restarting.UpdatedAt = s.currentTime()
+		if saveErr := s.deps.Store.UpdateSite(ctx, restarting); saveErr != nil {
+			return fmt.Errorf("sites: restart %q: %w (also failed to preserve desired state: %v)", site.Name, err, saveErr)
+		}
+		return fmt.Errorf("sites: restart %q: %w", site.Name, err)
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		return fmt.Errorf("sites: publish routes for %q: %w", site.Name, err)
@@ -693,6 +730,9 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 			return model.Site{}, err
 		}
 	case model.SiteNode:
+		if strings.TrimSpace(req.DocumentRoot) != "" {
+			return model.Site{}, errors.New("sites: node sites do not use a document root")
+		}
 		if site.NodeVersion == "" {
 			return model.Site{}, errors.New("sites: node site requires a version")
 		}
@@ -800,6 +840,9 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 		updated.FrontController = *req.FrontController
 	}
 	if strings.TrimSpace(req.DocumentRoot) != "" {
+		if updated.Kind == model.SiteNode {
+			return model.Site{}, errors.New("sites: node sites do not use a document root")
+		}
 		switch updated.Kind {
 		case model.SiteStatic, model.SitePHP:
 			root, err := validateDocumentRoot(updated.HostPath, req.DocumentRoot)
@@ -1036,6 +1079,11 @@ func (s *Service) refreshLocked(ctx context.Context, site model.Site) (model.Sit
 	site.UpdatedAt = s.currentTime()
 	if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
 		return site, fmt.Errorf("sites: record status for %q: %w", site.Name, err)
+	}
+	if !s.externalServing() {
+		if err := s.rebuildRoutesLocked(ctx); err != nil {
+			return site, fmt.Errorf("sites: republish routes after status change for %q: %w", site.Name, err)
+		}
 	}
 	s.emitStatus(ctx, site, oldStatus, status.State, status.Message)
 	return site, nil

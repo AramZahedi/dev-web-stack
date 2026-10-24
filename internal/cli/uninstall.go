@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -43,12 +47,17 @@ func (a *App) runUninstall(cmd *cobra.Command) error {
 	}
 
 	stopped, stopErr := stopDaemon(ctx, home)
+	userUnitRemoved := false
+	if stopErr == nil {
+		userUnitRemoved = removeDefaultUserDaemonUnit(ctx, home)
+	}
 	result := uninstallResult{
 		Status:        "complete",
 		Uninstalled:   true,
 		DaemonStopped: stopped,
 		Command:       elevatedRemovalCommand,
 		Checklist: []string{
+			fmt.Sprintf("Per-user daemon unit removed: %t. If false, run `systemctl --user disable --now devstack-daemon.service` and remove the unit file manually.", userUnitRemoved),
 			"Run the elevated command above to remove the devstack-helper unit and system binaries.",
 			"Remove the per-user devstack binary from your PATH if the installer added one.",
 			fmt.Sprintf("Review %s and remove it manually only if you no longer need configuration or logs.", home),
@@ -117,4 +126,25 @@ func (a *App) runUninstall(cmd *cobra.Command) error {
 	return uninstallErr
 }
 
-const elevatedRemovalCommand = "sudo systemctl disable --now devstack-helper && sudo rm -f /etc/systemd/system/devstack-helper.service && sudo rm -rf /usr/local/lib/devstack"
+// removeDefaultUserDaemonUnit removes the unit installed by the default
+// installer. A custom --home may share a machine with a differently installed
+// unit, so it is left to the printed checklist.
+func removeDefaultUserDaemonUnit(ctx context.Context, home string) bool {
+	defaultHome, err := resolveHome("")
+	if err != nil || filepath.Clean(home) != filepath.Clean(defaultHome) {
+		return false
+	}
+	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", "devstack-daemon.service").Run()
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return false
+	}
+	unit := filepath.Join(configDir, "systemd", "user", "devstack-daemon.service")
+	if err := os.Remove(unit); err != nil && !os.IsNotExist(err) {
+		return false
+	}
+	_ = exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run()
+	return true
+}
+
+const elevatedRemovalCommand = "sudo systemctl disable --now devstack-helper && sudo rm -f /etc/systemd/system/devstack-helper.service && sudo rm -rf /usr/local/lib/devstack /var/lib/devstack-helper /etc/devstack && sudo systemctl daemon-reload"

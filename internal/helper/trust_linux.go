@@ -147,6 +147,24 @@ func (m *TrustManager) resolveHomeOwner() {
 // chownToOwner repairs ownership of a path created by the privileged helper.
 // It is a no-op for an unprivileged helper (the home owner already created the
 // path) and uses Lchown so a symlink cannot redirect the ownership change.
+func (m *TrustManager) chownCreatedDir(path string) error {
+	if m.ownerErr != nil {
+		return m.ownerErr
+	}
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	if m.ownerUID == os.Geteuid() && m.ownerGID == os.Getegid() {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	return f.Chown(m.ownerUID, m.ownerGID)
+}
+
 func (m *TrustManager) chownToOwner(path string) error {
 	if m.ownerErr != nil {
 		return m.ownerErr
@@ -496,9 +514,9 @@ func (m *TrustManager) walkNSSDir(path string, create bool) error {
 			if !info.IsDir() {
 				return fmt.Errorf("%s is not a directory", current)
 			}
-			if err := m.chownToOwner(current); err != nil {
-				return fmt.Errorf("chown %s: %w", current, err)
-			}
+			// Never chown a pre-existing component by path. The user can swap
+			// an ancestor for a symlink after the Lstat check; only directories
+			// this process created are chowned, through a no-follow fd.
 		case errors.Is(err, fs.ErrNotExist):
 			if !create {
 				return err
@@ -520,7 +538,7 @@ func (m *TrustManager) walkNSSDir(path string, create bool) error {
 				}
 				continue
 			}
-			if err := m.chownToOwner(current); err != nil {
+			if err := m.chownCreatedDir(current); err != nil {
 				return fmt.Errorf("chown %s: %w", current, err)
 			}
 		default:

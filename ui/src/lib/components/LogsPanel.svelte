@@ -33,8 +33,9 @@
     lines = [...lines, ...incoming].slice(-MAX_LINES);
   }
 
+  const siteId = $derived(site.id);
   $effect(() => {
-    const ref = site.id;
+    const ref = siteId;
     lines = [];
     buffered = [];
     paused = false;

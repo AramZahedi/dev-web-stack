@@ -1113,8 +1113,8 @@ func TestUpdatePHPDocumentRootRecomposesGeneration(t *testing.T) {
 	if gotLint, gotFPM := fakes.php.counts(); gotLint != lint+1 || gotFPM != fpm+1 {
 		t.Fatalf("generation was not recomposed: lint %d->%d fpm %d->%d", lint, gotLint, fpm, gotFPM)
 	}
-	if fakes.backend.startCount() != startCalls {
-		t.Fatal("FPM restarted on a document-root update")
+	if fakes.backend.startCount() == startCalls {
+		t.Fatal("FPM was not restarted on a document-root update")
 	}
 	if _, err := os.Stat(oldDir); err != nil {
 		t.Fatalf("old generation removed: %v", err)
@@ -1180,8 +1180,8 @@ func TestUpdatePHPEnvironmentRecomposesGeneration(t *testing.T) {
 	if !reflect.DeepEqual(updated.Env, map[string]string{"APP_ENV": "prod", "FEATURE_X": "on"}) {
 		t.Fatalf("env = %v", updated.Env)
 	}
-	if fakes.backend.startCount() != startCalls {
-		t.Fatal("FPM restarted on an environment update")
+	if fakes.backend.startCount() == startCalls {
+		t.Fatal("FPM was not restarted on an environment update")
 	}
 	if _, err := os.Stat(oldDir); err != nil {
 		t.Fatalf("old generation removed: %v", err)

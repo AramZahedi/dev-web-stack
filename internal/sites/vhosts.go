@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -596,17 +597,18 @@ func (s *Service) vhostSiteSpecLocked(ctx context.Context, site model.Site) (hel
 	default:
 		spec.BackendPort = site.HTTPPort
 	}
-	if site.TLS {
+	if s.deps.Certs != nil {
 		rec, err := s.deps.Certs.Ensure(ctx, site.ID, siteDomains(site))
 		if err != nil {
-			return helperproto.VHostSite{}, fmt.Errorf("sites: ensure certificate for %q: %w", site.Name, err)
-		}
-		certPEM, keyPEM, err := s.deps.Certs.PEM(rec)
-		if err != nil {
+			if site.TLS {
+				return helperproto.VHostSite{}, fmt.Errorf("sites: ensure certificate for %q: %w", site.Name, err)
+			}
+		} else if certPEM, keyPEM, err := s.deps.Certs.PEM(rec); err == nil {
+			spec.CertPEM = certPEM
+			spec.KeyPEM = keyPEM
+		} else if site.TLS {
 			return helperproto.VHostSite{}, fmt.Errorf("sites: read certificate for %q: %w", site.Name, err)
 		}
-		spec.CertPEM = certPEM
-		spec.KeyPEM = keyPEM
 	}
 	return spec, nil
 }
@@ -664,6 +666,14 @@ func validateVhostSiteForSync(site model.Site) error {
 	if err != nil {
 		return err
 	}
+	if err := validateVhostBackendOwnership(resolvedBackend); err != nil {
+		return err
+	}
+	// Node sites never use a document root; ignore it rather than degrading a
+	// healthy Node vhost because of an unused field.
+	if site.Kind == model.SiteNode {
+		return nil
+	}
 	root := absoluteDocumentRoot(site)
 	if root == "" {
 		if site.Kind == model.SiteStatic {
@@ -685,6 +695,30 @@ func validateVhostSiteForSync(site model.Site) error {
 		return fmt.Errorf("FastCGI port %d is outside 43000-43999", site.FastCGIPort)
 	}
 	return nil
+}
+
+// validateVhostBackendOwnership mirrors the helper's ownership boundary so one
+// root-owned or foreign backend degrades to a 503 instead of poisoning the
+// entire external vhost sync.
+func validateVhostBackendOwnership(path string) error {
+	if os.Geteuid() == 0 {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat backend path %q: %w", path, err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("backend path %q has no ownership metadata", path)
+	}
+	if int(stat.Uid) == os.Geteuid() {
+		return nil
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && vhostPathContained(path, home) {
+		return nil
+	}
+	return fmt.Errorf("backend path %q is not owned by the devstack user", path)
 }
 
 func resolveVhostDirectory(kind, value string) (string, error) {

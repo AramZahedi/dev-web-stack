@@ -29,18 +29,23 @@
   let error = $state<{ code: string; message: string } | null>(null);
   let requestedPath = $state('/');
   let previousOpen = false;
+  let requestSeq = 0;
 
   async function browse(path: string): Promise<void> {
+    const seq = ++requestSeq;
     loading = true;
     requestedPath = path;
     error = null;
     try {
-      listing = await browseFs(path);
+      const next = await browseFs(path);
+      if (seq !== requestSeq) return;
+      listing = next;
     } catch (caught) {
+      if (seq !== requestSeq) return;
       const described = describeError(caught);
       error = { code: described.code, message: described.message };
     } finally {
-      loading = false;
+      if (seq === requestSeq) loading = false;
     }
   }
 

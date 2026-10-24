@@ -238,9 +238,6 @@ func ValidateSiteSpec(s SiteSpec) error {
 		return fmt.Errorf("vhost: site %q: invalid desired state %q", s.ID, s.DesiredState)
 	}
 
-	if s.ForceHTTPS && !s.TLS {
-		return fmt.Errorf("vhost: site %q: force HTTPS requires TLS", s.ID)
-	}
 	if s.TLS {
 		if len(s.CertPEM) == 0 {
 			return fmt.Errorf("vhost: site %q: TLS requires a certificate", s.ID)
@@ -444,7 +441,14 @@ func siteFilename(s SiteSpec) string {
 	if len(id) > 8 {
 		id = id[:8]
 	}
-	return s.Name + "-" + id + ".conf"
+	prefix := ""
+	// Apache includes the directory glob in lexical order. A site name that
+	// starts with a digit would sort before _default.conf and steal unmatched
+	// hosts; move only those names behind the underscore-prefixed defaults.
+	if s.Name != "" && s.Name[0] >= '0' && s.Name[0] <= '9' {
+		prefix = "site-"
+	}
+	return prefix + s.Name + "-" + id + ".conf"
 }
 
 func siteServerNames(s SiteSpec) string {
@@ -455,7 +459,7 @@ func siteServerNames(s SiteSpec) string {
 }
 
 func siteCertificatePaths(s SiteSpec, tlsDir string) (certPath, keyPath string) {
-	if !s.TLS {
+	if !s.TLS && len(s.CertPEM) == 0 {
 		return dashboardCertificatePaths(tlsDir)
 	}
 	return tlsDir + "/" + s.ID + ".crt", tlsDir + "/" + s.ID + ".key"

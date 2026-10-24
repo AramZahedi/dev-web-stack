@@ -2155,3 +2155,25 @@ func TestDaemonStopRejectsReusedPID(t *testing.T) {
 		t.Fatalf("error = %v, want reused pid refusal", err)
 	}
 }
+
+func TestDaemonStopCleansStaleStartTicksWhenProcessIsGone(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(daemon.PidPath(home), []byte("999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(daemon.StartTicksPath(home), []byte("123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := daemonStop(context.Background(), home)
+	if err != nil || stopped {
+		t.Fatalf("daemonStop = (%v, %v), want (false,nil)", stopped, err)
+	}
+	for _, path := range []string{daemon.PidPath(home), daemon.StartTicksPath(home)} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s was not removed: %v", path, err)
+		}
+	}
+}

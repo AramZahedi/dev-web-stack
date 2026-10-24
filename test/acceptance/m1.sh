@@ -65,6 +65,13 @@ done
 # Do not change the process umask: existing tests assert the modes of files
 # they create under the caller's umask. mktemp creates the log directory 0700.
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/devstack-acceptance.XXXXXX")"
+FPM_BASELINE="${LOG_DIR}/fpm-listeners-before.txt"
+: >"${FPM_BASELINE}"
+if command -v ss >/dev/null 2>&1; then
+	ss -H -ltn '( sport >= :43000 and sport <= :43999 )' 2>/dev/null | sort >"${FPM_BASELINE}" || true
+elif command -v lsof >/dev/null 2>&1; then
+	lsof -nP -iTCP:43000-43999 -sTCP:LISTEN 2>/dev/null | sort >"${FPM_BASELINE}" || true
+fi
 CURRENT_PHASE_LOG=""
 CURRENT_PHASE_NOTE=""
 
@@ -260,7 +267,8 @@ phase_e2e() {
 		return "${status}"
 	fi
 	if grep -q '^e2e: SKIP external nginx mode' "${CURRENT_PHASE_LOG}"; then
-		note "builtin flow PASS; $(grep -m1 '^e2e: SKIP external nginx mode' "${CURRENT_PHASE_LOG}")"
+		note "SKIP: builtin flow passed, but $(grep -m1 '^e2e: SKIP external nginx mode' "${CURRENT_PHASE_LOG}")"
+		return 77
 	fi
 	if grep -q '^e2e: SKIP node vhost' "${CURRENT_PHASE_LOG}"; then
 		note "$(grep -m1 '^e2e: SKIP node vhost' "${CURRENT_PHASE_LOG}")"
@@ -321,12 +329,16 @@ phase_fpm_ports() {
 		note "SKIP: neither ss nor lsof is available to inspect 43000-43999"
 		return 77
 	fi
-	if [ -n "${listeners}" ]; then
-		printf '%s\n' "${listeners}"
-		note "FAIL: TCP listeners remain on 43000-43999 after the acceptance phases"
+	local after
+	after="$(printf '%s\n' "${listeners}" | sort)"
+	local new
+	new="$(comm -13 "${FPM_BASELINE}" <(printf '%s\n' "${after}") 2>/dev/null || true)"
+	if [ -n "${new}" ]; then
+		printf '%s\n' "${new}"
+		note "FAIL: new TCP listeners remain on 43000-43999 after the acceptance phases"
 		return 1
 	fi
-	printf 'no TCP listeners on 43000-43999\n'
+	printf 'no new TCP listeners on 43000-43999\n'
 	return 0
 }
 
@@ -473,10 +485,12 @@ print_summary() {
 #   dist/devstack; `make build` still runs before the UI phases for npm ci.
 # - The installer test and E2E then use the built final binaries.
 run_phase "go vet" phase_go_vet
+# Build before the Go tests so the embedded-dashboard test exercises the real
+# UI build on a clean checkout instead of skipping.
+run_phase "make build" phase_make_build
 run_phase "go test" phase_go_test
 run_phase "go test race" phase_go_race
 run_phase "release archive test" phase_release_test
-run_phase "make build" phase_make_build
 run_phase "ui check" phase_ui_check
 run_phase "ui unit tests" phase_ui_test
 run_phase "ui build" phase_ui_build

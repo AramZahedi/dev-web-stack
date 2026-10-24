@@ -71,6 +71,7 @@ func TestStaticHandlerServesDirectoryIndexWithoutListing(t *testing.T) {
 	writeFile(t, filepath.Join(root, "index.html"), "root index")
 	writeFile(t, filepath.Join(root, "docs", "index.html"), "docs index")
 	writeFile(t, filepath.Join(root, "attacker.com", "index.html"), "not a redirect")
+	writeFile(t, filepath.Join(root, "a?b", "index.html"), "escaped redirect")
 	writeFile(t, filepath.Join(root, "assets", "app.js"), "console.log(1)")
 
 	h := newTestHandler(t, root, false)
@@ -82,6 +83,7 @@ func TestStaticHandlerServesDirectoryIndexWithoutListing(t *testing.T) {
 	}{
 		{"/docs", "/docs/", ""},
 		{"//attacker.com", "/attacker.com/", ""},
+		{"/a%3Fb", "/a%3Fb/", ""},
 		{"/docs?x=1", "/docs/?x=1", ""},
 		{"/docs/", "", "docs index"},
 	} {
@@ -257,5 +259,22 @@ func TestStaticHandlerCloseIsIdempotent(t *testing.T) {
 	}
 	if err := h.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestStaticHandlerDeniesDotfiles(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".env"), "SECRET=1")
+	writeFile(t, filepath.Join(root, ".git", "config"), "[core]")
+	h := newTestHandler(t, root, true)
+	for _, p := range []string{"/.env", "/.git/config", "/docs/.hidden"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: code = %d, want 404", p, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "SECRET") || strings.Contains(rec.Body.String(), "[core]") {
+			t.Fatalf("%s leaked file contents", p)
+		}
 	}
 }

@@ -146,6 +146,11 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 	}
 
 	oldHash, oldPort := current.PHPConfigHash, current.FastCGIPort
+	if active, ok := s.deps.PHPBackend.(interface{ ActivePHPGeneration(string) string }); ok {
+		if generation := active.ActivePHPGeneration(current.ID); generation != "" {
+			oldHash = generation
+		}
+	}
 
 	// A running apply first probes the merged configuration against the port
 	// the current master owns. A byte-identical render means only row fields

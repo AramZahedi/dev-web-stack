@@ -174,6 +174,12 @@ func daemonStop(ctx context.Context, home string) (bool, error) {
 	}
 	if expected, err := readStartTicks(daemon.StartTicksPath(home)); err == nil {
 		actual, err := readProcStartTicks(pid)
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+			// The recorded process is gone; treat the stale files as stopped.
+			_ = os.Remove(daemon.PidPath(home))
+			_ = os.Remove(daemon.StartTicksPath(home))
+			return false, nil
+		}
 		if err != nil {
 			return false, wrapError(fmt.Errorf("inspect start time for pid %d: %w", pid, err), "DAEMON_STOP_FAILED", fmt.Sprintf("Inspect %s.", daemon.PidPath(home)))
 		}

@@ -139,13 +139,16 @@ func writeApachePHPBody(b *strings.Builder, s SiteSpec, scheme string) {
 	b.WriteString("    </Directory>\n")
 	b.WriteString("\n")
 	b.WriteString("    DirectoryIndex index.php index.html\n")
+	b.WriteString("    Header always unset Strict-Transport-Security\n")
 	b.WriteString("\n")
 	b.WriteString("    RewriteEngine On\n")
+	b.WriteString("    RewriteCond %{HTTP_HOST} ^(.+)$\n")
+	b.WriteString("    RewriteRule ^ - [E=DEVSTACK_HOST:%1]\n")
 	b.WriteString("    RewriteCond %{REMOTE_ADDR} ^(.+)$\n")
 	b.WriteString("    RewriteRule ^ - [E=DEVSTACK_REMOTE:%1]\n")
 	b.WriteString("    RequestHeader set X-Forwarded-For \"%{DEVSTACK_REMOTE}e\"\n")
 	fmt.Fprintf(b, "    RequestHeader set X-Forwarded-Proto %s\n", apacheQuote(scheme))
-	b.WriteString("    RequestHeader set X-Forwarded-Host \"%{HTTP_HOST}s\"\n")
+	b.WriteString("    RequestHeader set X-Forwarded-Host \"%{DEVSTACK_HOST}e\"\n")
 	b.WriteString("\n")
 	// FilesMatch inspects only the basename, so the source-backup denial is
 	// scoped to the PHP extensions it protects. It is emitted before the PHP
@@ -183,6 +186,7 @@ func writeApacheProxyConfig(b *strings.Builder, port int, scheme string) {
 
 	b.WriteString("    ProxyPreserveHost On\n")
 	b.WriteString("    ProxyAddHeaders Off\n")
+	b.WriteString("    Header always unset Strict-Transport-Security\n")
 	fmt.Fprintf(b, "    ProxyPass \"/\" %s upgrade=websocket connectiontimeout=5 timeout=120\n", quotedUpstream)
 	fmt.Fprintf(b, "    ProxyPassReverse \"/\" %s\n", quotedUpstream)
 	b.WriteString("\n")

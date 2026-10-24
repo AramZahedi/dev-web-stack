@@ -143,6 +143,14 @@ if [ -f "${REPO_ROOT}/LICENSE" ]; then
 	install -m 0644 "${REPO_ROOT}/LICENSE" "${STAGE}/LICENSE"
 fi
 
+# Verify the packaged binary before writing a publishable archive. A wrong
+# ldflags value or stale dist/ binary must not leave a checksummed archive.
+REPORTED_VERSION="$("${STAGE}/devstack" version --json)"
+case "${REPORTED_VERSION}" in
+*"\"version\":\"${VERSION}\""*) ;;
+*) die "packaged devstack does not report ${VERSION}: ${REPORTED_VERSION}" ;;
+esac
+
 ARCHIVE_NAME="devstack_${VERSION}_linux_amd64.tar.gz"
 ARCHIVE="${OUTPUT_DIR}/${ARCHIVE_NAME}"
 MEMBERS=(devstack devstack-helper install.sh README.md)
@@ -168,15 +176,6 @@ rm -f "${ARCHIVE_TAR}"
 	cd "${OUTPUT_DIR}"
 	sha256sum "${ARCHIVE_NAME}" >checksums.txt
 )
-
-# Verify the packaged binary, not just the in-tree build, so a stale dist/
-# binary or a wrong ldflags value cannot produce a mislabelled archive.
-tar -xzf "${ARCHIVE}" -C "${VERIFY_DIR}" devstack
-REPORTED_VERSION="$("${VERIFY_DIR}/devstack" version --json)"
-case "${REPORTED_VERSION}" in
-*"\"version\":\"${VERSION}\""*) ;;
-*) die "packaged devstack does not report ${VERSION}: ${REPORTED_VERSION}" ;;
-esac
 
 CHECKSUM="$(cut -d' ' -f1 <"${OUTPUT_DIR}/checksums.txt")"
 printf 'archive: %s\n' "${ARCHIVE}"

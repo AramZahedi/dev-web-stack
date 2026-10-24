@@ -111,9 +111,21 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 		if !ok {
 			continue
 		}
+		// Repair an expired/rotated certificate before publishing routes. A
+		// stale cert must not prevent daemon startup; the renewal ticker starts
+		// only after readiness.
+		if fresh, ensureErr := s.deps.Certs.Ensure(ctx, site.ID, siteDomains(site)); ensureErr == nil {
+			rec = fresh
+			bySite[site.ID] = fresh
+		}
 		cert, err := s.deps.Certs.Load(rec)
 		if err != nil {
-			return fmt.Errorf("sites: load certificate for %q: %w", site.Name, err)
+			// Skip this site's routes rather than blocking every other site and
+			// the daemon readiness path. The next renewal/rebuild retries.
+			for _, host := range siteDomains(site) {
+				delete(routes, strings.ToLower(host))
+			}
+			continue
 		}
 		domains := rec.Domains
 		if len(domains) == 0 {

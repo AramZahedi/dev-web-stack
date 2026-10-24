@@ -330,7 +330,18 @@ export async function removeTrust(): Promise<TrustTarget[]> {
 
 export async function browseFs(path: string): Promise<FsListing> {
   if (isMockMode) return mockApi.browseFs(path);
-  return request<FsListing>(`/fs?path=${encodeURIComponent(path)}`);
+  // /fs is session-gated even though it is a GET. Ensure the session cookie is
+  // present, and recover once if the daemon restarted between calls.
+  await fetchSession();
+  try {
+    return await request<FsListing>(`/fs?path=${encodeURIComponent(path)}`);
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 403) throw error;
+    csrfToken = null;
+    sessionRequest = null;
+    await fetchSession();
+    return request<FsListing>(`/fs?path=${encodeURIComponent(path)}`);
+  }
 }
 
 export async function getSettings(): Promise<Settings> {

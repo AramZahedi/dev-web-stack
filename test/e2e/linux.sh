@@ -83,29 +83,29 @@ dump_logs() {
 	set +e
 	trap - ERR
 	printf '\n---- helper log ----\n' >&2
-	tail -n 80 "${HELPER_LOG}" 2>/dev/null >&2
+	tail -n 80 "${HELPER_LOG}" >&2 2>/dev/null
 	printf '\n---- daemon log ----\n' >&2
-	tail -n 120 "${DAEMON_LOG}" 2>/dev/null >&2
+	tail -n 120 "${DAEMON_LOG}" >&2 2>/dev/null
 	printf '\n---- site add log ----\n' >&2
-	tail -n 120 "${SITE_ADD_LOG}" 2>/dev/null >&2
+	tail -n 120 "${SITE_ADD_LOG}" >&2 2>/dev/null
 	printf '\n---- daemon stop log ----\n' >&2
-	tail -n 40 "${STOP_LOG}" 2>/dev/null >&2
+	tail -n 40 "${STOP_LOG}" >&2 2>/dev/null
 	printf '\n---- vhost use log ----\n' >&2
-	tail -n 80 "${VHOST_USE_LOG}" 2>/dev/null >&2
+	tail -n 80 "${VHOST_USE_LOG}" >&2 2>/dev/null
 	printf '\n---- vhost status log ----\n' >&2
-	tail -n 40 "${VHOST_STATUS_LOG}" 2>/dev/null >&2
+	tail -n 40 "${VHOST_STATUS_LOG}" >&2 2>/dev/null
 	printf '\n---- vhost preview log ----\n' >&2
-	tail -n 60 "${VHOST_PREVIEW_LOG}" 2>/dev/null >&2
+	tail -n 60 "${VHOST_PREVIEW_LOG}" >&2 2>/dev/null
 	printf '\n---- redirect site log ----\n' >&2
-	tail -n 60 "${REDIRECT_ADD_LOG}" 2>/dev/null >&2
+	tail -n 60 "${REDIRECT_ADD_LOG}" >&2 2>/dev/null
 	printf '\n---- redirect headers ----\n' >&2
-	cat "${REDIRECT_HEADERS}" 2>/dev/null >&2
+	cat "${REDIRECT_HEADERS}" >&2 2>/dev/null
 	printf '\n---- node site log ----\n' >&2
-	tail -n 60 "${NODE_ADD_LOG}" 2>/dev/null >&2
+	tail -n 60 "${NODE_ADD_LOG}" >&2 2>/dev/null
 	printf '\n---- nginx log ----\n' >&2
-	tail -n 80 "${NGINX_LOG}" 2>/dev/null >&2
+	tail -n 80 "${NGINX_LOG}" >&2 2>/dev/null
 	printf '\n---- nginx error log ----\n' >&2
-	tail -n 80 "${NGINX_PREFIX}/error.log" 2>/dev/null >&2
+	tail -n 80 "${NGINX_PREFIX}/error.log" >&2 2>/dev/null
 }
 
 fail() {
@@ -335,8 +335,16 @@ exec "${REAL_NGINX}" -p "${NGINX_PREFIX}/" -c "${NGINX_CONF}" "\$@"
 EOF
 	cat >"${TOOL_BIN}/systemctl" <<EOF
 #!/usr/bin/env bash
-if [ "\${1:-}" = "reload" ] && [ "\${2:-}" = "nginx" ]; then
-	exec "${REAL_NGINX}" -p "${NGINX_PREFIX}/" -c "${NGINX_CONF}" -s reload
+if [ "\${1:-}" = "reload" ] || [ "\${1:-}" = "reload-or-restart" ]; then
+	if [ "\${2:-}" = "nginx" ]; then
+		exec "${REAL_NGINX}" -p "${NGINX_PREFIX}/" -c "${NGINX_CONF}" -s reload
+	fi
+fi
+if [ "\${1:-}" = "is-active" ] && [ "\${3:-}" = "nginx" ]; then
+	if [ -s "${NGINX_PID}" ] && kill -0 "\$(cat "${NGINX_PID}")" 2>/dev/null; then
+		exit 0
+	fi
+	exit 3
 fi
 exit 0
 EOF

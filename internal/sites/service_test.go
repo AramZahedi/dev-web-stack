@@ -804,3 +804,70 @@ func TestValidateDocumentRootConfinesAbsolutePaths(t *testing.T) {
 		}
 	}
 }
+
+func TestRestartStartFailurePreservesDesiredRunning(t *testing.T) {
+	svc, fakes := newTestService(t)
+	site, err := svc.Create(ctx, CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakes.backend.startErr = errors.New("start failed")
+	if err := svc.Restart(ctx, site.ID); err == nil {
+		t.Fatal("Restart succeeded despite the injected start failure")
+	}
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DesiredState != model.DesiredRunning {
+		t.Fatalf("desired state = %q, want running", stored.DesiredState)
+	}
+	if stored.Status != model.StatusError {
+		t.Fatalf("status = %q, want error", stored.Status)
+	}
+}
+
+func TestUpdateRunningStaticAppliesDocumentRoot(t *testing.T) {
+	svc, fakes := newTestService(t)
+	site, err := svc.Create(ctx, CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := filepath.Join(fakes.root, "public")
+	if err := os.Mkdir(public, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(public, "index.html"), []byte("public"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, site.ID, UpdateRequest{DocumentRoot: "public"}); err != nil {
+		t.Fatal(err)
+	}
+	fakes.backend.mu.Lock()
+	defer fakes.backend.mu.Unlock()
+	if len(fakes.backend.prepared) == 0 {
+		t.Fatal("backend was not prepared")
+	}
+	last := fakes.backend.prepared[len(fakes.backend.prepared)-1]
+	if last.DocumentRoot != "public" {
+		t.Fatalf("prepared document root = %q, want public", last.DocumentRoot)
+	}
+}
+
+func TestRefreshStatusRepublishesRouteState(t *testing.T) {
+	svc, fakes := newTestService(t)
+	site, err := svc.Create(ctx, CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakes.backend.mu.Lock()
+	fakes.backend.status[site.ID] = model.StatusCrashed
+	fakes.backend.mu.Unlock()
+	if _, err := svc.Get(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	route, ok := fakes.router.Lookup("blog.test")
+	if !ok || route.State != string(model.StatusCrashed) {
+		t.Fatalf("route = %+v, ok=%v, want crashed state", route, ok)
+	}
+}

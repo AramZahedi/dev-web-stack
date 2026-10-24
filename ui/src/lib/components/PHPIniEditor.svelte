@@ -10,11 +10,12 @@
     ini: Record<string, string>;
     raw: string;
     generated: string;
+    siteRef?: string;
     onApply: (change: PHPChange) => Promise<void>;
     disabled?: boolean;
   }
 
-  let { ini, raw, generated, onApply, disabled = false }: Props = $props();
+  let { ini, raw, generated, siteRef = '', onApply, disabled = false }: Props = $props();
 
   interface Row {
     id: number;
@@ -24,16 +25,21 @@
 
   let rows = $state<Row[]>([]);
   let rawText = $state('');
-  let syncedIni: Record<string, string> | null = null;
   let syncedRaw: string | null = null;
+  let syncedRef: string | null = null;
   let rowSeq = 0;
   let busy = $state(false);
   let error = $state<PHPErrorDescription | null>(null);
 
   $effect(() => {
-    if (syncedIni !== ini) {
-      syncedIni = ini;
+    // Resync only when the site changes. A server refresh creates a new `ini`
+    // object on every poll and must not discard unsaved directive edits.
+    if (syncedRef !== siteRef) {
+      syncedRef = siteRef;
+      syncedRaw = raw;
+      rawText = raw;
       rows = Object.entries(ini).map(([key, value]) => ({ id: ++rowSeq, key, value }));
+      return;
     }
     if (syncedRaw !== raw) {
       syncedRaw = raw;

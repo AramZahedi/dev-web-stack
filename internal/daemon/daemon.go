@@ -57,8 +57,10 @@ var renewInterval = 24 * time.Hour
 // selfExecutable is a seam so tests can point the backend at a built devstack
 // binary instead of the test executable.
 var (
-	selfExecutable     = os.Executable
-	ensureStartTimeout = 10 * time.Second
+	selfExecutable = os.Executable
+	// Node readiness can take 60s and PHP up to 30s TCP plus 30s health. The
+	// CLI must not kill a daemon that is legitimately still starting those.
+	ensureStartTimeout = 75 * time.Second
 
 	// Seams for the systemd user-unit path. Tests replace these so they never
 	// need a live user manager or a real unit file.
@@ -510,10 +512,9 @@ func (d *daemon) renew(parent context.Context) {
 	if err != nil {
 		d.logger.Warn("daemon: renew certificates", "error", err)
 	}
-	if len(renewed) == 0 {
-		return
+	if len(renewed) != 0 {
+		d.logger.Info("daemon: renewed certificates", "count", len(renewed))
 	}
-	d.logger.Info("daemon: renewed certificates", "count", len(renewed))
 	if d.sites.ServingMode() == config.ServingModeBuiltin {
 		if err := d.sites.RebuildRoutes(ctx); err != nil {
 			d.logger.Error("daemon: republish routes after renewal", "error", err)

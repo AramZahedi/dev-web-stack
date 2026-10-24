@@ -315,6 +315,10 @@ func (m *VhostManager) SetMode(ctx context.Context, mode string, req helperproto
 	if state.Mode == vhostModeBuiltin {
 		return m.enableExternalLocked(ctx, state, mode, req)
 	}
+	if state.Mode == mode {
+		req.Mode = mode
+		return m.syncLocked(ctx, req)
+	}
 	return m.switchExternalLocked(ctx, state, mode, req)
 }
 
@@ -325,7 +329,17 @@ func (m *VhostManager) Remove(ctx context.Context) error {
 		return fmt.Errorf("%w: another vhost sync or mode switch is running", helperproto.ErrVhostSyncBusy)
 	}
 	defer m.syncMu.Unlock()
-	return m.removeLocked(ctx)
+	return m.removeLocked(ctx, true)
+}
+
+// RemoveForUninstall removes managed vhost state without re-enabling the
+// privileged forwarders; uninstall stops them itself.
+func (m *VhostManager) RemoveForUninstall(ctx context.Context) error {
+	if !m.syncMu.TryLock() {
+		return fmt.Errorf("%w: another vhost sync or mode switch is running", helperproto.ErrVhostSyncBusy)
+	}
+	defer m.syncMu.Unlock()
+	return m.removeLocked(ctx, false)
 }
 
 func (m *VhostManager) enableExternalLocked(ctx context.Context, state vhostState, mode string, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error) {
@@ -370,51 +384,57 @@ func (m *VhostManager) switchExternalLocked(ctx context.Context, state vhostStat
 			return helperproto.VhostStatusResponse{}, fmt.Errorf("%w: read old bridge %s: %v", helperproto.ErrVhostSyncFailed, bridgePath, err)
 		}
 	}
-	if hadBridge {
-		if err := os.Remove(bridgePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return helperproto.VhostStatusResponse{}, fmt.Errorf("%w: remove old bridge %s: %v", helperproto.ErrVhostSyncFailed, bridgePath, err)
-		}
-	}
 	oldActive := false
-	if hadBridge {
+	if oldServer != "" {
 		active, activeErr := m.serverActive(ctx, oldServer, state.ReloadService)
 		if activeErr != nil {
 			return helperproto.VhostStatusResponse{}, activeErr
 		}
 		oldActive = active
-		if active {
-			if err := m.stopServer(ctx, oldServer, state.ReloadService); err != nil {
-				restoreErr := m.restoreBridge(bridgePath, bridgeData)
-				reloadErr := m.reloadServer(ctx, oldServer, state.ReloadService)
-				var errs []error
-				errs = append(errs, err)
-				if restoreErr != nil {
+	}
+	if hadBridge {
+		if err := os.Remove(bridgePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return helperproto.VhostStatusResponse{}, fmt.Errorf("%w: remove old bridge %s: %v", helperproto.ErrVhostSyncFailed, bridgePath, err)
+		}
+	}
+	if oldActive {
+		if err := m.stopServer(ctx, oldServer, state.ReloadService); err != nil {
+			var errs []error
+			errs = append(errs, err)
+			if hadBridge {
+				if restoreErr := m.restoreBridge(bridgePath, bridgeData); restoreErr != nil {
 					errs = append(errs, fmt.Errorf("restore old bridge: %w", restoreErr))
 				}
-				if reloadErr != nil {
-					errs = append(errs, fmt.Errorf("reload restored old bridge: %w", reloadErr))
-				}
-				if serr := m.writeState(m.failureState(state, err, state.ConfigOK)); serr != nil {
-					errs = append(errs, serr)
-				}
-				return helperproto.VhostStatusResponse{}, errors.Join(errs...)
 			}
+			if reloadErr := m.startServer(ctx, oldServer, state.ReloadService); reloadErr != nil {
+				errs = append(errs, fmt.Errorf("restart old server: %w", reloadErr))
+			}
+			if serr := m.writeState(m.failureState(state, err, state.ConfigOK)); serr != nil {
+				errs = append(errs, serr)
+			}
+			return helperproto.VhostStatusResponse{}, errors.Join(errs...)
 		}
 	}
 
+	newActiveBefore, _ := m.serverActive(ctx, mode, "")
 	req.Mode = mode
 	status, err := m.syncLocked(ctx, req)
 	if err != nil {
 		var errs []error
 		errs = append(errs, err)
+		if !newActiveBefore {
+			if stopErr := m.stopServer(ctx, mode, ""); stopErr != nil {
+				errs = append(errs, fmt.Errorf("stop failed new server: %w", stopErr))
+			}
+		}
 		if hadBridge {
 			if rerr := m.restoreBridge(bridgePath, bridgeData); rerr != nil {
 				errs = append(errs, fmt.Errorf("restore old bridge: %w", rerr))
 			}
-			if oldActive {
-				if rerr := m.startServer(ctx, oldServer, state.ReloadService); rerr != nil {
-					errs = append(errs, fmt.Errorf("restart restored old server: %w", rerr))
-				}
+		}
+		if oldActive {
+			if rerr := m.startServer(ctx, oldServer, state.ReloadService); rerr != nil {
+				errs = append(errs, fmt.Errorf("restart restored old server: %w", rerr))
 			}
 		}
 		if serr := m.writeState(m.failureState(state, err, state.ConfigOK)); serr != nil {
@@ -427,12 +447,12 @@ func (m *VhostManager) switchExternalLocked(ctx context.Context, state vhostStat
 
 func (m *VhostManager) setBuiltinLocked(ctx context.Context, state vhostState) (helperproto.VhostStatusResponse, error) {
 	if state.Mode == vhostModeBuiltin {
-		if err := m.cleanupBuiltinLocked(ctx, state); err != nil {
+		if err := m.cleanupBuiltinLocked(ctx, state, true); err != nil {
 			return m.statusFromState(state), err
 		}
 		return m.statusFromState(builtinStateWithTime(m.currentTime())), nil
 	}
-	builtin, err := m.teardownExternalLocked(ctx, state)
+	builtin, err := m.teardownExternalLocked(ctx, state, true)
 	if err != nil {
 		return m.statusFromState(state), err
 	}
@@ -442,7 +462,7 @@ func (m *VhostManager) setBuiltinLocked(ctx context.Context, state vhostState) (
 // cleanupBuiltinLocked removes any managed leftovers while the persisted mode
 // is already builtin. Every removal must succeed before forwarders are started
 // and builtin state is rewritten.
-func (m *VhostManager) cleanupBuiltinLocked(ctx context.Context, state vhostState) error {
+func (m *VhostManager) cleanupBuiltinLocked(ctx context.Context, state vhostState, enableForwarders bool) error {
 	if state.BridgePath != "" {
 		if err := m.removeBridge(state); err != nil {
 			return err
@@ -454,13 +474,15 @@ func (m *VhostManager) cleanupBuiltinLocked(ctx context.Context, state vhostStat
 	if err := m.removeTLSFiles(state.TLSOwners); err != nil {
 		return err
 	}
-	if err := m.setForwarders(ctx, true); err != nil {
-		return fmt.Errorf("%w: enable built-in forwarders: %v", helperproto.ErrVhostSyncFailed, err)
+	if enableForwarders {
+		if err := m.setForwarders(ctx, true); err != nil {
+			return fmt.Errorf("%w: enable built-in forwarders: %v", helperproto.ErrVhostSyncFailed, err)
+		}
 	}
 	return m.writeState(builtinStateWithTime(m.currentTime()))
 }
 
-func (m *VhostManager) removeLocked(ctx context.Context) error {
+func (m *VhostManager) removeLocked(ctx context.Context, enableForwarders bool) error {
 	state, err := m.readState()
 	if err != nil {
 		return fmt.Errorf("%w: read vhost state: %v", helperproto.ErrVhostSyncFailed, err)
@@ -469,9 +491,9 @@ func (m *VhostManager) removeLocked(ctx context.Context) error {
 		state.Mode = vhostModeBuiltin
 	}
 	if state.Mode == vhostModeBuiltin {
-		return m.cleanupBuiltinLocked(ctx, state)
+		return m.cleanupBuiltinLocked(ctx, state, enableForwarders)
 	}
-	_, err = m.teardownExternalLocked(ctx, state)
+	_, err = m.teardownExternalLocked(ctx, state, enableForwarders)
 	return err
 }
 
@@ -479,7 +501,7 @@ func (m *VhostManager) removeLocked(ctx context.Context) error {
 // server without our bridge, enables the builtin forwarders, and only then
 // commits builtin state. Any failure before the commit restores the staged
 // files and leaves the external mode serving and persisted.
-func (m *VhostManager) teardownExternalLocked(ctx context.Context, state vhostState) (vhostState, error) {
+func (m *VhostManager) teardownExternalLocked(ctx context.Context, state vhostState, enableForwarders bool) (vhostState, error) {
 	server := state.Server
 	if server == "" {
 		server = state.Mode
@@ -503,15 +525,19 @@ func (m *VhostManager) teardownExternalLocked(ctx context.Context, state vhostSt
 	if err := m.reloadServerIfActive(ctx, server, state.ReloadService); err != nil {
 		return rollback(err)
 	}
-	if err := m.setForwarders(ctx, true); err != nil {
-		return rollback(fmt.Errorf("%w: enable built-in forwarders: %v", helperproto.ErrVhostSyncFailed, err))
+	if enableForwarders {
+		if err := m.setForwarders(ctx, true); err != nil {
+			return rollback(fmt.Errorf("%w: enable built-in forwarders: %v", helperproto.ErrVhostSyncFailed, err))
+		}
 	}
 
 	builtin := builtinStateWithTime(m.currentTime())
 	if err := m.writeState(builtin); err != nil {
 		// The staged files are still intact, so release the privileged ports
 		// and restore external serving rather than claiming builtin mode.
-		_ = m.setForwarders(ctx, false)
+		if enableForwarders {
+			_ = m.setForwarders(ctx, false)
+		}
 		return rollback(fmt.Errorf("%w: persist builtin vhost state: %v", helperproto.ErrVhostSyncFailed, err))
 	}
 	if err := cleanupStagedPaths(staged); err != nil {
@@ -915,7 +941,7 @@ func (m *VhostManager) validateSyncRequest(req helperproto.VHostSyncRequest) (pr
 			return preparedVhosts{}, err
 		}
 		prepared.sites = append(prepared.sites, spec)
-		if site.TLS {
+		if len(site.CertPEM) > 0 || len(site.KeyPEM) > 0 {
 			prepared.tlsSites = append(prepared.tlsSites, tlsSiteMaterial{
 				owner: site.ID, certPEM: site.CertPEM, keyPEM: site.KeyPEM,
 			})
@@ -999,7 +1025,7 @@ func (m *VhostManager) validateSite(site helperproto.VHostSite, ids, hosts map[s
 		hosts[name] = "site " + site.ID
 	}
 
-	if site.TLS {
+	if site.TLS || len(site.CertPEM) > 0 || len(site.KeyPEM) > 0 {
 		if err := m.verifyLeaf(site.CertPEM, site.KeyPEM, names, "site "+site.ID); err != nil {
 			return vhost.SiteSpec{}, err
 		}

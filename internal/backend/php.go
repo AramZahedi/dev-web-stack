@@ -572,3 +572,15 @@ func phpHealthParams(port int, script string) map[string]string {
 		"QUERY_STRING":      "",
 	}
 }
+
+// ActivePHPGeneration returns the generation currently backing a site, or an
+// empty string when no master is active.
+func (l *Local) ActivePHPGeneration(siteID string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	site := l.staged[siteID]
+	if site == nil {
+		return ""
+	}
+	return site.active
+}

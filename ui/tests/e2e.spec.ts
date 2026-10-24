@@ -274,6 +274,9 @@ test('Site detail streams logs, pauses/resumes, and stops/starts the site', asyn
   await page.waitForTimeout(1_200);
   expect(await lineCount()).toBe(pausedAt);
   await expect(page.getByText(/buffered while paused/)).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('devstack:refresh')));
+  await expect(page.getByRole('button', { name: 'Resume log stream' })).toBeVisible();
+  expect(await lineCount()).toBe(pausedAt);
 
   await page.getByRole('button', { name: 'Resume log stream' }).click();
   await expect.poll(lineCount, { timeout: 5_000 }).toBeGreaterThan(pausedAt);
@@ -300,6 +303,20 @@ test('Site detail reloads when the route ref changes', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'shop' })).toBeVisible();
   await expect(page.getByRole('log', { name: 'Live output from shop' })).toBeVisible();
   await expect(page.getByRole('log', { name: 'Live output from blog' })).toHaveCount(0);
+});
+
+test('Site detail clears revealed secrets on route change', async ({ page }) => {
+  await open(page, '#/sites/shop');
+  await expect(page.getByRole('heading', { name: 'shop' })).toBeVisible();
+  await page.getByRole('button', { name: 'Reveal SESSION_SECRET' }).click();
+  await expect(page.getByText('shop_dev_2f9c4a6e8b1d')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.location.hash = '#/sites/blog';
+  });
+  await expect(page.getByRole('heading', { name: 'blog' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reveal SESSION_SECRET' })).toBeVisible();
+  await expect(page.getByText('shop_dev_2f9c4a6e8b1d')).toHaveCount(0);
 });
 
 test('Runtimes asks for confirmation and installs a build', async ({ page }) => {

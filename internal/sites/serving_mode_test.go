@@ -864,3 +864,17 @@ func assertSavedMode(t *testing.T, svc *Service, want string) {
 		}
 	}
 }
+
+func TestValidateVhostSiteForSyncRejectsForeignBackend(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root owns every path; this check is for the unprivileged daemon")
+	}
+	site := model.Site{
+		ID: "foreign", Name: "foreign", Domain: "foreign.test",
+		Kind: model.SiteStatic, BackendPath: "/etc", DocumentRoot: "/etc",
+		DesiredState: model.DesiredRunning, Status: model.StatusRunning,
+	}
+	if err := validateVhostSiteForSync(site); err == nil {
+		t.Fatal("accepted a backend path owned by another user")
+	}
+}

@@ -756,3 +756,16 @@ func TestPHPProxyFlushesStreamingResponse(t *testing.T) {
 		t.Fatal("FastCGI response was not flushed")
 	}
 }
+
+func TestPHPDirectoryRedirectEscapesLocation(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "a?b/index.html", "index")
+	r, _ := newPHPRoute(t, root, false, false)
+	rec := servePHPTest(r, httptest.NewRequest(http.MethodGet, "http://blog.test/a%3Fb", nil))
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("code = %d, want 301", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/a%3Fb/" {
+		t.Fatalf("Location = %q, want /a%%3Fb/", got)
+	}
+}

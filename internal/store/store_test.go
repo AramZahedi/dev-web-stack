@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -718,5 +719,33 @@ func TestAddEventBoundsHistoryTo500(t *testing.T) {
 	}
 	if events[0].Message != "504" || events[len(events)-1].Message != "5" {
 		t.Fatalf("event bounds = %q..%q", events[0].Message, events[len(events)-1].Message)
+	}
+}
+
+func TestStoreDatabaseAndWALPermissionsAreOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.CreateSite(ctx, model.Site{ID: "s1", Name: "blog", Domain: "blog.test", Kind: model.SiteStatic}); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %o, want 600", candidate, info.Mode().Perm())
+		}
 	}
 }

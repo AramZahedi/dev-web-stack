@@ -441,7 +441,7 @@ func (s *Server) uninstall(ctx context.Context, _ helperproto.UninstallRequest) 
 	// Remove managed vhosts before stopping the forwarders so the external
 	// server is reloaded without our bridge first.
 	if s.vhosts != nil {
-		if err := s.vhosts.Remove(ctx); err != nil {
+		if err := s.vhosts.RemoveForUninstall(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("remove vhosts: %w", err))
 		}
 	}
@@ -1041,8 +1041,21 @@ func prepareSocketDir(socketPath string, allowUID int) error {
 		if info.Mode()&os.ModeSticky == 0 {
 			perm := info.Mode().Perm()
 			accessible := perm&0o001 != 0
-			if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) == allowUID {
-				accessible = perm&0o100 != 0
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				if int(stat.Uid) == allowUID {
+					accessible = perm&0o100 != 0
+				} else if perm&0o010 != 0 && allowUID > 0 {
+					if account, err := user.LookupId(strconv.Itoa(allowUID)); err == nil {
+						if groups, err := account.GroupIds(); err == nil {
+							for _, group := range groups {
+								if group == strconv.FormatUint(uint64(stat.Gid), 10) {
+									accessible = true
+									break
+								}
+							}
+						}
+					}
+				}
 			}
 			if !accessible {
 				return fmt.Errorf("helper: socket parent %s is not traversable by the allowed user", dir)

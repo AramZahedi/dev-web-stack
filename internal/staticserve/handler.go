@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -111,10 +112,11 @@ func (h *StaticHandler) serveDirectory(w http.ResponseWriter, r *http.Request, r
 	if !strings.HasSuffix(r.URL.Path, "/") {
 		// Use the cleaned relative path, never the raw request path: a raw
 		// "//attacker.example" would become a protocol-relative redirect.
-		location := "/"
+		locationPath := "/"
 		if rel != "." {
-			location = "/" + rel + "/"
+			locationPath = "/" + rel + "/"
 		}
+		location := (&url.URL{Path: locationPath}).EscapedPath()
 		if r.URL.RawQuery != "" {
 			location += "?" + r.URL.RawQuery
 		}
@@ -168,6 +170,9 @@ func cleanRequestPath(raw string) (string, bool) {
 	}
 	for _, segment := range strings.Split(raw, "/") {
 		if segment == ".." {
+			return "", false
+		}
+		if strings.HasPrefix(segment, ".") && segment != "." && segment != ".." {
 			return "", false
 		}
 	}
