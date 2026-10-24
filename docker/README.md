@@ -16,7 +16,10 @@ container. The builtin Go proxy still serves every static, Node, and PHP site.
 | HTTPS sites | **8443** | 443 |
 | Dashboard / UI | **7070** | 7070 |
 
-The host ports are explicit; they are not guessed. Use `docker compose` from the
+The ports bind to `127.0.0.1` by default, so the dashboard and sites are
+available on the local machine but not exposed to the LAN. Set
+`DEVSTACK_BIND_ADDRESS=0.0.0.0` if you deliberately want LAN access. The host
+ports are explicit; they are not guessed. Use `docker compose` from the
 repository root:
 
 ```sh
@@ -28,7 +31,7 @@ Or run the image directly:
 ```sh
 docker build -t devstack:0.1.0-docker .
 docker run -d --name devstack --restart unless-stopped \
-  -p 8080:80 -p 8443:443 -p 7070:7070 \
+  -p 127.0.0.1:8080:80 -p 127.0.0.1:8443:443 -p 127.0.0.1:7070:7070 \
   -v "$PWD/.docker-data/devstack:/home/devstack/.devstack" \
   -v "$PWD/.docker-data/helper:/var/lib/devstack-helper" \
   -v "$PWD/projects:/workspace" \
