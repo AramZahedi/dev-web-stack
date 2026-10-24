@@ -401,11 +401,16 @@ func (s *Service) stopRetainedPHPGenerationsLocked(ctx context.Context, site mod
 	released := make(map[int]bool)
 	for generation, port := range retained {
 		if generation == keep {
-			// The generation is now the live/current one; the row owns its
-			// port, so never stop it or release it here.
+			// The generation is now the live/current one. Its recorded port is
+			// normally the row's current port; a stale non-row port is safe to
+			// release because this generation is no longer running on it.
 			s.dropRetainedPHPGenerationLocked(site.ID, generation)
 			if port != 0 {
-				held[port] = true
+				if port == site.FastCGIPort {
+					held[port] = true
+				} else {
+					released[port] = true
+				}
 			}
 			continue
 		}

@@ -118,17 +118,24 @@ func (s *Service) retainedPHPGenerationsLocked(siteID string) map[string]int {
 	return retained
 }
 
-// releaseRetainedPHPGenerationsLocked releases every port retained for a site
-// after every one of its masters is known to be stopped. The caller must hold
-// s.mu.
-func (s *Service) releaseRetainedPHPGenerationsLocked(siteID string) {
+// releaseRetainedPHPGenerationsLocked releases every retained port that no
+// live row still owns, then forgets the entries. A stopped PHP row keeps its
+// FastCGI port for a later Start, so that port stays reserved even though the
+// retained entry is removed. The caller must hold s.mu.
+func (s *Service) releaseRetainedPHPGenerationsLocked(siteID string, ownedPorts ...int) {
 	generations := s.retainedPHP[siteID]
 	if len(generations) == 0 {
 		return
 	}
+	owned := make(map[int]bool, len(ownedPorts))
+	for _, port := range ownedPorts {
+		if port != 0 {
+			owned[port] = true
+		}
+	}
 	if s.deps.Ports != nil {
 		for _, port := range generations {
-			if port != 0 {
+			if port != 0 && !owned[port] {
 				s.deps.Ports.Release(port)
 			}
 		}
@@ -485,9 +492,10 @@ func (s *Service) stopPHPLocked(ctx context.Context, site model.Site) (model.Sit
 		return site, fmt.Errorf("sites: stop %q: %w", site.Name, err)
 	}
 	// Local.Stop below terminates every staged generation, including ones kept
-	// after an earlier failed cleanup, so their ports can be released now.
+	// after an earlier failed cleanup. Release their ports, but keep the port
+	// the stopped row still owns: Start reuses it without reallocating.
 	if s.deps.Backend != nil {
-		s.releaseRetainedPHPGenerationsLocked(site.ID)
+		s.releaseRetainedPHPGenerationsLocked(site.ID, site.FastCGIPort)
 	}
 	oldStatus := site.Status
 	site.DesiredState = model.DesiredStopped

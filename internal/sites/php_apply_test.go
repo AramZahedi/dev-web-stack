@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
+	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/phpfpm"
 	"github.com/AramZahedi/dev-web-stack/internal/phpini"
@@ -1650,6 +1651,49 @@ func TestRunningPHPExecWithoutFastCGIPortFailsClearly(t *testing.T) {
 	}
 	if _, ok := fakes.backend.lastExec(); ok {
 		t.Fatal("PHPExec ran without a FastCGI port")
+	}
+}
+
+func TestStopRetainedCurrentGenerationKeepsRowPortAndReleasesStalePort(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+
+	stale, err := fakes.ports.Allocate(domain.PortFastCGI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.retainedPHP = map[string]map[string]int{site.ID: {site.PHPConfigHash: stale}}
+	stopped, released, held := svc.stopRetainedPHPGenerationsLocked(ctx, site, site.PHPConfigHash)
+	if !stopped {
+		t.Fatal("dropping the current retained generation failed")
+	}
+	if len(released) != 1 || released[0] != stale {
+		t.Fatalf("released = %v, want stale port %d", released, stale)
+	}
+	if held[site.FastCGIPort] {
+		t.Fatalf("held = %v, current generation is not running on the row port", held)
+	}
+	fakes.ports.Release(released[0])
+	if reserveErr := fakes.ports.Reserve(stale); reserveErr != nil {
+		t.Fatalf("stale non-row port %d was not released: %v", stale, reserveErr)
+	}
+	fakes.ports.Release(stale)
+
+	svc.retainedPHP = map[string]map[string]int{site.ID: {site.PHPConfigHash: site.FastCGIPort}}
+	stopped, released, held = svc.stopRetainedPHPGenerationsLocked(ctx, site, site.PHPConfigHash)
+	if !stopped {
+		t.Fatal("dropping the current retained generation failed")
+	}
+	if len(released) != 0 {
+		t.Fatalf("released = %v, want no row-port release", released)
+	}
+	if !held[site.FastCGIPort] {
+		t.Fatalf("held = %v, want the row port %d", held, site.FastCGIPort)
+	}
+	if reserveErr := fakes.ports.Reserve(site.FastCGIPort); reserveErr == nil {
+		fakes.ports.Release(site.FastCGIPort)
+		t.Fatalf("row-owned port %d was released", site.FastCGIPort)
 	}
 }
 

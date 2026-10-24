@@ -599,6 +599,150 @@ func TestStartPHPStoreFailureRetainsPortWhenStopFails(t *testing.T) {
 	fakes.ports.Release(spec.FastCGIPort)
 }
 
+func TestStopKeepsRetainedRowFastCGIPort(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := stopped.FastCGIPort
+	if port == 0 {
+		t.Fatal("stopped row has no FastCGI port")
+	}
+
+	// Leave a retained generation on the row's own port by rejecting the
+	// running-state write after the master starts and then failing its stop.
+	db, err := sql.Open("sqlite", "file:"+fakes.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_php_site_update BEFORE UPDATE ON sites BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	fakes.backend.stopPHPErr = errors.New("stop failed")
+	if err := svc.Start(ctx, site.ID); err == nil || !strings.Contains(err.Error(), "stop failed") {
+		t.Fatalf("start error = %v, want the failed rollback stop", err)
+	}
+	if got := svc.retainedPHP[site.ID][phpDefaultGeneration]; got != port {
+		t.Fatalf("retained port = %d, want row port %d", got, port)
+	}
+	if _, err := db.ExecContext(ctx, `DROP TRIGGER reject_php_site_update`); err != nil {
+		t.Fatal(err)
+	}
+	fakes.backend.stopPHPErr = nil
+
+	// Stop succeeds and stops the retained master. It must forget the retained
+	// entry without freeing the FastCGI port the stopped row still owns.
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := svc.retainedPHP[site.ID][phpDefaultGeneration]; ok {
+		t.Fatal("retained entry survived a successful stop")
+	}
+	if reserveErr := fakes.ports.Reserve(port); reserveErr == nil {
+		fakes.ports.Release(port)
+		t.Fatalf("row-owned FastCGI port %d was released by Stop", port)
+	}
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.FastCGIPort != port || stored.Status != model.StatusStopped {
+		t.Fatalf("stopped row = %+v, want port %d and stopped", stored, port)
+	}
+
+	// The next Start reuses the stored port instead of allocating or binding a
+	// port the allocator may already have handed to another site.
+	if err := svc.Start(ctx, site.ID); err != nil {
+		t.Fatalf("start after stop: %v", err)
+	}
+	spec, ok := fakes.backend.phpSpec(site.ID, phpDefaultGeneration)
+	if !ok || spec.FastCGIPort != port {
+		t.Fatalf("start spec = %+v, want port %d", spec, port)
+	}
+	if !fakes.backend.phpStarted(site.ID, phpDefaultGeneration) {
+		t.Fatal("start did not run the master")
+	}
+}
+
+func TestExternalDeleteFailureKeepsRetainedRowFastCGIPort(t *testing.T) {
+	svc, fakes := newTestService(t)
+	useServingMode(svc, fakes, "nginx")
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := stopped.FastCGIPort
+	if port == 0 {
+		t.Fatal("stopped row has no FastCGI port")
+	}
+
+	db, err := sql.Open("sqlite", "file:"+fakes.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_php_site_update BEFORE UPDATE ON sites BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	fakes.backend.stopPHPErr = errors.New("stop failed")
+	if err := svc.Start(ctx, site.ID); err == nil || !strings.Contains(err.Error(), "stop failed") {
+		t.Fatalf("start error = %v, want the failed rollback stop", err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP TRIGGER reject_php_site_update`); err != nil {
+		t.Fatal(err)
+	}
+	fakes.backend.stopPHPErr = nil
+
+	// The restored row must be allowed to run again, using its own port.
+	stopped, err = fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped.DesiredState = model.DesiredRunning
+	if err := fakes.store.UpdateSite(ctx, stopped); err != nil {
+		t.Fatal(err)
+	}
+
+	fakes.certs.deleteErr = errors.New("cert delete failed")
+	err = svc.Delete(ctx, site.ID)
+	if err == nil || !strings.Contains(err.Error(), "cert delete failed") {
+		t.Fatalf("delete error = %v, want the certificate failure", err)
+	}
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatalf("row was not restored: %v", err)
+	}
+	if stored.FastCGIPort != port || stored.DesiredState != model.DesiredRunning {
+		t.Fatalf("restored row = %+v, want port %d and desired running", stored, port)
+	}
+	if reserveErr := fakes.ports.Reserve(port); reserveErr == nil {
+		fakes.ports.Release(port)
+		t.Fatalf("row-owned FastCGI port %d was released before the delete committed", port)
+	}
+	if got := svc.retainedPHP[site.ID][phpDefaultGeneration]; got != port {
+		t.Fatalf("retained port = %d, want %d", got, port)
+	}
+	if !fakes.backend.phpStarted(site.ID, phpDefaultGeneration) {
+		t.Fatal("restoreExternalDelete did not restart the PHP master")
+	}
+	spec, ok := fakes.backend.phpSpec(site.ID, phpDefaultGeneration)
+	if !ok || spec.FastCGIPort != port {
+		t.Fatalf("restart spec = %+v, want port %d", spec, port)
+	}
+}
+
 func TestCreatePHPRollsBackWhenConfigCannotBeWritten(t *testing.T) {
 	svc, fakes := newTestService(t)
 	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")

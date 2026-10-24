@@ -832,9 +832,6 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 			if err := s.stopPHPProcessLocked(ctx, site.ID); err != nil {
 				return fmt.Errorf("sites: stop %q: %w", site.Name, err)
 			}
-			if s.deps.Backend != nil {
-				s.releaseRetainedPHPGenerationsLocked(site.ID)
-			}
 		default:
 			if s.deps.Backend != nil {
 				if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil {
@@ -871,6 +868,11 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 	}
 
 	s.emitEvent(ctx, site.ID, "site.deleted", fmt.Sprintf("site %s deleted", site.Name))
+	// Only release retained and row ports after the row is gone: a later
+	// failure restores the row and expects its FastCGI port to stay reserved.
+	if s.deps.Backend != nil {
+		s.releaseRetainedPHPGenerationsLocked(site.ID)
+	}
 	s.deps.Ports.Release(site.HTTPPort)
 	if site.FastCGIPort != 0 {
 		s.deps.Ports.Release(site.FastCGIPort)
