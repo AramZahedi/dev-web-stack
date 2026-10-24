@@ -179,7 +179,10 @@ build `opcache.so` as a shared Zend extension and keep the toggle.
 ## What smoke.sh does
 
 1. Refuses root. Rejects archive members with `..` or absolute paths outside
-   the expected top-level directory, and rejects symbolic or hard-link entries.
+   the expected top-level directory, hard links, and symlinks that are
+   absolute, malformed, or resolve outside the package root. Contained relative
+   symlinks such as `bin/phar -> phar.phar` are allowed, matching the runtime
+   installer.
 2. Runs `bin/php -n -v`, `sbin/php-fpm -n -v`, and `bin/php -n -m`, capturing
    both stdout and stderr and rejecting `Failed loading`, `PHP Startup`, and
    other load-error output.

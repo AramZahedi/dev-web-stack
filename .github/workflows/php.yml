@@ -16,6 +16,7 @@ on:
       - "internal/catalog/php.json"
       - "internal/fcgi/**"
       - "internal/phpfpm/**"
+      - "test/php/**"
       - ".github/workflows/php.yml"
   pull_request:
     paths:
@@ -25,6 +26,7 @@ on:
       - "internal/catalog/php.json"
       - "internal/fcgi/**"
       - "internal/phpfpm/**"
+      - "test/php/**"
       - ".github/workflows/php.yml"
 
 permissions:
@@ -120,10 +122,13 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Check shell syntax
-        run: bash -n build/php/*.sh
+        run: bash -n build/php/*.sh test/php/*.sh
 
       - name: Lint shell scripts
-        run: shellcheck --severity=error build/php/*.sh
+        run: shellcheck --severity=error build/php/*.sh test/php/*.sh
+
+      - name: Test the smoke archive link policy
+        run: bash test/php/smoke_links_test.sh
 
       - name: Test the catalog generator and smoke command
         run: |
