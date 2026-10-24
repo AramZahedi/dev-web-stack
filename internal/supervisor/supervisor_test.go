@@ -299,8 +299,17 @@ func TestUnexpectedExitKillsRemainingProcessGroup(t *testing.T) {
 	if syscall.Kill(-groupPID, 0) == nil {
 		t.Fatal("descendant process group survived the unexpected exit")
 	}
-	if _, err := os.Stat(filepath.Join(runDir, "bg.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("pid file still exists after the group was killed: %v", err)
+	pidFilePath := filepath.Join(runDir, "bg.json")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, statErr := os.Stat(pidFilePath)
+		if errors.Is(statErr, os.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid file still exists after the group was killed: %v", statErr)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
