@@ -11,6 +11,11 @@
   (no `mod_ssl`).** The managed-artifact gate (real PHP 8.2 and 8.5 side by
   side, production catalog publication) is **BLOCKED** on the Task 11 CI
   artifacts. This report does not claim production PHP installation works.
+- **Post-acceptance verification:** the final-review fixes (`b9f38c8`, `039f0b0`,
+  `6add708`) were followed by a full `go test ./... -race -count=1` rerun at
+  `6add708` (PASS, including the real-FPM acceptance) and UI Vitest/check at
+  `039f0b0` (51 tests PASS, 0 errors). The acceptance paths themselves are
+  unchanged; the artifact and Apache HTTPS gates below remain the only blockers.
 
 ## Environment
 

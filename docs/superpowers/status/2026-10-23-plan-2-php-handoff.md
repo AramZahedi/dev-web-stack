@@ -3,120 +3,75 @@
 - **Date:** 2026-10-24
 - **Branch:** `plan-2-php` (created from `plan-1-foundation` at `4f7ab97`)
 - **Remote:** `origin` (`git@github.com:AramZahedi/dev-web-stack.git`)
-- **Head at this handoff:** `b9f38c8` (`fix: close plan 2 final review findings`)
-- **Origin `plan-2-php` before this handoff:** `c1e5f33`; this handoff adds the next
-  docs commit and must be pushed.
+- **Head before this handoff commit:** `6add708` (`fix: retain stopped PHP row port on cleanup`)
+- **Origin `plan-2-php` before this handoff:** `5ec96fd`; after this docs commit it
+  must be pushed.
 - **Origin `plan-1-foundation`:** `4f7ab97` (Plan 1 complete, pushed).
 - **Working tree at handoff:** clean except this handoff/plan doc edit.
-- **Verification at `b9f38c8`:** `go test ./...` PASS (all packages, including the
-  real-FPM `test/php` acceptance test). The final fix report also records
-  `go test ./... -race`, focused suites, UI Vitest/check/build, Playwright 19/19,
-  `make build`, and no FPM listeners on 43000–43999.
+- **Verification at `6add708`:** `go test ./... -race -count=1` PASS (all packages,
+  including the real-FPM `test/php` acceptance test); UI Vitest 51/51 and
+  `npm run check` PASS at `039f0b0`; the residual fix report records real acceptance,
+  Playwright 19/19, `make build`, and no FPM listeners on 43000–43999.
 - **Plan 1:** Tasks 1–26 complete; automated acceptance PASS; manual
   browser/root/Apache/uninstall checks remain blocked.
 - **Plan 2:** Tasks 1–12 complete and task-reviewed; automated acceptance PASS on
-  system PHP 8.4.4. **Final whole-branch review is not clean** — see §2. Do not
-  merge `plan-2-php` until the two open Important findings are fixed and
-  re-reviewed.
+  system PHP 8.4.4. Final whole-branch review and both residual re-reviews are clean
+  (one Minor parked). **Plan 2 is merge-ready.**
 - **Plan 3 (Windows/WSL):** **skipped/deferred by user request.** Keep the Windows
   build for later. Do not start Plan 3.
 - **Next implementation plan:** Plan 4 (packaging/release), Linux-only for now.
-  Write it after closing the Plan 2 open findings (or at the user's direction).
 
 ---
 
 ## 1. Exact next step
 
-### 1.1 Close the two open final-review findings
+**Plan 2 is merge-ready.** All final-review Critical/Important findings are closed and
+re-reviewed. The next implementation step is to write and execute **Plan 4
+(packaging/release), Linux-only**, while **Plan 3 (Windows/WSL) stays skipped**.
 
-Start from `plan-2-php` at this handoff tip, run `go test ./...` (passes), then
-dispatch one fix implementer on **`opencode-go/deepseek-v4.1-flash#max`** with the
-two findings below. The original findings list and fix report live in the
-git-ignored workspace:
+### 1.1 Final-review residuals (resolved)
 
-- `.superpowers/sdd/2026-10-23-dev-web-stack-plan-2-php/final-review-fixes.md`
-- `.superpowers/sdd/2026-10-23-dev-web-stack-plan-2-php/final-review-fix-report.md`
+The final whole-branch review of `4f7ab97..c1e5f33` found one Critical and seven
+Important issues. `b9f38c8` fixed most; the scoped re-review then found two Important
+residuals. They were closed by:
 
-They will not exist on another machine; this handoff carries the essential detail.
+- `039f0b0` — `fix: close plan 2 final review residuals`
+  - Added a service-owned retained-generation/port map.
+  - Every failed cleanup stop is recorded; pruning is skipped while retained
+    generations exist.
+  - A later apply stops retained generations with the cleanup context and releases
+    each port only after a successful stop.
+  - `restoreSiteStateLocked` releases a FastCGI port only after a successful stop.
+  - Running-site `PHPExec` uses the newly composed ini without persisting
+    `PHPConfigHash`, so the next Apply cannot false-no-op.
+  - Fixed the hash-branch port ordering and the Runtimes ARIA label.
+- `6add708` — `fix: retain stopped PHP row port on cleanup`
+  - `Stop` no longer frees the stopped row’s own FastCGI port; the row keeps it for
+    reuse.
+  - External delete releases retained ports only after the row deletion commits; a
+    failed delete restores the row with its port still reserved.
+  - The current-hash retain branch releases only non-row ports.
 
-#### Open Important A — retained generation/port can still be pruned
+Scoped re-review verdict: all named findings **ADDRESSED**, no new Critical/Important
+breakage. One new **Minor** was parked (non-blocking):
 
-The final fix retains a staged generation and its port when `StopPHP` fails
-(`internal/sites/php_apply.go:236-244`), but a later successful apply prunes every
-hash directory except its own current/previous row hashes
-(`internal/sites/php_apply.go:300-308`, `:370-402`). The retained generation is not
-a row hash, so the still-live master's directory can be deleted. The existing
-regression test (`TestApplyPHPRollbackRetainsGenerationWhenStopFails`,
-`internal/sites/php_apply_test.go:1362-1397`) stops at the retention assertion and
-never applies again.
+- When a retained generation equals the new current hash, the keep branch can return
+  a non-row port for release even if that generation is still bound. Impact is limited
+  because `Allocate` probes listeners and the row points at the new port. A safer
+  future fix is to keep holding the entry/port until the backend confirms the process
+  is stopped. Ledger: `Final residual fix: new Minor parked`.
 
-Also: `internal/sites/service.go:946-951` uses the cleanup context in
-`restoreSiteStateLocked`, but `internal/sites/service.go:987-992` still releases
-`current.FastCGIPort` when `previous.FastCGIPort == 0` even after that stop returned
-an error. No test covers that path.
+Historical local artifacts (git-ignored):
+`.superpowers/sdd/2026-10-23-dev-web-stack-plan-2-php/final-review-fixes.md`,
+`final-review-fix-report.md`, `residual-fixes.md`, `residual-fix-report.md`.
 
-Required fix:
-- Track retained live generations/ports (for example a service-level keep set) and
-  exclude them from every later prune; or skip pruning while any retained live
-  generation exists.
-- Only release a port after the corresponding stop succeeds; if the stop fails,
-  retain the port and return/join the error.
-- Add tests: failed stop then a later successful apply must **not** delete the
-  retained generation; `restoreSiteStateLocked` must not release a port when its
-  stop failed.
-
-#### Open Important B — `PHPExec` on a running site can repin the row without swapping FPM
-
-The stopped-site defaults fix (`internal/sites/php.go:562-596`) recomposes and, when
-the hash differs, writes a new generation and persists `PHPConfigHash = files.Hash`
-(`:575-588`). For a **running** site the `default` master keeps the old generation;
-`PHPExec` does not start a master. A later `ApplyPHP` probe
-(`internal/sites/php_apply.go:154-164`) sees the row hash already equals the composed
-hash and takes `persistPHPRowOnlyLocked`, so the new defaults never reach the running
-master.
-
-Required fix (choose one, with a regression test):
-- For a running site, `PHPExec` should compose/use a temporary/current generation
-  without persisting `PHPConfigHash`; the next Start/Apply must still see the old
-  stored hash and swap/recompose; or
-- Stage and swap the master before persisting the new hash; or
-- Persist the new hash but mark the site “restart required” and ensure Apply does not
-  treat the master as current.
-
-Add a test: running site, edit version defaults, run `PHPExec` (new ini must be used
-for the exec), then `ApplyPHP`/restart must actually apply the new config to the
-serving master. The existing `TestStoppedPHPStartAndExecPickUpEditedDefaults`
-(`internal/sites/php_apply_test.go:1255`) only covers a stopped site.
-
-#### Open Minor
-
-- `internal/sites/php_apply.go:197-200`: the hash-equality branch releases the
-  allocated port before `persistPHPRowOnlyLocked` writes the row with that port. The
-  branch is currently unreachable because the FPM hash includes the listen port, but
-  fix the ordering or clear the row port.
-- `ui/src/routes/Runtimes.svelte:772`: the migration list's `aria-label` still says
-  “Sites using the build” although it now lists every site on the PHP line. Make it
-  match the visible line-wide wording.
-- Out-of-scope/knowledge: legacy PHP rows with empty `php_version` can appear in the
-  migration dialog because `CheckRuntimeRemoval` reports any site pinning the build,
-  while `MigratePHP` skips rows whose `PHPVersion` is empty. Fix in a later CLI/UI
-  pass if it matters.
-
-After fixing:
-- Run `go test ./... -race -count=1`, the real acceptance,
-  `go test ./internal/sites`, UI tests/check/build, and the PHP/Runtimes Playwright
-  tests.
-- Dispatch a scoped re-review (same model) against the fix diff; all findings must be
-  ADDRESSED with no new Critical/Important breakage.
-- Update this handoff/plan status before merges.
-
-### 1.2 Then write and execute Plan 4 (packaging/release), skipping Plan 3
+### 1.2 Write and execute Plan 4 (packaging/release), skipping Plan 3
 
 Plan 4 scope from the plan series (Linux-only while Windows is deferred):
 
-- Signed binaries/packages and a release workflow.
-- Upgrade path and versioning.
-- Diagnostics bundle.
+- Release binaries and checksum manifests, with a release workflow.
+- Upgrade path and versioning/protocol compatibility.
+- Diagnostics bundle or support-oriented Doctor output, subject to the M1 spec.
 - Documentation polish.
 - Full M1 acceptance (including the existing Plan 1/Plan 2 automated gates).
 - Publication of real PHP catalog entries **only after** the Task 11 CI pipeline has
@@ -134,30 +89,30 @@ whole-branch review. Use **`opencode-go/deepseek-v4.1-flash#max`** for every sub
 
 The final review covered `4f7ab97..c1e5f33` (31 commits, ~1.4 MB diff) and returned
 **“Ready to merge with fixes.”** One Critical and seven Important findings were sent
-to one fix wave. `b9f38c8` (`fix: close plan 2 final review findings`) addressed most
-of them, but the scoped re-review found:
+to one fix wave. `b9f38c8` fixed most; the residual wave (`039f0b0`, `6add708`) closed
+the rest.
 
 | Finding | Status |
 |---|---|
 | **C1** Built-in proxy source disclosure via `.php.tmp`/`.php.swp` | **ADDRESSED** — suffixes added; proxy/native parity helper + tests. |
-| **I1** Cleanup context/port ownership/prune live generation | **PARTIALLY ADDRESSED / OPEN** — contexts and enumeration fixed; retained live generation can still be pruned by a later apply; `restoreSiteStateLocked` can release a port after a failed stop; tests missing. |
+| **I1** Cleanup context/port ownership/prune live generation | **ADDRESSED** — retained map, later-apply drain, prune guard, `restoreSiteStateLocked` port gate, tests. |
 | **I2** `memcached` missing igbinary dependency | **ADDRESSED** — `requires:["igbinary"]` + tests. |
-| **I3** Stopped sites don't pick up edited defaults | **ADDRESSED for stopped sites** — compose/compare before reuse; stopped test passes. |
+| **I3** Stopped sites don't pick up edited defaults | **ADDRESSED** — compose/compare before reuse; stopped test passes. |
 | **I4** 8.5 stale opcache override / poisoned defaults | **ADDRESSED** — overrides dropped on line switch; stored defaults/site maps sanitized; tests. |
 | **I5** Dashboard Inherit baseline | **ADDRESSED** — `defaults` prop; SiteDetail/drawer pass edited baseline; tests. |
 | **I6** Migration dialog moves unlisted same-line sites | **ADDRESSED** — union with `phpSitesOn(line)`, same-line target default, tests. |
 | **I7** Apache HTTP configtest gated on mod_ssl | **ADDRESSED** — HTTP requires only `proxy_fcgi_module`; HTTP PASS, HTTPS SKIP. |
-| Minor: hash-branch port leak | ADDRESSED for release, but ordering minor remains (see §1.1). |
-| Minor: builtin membership validation | ADDRESSED. |
-| Minor: Line 0 / AddSite focus | ADDRESSED. |
-| Minor: start store-failure cleanup | ADDRESSED. |
-| Minor: absent runtime removal idempotence | ADDRESSED. |
-| **New Important** | **OPEN** — running-site `PHPExec` repins `PHPConfigHash` without swapping the master; later ApplyPHP can see a false no-op. |
-| New Minor | `Runtimes` migration list ARIA label stale; hash-branch release-before-persist ordering. |
+| Minor: hash-branch port leak | **ADDRESSED** — persist-before-release ordering + test. |
+| Minor: builtin membership validation | **ADDRESSED**. |
+| Minor: Line 0 / AddSite focus | **ADDRESSED**. |
+| Minor: start store-failure cleanup | **ADDRESSED** — retained on failed stop. |
+| Minor: absent runtime removal idempotence | **ADDRESSED**. |
+| **New Important (first re-review)** | **ADDRESSED** — running-site `PHPExec` no longer repins the master; next Apply swaps. |
+| **New Important (second re-review)** | **ADDRESSED** — `Stop`/failed delete keep the row-owned FastCGI port reserved. |
+| **New Minor (parked)** | Current-hash retained branch can release a still-bound non-row port; non-blocking, see §1.1. |
 
-Do not mark Plan 2 merge-complete until A and B above are fixed and re-reviewed.
-The acceptance results themselves remain valid for the code at `b9f38c8`; the open
-issues are edge/cross-path defects, not acceptance failures.
+All acceptance results remain valid at `6add708`; the full `go test ./... -race` and
+UI unit/check gate pass. No Plan 2 merge blocker remains.
 
 ---
 
@@ -186,7 +141,8 @@ issues are edge/cross-path defects, not acceptance failures.
 | Docs through Task 11 | Committed | `65ad1bf` |
 | 12. Plan 2 acceptance | Complete, reviewed | `d2b37e9`, `a8db13f` |
 | Plan 2 completion docs | Committed | `c1e5f33` |
-| Final review fix wave | Committed, re-review open | `b9f38c8` |
+| Final review fix wave | Committed | `b9f38c8` |
+| Residual review fixes | Committed, re-reviewed clean | `039f0b0`, `6add708` |
 
 Original handoff after Task 4: `c0ff9d8`. Plan 1 tip: `4f7ab97`.
 
@@ -332,22 +288,24 @@ Original handoff after Task 4: `c0ff9d8`. Plan 1 tip: `4f7ab97`.
 
 ## 5. Blockers / honest gaps
 
-1. **Plan 2 final review open** — the two Important findings in §1.1; not merge-ready.
-2. **Production PHP artifacts** — `internal/catalog/catalog.json` has no PHP entries.
+1. **Production PHP artifacts** — `internal/catalog/catalog.json` has no PHP entries.
    Task 11 CI has not published checksummed tarballs; the real 8.2/8.5 side-by-side
    is BLOCKED. Do not invent URLs/checksums.
-3. **Apache HTTPS** — `mod_ssl` is absent on this workstation; Apache HTTP PHP config
+2. **Apache HTTPS** — `mod_ssl` is absent on this workstation; Apache HTTP PHP config
    test passes, HTTPS vhost is SKIP. Real Apache serving remains manual.
-4. **In-flight request continuity across a successful swap** — not measured.
-5. **Cross-build migration** — acceptance migrates a same-path `php@8.4.4-r2`
+3. **In-flight request continuity across a successful swap** — not measured.
+4. **Cross-build migration** — acceptance migrates a same-path `php@8.4.4-r2`
    revision; it does not prove switching between different real builds (blocked on
    artifacts).
-6. **`imap`** — build pipeline blocked/documented; UI may still offer the toggle
+5. **`imap`** — build pipeline blocked/documented; UI may still offer the toggle
    until a later cleanup; enabling it will fail validation.
-7. **Plan 1 manual blockers** — browser trust, fresh root init/uninstall/80/443, real
+6. **Plan 1 manual blockers** — browser trust, fresh root init/uninstall/80/443, real
    Apache serving, live UI daemon, browser HMR/WebSocket remain manual.
-8. **Windows/WSL** — entirely deferred; no agent, named pipe, Windows trust, or
+7. **Windows/WSL** — entirely deferred; no agent, named pipe, Windows trust, or
    `install.ps1`.
+8. **Parked Plan 2 Minor** — a retained generation equal to the new current hash can
+   have a still-bound non-row port released without a confirmed stop. Non-blocking;
+   see §1.1. Do not let it grow into a port leak if the area is touched again.
 
 ---
 
@@ -357,14 +315,14 @@ Host: Fedora Linux 44 x86_64. Go 1.27.3; Node 22.23.1/npm 10.9.8.
 PHP 8.4.4 CLI `/usr/local/php/bin/php`; FPM `/usr/local/php/sbin/php-fpm`.
 nginx 1.28.0; Apache 2.4.69 (no mod_ssl); system nginx owns 80/443.
 
-At `b9f38c8`:
+At `6add708`:
+- `go test ./... -race -count=1` PASS (controller run, includes real-FPM acceptance).
 - `go test ./...` PASS.
-- `go test ./... -race -count=1` PASS (fix report).
 - `DEVSTACK_PHP_ROOT=/usr/local/php go test ./test/php -run TestPHPSubsystemAcceptance -v -count=1` PASS.
 - `go test ./internal/backend ./internal/sites ./internal/proxy ./internal/phpfpm ./internal/phpini -v` PASS.
 - `go test ./internal/vhost ./internal/helper ./internal/doctor` PASS.
 - `cd ui && npm test -- --run` PASS (51 tests), `npm run check` PASS, `npm run build` PASS,
-  `npx playwright test` 19/19 PASS.
+  `npx playwright test` 19/19 PASS (at `039f0b0`; `6add708` is Go-only).
 - `make build` PASS.
 - No FPM listeners left on 43000–43999 after acceptance.
 
@@ -451,10 +409,12 @@ FastCGI 43000–43999.
 
 ## 9. Commit/push state
 
-Before this handoff, `plan-2-php` was at `b9f38c8` (one commit ahead of origin
-`c1e5f33`). This handoff adds a docs commit on top of:
+Before this handoff, `plan-2-php` was at `6add708` (two commits ahead of origin
+`5ec96fd`). This handoff adds a docs commit on top of:
 
 ```
+6add708 fix: retain stopped PHP row port on cleanup
+039f0b0 fix: close plan 2 final review residuals
 b9f38c8 fix: close plan 2 final review findings
 c1e5f33 docs: record plan 2 completion and acceptance
 a8db13f fix: prove PHP acceptance cleanup and built-ins
@@ -498,5 +458,5 @@ git rev-list --left-right --count origin/plan-2-php...HEAD   # expect 0 0
 git status --short --branch                                  # clean
 ```
 
-Paused at the user's request. Next: close the two open final-review findings
-(§1.1), re-review, then write/execute Plan 4. Do not start Plan 3.
+Plan 2 is complete and merge-ready. Next: write and execute Plan 4
+(packaging/release), Linux-only. Do not start Plan 3.
