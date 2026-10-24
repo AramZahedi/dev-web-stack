@@ -15,9 +15,18 @@ PHP catalog merge that runs only after real PHP artifacts are published.
   produced by this release path.
 - **No auto-update:** devstack never checks for or installs updates on its own.
   Installing a newer release is an explicit installer run.
+- **No diagnostics bundle:** M1 does not create a diagnostics zip/bundle.
+  `devstack doctor --json` is the support surface.
+- **Not published yet:** this branch has no release tag and no GitHub release.
+  The commands below describe the release path; they do not claim a published
+  artifact exists.
 
 Windows/WSL is deferred with Plan 3; signing, diagnostics bundles, and
-auto-update are M4 non-goals.
+auto-update are M4 non-goals. The Plan 4 acceptance report records the release,
+install, upgrade, and remaining gates:
+[2026-10-24-dev-web-stack-plan-4-acceptance.md](superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md).
+The M1 handoff records branch/commit state and next steps:
+[2026-10-24-m1-handoff.md](superpowers/status/2026-10-24-m1-handoff.md).
 
 ## Version and tag format
 
@@ -110,8 +119,11 @@ linux/amd64 only, writes `checksums.txt`, and attaches `install.sh` to the
 release. The configuration's `before` hook runs the UI build again so the
 embedded dashboard matches the tagged source.
 
-`goreleaser check` runs in CI, so the workflow is the first real validation of
-the GoReleaser configuration when GoReleaser is not installed locally.
+The workflow is configured to run `goreleaser check`, so a live CI run is the
+first full GoReleaser validation when GoReleaser is not installed locally. The
+local `test/release/workflow_test.sh` only validates the checked-in workflow and
+configuration contract; it does not prove CI is green or that a release was
+published.
 
 The release workflow does **not** publish a PHP catalog. PHP catalog publication
 is a separate gated step described below.

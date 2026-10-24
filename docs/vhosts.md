@@ -430,13 +430,23 @@ option: `vhost_http_port`/`vhost_https_port` (helper flags
 always renders those ports. Do not change them on a real installation unless
 you are deliberately running the server unprivileged for a test.
 
+`make acceptance` runs this E2E script as part of the Linux M1 acceptance. When
+nginx is unavailable or port 7070 is busy, the runner reports the E2E phase as
+PASS for the builtin flow and records the external-mode skip reason in its
+table; it never reports the skipped external steps as a pass.
+
 ## Limitations
 
 - PHP sites require an installed PHP build. The production PHP catalog stays
   empty until release artifacts are published, so a PHP site cannot be created
   from a shipped release yet (see [PHP](php.md)).
 - Apache PHP vhosts need `proxy_fcgi`; devstack does not enable it for you.
-- External serving is Linux only. Windows and WSL use the built-in proxy.
+- External serving is Linux only. Windows/WSL (Plan 3) is deferred by user
+  request; no Windows or WSL serving path is implemented or claimed in M1.
+- Apache HTTPS vhosts are skipped on hosts without `mod_ssl`. The automated
+  acceptance validates nginx with real `nginx -t`, Apache HTTP PHP with real
+  `httpd -t`, and records Apache HTTPS as **SKIP** when the module is absent.
+  Real Apache serving is a manual check.
 - There is no per-site mode: all sites share one serving mode.
 - nginx and Apache cannot serve simultaneously on ports 80 and 443.
 - devstack does not install servers or modules, generate custom directives, or

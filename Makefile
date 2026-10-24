@@ -19,7 +19,7 @@ PHP_CATALOG_JSON  ?=
 CATALOG           ?=
 PHP_CATALOG_CHECK ?= 0
 
-.PHONY: build test lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test
+.PHONY: build test lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test acceptance
 
 build: ui
 	mkdir -p dist
@@ -41,6 +41,13 @@ ui:
 
 e2e: build
 	E2E_SKIP_BUILD=1 bash test/e2e/linux.sh
+
+# Full Linux M1 acceptance. The runner is unprivileged and exits 0 only when
+# no phase FAILs; SKIP and BLOCKED gates are printed and counted. Pass
+# ACCEPTANCE_ARGS="--quick" to skip the race detector, or
+# ACCEPTANCE_ARGS="--quick --skip-playwright" for a faster pass.
+acceptance:
+	bash test/acceptance/m1.sh $(ACCEPTANCE_ARGS)
 
 clean:
 	rm -rf dist

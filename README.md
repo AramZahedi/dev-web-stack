@@ -3,24 +3,31 @@
 A local web development stack for Linux: static, Node, and PHP sites served at
 trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 
-> **Status:** Plan 1 implementation and its automated acceptance suite pass
-> (unit, race, vet, build, Linux E2E, UI unit/type/build/Playwright). Plan 2's
-> PHP runtime, per-site FPM, php.ini and extension controls, dashboard, external
-> vhost rendering, and rollback paths pass the automated acceptance test on
-> system PHP 8.4.4, including the real Apache HTTP PHP configtest; only the
-> Apache HTTPS vhost is skipped because this workstation has no `mod_ssl`; see the
-> [Plan 2 acceptance report](docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
-> The managed-artifact multi-version gate (real PHP 8.2/8.5 side by side) is
-> blocked on published Task 11 CI artifacts.
+> **Status:** M1's Linux scope is implemented on branch `plan-4-release`. Plan 1
+> (foundation) and Plan 2 (PHP) automated acceptance pass. Plan 4 adds unsigned,
+> checksummed Linux x86_64 release archives; verified source, archive, and
+> HTTPS release installs; forward upgrades with an automatic pre-migration
+> SQLite backup; a gated PHP catalog merge; and the full Linux M1 acceptance
+> runner. See the
+> [Plan 4 acceptance report](docs/superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md)
+> and the [M1 handoff](docs/superpowers/status/2026-10-24-m1-handoff.md). This
+> branch has not been merged and no release tag or GitHub release has been
+> published from it.
+>
+> **M1 is Linux-only and unsigned.** Windows/WSL (Plan 3) is deferred by user
+> request: there is no `devstack-agent`, named-pipe helper, `install.ps1`, or
+> Windows artifact. Signed packages/installers, diagnostics bundles,
+> auto-update, remote catalogs, arm64, and log aggregation are M4 work.
 >
 > **PHP is not installable from the shipped catalog yet.** The production PHP
-> catalog stays empty until the CI/release pipeline publishes checksummed
+> catalog stays empty until the release pipeline publishes checksummed
 > `php-<version>-r<revision>-linux-x64.tar.gz` archives and their entries are
-> merged. See [PHP](docs/php.md). The manual Fedora 44 checks for browser trust,
-> privileged install/uninstall on 80/443, live UI flows, and real Apache serving
-> were not run in the Plan 1 acceptance environment; see the
-> [Plan 1 acceptance report](docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md).
-> Windows/WSL support remains future work.
+> merged. The real PHP 8.2/8.5 side-by-side gate is **BLOCKED** on those
+> artifacts. See [PHP](docs/php.md).
+>
+> **Support surface:** `devstack doctor --json` is the diagnostic snapshot to
+> attach to a bug report. M1 does not create a diagnostics zip/bundle, and it
+> never checks for or installs updates automatically.
 
 ## Quick start
 
@@ -43,6 +50,11 @@ devstack init
 
 A downloaded archive can be installed with
 `--archive devstack_0.1.0_linux_amd64.tar.gz --checksums checksums.txt`.
+
+No release tag has been published from this branch yet. Until one is, use the
+source install above or a local archive produced with
+`make release VERSION=<semver>`. The release path is documented in
+[Release](docs/release.md).
 
 `install.sh` runs as your normal user and uses `sudo` for the helper binary,
 configuration, and system unit. It does not install packages. `devstack init`
@@ -83,6 +95,9 @@ make test    # go test ./...
 make lint    # golangci-lint run
 make ui      # builds the dashboard only (npm ci && npm run build)
 make e2e     # builds, then runs the Linux end-to-end script
+make acceptance # full unprivileged Linux M1 acceptance (PASS/FAIL/SKIP/BLOCKED)
+make release VERSION=0.2.0 # local unsigned archive + checksums.txt
+make release-test # release archive contract test
 make php-test  # catalog/smoke tests plus shell syntax and shellcheck
 make php-build # builds one PHP artifact (needs build/php/README.md deps)
 make php-smoke # verifies the built artifact, including FPM over FastCGI
@@ -104,6 +119,14 @@ runs `test/e2e/linux.sh`, which uses temporary HOME/state/hosts/trust paths and
 high ports. It never binds 80/443, edits `/etc/hosts`, or modifies real trust
 stores, so it does not require root.
 
+`make acceptance` runs `test/acceptance/m1.sh`: vet, unit tests, race tests,
+build, UI type/unit/build/Playwright checks, the release/installer/workflow
+tests, `install.sh --dry-run`, the Linux E2E flow, the real system-PHP
+acceptance when `/usr/local/php` exists, and a final check for listeners on
+43000-43999. It refuses to run as root, installs no packages, and prints a
+PASS/FAIL/SKIP/BLOCKED table. `--quick` skips the race detector and
+`--skip-playwright` skips Playwright; neither turns a skipped gate into a pass.
+
 The dashboard build must run before Go builds that embed it; `make build` and CI
 handle that ordering automatically. To run the compiler and race tests without
 rebuilding the UI after a UI build, use `go test -race ./...` directly.
@@ -120,12 +143,16 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
 
 ## Status and limitations
 
-- Plan 1 serves static and Node sites on Linux. Plan 2 adds PHP sites, per-site
-  FPM masters, php.ini/extension controls, and PHP vhost previews. Its automated
-  acceptance test passes against system PHP 8.4.4 using a filtered fixture
-  catalog. Windows/WSL (Plan 3) is deferred. Linux release archives and verified
-  installer release/upgrade modes are documented in
-  [Install](docs/install.md) and [Upgrade](docs/upgrade.md).
+- M1's Linux scope is implemented: Plan 1 serves static and Node sites, Plan 2
+  adds PHP sites, per-site FPM masters, php.ini/extension controls, and PHP
+  vhost previews, and Plan 4 adds the unsigned release/install/upgrade path. The
+  automated Linux acceptance passed for those implemented paths on Fedora 44
+  with system PHP 8.4.4; the blocked and manual gates are listed below and in the
+  [Plan 4 acceptance report](docs/superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md).
+- **Release archives are unsigned and Linux-only.** The archive contains
+  `devstack`, `devstack-helper`, `install.sh`, `README.md`, and `LICENSE` when
+  present, plus a SHA-256 `checksums.txt`. There is no Windows, WSL, macOS,
+  arm64, or `devstack-agent` artifact. Signed packages/installers are M4.
 - **PHP installation is gated.** The production catalog has no PHP entries until
   the release pipeline publishes checksummed archives and merges their entries.
   `devstack runtime list` shows only Node builds in shipped releases. The build,
@@ -148,10 +175,21 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
   [Plan 1 acceptance report](docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md)
   and the
   [Plan 2 acceptance report](docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
+- **Browser trust, root install/uninstall on 80/443, live UI flows, and real
+  Apache serving are MANUAL and were not run** in this unprivileged acceptance.
+  The acceptance runner never edits `/etc/hosts`, host trust stores, or system
+  services.
+- **In-flight request continuity across a successful PHP swap is NOT
+  MEASURED.** The tests prove validate-then-swap and rollback, not concurrent
+  request survival.
 - Node HMR WebSockets are covered by automated proxy tests, but no browser HMR
   session was part of the acceptance pass.
 - The PHP full source build and FPM smoke test are verified by CI on
   `ubuntu-22.04`, not by the local development environment.
+- The release/installer/workflow tests validate the checked-in configuration,
+  but this local acceptance did not observe a CI run. CI is not claimed green
+  here. The manual platform matrix (Ubuntu 22.04/24.04, Debian 12, Fedora 44,
+  Windows/WSL) was not run; local acceptance used Fedora 44.
 
 ## Documentation
 
@@ -159,6 +197,7 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
 |---|---|
 | [Install](docs/install.md) | prerequisites, installer, release archives, systemd, config, logs, uninstall |
 | [Upgrade](docs/upgrade.md) | preflight, stop/install/start, database backup, protocol mismatch, verification, rollback limits |
+| [Release](docs/release.md) | tag/version, archive/checksums, GoReleaser workflow, release checklist, PHP catalog gate |
 | [Sites](docs/sites.md) | first static site, Node sites, lifecycle commands, limitations |
 | [PHP](docs/php.md) | PHP builds, sites, ini and extensions, migration, FPM ports, troubleshooting, artifact gate |
 | [Vhosts](docs/vhosts.md) | external nginx/Apache serving, PHP FastCGI prerequisites, mode switching, preview, TLS custody, troubleshooting |
@@ -187,14 +226,18 @@ Dev mode uses the mock API unless `VITE_API_MODE` is set; use
 | `cmd/devstack-helper` | privileged helper service |
 | `cmd/phpcatalog` | emits one PHP catalog entry from a verified artifact |
 | `cmd/php-smoke` | starts FPM and asserts a FastCGI health request |
+| `cmd/catalogmerge` | gated merge of verified PHP catalog entries |
 | `internal/` | implementation packages |
 | `ui/` | Svelte 5 dashboard (mock-mode development, embedded in the daemon) |
 | `build/systemd/` | helper and user daemon units |
 | `build/php/` | PHP source/PECL pin lock, build, smoke, and lock scripts |
 | `build/helper.yaml.example` | helper configuration reference |
 | `.github/workflows/php.yml` | PHP build matrix, smoke, SBOM, and catalog artifact |
+| `.github/workflows/release.yml` | tag-driven Linux GoReleaser release |
 | `install.sh` | source, verified release archive, and upgrade installer |
+| `test/acceptance/m1.sh` | unprivileged Linux M1 acceptance runner |
 | `test/e2e/linux.sh` | unprivileged Linux end-to-end test |
-| `docs/` | install, upgrade, sites, PHP, vhosts, and TLS guides |
+| `test/release/` | archive, installer, and release-workflow tests |
+| `docs/` | install, upgrade, release, sites, PHP, vhosts, and TLS guides |
 
 Design and implementation plans live in `docs/superpowers/`.

@@ -31,8 +31,12 @@ This does **not** mean production PHP installation works yet. The test builds a
 filtered catalog manifest from the embedded fixture plus the system `php -m` and
 present `.so` files, precisely because the shipped catalog has no PHP entries.
 The release gate still requires checksummed 8.2 and 8.5 artifacts from the Task
-11 CI pipeline and a real 8.2/8.5 side-by-side run. See the
-[Plan 2 acceptance report](superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
+11 CI pipeline and a real 8.2/8.5 side-by-side run. The Plan 4 Linux acceptance
+runner re-runs this system-PHP acceptance and records the real 8.2/8.5 gate as
+**BLOCKED** and in-flight continuity as **NOT MEASURED**. See the
+[Plan 2 acceptance report](superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md)
+and the
+[Plan 4 acceptance report](superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md).
 
 ## Install a PHP build (after the artifact gate opens)
 
