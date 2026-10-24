@@ -95,11 +95,19 @@ fi
 assert_no_active "${WORKFLOW}" 'permissions:[[:space:]]*write-all|contents:[[:space:]]*write-all' "workflow never grants write-all"
 
 # --- Build inputs. ---
-assert_fixed "${WORKFLOW}" 'CGO_ENABLED: "0"' "release builds disable cgo"
+# The race detector requires cgo. The workflow must not disable cgo globally;
+# GoReleaser sets CGO_ENABLED=0 on the two release builds instead.
+assert_no_active "${WORKFLOW}" 'CGO_ENABLED.*0' "workflow leaves cgo enabled for the race test"
+assert_fixed "${WORKFLOW}" 'go test ./... -race' "race tests run before packaging"
+cgo_off_builds="$(grep -c 'CGO_ENABLED=0' "${GORELEASER}" || true)"
+if [ "${cgo_off_builds}" -eq 2 ]; then
+	pass "both GoReleaser builds disable cgo"
+else
+	fail "both GoReleaser builds must set CGO_ENABLED=0, found ${cgo_off_builds}"
+fi
 assert_fixed "${WORKFLOW}" 'actions/setup-go@v5' "Go is set up"
 assert_fixed "${WORKFLOW}" 'go-version-file: go.mod' "Go version comes from go.mod"
 assert_fixed "${WORKFLOW}" 'actions/setup-node@v4' "Node is set up"
-assert_fixed "${WORKFLOW}" 'go test ./... -race' "race tests run before packaging"
 assert_fixed "${WORKFLOW}" 'go vet ./...' "vet runs before packaging"
 assert_fixed "${WORKFLOW}" 'npm ci' "UI dependencies are installed"
 assert_fixed "${WORKFLOW}" 'npm run check' "UI type check runs"

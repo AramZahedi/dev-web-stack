@@ -165,6 +165,9 @@ func validatePHPEntry(entry catalog.Entry) error {
 	if parsed.Fragment != "" || strings.ContainsRune(entry.URL, '#') {
 		return fmt.Errorf("url %q must not contain a fragment", entry.URL)
 	}
+	if strings.HasSuffix(parsed.Path, "/") {
+		return fmt.Errorf("url %q must point at a file, not a directory", entry.URL)
+	}
 	wantName := fmt.Sprintf("php-%s-r%d-linux-x64.tar.gz", entry.Version, entry.Revision)
 	if path.Base(parsed.Path) != wantName {
 		return fmt.Errorf("url basename %q does not match version/revision (want %q)", path.Base(parsed.Path), wantName)

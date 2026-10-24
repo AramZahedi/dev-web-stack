@@ -22,9 +22,6 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  CGO_ENABLED: "0"
-
 jobs:
   release:
     name: Build and publish the Linux release
@@ -98,6 +95,8 @@ jobs:
         run: npm ci && npm run check && npm test && npm run build
 
       - name: Test with the race detector
+        # CGO stays enabled for -race. GoReleaser disables cgo per build in
+        # .goreleaser.yaml, so the published binaries remain static.
         run: go test ./... -race
 
       - name: Vet

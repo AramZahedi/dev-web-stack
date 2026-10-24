@@ -303,13 +303,31 @@ func TestMissingRequiredLine(t *testing.T) {
 					filtered = append(filtered, entry)
 				}
 			}
-			if _, err := mergeCatalogs(
-				catalog.Catalog{Entries: []catalog.Entry{nodeEntry("24.22.1")}},
-				catalog.Catalog{Entries: filtered},
-			); err == nil {
+
+			dir := tempDir(t)
+			currentPath := filepath.Join(dir, "current.json")
+			incomingPath := filepath.Join(dir, "incoming.json")
+			outputPath := filepath.Join(dir, "out.json")
+			writeCatalog(t, currentPath, []catalog.Entry{nodeEntry("24.22.1")})
+			writeCatalog(t, incomingPath, filtered)
+			sentinel := []byte("do not replace me\n")
+			if err := os.WriteFile(outputPath, sentinel, 0o644); err != nil {
+				t.Fatalf("write sentinel: %v", err)
+			}
+
+			_, _, err := runMerge(t,
+				"--catalog", currentPath,
+				"--php-catalog", incomingPath,
+				"--output", outputPath,
+			)
+			if err == nil {
 				t.Fatalf("merge accepted a catalog without the %s line", line)
-			} else if !strings.Contains(err.Error(), line) {
+			}
+			if !strings.Contains(err.Error(), line) {
 				t.Fatalf("error %q does not name the missing line %s", err, line)
+			}
+			if after := readFile(t, outputPath); !bytes.Equal(after, sentinel) {
+				t.Fatalf("missing %s line wrote partial output: %q", line, after)
 			}
 		})
 	}
@@ -398,6 +416,14 @@ func TestInvalidPHPCatalogLeavesOutputUntouched(t *testing.T) {
 			want: "id",
 			mutate: func(entries []catalog.Entry) []catalog.Entry {
 				entries[0].ID = catalog.FormatID("php", entries[0].Version, entries[0].Revision+1)
+				return entries
+			},
+		},
+		{
+			name: "directory url",
+			want: "directory",
+			mutate: func(entries []catalog.Entry) []catalog.Entry {
+				entries[0].URL += "/"
 				return entries
 			},
 		},
