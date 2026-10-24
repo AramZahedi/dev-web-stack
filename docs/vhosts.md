@@ -11,9 +11,10 @@ devstack serves sites through one of three modes:
 Exactly one mode is active. The dashboard, API, TLS, hosts entries, logs, and site
 lifecycle work the same way in every mode.
 
-External serving is Linux only. PHP vhosts arrive in Plan 2; Plan 1 renders static
-and Node sites. There is no per-site serving mode and nginx and Apache cannot run
-at the same time on ports 80 and 443.
+External serving is Linux only. Static, Node, and PHP sites are supported. A PHP
+site additionally needs an installed PHP build; the production catalog is gated
+until release artifacts exist (see [PHP](php.md)). There is no per-site serving
+mode and nginx and Apache cannot run at the same time on ports 80 and 443.
 
 ## Prerequisites
 
@@ -49,12 +50,15 @@ Apache needs these modules:
 - `headers`
 - `rewrite`
 
-devstack detects them with `apachectl -M` and refuses to switch when one is
+PHP vhosts additionally need **`proxy_fcgi`** (`mod_proxy_fcgi`), which forwards
+requests to the per-site php-fpm master. devstack's module preflight checks the
+six base modules above; enable `proxy_fcgi` before syncing PHP sites. devstack
+detects the base modules with `apachectl -M` and refuses to switch when one is
 missing. It does not enable modules automatically. On Debian/Ubuntu, an
 administrator can enable them explicitly:
 
 ```sh
-sudo a2enmod ssl proxy proxy_http proxy_wstunnel headers rewrite
+sudo a2enmod ssl proxy proxy_http proxy_wstunnel headers rewrite proxy_fcgi
 sudo systemctl reload apache2
 ```
 
@@ -73,6 +77,34 @@ ui_port: 7070
 The generated `devstack.test` vhost always proxies to `127.0.0.1:7070`. A sync
 with another `ui_port` fails with a validation error instead of publishing a
 broken dashboard. Restart the daemon after changing the port, then sync again.
+
+### PHP prerequisites
+
+A PHP site is served externally through the same loopback php-fpm master that
+the built-in proxy uses:
+
+- devstack owns the FPM master and listens on `127.0.0.1:<port>` in
+  **43000-43999**; the external server never starts or supervises PHP.
+- nginx uses `fastcgi_pass 127.0.0.1:<port>` (FastCGI is built into nginx; no
+  extra nginx module is required).
+- Apache uses `proxy:fcgi://127.0.0.1:<port>` and requires `mod_proxy_fcgi`.
+- The nginx vhost sets `SCRIPT_FILENAME`, `SCRIPT_NAME`, `PATH_INFO`,
+  `DOCUMENT_ROOT`, and the standard CGI/HTTP parameters explicitly. Apache's
+  `mod_proxy_fcgi` derives them from the mapped filesystem path. A request that
+  does not map to a `.php` file is rejected instead of being passed to FPM.
+- A PHP site needs an installed PHP build before its vhost can be published.
+  The production artifact gate is documented in [PHP](php.md).
+
+Preview the generated vhost without writing anything:
+
+```sh
+devstack vhost preview app
+devstack vhost preview app --server apache
+```
+
+A stopped PHP site publishes a branded 503 vhost, the same as a stopped static
+or Node site. Fix the PHP build or its generated configuration, then start the
+site and run `devstack vhost sync`.
 
 ## File layout
 
@@ -400,8 +432,10 @@ you are deliberately running the server unprivileged for a test.
 
 ## Limitations
 
-- PHP vhosts and FastCGI wiring are Plan 2 work. Plan 1 serves static and Node
-  sites through nginx or Apache; a PHP site fails with an unsupported-kind error.
+- PHP sites require an installed PHP build. The production PHP catalog stays
+  empty until release artifacts are published, so a PHP site cannot be created
+  from a shipped release yet (see [PHP](php.md)).
+- Apache PHP vhosts need `proxy_fcgi`; devstack does not enable it for you.
 - External serving is Linux only. Windows and WSL use the built-in proxy.
 - There is no per-site mode: all sites share one serving mode.
 - nginx and Apache cannot serve simultaneously on ports 80 and 443.

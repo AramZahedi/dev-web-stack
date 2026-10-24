@@ -1,12 +1,14 @@
 # Install devstack
 
-devstack is a local web development stack for Linux. It serves static and Node
-sites at trusted `https://<name>.test` URLs and manages the daemon, helper,
+devstack is a local web development stack for Linux. It serves static, Node, and
+PHP sites at trusted `https://<name>.test` URLs and manages the daemon, helper,
 hosts entries, and local certificate authority.
 
-This document covers the Plan 1 Linux install. External nginx/Apache serving is
-available now; PHP and Windows/WSL arrive in later plans. See [Sites](sites.md),
-[Vhosts](vhosts.md), and [TLS and trust](tls.md) for day-to-day use.
+This document covers the Linux install. External nginx/Apache serving is
+available now. PHP is implemented, but its production build artifacts are gated
+until the release pipeline publishes them (see [PHP](php.md)); Windows/WSL
+arrives in a later plan. See [Sites](sites.md), [Vhosts](vhosts.md), and
+[TLS and trust](tls.md) for day-to-day use.
 
 ## Supported systems
 
@@ -286,12 +288,14 @@ ls -l /run/devstack-helper/helper.sock
 Do not edit the block between the `# BEGIN devstack` and `# END devstack`
 markers by hand.
 
-## Plan 1 limitations
+## Limitations
 
 - Builtin serving is the default; optional native nginx/Apache vhosts are
-  available for static and Node sites. The external server must already be
-  installed and own 80/443; PHP vhosts arrive in Plan 2.
-- Static and Node sites only. PHP support is planned for a later milestone.
+  available for static, Node, and PHP sites. The external server must already be
+  installed and own 80/443; Apache PHP vhosts additionally need `proxy_fcgi`.
+- Static, Node, and PHP sites are supported. PHP sites need an installed build;
+  the production PHP catalog is gated until release artifacts are published
+  (see [PHP](php.md)).
 - Linux x86_64 and systemd only. Windows/WSL support is planned later.
 - The helper, CA, hosts block, and trust targets are machine-global but scoped
   to the single installing UID.

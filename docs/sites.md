@@ -174,11 +174,12 @@ If a site says running but the URL fails:
    helper's `proxy_*` values in `/etc/devstack/helper.yaml` exactly, then run
    `devstack init`. A mismatch makes `init` reject the forwarder configuration.
 
-## Plan 1 limitations
+## Limitations
 
-- Static and Node sites only; PHP is a later milestone.
+- PHP sites need an installed PHP build; the production catalog is gated until
+  release artifacts are published (see [PHP](php.md)).
 - Builtin serving is the default; optional native nginx/Apache vhosts are
-  available for static and Node sites. PHP vhosts arrive in Plan 2.
+  available for static, Node, and PHP sites.
 - One backend process per site; multi-process Node clusters are not managed.
 - Site updates are remove-and-re-add; project files are always preserved.
 - The dashboard and all site domains use the local CA; there is no per-site
