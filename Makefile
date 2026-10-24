@@ -81,9 +81,10 @@ php-catalog:
 php-test:
 	go test ./cmd/phpcatalog ./cmd/php-smoke
 	go vet ./cmd/phpcatalog ./cmd/php-smoke
-	bash -n build/php/*.sh
+	bash test/php/smoke_links_test.sh
+	bash -n build/php/*.sh test/php/*.sh
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck --severity=error build/php/*.sh; \
+		shellcheck --severity=error build/php/*.sh test/php/*.sh; \
 	else \
 		echo "php-test: shellcheck not installed, skipped"; \
 	fi

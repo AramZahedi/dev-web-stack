@@ -46,7 +46,7 @@ if [[ $(id -u) -eq 0 ]]; then
 	die 'refusing to run as root; run the smoke test as the unprivileged build user'
 fi
 
-for tool in awk grep jq tar; do
+for tool in awk find grep jq readlink realpath tar; do
 	command -v "$tool" >/dev/null 2>&1 || die "required tool '$tool' is missing"
 done
 
@@ -63,12 +63,39 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/devstack-php-smoke-XXXXXX") ||
 	die 'could not create a temporary directory'
 trap 'rm -rf "$work"' EXIT
 
-# Symlinks and hard links are rejected before extraction: the artifact is a
-# self-contained tree and must not redirect files outside its prefix.
+# Hard links are rejected before extraction: the artifact is a self-contained
+# tree and the runtime installer refuses hard links outright. Symlinks are
+# allowed when they are relative and stay inside the package prefix, matching
+# the runtime installer, but their containment is checked on the extracted
+# tree below.
 verbose="$work/listing.verbose"
 tar -tvzf "$tarball" >"$verbose" 2>&1 || die "could not list $tarball"
-if link_entry=$(grep -m1 -E '^[lh]' "$verbose"); then
-	die "archive contains a symbolic or hard link: $link_entry"
+if hard_entry=$(grep -m1 -E '^h' "$verbose"); then
+	die "archive contains a hard link: $hard_entry"
+fi
+
+# Reject symlink targets that are unsafe on their face: empty, absolute, or
+# containing a backslash. A NUL cannot be represented in tar's textual listing
+# or in a shell string; tar's Linkname is NUL-terminated, so there is nothing
+# further to inspect there. Containment of relative targets (including ones
+# using "..") is resolved against the extracted tree afterwards, because
+# another archive symlink can redirect an otherwise lexically contained target.
+if ! awk '
+	function bad(message) { printf "smoke.sh: %s\n", message > "/dev/stderr"; exit 1 }
+	/^l/ {
+		line = $0
+		for (i = 0; i < 5; i++) sub(/^[^ \t]+[ \t]+/, "", line)
+		arrow = index(line, " -> ")
+		if (arrow == 0) bad("malformed symlink listing: " $0)
+		name = substr(line, 1, arrow - 1)
+		target = substr(line, arrow + 4)
+		if (name == "") bad("malformed symlink listing: " $0)
+		if (target == "") bad("symlink " name " has an empty target")
+		if (target ~ /^\//) bad("symlink " name " is absolute: " target)
+		if (index(target, "\\") != 0) bad("symlink " name " has a backslash target: " target)
+	}
+' "$verbose"; then
+	die 'archive contains an unsafe symbolic link'
 fi
 
 listing="$work/listing.txt"
@@ -82,9 +109,37 @@ while IFS= read -r entry; do
 	*) die "archive member is outside the $top prefix: $entry" ;;
 	esac
 done <"$listing"
-tar -xzf "$tarball" -C "$work"
+tar -xzf "$tarball" -C "$work" || die "could not extract $tarball"
 root="$work/$top"
-[[ -d $root ]] || die "archive did not contain the $top directory"
+# The package root itself must be a real directory: a symlink here would make
+# every later path and the containment check below resolve outside the tree.
+[[ -d $root && ! -L $root ]] || die "archive did not contain the $top directory as a real directory"
+root_real=$(cd -- "$root" && pwd -P)
+
+# Every extracted symlink must be relative and resolve inside the package root.
+# realpath -m follows links that exist (matching the runtime manager) and
+# resolves dangling targets lexically. A link may not point at itself or an
+# ancestor, which the runtime installer also rejects.
+while IFS= read -r -d '' link; do
+	rel=${link#"$root_real"/}
+	target=$(readlink -- "$link") || die "could not read archive symlink $rel"
+	[[ -n $target ]] || die "archive symlink $rel has an empty target"
+	[[ $target != *\\* ]] || die "archive symlink $rel has a backslash target: $target"
+	[[ $target != *$'\n'* ]] || die "archive symlink $rel has a newline in its target"
+	[[ $target != /* ]] || die "archive symlink $rel has an absolute target: $target"
+	link_dir=$(realpath -m -- "$(dirname -- "$link")") ||
+		die "could not resolve the directory of archive symlink $rel"
+	resolved=$(realpath -m -- "$link_dir/$target") ||
+		die "could not resolve archive symlink $rel target: $target"
+	identity="$link_dir/$(basename -- "$link")"
+	if [[ $resolved != "$root_real" && $resolved != "$root_real"/* ]]; then
+		die "archive symlink $rel resolves outside $top: $target -> $resolved"
+	fi
+	if [[ $resolved == "$identity" || $identity == "$resolved"/* ]]; then
+		die "archive symlink $rel points at itself or an ancestor"
+	fi
+done < <(find "$root_real" -type l -print0)
+
 [[ -x "$root/bin/php" ]] || die "$top/bin/php is missing or not executable"
 [[ -x "$root/sbin/php-fpm" ]] || die "$top/sbin/php-fpm is missing or not executable"
 ext_dir="$root/lib/php/extensions"
