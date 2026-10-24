@@ -196,8 +196,12 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 	}
 	if files.Hash == oldHash {
 		next.PHPConfigHash = oldHash
-		releaseNewPort()
-		return s.persistPHPRowOnlyLocked(ctx, current, next)
+		persisted, persistErr := s.persistPHPRowOnlyLocked(ctx, current, next)
+		if persistErr != nil {
+			releaseNewPort()
+			return persisted, persistErr
+		}
+		return persisted, nil
 	}
 	next.PHPConfigHash = files.Hash
 
@@ -235,6 +239,7 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 	// retained and the error is joined so the leak is visible.
 	discardNewGeneration := func(cause error) error {
 		if err := stopNewGeneration(); err != nil {
+			s.retainPHPGenerationLocked(next.ID, files.Hash, newPort)
 			return errors.Join(cause,
 				fmt.Errorf("sites: stop staged PHP generation for %q: %w", next.Name, err))
 		}
@@ -297,13 +302,29 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 	}
 
 	s.commitPHPFilesBestEffortLocked(ctx, next)
-	drained := s.drainPHPGenerationsLocked(ctx, next, files.Hash, oldHash)
-	if drained {
-		if oldPort != 0 && oldPort != newPort {
-			s.deps.Ports.Release(oldPort)
-		}
+	drained := s.drainPHPGenerationsLocked(ctx, next, files.Hash, oldHash, oldPort)
+	if !drained {
 		// Pruning is unsafe after a failed stop: a directory that is not the
-		// current or previous row hash may still back the live master.
+		// current or previous row hash may still back the live master. The
+		// failed generations stay tracked for a later apply.
+		return next, nil
+	}
+	retainedStopped, retainedPorts, heldPorts := s.stopRetainedPHPGenerationsLocked(ctx, next, files.Hash)
+	released := make(map[int]bool, len(retainedPorts)+1)
+	releasePort := func(port int) {
+		if port == 0 || s.deps.Ports == nil || released[port] {
+			return
+		}
+		s.deps.Ports.Release(port)
+		released[port] = true
+	}
+	if oldPort != 0 && oldPort != newPort && !heldPorts[oldPort] {
+		releasePort(oldPort)
+	}
+	for _, port := range retainedPorts {
+		releasePort(port)
+	}
+	if retainedStopped {
 		s.prunePHPGenerationsLocked(ctx, next, files.Hash, oldHash)
 	}
 	return next, nil
@@ -347,8 +368,9 @@ func (s *Service) restorePHPApplyLocked(ctx context.Context, previous model.Site
 
 // drainPHPGenerationsLocked stops the default generation and the previous
 // hash generation after the new master is live. It reports whether every stop
-// succeeded; a failed stop keeps the old port reserved.
-func (s *Service) drainPHPGenerationsLocked(ctx context.Context, site model.Site, newHash, oldHash string) bool {
+// succeeded; a failed stop keeps the old port reserved and records the
+// generation so a later apply can retry its cleanup.
+func (s *Service) drainPHPGenerationsLocked(ctx context.Context, site model.Site, newHash, oldHash string, oldPort int) bool {
 	generations := []string{phpDefaultGeneration}
 	if oldHash != "" && oldHash != newHash {
 		generations = append(generations, oldHash)
@@ -357,6 +379,7 @@ func (s *Service) drainPHPGenerationsLocked(ctx context.Context, site model.Site
 	for _, generation := range generations {
 		if err := s.deps.PHPBackend.StopPHP(ctx, site.ID, generation); err != nil {
 			stopped = false
+			s.retainPHPGenerationLocked(site.ID, generation, oldPort)
 			s.emitEvent(ctx, site.ID, "site.error",
 				fmt.Sprintf("site %s: stop drained PHP generation %s: %v", site.Name, generation, err))
 		}
@@ -364,10 +387,59 @@ func (s *Service) drainPHPGenerationsLocked(ctx context.Context, site model.Site
 	return stopped
 }
 
+// stopRetainedPHPGenerationsLocked retries the cleanup stops recorded by
+// earlier failed applies with a cancellation-proof context. A port is released
+// only after every retained generation using it stopped. The caller must hold
+// s.mu.
+func (s *Service) stopRetainedPHPGenerationsLocked(ctx context.Context, site model.Site, keep string) (bool, []int, map[int]bool) {
+	retained := s.retainedPHPGenerationsLocked(site.ID)
+	if len(retained) == 0 {
+		return true, nil, nil
+	}
+	stopped := true
+	held := make(map[int]bool)
+	released := make(map[int]bool)
+	for generation, port := range retained {
+		if generation == keep {
+			// The generation is now the live/current one; the row owns its
+			// port, so never stop it or release it here.
+			s.dropRetainedPHPGenerationLocked(site.ID, generation)
+			if port != 0 {
+				held[port] = true
+			}
+			continue
+		}
+		if err := s.stopPHPGenerationForCleanup(ctx, site.ID, generation); err != nil {
+			stopped = false
+			if port != 0 {
+				held[port] = true
+			}
+			s.emitEvent(ctx, site.ID, "site.error",
+				fmt.Sprintf("site %s: stop retained PHP generation %s: %v", site.Name, generation, err))
+			continue
+		}
+		s.dropRetainedPHPGenerationLocked(site.ID, generation)
+		if port != 0 {
+			released[port] = true
+		}
+	}
+	ports := make([]int, 0, len(released))
+	for port := range released {
+		if !held[port] {
+			ports = append(ports, port)
+		}
+	}
+	return stopped, ports, held
+}
+
 // prunePHPGenerationsLocked removes hash-named generation directories other
 // than the current and previous ones. Stable copies and unrelated site files
-// are never touched.
+// are never touched. A site with retained generations is never pruned: one of
+// its directories may still back a live master.
 func (s *Service) prunePHPGenerationsLocked(ctx context.Context, site model.Site, keep ...string) {
+	if len(s.retainedPHP[site.ID]) > 0 {
+		return
+	}
 	dir, err := s.phpSiteDir(site.ID)
 	if err != nil {
 		s.emitEvent(ctx, site.ID, "site.error", fmt.Sprintf("site %s: prune PHP generations: %v", site.Name, err))

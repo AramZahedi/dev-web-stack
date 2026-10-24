@@ -832,6 +832,9 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 			if err := s.stopPHPProcessLocked(ctx, site.ID); err != nil {
 				return fmt.Errorf("sites: stop %q: %w", site.Name, err)
 			}
+			if s.deps.Backend != nil {
+				s.releaseRetainedPHPGenerationsLocked(site.ID)
+			}
 		default:
 			if s.deps.Backend != nil {
 				if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil {

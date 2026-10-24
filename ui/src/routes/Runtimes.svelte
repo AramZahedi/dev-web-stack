@@ -769,7 +769,7 @@
     <div class="migration">
       <div class="migration-block">
         <p class="migration-label">Sites to move (all sites on PHP {phpLine(migration.runtime.version)})</p>
-        <ul class="migration-sites" aria-label="Sites using the build">
+        <ul class="migration-sites" aria-label={`Sites to move (all sites on PHP ${phpLine(migration.runtime.version)})`}>
           {#each migration.sites as name (name)}
             <li class="mono">{name}</li>
           {/each}

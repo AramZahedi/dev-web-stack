@@ -66,6 +66,76 @@ func (s *Service) stopPHPGenerationForCleanup(ctx context.Context, siteID, gener
 	return s.deps.PHPBackend.StopPHP(cleanupCtx, siteID, generation)
 }
 
+// retainPHPGenerationLocked records a generation whose stop failed and the
+// FastCGI port reserved for it. The caller must hold s.mu.
+func (s *Service) retainPHPGenerationLocked(siteID, generation string, port int) {
+	if siteID == "" || generation == "" {
+		return
+	}
+	if s.retainedPHP == nil {
+		s.retainedPHP = make(map[string]map[string]int)
+	}
+	generations := s.retainedPHP[siteID]
+	if generations == nil {
+		generations = make(map[string]int)
+		s.retainedPHP[siteID] = generations
+	}
+	if existing, ok := generations[generation]; ok && existing != 0 {
+		// The generation name still refers to the master that failed to stop;
+		// keep the port recorded for its first failed stop instead of the port
+		// of a later row.
+		port = existing
+	}
+	generations[generation] = port
+}
+
+// dropRetainedPHPGenerationLocked stops tracking one retained generation. The
+// caller must hold s.mu.
+func (s *Service) dropRetainedPHPGenerationLocked(siteID, generation string) int {
+	generations := s.retainedPHP[siteID]
+	if generations == nil {
+		return 0
+	}
+	port := generations[generation]
+	delete(generations, generation)
+	if len(generations) == 0 {
+		delete(s.retainedPHP, siteID)
+	}
+	return port
+}
+
+// retainedPHPGenerationsLocked returns a copy of a site's retained generations
+// and their ports. The caller must hold s.mu.
+func (s *Service) retainedPHPGenerationsLocked(siteID string) map[string]int {
+	generations := s.retainedPHP[siteID]
+	if len(generations) == 0 {
+		return nil
+	}
+	retained := make(map[string]int, len(generations))
+	for generation, port := range generations {
+		retained[generation] = port
+	}
+	return retained
+}
+
+// releaseRetainedPHPGenerationsLocked releases every port retained for a site
+// after every one of its masters is known to be stopped. The caller must hold
+// s.mu.
+func (s *Service) releaseRetainedPHPGenerationsLocked(siteID string) {
+	generations := s.retainedPHP[siteID]
+	if len(generations) == 0 {
+		return
+	}
+	if s.deps.Ports != nil {
+		for _, port := range generations {
+			if port != 0 {
+				s.deps.Ports.Release(port)
+			}
+		}
+	}
+	delete(s.retainedPHP, siteID)
+}
+
 // PHPCommands validates generated PHP configuration. The production
 // implementation shells out to the build's binaries; tests inject fakes.
 type PHPCommands interface {
@@ -368,6 +438,7 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 	if _, err := s.deps.PHPBackend.StartPHP(ctx, site.ID, phpDefaultGeneration); err != nil {
 		cause := fmt.Errorf("sites: start %q: %w", site.Name, err)
 		if stopErr := s.stopPHPGenerationForCleanup(ctx, site.ID, phpDefaultGeneration); stopErr != nil {
+			s.retainPHPGenerationLocked(site.ID, phpDefaultGeneration, site.FastCGIPort)
 			return site, errors.Join(cause,
 				fmt.Errorf("sites: stop %q after a failed start: %w", site.Name, stopErr))
 		}
@@ -382,6 +453,7 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 	if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
 		cause := fmt.Errorf("sites: record running state for %q: %w", site.Name, err)
 		if stopErr := s.stopPHPGenerationForCleanup(ctx, site.ID, phpDefaultGeneration); stopErr != nil {
+			s.retainPHPGenerationLocked(site.ID, phpDefaultGeneration, site.FastCGIPort)
 			return previous, errors.Join(cause,
 				fmt.Errorf("sites: stop %q after a failed state write: %w", site.Name, stopErr))
 		}
@@ -394,6 +466,7 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 			stopErr := s.stopPHPGenerationForCleanup(ctx, site.ID, phpDefaultGeneration)
 			restoreErr := s.deps.Store.UpdateSite(ctx, previous)
 			if stopErr != nil {
+				s.retainPHPGenerationLocked(site.ID, phpDefaultGeneration, site.FastCGIPort)
 				return previous, errors.Join(cause, restoreErr,
 					fmt.Errorf("sites: stop %q after a failed config save: %w", site.Name, stopErr))
 			}
@@ -410,6 +483,11 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 func (s *Service) stopPHPLocked(ctx context.Context, site model.Site) (model.Site, error) {
 	if err := s.stopPHPProcessLocked(ctx, site.ID); err != nil {
 		return site, fmt.Errorf("sites: stop %q: %w", site.Name, err)
+	}
+	// Local.Stop below terminates every staged generation, including ones kept
+	// after an earlier failed cleanup, so their ports can be released now.
+	if s.deps.Backend != nil {
+		s.releaseRetainedPHPGenerationsLocked(site.ID)
 	}
 	oldStatus := site.Status
 	site.DesiredState = model.DesiredStopped
@@ -523,7 +601,11 @@ func sameStringMap(a, b map[string]string) bool {
 }
 
 // ensurePHPConfigLocked returns a usable site configuration for PHPExec,
-// composing and persisting one when the stored generation is missing.
+// composing and persisting one when the stored generation is missing. A
+// stopped site persists the new generation so it starts from it later. A
+// running site only uses the composed generation for this exec: its master
+// still serves the stored generation, so the row keeps pointing at that
+// generation until the next Start or ApplyPHP swaps the master.
 func (s *Service) ensurePHPConfigLocked(ctx context.Context, site model.Site) (model.Site, model.RuntimeBuild, error) {
 	build, err := s.phpBuildForSiteLocked(ctx, site)
 	if err != nil {
@@ -544,7 +626,12 @@ func (s *Service) ensurePHPConfigLocked(ctx context.Context, site model.Site) (m
 			"site %s: dropped extension overrides built into PHP %s: %s",
 			site.Name, version, strings.Join(dropped, ", ")))
 	}
+	running := site.Status == model.StatusRunning
 	allocated := 0
+	if running && site.FastCGIPort == 0 {
+		return site, model.RuntimeBuild{}, fmt.Errorf(
+			"sites: running PHP site %q has no FastCGI port", site.Name)
+	}
 	if site.FastCGIPort == 0 {
 		port, err := s.deps.Ports.Allocate(domain.PortFastCGI)
 		if err != nil {
@@ -573,14 +660,32 @@ func (s *Service) ensurePHPConfigLocked(ctx context.Context, site model.Site) (m
 		return site, build, nil
 	}
 	site.PHPConfigHash = files.Hash
-	generationDir, err := s.writePHPFilesLocked(site.ID, files)
+	generationDir, err := s.phpGenerationDir(site.ID, files.Hash)
 	if err != nil {
 		releaseAllocated()
 		return site, model.RuntimeBuild{}, err
 	}
-	if err := s.validatePHPFilesLocked(ctx, site, build, generationDir); err != nil {
+	preexisting := phpGenerationComplete(generationDir)
+	written, err := s.writePHPFilesLocked(site.ID, files)
+	if err != nil {
+		if !preexisting {
+			_ = os.RemoveAll(generationDir)
+		}
 		releaseAllocated()
 		return site, model.RuntimeBuild{}, err
+	}
+	if err := s.validatePHPFilesLocked(ctx, site, build, written); err != nil {
+		if !preexisting {
+			_ = os.RemoveAll(generationDir)
+		}
+		releaseAllocated()
+		return site, model.RuntimeBuild{}, err
+	}
+	if running {
+		// The master was started with the stored generation. Leave the row and
+		// the applied-config snapshot untouched so the next ApplyPHP recomposes
+		// and swaps the master instead of taking a false no-op.
+		return site, build, nil
 	}
 	site.UpdatedAt = s.currentTime()
 	if err := s.deps.Store.UpdateSite(ctx, site); err != nil {

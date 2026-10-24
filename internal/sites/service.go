@@ -119,6 +119,13 @@ type Service struct {
 	// accessed while mu is held.
 	phpManifest    *catalog.PHPManifest
 	phpManifestErr error
+
+	// retainedPHP tracks PHP generations whose cleanup stop failed, keyed by
+	// site id and generation name, with the FastCGI port reserved for that
+	// generation. A generation may still back a live master, so neither its
+	// directory nor its port may be released until a later stop succeeds. It is
+	// only accessed while mu is held.
+	retainedPHP map[string]map[string]int
 }
 
 // NewService returns a service and reserves every port already recorded for a
@@ -942,12 +949,18 @@ func (s *Service) stopExternalStaticLocked(ctx context.Context, site model.Site)
 // released.
 func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current model.Site) error {
 	var errs []error
+	phpStopped := true
 	if current.Kind == model.SitePHP {
 		cleanupCtx, cancel := phpCleanupContext(ctx)
 		err := s.stopPHPProcessLocked(cleanupCtx, current.ID)
 		cancel()
 		if err != nil {
+			phpStopped = false
 			errs = append(errs, fmt.Errorf("rollback: stop %q: %w", current.Name, err))
+			// The failed transition's master may still be live on this port.
+			// Keep both the generation and the port reserved until a later stop
+			// succeeds; the restored row still exists.
+			s.retainPHPGenerationLocked(current.ID, phpDefaultGeneration, current.FastCGIPort)
 		}
 	} else if s.deps.Backend != nil {
 		if err := s.deps.Backend.Stop(ctx, current.ID, true); err != nil {
@@ -987,7 +1000,7 @@ func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current 
 	if previous.HTTPPort == 0 && current.HTTPPort != 0 && s.deps.Ports != nil {
 		s.deps.Ports.Release(current.HTTPPort)
 	}
-	if previous.FastCGIPort == 0 && current.FastCGIPort != 0 && s.deps.Ports != nil {
+	if previous.FastCGIPort == 0 && current.FastCGIPort != 0 && s.deps.Ports != nil && phpStopped {
 		s.deps.Ports.Release(current.FastCGIPort)
 	}
 	return errors.Join(errs...)
@@ -1080,6 +1093,7 @@ func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts 
 		// retain its generation directory and port reservation for diagnosis and
 		// a later cleanup instead of advertising a free port.
 		if phpStopFailed {
+			s.retainPHPGenerationLocked(site.ID, phpDefaultGeneration, site.FastCGIPort)
 			errs = append(errs, fmt.Errorf(
 				"rollback: retained PHP generation and FastCGI port %d for %q after a failed stop",
 				site.FastCGIPort, site.Name))

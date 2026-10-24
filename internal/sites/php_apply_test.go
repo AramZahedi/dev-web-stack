@@ -416,6 +416,29 @@ func TestApplyPHPNoOpDoesNotStageAMaster(t *testing.T) {
 	}
 }
 
+func TestApplyPHPStoppedNoOpKeepsPortAndGeneration(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := svc.ApplyPHP(ctx, site.ID, PHPChange{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.PHPConfigHash != site.PHPConfigHash || applied.FastCGIPort != site.FastCGIPort {
+		t.Fatalf("stopped no-op changed the row: %+v", applied)
+	}
+	if got := reservedFastCGIPorts(t, fakes); !reflect.DeepEqual(got, []int{site.FastCGIPort}) {
+		t.Fatalf("reserved ports = %v, want [%d]", got, site.FastCGIPort)
+	}
+	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, site.PHPConfigHash)); err != nil {
+		t.Fatalf("generation missing after a stopped no-op: %v", err)
+	}
+}
+
 func TestApplyPHPBuildOnlyChangePersistsWithoutRestaging(t *testing.T) {
 	svc, fakes := newTestService(t)
 	build := fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
@@ -1394,6 +1417,240 @@ func TestApplyPHPRollbackRetainsGenerationWhenStopFails(t *testing.T) {
 		t.Fatalf("cleanup staged master: %v", stopErr)
 	}
 	fakes.ports.Release(stagedPort)
+}
+
+func TestApplyPHPRetainedGenerationStoppedByLaterApply(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+
+	// Fail a running apply after the staged master is live and make its
+	// rollback stop fail, so the staged generation H1 is retained.
+	fakes.certs.err = errors.New("route publish failed")
+	fakes.backend.stopPHPErr = errors.New("stop failed")
+	if _, err := svc.ApplyPHP(ctx, site.ID, PHPChange{Ini: map[string]string{"memory_limit": "512M"}}); err == nil {
+		t.Fatal("apply succeeded")
+	}
+	retainedHash, retainedPort := lastStagedApply(t, fakes, site.ID)
+	if !fakes.backend.phpStarted(site.ID, retainedHash) {
+		t.Fatal("retained generation is not running")
+	}
+	if got := svc.retainedPHP[site.ID][retainedHash]; got != retainedPort {
+		t.Fatalf("retained port = %d, want %d", got, retainedPort)
+	}
+
+	// A later successful apply must stop the retained master before pruning
+	// its directory or releasing its port.
+	fakes.backend.stopPHPErr = nil
+	fakes.certs.err = nil
+	applied, err := svc.ApplyPHP(ctx, site.ID, PHPChange{Ini: map[string]string{"memory_limit": "1G"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fakes.backend.phpStarted(site.ID, retainedHash) {
+		t.Fatal("retained master still runs after a later successful apply")
+	}
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, retainedHash)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("retained generation was not pruned after its stop succeeded: %v", statErr)
+	}
+	if reserveErr := fakes.ports.Reserve(retainedPort); reserveErr != nil {
+		t.Fatalf("retained FastCGI port %d was not released: %v", retainedPort, reserveErr)
+	}
+	fakes.ports.Release(retainedPort)
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, applied.PHPConfigHash)); statErr != nil {
+		t.Fatalf("current generation was pruned: %v", statErr)
+	}
+	if active := fakes.backend.phpActiveGeneration(site.ID); active != applied.PHPConfigHash {
+		t.Fatalf("active generation = %q, want %q", active, applied.PHPConfigHash)
+	}
+	if got := reservedFastCGIPorts(t, fakes); !reflect.DeepEqual(got, []int{applied.FastCGIPort}) {
+		t.Fatalf("reserved ports = %v, want [%d]", got, applied.FastCGIPort)
+	}
+}
+
+func TestApplyPHPRetainedStopFailureKeepsPortAndSkipsPruning(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+
+	fakes.certs.err = errors.New("route publish failed")
+	fakes.backend.stopPHPErr = errors.New("stop failed")
+	if _, err := svc.ApplyPHP(ctx, site.ID, PHPChange{Ini: map[string]string{"memory_limit": "512M"}}); err == nil {
+		t.Fatal("apply succeeded")
+	}
+	retainedHash, retainedPort := lastStagedApply(t, fakes, site.ID)
+	liveHash := site.PHPConfigHash
+
+	fakes.backend.stopPHPErr = nil
+	fakes.certs.err = nil
+	fakes.backend.phpStopErrs[phpFakeKey(site.ID, retainedHash)] = errors.New("retained stop failed")
+	applied, err := svc.ApplyPHP(ctx, site.ID, PHPChange{Ini: map[string]string{"memory_limit": "1G"}})
+	if err != nil {
+		t.Fatalf("healthy new master must not be rolled back: %v", err)
+	}
+	if !fakes.backend.phpStarted(site.ID, retainedHash) {
+		t.Fatal("failed retained stop removed the staged master")
+	}
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, retainedHash)); statErr != nil {
+		t.Fatalf("retained generation was pruned after a failed stop: %v", statErr)
+	}
+	if reserveErr := fakes.ports.Reserve(retainedPort); reserveErr == nil {
+		fakes.ports.Release(retainedPort)
+		t.Fatalf("retained FastCGI port %d was released after a failed stop", retainedPort)
+	}
+	if got := svc.retainedPHP[site.ID][retainedHash]; got != retainedPort {
+		t.Fatalf("retained port = %d, want %d", got, retainedPort)
+	}
+	// The successful drain must not prune the old live generation while a
+	// retained generation still exists.
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, liveHash)); statErr != nil {
+		t.Fatalf("live generation was pruned: %v", statErr)
+	}
+	if active := fakes.backend.phpActiveGeneration(site.ID); active != applied.PHPConfigHash {
+		t.Fatalf("active generation = %q, want %q", active, applied.PHPConfigHash)
+	}
+	want := []int{retainedPort, applied.FastCGIPort}
+	sort.Ints(want)
+	if got := reservedFastCGIPorts(t, fakes); !reflect.DeepEqual(got, want) {
+		t.Fatalf("reserved ports = %v, want retained and current (%v)", got, want)
+	}
+}
+
+func TestRestoreSiteStateRetainsFastCGIPortAfterFailedPHPStop(t *testing.T) {
+	svc, fakes := newTestService(t)
+	useServingMode(svc, fakes, "nginx")
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Starting this row allocates a new FastCGI port; the failed transition
+	// must not release that port while its master is still live.
+	stored.FastCGIPort = 0
+	if err := fakes.store.UpdateSite(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+
+	fakes.vhosts.err = errors.New("vhost sync failed")
+	fakes.backend.stopPHPErr = errors.New("stop failed")
+	err = svc.Start(ctx, site.ID)
+	if err == nil {
+		t.Fatal("start succeeded")
+	}
+	for _, want := range []string{"vhost sync failed", "stop failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	}
+	spec, ok := fakes.backend.phpSpec(site.ID, phpDefaultGeneration)
+	if !ok || spec.FastCGIPort == 0 {
+		t.Fatalf("started spec = %+v", spec)
+	}
+	if !fakes.backend.phpStarted(site.ID, phpDefaultGeneration) {
+		t.Fatal("failed stop did not leave the started master running")
+	}
+	if reserveErr := fakes.ports.Reserve(spec.FastCGIPort); reserveErr == nil {
+		fakes.ports.Release(spec.FastCGIPort)
+		t.Fatalf("FastCGI port %d was released after a failed PHP stop", spec.FastCGIPort)
+	}
+	if got := svc.retainedPHP[site.ID][phpDefaultGeneration]; got != spec.FastCGIPort {
+		t.Fatalf("retained port = %d, want %d", got, spec.FastCGIPort)
+	}
+	restored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.FastCGIPort != 0 {
+		t.Fatalf("restored row port = %d, want 0", restored.FastCGIPort)
+	}
+}
+
+func TestRunningPHPExecDoesNotRepinConfigHash(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	oldHash, oldPort := site.PHPConfigHash, site.FastCGIPort
+
+	// Change the version defaults directly in the store so nothing applies
+	// them to the running master.
+	defaults, err := svc.PHPDefaults(ctx, "8.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults.Ini["memory_limit"] = "640M"
+	if err := fakes.store.SavePHPDefaults(ctx, defaults); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.PHPExec(ctx, site.ID, []string{"-r", "echo 1;"}); err != nil {
+		t.Fatal(err)
+	}
+	exec, ok := fakes.backend.lastExec()
+	if !ok || len(exec.Argv) < 3 {
+		t.Fatalf("exec argv = %v", exec.Argv)
+	}
+	execIni := string(readFile(t, exec.Argv[2]))
+	if !strings.Contains(execIni, "memory_limit = 640M") {
+		t.Fatalf("PHPExec did not use the edited default:\n%s", execIni)
+	}
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PHPConfigHash != oldHash || stored.FastCGIPort != oldPort {
+		t.Fatalf("running PHPExec repinned the row: %+v (want hash %q port %d)", stored, oldHash, oldPort)
+	}
+	if active := fakes.backend.phpActiveGeneration(site.ID); active != phpDefaultGeneration {
+		t.Fatalf("PHPExec restarted the master: active generation = %q", active)
+	}
+
+	applied, err := svc.ApplyPHP(ctx, site.ID, PHPChange{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.PHPConfigHash == oldHash {
+		t.Fatal("ApplyPHP treated the running master as current after a PHPExec generation")
+	}
+	appliedIni := string(readFile(t, filepath.Join(phpGenerationDir(t, fakes, applied), "php.ini")))
+	if !strings.Contains(appliedIni, "memory_limit = 640M") {
+		t.Fatalf("applied generation does not reflect the edited default:\n%s", appliedIni)
+	}
+	stored, err = fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PHPConfigHash != applied.PHPConfigHash {
+		t.Fatalf("stored hash = %q, want %q", stored.PHPConfigHash, applied.PHPConfigHash)
+	}
+	if active := fakes.backend.phpActiveGeneration(site.ID); active != applied.PHPConfigHash {
+		t.Fatalf("active generation = %q, want %q", active, applied.PHPConfigHash)
+	}
+}
+
+func TestRunningPHPExecWithoutFastCGIPortFailsClearly(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.FastCGIPort = 0
+	if err := fakes.store.UpdateSite(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.PHPExec(ctx, site.ID, []string{"-r", "echo 1;"})
+	if err == nil || !strings.Contains(err.Error(), "FastCGI port") {
+		t.Fatalf("error = %v, want a missing FastCGI port failure", err)
+	}
+	if _, ok := fakes.backend.lastExec(); ok {
+		t.Fatal("PHPExec ran without a FastCGI port")
+	}
 }
 
 func TestApplyPHPFailedDrainSkipsPruning(t *testing.T) {

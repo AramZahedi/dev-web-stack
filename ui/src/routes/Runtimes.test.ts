@@ -198,7 +198,7 @@ describe('Runtimes PHP removal', () => {
     render(Runtimes);
     const dialog = await openMigrationDialog();
 
-    const listed = within(dialog).getByLabelText('Sites using the build');
+    const listed = within(dialog).getByLabelText('Sites to move (all sites on PHP 8.4)');
     expect(within(listed).getByText('blog')).toBeTruthy();
     expect(within(listed).getByText('shop')).toBeTruthy();
     expect(within(listed).queryByText('api')).toBeNull();
@@ -225,7 +225,7 @@ describe('Runtimes PHP removal', () => {
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Migrate and remove' }));
 
     expect(await within(dialog).findByText(/php.ini failed validation on line 4/)).toBeTruthy();
-    const affectedSites = within(dialog).getByLabelText('Sites using the build');
+    const affectedSites = within(dialog).getByLabelText('Sites to move (all sites on PHP 8.4)');
     expect(within(affectedSites).getByText('shop')).toBeTruthy();
     expect(mockApi.removeRuntime).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('dialog', { name: /Migrate sites off PHP 8.4.4/ })).toBeTruthy();
