@@ -118,7 +118,7 @@ Write `.goreleaser.yaml` v2 with:
 - two builds (`devstack`, `devstack-helper`) with `main`, `binary`, `env: [CGO_ENABLED=0]`, `goos: [linux]`, `goarch: [amd64]`, `flags: [-trimpath]`, and ldflags using `{{ .Version }}`/`{{ .ShortCommit }}`;
 - one archive with `name_template: devstack_{{ .Version }}_linux_amd64`, `formats: [tar.gz]`, and `files: [install.sh, README.md, LICENSE*]`;
 - `checksum.name_template: checksums.txt`;
-- `release.extra_files: [install.sh]`;
+- `release.extra_files: [{glob: install.sh}]`;
 - no `devstack-agent`/Windows id.
 Add a short comment that Windows/agent are deferred with Plan 3 and that signing/diagnostics bundles are M4.
 
