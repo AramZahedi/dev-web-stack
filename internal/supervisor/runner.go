@@ -2,6 +2,8 @@ package supervisor
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,9 +152,16 @@ func (m *Manager) startChild(p *proc) (*child, error) {
 	spec := p.spec
 	p.mu.Unlock()
 
+	token := newSupervisorToken()
+	env := make(map[string]string, len(spec.Env)+1)
+	for key, value := range spec.Env {
+		env[key] = value
+	}
+	env[supervisorTokenEnv] = token
+
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
 	cmd.Dir = spec.Dir
-	cmd.Env = mergeEnv(os.Environ(), spec.Env)
+	cmd.Env = mergeEnv(os.Environ(), env)
 	cmd.Stdout = nonNilWriter(spec.Stdout)
 	cmd.Stderr = nonNilWriter(spec.Stderr)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -180,7 +189,7 @@ func (m *Manager) startChild(p *proc) (*child, error) {
 		close(c.exitedCh)
 	}()
 
-	if err := m.writePIDFile(spec.ID, pid, ticks); err != nil {
+	if err := m.writePIDFile(spec.ID, pid, ticks, token); err != nil {
 		_ = m.terminateChild(p, c)
 		return nil, err
 	}
@@ -285,7 +294,7 @@ func (m *Manager) terminateChild(p *proc, c *child) error {
 	}
 	var errs []error
 	if !channelClosed(c.exitedCh) {
-		_ = syscall.Kill(-c.pid, syscall.SIGTERM)
+		_ = syscall.Kill(-c.pid, p.terminationSignal())
 		if !waitChannel(nil, c.exitedCh, m.stopGrace()) {
 			_ = syscall.Kill(-c.pid, syscall.SIGKILL)
 			if !waitChannel(nil, c.exitedCh, killWait) {
@@ -418,8 +427,8 @@ func (m *Manager) pidPath(id string) string {
 
 // writePIDFile atomically records the process ID and kernel start time so a
 // later daemon can distinguish our process from a recycled PID.
-func (m *Manager) writePIDFile(id string, pid int, ticks uint64) error {
-	rec := pidRecord{ID: id, PID: pid, StartTicks: ticks}
+func (m *Manager) writePIDFile(id string, pid int, ticks uint64, token string) error {
+	rec := pidRecord{ID: id, PID: pid, StartTicks: ticks, Token: token}
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("supervisor: encode pid file for %q: %w", id, err)
@@ -461,6 +470,14 @@ func (m *Manager) removePIDFile(id string) {
 
 // mergeEnv appends overrides to the daemon environment, replacing matching
 // keys. A nil or empty override map inherits the environment unchanged.
+func newSupervisorToken() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return hex.EncodeToString(raw[:])
+	}
+	return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+}
+
 func mergeEnv(base []string, overrides map[string]string) []string {
 	if len(overrides) == 0 {
 		return base

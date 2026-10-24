@@ -70,6 +70,11 @@ func TestRedactAuthorizationAndVariants(t *testing.T) {
 		{"dotted key", "secret.foo=barval", "barval"},
 		{"quoted password", `password="hunter2"`, "hunter2"},
 		{"colon secret", "secret: s3cr3t", "s3cr3t"},
+		{"json password", `{"password":"hunter2","user":"me"}`, "hunter2"},
+		{"json authorization", `{"authorization":"Bearer tok-789"}`, "tok-789"},
+		{"database url", "DATABASE_URL=postgres://user:s3cret@db.example/app", "s3cret"},
+		{"cookie header", "Cookie: session=abc123; theme=dark", "abc123"},
+		{"set-cookie header", "Set-Cookie: session=xyz789; HttpOnly", "xyz789"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

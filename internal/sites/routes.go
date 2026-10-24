@@ -88,11 +88,13 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 		if upstreamPort > 0 {
 			upstream := net.JoinHostPort("127.0.0.1", strconv.Itoa(upstreamPort))
 			route := proxy.Route{
-				SiteID:     site.ID,
-				Kind:       kind,
-				Upstream:   upstream,
-				ForceHTTPS: site.ForceHTTPS,
-				TLS:        site.TLS,
+				SiteID:       site.ID,
+				Kind:         kind,
+				Upstream:     upstream,
+				ForceHTTPS:   site.ForceHTTPS,
+				TLS:          site.TLS,
+				State:        string(site.Status),
+				DesiredState: string(site.DesiredState),
 			}
 			if site.Kind == model.SitePHP {
 				route.DocumentRoot = absoluteDocumentRoot(site)

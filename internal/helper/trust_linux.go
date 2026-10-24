@@ -10,7 +10,9 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -301,9 +303,10 @@ func (m *TrustManager) installNSSDB(ctx context.Context, name, db string, create
 	if err := checkNSSDatabaseFiles(db); err != nil {
 		return Target{Name: name, OK: false, Detail: "invalid NSS database: " + detailError(err)}
 	}
-	if err := m.chownNSSDatabase(db); err != nil {
-		return Target{Name: name, OK: false, Detail: "repair NSS database ownership: " + detailError(err)}
-	}
+	// Do not chown an existing NSS database as root. certutil runs as the home
+	// owner, so files it creates are already correctly owned. Chowning a path
+	// inside the user's home would let a symlink race change ownership of a
+	// root-owned file.
 
 	initialized, err := nssDatabaseInitialized(db)
 	if err != nil {
@@ -315,9 +318,6 @@ func (m *TrustManager) installNSSDB(ctx context.Context, name, db string, create
 		}
 		if err := checkNSSDatabaseFiles(db); err != nil {
 			return Target{Name: name, OK: false, Detail: "invalid NSS database after creation: " + detailError(err)}
-		}
-		if err := m.chownNSSDatabase(db); err != nil {
-			return Target{Name: name, OK: false, Detail: "repair NSS database ownership: " + detailError(err)}
 		}
 	}
 
@@ -331,9 +331,6 @@ func (m *TrustManager) installNSSDB(ctx context.Context, name, db string, create
 	}
 	if err := checkNSSDatabaseFiles(db); err != nil {
 		return Target{Name: name, OK: false, Detail: "invalid NSS database after install: " + detailError(err)}
-	}
-	if err := m.chownNSSDatabase(db); err != nil {
-		return Target{Name: name, OK: false, Detail: "repair NSS database ownership: " + detailError(err)}
 	}
 	return Target{Name: name, OK: true, Detail: "installed"}
 }
@@ -350,9 +347,6 @@ func (m *TrustManager) removeNSSNickname(ctx context.Context, name, db string) T
 	}
 	if err := checkNSSDatabaseFiles(db); err != nil {
 		return Target{Name: name, OK: false, Detail: "invalid NSS database: " + detailError(err)}
-	}
-	if err := m.chownNSSDatabase(db); err != nil {
-		return Target{Name: name, OK: false, Detail: "repair NSS database ownership: " + detailError(err)}
 	}
 	initialized, err := nssDatabaseInitialized(db)
 	if err != nil {
@@ -386,9 +380,6 @@ func (m *TrustManager) statusNSSDB(ctx context.Context, name, db string) Target 
 	}
 	if err := checkNSSDatabaseFiles(db); err != nil {
 		return Target{Name: name, OK: false, Detail: "invalid NSS database: " + detailError(err)}
-	}
-	if err := m.chownNSSDatabase(db); err != nil {
-		return Target{Name: name, OK: false, Detail: "repair NSS database ownership: " + detailError(err)}
 	}
 	initialized, err := nssDatabaseInitialized(db)
 	if err != nil {
@@ -462,24 +453,6 @@ func checkNSSDatabaseFiles(db string) error {
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("%s is not a regular file", name)
-		}
-	}
-	return nil
-}
-
-func (m *TrustManager) chownNSSDatabase(db string) error {
-	if err := m.chownToOwner(db); err != nil {
-		return err
-	}
-	for _, name := range nssDBFileNames {
-		path := filepath.Join(db, name)
-		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return err
-		}
-		if err := m.chownToOwner(path); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -783,6 +756,17 @@ func (execRunner) RunAs(ctx context.Context, uid, gid int, name string, args ...
 		cred.NoSetGroups = true
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
+	// Do not pass the root helper environment (which may contain secrets) to
+	// the unprivileged certutil process.
+	env := []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"LANG=C",
+		"LC_ALL=C",
+	}
+	if account, err := user.LookupId(strconv.Itoa(uid)); err == nil && account.HomeDir != "" {
+		env = append(env, "HOME="+account.HomeDir)
+	}
+	cmd.Env = env
 	return runCombined(cmd)
 }
 

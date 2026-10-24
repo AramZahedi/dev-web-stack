@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -281,5 +282,21 @@ func TestHelperSocketPermissions(t *testing.T) {
 	}
 	if dirInfo.Mode().Perm() != 0o755 {
 		t.Fatalf("socket dir mode = %v, want 0755", dirInfo.Mode().Perm())
+	}
+}
+
+func TestHelperRejectsTooManyHostsDomains(t *testing.T) {
+	socketPath, hostsPath := newTestServer(t, os.Getuid())
+	c := dialClient(t, socketPath)
+	domains := make([]string, 1001)
+	for i := range domains {
+		domains[i] = fmt.Sprintf("s%d.test", i)
+	}
+	err := c.SyncHosts(context.Background(), domains)
+	if !errors.Is(err, helperclient.ErrInvalidRequest) {
+		t.Fatalf("error = %v, want ErrInvalidRequest", err)
+	}
+	if _, statErr := os.Stat(hostsPath); !os.IsNotExist(statErr) {
+		t.Fatalf("hosts file written for oversized request: stat error = %v", statErr)
 	}
 }

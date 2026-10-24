@@ -156,3 +156,20 @@ func TestParseReturnsManagedDomains(t *testing.T) {
 		t.Fatal("found managed block in unrelated content")
 	}
 }
+
+func TestWriteInPlaceTruncatesOldSuffix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts")
+	if err := os.WriteFile(path, []byte("a much longer old hosts file"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInPlace(path, []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new" {
+		t.Fatalf("content = %q, want new", data)
+	}
+}

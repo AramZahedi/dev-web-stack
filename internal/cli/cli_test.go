@@ -2126,3 +2126,32 @@ func TestCLIPHPRemediations(t *testing.T) {
 		t.Fatalf("PHP_CONFIG_INVALID remediation = %q", got)
 	}
 }
+
+func TestDaemonStopRejectsReusedPID(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(daemon.PidPath(home), []byte("4242\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(daemon.StartTicksPath(home), []byte("100\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldTicks := readProcStartTicks
+	readProcStartTicks = func(pid int) (uint64, error) {
+		if pid != 4242 {
+			t.Fatalf("readProcStartTicks(%d), want 4242", pid)
+		}
+		return 101, nil
+	}
+	t.Cleanup(func() { readProcStartTicks = oldTicks })
+
+	stopped, err := daemonStop(context.Background(), home)
+	if err == nil || stopped {
+		t.Fatalf("daemonStop = (%v, %v), want refusal", stopped, err)
+	}
+	if !strings.Contains(asError(err).Error(), "reused") {
+		t.Fatalf("error = %v, want reused pid refusal", err)
+	}
+}

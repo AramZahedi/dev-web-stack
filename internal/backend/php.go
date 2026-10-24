@@ -168,10 +168,15 @@ func (l *Local) startPHP(ctx context.Context, siteID, generation string) (Proces
 // promotes the most recently started remaining generation so a failed swap
 // still reports the old master.
 func (l *Local) StopPHP(ctx context.Context, siteID, generation string) error {
-	return l.stopPHP(ctx, siteID, generation)
+	return l.stopPHP(ctx, siteID, generation, false)
 }
 
-func (l *Local) stopPHP(ctx context.Context, siteID, generation string) error {
+// StopPHPGraceful drains a generation with SIGQUIT before escalating.
+func (l *Local) StopPHPGraceful(ctx context.Context, siteID, generation string) error {
+	return l.stopPHP(ctx, siteID, generation, true)
+}
+
+func (l *Local) stopPHP(ctx context.Context, siteID, generation string, graceful bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -188,8 +193,14 @@ func (l *Local) stopPHP(ctx context.Context, siteID, generation string) error {
 	}
 
 	processID := generationProcessID(siteID, generation)
-	if err := l.supervisor.Stop(ctx, processID); err != nil {
-		return fmt.Errorf("backend: stop php site %q generation %q: %w", siteID, generation, err)
+	var stopErr error
+	if graceful {
+		stopErr = l.supervisor.StopGraceful(ctx, processID)
+	} else {
+		stopErr = l.supervisor.Stop(ctx, processID)
+	}
+	if stopErr != nil {
+		return fmt.Errorf("backend: stop php site %q generation %q: %w", siteID, generation, stopErr)
 	}
 
 	l.mu.Lock()

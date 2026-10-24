@@ -44,6 +44,32 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	switch {
+	case route.DesiredState == "stopped" || route.State == "stopped":
+		writeBrandedPage(w, req, brandedPage{
+			Status:  http.StatusServiceUnavailable,
+			Title:   "Site stopped",
+			Message: fmt.Sprintf("%s is configured but not running.", host),
+			Command: "devstack site start " + route.SiteID,
+		})
+		return
+	case route.State == "starting":
+		writeBrandedPage(w, req, brandedPage{
+			Status:  http.StatusServiceUnavailable,
+			Title:   "Site starting",
+			Message: fmt.Sprintf("%s is starting; retry in a moment.", host),
+		})
+		return
+	case route.State == "crashed":
+		writeBrandedPage(w, req, brandedPage{
+			Status:  http.StatusBadGateway,
+			Title:   "Site crashed",
+			Message: fmt.Sprintf("%s stopped unexpectedly.", host),
+			Command: "devstack site restart " + route.SiteID,
+		})
+		return
+	}
+
 	if route.Kind == KindPHP {
 		r.servePHP(w, req, route)
 		return
@@ -86,6 +112,9 @@ func (r *Router) reverseProxy(route Route) (*httputil.ReverseProxy, error) {
 			// Preserve the original Host: applications route and build URLs
 			// from the site domain, not the loopback upstream address.
 			pr.Out.Host = pr.In.Host
+			// Never trust a client-supplied forwarding chain at the local edge.
+			// The only client address we know is the one that connected to us.
+			pr.Out.Header.Del("X-Forwarded-For")
 			pr.SetXForwarded()
 		},
 		ModifyResponse: func(resp *http.Response) error {

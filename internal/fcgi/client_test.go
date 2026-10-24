@@ -782,3 +782,109 @@ func TestFastCGIDialRejectsInvalidAddress(t *testing.T) {
 		t.Fatalf("Dial error = %v, want context.Canceled", err)
 	}
 }
+
+func TestFastCGIDeliversEarlyResponseAfterStdinWriteFails(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	client := &Client{conn: clientConn}
+	ctx, cancel := context.WithTimeout(testContext, 5*time.Second)
+	defer cancel()
+
+	go func() {
+		if _, err := readRecord(serverConn); err != nil { // BEGIN_REQUEST
+			return
+		}
+		for {
+			rec, err := readRecord(serverConn)
+			if err != nil || rec.typ != typeParams {
+				return
+			}
+			if len(rec.content) == 0 {
+				break
+			}
+		}
+		_ = writeRecord(serverConn, typeStdout, defaultRequestID,
+			[]byte("Status: 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nunauthorized"))
+		_ = writeRecord(serverConn, typeEndRequest, defaultRequestID,
+			endRequestBody(0, protocolRequestComplete))
+		_ = serverConn.Close()
+	}()
+
+	body := strings.NewReader(strings.Repeat("x", 1<<20))
+	resp, err := client.Do(ctx, Request{
+		Params:     map[string]string{"REQUEST_METHOD": "POST"},
+		Body:       body,
+		BodyLength: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("Do after early response: %v", err)
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read early response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized || string(got) != "unauthorized" {
+		t.Fatalf("response = %d %q, want 401 unauthorized", resp.StatusCode, got)
+	}
+}
+
+func TestFastCGIIgnoresManagementRecordsWithRequestIDZero(t *testing.T) {
+	addr, stop := startFakeServer(t, func(e *fakeExchange) error {
+		if err := writeRecord(e.conn, typeGetValues, 0, []byte{0, 0}); err != nil {
+			return err
+		}
+		if err := e.WriteStdout([]byte("Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nok")); err != nil {
+			return err
+		}
+		return e.EndRequest(0, protocolRequestComplete)
+	})
+	defer stop()
+
+	client, err := Dial(testContext, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	resp, err := client.Do(testContext, Request{Params: map[string]string{"REQUEST_METHOD": "GET"}})
+	if err != nil {
+		t.Fatalf("Do with management record: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "ok" {
+		t.Fatalf("response = %d %q", resp.StatusCode, body)
+	}
+}
+
+func TestFastCGILocationWithoutStatusDefaultsToFound(t *testing.T) {
+	addr, stop := startFakeServer(t, func(e *fakeExchange) error {
+		if err := e.WriteStdout([]byte("Location: /next\r\nContent-Type: text/plain\r\n\r\n")); err != nil {
+			return err
+		}
+		return e.EndRequest(0, protocolRequestComplete)
+	})
+	defer stop()
+
+	client, err := Dial(testContext, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	resp, err := client.Do(testContext, Request{Params: map[string]string{"REQUEST_METHOD": "GET"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != "/next" {
+		t.Fatalf("Location = %q", got)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -667,5 +668,55 @@ func assertCertEqual(t *testing.T, want, got model.CertRecord) {
 	want.NotAfter, got.NotAfter = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(want, got) {
 		t.Errorf("cert mismatch:\n want %+v\n  got %+v", want, got)
+	}
+}
+
+func TestCreateSiteWithPHPConfigIsAtomic(t *testing.T) {
+	s := openTemp(t)
+	site := model.Site{ID: "s1", Name: "blog", Domain: "blog.test", Kind: model.SitePHP}
+	cfg := model.SitePHPConfig{
+		SiteID: "s1", Ini: map[string]string{"memory_limit": "256M"},
+		Extensions: map[string]bool{"redis": true}, ConfigHash: "hash",
+		AppliedAt: time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
+	}
+	if err := s.CreateSiteWithPHPConfig(ctx, site, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetSitePHPConfig(ctx, "s1")
+	if err != nil || got.ConfigHash != "hash" || got.Ini["memory_limit"] != "256M" {
+		t.Fatalf("snapshot = %+v, err = %v", got, err)
+	}
+
+	// A duplicate insert must roll back both statements, leaving the original
+	// row and snapshot intact.
+	cfg.ConfigHash = "other"
+	if err := s.CreateSiteWithPHPConfig(ctx, site, cfg); err == nil {
+		t.Fatal("duplicate site insert succeeded")
+	}
+	got, err = s.GetSitePHPConfig(ctx, "s1")
+	if err != nil || got.ConfigHash != "hash" {
+		t.Fatalf("snapshot changed after failed create: %+v, err = %v", got, err)
+	}
+}
+
+func TestAddEventBoundsHistoryTo500(t *testing.T) {
+	s := openTemp(t)
+	for i := 0; i < 505; i++ {
+		if err := s.AddEvent(ctx, model.Event{
+			SiteID: "s1", Type: "test", Message: strconv.Itoa(i),
+			CreatedAt: time.Unix(int64(i), 0).UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := s.ListEvents(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 500 {
+		t.Fatalf("events = %d, want 500", len(events))
+	}
+	if events[0].Message != "504" || events[len(events)-1].Message != "5" {
+		t.Fatalf("event bounds = %q..%q", events[0].Message, events[len(events)-1].Message)
 	}
 }

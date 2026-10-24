@@ -197,14 +197,17 @@ func TestSyncDegradesBrokenSitesInsteadOfFailing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "index.html"), []byte("outside"), 0o644); err != nil {
+	badRoot := filepath.Join(fakes.root, "docs-bad")
+	if err := os.MkdirAll(badRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	badStatic, err := svc.Create(ctx, CreateRequest{
-		Name: "docs", Path: fakes.root, Kind: "static", DocumentRoot: outside,
+		Name: "docs", Path: fakes.root, Kind: "static", DocumentRoot: "docs-bad", TLS: true,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(badRoot); err != nil {
 		t.Fatal(err)
 	}
 
@@ -238,8 +241,15 @@ func TestSyncDegradesBrokenSitesInsteadOfFailing(t *testing.T) {
 		if spec.DesiredState != string(model.DesiredStopped) {
 			t.Errorf("broken site %s desired state = %q, want stopped", broken.Name, spec.DesiredState)
 		}
-		if spec.TLS || spec.ForceHTTPS || spec.DocumentRoot != "" || spec.BackendPort != 0 {
+		if spec.ForceHTTPS || spec.DocumentRoot != "" || spec.BackendPort != 0 {
 			t.Errorf("broken site %s was not degraded: %+v", broken.Name, spec)
+		}
+		if broken.ID == badStatic.ID {
+			if !spec.TLS || len(spec.CertPEM) == 0 || len(spec.KeyPEM) == 0 {
+				t.Errorf("broken TLS site %s lost its usable certificate: %+v", broken.Name, spec)
+			}
+		} else if spec.TLS {
+			t.Errorf("broken non-TLS site %s unexpectedly enabled TLS: %+v", broken.Name, spec)
 		}
 		if spec.Domain == "" {
 			t.Errorf("broken site %s lost its domain, so it would not serve the 503 vhost", broken.Name)
@@ -767,6 +777,10 @@ func TestExternalNodeStartStopSyncFailureRestoresState(t *testing.T) {
 	}
 	if state := fakes.backend.statusFor(site.ID); state != model.StatusStopped {
 		t.Fatalf("backend after failed start = %q", state)
+	}
+	route, ok := fakes.router.Lookup("shop.test")
+	if !ok || route.State != string(model.StatusStopped) {
+		t.Fatalf("failed start left a route that can reach a stopped backend: %+v (ok=%v)", route, ok)
 	}
 
 	fakes.vhosts.err = nil

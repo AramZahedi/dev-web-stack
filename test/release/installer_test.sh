@@ -79,7 +79,19 @@ chmod 0755 "${TOOLS}/getent"
 cat >"${TOOLS}/sudo" <<EOF
 #!/usr/bin/env bash
 printf 'sudo %s\n' "\$*" >>"${COMMAND_LOG}"
+if [ "\${1:-}" = "-v" ] || [ "\${1:-}" = "-n" ]; then
+	if [ "\${FAKE_SUDO_DENY:-0}" = 1 ]; then
+		exit 1
+	fi
+	exit 0
+fi
 if [ "\${1:-}" = systemctl ]; then
+	if [ "\${2:-}" = is-active ] && [ "\${4:-}" = devstack-helper.service ]; then
+		if [ "\${FAKE_HELPER_ACTIVE:-1}" = 1 ]; then
+			exit 0
+		fi
+		exit 1
+	fi
 	exit 0
 fi
 if [ "\${1:-}" != install ]; then
@@ -112,6 +124,12 @@ if [ "\${1:-}" = --user ] && [ "\${2:-}" = show-environment ]; then
 fi
 if [ "\${1:-}" = --user ] && [ "\${2:-}" = is-active ]; then
 	if [ "\${FAKE_UNIT_ACTIVE:-0}" = 1 ]; then
+		exit 0
+	fi
+	exit 1
+fi
+if [ "\${1:-}" = is-active ] && [ "\${3:-}" = devstack-helper.service ]; then
+	if [ "\${FAKE_HELPER_ACTIVE:-1}" = 1 ]; then
 		exit 0
 	fi
 	exit 1
@@ -207,6 +225,12 @@ expect_no_sudo_install() {
 expect_no_privileged_commands() {
 	if grep -Eq '^(sudo|systemctl) ' "${COMMAND_LOG}"; then
 		fail "a privileged command was attempted before verification completed: $(cat "${COMMAND_LOG}")"
+	fi
+}
+
+expect_no_service_stop() {
+	if grep -Eq '(^| )systemctl( --user)? stop ' "${COMMAND_LOG}"; then
+		fail "the installer stopped a service before sudo succeeded: $(cat "${COMMAND_LOG}")"
 	fi
 }
 
@@ -473,6 +497,26 @@ if [ -e "${FAKE_ROOT}/usr/local/lib/devstack/devstack-helper" ]; then
 fi
 export FAKE_SYSTEMD_SESSION=1
 pass "a failed daemon stop aborts the upgrade before binary replacement"
+
+# A denied sudo must abort before the daemon is stopped or a binary replaced.
+export FAKE_SUDO_DENY=1
+export FAKE_UNIT_ACTIVE=1
+export FAKE_SYSTEMD_SESSION=1
+CLI_BEFORE="$(sha256sum "${FAKE_HOME}/.local/bin/devstack" | cut -d' ' -f1)"
+invoke "${INSTALLER}" --upgrade \
+	--archive "${GOOD_ARCHIVE}" --checksums "${GOOD_CHECKSUMS}"
+expect_failure
+expect_output "sudo authentication failed"
+expect_no_service_stop
+expect_no_sudo_install
+CLI_AFTER="$(sha256sum "${FAKE_HOME}/.local/bin/devstack" | cut -d' ' -f1)"
+[ "${CLI_BEFORE}" = "${CLI_AFTER}" ] || fail "denied sudo replaced the existing CLI"
+if [ -e "${FAKE_ROOT}/usr/local/lib/devstack/devstack-helper" ]; then
+	fail "denied sudo installed the helper binary"
+fi
+export FAKE_SUDO_DENY=0
+export FAKE_UNIT_ACTIVE=0
+pass "a denied sudo aborts before stopping services or replacing binaries"
 
 # Packaged install.sh: run from a directory without build/systemd so the
 # installer must use its embedded unit definitions. The fake sudo keeps every

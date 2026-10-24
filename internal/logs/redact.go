@@ -9,7 +9,14 @@ import "regexp"
 var (
 	assignmentSecretPattern = regexp.MustCompile(
 		`(?i)\b([A-Za-z0-9_.-]*(?:key|token|secret|password)[A-Za-z0-9_.-]*)\b(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;]+)`)
-	authorizationPattern = regexp.MustCompile(`(?i)\b(authorization)\b(\s*:\s*)([^\r\n]+)`)
+	authorizationPattern    = regexp.MustCompile(`(?i)\b(authorization)\b(\s*:\s*)([^\r\n]+)`)
+	jsonQuotedSecretPattern = regexp.MustCompile(
+		`(?i)("(?:[^"\\]|\\.)*(?:key|token|secret|password|authorization)(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*")`)
+	jsonUnquotedSecretPattern = regexp.MustCompile(
+		`(?i)("(?:[^"\\]|\\.)*(?:key|token|secret|password|authorization)(?:[^"\\]|\\.)*")(\s*:\s*)([^\s,;}]+)`)
+	uriUserinfoPattern = regexp.MustCompile(
+		`(?i)\b([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@`)
+	cookiePattern = regexp.MustCompile(`(?i)\b((?:set-)?cookie)\b(\s*:\s*)([^\r\n]+)`)
 )
 
 // Redact replaces secret values in text with "***". It recognises environment
@@ -21,6 +28,10 @@ func Redact(text string) string {
 	if text == "" {
 		return text
 	}
+	text = jsonQuotedSecretPattern.ReplaceAllString(text, `${1}${2}"***"`)
+	text = jsonUnquotedSecretPattern.ReplaceAllString(text, "${1}${2}***")
+	text = uriUserinfoPattern.ReplaceAllString(text, "${1}${2}:***@")
+	text = cookiePattern.ReplaceAllString(text, "${1}${2}***")
 	text = authorizationPattern.ReplaceAllString(text, "${1}${2}***")
 	return assignmentSecretPattern.ReplaceAllString(text, "${1}${2}***")
 }

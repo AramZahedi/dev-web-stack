@@ -462,6 +462,8 @@ TimeoutStopSec=20s
 UMask=0077
 LimitNOFILE=65536
 NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+AmbientCapabilities=
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectKernelTunables=yes
@@ -564,6 +566,17 @@ if systemctl --user show-environment >/dev/null 2>&1; then
 	fi
 fi
 
+if [ "${DRY_RUN}" -eq 0 ]; then
+	if ! command -v sudo >/dev/null 2>&1; then
+		die "sudo is required to install the privileged helper"
+	fi
+	# Validate elevation before stopping the daemon or replacing binaries. A
+	# cancelled sudo must leave the existing installation untouched.
+	if ! sudo -v; then
+		die "sudo authentication failed; nothing was changed"
+	fi
+fi
+
 if [ "${UPGRADE}" -eq 1 ]; then
 	log "upgrade: keeping ${HELPER_CONFIG} unless --force-config is used"
 	if [ -n "${BACKUP_HINT}" ]; then
@@ -642,6 +655,12 @@ if [ "${DRY_RUN}" -eq 0 ]; then
 		fi
 		sleep 0.1
 	done
+	if ! run sudo systemctl is-active --quiet devstack-helper.service; then
+		printf 'install: devstack-helper is not active after restart; inspect:\n' >&2
+		printf '  sudo systemctl status devstack-helper --no-pager\n' >&2
+		printf '  sudo journalctl -u devstack-helper -n 100 --no-pager\n' >&2
+		exit 1
+	fi
 	if [ ! -S /run/devstack-helper/helper.sock ]; then
 		printf 'install: warning: helper socket is not ready yet; run `devstack init` after checking the service\n' >&2
 	fi

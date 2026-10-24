@@ -369,3 +369,33 @@ describe('api client', () => {
     expect(JSON.parse(String(execInit.body))).toEqual({ argv: ['-v'] });
   });
 });
+
+describe('api client CSRF recovery', () => {
+  beforeEach(() => resetApiClientForTests());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetApiClientForTests();
+  });
+
+  it('refreshes the session and retries once after a CSRF 403', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'old-token' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ code: 'FORBIDDEN', message: 'missing or invalid CSRF token' }, 403),
+      )
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'new-token' }))
+      .mockResolvedValueOnce(jsonResponse({ id: 's1', name: 'blog', domain: 'blog.test' }, 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createSite({ name: 'blog', path: '/tmp/blog', kind: 'static' })).resolves.toMatchObject({
+      id: 's1',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/v1/session');
+    expect((fetchMock.mock.calls[2] as [string])[0]).toBe('/api/v1/session');
+    const retryHeaders = new Headers((fetchMock.mock.calls[3][1] as RequestInit).headers);
+    expect(retryHeaders.get('X-CSRF-Token')).toBe('new-token');
+  });
+});

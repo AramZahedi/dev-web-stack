@@ -19,6 +19,14 @@ func LockPath(home string) string {
 	return filepath.Join(home, "run", "daemon.lock")
 }
 
+// SpawnLockPath serializes EnsureRunning callers so only one process performs
+// the check-and-spawn sequence. It is separate from the lifetime lock because
+// the child must be able to acquire the lifetime lock while the parent still
+// holds the spawn lock.
+func SpawnLockPath(home string) string {
+	return filepath.Join(home, "run", "daemon.spawn.lock")
+}
+
 // ReadyPath returns the readiness marker path below home. It exists only while
 // the daemon has finished startup and has not begun shutting down.
 func ReadyPath(home string) string {
@@ -49,14 +57,21 @@ type lifetimeLock struct {
 // acquireLifetimeLock takes the machine's non-blocking exclusive lock. A busy
 // lock is reported as ErrAlreadyRunning.
 func acquireLifetimeLock(home string) (*lifetimeLock, error) {
-	path := LockPath(home)
+	return acquireLockFile(LockPath(home))
+}
+
+func acquireSpawnLock(home string) (*lifetimeLock, error) {
+	return acquireLockFile(SpawnLockPath(home))
+}
+
+func acquireLockFile(path string) (*lifetimeLock, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("daemon: open lifetime lock: %w", err)
+		return nil, fmt.Errorf("daemon: open lock %s: %w", path, err)
 	}
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("daemon: set lifetime lock permissions: %w", err)
+		return nil, fmt.Errorf("daemon: set lock permissions %s: %w", path, err)
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = file.Close()

@@ -348,18 +348,73 @@ func (m *VhostManager) runConfigTest(ctx context.Context, mode string) ([]byte, 
 	}
 }
 
-func (m *VhostManager) reloadServerOutput(ctx context.Context, mode, service string) ([]byte, error) {
-	if service == "" {
-		switch mode {
-		case vhostModeNginx:
-			service = "nginx"
-		case vhostModeApache:
-			service = "apache2"
-		default:
-			return nil, fmt.Errorf("unsupported serving mode %q", mode)
-		}
+func (m *VhostManager) serviceName(mode, service string) string {
+	if service != "" {
+		return service
 	}
-	return m.runner.Run(ctx, "systemctl", "reload", service)
+	switch mode {
+	case vhostModeNginx:
+		return "nginx"
+	case vhostModeApache:
+		return "apache2"
+	default:
+		return ""
+	}
+}
+
+func (m *VhostManager) reloadServerOutput(ctx context.Context, mode, service string) ([]byte, error) {
+	service = m.serviceName(mode, service)
+	if service == "" {
+		return nil, fmt.Errorf("unsupported serving mode %q", mode)
+	}
+	// reload-or-restart starts a stopped server after a mode switch and
+	// reloads an active one. Plain reload fails with "Unit ... is not active".
+	return m.runner.Run(ctx, "systemctl", "reload-or-restart", service)
+}
+
+func (m *VhostManager) serverActive(ctx context.Context, mode, service string) (bool, error) {
+	service = m.serviceName(mode, service)
+	if service == "" {
+		return false, fmt.Errorf("unsupported serving mode %q", mode)
+	}
+	output, err := m.runner.Run(ctx, "systemctl", "is-active", "--quiet", service)
+	if err == nil {
+		return true, nil
+	}
+	// systemctl is-active exits non-zero for inactive units. Treat only that
+	// normal inactive result as false; other errors still fail the operation.
+	if len(output) == 0 {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect %s: %s", service, scrubVhostOutput(output))
+}
+
+func (m *VhostManager) stopServer(ctx context.Context, mode, service string) error {
+	active, err := m.serverActive(ctx, mode, service)
+	if err != nil {
+		return err
+	}
+	if !active {
+		return nil
+	}
+	service = m.serviceName(mode, service)
+	output, err := m.runner.Run(ctx, "systemctl", "stop", service)
+	if err != nil {
+		return fmt.Errorf("%w: stop %s: %s", helperproto.ErrServerReloadFailed, service, scrubVhostOutput(output))
+	}
+	return nil
+}
+
+func (m *VhostManager) startServer(ctx context.Context, mode, service string) error {
+	service = m.serviceName(mode, service)
+	if service == "" {
+		return fmt.Errorf("unsupported serving mode %q", mode)
+	}
+	output, err := m.runner.Run(ctx, "systemctl", "start", service)
+	if err != nil {
+		return fmt.Errorf("%w: start %s: %s", helperproto.ErrServerReloadFailed, service, scrubVhostOutput(output))
+	}
+	return nil
 }
 
 func (m *VhostManager) reloadServer(ctx context.Context, server, service string) error {
@@ -372,6 +427,17 @@ func (m *VhostManager) reloadServer(ctx context.Context, server, service string)
 		return fmt.Errorf("%w: reload %s: %s", helperproto.ErrServerReloadFailed, service, scrubVhostOutput(output))
 	}
 	return nil
+}
+
+func (m *VhostManager) reloadServerIfActive(ctx context.Context, server, service string) error {
+	active, err := m.serverActive(ctx, server, service)
+	if err != nil {
+		return err
+	}
+	if !active {
+		return nil
+	}
+	return m.reloadServer(ctx, server, service)
 }
 
 // staticRootWorkerError verifies that the distribution's nginx/Apache worker

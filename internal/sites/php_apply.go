@@ -370,6 +370,17 @@ func (s *Service) restorePHPApplyLocked(ctx context.Context, previous model.Site
 // hash generation after the new master is live. It reports whether every stop
 // succeeded; a failed stop keeps the old port reserved and records the
 // generation so a later apply can retry its cleanup.
+type gracefulPHPStopper interface {
+	StopPHPGraceful(ctx context.Context, siteID, generation string) error
+}
+
+func (s *Service) stopDrainedPHPGeneration(ctx context.Context, siteID, generation string) error {
+	if graceful, ok := s.deps.PHPBackend.(gracefulPHPStopper); ok {
+		return graceful.StopPHPGraceful(ctx, siteID, generation)
+	}
+	return s.deps.PHPBackend.StopPHP(ctx, siteID, generation)
+}
+
 func (s *Service) drainPHPGenerationsLocked(ctx context.Context, site model.Site, newHash, oldHash string, oldPort int) bool {
 	generations := []string{phpDefaultGeneration}
 	if oldHash != "" && oldHash != newHash {
@@ -377,7 +388,7 @@ func (s *Service) drainPHPGenerationsLocked(ctx context.Context, site model.Site
 	}
 	stopped := true
 	for _, generation := range generations {
-		if err := s.deps.PHPBackend.StopPHP(ctx, site.ID, generation); err != nil {
+		if err := s.stopDrainedPHPGeneration(ctx, site.ID, generation); err != nil {
 			stopped = false
 			s.retainPHPGenerationLocked(site.ID, generation, oldPort)
 			s.emitEvent(ctx, site.ID, "site.error",

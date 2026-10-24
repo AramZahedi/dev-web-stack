@@ -474,6 +474,9 @@ func validateTLSDir(dir string) error {
 	if strings.ContainsAny(dir, "\n\r") {
 		return errors.New("vhost: TLS directory contains a newline")
 	}
+	if strings.ContainsRune(dir, '$') {
+		return errors.New("vhost: TLS directory contains an nginx variable marker")
+	}
 	if !filepath.IsAbs(dir) {
 		return fmt.Errorf("vhost: TLS directory %q must be absolute", dir)
 	}

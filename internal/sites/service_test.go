@@ -784,3 +784,23 @@ func countEvent(t *testing.T, fakes *testFakes, siteID, typ string) int {
 	}
 	return count
 }
+
+func TestValidateDocumentRootConfinesAbsolutePaths(t *testing.T) {
+	project := t.TempDir()
+	inside := filepath.Join(project, "public")
+	if err := os.Mkdir(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := validateDocumentRoot(project, inside); err != nil || got != inside {
+		t.Fatalf("inside absolute root = %q, err = %v", got, err)
+	}
+	outside := t.TempDir()
+	if _, err := validateDocumentRoot(project, outside); err == nil {
+		t.Fatal("accepted an absolute document root outside the project")
+	}
+	if err := os.Symlink(outside, filepath.Join(project, "escape")); err == nil {
+		if _, err := validateDocumentRoot(project, filepath.Join(project, "escape")); err == nil {
+			t.Fatal("accepted a symlinked document root outside the project")
+		}
+	}
+}

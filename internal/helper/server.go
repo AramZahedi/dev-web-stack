@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
@@ -184,6 +185,8 @@ func NewServer(cfg Config) (*Server, error) {
 			statePath = filepath.Join(cfg.VhostRoot, "vhosts.json")
 		}
 		manager := NewVhostManager(filepath.Join(cfg.VhostRoot, "vhosts"), statePath, s.authority, cfg.Runner, logger)
+		manager.AllowUID = cfg.AllowUID
+		manager.AllowHome = cfg.AllowHome
 		manager.TLSDir = filepath.Join(cfg.VhostRoot, "tls")
 		manager.NginxIncludeDir = cfg.NginxIncludeDir
 		manager.ApacheIncludeDir = cfg.ApacheIncludeDir
@@ -546,7 +549,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return errors.New("helper: server already started")
 	}
 	socketPath := s.cfg.SocketPath
-	if err := prepareSocketDir(socketPath); err != nil {
+	if err := prepareSocketDir(socketPath, s.cfg.AllowUID); err != nil {
 		return err
 	}
 	if err := removeStaleSocket(socketPath); err != nil {
@@ -731,10 +734,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
+const maxHostsDomains = 1000
+
 func (s *Server) handleHostsSync(w http.ResponseWriter, r *http.Request) {
 	var req helperproto.HostsSyncRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if len(req.Domains) > maxHostsDomains {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest,
+			fmt.Sprintf("too many hosts domains: %d (max %d)", len(req.Domains), maxHostsDomains))
 		return
 	}
 	for _, d := range req.Domains {
@@ -1017,7 +1027,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	return nil
 }
 
-func prepareSocketDir(socketPath string) error {
+func prepareSocketDir(socketPath string, allowUID int) error {
 	dir := filepath.Dir(socketPath)
 	info, err := os.Stat(dir)
 	switch {
@@ -1025,11 +1035,17 @@ func prepareSocketDir(socketPath string) error {
 		if !info.IsDir() {
 			return fmt.Errorf("helper: socket parent %s is not a directory", dir)
 		}
-		// Keep a shared sticky directory (for example /tmp) unchanged, but
-		// make a dedicated helper directory traversable.
+		// Never widen a pre-existing directory. Verify the allowed user can
+		// traverse it instead; a private 0700 directory owned by that user is
+		// valid, while root-only 0700 is rejected.
 		if info.Mode()&os.ModeSticky == 0 {
-			if err := os.Chmod(dir, 0o755); err != nil {
-				return fmt.Errorf("helper: set socket directory mode: %w", err)
+			perm := info.Mode().Perm()
+			accessible := perm&0o001 != 0
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) == allowUID {
+				accessible = perm&0o100 != 0
+			}
+			if !accessible {
+				return fmt.Errorf("helper: socket parent %s is not traversable by the allowed user", dir)
 			}
 		}
 		return nil

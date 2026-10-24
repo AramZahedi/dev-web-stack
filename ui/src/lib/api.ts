@@ -124,19 +124,36 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (mutation) headers['X-CSRF-Token'] = await fetchSession();
 
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
-      method,
-      credentials: 'same-origin',
-      headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
-  } catch (error) {
-    throw networkError(error);
-  }
+  const send = async (): Promise<Response> => {
+    try {
+      return await fetch(`${API_BASE}${path}`, {
+        method,
+        credentials: 'same-origin',
+        headers,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+    } catch (error) {
+      throw networkError(error);
+    }
+  };
 
-  if (!response.ok) throw await readError(response);
+  let response = await send();
+  if (mutation && response.status === 403) {
+    const error = await readError(response);
+    // A daemon restart changes the CSRF secret. Refresh once, then retry the
+    // mutation; do not retry ordinary permission 403s.
+    if (error.code === 'FORBIDDEN' && /csrf|session/i.test(error.message)) {
+      csrfToken = null;
+      sessionRequest = null;
+      headers['X-CSRF-Token'] = await fetchSession();
+      response = await send();
+      if (!response.ok) throw await readError(response);
+    } else {
+      throw error;
+    }
+  } else if (!response.ok) {
+    throw await readError(response);
+  }
   if (response.status === 202 || response.status === 204) return undefined as T;
   const contentType = response.headers.get('content-type') ?? '';
   if (options.voidResponse) {

@@ -5,6 +5,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -91,6 +92,13 @@ func PidPath(home string) string {
 	return filepath.Join(home, "run", "daemon.pid")
 }
 
+// StartTicksPath returns the sidecar that records /proc/<pid>/stat field 22 for
+// the daemon pid. CLI stop verifies it before signalling, protecting against a
+// reused PID after a stale pid file.
+func StartTicksPath(home string) string {
+	return filepath.Join(home, "run", "daemon.start")
+}
+
 // Run starts every devstack service and blocks until ctx is cancelled or a
 // listener fails. On return it stops the supervised processes without changing
 // their desired state, so sites marked running come back on the next launch.
@@ -152,6 +160,7 @@ func Run(ctx context.Context, opts Options) error {
 		logger:     logger,
 		socketPath: SocketPath(cfg.Home),
 		pidPath:    PidPath(cfg.Home),
+		startPath:  StartTicksPath(cfg.Home),
 		readyPath:  ReadyPath(cfg.Home),
 		serveErr:   make(chan error, 2),
 	}
@@ -340,6 +349,7 @@ type daemon struct {
 	socketPath string
 	socketInfo os.FileInfo
 	pidPath    string
+	startPath  string
 	pidValue   string
 	readyPath  string
 
@@ -403,8 +413,32 @@ func (d *daemon) writePID() error {
 	if err := writeAtomic(d.pidPath, []byte(value+"\n"), 0o600); err != nil {
 		return fmt.Errorf("daemon: write pid file: %w", err)
 	}
+	ticks, err := daemonStartTicks(os.Getpid())
+	if err != nil {
+		return fmt.Errorf("daemon: record start time: %w", err)
+	}
+	if err := writeAtomic(d.startPath, []byte(strconv.FormatUint(ticks, 10)+"\n"), 0o600); err != nil {
+		return fmt.Errorf("daemon: write start-time file: %w", err)
+	}
 	d.pidValue = value
 	return nil
+}
+
+func daemonStartTicks(pid int) (uint64, error) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, err
+	}
+	closeParen := bytes.LastIndexByte(data, ')')
+	if closeParen < 0 || closeParen+2 >= len(data) {
+		return 0, fmt.Errorf("truncated /proc/%d/stat", pid)
+	}
+	fields := strings.Fields(string(data[closeParen+2:]))
+	const startTimeIndex = 22 - 3
+	if len(fields) <= startTimeIndex {
+		return 0, fmt.Errorf("truncated /proc/%d/stat", pid)
+	}
+	return strconv.ParseUint(fields[startTimeIndex], 10, 64)
 }
 
 // writeReady publishes the readiness marker only after the proxy, API,
@@ -472,19 +506,38 @@ func (d *daemon) startDesiredSites(ctx context.Context) {
 func (d *daemon) renew(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
-	if renewed, err := d.certs.RenewDue(ctx); err != nil {
+	renewed, err := d.certs.RenewDue(ctx)
+	if err != nil {
 		d.logger.Warn("daemon: renew certificates", "error", err)
-	} else if len(renewed) != 0 {
-		d.logger.Info("daemon: renewed certificates", "count", len(renewed))
 	}
+	if len(renewed) == 0 {
+		return
+	}
+	d.logger.Info("daemon: renewed certificates", "count", len(renewed))
 	if d.sites.ServingMode() == config.ServingModeBuiltin {
 		if err := d.sites.RebuildRoutes(ctx); err != nil {
-			d.logger.Warn("daemon: republish routes after renewal", "error", err)
+			d.logger.Error("daemon: republish routes after renewal", "error", err)
 		}
 		return
 	}
-	if err := d.sites.SyncVhosts(ctx); err != nil {
-		d.logger.Warn("daemon: sync vhosts after renewal", "error", err)
+	// The next daily tick is too late to discover a transient helper/reload
+	// failure, so retry a few times before reporting the stale on-disk certs.
+	for attempt, delay := range []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond} {
+		if delay > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+		}
+		if err := d.sites.SyncVhosts(ctx); err == nil {
+			return
+		} else if attempt == 2 {
+			d.logger.Error("daemon: sync vhosts after renewal failed; external servers may serve stale certificates",
+				"error", err)
+		} else {
+			d.logger.Warn("daemon: sync vhosts after renewal; retrying", "attempt", attempt+1, "error", err)
+		}
 	}
 }
 
@@ -539,6 +592,11 @@ func (d *daemon) shutdown() {
 
 		if err := removeOwnedSocket(d.socketPath, d.socketInfo); err != nil {
 			d.logger.Warn("daemon: remove socket", "error", err)
+		}
+		if d.startPath != "" {
+			if err := os.Remove(d.startPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				d.logger.Warn("daemon: remove start-time file", "error", err)
+			}
 		}
 		if err := removeOwnedPID(d.pidPath, d.pidValue); err != nil {
 			d.logger.Warn("daemon: remove pid file", "error", err)
@@ -678,6 +736,24 @@ func EnsureRunning(ctx context.Context, opts Options) error {
 	home := cfg.Home
 	logPath := filepath.Join(home, "run", "daemon.log")
 	deadline := time.Now().Add(ensureStartTimeout)
+
+	var spawnLock *lifetimeLock
+	for {
+		spawnLock, err = acquireSpawnLock(home)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrAlreadyRunning) {
+			return fmt.Errorf("daemon: acquire spawn lock: %w", err)
+		}
+		if daemonReady(home) {
+			return nil
+		}
+		if err := sleepContext(ctx, 25*time.Millisecond); err != nil {
+			return fmt.Errorf("daemon: waiting for spawn lock: %w", err)
+		}
+	}
+	defer spawnLock.release()
 
 	if daemonReady(home) {
 		return nil

@@ -109,7 +109,12 @@ func (h *StaticHandler) serveDirectory(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	if !strings.HasSuffix(r.URL.Path, "/") {
-		location := r.URL.Path + "/"
+		// Use the cleaned relative path, never the raw request path: a raw
+		// "//attacker.example" would become a protocol-relative redirect.
+		location := "/"
+		if rel != "." {
+			location = "/" + rel + "/"
+		}
 		if r.URL.RawQuery != "" {
 			location += "?" + r.URL.RawQuery
 		}

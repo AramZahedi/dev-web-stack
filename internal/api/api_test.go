@@ -251,6 +251,9 @@ func TestCreateSiteAndList(t *testing.T) {
 
 func TestLogsSSEStreamsLines(t *testing.T) {
 	h, fake := newTestAPIWithFakes(t)
+	fake.sites.mu.Lock()
+	fake.sites.sites["s1"] = model.Site{ID: "s1", Name: "blog", Domain: "blog.test"}
+	fake.sites.mu.Unlock()
 	fake.server.keepAliveInterval = time.Hour
 	srv := httptest.NewServer(h)
 	defer srv.Close()
@@ -289,6 +292,9 @@ func TestLogsSSEStreamsLines(t *testing.T) {
 
 func TestLogsSnapshotFollowFalse(t *testing.T) {
 	h, fake := newTestAPIWithFakes(t)
+	fake.sites.mu.Lock()
+	fake.sites.sites["s1"] = model.Site{ID: "s1", Name: "blog", Domain: "blog.test"}
+	fake.sites.mu.Unlock()
 	writer := fake.logs.Writer("s1", "app")
 	if _, err := io.WriteString(writer, "one\n"); err != nil {
 		t.Fatal(err)
@@ -339,8 +345,9 @@ func TestLogsStreamRejectsInvalidFollow(t *testing.T) {
 }
 
 func TestFSBrowserListsDirsAndRejectsFiles(t *testing.T) {
-	h := newTestAPI(t)
 	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	h := newTestAPI(t)
 	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +487,6 @@ func TestReadsAndSSEAllowedWithoutSession(t *testing.T) {
 		"/api/v1/settings",
 		"/api/v1/doctor",
 		"/api/v1/trust",
-		"/api/v1/fs?path=" + url.QueryEscape(home),
 	} {
 		rec := httptest.NewRecorder()
 		fx.raw.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1"+path, nil))
@@ -1707,4 +1713,37 @@ func (f *fakeHelperClient) TrustStatus(_ context.Context, userHome string) ([]tr
 		return nil, f.trustErr
 	}
 	return append([]trust.Target(nil), f.targets...), nil
+}
+
+func TestFSBrowserRequiresSession(t *testing.T) {
+	fx := newFixture(t, Config{UserHome: t.TempDir()})
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/fs?path="+url.QueryEscape(fx.server.userHome()), nil)
+	rec := httptest.NewRecorder()
+	fx.raw.ServeHTTP(rec, req)
+	assertError(t, rec, http.StatusForbidden, codeForbidden)
+}
+
+func TestFSBrowserFailsClosedWithoutUserHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	fx := newFixture(t, Config{})
+	rec := fx.request(t, http.MethodGet, "/api/v1/fs?path="+url.QueryEscape(t.TempDir()), nil)
+	assertError(t, rec, http.StatusInternalServerError, codeInternal)
+}
+
+func TestLogsStreamUnknownSiteDoesNotGrowRegistry(t *testing.T) {
+	fx := newFixture(t, Config{UserHome: t.TempDir()})
+	before := fx.logs.SiteCount()
+	srv := httptest.NewServer(fx.raw)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/v1/sites/attacker-controlled/logs/stream?follow=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if got := fx.logs.SiteCount(); got != before {
+		t.Fatalf("log registry grew from %d to %d for an unknown site", before, got)
+	}
 }

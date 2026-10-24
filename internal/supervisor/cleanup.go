@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +20,13 @@ type pidRecord struct {
 	ID         string `json:"id"`
 	PID        int    `json:"pid"`
 	StartTicks uint64 `json:"start_ticks"`
+	// Token is injected into the child environment and inherited by its
+	// descendants. It lets orphan cleanup identify a surviving group after the
+	// original leader has exited, without trusting a reused PGID.
+	Token string `json:"token,omitempty"`
 }
+
+const supervisorTokenEnv = "DEVSTACK_SUPERVISOR_TOKEN"
 
 // CleanupOrphans kills process groups left behind by a previous daemon. It
 // only acts on pid files whose recorded start time still matches the live
@@ -86,6 +93,15 @@ func (m *Manager) CleanupOrphans() error {
 				continue
 			}
 			if alive {
+				if rec.Token != "" && groupMembersHaveToken(rec.PID, rec.Token) {
+					if err := cleanupVerifiedGroup(rec.PID); err != nil {
+						errs = append(errs, fmt.Errorf("supervisor: clean up leaderless group %d from %s: %w", rec.PID, path, err))
+						continue
+					}
+					m.logger.Info("supervisor: killed verified leaderless process group", "id", rec.ID, "pid", rec.PID)
+					errs = removePIDPath(errs, path)
+					continue
+				}
 				m.logger.Warn("supervisor: process group outlived its leader; leaving pid file", "id", rec.ID, "pid", rec.PID)
 				errs = append(errs, fmt.Errorf("supervisor: process group %d outlived its leader; left %s in place", rec.PID, path))
 				continue
@@ -105,6 +121,15 @@ func (m *Manager) CleanupOrphans() error {
 				continue
 			}
 			if alive {
+				if rec.Token != "" && groupMembersHaveToken(rec.PID, rec.Token) {
+					if err := cleanupVerifiedGroup(rec.PID); err != nil {
+						errs = append(errs, fmt.Errorf("supervisor: clean up reused-pid group %d from %s: %w", rec.PID, path, err))
+						continue
+					}
+					m.logger.Info("supervisor: killed verified reused-pid process group", "id", rec.ID, "pid", rec.PID)
+					errs = removePIDPath(errs, path)
+					continue
+				}
 				m.logger.Warn("supervisor: pid was reused but its group is alive; leaving pid file", "id", rec.ID, "pid", rec.PID)
 				errs = append(errs, fmt.Errorf("supervisor: pid %d was reused and process group %d is still alive; left %s in place", rec.PID, rec.PID, path))
 				continue
@@ -129,6 +154,59 @@ func (m *Manager) CleanupOrphans() error {
 // the bounded wait expires. The group leader guard runs before any signal so a
 // malformed pid file can never turn into kill(-1) or a signal to an unrelated
 // process group.
+// groupMembersHaveToken reports whether every live member of pgid carries the
+// per-process token in its environment. A recycled group cannot satisfy this
+// unless it inherited a token from one of our children.
+func groupMembersHaveToken(pgid int, token string) bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	found := false
+	needle := []byte(supervisorTokenEnv + "=" + token + "\x00")
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		pgrp, err := procPgrp(pid)
+		if err != nil || pgrp != pgid {
+			continue
+		}
+		found = true
+		env, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
+		if err != nil || !bytes.Contains(env, needle) {
+			return false
+		}
+	}
+	return found
+}
+
+// cleanupVerifiedGroup terminates a group whose members have already been
+// verified by token. It is used when the original leader is gone, so the
+// leader-only safety check in cleanupGroup cannot run.
+func cleanupVerifiedGroup(pid int) error {
+	if pid <= 1 {
+		return fmt.Errorf("supervisor: refusing to signal reserved pid %d", pid)
+	}
+	alive, err := groupAlive(pid)
+	if err != nil {
+		return err
+	}
+	if !alive {
+		return nil
+	}
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
+	if waitGroupGone(pid, cleanupTermWait) {
+		return nil
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	if waitGroupGone(pid, cleanupKillWait) {
+		return nil
+	}
+	return fmt.Errorf("process group %d did not exit", pid)
+}
+
 func cleanupGroup(pid int) error {
 	if err := signalableGroupLeader(pid); err != nil {
 		return err

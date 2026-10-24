@@ -542,3 +542,45 @@ func TestCleanupOrphansSkipsRecycledPID(t *testing.T) {
 		t.Fatalf("pid file was removed while its group is alive: %v", err)
 	}
 }
+
+func TestCleanupOrphansKillsVerifiedLeaderlessGroup(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(t.TempDir(), "child.pid")
+	token := "test-supervisor-token"
+	leader := exec.Command("sh", "-c", `sleep 30 & echo $! > "$CHILD_PID"; exit 0`)
+	leader.Env = append(os.Environ(), "CHILD_PID="+pidPath, supervisorTokenEnv+"="+token)
+	leader.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := leader.Start(); err != nil {
+		t.Fatal(err)
+	}
+	leaderPID := leader.Process.Pid
+	ticks, err := procStartTicks(leaderPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = syscall.Kill(-leaderPID, syscall.SIGKILL)
+		_ = waitGroupGone(leaderPID, 2*time.Second)
+	}()
+
+	path := filepath.Join(dir, "orphan.json")
+	writePIDRecordForTest(t, path, pidRecord{ID: "orphan", PID: leaderPID, StartTicks: ticks, Token: token})
+	if err := leader.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	_ = waitForPID(t, pidPath)
+	if err := syscall.Kill(leaderPID, 0); err == nil {
+		t.Fatal("leader is still alive")
+	}
+
+	m := NewManager(dir, slog.Default())
+	if err := m.CleanupOrphans(); err != nil {
+		t.Fatalf("CleanupOrphans: %v", err)
+	}
+	if err := syscall.Kill(-leaderPID, 0); err == nil {
+		t.Fatal("verified leaderless group was not killed")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pid file was not removed after cleanup: %v", err)
+	}
+}

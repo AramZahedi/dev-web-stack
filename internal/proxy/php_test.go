@@ -353,6 +353,11 @@ func TestPHPProxyDirectoryPrefersIndexPHPThenIndexHTML(t *testing.T) {
 		t.Fatalf("PATH_INFO = %q", request.Params["PATH_INFO"])
 	}
 
+	rec = servePHPTest(r, httptest.NewRequest(http.MethodGet, "http://blog.test/html-only", nil))
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/html-only/" {
+		t.Fatalf("html-only redirect = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
 	rec = servePHPTest(r, httptest.NewRequest(http.MethodGet, "http://blog.test/html-only/", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "html index" {
 		t.Fatalf("html-only = %d %q", rec.Code, rec.Body.String())
@@ -678,6 +683,7 @@ func TestPHPProxyBuildsCGIHeadersAndIgnoresClientForwarding(t *testing.T) {
 	req.Header.Set("X-Hop", "drop")
 	req.Header.Set("Keep-Alive", "timeout=5")
 	req.Header.Set("TE", "trailers")
+	req.Header.Set("Proxy", "http://attacker.example:8080")
 	req.Header.Set("Proxy-Authorization", "Basic abc")
 	req.Header.Set("X-Forwarded-For", "6.6.6.6")
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -712,6 +718,7 @@ func TestPHPProxyBuildsCGIHeadersAndIgnoresClientForwarding(t *testing.T) {
 		"HTTP_X_HOP",
 		"HTTP_KEEP_ALIVE",
 		"HTTP_TE",
+		"HTTP_PROXY",
 		"HTTP_PROXY_AUTHORIZATION",
 		"HTTP_X_FORWARDED_CUSTOM",
 		"HTTP_CONTENT_TYPE",
@@ -720,5 +727,32 @@ func TestPHPProxyBuildsCGIHeadersAndIgnoresClientForwarding(t *testing.T) {
 		if value, ok := request.Params[key]; ok {
 			t.Errorf("%s was forwarded: %q", key, value)
 		}
+	}
+}
+
+func TestPHPProxyMapsMaxBytesErrorTo413(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "index.php", "<?php echo 'front';")
+	r, client := newPHPRoute(t, root, true, false)
+	client.doErr = &http.MaxBytesError{Limit: 1024}
+	req := httptest.NewRequest(http.MethodPost, "http://blog.test/upload", strings.NewReader("body"))
+	rec := servePHPTest(r, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPHPProxyFlushesStreamingResponse(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "index.php", "<?php echo 'stream';")
+	r, client := newPHPRoute(t, root, true, false)
+	client.body = "streamed body"
+	req := httptest.NewRequest(http.MethodGet, "http://blog.test/stream", nil)
+	rec := servePHPTest(r, req)
+	if rec.Code != http.StatusOK || rec.Body.String() != "streamed body" {
+		t.Fatalf("response = %d %q", rec.Code, rec.Body.String())
+	}
+	if !rec.Flushed {
+		t.Fatal("FastCGI response was not flushed")
 	}
 }

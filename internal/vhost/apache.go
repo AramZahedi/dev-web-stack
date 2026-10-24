@@ -82,7 +82,11 @@ func writeApacheServingVHost(b *strings.Builder, s SiteSpec, maxBody int64, tls 
 		b.WriteString("\n")
 		writeApacheDenyLocation(b)
 	case model.SitePHP:
-		writeApachePHPBody(b, s)
+		scheme := "http"
+		if tls {
+			scheme = "https"
+		}
+		writeApachePHPBody(b, s, scheme)
 	default:
 		writeApacheStaticBody(b, s)
 	}
@@ -115,7 +119,7 @@ func writeApacheStaticBody(b *strings.Builder, s SiteSpec) {
 	b.WriteString("    Header always set Cache-Control \"no-store\"\n")
 }
 
-func writeApachePHPBody(b *strings.Builder, s SiteSpec) {
+func writeApachePHPBody(b *strings.Builder, s SiteSpec, scheme string) {
 	fmt.Fprintf(b, "    DocumentRoot %s\n", apacheQuote(s.DocumentRoot))
 	fmt.Fprintf(b, "    <Directory %s>\n", apacheQuote(s.DocumentRoot))
 	b.WriteString("        Options -Indexes\n")
@@ -135,6 +139,13 @@ func writeApachePHPBody(b *strings.Builder, s SiteSpec) {
 	b.WriteString("    </Directory>\n")
 	b.WriteString("\n")
 	b.WriteString("    DirectoryIndex index.php index.html\n")
+	b.WriteString("\n")
+	b.WriteString("    RewriteEngine On\n")
+	b.WriteString("    RewriteCond %{REMOTE_ADDR} ^(.+)$\n")
+	b.WriteString("    RewriteRule ^ - [E=DEVSTACK_REMOTE:%1]\n")
+	b.WriteString("    RequestHeader set X-Forwarded-For \"%{DEVSTACK_REMOTE}e\"\n")
+	fmt.Fprintf(b, "    RequestHeader set X-Forwarded-Proto %s\n", apacheQuote(scheme))
+	b.WriteString("    RequestHeader set X-Forwarded-Host \"%{HTTP_HOST}s\"\n")
 	b.WriteString("\n")
 	// FilesMatch inspects only the basename, so the source-backup denial is
 	// scoped to the PHP extensions it protects. It is emitted before the PHP

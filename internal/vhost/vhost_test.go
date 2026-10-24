@@ -1126,6 +1126,7 @@ func TestRenderRejectsInvalidTLSDir(t *testing.T) {
 		{name: "trailing slash", dir: "/etc/devstack/tls/", want: "clean"},
 		{name: "NUL", dir: "/etc/devstack/tls\x00", want: "NUL"},
 		{name: "newline", dir: "/etc/devstack/tls\nserver", want: "newline"},
+		{name: "nginx variable", dir: "/etc/devstack/$tls", want: "variable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			set := testSet(ServerNginx, 0)

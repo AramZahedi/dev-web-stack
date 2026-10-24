@@ -21,10 +21,14 @@ import (
 
 const daemonStopTimeout = 10 * time.Second
 
-// readProcCmdline is a test seam for the daemon-stop ownership check.
-var readProcCmdline = func(pid int) ([]byte, error) {
-	return os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
-}
+// readProcCmdline and readProcStartTicks are test seams for the daemon-stop
+// ownership checks.
+var (
+	readProcCmdline = func(pid int) ([]byte, error) {
+		return os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	}
+	readProcStartTicks = procStartTicks
+)
 
 // daemonStatus is the JSON shape reported by `daemon status`.
 type daemonStatus struct {
@@ -168,6 +172,17 @@ func daemonStop(ctx context.Context, home string) (bool, error) {
 	if pid == 1 {
 		return false, daemonStopRefused(home, "refusing to signal pid 1")
 	}
+	if expected, err := readStartTicks(daemon.StartTicksPath(home)); err == nil {
+		actual, err := readProcStartTicks(pid)
+		if err != nil {
+			return false, wrapError(fmt.Errorf("inspect start time for pid %d: %w", pid, err), "DAEMON_STOP_FAILED", fmt.Sprintf("Inspect %s.", daemon.PidPath(home)))
+		}
+		if actual != expected {
+			return false, daemonStopRefused(home, fmt.Sprintf("pid %d was reused by another process", pid))
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, wrapError(err, "DAEMON_STOP_FAILED", fmt.Sprintf("Inspect %s.", daemon.StartTicksPath(home)))
+	}
 	cmdline, err := readProcCmdline(pid)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -241,6 +256,35 @@ func readPID(path string) (int, error) {
 		return 0, fmt.Errorf("invalid pid file %s", path)
 	}
 	return pid, nil
+}
+
+func readStartTicks(path string) (uint64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	ticks, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid start-time file %s", path)
+	}
+	return ticks, nil
+}
+
+func procStartTicks(pid int) (uint64, error) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, err
+	}
+	closeParen := bytes.LastIndexByte(data, ')')
+	if closeParen < 0 || closeParen+2 >= len(data) {
+		return 0, fmt.Errorf("truncated /proc/%d/stat", pid)
+	}
+	fields := strings.Fields(string(data[closeParen+2:]))
+	const startTimeIndex = 22 - 3
+	if len(fields) <= startTimeIndex {
+		return 0, fmt.Errorf("truncated /proc/%d/stat", pid)
+	}
+	return strconv.ParseUint(fields[startTimeIndex], 10, 64)
 }
 
 func signalProcess(pid int, signal syscall.Signal) error {

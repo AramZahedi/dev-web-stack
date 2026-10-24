@@ -70,6 +70,7 @@ func TestStaticHandlerServesDirectoryIndexWithoutListing(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "index.html"), "root index")
 	writeFile(t, filepath.Join(root, "docs", "index.html"), "docs index")
+	writeFile(t, filepath.Join(root, "attacker.com", "index.html"), "not a redirect")
 	writeFile(t, filepath.Join(root, "assets", "app.js"), "console.log(1)")
 
 	h := newTestHandler(t, root, false)
@@ -80,6 +81,7 @@ func TestStaticHandlerServesDirectoryIndexWithoutListing(t *testing.T) {
 		wantBody string
 	}{
 		{"/docs", "/docs/", ""},
+		{"//attacker.com", "/attacker.com/", ""},
 		{"/docs?x=1", "/docs/?x=1", ""},
 		{"/docs/", "", "docs index"},
 	} {

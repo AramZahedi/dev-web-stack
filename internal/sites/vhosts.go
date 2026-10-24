@@ -542,7 +542,7 @@ func (s *Service) buildVhostRequestLocked(ctx context.Context, mode, excludeID s
 			// One broken site must not poison the whole set. Publish it as a
 			// stopped 503 vhost so every other site still syncs, and record
 			// the reason as a site event.
-			spec = degradedVhostSite(site)
+			spec = s.degradedVhostSite(ctx, site)
 			s.emitEvent(ctx, site.ID, "site.error",
 				fmt.Sprintf("site %s is served as a stopped 503 vhost: %v", site.Name, err))
 		}
@@ -611,24 +611,42 @@ func (s *Service) vhostSiteSpecLocked(ctx context.Context, site model.Site) (hel
 	return spec, nil
 }
 
-// degradedVhostSite returns a valid stopped vhost for a site whose paths or
-// certificate are unusable. It keeps the host name so the branded 503 is shown
-// instead of the default 404, and drops TLS so no broken certificate is used.
-func degradedVhostSite(site model.Site) helperproto.VHostSite {
+// degradedVhostSite returns a valid stopped vhost for a site whose paths are
+// unusable. It keeps the host name so the branded 503 is shown instead of the
+// default 404. TLS is retained when the certificate itself is still usable;
+// dropping it would make https://site.test fall through to the dashboard
+// certificate and show a hostname mismatch.
+func (s *Service) degradedVhostSite(ctx context.Context, site model.Site) helperproto.VHostSite {
 	kind := site.Kind
 	if kind != model.SiteStatic && kind != model.SiteNode {
 		// A stopped 503 vhost has no backend behavior, so an unsupported kind
 		// (for example a legacy PHP row) can still be represented as static.
 		kind = model.SiteStatic
 	}
-	return helperproto.VHostSite{
+	spec := helperproto.VHostSite{
 		ID:           site.ID,
 		Name:         site.Name,
 		Domain:       site.Domain,
 		WWW:          site.WWW,
 		Kind:         string(kind),
+		TLS:          site.TLS,
 		DesiredState: string(model.DesiredStopped),
 	}
+	if site.TLS && s.deps.Certs != nil {
+		rec, err := s.deps.Certs.Ensure(ctx, site.ID, siteDomains(site))
+		if err == nil {
+			certPEM, keyPEM, err := s.deps.Certs.PEM(rec)
+			if err == nil {
+				spec.CertPEM = certPEM
+				spec.KeyPEM = keyPEM
+				return spec
+			}
+		}
+	}
+	// No usable certificate: fall back to a plain-HTTP 503 rather than
+	// presenting the wrong certificate.
+	spec.TLS = false
+	return spec
 }
 
 // validateVhostSiteForSync checks the filesystem conditions that the helper

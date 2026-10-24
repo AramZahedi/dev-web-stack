@@ -137,36 +137,61 @@
     phpBuilds.find((runtime) => runtime.id === switchBuild) ?? switchCandidates[0] ?? null,
   );
 
-  async function loadPHP(): Promise<void> {
+  let loadGeneration = 0;
+  let loadedRef = '';
+  let pollAttempts = 0;
+
+  async function loadPHP(siteRef: string, generation: number): Promise<void> {
     phpLoading = true;
     phpError = null;
     try {
       const [info, builds] = await Promise.all([
-        api.getPHPInfo(ref),
+        api.getPHPInfo(siteRef),
         api.listRuntimes().catch(() => [] as RuntimeBuild[]),
       ]);
+      if (generation !== loadGeneration || siteRef !== ref) return;
       phpInfo = info;
       phpRuntimes = builds;
     } catch (caught) {
+      if (generation !== loadGeneration || siteRef !== ref) return;
       phpError = describeError(caught);
     } finally {
-      phpLoading = false;
+      if (generation === loadGeneration) phpLoading = false;
     }
   }
 
   async function load(initial = false): Promise<void> {
-    if (initial) loading = true;
+    const siteRef = ref;
+    const generation = ++loadGeneration;
+    const reset = initial || loadedRef !== siteRef;
+    loadedRef = siteRef;
+    if (reset) {
+      loading = true;
+      site = null;
+      phpInfo = null;
+      phpRuntimes = [];
+      phpLoading = false;
+      phpError = null;
+      phpApplyError = null;
+      phpSwitchError = null;
+      error = null;
+      notFound = false;
+      pollAttempts = 0;
+    }
     error = null;
     notFound = false;
-    if (!ref) {
+    if (!siteRef) {
       notFound = true;
       loading = false;
       return;
     }
     try {
-      site = await api.getSite(ref);
-      if (site.kind === 'php') await loadPHP();
+      const next = await api.getSite(siteRef);
+      if (generation !== loadGeneration || siteRef !== ref) return;
+      site = next;
+      if (next.kind === 'php') await loadPHP(siteRef, generation);
     } catch (caught) {
+      if (generation !== loadGeneration || siteRef !== ref) return;
       const described = describeError(caught);
       if (described.code === 'NOT_FOUND') {
         notFound = true;
@@ -174,12 +199,18 @@
         error = described;
       }
     } finally {
-      loading = false;
+      if (generation === loadGeneration) loading = false;
     }
   }
 
-  onMount(() => {
+  let activeRef = $state<string | null>(null);
+  $effect(() => {
+    if (activeRef === ref) return;
+    activeRef = ref;
     void load(true);
+  });
+
+  onMount(() => {
     const refresh = () => void load();
     window.addEventListener('devstack:refresh', refresh);
     return () => {
@@ -188,10 +219,12 @@
     };
   });
 
-  let pollAttempts = 0;
+  const transient = $derived(site?.status === 'starting' || site?.status === 'stopping');
   $effect(() => {
-    const transient = site?.status === 'starting' || site?.status === 'stopping';
-    if (!transient) return;
+    if (!transient) {
+      pollAttempts = 0;
+      return;
+    }
     pollAttempts = 0;
     const timer = setInterval(() => {
       pollAttempts += 1;
@@ -694,7 +727,7 @@
             title="Could not load PHP configuration"
             code={phpError.code}
             message={phpError.message}
-            onretry={loadPHP}
+            onretry={() => void load(true)}
           />
         {:else if phpInfo}
           <div class="php-grid">

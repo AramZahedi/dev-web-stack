@@ -718,3 +718,18 @@ func (f *fakeRuntime) buildCallsForTest() []string {
 	defer f.mu.Unlock()
 	return append([]string(nil), f.builds...)
 }
+
+func TestLocalRejectsAbsoluteDocumentRootOutsideProject(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+	if _, err := resolveDocumentRoot(SiteSpec{ID: "outside", BackendPath: project, DocumentRoot: outside}); err == nil {
+		t.Fatal("accepted an absolute document root outside the project")
+	}
+	inside := filepath.Join(project, "public")
+	if err := os.Mkdir(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := resolveDocumentRoot(SiteSpec{ID: "inside", BackendPath: project, DocumentRoot: inside}); err != nil || got != inside {
+		t.Fatalf("inside absolute root = %q, err = %v", got, err)
+	}
+}

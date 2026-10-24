@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -126,11 +127,12 @@ type proc struct {
 	doneCh   chan struct{}
 	resultCh chan startOutcome
 
-	mu       sync.Mutex
-	status   Status
-	child    *child
-	stopping bool
-	restarts int
+	mu         sync.Mutex
+	status     Status
+	child      *child
+	stopping   bool
+	restarts   int
+	stopSignal syscall.Signal
 
 	// pidFileLeaked keeps the pid file when the process group could not be
 	// confirmed gone, so a later CleanupOrphans can retry.
@@ -181,8 +183,16 @@ func (m *Manager) Start(ctx context.Context, spec ProcessSpec) (Status, error) {
 	}
 	spec = cloneSpec(spec)
 
+	var p *proc
 	m.mu.Lock()
-	if old, ok := m.procs[spec.ID]; ok {
+	for {
+		old, ok := m.procs[spec.ID]
+		if !ok {
+			p = newProc(spec)
+			m.procs[spec.ID] = p
+			m.mu.Unlock()
+			break
+		}
 		st := old.snapshot()
 		switch st.State {
 		case model.StatusStarting, model.StatusRunning, model.StatusStopping:
@@ -190,13 +200,16 @@ func (m *Manager) Start(ctx context.Context, spec ProcessSpec) (Status, error) {
 			return st, fmt.Errorf("%w: %q", errAlreadyRunning, spec.ID)
 		}
 		// Let the previous supervisor finish removing its pid file before the
-		// replacement writes a new one with the same name.
-		<-old.doneCh
-		delete(m.procs, spec.ID)
+		// replacement writes a new one with the same name. Do not hold the
+		// manager mutex while waiting: that would freeze unrelated sites.
+		done := old.doneCh
+		m.mu.Unlock()
+		<-done
+		m.mu.Lock()
+		if current, ok := m.procs[spec.ID]; ok && current == old {
+			delete(m.procs, spec.ID)
+		}
 	}
-	p := newProc(spec)
-	m.procs[spec.ID] = p
-	m.mu.Unlock()
 
 	go m.supervise(p)
 
@@ -215,6 +228,16 @@ func (m *Manager) Start(ctx context.Context, spec ProcessSpec) (Status, error) {
 // then sends SIGKILL. Stopping an unknown or already stopped id succeeds so
 // callers can reconcile idempotently.
 func (m *Manager) Stop(ctx context.Context, id string) error {
+	return m.stop(ctx, id, syscall.SIGTERM)
+}
+
+// StopGraceful stops id with SIGQUIT first, then escalates to SIGKILL after
+// StopGrace. PHP-FPM uses SIGQUIT to drain in-flight requests.
+func (m *Manager) StopGraceful(ctx context.Context, id string) error {
+	return m.stop(ctx, id, syscall.SIGQUIT)
+}
+
+func (m *Manager) stop(ctx context.Context, id string, signal syscall.Signal) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -236,7 +259,7 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 	// waiting for readiness, waiting for exit, and backing off, then terminates
 	// the process group and polls until it is gone. Delegating here avoids any
 	// chance of signalling a recycled pid after a crash.
-	p.requestStop()
+	p.requestStopWithSignal(signal)
 
 	wait := m.stopGrace() + killWait + cleanupKillWait + time.Second
 	timer := time.NewTimer(wait)
@@ -307,12 +330,13 @@ func (m *Manager) Status(id string) (Status, bool) {
 
 func newProc(spec ProcessSpec) *proc {
 	return &proc{
-		id:       spec.ID,
-		spec:     spec,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
-		resultCh: make(chan startOutcome, 1),
-		status:   Status{State: model.StatusStarting},
+		id:         spec.ID,
+		spec:       spec,
+		stopCh:     make(chan struct{}),
+		doneCh:     make(chan struct{}),
+		resultCh:   make(chan startOutcome, 1),
+		status:     Status{State: model.StatusStarting},
+		stopSignal: syscall.SIGTERM,
 	}
 }
 
@@ -344,10 +368,26 @@ func (p *proc) isStopping() bool {
 // requestStop closes stopCh exactly once. The supervisor observes the channel
 // while waiting for readiness, between restarts, and while backing off.
 func (p *proc) requestStop() {
+	p.requestStopWithSignal(syscall.SIGTERM)
+}
+
+func (p *proc) requestStopWithSignal(signal syscall.Signal) {
 	p.mu.Lock()
 	p.stopping = true
+	if signal != 0 {
+		p.stopSignal = signal
+	}
 	p.mu.Unlock()
 	p.stopOnce.Do(func() { close(p.stopCh) })
+}
+
+func (p *proc) terminationSignal() syscall.Signal {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopSignal == 0 {
+		return syscall.SIGTERM
+	}
+	return p.stopSignal
 }
 
 func (p *proc) deliver(out startOutcome) {

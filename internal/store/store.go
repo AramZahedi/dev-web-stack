@@ -98,6 +98,32 @@ func (s *Store) CreateSite(ctx context.Context, site model.Site) error {
 	return nil
 }
 
+// CreateSiteWithPHPConfig inserts a PHP site and its applied configuration
+// snapshot in one transaction. A crash between the two writes must not leave a
+// site row without the configuration it was created with.
+func (s *Store) CreateSiteWithPHPConfig(ctx context.Context, site model.Site, cfg model.SitePHPConfig) error {
+	args, err := siteInsertArgs(site)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create site %q: begin transaction: %w", site.ID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sites (`+siteColumns+`) VALUES (
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
+		return fmt.Errorf("create site %q: %w", site.ID, err)
+	}
+	if err := saveSitePHPConfig(ctx, tx, cfg); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create site %q: commit: %w", site.ID, err)
+	}
+	return nil
+}
+
 // UpdateSite replaces the mutable fields of an existing site. The creation
 // timestamp is preserved. It returns ErrNotFound when the site does not exist.
 func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
@@ -404,9 +430,17 @@ func (s *Store) ListPHPDefaults(ctx context.Context) ([]model.PHPDefaults, error
 
 const sitePHPConfigColumns = `site_id, ini_overrides_json, extension_overrides_json, config_hash, applied_at`
 
+type sqlExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 // SaveSitePHPConfig inserts or replaces the applied PHP configuration snapshot
 // for a site.
 func (s *Store) SaveSitePHPConfig(ctx context.Context, cfg model.SitePHPConfig) error {
+	return saveSitePHPConfig(ctx, s.db, cfg)
+}
+
+func saveSitePHPConfig(ctx context.Context, db sqlExecer, cfg model.SitePHPConfig) error {
 	if cfg.SiteID == "" {
 		return errors.New("save site php config: empty site id")
 	}
@@ -418,7 +452,7 @@ func (s *Store) SaveSitePHPConfig(ctx context.Context, cfg model.SitePHPConfig) 
 	if err != nil {
 		return fmt.Errorf("encode site %q php extensions: %w", cfg.SiteID, err)
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO site_php_config (`+sitePHPConfigColumns+`)
+	_, err = db.ExecContext(ctx, `INSERT INTO site_php_config (`+sitePHPConfigColumns+`)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(site_id) DO UPDATE SET
 			ini_overrides_json = excluded.ini_overrides_json,
@@ -545,6 +579,11 @@ func (s *Store) AddEvent(ctx context.Context, e model.Event) error {
 		VALUES (?, ?, ?, ?)`, e.SiteID, e.Type, e.Message, createdAt.Unix())
 	if err != nil {
 		return fmt.Errorf("add event %q: %w", e.Type, err)
+	}
+	// The event feed is bounded to the most recent 500 rows by the spec.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE id NOT IN (
+		SELECT id FROM events ORDER BY created_at DESC, id DESC LIMIT 500)`); err != nil {
+		return fmt.Errorf("prune events: %w", err)
 	}
 	return nil
 }

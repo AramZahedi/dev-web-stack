@@ -86,7 +86,7 @@ download() {
 	# computed from a stale or corrupted cache entry. build.sh may reuse this
 	# cache because it verifies every file against the committed lock.
 	mkdir -p "$(dirname "$dest")"
-	temporary="$dest.tmp.$$"
+	temporary=$(mktemp "${dest}.tmp.XXXXXX")
 	if ! curl -fsSL --retry 3 --connect-timeout 20 --max-time 600 -o "$temporary" "$url"; then
 		rm -f "$temporary"
 		printf 'update-lock.sh: could not download %s from %s\n' "$label" "$url" >&2

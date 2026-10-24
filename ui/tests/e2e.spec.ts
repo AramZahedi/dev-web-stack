@@ -288,6 +288,20 @@ test('Site detail streams logs, pauses/resumes, and stops/starts the site', asyn
   await expect(page.getByLabel('Status: Running')).toBeVisible();
 });
 
+test('Site detail reloads when the route ref changes', async ({ page }) => {
+  await open(page, '#/sites/blog');
+  await expect(page.getByRole('heading', { name: 'blog' })).toBeVisible();
+  await expect(page.getByRole('log', { name: 'Live output from blog' })).toBeVisible();
+
+  await page.evaluate(() => {
+    window.location.hash = '#/sites/shop';
+  });
+
+  await expect(page.getByRole('heading', { name: 'shop' })).toBeVisible();
+  await expect(page.getByRole('log', { name: 'Live output from shop' })).toBeVisible();
+  await expect(page.getByRole('log', { name: 'Live output from blog' })).toHaveCount(0);
+});
+
 test('Runtimes asks for confirmation and installs a build', async ({ page }) => {
   await open(page, '#/runtimes');
 

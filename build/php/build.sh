@@ -12,6 +12,17 @@ set -euo pipefail
 IFS=$'\n\t'
 export LC_ALL=C
 
+# The release artifact targets glibc 2.35 (Ubuntu 22.04). A newer build host
+# can link symbols that are unavailable on the oldest supported platform.
+if command -v ldd >/dev/null 2>&1; then
+	host_glibc="$(ldd --version 2>/dev/null | head -n 1 | awk '{print $NF}')"
+	if [[ $host_glibc =~ ^[0-9]+\.[0-9]+$ ]] &&
+		[[ $(printf '%s\n' 2.35 "$host_glibc" | sort -V | tail -n 1) == "$host_glibc" ]] &&
+		[[ $host_glibc != 2.35 ]]; then
+		printf 'build.sh: warning: host glibc %s is newer than the 2.35 release baseline; the artifact may not run on Ubuntu 22.04\n' "$host_glibc" >&2
+	fi
+fi
+
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly script_dir
 repo_root=$(cd -- "$script_dir/../.." && pwd)
@@ -179,7 +190,7 @@ download_verified() {
 		fi
 		rm -f -- "$destination"
 	fi
-	temporary="$destination.tmp.$$"
+	temporary=$(mktemp "${destination}.tmp.XXXXXX")
 	if ! curl -fsSL --retry 3 --connect-timeout 20 --max-time 600 -o "$temporary" "$url"; then
 		rm -f -- "$temporary"
 		die "could not download $label from $url"
@@ -223,6 +234,11 @@ mapfile -t standard_so < <(jq -r --arg line "$line" '
 [[ ${#standard_so[@]} -gt 0 ]] || die "no standard extensions found for PHP $line in $manifest"
 
 mkdir -p -- "$package_dir"
+# Keep the relocatable build hardened even when the host toolchain does not
+# inject these flags by default. PIE remains the distribution default.
+export CFLAGS="${CFLAGS:-} -O2 -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2"
+export CPPFLAGS="${CPPFLAGS:-} -D_FORTIFY_SOURCE=2"
+export LDFLAGS="${LDFLAGS:-} -Wl,-z,relro,-z,now"
 configure_args=(
 	"--prefix=$package_dir"
 	--enable-fpm
@@ -435,7 +451,7 @@ if [[ -f "$source_dir/LICENSE" ]]; then
 fi
 
 archive="$output/$package_name.tar.gz"
-temporary="$archive.tmp.$$"
+temporary=$(mktemp "${archive}.tmp.XXXXXX")
 tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 --numeric-owner \
 	-C "$work" -cf - "$package_name" | gzip -9n >"$temporary"
 chmod 0644 "$temporary"

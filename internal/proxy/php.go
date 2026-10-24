@@ -40,6 +40,7 @@ var phpPathInfoPattern = regexp.MustCompile(`(?i)^(.+\.php)(/.*)?$`)
 var hopByHopHeaders = []string{
 	"Connection",
 	"Keep-Alive",
+	"Proxy",
 	"Proxy-Authenticate",
 	"Proxy-Authorization",
 	"TE",
@@ -83,6 +84,16 @@ func (r *Router) servePHP(w http.ResponseWriter, req *http.Request, route Route)
 		return
 	}
 	if target.staticPath != "" {
+		if target.staticName == "index.html" && !strings.HasSuffix(requestPath, "/") &&
+			path.Base(requestPath) != "index.html" {
+			location := "/" + strings.TrimPrefix(path.Clean(requestPath), "/") + "/"
+			if req.URL != nil && req.URL.RawQuery != "" {
+				location += "?" + req.URL.RawQuery
+			}
+			w.Header().Set("Location", location)
+			w.WriteHeader(http.StatusMovedPermanently)
+			return
+		}
 		r.servePHPStatic(w, req, route, target)
 		return
 	}
@@ -92,7 +103,18 @@ func (r *Router) servePHP(w http.ResponseWriter, req *http.Request, route Route)
 // servePHPStatic serves a resolved file with conditional-request and range
 // support. Directories are never served as files and never listed.
 func (r *Router) servePHPStatic(w http.ResponseWriter, req *http.Request, route Route, target phpTarget) {
-	file, err := os.Open(target.staticPath)
+	root, err := os.OpenRoot(target.documentRoot)
+	if err != nil {
+		writePHPNotFound(w, req, route)
+		return
+	}
+	defer func() { _ = root.Close() }()
+	rel, err := filepath.Rel(target.documentRoot, target.staticPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		writePHPNotFound(w, req, route)
+		return
+	}
+	file, err := root.Open(rel)
 	if err != nil {
 		writePHPNotFound(w, req, route)
 		return
@@ -136,6 +158,15 @@ func (r *Router) serveFastCGI(w http.ResponseWriter, req *http.Request, route Ro
 		BodyLength: bodyLength,
 	})
 	if err != nil {
+		var maxBytes *http.MaxBytesError
+		if errors.As(err, &maxBytes) {
+			writeBrandedPage(w, req, brandedPage{
+				Status:  http.StatusRequestEntityTooLarge,
+				Title:   "Request too large",
+				Message: fmt.Sprintf("The request body exceeds the %d byte limit.", maxBytes.Limit),
+			})
+			return
+		}
 		r.logProxyError(route, err)
 		writeUpstreamFailure(w, req, route)
 		return
@@ -154,6 +185,19 @@ func (r *Router) dialFastCGI(ctx context.Context, addr string) (fcgiClient, erro
 
 // writeFastCGIResponse copies the CGI status and headers, then streams the
 // body. HSTS is never emitted and HEAD responses carry headers only.
+type flushWriter struct {
+	w          io.Writer
+	controller *http.ResponseController
+}
+
+func (f flushWriter) Write(p []byte) (int, error) {
+	n, err := f.w.Write(p)
+	if err == nil {
+		_ = f.controller.Flush()
+	}
+	return n, err
+}
+
 func writeFastCGIResponse(w http.ResponseWriter, req *http.Request, route Route, resp *fcgi.Response) {
 	drop := hopByHopHeaderSet(resp.Header)
 	header := w.Header()
@@ -174,7 +218,8 @@ func writeFastCGIResponse(w http.ResponseWriter, req *http.Request, route Route,
 	if req.Method == http.MethodHead {
 		return
 	}
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	controller := http.NewResponseController(w)
+	if _, err := io.Copy(flushWriter{w: w, controller: controller}, resp.Body); err != nil {
 		slog.Default().Error("proxy PHP response body failed",
 			"site", route.SiteID,
 			"host", route.Host,

@@ -1321,3 +1321,23 @@ func terminateAndWait(t *testing.T, pid int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func TestSpawnLockSerializesCallers(t *testing.T) {
+	home := t.TempDir()
+	if err := prepareRunDir(home); err != nil {
+		t.Fatal(err)
+	}
+	first, err := acquireSpawnLock(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireSpawnLock(home); !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("second spawn lock error = %v, want ErrAlreadyRunning", err)
+	}
+	first.release()
+	second, err := acquireSpawnLock(home)
+	if err != nil {
+		t.Fatalf("spawn lock after release: %v", err)
+	}
+	second.release()
+}

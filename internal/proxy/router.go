@@ -47,6 +47,11 @@ type Route struct {
 	FrontController bool
 	ForceHTTPS      bool
 	TLS             bool
+	// State and DesiredState prevent a stopped or failed site from being
+	// proxied to a stale/dead upstream. Empty values are treated as running
+	// for compatibility with standalone routes.
+	State        string
+	DesiredState string
 }
 
 // fcgiClient is the FastCGI client behavior the proxy needs. One client is one

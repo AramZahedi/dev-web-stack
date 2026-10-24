@@ -32,3 +32,20 @@ func TestHelperUnitWritableVhostBridges(t *testing.T) {
 		}
 	}
 }
+
+func TestHelperUnitBoundsCapabilities(t *testing.T) {
+	path := filepath.Join("..", "..", "build", "systemd", "devstack-helper.service")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := string(data)
+	for _, want := range []string{
+		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER",
+		"AmbientCapabilities=",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("helper unit is missing %q", want)
+		}
+	}
+}

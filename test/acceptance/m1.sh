@@ -201,8 +201,8 @@ phase_playwright() {
 		return 77
 	fi
 	if port_has_listener 4173; then
-		note "SKIP: port 4173 is already in use; refusing to reuse an unknown server"
-		return 77
+		note "FAIL: port 4173 is already in use; refusing to reuse an unknown server (use --skip-playwright to opt out explicitly)"
+		return 1
 	fi
 
 	local browser=""
@@ -269,18 +269,19 @@ phase_e2e() {
 }
 
 phase_php_acceptance() {
-	if [ ! -e /usr/local/php ]; then
-		note "SKIP: /usr/local/php does not exist; real-PHP acceptance was not run"
+	local php_root="${DEVSTACK_PHP_ROOT:-/usr/local/php}"
+	if [ ! -e "${php_root}" ]; then
+		note "SKIP: ${php_root} does not exist; real-PHP acceptance was not run"
 		return 77
 	fi
-	if [ ! -x /usr/local/php/bin/php ]; then
-		note "SKIP: /usr/local/php/bin/php is not executable; real-PHP acceptance was not run"
+	if [ ! -x "${php_root}/bin/php" ]; then
+		note "SKIP: ${php_root}/bin/php is not executable; real-PHP acceptance was not run"
 		return 77
 	fi
 
 	local status=0
-	printf '+ DEVSTACK_PHP_ROOT=/usr/local/php go test ./test/php -run TestPHPSubsystemAcceptance -count=1 -v\n'
-	(cd "${REPO_ROOT}" && DEVSTACK_PHP_ROOT=/usr/local/php \
+	printf '+ DEVSTACK_PHP_ROOT=%s go test ./test/php -run TestPHPSubsystemAcceptance -count=1 -v\n' "${php_root}"
+	(cd "${REPO_ROOT}" && DEVSTACK_PHP_ROOT="${php_root}" \
 		go test ./test/php -run TestPHPSubsystemAcceptance -count=1 -v)
 	status=$?
 	if [ "${status}" -ne 0 ]; then

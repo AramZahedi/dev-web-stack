@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
@@ -69,6 +70,13 @@ type VhostManager struct {
 	authority *Authority
 	runner    CommandRunner
 	logger    *slog.Logger
+
+	// AllowUID is the unprivileged user allowed to request vhosts. When
+	// non-zero, every backend path must be owned by that user or live under
+	// AllowHome. This prevents the root helper from configuring a web server to
+	// serve /etc or another user's private tree.
+	AllowUID  int
+	AllowHome string
 
 	// TLSDir is the directory receiving <owner>.crt and <owner>.key files. It
 	// defaults to <root>/tls when empty.
@@ -367,22 +375,30 @@ func (m *VhostManager) switchExternalLocked(ctx context.Context, state vhostStat
 			return helperproto.VhostStatusResponse{}, fmt.Errorf("%w: remove old bridge %s: %v", helperproto.ErrVhostSyncFailed, bridgePath, err)
 		}
 	}
+	oldActive := false
 	if hadBridge {
-		if err := m.reloadServer(ctx, oldServer, state.ReloadService); err != nil {
-			restoreErr := m.restoreBridge(bridgePath, bridgeData)
-			reloadErr := m.reloadServer(ctx, oldServer, state.ReloadService)
-			var errs []error
-			errs = append(errs, err)
-			if restoreErr != nil {
-				errs = append(errs, fmt.Errorf("restore old bridge: %w", restoreErr))
+		active, activeErr := m.serverActive(ctx, oldServer, state.ReloadService)
+		if activeErr != nil {
+			return helperproto.VhostStatusResponse{}, activeErr
+		}
+		oldActive = active
+		if active {
+			if err := m.stopServer(ctx, oldServer, state.ReloadService); err != nil {
+				restoreErr := m.restoreBridge(bridgePath, bridgeData)
+				reloadErr := m.reloadServer(ctx, oldServer, state.ReloadService)
+				var errs []error
+				errs = append(errs, err)
+				if restoreErr != nil {
+					errs = append(errs, fmt.Errorf("restore old bridge: %w", restoreErr))
+				}
+				if reloadErr != nil {
+					errs = append(errs, fmt.Errorf("reload restored old bridge: %w", reloadErr))
+				}
+				if serr := m.writeState(m.failureState(state, err, state.ConfigOK)); serr != nil {
+					errs = append(errs, serr)
+				}
+				return helperproto.VhostStatusResponse{}, errors.Join(errs...)
 			}
-			if reloadErr != nil {
-				errs = append(errs, fmt.Errorf("reload restored old bridge: %w", reloadErr))
-			}
-			if serr := m.writeState(m.failureState(state, err, state.ConfigOK)); serr != nil {
-				errs = append(errs, serr)
-			}
-			return helperproto.VhostStatusResponse{}, errors.Join(errs...)
 		}
 	}
 
@@ -395,8 +411,10 @@ func (m *VhostManager) switchExternalLocked(ctx context.Context, state vhostStat
 			if rerr := m.restoreBridge(bridgePath, bridgeData); rerr != nil {
 				errs = append(errs, fmt.Errorf("restore old bridge: %w", rerr))
 			}
-			if rerr := m.reloadServer(ctx, oldServer, state.ReloadService); rerr != nil {
-				errs = append(errs, fmt.Errorf("reload restored old server: %w", rerr))
+			if oldActive {
+				if rerr := m.startServer(ctx, oldServer, state.ReloadService); rerr != nil {
+					errs = append(errs, fmt.Errorf("restart restored old server: %w", rerr))
+				}
 			}
 		}
 		if serr := m.writeState(m.failureState(state, err, state.ConfigOK)); serr != nil {
@@ -476,13 +494,13 @@ func (m *VhostManager) teardownExternalLocked(ctx context.Context, state vhostSt
 		if rerr := restoreStagedPaths(staged); rerr != nil {
 			errs = append(errs, fmt.Errorf("restore managed files: %w", rerr))
 		}
-		if rerr := m.reloadServer(ctx, server, state.ReloadService); rerr != nil {
+		if rerr := m.reloadServerIfActive(ctx, server, state.ReloadService); rerr != nil {
 			errs = append(errs, fmt.Errorf("reload restored external server: %w", rerr))
 		}
 		return state, errors.Join(errs...)
 	}
 
-	if err := m.reloadServer(ctx, server, state.ReloadService); err != nil {
+	if err := m.reloadServerIfActive(ctx, server, state.ReloadService); err != nil {
 		return rollback(err)
 	}
 	if err := m.setForwarders(ctx, true); err != nil {
@@ -946,6 +964,9 @@ func (m *VhostManager) validateSite(site helperproto.VHostSite, ids, hosts map[s
 			if err != nil {
 				return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: %v", helperproto.ErrInvalidRequest, site.ID, err)
 			}
+			if err := m.validateBackendOwnership(resolvedBackend); err != nil {
+				return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: %v", helperproto.ErrInvalidRequest, site.ID, err)
+			}
 		case kind == model.SiteStatic || site.DocumentRoot != "":
 			return vhost.SiteSpec{}, fmt.Errorf("%w: site %q: a backend path is required", helperproto.ErrInvalidRequest, site.ID)
 		}
@@ -994,6 +1015,37 @@ func (m *VhostManager) verifyLeaf(certPEM, keyPEM []byte, domains []string, owne
 		return fmt.Errorf("%w: %s certificate: %v", helperproto.ErrInvalidRequest, owner, err)
 	}
 	return nil
+}
+
+func (m *VhostManager) validateBackendOwnership(resolved string) error {
+	if m.AllowUID <= 0 {
+		return nil
+	}
+	if m.AllowHome != "" && pathWithinOrEqual(m.AllowHome, resolved) {
+		return nil
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("stat backend path %q: %w", resolved, err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("backend path %q has no ownership metadata", resolved)
+	}
+	if int(stat.Uid) != m.AllowUID {
+		return fmt.Errorf("backend path %q is owned by UID %d, not the allowed UID %d", resolved, stat.Uid, m.AllowUID)
+	}
+	return nil
+}
+
+func pathWithinOrEqual(base, target string) bool {
+	base = resolvePath(base)
+	target = resolvePath(target)
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func validateBackendPath(raw string) (string, error) {

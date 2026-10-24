@@ -61,6 +61,7 @@ func newVhostTestEnv(t *testing.T) *vhostTestEnv {
 		runner:    &fakeRunner{},
 	}
 	env.manager = NewVhostManager(root, env.statePath, env.authority, env.runner, vhostTestLogger)
+	env.manager.AllowUID = os.Getuid()
 	env.manager.NginxIncludeDir = filepath.Join(root, "includes", "nginx")
 	env.manager.ApacheIncludeDir = filepath.Join(root, "includes", "apache")
 	env.manager.Forwarders = func(_ context.Context, enable bool) error {
@@ -221,7 +222,7 @@ func TestSyncWritesReleaseAndBridge(t *testing.T) {
 	if !env.runner.called("nginx", "-t") {
 		t.Fatal("nginx config test was not run")
 	}
-	if !env.runner.called("systemctl", "reload", "nginx") {
+	if !env.runner.called("systemctl", "reload-or-restart", "nginx") {
 		t.Fatal("nginx reload was not run")
 	}
 
@@ -258,7 +259,7 @@ func TestSyncWritesApacheReleaseAndBridge(t *testing.T) {
 	if !env.runner.called("apachectl", "configtest") {
 		t.Fatal("apachectl configtest was not run")
 	}
-	if !env.runner.called("systemctl", "reload", "apache2") {
+	if !env.runner.called("systemctl", "reload-or-restart", "apache2") {
 		t.Fatal("apache reload was not run")
 	}
 }
@@ -492,7 +493,7 @@ func TestSyncRollsBackOnReloadFailure(t *testing.T) {
 	}
 	first := env.currentTarget("nginx")
 	env.runner.fn = func(name string, args []string) ([]byte, error) {
-		if name == "systemctl" && len(args) == 2 && args[0] == "reload" && args[1] == "nginx" {
+		if name == "systemctl" && len(args) == 2 && args[0] == "reload-or-restart" && args[1] == "nginx" {
 			return []byte("Job for nginx.service failed\n"), errors.New("exit status 1")
 		}
 		return nil, nil
@@ -1889,7 +1890,7 @@ func TestSetModeBuiltinReloadFailureKeepsExternalMode(t *testing.T) {
 		t.Fatalf("SetMode nginx: %v", err)
 	}
 	env.runner.fn = func(name string, args []string) ([]byte, error) {
-		if name == "systemctl" && len(args) == 2 && args[0] == "reload" && args[1] == "nginx" {
+		if name == "systemctl" && len(args) == 2 && args[0] == "reload-or-restart" && args[1] == "nginx" {
 			return []byte("reload failed\n"), errors.New("exit status 1")
 		}
 		return nil, nil
@@ -1934,6 +1935,9 @@ func TestSetModeBetweenExternalServers(t *testing.T) {
 	}
 	if got := env.forwarders(); len(got) != 1 || got[0] != false {
 		t.Fatalf("forwarder calls = %v, want [false]", got)
+	}
+	if !env.runner.called("systemctl", "stop", "nginx") {
+		t.Fatal("old nginx was not stopped before starting Apache")
 	}
 	if err := env.manager.Remove(ctx); err != nil {
 		t.Fatalf("Remove after switch: %v", err)
@@ -1981,14 +1985,14 @@ func TestSetModeExternalRestoresOldBridgeOnNewFailure(t *testing.T) {
 			t.Fatalf("shared TLS file %s was removed by the failed switch: %v", name, err)
 		}
 	}
-	reloads := 0
+	starts := 0
 	for _, call := range env.runner.invocations("systemctl") {
-		if len(call.args) == 2 && call.args[0] == "reload" && call.args[1] == "nginx" {
-			reloads++
+		if len(call.args) == 2 && call.args[0] == "start" && call.args[1] == "nginx" {
+			starts++
 		}
 	}
-	if reloads < 2 {
-		t.Fatalf("old nginx was not reloaded during rollback (reloads = %d)", reloads)
+	if starts < 1 {
+		t.Fatalf("old nginx was not restarted during rollback (starts = %d)", starts)
 	}
 }
 
@@ -2247,5 +2251,21 @@ func TestVhostStateRoundTrip(t *testing.T) {
 	}
 	if got.Mode != want.Mode || got.CurrentRelease != want.CurrentRelease || len(got.TLSOwners) != 2 {
 		t.Fatalf("state = %+v, want %+v", got, want)
+	}
+}
+
+func TestVhostRejectsBackendNotOwnedByAllowedUID(t *testing.T) {
+	env := newVhostTestEnv(t)
+	site := helperproto.VHostSite{
+		ID:           "outside",
+		Name:         "outside",
+		Domain:       "outside.test",
+		Kind:         string(model.SiteStatic),
+		BackendPath:  "/etc",
+		DocumentRoot: "/etc",
+		DesiredState: string(model.DesiredRunning),
+	}
+	if _, err := env.manager.validateSite(site, map[string]string{}, map[string]string{}); err == nil {
+		t.Fatal("accepted a root-owned backend path")
 	}
 }

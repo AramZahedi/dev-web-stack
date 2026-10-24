@@ -247,14 +247,22 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	site.DesiredState = model.DesiredRunning
 	site.CreatedAt = s.currentTime()
 	site.UpdatedAt = site.CreatedAt
-	if err := s.deps.Store.CreateSite(ctx, site); err != nil {
+	if site.Kind == model.SitePHP {
+		cfg := model.SitePHPConfig{
+			SiteID:     site.ID,
+			Ini:        cloneStringMap(site.PHPIni),
+			Extensions: cloneBoolMap(site.PHPExtensions),
+			ConfigHash: site.PHPConfigHash,
+			AppliedAt:  site.CreatedAt,
+		}
+		if err := s.deps.Store.CreateSiteWithPHPConfig(ctx, site, cfg); err != nil {
+			return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
+		}
+	} else if err := s.deps.Store.CreateSite(ctx, site); err != nil {
 		return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
 	}
 
 	if site.Kind == model.SitePHP {
-		if err := s.saveAppliedPHPConfigLocked(ctx, site); err != nil {
-			return fail(fmt.Errorf("sites: save PHP configuration for %q: %w", site.Name, err), true)
-		}
 		spec, err := s.phpSiteSpecFromBuildLocked(site, phpBuild)
 		if err != nil {
 			return fail(err, true)
@@ -1003,6 +1011,9 @@ func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current 
 	if previous.FastCGIPort == 0 && current.FastCGIPort != 0 && s.deps.Ports != nil && phpStopped {
 		s.deps.Ports.Release(current.FastCGIPort)
 	}
+	if err := s.rebuildRoutesLocked(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("rollback: republish routes: %w", err))
+	}
 	return errors.Join(errs...)
 }
 
@@ -1332,21 +1343,40 @@ func validateDocumentRoot(projectRoot, value string) (string, error) {
 	if root == "" {
 		root = "."
 	}
+	project, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("sites: resolve project root %q: %w", projectRoot, err)
+	}
 	target := root
 	if !filepath.IsAbs(root) {
 		if !filepath.IsLocal(root) {
 			return "", fmt.Errorf("sites: document root %q escapes the project", root)
 		}
-		target = filepath.Join(projectRoot, root)
+		target = filepath.Join(project, root)
 	}
-	info, err := os.Stat(target)
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", fmt.Errorf("sites: document root %q: %w", root, err)
+	}
+	info, err := os.Stat(resolved)
 	if err != nil {
 		return "", fmt.Errorf("sites: document root %q: %w", root, err)
 	}
 	if !info.IsDir() {
 		return "", fmt.Errorf("sites: document root %q is not a directory", root)
 	}
+	if !pathWithin(project, resolved) {
+		return "", fmt.Errorf("sites: document root %q escapes the project", root)
+	}
 	return root, nil
+}
+
+func pathWithin(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
 func (s *Service) currentTime() time.Time {

@@ -635,6 +635,9 @@ func resolveSiteDocumentRoot(spec SiteSpec, kind string) (string, error) {
 		}
 		resolved = project
 	case filepath.IsAbs(documentRoot):
+		if project == "" {
+			return "", fmt.Errorf("backend: %s site %q has an absolute document root but no project path", kind, spec.ID)
+		}
 		resolved = documentRoot
 	default:
 		if !filepath.IsLocal(documentRoot) {
@@ -650,14 +653,37 @@ func resolveSiteDocumentRoot(spec SiteSpec, kind string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("backend: resolve document root %q: %w", resolved, err)
 	}
-	info, err := os.Stat(abs)
+	canonical, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", fmt.Errorf("backend: %s site %q document root %s: %w", kind, spec.ID, abs, err)
+		return "", fmt.Errorf("backend: resolve document root %s: %w", abs, err)
+	}
+	projectAbs, err := filepath.Abs(project)
+	if err != nil {
+		return "", fmt.Errorf("backend: resolve project path %q: %w", project, err)
+	}
+	projectCanonical, err := filepath.EvalSymlinks(projectAbs)
+	if err != nil {
+		return "", fmt.Errorf("backend: resolve project path %s: %w", projectAbs, err)
+	}
+	if !pathWithin(projectCanonical, canonical) {
+		return "", fmt.Errorf("backend: %s site %q document root %q escapes the project", kind, spec.ID, documentRoot)
+	}
+	info, err := os.Stat(canonical)
+	if err != nil {
+		return "", fmt.Errorf("backend: %s site %q document root %s: %w", kind, spec.ID, canonical, err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("backend: %s site %q document root %s is not a directory", kind, spec.ID, abs)
+		return "", fmt.Errorf("backend: %s site %q document root %s is not a directory", kind, spec.ID, canonical)
 	}
-	return abs, nil
+	return canonical, nil
+}
+
+func pathWithin(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
 // resolveWorkingDir validates the Node project directory, when one is given.

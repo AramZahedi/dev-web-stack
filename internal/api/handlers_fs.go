@@ -57,19 +57,22 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if home := strings.TrimSpace(s.cfg.UserHome); home != "" {
-		base, err := filepath.Abs(home)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, codeInternal, "internal error", nil)
-			return
-		}
-		if evaluated, err := filepath.EvalSymlinks(base); err == nil {
-			base = evaluated
-		}
-		if !withinDirectory(base, resolved) {
-			writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured user home", nil)
-			return
-		}
+	home := strings.TrimSpace(s.userHome())
+	if home == "" {
+		writeError(w, http.StatusInternalServerError, codeInternal, "user home is not configured", nil)
+		return
+	}
+	base, err := filepath.Abs(home)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, codeInternal, "user home cannot be resolved", nil)
+		return
+	}
+	if evaluated, err := filepath.EvalSymlinks(base); err == nil {
+		base = evaluated
+	}
+	if !withinDirectory(base, resolved) {
+		writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured user home", nil)
+		return
 	}
 
 	entries, err := os.ReadDir(resolved)

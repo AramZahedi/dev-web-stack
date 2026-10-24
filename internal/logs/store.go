@@ -244,6 +244,17 @@ func (s *Store) Close() error {
 	return errors.Join(errs...)
 }
 
+// SiteCount reports the number of in-memory site registries. It is used by
+// tests and diagnostics to catch registry leaks from unknown stream IDs.
+func (s *Store) SiteCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.sites)
+}
+
 // siteLocked returns the state for siteID, creating it on first use. It does
 // not touch the filesystem; the directory and file are opened on the first
 // complete line.

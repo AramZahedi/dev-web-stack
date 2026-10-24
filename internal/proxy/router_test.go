@@ -157,3 +157,33 @@ func TestRouterUpstreamTimeouts(t *testing.T) {
 		t.Fatal("Node upstreams must allow more time than static upstreams")
 	}
 }
+
+func TestRouterServesStatePageWithoutDialingUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		state        string
+		desiredState string
+		want         int
+	}{
+		{name: "stopped", state: "stopped", desiredState: "stopped", want: http.StatusServiceUnavailable},
+		{name: "starting", state: "starting", desiredState: "running", want: http.StatusServiceUnavailable},
+		{name: "crashed", state: "crashed", desiredState: "running", want: http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRouter()
+			r.Replace(Snapshot{Routes: map[string]Route{"blog.test": {
+				SiteID:       "site",
+				Host:         "blog.test",
+				Kind:         KindNode,
+				Upstream:     "127.0.0.1:1",
+				State:        tc.state,
+				DesiredState: tc.desiredState,
+			}}})
+			rec := httptest.NewRecorder()
+			r.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://blog.test/", nil))
+			if rec.Code != tc.want {
+				t.Fatalf("code = %d, want %d; body=%q", rec.Code, tc.want, rec.Body.String())
+			}
+		})
+	}
+}

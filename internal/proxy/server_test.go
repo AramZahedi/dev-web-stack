@@ -219,7 +219,12 @@ func TestServerHTTP2AndForwardedHeaders(t *testing.T) {
 		t.Fatalf("TLS NextProtos = %v, want h2", s.httpsSrv.TLSConfig.NextProtos)
 	}
 
-	resp, err := tlsClientFor(httpsAddr).Get("https://blog.test/hello?x=1")
+	req, err := http.NewRequest(http.MethodGet, "https://blog.test/hello?x=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	resp, err := tlsClientFor(httpsAddr).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,8 +251,8 @@ func TestServerHTTP2AndForwardedHeaders(t *testing.T) {
 		if got.xHost != "blog.test" {
 			t.Fatalf("X-Forwarded-Host = %q", got.xHost)
 		}
-		if strings.TrimSpace(got.forwarded) == "" {
-			t.Fatal("X-Forwarded-For missing")
+		if got.forwarded != "127.0.0.1" {
+			t.Fatalf("X-Forwarded-For = %q, want the real client address only", got.forwarded)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("upstream did not receive the request")

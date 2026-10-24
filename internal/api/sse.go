@@ -51,13 +51,21 @@ func (s *Server) handleLogsStream(w http.ResponseWriter, r *http.Request) {
 
 	// Site routes accept an id or a name. Resolve when possible so a CLI
 	// `devstack logs blog` observes the same log file as the dashboard, which
-	// uses the id. An unknown reference still streams (empty) rather than
-	// turning an EventSource reconnect loop into a hard error.
+	// uses the id. An unknown reference still returns an empty stream, but it
+	// must not create a permanent in-memory log registry entry for an arbitrary
+	// caller-controlled id.
 	streamID := ref
+	known := s.sites == nil
 	if s.sites != nil {
 		if site, err := s.sites.Get(r.Context(), ref); err == nil && site.ID != "" {
 			streamID = site.ID
+			known = true
 		}
+	}
+	if !known {
+		sseHeaders(w)
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 
 	if !follow {

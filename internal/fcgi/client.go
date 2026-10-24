@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -219,11 +220,21 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 
 	go func() {
 		err := writeStdin(out, defaultRequestID, body, length)
-		if err != nil && ctx.Err() == nil {
-			// On cancellation the watcher owns teardown and ABORT_REQUEST;
-			// closing the connection here could race it and skip the abort.
-			finish(requestError(ctx, "write STDIN", err))
+		if err == nil || ctx.Err() != nil {
+			return
 		}
+		if isFCGIWriteClosed(err) {
+			// PHP-FPM may answer early (401/403/413/302) and close its read
+			// side while we are still uploading. Do not abort the response
+			// pipe; half-close our write side and let readResponse deliver the
+			// response that is already on the wire.
+			if closer, ok := conn.(interface{ CloseWrite() error }); ok {
+				_ = closer.CloseWrite()
+			}
+			return
+		}
+		// A local body read or framing error still fails the request.
+		finish(requestError(ctx, "write STDIN", err))
 	}()
 
 	go c.readResponse(ctx, conn, writer, finish)
@@ -247,6 +258,25 @@ func requestError(ctx context.Context, operation string, err error) error {
 		return ctxErr
 	}
 	return fmt.Errorf("fcgi: %s: %w", operation, err)
+}
+
+// isFCGIWriteClosed reports whether a STDIN write failed because the backend
+// stopped reading. This is expected when an application returns a response
+// before consuming the whole request body.
+func isManagementRecord(typ uint8) bool {
+	switch typ {
+	case typeGetValues, typeGetValuesReply, typeUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func isFCGIWriteClosed(err error) bool {
+	return errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET)
 }
 
 // lockedWriter serializes individual socket writes. The write lock is never
@@ -277,6 +307,12 @@ func (c *Client) readResponse(ctx context.Context, conn net.Conn, writer *io.Pip
 			}
 			return
 		}
+		if isManagementRecord(rec.typ) {
+			// Management records use request ID 0 and are not part of the
+			// responder exchange. Ignore them before enforcing the responder
+			// request ID.
+			continue
+		}
 		if rec.requestID != defaultRequestID {
 			finish(fmt.Errorf("fcgi: response record for request %d, want %d", rec.requestID, defaultRequestID))
 			return
@@ -304,9 +340,8 @@ func (c *Client) readResponse(ctx context.Context, conn net.Conn, writer *io.Pip
 			}
 			finish(nil)
 			return
-		case typeData, typeGetValues, typeGetValuesReply, typeUnknown:
-			// Management records and unknown types are not part of a
-			// responder exchange; ignore them.
+		case typeData:
+			// DATA records are not valid for a responder; ignore them.
 		default:
 			// Forward compatibility: ignore record types we do not know.
 		}
@@ -408,6 +443,11 @@ func readResponseHead(reader *bufio.Reader) (*Response, error) {
 
 	code := http.StatusOK
 	status := http.StatusText(http.StatusOK)
+	if statusLine == "" && header.Get("Location") != "" {
+		// RFC 3875 6.2.3: a Location header without Status is a redirect.
+		code = http.StatusFound
+		status = http.StatusText(http.StatusFound)
+	}
 	if statusLine != "" {
 		fields := strings.Fields(statusLine)
 		if len(fields) == 0 {

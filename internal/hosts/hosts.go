@@ -178,24 +178,29 @@ func WriteAtomic(path string, data []byte, mode fs.FileMode) error {
 // mount whose parent directory is read-only (systemd ProtectSystem=strict with
 // ReadWritePaths=/etc/hosts). It keeps the existing mode and fsyncs the file.
 func writeInPlace(path string, data []byte, mode fs.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	// Do not use O_TRUNC here. Under ProtectSystem=strict this is the only
+	// writable path, and a crash between open and write must not leave
+	// /etc/hosts empty. Overwrite first, then truncate to the new length.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, mode)
 	if err != nil {
 		return fmt.Errorf("hosts: write %s in place: %w", path, err)
 	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("hosts: lock %s: %w", path, err)
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	if _, err := f.WriteAt(data, 0); err != nil {
 		return fmt.Errorf("hosts: write %s in place: %w", path, err)
 	}
+	if err := f.Truncate(int64(len(data))); err != nil {
+		return fmt.Errorf("hosts: truncate %s: %w", path, err)
+	}
 	if err := f.Chmod(mode); err != nil {
-		_ = f.Close()
 		return fmt.Errorf("hosts: chmod %s: %w", path, err)
 	}
 	if err := f.Sync(); err != nil {
-		_ = f.Close()
 		return fmt.Errorf("hosts: sync %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("hosts: close %s: %w", path, err)
 	}
 	return nil
 }
