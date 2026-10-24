@@ -105,3 +105,27 @@ describe('mock vhost previews', () => {
     expect(apache).toContain('ProxyPassReverse "/" "http://127.0.0.1:41002/"');
   });
 });
+
+describe('mock PHP 8.5 built-ins', () => {
+  it('treats OPcache as built in and never emits opcache.so', async () => {
+    const site = await mockApi.createSite({
+      name: 'php85-check',
+      path: '/home/dev/projects/scratch',
+      kind: 'php',
+      php_version: '8.5',
+      php_build: 'php@8.5.0-r1',
+    });
+    try {
+      const info = await mockApi.getPHPInfo(site.id);
+      expect(info.builtins).toContain('opcache');
+      expect(info.available_extensions.map((extension) => extension.name)).not.toContain('opcache');
+      expect(info.generated_ini).not.toContain('opcache.so');
+
+      const extensions = await mockApi.phpExtensions('8.5');
+      expect(extensions.map((extension) => extension.name)).not.toContain('opcache');
+      expect((await mockApi.getPHPDefaults('8.5')).extensions.opcache).toBeUndefined();
+    } finally {
+      await mockApi.deleteSite(site.id);
+    }
+  });
+});

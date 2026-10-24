@@ -125,8 +125,16 @@ func (s *Server) handlePHPExtensions(w http.ResponseWriter, r *http.Request) {
 			"unsupported PHP version \""+version+"\" (want 8.2, 8.3, 8.4, or 8.5)", nil)
 		return
 	}
+	builtins := manifest.BuiltinsFor(version)
+	builtinSet := make(map[string]bool, len(builtins))
+	for _, name := range builtins {
+		builtinSet[name] = true
+	}
 	extensions := make([]catalog.Extension, 0, len(manifest.Extensions))
 	for _, extension := range manifest.Extensions {
+		if builtinSet[extension.Name] {
+			continue
+		}
 		for _, supported := range extension.Versions {
 			if supported == version {
 				extensions = append(extensions, extension)

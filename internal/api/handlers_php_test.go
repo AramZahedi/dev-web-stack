@@ -163,10 +163,17 @@ func TestAPIPHPExtensionsFiltersAndSorts(t *testing.T) {
 			t.Fatalf("extensions are not sorted at %d: %q > %q", i, extensions[i-1].Name, extensions[i].Name)
 		}
 	}
+	foundOpcache := false
 	for _, extension := range extensions {
 		if extension.Name == "imap" {
 			t.Fatal("imap is not available on PHP 8.4")
 		}
+		if extension.Name == "opcache" {
+			foundOpcache = true
+		}
+	}
+	if !foundOpcache {
+		t.Fatal("opcache should remain a shared toggle on PHP 8.4")
 	}
 
 	rec = fake.request(t, http.MethodGet, "/api/v1/php/extensions?version=8.2", nil)
@@ -185,6 +192,23 @@ func TestAPIPHPExtensionsFiltersAndSorts(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("imap should be available on PHP 8.2")
+	}
+
+	rec = fake.request(t, http.MethodGet, "/api/v1/php/extensions?version=8.5", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("8.5 extensions code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var newer []catalog.Extension
+	if err := json.Unmarshal(rec.Body.Bytes(), &newer); err != nil {
+		t.Fatalf("decode 8.5 extensions: %v", err)
+	}
+	if len(newer) == 0 {
+		t.Fatal("8.5 extensions are empty")
+	}
+	for _, extension := range newer {
+		if extension.Name == "opcache" {
+			t.Fatal("opcache is built into PHP 8.5 and must not be offered as a toggle")
+		}
 	}
 
 	for _, target := range []string{"/api/v1/php/extensions?version=9.9", "/api/v1/php/extensions"} {

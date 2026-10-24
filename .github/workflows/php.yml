@@ -5,8 +5,7 @@ on:
     inputs:
       download_base_url:
         description: HTTPS base URL where the php-<version>-r<revision>-linux-x64.tar.gz assets will be published
-        required: false
-        default: ""
+        required: true
         type: string
   push:
     branches: [main, plan-2-php]
@@ -36,8 +35,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate:
+    name: Validate PHP download base URL
+    runs-on: ubuntu-22.04
+    outputs:
+      base_url: ${{ steps.base.outputs.base_url }}
+      available: ${{ steps.base.outputs.available }}
+    steps:
+      - name: Resolve the release asset base URL
+        id: base
+        env:
+          INPUT_BASE_URL: ${{ github.event.inputs.download_base_url }}
+          REPOSITORY_BASE_URL: ${{ vars.PHP_DOWNLOAD_BASE_URL }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          base_url="$INPUT_BASE_URL"
+          if [[ -z $base_url && $EVENT_NAME != "workflow_dispatch" ]]; then
+            base_url="$REPOSITORY_BASE_URL"
+          fi
+          if [[ -z $base_url ]]; then
+            if [[ $EVENT_NAME == "workflow_dispatch" ]]; then
+              echo "download_base_url is required for workflow_dispatch runs" >&2
+              exit 1
+            fi
+            echo "No PHP_DOWNLOAD_BASE_URL repository variable is configured; catalog generation will be skipped." >&2
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ $base_url != https://* ]]; then
+            echo "PHP download base URL must start with https://: $base_url" >&2
+            exit 1
+          fi
+          echo "Using PHP download base URL: $base_url"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "base_url=$base_url" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build PHP ${{ matrix.line }}
+    needs: validate
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -59,8 +95,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             autoconf bison build-essential file jq libtool patchelf pkg-config re2c shellcheck xz-utils \
             libbz2-dev libcurl4-openssl-dev libffi-dev libfreetype6-dev libgdbm-dev libgmp-dev \
-            libicu-dev libjpeg-dev libldap2-dev libmagickwand-dev libmemcached-dev libpng-dev \
-            libpq-dev libreadline-dev libsasl2-dev libsqlite3-dev libssh2-1-dev libssl-dev \
+            libicu-dev libjpeg-dev libldap2-dev libmagickwand-dev libmemcached-dev libonig-dev libpng-dev \
+            libpq-dev libreadline-dev libsasl2-dev libsodium-dev libsqlite3-dev libssh2-1-dev libssl-dev \
             libtidy-dev libwebp-dev libxml2-dev libxslt1-dev libyaml-dev libzip-dev zlib1g-dev
 
       - name: Cache PHP and PECL source downloads
@@ -139,7 +175,8 @@ jobs:
 
   catalog:
     name: Combine PHP catalog entries
-    needs: build
+    needs: [build, validate]
+    if: needs.validate.outputs.available == 'true'
     runs-on: ubuntu-22.04
     steps:
       - name: Check out the repository
@@ -160,7 +197,7 @@ jobs:
 
       - name: Generate php-catalog.json
         env:
-          PHP_DOWNLOAD_BASE_URL: ${{ github.event.inputs.download_base_url || vars.PHP_DOWNLOAD_BASE_URL || format('https://github.com/{0}/releases/download/php-builds', github.repository) }}
+          PHP_DOWNLOAD_BASE_URL: ${{ needs.validate.outputs.base_url }}
         run: |
           set -euo pipefail
           mkdir -p dist/catalog

@@ -50,10 +50,45 @@ type PHPVersionDefaults struct {
 }
 
 // PHPManifest is the embedded PHP extension and per-version defaults catalog.
+// BuiltinByVersion marks modules that are compiled into a specific PHP line
+// (for example OPcache in PHP 8.5) and therefore cannot be toggled there.
 type PHPManifest struct {
-	Builtin    []string                      `json:"builtin"`
-	Extensions []Extension                   `json:"extensions"`
-	Versions   map[string]PHPVersionDefaults `json:"versions"`
+	Builtin          []string                      `json:"builtin"`
+	BuiltinByVersion map[string][]string           `json:"builtin_by_version,omitempty"`
+	Extensions       []Extension                   `json:"extensions"`
+	Versions         map[string]PHPVersionDefaults `json:"versions"`
+}
+
+// BuiltinsFor returns the global built-in modules followed by the built-ins
+// specific to version. Duplicates are removed and the global order is kept
+// before the per-version order.
+func (m PHPManifest) BuiltinsFor(version string) []string {
+	out := make([]string, 0, len(m.Builtin)+len(m.BuiltinByVersion[version]))
+	seen := make(map[string]bool, cap(out))
+	for _, name := range m.Builtin {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, name := range m.BuiltinByVersion[version] {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+func (m PHPManifest) builtinSet(version string) map[string]bool {
+	names := m.BuiltinsFor(version)
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
 }
 
 // phpLines are the supported PHP major.minor lines.
@@ -130,10 +165,7 @@ func (m PHPManifest) resolve(version string, base, overrides map[string]bool) ([
 		return nil, fmt.Errorf("unsupported php version %q", version)
 	}
 	extensions := make(map[string]Extension, len(m.Extensions))
-	builtin := make(map[string]bool, len(m.Builtin))
-	for _, name := range m.Builtin {
-		builtin[name] = true
-	}
+	builtin := m.builtinSet(version)
 	for _, ext := range m.Extensions {
 		extensions[ext.Name] = ext
 	}
@@ -264,6 +296,24 @@ func (m PHPManifest) validate() error {
 			return fmt.Errorf("unsupported PHP version %q", version)
 		}
 	}
+	for version, names := range m.BuiltinByVersion {
+		if !isPHPLine(version) {
+			return fmt.Errorf("builtin_by_version has unsupported PHP version %q", version)
+		}
+		if _, ok := m.Versions[version]; !ok {
+			return fmt.Errorf("builtin_by_version has PHP version %q without defaults", version)
+		}
+		seen := make(map[string]bool, len(names))
+		for _, name := range names {
+			if !extensionNamePattern.MatchString(name) {
+				return fmt.Errorf("builtin_by_version[%s] has invalid module name %q", version, name)
+			}
+			if seen[name] {
+				return fmt.Errorf("builtin_by_version[%s] has duplicate module %q", version, name)
+			}
+			seen[name] = true
+		}
+	}
 	if len(m.Extensions) == 0 {
 		return fmt.Errorf("manifest has no extensions")
 	}
@@ -304,6 +354,13 @@ func (m PHPManifest) validate() error {
 		extensions[ext.Name] = ext
 	}
 
+	for version, names := range m.BuiltinByVersion {
+		for _, name := range names {
+			if ext, ok := extensions[name]; ok && !supportsVersion(ext, version) {
+				return fmt.Errorf("builtin_by_version[%s] marks extension %q built-in, but it does not support that version", version, name)
+			}
+		}
+	}
 	for _, ext := range m.Extensions {
 		for _, dependency := range ext.Requires {
 			if builtin[dependency] {
@@ -325,8 +382,9 @@ func (m PHPManifest) validate() error {
 	}
 
 	for version, defaults := range m.Versions {
+		versionBuiltins := m.builtinSet(version)
 		for name := range defaults.Extensions {
-			if builtin[name] {
+			if versionBuiltins[name] {
 				return fmt.Errorf("version %s defaults cannot toggle built-in module %q", version, name)
 			}
 			ext, ok := extensions[name]

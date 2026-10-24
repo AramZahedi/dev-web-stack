@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Verify one built PHP artifact before publication: extract it, run the CLI and
-# FPM binaries, load every shared extension, then start FPM and issue a real
-# FastCGI health request through cmd/php-smoke. Any failure exits non-zero.
+# FPM binaries, load every shared extension, lint the line's default ini, then
+# start FPM and issue a real FastCGI health request through cmd/php-smoke. Any
+# failure exits non-zero and the artifact must not be published.
 set -euo pipefail
 IFS=$'\n\t'
 export LC_ALL=C
@@ -20,8 +21,8 @@ usage() {
 usage: smoke.sh <php-<version>-r<revision>-linux-x64.tar.gz>
 
 Extracts the artifact to a temporary directory and verifies the PHP CLI,
-php-fpm, every shared extension, and one FastCGI health request. The archive is
-not published if any check fails.
+php-fpm, every shared extension, the line's default extension set, and one
+FastCGI health request. The archive is not published if any check fails.
 EOF
 }
 
@@ -62,8 +63,16 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/devstack-php-smoke-XXXXXX") ||
 	die 'could not create a temporary directory'
 trap 'rm -rf "$work"' EXIT
 
+# Symlinks and hard links are rejected before extraction: the artifact is a
+# self-contained tree and must not redirect files outside its prefix.
+verbose="$work/listing.verbose"
+tar -tvzf "$tarball" >"$verbose" 2>&1 || die "could not list $tarball"
+if link_entry=$(grep -m1 -E '^[lh]' "$verbose"); then
+	die "archive contains a symbolic or hard link: $link_entry"
+fi
+
 listing="$work/listing.txt"
-tar -tzf "$tarball" >"$listing" || die "could not list $tarball"
+tar -tzf "$tarball" >"$listing" 2>&1 || die "could not list $tarball"
 while IFS= read -r entry; do
 	case "$entry" in
 	/* | ../* | */../* | */..)
@@ -89,48 +98,71 @@ fi
 php_bin="$root/bin/php"
 fpm_bin="$root/sbin/php-fpm"
 
-run_php() {
-	"$php_bin" -n -d "extension_dir=$ext_dir" "$@"
-}
-
 check_clean_output() {
 	local label=$1 output=$2
-	if printf '%s\n' "$output" | grep -Eiq 'PHP (Warning|Fatal error)|Unable to load dynamic library|Cannot load module|undefined symbol'; then
+	if grep -Eiq 'Failed loading|PHP Startup|PHP (Warning|Fatal error)|Unable to load dynamic library|Cannot load module|undefined symbol' <<<"$output"; then
 		printf 'smoke.sh: %s produced a load error:\n%s\n' "$label" "$output" >&2
-		die "shared extension check failed for $label"
+		die "output check failed for $label"
 	fi
 }
 
-note "checking $top/bin/php"
-php_version=$("$php_bin" -n -v | sed -n '1p') || die 'php -v failed'
-note "checking $top/sbin/php-fpm"
-fpm_version=$("$fpm_bin" -n -v | sed -n '1p') || die 'php-fpm -v failed'
+module_name_for_so() {
+	case "$1" in
+	opcache.so) printf '%s\n' 'Zend OPcache' ;;
+	*) printf '%s\n' "${1%.so}" ;;
+	esac
+}
 
-module_output=$("$php_bin" -n -m) || die 'php -m failed'
+# assert_loaded LABEL MODULE [php args...] runs the already-loaded module set
+# with a one-line php -r check. It captures stderr so Failed loading and PHP
+# Startup errors cannot be mistaken for success.
+assert_loaded() {
+	local label=$1 module=$2
+	shift 2
+	local output
+	# shellcheck disable=SC2016 # this is PHP source, not a shell expansion.
+	if ! output=$("$php_bin" "$@" -r 'exit(extension_loaded($argv[1]) ? 0 : 1);' "$module" 2>&1); then
+		printf 'smoke.sh: %s did not report extension_loaded(%q):\n%s\n' "$label" "$module" "$output" >&2
+		die "extension presence check failed for $label"
+	fi
+	check_clean_output "$label" "$output"
+}
+
+note "checking $top/bin/php"
+if ! php_version_output=$("$php_bin" -v 2>&1); then
+	die 'php -v failed'
+fi
+check_clean_output 'php -v' "$php_version_output"
+php_version=$(printf '%s\n' "$php_version_output" | sed -n '1p')
+
+note "checking $top/sbin/php-fpm"
+if ! fpm_version_output=$("$fpm_bin" -v 2>&1); then
+	die 'php-fpm -v failed'
+fi
+check_clean_output 'php-fpm -v' "$fpm_version_output"
+fpm_version=$(printf '%s\n' "$fpm_version_output" | sed -n '1p')
+
+if ! module_output=$("$php_bin" -n -m 2>&1); then
+	die 'php -m failed'
+fi
 check_clean_output 'php -m' "$module_output"
-printf '%s\n' "$module_output" | grep -qx 'Core' || die 'php -m did not report Core'
+grep -qx 'Core' <<<"$module_output" || die 'php -m did not report Core'
 module_count=$(printf '%s\n' "$module_output" | grep -Ec '^[A-Za-z]') || true
 
 # Load the standard shared modules in manifest order. opcache is a zend
 # extension and must be loaded before ordinary modules.
 artifact_line=$(printf '%s' "$top" | sed -E 's/^php-([0-9]+\.[0-9]+)\..*/\1/')
 mapfile -t standard_so < <(jq -r --arg line "$artifact_line" '
-	.extensions[]
+	(.builtin_by_version[$line] // []) as $builtins
+	| .extensions[]
 	| select(.standard == true)
 	| select(.name != "imap")
 	| select((.versions // []) | index($line))
+	| .name as $name
+	| select(($builtins | index($name)) == null)
 	| .so
 ' "$manifest")
 [[ ${#standard_so[@]} -gt 0 ]] || die 'no standard extensions found in the manifest'
-if [[ $artifact_line == '8.5' ]]; then
-	# PHP 8.5 always builds OPcache into the binary and produces no opcache.so.
-	filtered_so=()
-	for so in "${standard_so[@]}"; do
-		[[ $so == 'opcache.so' ]] && continue
-		filtered_so+=("$so")
-	done
-	standard_so=("${filtered_so[@]}")
-fi
 for so in "${standard_so[@]}"; do
 	[[ -f "$ext_dir/$so" ]] || die "standard extension $so is missing from the artifact"
 done
@@ -145,12 +177,22 @@ for so in "${standard_so[@]}"; do
 	[[ $so == 'opcache.so' ]] && continue
 	standard_args+=(-d "extension=$so")
 done
-standard_output=$("$php_bin" "${standard_args[@]}" -m) ||
+if ! standard_output=$("$php_bin" "${standard_args[@]}" -m 2>&1); then
 	die 'loading the standard extensions failed'
+fi
 check_clean_output 'standard extensions' "$standard_output"
+for so in "${standard_so[@]}"; do
+	assert_loaded "$so" "$(module_name_for_so "$so")" "${standard_args[@]}"
+done
+if [[ $artifact_line == '8.5' ]]; then
+	if ! opcache_output=$("$php_bin" -n -r 'exit(extension_loaded("Zend OPcache") ? 0 : 1);' 2>&1); then
+		die 'PHP 8.5 did not report its built-in Zend OPcache'
+	fi
+	check_clean_output 'PHP 8.5 built-in OPcache' "$opcache_output"
+fi
 
-# Every PECL package pinned in the lock must load. Preload igbinary for the
-# serializer integrations that are compiled against it.
+# Every PECL package pinned in the lock must load and report extension_loaded.
+# Preload igbinary for the serializer integrations that are compiled against it.
 # shellcheck disable=SC1090
 source "$lock_file"
 for package in "${pecl_packages[@]}"; do
@@ -173,9 +215,50 @@ for package in "${pecl_packages[@]}"; do
 	else
 		args+=(-d "extension=$so")
 	fi
-	output=$("$php_bin" "${args[@]}" -m) || die "loading $so failed"
+	if ! output=$("$php_bin" "${args[@]}" -m 2>&1); then
+		die "loading $so failed"
+	fi
 	check_clean_output "$so" "$output"
+	assert_loaded "$so" "$(module_name_for_so "$so")" "${args[@]}"
 done
+
+# The default extension set for the line must lint cleanly against the artifact.
+# This catches a default that names a missing shared object (the 8.5 OPcache
+# case) before a user can create a site.
+default_ini="$work/default-$artifact_line.ini"
+mapfile -t default_modules < <(jq -r --arg line "$artifact_line" '
+	.versions[$line].extensions as $enabled
+	| .extensions[]
+	| select($enabled[.name] == true)
+	| "\(.type)\t\(.so)"
+' "$manifest")
+[[ ${#default_modules[@]} -gt 0 ]] || die "no default extensions found for PHP $artifact_line"
+{
+	printf '[PHP]\n'
+	printf 'extension_dir = "%s"\n' "$ext_dir"
+	for entry in "${default_modules[@]}"; do
+		type=${entry%%$'\t'*}
+		[[ $type == 'zend_extension' ]] || continue
+		so=${entry#*$'\t'}
+		[[ -f "$ext_dir/$so" ]] || die "default extension $so is missing from the artifact"
+		printf 'zend_extension=%s\n' "$so"
+	done
+	for entry in "${default_modules[@]}"; do
+		type=${entry%%$'\t'*}
+		[[ $type != 'extension' ]] && continue
+		so=${entry#*$'\t'}
+		[[ -f "$ext_dir/$so" ]] || die "default extension $so is missing from the artifact"
+		printf 'extension=%s\n' "$so"
+	done
+} >"$default_ini"
+if ! default_lint_output=$(env -u PHPRC PHP_INI_SCAN_DIR= "$php_bin" -c "$default_ini" -r 'exit(0);' 2>&1); then
+	printf 'smoke.sh: default extension lint failed for PHP %s:\n%s\n' "$artifact_line" "$default_lint_output" >&2
+	die "default extension lint failed for PHP $artifact_line"
+fi
+if [[ -n $default_lint_output ]]; then
+	printf 'smoke.sh: default extension lint produced output for PHP %s:\n%s\n' "$artifact_line" "$default_lint_output" >&2
+	die "default extension lint produced output for PHP $artifact_line"
+fi
 
 note 'starting php-fpm and sending a FastCGI health request'
 smoke_bin=${PHP_SMOKE_BIN:-}
@@ -209,4 +292,5 @@ printf '  php:     %s\n' "$php_version"
 printf '  php-fpm: %s\n' "$fpm_version"
 printf '  modules: %s\n' "$module_count"
 printf '  extensions: %s standard + %s pecl loaded\n' "${#standard_so[@]}" "${#pecl_packages[@]}"
+printf '  default: %s ini modules linted clean\n' "${#default_modules[@]}"
 printf '  fastcgi: 200 ok on 127.0.0.1:%s\n' "$port"

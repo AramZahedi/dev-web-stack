@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,6 +190,30 @@ func TestGenerateRejectsUnwritableOutput(t *testing.T) {
 	opts.Output = t.TempDir()
 	if _, err := Generate(opts); err == nil {
 		t.Fatal("expected a directory output error")
+	}
+}
+
+func TestGenerateRejectsProductionCatalogOutput(t *testing.T) {
+	opts := validOptions(t)
+	cwd := filepath.Join(t.TempDir(), "cwd")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	for _, output := range []string{
+		"internal/catalog/catalog.json",
+		"./internal/catalog/catalog.json",
+		"../internal/catalog/catalog.json",
+		filepath.Join(t.TempDir(), "repo", "internal", "catalog", "catalog.json"),
+	} {
+		opts.Output = output
+		_, err := Generate(opts)
+		if err == nil || !strings.Contains(err.Error(), "catalog.json") {
+			t.Fatalf("output %q error = %v, want a production catalog refusal", output, err)
+		}
+		if _, statErr := os.Stat(output); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("output %q was created despite the guard: %v", output, statErr)
+		}
 	}
 }
 

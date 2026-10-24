@@ -145,24 +145,25 @@ Each extension is one of three states per site:
 - **Off**: force it off for this site.
 
 Standard extensions are on by default except `ffi`; extras are off by default.
-`opcache` is a standard Zend extension and is on by default; `xdebug` is an extra
-Zend extension and is off by default. Turning on `redis` or `apcu` automatically
-includes `igbinary`, and the managed block writes dependencies before their
-dependents.
+`opcache` is a standard Zend extension and is on by default on PHP 8.2-8.4;
+`xdebug` is an extra Zend extension and is off by default. Turning on `redis` or
+`apcu` automatically includes `igbinary`, and the managed block writes
+dependencies before their dependents.
 
 On PHP 8.5, OPcache is built into the PHP binary and upstream no longer produces
-`opcache.so`. The build pipeline omits the shared module on that line. The
-current extension manifest still lists `opcache` for 8.5 with its default on, so
-a generated 8.5 ini may log a startup warning about the missing shared object
-even though OPcache is active. Use the `opcache.*` ini rows to control it; 8.2,
-8.3, and 8.4 artifacts include `opcache.so`. Making the extension toggle
-version-aware is a catalog follow-up.
+`opcache.so`. The manifest marks OPcache as a per-version built-in for 8.5, so it
+is not offered as a site/API extension toggle and a default 8.5 site does not
+emit a `zend_extension=opcache.so` line. OPcache is always active on that line;
+use the `opcache.*` ini rows to control its behavior. PHP 8.2, 8.3, and 8.4
+artifacts include `opcache.so` as a shared Zend extension and keep the toggle.
 
 `imap` is listed in the extension manifest for PHP 8.2/8.3 only, but it is not
-included in the current build pipeline because the upstream PECL release needs
-PHP 8.3+ and the 8.2 bundled copy requires the UW-IMAP c-client library. If it
-is enabled on those lines, the generated ini will name a missing `imap.so` and
-`devstack php --site <name> -- -m` will report the load failure. See
+included in the current build pipeline. PECL imap 1.0.3 supports PHP 8.3 but not
+8.2; the bundled 8.2/8.3 copy requires the UW-IMAP c-client library, which the
+build image does not provide. PHP 8.2 has both problems; PHP 8.3 has a PECL path
+that is not wired into the pipeline. If imap is enabled on those lines, the
+generated ini names a missing `imap.so` and `devstack php --site <name> -- -m`
+reports the load failure. See
 [build/php/README.md](../build/php/README.md) for the blocked-entry record.
 
 ## Run PHP from a site
@@ -297,13 +298,18 @@ The pipeline is in [build/php/README.md](../build/php/README.md) and
 - `build.sh` builds PHP with FPM and shared standard/PECL extensions, bundles
   dependencies, flattens `lib/php/extensions`, sets relative RPATHs, and creates
   a top-level `php-<version>-r<revision>-linux-x64/` archive;
-- `smoke.sh` runs the CLI and FPM binaries, loads every shared extension, starts
-  FPM with a temporary config, and asserts one FastCGI health request returns
-  `200 ok`;
+- `smoke.sh` runs the CLI and FPM binaries, loads every shared extension, checks
+  `extension_loaded()` for each one, lints the line's default extension set
+  against the artifact, starts FPM with a temporary config, and asserts one
+  FastCGI health request returns `200 ok`;
 - CI generates an SBOM and a `.sha256` checksum and uploads the archive;
 - a dependent job downloads all four archives, runs `cmd/phpcatalog` once per
-  artifact, and uploads the combined `php-catalog.json`.
+  artifact, and uploads the combined `php-catalog.json`. It runs only when a real
+  HTTPS asset host is supplied: dispatch runs require the `download_base_url`
+  input, while push/pull-request runs use the `PHP_DOWNLOAD_BASE_URL` repository
+  variable and skip the catalog job when it is unset. There is no default URL.
 
-The workflow never edits `internal/catalog/catalog.json`. Publication and the
-catalog merge happen only after the artifacts are uploaded to the release host,
-and the production PHP catalog stays empty until then.
+The workflow never edits `internal/catalog/catalog.json` and does not publish a
+release. Publication and the catalog merge happen only after the artifacts are
+uploaded to the real release host, and the production PHP catalog stays empty
+until then.

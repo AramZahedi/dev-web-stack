@@ -10,8 +10,8 @@ PHP_REVISION   ?= 1
 PHP_OUTPUT     ?= dist/php
 PHP_VERSION    ?= $(shell sed -n 's/^PHP_$(subst .,_,$(PHP_LINE))_VERSION=//p' build/php/extensions.lock 2>/dev/null)
 PHP_ARTIFACT   ?= $(PHP_OUTPUT)/php-$(PHP_VERSION)-r$(PHP_REVISION)-linux-x64.tar.gz
-# Override with the final release asset base URL before publishing a catalog.
-PHP_BASE_URL   ?= https://github.com/AramZahedi/dev-web-stack/releases/download/php-builds
+# Required for php-catalog: the real HTTPS host where release assets are published.
+PHP_BASE_URL   ?=
 PHP_SMOKE_BIN  ?=
 
 .PHONY: build test lint ui e2e clean php-build php-smoke php-catalog php-test
@@ -53,6 +53,10 @@ php-smoke:
 	PHP_SMOKE_BIN="$(PHP_SMOKE_BIN)" bash build/php/smoke.sh "$(PHP_ARTIFACT)"
 
 php-catalog:
+	@case "$(PHP_BASE_URL)" in \
+		https://*) ;; \
+		*) echo "PHP_BASE_URL must be a non-empty https:// URL for the published artifact host" >&2; exit 1 ;; \
+	esac
 	@test -f "$(PHP_ARTIFACT)" || { echo "missing $(PHP_ARTIFACT); run make php-build" >&2; exit 1; }
 	@mkdir -p "$(PHP_OUTPUT)"
 	@sha=$$(sha256sum "$(PHP_ARTIFACT)" | cut -d' ' -f1); \

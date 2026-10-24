@@ -43,7 +43,7 @@ go run ./cmd/phpcatalog \
   --artifact dist/php/php-8.4.27-r1-linux-x64.tar.gz \
   --sha256 "$(sha256sum dist/php/php-8.4.27-r1-linux-x64.tar.gz | cut -d' ' -f1)" \
   --size "$(stat -c '%s' dist/php/php-8.4.27-r1-linux-x64.tar.gz)" \
-  --base-url https://downloads.example.test/php \
+  --base-url https://example.invalid/php \
   --output dist/php/php-8.4.27-r1.json
 
 # Focused Go tests and shell checks
@@ -74,9 +74,10 @@ required PHP or PECL entry is missing or not a lowercase 64-hex SHA-256.
   gzip data, and hashed locally.
 - It writes through a temporary file in the destination directory and renames it
   into place, so a failed run never leaves a partial lock.
-- A package whose checksum cannot be computed is omitted from the lock, printed
-  as blocked, and makes the script exit non-zero. `build.sh` then fails with an
-  actionable "run build/php/update-lock.sh" message for that package.
+- If any package cannot be verified, the script reports it and exits non-zero
+  **before** creating or replacing the lock. No partial lock is ever written.
+  `build.sh` then fails with an actionable "run build/php/update-lock.sh" message
+  for that package.
 
 The current lock pins PHP 8.2.35, 8.3.36, 8.4.27, and 8.5.12. A PHP line is
 advanced only by running the lock writer and committing the result; `build.sh`
@@ -105,14 +106,17 @@ The lock verifies and the build includes these extras on every line:
 `imap` is **not** in the lock or any artifact:
 
 - the extension manifest exposes `imap` only on PHP 8.2 and 8.3;
-- PECL imap 1.0.3 (the verified upstream release) declares PHP >= 8.3;
-- the PHP 8.2 bundled copy needs the UW-IMAP c-client library, which is not part
-  of this build image.
+- PECL imap 1.0.3 (the verified upstream release) declares PHP >= 8.3, so it
+  covers 8.3 but not 8.2;
+- the bundled PHP 8.2/8.3 copy needs the UW-IMAP c-client library, which is not
+  part of this build image. PHP 8.2 has both problems (below the PECL floor and
+  no c-client); PHP 8.3 could use PECL imap 1.0.3, but that path is not wired
+  into this pipeline.
 
 The README and `docs/php.md` record this so the missing toggle is not mistaken
-for a successful build. Adding it later requires a verified PECL version that
-supports both lines (or a deliberate 8.2/8.3 split) plus the required system
-library, and an updated lock.
+for a successful build. Adding it later requires a deliberate 8.2/8.3 split:
+PECL imap for 8.3 and either c-client headers for the bundled 8.2 copy or a
+decision to drop 8.2 support, plus an updated lock.
 
 ## Build dependencies
 
@@ -125,13 +129,16 @@ sudo apt-get install -y --no-install-recommends \
   autoconf bison build-essential file libtool patchelf pkg-config re2c \
   libbz2-dev libcurl4-openssl-dev libffi-dev libfreetype6-dev libgdbm-dev \
   libgmp-dev libicu-dev libjpeg-dev libldap2-dev libmagickwand-dev \
-  libmemcached-dev libpng-dev libpq-dev libreadline-dev libsasl2-dev \
-  libsqlite3-dev libssh2-1-dev libssl-dev libtidy-dev libwebp-dev \
+  libmemcached-dev libonig-dev libpng-dev libpq-dev libreadline-dev \
+  libsasl2-dev libsodium-dev libsqlite3-dev libssh2-1-dev libssl-dev \
+  libtidy-dev libwebp-dev \
   libxml2-dev libxslt1-dev libyaml-dev libzip-dev zlib1g-dev
 ```
 
 `build.sh` also needs `curl`, `jq`, `gcc`, `make`, `patchelf`, `file`, `ldd`,
-`perl`, and `sha256sum`. `smoke.sh` needs Go to build `cmd/php-smoke` unless
+`perl`, and `sha256sum`. It preflights `pkg-config --exists oniguruma libsodium`
+and fails with an actionable message naming `libonig-dev`/`libsodium-dev` when
+either module is absent. `smoke.sh` needs Go to build `cmd/php-smoke` unless
 `PHP_SMOKE_BIN` points at an existing binary. Neither script runs as root; the
 prefix is staged under a temporary directory and needs no system installation.
 
@@ -164,22 +171,28 @@ directory for inspection and prints the tail of the failing log.
 PHP 8.5 builds OPcache into the PHP binary and no longer produces
 `opcache.so`; the `--enable-opcache` configure flag was removed. `build.sh`
 therefore omits that flag and the expected-module check on 8.5, and `smoke.sh`
-skips the shared-module load there. PHP 8.2-8.4 still build `opcache.so` as a
-shared Zend extension. The extension manifest still lists an `opcache` toggle on
-every line; making that toggle version-aware is a catalog follow-up outside this
-build pipeline.
+skips the shared-module load there. The extension manifest marks OPcache as a
+per-version built-in for 8.5 (`builtin_by_version`), so it is not offered as a
+toggle and a default 8.5 ini does not reference `opcache.so`. PHP 8.2-8.4 still
+build `opcache.so` as a shared Zend extension and keep the toggle.
 
 ## What smoke.sh does
 
-1. Refuses root and rejects archive members outside the expected top-level
-   directory.
-2. Runs `bin/php -n -v`, `sbin/php-fpm -n -v`, and `bin/php -n -m`.
+1. Refuses root. Rejects archive members with `..` or absolute paths outside
+   the expected top-level directory, and rejects symbolic or hard-link entries.
+2. Runs `bin/php -n -v`, `sbin/php-fpm -n -v`, and `bin/php -n -m`, capturing
+   both stdout and stderr and rejecting `Failed loading`, `PHP Startup`, and
+   other load-error output.
 3. Loads every standard shared module in manifest order (with `opcache` as a
    `zend_extension` on 8.2-8.4; 8.5 has built-in OPcache and no `opcache.so`);
    then loads every pinned PECL `.so` (preloading `igbinary` for
-   redis/apcu/memcached and using `zend_extension` for xdebug). Any load warning
-   or missing module fails the run.
-4. Finds a free port in 43000-43999, builds `cmd/php-smoke`, and runs it. That
+   redis/apcu/memcached and using `zend_extension` for xdebug). Each load is
+   followed by an `extension_loaded()` assertion. Any load warning or missing
+   module fails the run.
+4. Builds a temporary ini from the line's default extension set, runs
+   `php -c <ini> -r 'exit(0);'` with `PHP_INI_SCAN_DIR=` cleared, and fails on a
+   non-zero exit or any output.
+5. Finds a free port in 43000-43999, builds `cmd/php-smoke`, and runs it. That
    command renders a temporary FPM config with `internal/phpfpm`, starts
    `sbin/php-fpm --nodaemonize --fpm-config ... -c ...`, waits for TCP readiness,
    sends a FastCGI GET for a temporary `health.php`, asserts `200 ok`, and stops
@@ -201,16 +214,16 @@ separators, and returns exactly one `catalog.Entry`:
   "version": "8.4.27",
   "build": "linux-x64",
   "revision": 1,
-  "url": "https://downloads.example.test/php/php-8.4.27-r1-linux-x64.tar.gz",
+  "url": "https://example.invalid/php/php-8.4.27-r1-linux-x64.tar.gz",
   "sha256": "...",
   "size": 12345678
 }
 ```
 
 With no `--output` it prints that object to stdout. With `--output` it atomically
-writes only that object; it never reads or writes
-`internal/catalog/catalog.json`. The CI catalog job combines the four files
-itself:
+writes only that object; it rejects an output path ending in
+`internal/catalog/catalog.json` so the embedded catalog cannot be overwritten by
+mistake. The CI catalog job combines the four files itself:
 
 ```sh
 jq -s 'sort_by(.version) | {entries: .}' entries/*.json > php-catalog.json
@@ -232,10 +245,25 @@ jq -s 'sort_by(.version) | {entries: .}' entries/*.json > php-catalog.json
    checksum, runs `go run ./cmd/phpcatalog` per artifact, combines the entries,
    and uploads `php-catalog.json`.
 
-The workflow does not commit or push catalog changes. It also does not create a
-release; the release process must publish the uploaded artifacts at the same
-HTTPS base URL passed to `phpcatalog` before the entries are merged into the
-shipped catalog.
+The catalog job needs a real HTTPS release host:
+
+- `workflow_dispatch` requires the `download_base_url` input.
+- Push and pull-request runs use the repository variable
+  `PHP_DOWNLOAD_BASE_URL`.
+- If no base URL is configured for a push or pull request, the validate job
+  logs that the catalog step is skipped; the build still runs, but no dead
+  entries are generated.
+- An empty dispatch input or a non-HTTPS value fails validation.
+
+There is no default or fabricated release URL. The workflow does not commit or
+push catalog changes and does not create a release; the release process must
+publish the artifacts at the same HTTPS base URL before merging the entries into
+the shipped catalog. `make php-catalog` likewise requires an explicit
+`PHP_BASE_URL`:
+
+```sh
+make php-catalog PHP_BASE_URL='https://release-host.invalid/php'
+```
 
 ## Local verification
 

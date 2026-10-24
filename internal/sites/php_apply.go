@@ -496,9 +496,14 @@ func (s *Service) PHPInfo(ctx context.Context, ref string) (PHPInfo, error) {
 	if err != nil {
 		return PHPInfo{}, fmt.Errorf("sites: PHP extensions for %q: %w", site.Name, err)
 	}
+	builtins := manifest.BuiltinsFor(version)
+	builtinSet := make(map[string]bool, len(builtins))
+	for _, name := range builtins {
+		builtinSet[name] = true
+	}
 	available := make([]catalog.Extension, 0, len(manifest.Extensions))
 	for _, extension := range manifest.Extensions {
-		if versionSupported(extension.Versions, version) {
+		if versionSupported(extension.Versions, version) && !builtinSet[extension.Name] {
 			available = append(available, extension)
 		}
 	}
@@ -510,7 +515,7 @@ func (s *Service) PHPInfo(ctx context.Context, ref string) (PHPInfo, error) {
 		Defaults:            defaults,
 		Extensions:          resolved,
 		AvailableExtensions: available,
-		Builtins:            append([]string{}, manifest.Builtin...),
+		Builtins:            builtins,
 		Ini:                 cloneStringMap(site.PHPIni),
 		IniRaw:              site.PHPIniRaw,
 	}

@@ -69,8 +69,13 @@ make e2e     # builds, then runs the Linux end-to-end script
 make php-test  # catalog/smoke tests plus shell syntax and shellcheck
 make php-build # builds one PHP artifact (needs build/php/README.md deps)
 make php-smoke # verifies the built artifact, including FPM over FastCGI
-make php-catalog # emits one catalog entry JSON for the built artifact
+make php-catalog PHP_BASE_URL='https://release-host.invalid/php'  # emits one entry
 ```
+
+The `php-catalog` target requires an explicit `PHP_BASE_URL` for the real HTTPS
+release asset host; there is no default URL. The CI catalog job likewise runs
+only when `download_base_url` (dispatch) or `PHP_DOWNLOAD_BASE_URL` (repository
+variable) is supplied.
 
 The PHP build is a real source build and runs in the dedicated
 [PHP workflow](.github/workflows/php.yml) on `ubuntu-22.04`; the local

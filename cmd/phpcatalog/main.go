@@ -39,7 +39,8 @@ type Options struct {
 
 // Generate validates opts, verifies the artifact on disk, and returns the
 // catalog entry for it. It writes exactly one entry object to opts.Output when
-// that field is set; it never touches the embedded production catalog.
+// that field is set. An output path that resolves to the embedded production
+// catalog is rejected; Generate never touches internal/catalog/catalog.json.
 func Generate(opts Options) (catalog.Entry, error) {
 	if !versionPattern.MatchString(opts.Version) {
 		return catalog.Entry{}, fmt.Errorf("invalid PHP version %q (want x.y.z)", opts.Version)
@@ -91,6 +92,9 @@ func Generate(opts Options) (catalog.Entry, error) {
 		Size:     info.Size(),
 	}
 	if opts.Output != "" {
+		if err := ensureNotProductionCatalog(opts.Output); err != nil {
+			return catalog.Entry{}, err
+		}
 		if err := writeEntry(opts.Output, entry); err != nil {
 			return catalog.Entry{}, err
 		}
@@ -151,6 +155,18 @@ func fileSHA256(path string) (string, error) {
 		return "", fmt.Errorf("hash artifact %s: %w", path, err)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// ensureNotProductionCatalog rejects relative and absolute paths whose cleaned
+// form ends in internal/catalog/catalog.json. The generator writes one entry,
+// never a catalog document, and must not be able to overwrite the embedded one.
+func ensureNotProductionCatalog(path string) error {
+	cleaned := filepath.ToSlash(filepath.Clean(path))
+	if cleaned == "internal/catalog/catalog.json" ||
+		strings.HasSuffix(cleaned, "/internal/catalog/catalog.json") {
+		return fmt.Errorf("refusing to write %s: output must not be internal/catalog/catalog.json", path)
+	}
+	return nil
 }
 
 // writeEntry writes the JSON object atomically: a temporary file in the target

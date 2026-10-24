@@ -647,6 +647,34 @@ func TestPHPInfoReadsCurrentGeneration(t *testing.T) {
 	}
 }
 
+func TestPHPInfo85TreatsOPcacheAsBuiltin(t *testing.T) {
+	svc, fakes := newTestService(t)
+	build := fakes.installPHPBuild("php@8.5.0-r1", "8.5.0")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "api", Path: fakes.root, Kind: "php",
+		PHPVersion: "8.5", PHPBuild: build.ID})
+
+	info, err := svc.PHPInfo(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(info.GeneratedIni, "opcache.so") {
+		t.Fatalf("8.5 default ini references the removed shared opcache:\n%s", info.GeneratedIni)
+	}
+	if !containsString(info.Builtins, "opcache") {
+		t.Fatalf("8.5 built-ins = %v, want opcache", info.Builtins)
+	}
+	for _, extension := range info.AvailableExtensions {
+		if extension.Name == "opcache" {
+			t.Fatalf("8.5 available extensions still include opcache: %+v", extension)
+		}
+	}
+	for _, extension := range info.Extensions {
+		if extension.Name == "opcache" {
+			t.Fatalf("8.5 effective extensions still include opcache: %+v", extension)
+		}
+	}
+}
+
 func TestPHPInfoComposesInMemoryWhenFilesAreMissing(t *testing.T) {
 	svc, fakes := newTestService(t)
 	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")

@@ -111,6 +111,11 @@ const phpCatalogExtensions: PHPExtension[] = [
 ];
 
 const phpBuiltins = ['core', 'ctype', 'date', 'filter', 'hash', 'json', 'pcre', 'random', 'spl', 'standard'];
+const phpBuiltinsByVersion: Record<string, string[]> = { '8.5': ['opcache'] };
+
+function phpBuiltinsFor(version: string): string[] {
+  return [...phpBuiltins, ...(phpBuiltinsByVersion[version] ?? [])];
+}
 
 const phpDefaultIni: Record<string, string> = {
   display_errors: 'On',
@@ -129,12 +134,14 @@ function seedPHPDefaults(): Record<string, PHPDefaults> {
   const extensions = Object.fromEntries(
     phpCatalogExtensions.map((extension) => [extension.name, extension.default]),
   );
-  return Object.fromEntries(
+  const defaults = Object.fromEntries(
     PHP_LINES.map((version) => [
       version,
       { version, ini: { ...phpDefaultIni }, extensions: { ...extensions } },
     ]),
   );
+  delete defaults['8.5']?.extensions.opcache;
+  return defaults;
 }
 
 let phpDefaults = seedPHPDefaults();
@@ -145,8 +152,10 @@ function resolvePHPExtensions(
   overrides: Record<string, boolean> | undefined,
 ): PHPResolvedExtension[] {
   const catalog = new Map(phpCatalogExtensions.map((extension) => [extension.name, extension]));
+  const builtins = new Set(phpBuiltinsFor(version));
   const selected = new Map<string, PHPResolvedExtension>();
   for (const extension of phpCatalogExtensions) {
+    if (builtins.has(extension.name)) continue;
     const enabled =
       overrides?.[extension.name] ?? defaults[extension.name] ?? extension.default;
     if (!enabled) continue;
@@ -1177,9 +1186,11 @@ export const mockApi = {
         409,
       );
     }
-    const defaults = phpDefaults[phpLineOf(build.version)] ?? phpDefaults['8.4'];
+    const line = phpLineOf(build.version);
+    const defaults = phpDefaults[line] ?? phpDefaults['8.4'];
+    const builtins = new Set(phpBuiltinsFor(line));
     const available = phpCatalogExtensions
-      .filter((extension) => extension.versions.includes(phpLineOf(build.version)))
+      .filter((extension) => extension.versions.includes(line) && !builtins.has(extension.name))
       .map((extension) => clone(extension));
     const generated = renderPHPIni(site, defaults);
     return {
@@ -1192,7 +1203,7 @@ export const mockApi = {
         site.php_extensions,
       ),
       available_extensions: available,
-      builtins: [...phpBuiltins],
+      builtins: phpBuiltinsFor(line),
       ini: clone(site.php_ini ?? {}),
       ini_raw: site.php_ini_raw,
       generated_ini: generated,
@@ -1248,9 +1259,10 @@ export const mockApi = {
     if (!PHP_LINES.includes(version)) {
       throw new ApiError('INVALID_REQUEST', `Unsupported PHP version “${version}”.`, 400);
     }
+    const builtins = new Set(phpBuiltinsFor(version));
     return clone(
       phpCatalogExtensions
-        .filter((extension) => extension.versions.includes(version))
+        .filter((extension) => extension.versions.includes(version) && !builtins.has(extension.name))
         .sort((a, b) => a.name.localeCompare(b.name)),
     );
   },

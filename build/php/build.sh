@@ -130,6 +130,9 @@ for tool in awk curl file gcc gzip jq ldd make patchelf perl pkg-config sha256su
 done
 command -v autoconf >/dev/null 2>&1 ||
 	die "required build tool 'autoconf' is missing; install the dependencies listed in build/php/README.md"
+if ! pkg-config --exists oniguruma libsodium; then
+	die 'pkg-config cannot find both oniguruma and libsodium; install libonig-dev and libsodium-dev (see build/php/README.md)'
+fi
 
 mkdir -p -- "$output"
 output=$(cd -- "$output" && pwd)
@@ -208,21 +211,16 @@ source_dir="$work/php-$version"
 [[ -d $source_dir ]] || die "source archive did not contain php-$version"
 
 mapfile -t standard_so < <(jq -r --arg line "$line" '
-	.extensions[]
+	(.builtin_by_version[$line] // []) as $builtins
+	| .extensions[]
 	| select(.standard == true)
 	| select(.name != "imap")
 	| select((.versions // []) | index($line))
+	| .name as $name
+	| select(($builtins | index($name)) == null)
 	| .so
 ' "$manifest")
 [[ ${#standard_so[@]} -gt 0 ]] || die "no standard extensions found for PHP $line in $manifest"
-if [[ $line == '8.5' ]]; then
-	filtered_so=()
-	for so in "${standard_so[@]}"; do
-		[[ $so == 'opcache.so' ]] && continue
-		filtered_so+=("$so")
-	done
-	standard_so=("${filtered_so[@]}")
-fi
 
 mkdir -p -- "$package_dir"
 configure_args=(

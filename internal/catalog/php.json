@@ -11,6 +11,11 @@
     "spl",
     "standard"
   ],
+  "builtin_by_version": {
+    "8.5": [
+      "opcache"
+    ]
+  },
   "extensions": [
     {
       "name": "bcmath",
@@ -1025,7 +1030,6 @@
         "ldap": true,
         "mbstring": true,
         "mysqli": true,
-        "opcache": true,
         "openssl": true,
         "pcntl": true,
         "pdo": true,

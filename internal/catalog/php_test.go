@@ -3,6 +3,7 @@ package catalog
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -71,6 +72,72 @@ func TestPHPManifestDefaultsAndDependencyOrder(t *testing.T) {
 	}
 	if _, err := m.Resolve("8.3", map[string]bool{"imap": true}); err != nil {
 		t.Fatalf("imap on 8.3: %v", err)
+	}
+}
+
+func TestPHPManifestBuiltinsAreVersionAware(t *testing.T) {
+	m, err := LoadPHP()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := m.BuiltinsFor("8.5"); !slices.Contains(got, "opcache") {
+		t.Fatalf("8.5 built-ins = %v, want opcache", got)
+	}
+	if got := m.BuiltinsFor("8.5"); got[0] != "core" {
+		t.Fatalf("8.5 built-ins do not start with the global list: %v", got)
+	}
+	if got := m.BuiltinsFor("8.4"); slices.Contains(got, "opcache") {
+		t.Fatalf("8.4 built-ins unexpectedly include opcache: %v", got)
+	}
+
+	d, ok := m.DefaultsFor("8.5")
+	if !ok {
+		t.Fatal("missing 8.5 defaults")
+	}
+	if _, ok := d.Extensions["opcache"]; ok {
+		t.Fatal("8.5 defaults must not toggle the built-in opcache")
+	}
+
+	resolved, err := m.Resolve("8.5", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) == 0 {
+		t.Fatal("8.5 default resolve is empty")
+	}
+	for _, extension := range resolved {
+		if extension.Name == "opcache" {
+			t.Fatalf("8.5 default resolve includes opcache: %+v", resolved)
+		}
+	}
+	if _, err := m.Resolve("8.5", map[string]bool{"opcache": true}); err == nil || !errors.Is(err, ErrInvalidExtension) {
+		t.Fatalf("explicit opcache on 8.5 = %v, want ErrInvalidExtension", err)
+	}
+
+	resolved, err = m.Resolve("8.4", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, extension := range resolved {
+		if extension.Name == "opcache" {
+			found = true
+			if extension.Type != ExtensionZend {
+				t.Fatalf("opcache type = %q", extension.Type)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("8.4 default resolve must include the shared opcache")
+	}
+
+	direct := PHPManifest{
+		Builtin:          []string{"core", "filter"},
+		BuiltinByVersion: map[string][]string{"8.5": {"filter", "opcache"}},
+	}
+	if got := strings.Join(direct.BuiltinsFor("8.5"), ","); got != "core,filter,opcache" {
+		t.Fatalf("BuiltinsFor order/dedupe = %q", got)
 	}
 }
 
@@ -296,6 +363,26 @@ func TestParsePHPRejectsInvalidManifests(t *testing.T) {
 		{name: "empty versions", mutate: func(m *PHPManifest) {
 			m.Versions = nil
 		}, wantErr: "version"},
+		{name: "builtin_by_version unsupported line", mutate: func(m *PHPManifest) {
+			m.BuiltinByVersion = map[string][]string{"9.0": {"a"}}
+		}, wantErr: "version"},
+		{name: "builtin_by_version without defaults", mutate: func(m *PHPManifest) {
+			m.BuiltinByVersion = map[string][]string{"8.5": {"a"}}
+		}, wantErr: "without defaults"},
+		{name: "builtin_by_version invalid name", mutate: func(m *PHPManifest) {
+			m.BuiltinByVersion = map[string][]string{"8.4": {"Not-A-Module"}}
+		}, wantErr: "name"},
+		{name: "builtin_by_version duplicate", mutate: func(m *PHPManifest) {
+			m.BuiltinByVersion = map[string][]string{"8.4": {"a", "a"}}
+		}, wantErr: "duplicate"},
+		{name: "builtin_by_version unsupported extension", mutate: func(m *PHPManifest) {
+			m.Versions["8.5"] = PHPVersionDefaults{Extensions: map[string]bool{"b": false}}
+			m.BuiltinByVersion = map[string][]string{"8.5": {"a"}}
+			m.Extensions[0].Versions = []string{"8.4"}
+		}, wantErr: "does not support"},
+		{name: "default toggles per-version builtin", mutate: func(m *PHPManifest) {
+			m.BuiltinByVersion = map[string][]string{"8.4": {"a"}}
+		}, wantErr: "cannot toggle"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

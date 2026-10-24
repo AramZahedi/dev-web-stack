@@ -179,6 +179,12 @@ for package in "${pecl_packages[@]}"; do
 	fetch_pecl "$package"
 done
 
+if [[ -s $blocked ]]; then
+	printf 'update-lock.sh: packages left out of the lock:\n' >&2
+	sed -e 's/^/  - /' "$blocked" >&2
+	die "refusing to replace $output while any package is blocked"
+fi
+
 output_dir=$(dirname "$output")
 mkdir -p "$output_dir"
 temporary=$(mktemp "$output_dir/.extensions.lock.XXXXXX") ||
@@ -197,9 +203,3 @@ HEADER
 chmod 0644 "$temporary"
 mv "$temporary" "$output"
 printf 'wrote %s\n' "$output"
-
-if [[ -s $blocked ]]; then
-	printf 'update-lock.sh: packages left out of the lock:\n' >&2
-	sed -e 's/^/  - /' "$blocked" >&2
-	exit 1
-fi
