@@ -5,15 +5,20 @@
 - **Remote:** `origin` (`git@github.com:AramZahedi/dev-web-stack.git`)
 - **Head before this handoff commit:** `6add708` (`fix: retain stopped PHP row port on cleanup`)
 - **Origin `plan-2-php` (actual remote tip):** `fec5917`
-  (`fix: load standard PHP modules in PECL smoke checks`). It includes this
-  handoff and the two approved CI smoke fixes (`0baf4af`, `fec5917`), and is
-  merged into `plan-4-release` at `a0e0e4f`.
+  (`fix: load standard PHP modules in PECL smoke checks`). It includes the two
+  approved CI smoke fixes (`0baf4af`, `fec5917`) and is merged into
+  `plan-4-release` at `a0e0e4f`. This updated handoff lives on
+  `plan-4-release`; the earlier snapshot is on `plan-2-php`.
 - **Origin `plan-1-foundation`:** `4f7ab97` (Plan 1 complete, pushed).
 - **Working tree at handoff:** clean except this handoff/plan doc edit.
 - **Verification at `6add708`:** `go test ./... -race -count=1` PASS (all packages,
   including the real-FPM `test/php` acceptance test); UI Vitest 51/51 and
   `npm run check` PASS at `039f0b0`; the residual fix report records real acceptance,
   Playwright 19/19, `make build`, and no FPM listeners on 43000–43999.
+- **PHP build/smoke CI:** run `40088938373` at `fec5917` PASS for the 8.2, 8.3, 8.4,
+  and 8.5 build/smoke jobs. The catalog job was skipped because
+  `PHP_DOWNLOAD_BASE_URL` is not configured; production artifacts remain
+  unpublished and the production catalog remains empty.
 - **Plan 1:** Tasks 1–26 complete; automated acceptance PASS; manual
   browser/root/Apache/uninstall checks remain blocked.
 - **Plan 2:** Tasks 1–12 complete and task-reviewed; automated acceptance PASS on

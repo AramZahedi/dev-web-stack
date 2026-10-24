@@ -18,9 +18,10 @@
 deferred by user request, real PHP 8.2/8.5 artifacts and the production PHP
 catalog are blocked, Apache HTTPS is skipped without `mod_ssl`, browser
 trust/root install/uninstall are manual, and in-flight request continuity is not
-measured. This report does not claim a merged, tagged, published, or CI-green
-release. No release tag exists and no GitHub release was published from this
-branch.
+measured. This report does not claim a merged, tagged, published, or app/release
+CI-green release. No release tag exists and no GitHub release was published from
+this branch. The separate PHP build/smoke workflow was observed green at
+`fec5917` (run `40088938373`).
 
 | Result | Count | Meaning |
 |---|---:|---|
@@ -46,7 +47,7 @@ because no phase FAILed; it prints the blocked/skip gates in the same table.
 | Apache | `httpd 2.4.69` (Fedora); `ssl_module` absent, `proxy_fcgi_module` loaded |
 | Git | `2.56.0`; branch `plan-4-release`; **no tags** |
 | Release state | No tag, no published archive, no GitHub release from this branch |
-| CI state | Not observed by this local run; the workflow contract test only checks the checked-in YAML |
+| CI state | PHP build/smoke workflow run `40088938373` at `fec5917` PASS (8.2/8.3/8.4/8.5 build + smoke); catalog job skipped (no `PHP_DOWNLOAD_BASE_URL`). App CI and the tag-driven release workflow were not observed; the workflow contract test checks the checked-in YAML. |
 
 The pre-existing system PHP-FPM master (`pid 1397`, listening outside the
 43000-43999 range) was present before the run and is unrelated to acceptance.
@@ -231,7 +232,7 @@ other.
 | 7 | Start/stop/restart from CLI and UI; logs stream; daemon restart reconciles healthy processes, stops orphans, preserves desired state | **PASS (automated)** / **MANUAL** (live UI) | E2E stopped and restarted the daemon, verified the site and forwarder recovered, and verified no `serve-static` orphan remained. Playwright covers the UI in mock mode (19/19). A live browser session against a real daemon was not run. |
 | 8 | Fresh Windows install provisions the WSL distro and agent; static/PHP/Node and trust checks pass; `C:` and distro paths both work | **DEFERRED** | Plan 3 (Windows/WSL) is deferred by user request. There is no agent, named-pipe helper, `install.ps1`, Windows trust-store work, or WSL lifecycle in this branch. |
 | 9 | `devstack trust remove` and `devstack uninstall` revert hosts, CA, listeners, units, and processes; project files untouched; Doctor diagnoses broken preconditions | **MANUAL/BLOCKED** | The unprivileged runner does not write trust stores, `/etc/hosts`, units, or privileged listeners. Unit-level trust/uninstall tests exist, but the real root install/uninstall and each intentionally broken precondition were not run. |
-| 10 | CI green, race clean, helper RPC and archive-extraction security tests pass, no privileged process writes user config | **PASS (race + named security tests)** / **NOT VERIFIED (CI)** / **NOT MEASURED (privileged config writes)** | `go test ./... -race` PASS. `TestHelperRejectsWrongUID` PASS; `TestExtractionRejectsTraversalAndSymlink` (parent traversal, absolute path, absolute/escaping/ancestor/chain symlinks, write-through chain, wrapper-relative escape, hardlink, device), `TestExtractionRejectsSymlinkChainWithoutWritingOutside`, and `TestInstallVerifiesChecksumAndExtractsSafely` PASS; installer archive checks PASS. The workflow contract test PASSes, but no CI run was observed. No test proves the “no privileged process writes user config” subcriterion; it is not claimed. |
+| 10 | CI green, race clean, helper RPC and archive-extraction security tests pass, no privileged process writes user config | **PASS (race + named security tests + PHP CI)** / **NOT VERIFIED (app/release CI)** / **NOT MEASURED (privileged config writes)** | `go test ./... -race` PASS. `TestHelperRejectsWrongUID` PASS; `TestExtractionRejectsTraversalAndSymlink` (parent traversal, absolute path, absolute/escaping/ancestor/chain symlinks, write-through chain, wrapper-relative escape, hardlink, device), `TestExtractionRejectsSymlinkChainWithoutWritingOutside`, and `TestInstallVerifiesChecksumAndExtractsSafely` PASS; installer archive checks PASS. PHP build/smoke CI run `40088938373` at `fec5917` PASS for 8.2–8.5; app CI and the release workflow were not observed. No test proves the “no privileged process writes user config” subcriterion; it is not claimed. |
 | 11 | Docs cover install, first site, PHP versions/ini/extensions, TLS repair, WSL paths/performance, upgrades, uninstall | **PASS (Linux)** / **DEFERRED** (WSL) | README and `docs/install.md`, `upgrade.md`, `release.md`, `php.md`, and `vhosts.md` were updated for release install, upgrade backup, Linux-only/unsigned scope, the PHP catalog gate, `doctor --json`, and no diagnostics bundle. WSL documentation is intentionally absent until Plan 3. |
 | 12 | External serving works end to end for nginx/Apache; broken vhost leaves the previous mode serving; uninstall removes our vhosts/bridge/TLS without touching unrelated vhosts | **PASS (nginx automated)** / **SKIP** (Apache HTTPS) / **MANUAL** (Apache serving, uninstall) | Real nginx ran from a temporary prefix on high ports; `builtin → nginx → builtin` served the static site, applied the force-HTTPS redirect, and restored the forwarder. The Node vhost step was skipped because no Node runtime was installed. Rollback tests `TestSetModeRestoresOnFailure` and `TestSetModeExternalRestoresOldBridgeOnNewFailure` PASS. The Apache HTTP PHP vhost passed real `httpd -t`; Apache HTTPS was **SKIP** because `ssl_module` is not loaded. Real Apache serving and privileged vhost/uninstall cleanup remain manual. |
 
@@ -390,8 +391,10 @@ grep -c '"kind"[[:space:]]*:[[:space:]]*"php"' internal/catalog/catalog.json
    live browser session and were not performed by the unprivileged runner.
 6. **In-flight request continuity — NOT MEASURED.** The valid-swap path does not
    have a concurrent-request assertion.
-7. **CI — NOT VERIFIED.** The release/installer/workflow tests validate the
-   checked-in contracts. No CI run was observed, and the manual multi-distro
+7. **App/release CI — NOT VERIFIED.** The release/installer/workflow tests
+   validate the checked-in contracts. The PHP build/smoke workflow run
+   `40088938373` at `fec5917` was observed green for all four lines; app CI and
+   the tag-driven release workflow were not observed. The manual multi-distro
    matrix (Ubuntu 22.04/24.04, Debian 12, Fedora 44, Windows/WSL) was not run.
 8. **Release publication — NOT DONE.** No tag, archive, or GitHub release was
    published. The installer's `--release` path returns 404 until one exists.
