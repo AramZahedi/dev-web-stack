@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Regression tests for the symlink policy in build/php/smoke.sh. The fixtures
-# are tiny synthetic archives, so the test needs no PHP, FPM, network, or root.
+# Regression tests for build/php/smoke.sh: the archive link policy and the
+# extension set the PECL load checks start from. The fixtures are tiny
+# synthetic archives, so the test needs no PHP, FPM, network, or root.
 set -euo pipefail
 IFS=$'\n\t'
 export LC_ALL=C
@@ -63,6 +64,24 @@ expect_rejected() { # expect_rejected TARBALL PATTERN LABEL
 	grep -Eiq -- "$pattern" "$output" ||
 		fail "$label: expected /$pattern/ in smoke output, got: $(cat "$output")"
 }
+
+# The PECL load checks must model the generated site ini by starting from the
+# validated standard extension set, which includes session.so that redis
+# requires. A source-level guard is enough: a fake PHP runtime would not
+# reproduce the real module interactions that this baseline exists to cover.
+pecl_loop=$(awk '
+	index($0, "for package in \"${pecl_packages[@]}\"; do") == 1 { in_loop = 1 }
+	in_loop { print }
+	in_loop && $0 == "done" { exit }
+' "$smoke")
+[[ -n $pecl_loop ]] || fail 'smoke.sh: could not locate the PECL load loop'
+grep -Fq 'args=("${standard_args[@]}")' <<<"$pecl_loop" ||
+	fail 'smoke.sh: PECL load checks do not start from the standard extension args'
+if grep -Fq 'args=(-n ' <<<"$pecl_loop"; then
+	fail 'smoke.sh: PECL load checks still run PHP with a bare -n'
+fi
+grep -Fq "args+=(-d 'extension=igbinary.so')" <<<"$pecl_loop" ||
+	fail 'smoke.sh: PECL load checks no longer preload igbinary for its integrations'
 
 # A relative symlink whose target is inside the package prefix is legal. It
 # must get past the link check and stop at the missing bin/php entry.
