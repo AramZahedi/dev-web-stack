@@ -29,7 +29,24 @@ pass() {
 [ -x "${RELEASE_SCRIPT}" ] || fail "missing executable ${RELEASE_SCRIPT}"
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/devstack-release-test.XXXXXX")"
+DEFAULT_RELEASE_DIR=""
+DEFAULT_ARCHIVE=""
+DEFAULT_CHECKSUMS=""
+DEFAULT_BACKUP=""
+DEFAULT_RELEASE_TOUCHED=0
 cleanup() {
+	if [ "${DEFAULT_RELEASE_TOUCHED}" -eq 1 ]; then
+		rm -f "${DEFAULT_ARCHIVE}"
+		if [ -f "${DEFAULT_BACKUP}/archive" ]; then
+			mv "${DEFAULT_BACKUP}/archive" "${DEFAULT_ARCHIVE}"
+		fi
+		if [ -f "${DEFAULT_BACKUP}/checksums" ]; then
+			mv "${DEFAULT_BACKUP}/checksums" "${DEFAULT_CHECKSUMS}"
+		else
+			rm -f "${DEFAULT_CHECKSUMS}"
+		fi
+		rmdir "${DEFAULT_RELEASE_DIR}" 2>/dev/null || true
+	fi
 	rm -rf "${TMP}"
 }
 trap cleanup EXIT
@@ -94,7 +111,11 @@ pass "packaged devstack reports version ${VERSION} and protocol ${PROTOCOL}"
 if [ "$(wc -l <"${CHECKSUMS}")" -ne 1 ]; then
 	fail "checksums.txt must contain exactly one line"
 fi
-grep -Eq "^[0-9a-f]{64}  ${ARCHIVE_NAME}$" "${CHECKSUMS}" ||
+awk -v archive="${ARCHIVE_NAME}" '
+	NF != 2 || length($1) != 64 || $1 !~ /^[0-9a-f]+$/ || $2 != archive { bad = 1 }
+	{ lines++ }
+	END { exit (bad || lines != 1) }
+' "${CHECKSUMS}" ||
 	fail "checksums.txt is not a single lowercase sha256 line for ${ARCHIVE_NAME}"
 (cd "${OUT}" && sha256sum -c "${CHECKSUMS}" >/dev/null) ||
 	fail "sha256sum -c rejected the archive"
@@ -111,5 +132,62 @@ if (cd "${CORRUPT}" && sha256sum -c checksums.txt >/dev/null 2>&1); then
 	fail "checksum verification accepted a corrupted archive"
 fi
 pass "checksum verification rejects a corrupted archive"
+
+# Regression: a leading v is normalised out of the archive filename, so a git
+# tag can be passed directly without producing devstack_v<version>_...
+VOUT="${TMP}/vout"
+mkdir -p "${VOUT}"
+"${RELEASE_SCRIPT}" --version "v${VERSION}" --skip-ui --output "${VOUT}"
+[ -f "${VOUT}/${ARCHIVE_NAME}" ] ||
+	fail "leading v was not normalised to ${ARCHIVE_NAME}"
+for candidate in "${VOUT}"/*; do
+	[ -e "${candidate}" ] || continue
+	case "$(basename "${candidate}")" in
+	*_v"${VERSION}"*)
+		fail "leading v leaked into archive member name: ${candidate}"
+		;;
+	esac
+done
+pass "leading v is normalised in the archive filename"
+
+# Regression: invalid versions and path traversal must be rejected before any
+# output directory is created, so they cannot influence the archive filename.
+BAD_OUT="${TMP}/bad-out"
+for bad_version in "../evil" "1.2" "1.2.3/../../evil" "1.2.3 extra" "v../evil"; do
+	if "${RELEASE_SCRIPT}" --version "${bad_version}" --skip-ui --output "${BAD_OUT}" >/dev/null 2>&1; then
+		fail "invalid version was accepted: ${bad_version}"
+	fi
+done
+[ ! -e "${BAD_OUT}" ] || fail "invalid version created the output directory"
+traversal_artifact="$(find "${TMP}" -maxdepth 3 -name '*evil*' -print -quit)"
+[ -z "${traversal_artifact}" ] || fail "invalid version produced a path-traversal artifact: ${traversal_artifact}"
+pass "invalid versions and path traversal are rejected"
+
+# Regression: without --output the script must write to dist/release under the
+# repository root, regardless of the caller's working directory. Preserve any
+# pre-existing artifacts and restore them on exit.
+DEFAULT_VERSION="0.0.0-defaultpath"
+DEFAULT_RELEASE_DIR="${REPO_ROOT}/dist/release"
+DEFAULT_ARCHIVE="${DEFAULT_RELEASE_DIR}/devstack_${DEFAULT_VERSION}_linux_amd64.tar.gz"
+DEFAULT_CHECKSUMS="${DEFAULT_RELEASE_DIR}/checksums.txt"
+DEFAULT_BACKUP="${TMP}/default-backup"
+mkdir -p "${DEFAULT_BACKUP}" "${DEFAULT_RELEASE_DIR}"
+if [ -f "${DEFAULT_CHECKSUMS}" ]; then
+	cp "${DEFAULT_CHECKSUMS}" "${DEFAULT_BACKUP}/checksums"
+fi
+if [ -f "${DEFAULT_ARCHIVE}" ]; then
+	mv "${DEFAULT_ARCHIVE}" "${DEFAULT_BACKUP}/archive"
+fi
+DEFAULT_RELEASE_TOUCHED=1
+if ! (cd "${TMP}" && "${RELEASE_SCRIPT}" --version "${DEFAULT_VERSION}" --skip-ui); then
+	fail "default output build failed"
+fi
+[ -f "${DEFAULT_ARCHIVE}" ] ||
+	fail "default build did not write ${DEFAULT_ARCHIVE}"
+[ -f "${DEFAULT_CHECKSUMS}" ] ||
+	fail "default build did not write ${DEFAULT_CHECKSUMS}"
+grep -Fq "devstack_${DEFAULT_VERSION}_linux_amd64.tar.gz" "${DEFAULT_CHECKSUMS}" ||
+	fail "default checksums.txt does not name the default archive"
+pass "default output is dist/release from an unrelated working directory"
 
 log "all release archive contract checks passed"

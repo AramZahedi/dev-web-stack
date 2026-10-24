@@ -62,5 +62,8 @@ checksum:
   name_template: checksums.txt
 
 release:
+  # GoReleaser v2 types extra_files as ExtraFile objects, so `glob` is
+  # required. Task 3/CI must run `goreleaser check`; GoReleaser is not
+  # installed in this local environment.
   extra_files:
-    - install.sh
+    - glob: install.sh

@@ -1275,10 +1275,17 @@ func TestCLIRemoveRequiresYes(t *testing.T) {
 
 func TestVersion(t *testing.T) {
 	useTestSeams(t)
+	oldCommit := version.Commit
+	version.Commit = "abc1234"
+	t.Cleanup(func() { version.Commit = oldCommit })
+
 	fake := &fakeClient{}
 	out := runCLI(t, fake, "version")
 	if got := strings.TrimSpace(out); got != version.String() {
 		t.Fatalf("plain version output = %q, want %q", got, version.String())
+	}
+	if !strings.Contains(out, "abc1234") {
+		t.Fatalf("plain version output = %q, want the commit", out)
 	}
 	out = runCLI(t, fake, "version", "--json")
 	var got map[string]string
@@ -1287,6 +1294,7 @@ func TestVersion(t *testing.T) {
 	}
 	want := map[string]string{
 		"version":    version.Version,
+		"commit":     version.Commit,
 		"string":     version.String(),
 		"protocol":   helperproto.Version,
 		"os":         runtime.GOOS,
