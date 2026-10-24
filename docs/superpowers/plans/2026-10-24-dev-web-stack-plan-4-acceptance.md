@@ -4,7 +4,8 @@
 - **Branch:** `plan-4-release`
 - **Base revision:** `a0e0e4f` (`Merge branch 'plan-2-php' into plan-4-release`)
 - **Acceptance/docs commit:** `dfb0fc1` — `docs: record Linux M1 release acceptance`
-- **Clean-checkout fix:** `fix: make M1 acceptance reproducible from a clean checkout` (follow-up commit)
+- **Clean-checkout fix:** `6cc78ce` — `fix: make M1 acceptance reproducible from a clean checkout`
+- **Final-review fix:** `8bd6dc5` — `fix: verify catalog artifacts and isolate release tests`
 - **Plan:** [Plan 4 — Release Packaging, Upgrade, and M1 Acceptance (Linux)](2026-10-24-dev-web-stack-plan-4-release.md)
 - **Spec:** [M1 design §21](../specs/2026-10-22-dev-web-stack-m1-design.md#21-acceptance-criteria)
 - **Handoff:** [2026-10-24 M1 handoff](../status/2026-10-24-m1-handoff.md)
@@ -99,33 +100,33 @@ Command:
 make acceptance
 ```
 
-A clean source tree (no `ui/node_modules`, only `ui/dist/.gitkeep`, no `dist/`)
-produced this result in about 90 seconds:
+A clean `git worktree` (no `ui/node_modules`, only `ui/dist/.gitkeep`, no
+`dist/`) produced this result in about 84 seconds:
 
 ```text
-STATUS     PHASE                                  SECS  NOTE
----------- ------------------------------------ ------  ----
-PASS       go vet                                    1
-PASS       go test                                   5
-PASS       go test race                             13
-PASS       release archive test                      5
-PASS       make build                                6
-PASS       ui check                                  3
-PASS       ui unit tests                            11
-PASS       ui build                                  5
-PASS       ui Playwright                            31
-PASS       installer test                            1
-PASS       release workflow test                     0
-PASS       installer dry-run                         0
-PASS       linux E2E                                 2  e2e: SKIP node vhost check (no installed Node runtime)
-PASS       real PHP acceptance                       1
-PASS       FPM listener check                        0
-BLOCKED    PHP catalog gate                          0  production catalog is intentionally Node-only
-BLOCKED    PHP 8.2/8.5 side-by-side                  0  needs published checksummed artifacts
-BLOCKED    Windows/WSL                               0  deferred by user request (Plan 3)
-SKIP       Apache HTTPS                              0  ssl_module is not loaded
-SKIP       manual checks                             0  browser trust/root install/uninstall/live UI
-SKIP       in-flight continuity                      0  not measured
+STATUS     PHASE                               SECS NOTE
+---------- ---------------------------------- ---- ----------------------------------------------
+PASS       go vet                                1
+PASS       go test                               5
+PASS       go test race                         13
+PASS       release archive test                  7
+PASS       make build                            6
+PASS       ui check                              4
+PASS       ui unit tests                        11
+PASS       ui build                              5
+PASS       ui Playwright                        31
+PASS       installer test                        1
+PASS       release workflow test                 0
+PASS       installer dry-run                     0
+PASS       linux E2E                             2 e2e: SKIP node vhost check (no installed Node runtime)
+PASS       real PHP acceptance                   1
+PASS       FPM listener check                    0
+BLOCKED    PHP catalog gate                      0 catalog is valid and Node-only (0 PHP entries)
+BLOCKED    PHP 8.2/8.5 side-by-side              0 needs published checksummed artifacts
+BLOCKED    Windows/WSL                           0 deferred by user request (Plan 3)
+SKIP       Apache HTTPS                          0 ssl_module is not loaded
+SKIP       manual checks                         0 browser trust/root install/uninstall/live UI
+SKIP       in-flight continuity                  0 not measured
 
 TOTAL: 15 PASS, 0 FAIL, 3 SKIP, 3 BLOCKED
 RESULT: PASS (no FAIL; SKIP/BLOCKED are not passes)
@@ -181,6 +182,9 @@ test ! -d "$clean/dist"                             # absent before the run
 (cd "$clean" && bash test/acceptance/m1.sh)
 git worktree remove --force "$clean"
 ```
+
+The run was executed in a detached worktree at `8bd6dc5`; the worktree was
+removed afterwards and the main checkout was not used for this evidence.
 
 Result: **15 PASS, 0 FAIL, 3 SKIP, 3 BLOCKED**, exit 0. The `release archive
 test` phase used a temporary build directory and left `dist/` untouched;
@@ -238,7 +242,7 @@ contract:
 
 ```text
 archive: /tmp/devstack-release-test.sKMDfF/out/devstack_0.0.0-test_linux_amd64.tar.gz
-sha256:  12b7967558711f128d9c915b7e1454cba9a16205a5ef9c2813858f3ad39b2c48
+sha256:  45a973aeecd07ba7cb0cc6cad92312ef1111bd096420bf97a3be5d13c7e8684c
 release-test: ok: archive members are exactly: devstack devstack-helper install.sh README.md LICENSE
 release-test: ok: no devstack-agent, Windows, or darwin members
 release-test: ok: packaged install.sh and both binaries are executable
@@ -246,12 +250,17 @@ release-test: ok: packaged devstack reports version 0.0.0-test and protocol 1
 release-test: ok: checksums.txt verifies the archive
 release-test: ok: checksum verification rejects a corrupted archive
 release-test: ok: leading v is normalised in the archive filename
-release-test: ok: two builds of 0.0.0-test are byte-identical (12b7967558711f128d9c915b7e1454cba9a16205a5ef9c2813858f3ad39b2c48)
+release-test: ok: two builds of 0.0.0-test are byte-identical (45a973aeecd07ba7cb0cc6cad92312ef1111bd096420bf97a3be5d13c7e8684c)
 release-test: ok: invalid versions and path traversal are rejected
 release-test: ok: default output is dist/release from an unrelated working directory
 release-test: ok: build outputs are isolated; dist/devstack is unchanged or absent
 release-test: all release archive contract checks passed
 ```
+
+These digests are from the clean-worktree run at `8bd6dc5`. The commit SHA is
+embedded in the binary by ldflags, so rebuilding at another commit produces a
+different archive digest even with identical inputs; the reproducibility test
+compares two builds at the same commit.
 
 A separate explicit artifact was built with the local packager and installed in
 dry-run mode:
@@ -282,8 +291,10 @@ install: archive members verified; extracting to a temporary directory
 install: dry run: no files or services will be changed
 ```
 
-The archive SHA-256 was
+The archive SHA-256 observed for that build was
 `6c4366f12be4fbf075ebafc29956313611d47b82cfd533d6f2924d7f4122f20a`.
+As above, rebuilding at a different commit changes the digest because the
+commit is embedded in the binary.
 The installer test additionally rejects a corrupted checksum, traversal,
 absolute paths, symlinks, hardlinks, a wrong packaged version, invalid option
 combinations, and a failed daemon stop before binary replacement. The only

@@ -130,9 +130,10 @@ It is safe to re-run and performs these steps:
 
 The installer writes `allow_uid` in the helper config using your UID, installs
 the helper unit, enables and restarts it, installs the user unit, and enables it
-when a user systemd session is available. It only reloads/restarts the
-`devstack-daemon` user unit when that session exists and the unit is being
-upgraded; without a session it prints how to start the daemon later. An existing
+when a user systemd session is available. It reloads/restarts the
+`devstack-daemon` user unit only when that session exists and the unit was
+already active or this is an upgrade; without a session it prints how to start
+the daemon later. An existing
 `/etc/devstack/helper.yaml` is kept by default; pass `--force-config` to replace
 it with the generated defaults, or `--keep-config` to make that behavior
 explicit. The installer does not install packages, configure nginx/Apache, or
