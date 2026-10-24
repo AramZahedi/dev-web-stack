@@ -55,8 +55,11 @@ export interface Site {
   backend_path: string;
   kind: SiteKind;
   php_version: string;
+  php_build: string;
   php_extensions?: Record<string, boolean>;
   php_ini?: Record<string, string>;
+  php_ini_raw: string;
+  php_config_hash: string;
   node_version: string;
   command: string;
   env: Record<string, string>;
@@ -90,6 +93,12 @@ export interface CreateSiteRequest {
   force_https?: boolean;
   spa_fallback?: boolean;
   env?: Record<string, string>;
+  php_version?: string;
+  php_build?: string;
+  php_extensions?: Record<string, boolean>;
+  php_ini?: Record<string, string>;
+  php_ini_raw?: string;
+  front_controller?: boolean;
 }
 
 export interface UpdateSiteRequest {
@@ -99,6 +108,7 @@ export interface UpdateSiteRequest {
   node_version?: string;
   command?: string;
   document_root?: string;
+  front_controller?: boolean;
   spa_fallback?: boolean;
   tls?: boolean;
   force_https?: boolean;
@@ -122,9 +132,90 @@ export interface CatalogEntry {
   kind: string;
   version: string;
   build: string;
+  revision?: number;
   url: string;
   sha256: string;
   size: number;
+}
+
+export type PHPExtensionType = 'extension' | 'zend_extension';
+
+/** One extension shipped in the embedded PHP catalog for a version line. */
+export interface PHPExtension {
+  name: string;
+  type: PHPExtensionType;
+  so: string;
+  default: boolean;
+  standard: boolean;
+  versions: string[];
+  requires?: string[];
+}
+
+/** One extension selected after defaults and site overrides are resolved. */
+export interface PHPResolvedExtension {
+  name: string;
+  type: PHPExtensionType;
+  so: string;
+  required: boolean;
+  required_by?: string[];
+}
+
+/** An installed PHP build with the line and revision derived from its ID. */
+export interface PHPRuntimeBuild extends RuntimeBuild {
+  line: string;
+  revision: number;
+}
+
+export interface PHPDefaults {
+  version: string;
+  ini: Record<string, string>;
+  extensions: Record<string, boolean>;
+}
+
+/** A partial PHP configuration change; omitted fields keep their current value. */
+export interface PHPChange {
+  version?: string;
+  build?: string;
+  extensions?: Record<string, boolean>;
+  ini?: Record<string, string>;
+  ini_raw?: string;
+}
+
+export interface PHPInfo {
+  site: Site;
+  build: RuntimeBuild;
+  defaults: PHPDefaults;
+  extensions: PHPResolvedExtension[];
+  available_extensions: PHPExtension[];
+  builtins: string[];
+  ini: Record<string, string>;
+  ini_raw: string;
+  generated_ini: string;
+  fpm_config: string;
+  config_hash: string;
+}
+
+export interface PHPMigrationRequest {
+  from_version: string;
+  to_version: string;
+  to_build: string;
+}
+
+export interface PHPMigrationResult {
+  site: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface PHPDefaultsResult {
+  defaults: PHPDefaults;
+  sites: PHPMigrationResult[];
+}
+
+export interface PHPExecResult {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
 }
 
 export interface DoctorCheck {

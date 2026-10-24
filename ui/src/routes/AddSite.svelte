@@ -7,6 +7,7 @@
     Check,
     ChevronDown,
     Code,
+    FileCode,
     FolderOpen,
     Globe,
     Lock,
@@ -20,7 +21,6 @@
   import { isAbsolutePath } from '../lib/format';
   import { addToast } from '../lib/stores';
   import type { RuntimeBuild, Settings } from '../lib/types';
-  import Badge from '../lib/components/Badge.svelte';
   import Button from '../lib/components/Button.svelte';
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
   import Field from '../lib/components/Field.svelte';
@@ -29,7 +29,7 @@
   import Skeleton from '../lib/components/Skeleton.svelte';
   import Toggle from '../lib/components/Toggle.svelte';
 
-  type Kind = 'static' | 'node';
+  type Kind = 'static' | 'php' | 'node';
   interface EnvRow {
     key: string;
     value: string;
@@ -37,7 +37,7 @@
 
   const steps = [
     { label: 'Project', title: 'Project details', description: 'Name the site and point devstack at its folder.' },
-    { label: 'Runtime', title: 'How should it run?', description: 'Choose a static document root or a supervised Node process.' },
+    { label: 'Runtime', title: 'How should it run?', description: 'Choose static files, PHP-FPM, or a supervised Node process.' },
     { label: 'Options', title: 'Domain and options', description: 'Decide how the site is served, then review everything.' },
   ];
 
@@ -46,8 +46,10 @@
   let path = $state('');
   let kind = $state<Kind>('static');
   let nodeVersion = $state('');
+  let phpBuild = $state('');
   let command = $state('npm run dev');
   let documentRoot = $state('.');
+  let frontController = $state(true);
   let spaFallback = $state(false);
   let tls = $state(true);
   let forceHttps = $state(false);
@@ -64,6 +66,16 @@
   let pathOpen = $state(false);
   let headingEl: HTMLHeadingElement | undefined = $state();
 
+  function phpLine(version: string): string {
+    const parts = version.split('.');
+    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : version;
+  }
+
+  function phpRevision(id: string): number {
+    const match = /-r([1-9][0-9]*)$/.exec(id);
+    return match ? Number.parseInt(match[1], 10) : 0;
+  }
+
   const nodeRuntimes = $derived(
     runtimes
       .filter((runtime) => runtime.kind === 'node')
@@ -71,10 +83,40 @@
       .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true })),
   );
 
+  const phpRuntimes = $derived(
+    runtimes
+      .filter((runtime) => runtime.kind === 'php')
+      .slice()
+      .sort(
+        (a, b) =>
+          b.version.localeCompare(a.version, undefined, { numeric: true }) ||
+          phpRevision(b.id) - phpRevision(a.id),
+      ),
+  );
+
+  const phpLines = $derived(
+    Array.from(new Set(phpRuntimes.map((runtime) => phpLine(runtime.version)))).sort((a, b) =>
+      b.localeCompare(a, undefined, { numeric: true }),
+    ),
+  );
+
+  const selectedPHPBuild = $derived(phpRuntimes.find((runtime) => runtime.id === phpBuild));
+
+  function buildsOnLine(line: string): RuntimeBuild[] {
+    return phpRuntimes.filter((runtime) => phpLine(runtime.version) === line);
+  }
   const previewName = $derived(name.trim() || 'your-site');
   const previewUrl = $derived(`${tls ? 'https' : 'http'}://${previewName}.test`);
   const previewRuntime = $derived(
-    kind === 'static' ? 'Static files' : nodeVersion ? `Node ${nodeVersion}` : 'Node — not selected',
+    kind === 'static'
+      ? 'Static files'
+      : kind === 'php'
+        ? selectedPHPBuild
+          ? `PHP ${selectedPHPBuild.version} (r${phpRevision(selectedPHPBuild.id)})`
+          : 'PHP — not selected'
+        : nodeVersion
+          ? `Node ${nodeVersion}`
+          : 'Node — not selected',
   );
   const initialBrowsePath = $derived(settings?.user_home ?? '/');
 
@@ -97,6 +139,7 @@
       runtimes = builds;
       settings = config;
       if (!nodeVersion && nodeRuntimes.length > 0) nodeVersion = nodeRuntimes[0].version;
+      if (!phpBuild && phpRuntimes.length > 0) phpBuild = phpRuntimes[0].id;
     } catch (caught) {
       runtimesError = describeError(caught);
     } finally {
@@ -112,6 +155,7 @@
     if (key === 'name') return 'Site name';
     if (key === 'path') return 'Project folder';
     if (key === 'node_version') return 'Node version';
+    if (key === 'php_build') return 'PHP build';
     if (key === 'command') return 'Start command';
     if (key === 'document_root') return 'Document root';
     if (key.startsWith('env-')) return `Environment variable ${Number(key.slice(4)) + 1}`;
@@ -120,7 +164,13 @@
 
   function fieldStep(key: string): number {
     if (key === 'name' || key === 'path' || key === 'kind') return 1;
-    if (key === 'node_version' || key === 'command' || key === 'document_root' || key.startsWith('env-')) {
+    if (
+      key === 'node_version' ||
+      key === 'php_build' ||
+      key === 'command' ||
+      key === 'document_root' ||
+      key.startsWith('env-')
+    ) {
       return 2;
     }
     return 3;
@@ -143,9 +193,13 @@
       next.path = 'Use an absolute path, for example /home/you/projects/app.';
     }
 
-    if (kind === 'static') {
+    if (kind === 'static' || kind === 'php') {
       if (!documentRoot.trim()) next.document_root = 'Enter a document root. Use . to serve the project root.';
-    } else {
+    }
+    if (kind === 'php') {
+      if (!phpBuild) next.php_build = 'Install a PHP build before adding a PHP site.';
+    }
+    if (kind === 'node') {
       if (!nodeVersion) next.node_version = 'Install a Node build before adding a Node site.';
       if (!command.trim()) next.command = 'Enter the command that starts the dev server.';
     }
@@ -171,7 +225,7 @@
   }
 
   function stepFields(target: number): string[] {
-    const fields = ['name', 'path', 'kind', 'node_version', 'command', 'document_root'];
+    const fields = ['name', 'path', 'kind', 'node_version', 'php_build', 'command', 'document_root'];
     if (target === 2 && kind === 'node') fields.push(...envRows.map((_, index) => `env-${index}`));
     return fields.filter((key) => fieldStep(key) === target);
   }
@@ -220,9 +274,11 @@
           ? 'site-name'
           : key === 'path'
             ? 'site-path'
-            : key.startsWith('env-')
-              ? `env-key-${key.slice(4)}`
-              : key.replace(/_/g, '-');
+            : key === 'php_build'
+              ? 'php-build'
+              : key.startsWith('env-')
+                ? `env-key-${key.slice(4)}`
+                : key.replace(/_/g, '-');
     const element = document.getElementById(id);
     element?.focus();
     element?.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
@@ -277,6 +333,7 @@
     const next = { ...errors };
     delete next.kind;
     delete next.node_version;
+    delete next.php_build;
     delete next.command;
     delete next.document_root;
     for (const key of Object.keys(next)) {
@@ -310,7 +367,11 @@
         kind,
         node_version: kind === 'node' ? nodeVersion : undefined,
         command: kind === 'node' ? command.trim() : undefined,
-        document_root: kind === 'static' ? documentRoot.trim() : undefined,
+        document_root: kind === 'static' || kind === 'php' ? documentRoot.trim() : undefined,
+        php_version:
+          kind === 'php' && selectedPHPBuild ? phpLine(selectedPHPBuild.version) : undefined,
+        php_build: kind === 'php' ? phpBuild : undefined,
+        front_controller: kind === 'php' ? frontController : false,
         www,
         tls,
         force_https: tls ? forceHttps : false,
@@ -482,13 +543,21 @@
                     {#if kind === 'node'}<span class="kind-check" aria-hidden="true"><Check size={14} strokeWidth={2.4} /></span>{/if}
                   </label>
 
-                  <label class="kind-card disabled">
-                    <input type="radio" name="site-kind" value="php" disabled />
-                    <span class="kind-icon" aria-hidden="true"><Code size={17} strokeWidth={1.8} /></span>
+                  <label class="kind-card" class:checked={kind === 'php'}>
+                    <input
+                      id="kind-php"
+                      type="radio"
+                      name="site-kind"
+                      value="php"
+                      checked={kind === 'php'}
+                      onchange={() => setKind('php')}
+                    />
+                    <span class="kind-icon" aria-hidden="true"><FileCode size={17} strokeWidth={1.8} /></span>
                     <span class="kind-copy">
-                      <span class="kind-title">PHP <Badge>M2</Badge></span>
-                      <span class="kind-desc">PHP-FPM pools arrive in the next milestone.</span>
+                      <span class="kind-title">PHP</span>
+                      <span class="kind-desc">A PHP-FPM pool served through the devstack proxy.</span>
                     </span>
+                    {#if kind === 'php'}<span class="kind-check" aria-hidden="true"><Check size={14} strokeWidth={2.4} /></span>{/if}
                   </label>
                 </div>
               </fieldset>
@@ -524,6 +593,98 @@
                     description="Route unknown paths to index.html so client-side routers work on refresh."
                     bind:checked={spaFallback}
                   />
+                </div>
+              </div>
+            {:else if kind === 'php'}
+              <div class="form-stack">
+                {#if runtimesLoading}
+                  <div class="loading-field">
+                    <Skeleton width="90px" height="10px" />
+                    <Skeleton width="100%" height="36px" />
+                  </div>
+                {:else if runtimesError}
+                  <ErrorBanner
+                    title="Could not load PHP builds"
+                    code={runtimesError.code}
+                    message={runtimesError.message}
+                    onretry={loadRuntimeData}
+                  />
+                {:else if phpRuntimes.length === 0}
+                  <div class="notice">
+                    <p>No PHP builds are installed yet.</p>
+                    <p class="notice-copy">
+                      Install a PHP runtime from <a class="link" href="#/runtimes">Runtimes</a>, then
+                      come back to finish this site.
+                    </p>
+                  </div>
+                {:else}
+                  <Field
+                    id="php-build"
+                    label="PHP build"
+                    required
+                    hint="Builds are grouped by PHP line. You can switch to another installed build from the site page later."
+                    error={errors.php_build}
+                  >
+                    <div class="select-wrap">
+                      <select
+                        id="php-build"
+                        class="input mono"
+                        bind:value={phpBuild}
+                        aria-invalid={Boolean(errors.php_build)}
+                        aria-describedby={errors.php_build ? 'php-build-error' : 'php-build-hint'}
+                        onchange={() => clearError('php_build')}
+                      >
+                        {#each phpLines as line (line)}
+                          <optgroup label={`PHP ${line}`}>
+                            {#each buildsOnLine(line) as runtime (runtime.id)}
+                              <option value={runtime.id}>
+                                PHP {runtime.version} (r{phpRevision(runtime.id)}) · {runtime.backend}
+                              </option>
+                            {/each}
+                          </optgroup>
+                        {/each}
+                      </select>
+                      <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+                    </div>
+                  </Field>
+                {/if}
+
+                <Field
+                  id="php-document-root"
+                  label="Document root"
+                  required
+                  hint="Relative to the project folder. Use . to serve the folder itself; public for most frameworks."
+                  error={errors.document_root}
+                >
+                  <input
+                    id="php-document-root"
+                    class="input mono"
+                    type="text"
+                    placeholder="public"
+                    autocomplete="off"
+                    spellcheck="false"
+                    bind:value={documentRoot}
+                    aria-invalid={Boolean(errors.document_root)}
+                    aria-describedby={errors.document_root ? 'php-document-root-error' : 'php-document-root-hint'}
+                    oninput={() => clearError('document_root')}
+                    onblur={() => validateField('document_root')}
+                  />
+                </Field>
+
+                <div class="options-box">
+                  <Toggle
+                    label="Front controller"
+                    description="Route requests that do not match a file to index.php, as most PHP frameworks expect."
+                    bind:checked={frontController}
+                  />
+                </div>
+
+                <div class="notice">
+                  <p>ini and extensions are editable after creation.</p>
+                  <p class="notice-copy">
+                    Open the site to edit the site php.ini section and enable or disable
+                    extensions. Shared version defaults live on the Runtimes page.
+                  </p>
                 </div>
               </div>
             {:else}
@@ -695,7 +856,11 @@
                     <dd>
                       <span class="review-main">{previewRuntime}</span>
                       <span class="review-sub mono">
-                        {kind === 'static' ? `root ${documentRoot || '.'}` : command || 'No command'}
+                        {kind === 'static'
+                          ? `root ${documentRoot || '.'}`
+                          : kind === 'php'
+                            ? `root ${documentRoot || '.'} · ${frontController ? 'front controller' : 'no front controller'}`
+                            : command || 'No command'}
                       </span>
                     </dd>
                     <button type="button" class="edit" onclick={() => goToStep(2)}>Edit</button>
@@ -712,18 +877,18 @@
                     </dd>
                     <button type="button" class="edit" onclick={() => goToStep(3)}>Edit</button>
                   </div>
-                  <div class="review-row">
-                    <dt>Environment</dt>
-                    <dd>
-                      <span class="review-main">
-                        {envRows.filter((row) => row.key.trim()).length} variables
-                      </span>
-                      <span class="review-sub">Stored locally with the site</span>
-                    </dd>
-                    {#if kind === 'node'}
+                  {#if kind === 'node'}
+                    <div class="review-row">
+                      <dt>Environment</dt>
+                      <dd>
+                        <span class="review-main">
+                          {envRows.filter((row) => row.key.trim()).length} variables
+                        </span>
+                        <span class="review-sub">Stored locally with the site</span>
+                      </dd>
                       <button type="button" class="edit" onclick={() => goToStep(2)}>Edit</button>
-                    {/if}
-                  </div>
+                    </div>
+                  {/if}
                 </dl>
               </div>
 
@@ -768,7 +933,7 @@
         <dl class="preview-meta">
           <div>
             <dt>Kind</dt>
-            <dd>{kind === 'static' ? 'Static' : 'Node'}</dd>
+            <dd>{kind === 'static' ? 'Static' : kind === 'php' ? 'PHP' : 'Node'}</dd>
           </div>
           <div>
             <dt>Runtime</dt>
@@ -1056,12 +1221,6 @@
   .kind-card:has(input:focus-visible) {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
-  }
-
-  .kind-card.disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-    border-color: var(--border);
   }
 
   .kind-icon {

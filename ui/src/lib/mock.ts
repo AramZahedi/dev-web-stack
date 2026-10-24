@@ -8,6 +8,15 @@ import type {
   FsListing,
   Health,
   LogLine,
+  PHPChange,
+  PHPDefaults,
+  PHPDefaultsResult,
+  PHPExecResult,
+  PHPExtension,
+  PHPInfo,
+  PHPMigrationRequest,
+  PHPMigrationResult,
+  PHPResolvedExtension,
   RuntimeBuild,
   Session,
   Settings,
@@ -35,6 +44,163 @@ function clone<T>(value: T): T {
 
 const sessions: Session = { csrf_token: 'mock-csrf-token-7f3c9a' };
 
+const PHP_LINES = ['8.2', '8.3', '8.4', '8.5'];
+/** The mock refuses this build so the dashboard rollback path is exercised. */
+export const FAILING_PHP_BUILD = 'php@8.5.0-r1';
+const PHP_MANAGED_BEGIN = '; BEGIN devstack extensions (managed)';
+const PHP_MANAGED_END = '; END devstack extensions (managed)';
+
+function phpLineOf(version: string): string {
+  const parts = version.split('.');
+  return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : version;
+}
+
+function phpRevisionOf(id: string): number {
+  const match = /-r([1-9][0-9]*)$/.exec(id);
+  return match ? Number.parseInt(match[1], 10) : 0;
+}
+
+function mockHash(value: string): string {
+  const source = value || 'devstack';
+  let hash = '';
+  for (let index = 0; index < 64; index += 1) {
+    const code = source.charCodeAt(index % source.length) + index * 31;
+    hash += (code % 16).toString(16);
+  }
+  return hash;
+}
+
+const phpCatalogExtensions: PHPExtension[] = [
+  { name: 'apcu', type: 'extension', so: 'apcu.so', default: false, standard: false, versions: PHP_LINES },
+  { name: 'bcmath', type: 'extension', so: 'bcmath.so', default: true, standard: true, versions: PHP_LINES },
+  { name: 'curl', type: 'extension', so: 'curl.so', default: true, standard: true, versions: PHP_LINES },
+  { name: 'gd', type: 'extension', so: 'gd.so', default: true, standard: true, versions: PHP_LINES },
+  { name: 'igbinary', type: 'extension', so: 'igbinary.so', default: false, standard: false, versions: PHP_LINES },
+  { name: 'imagick', type: 'extension', so: 'imagick.so', default: false, standard: false, versions: PHP_LINES },
+  { name: 'intl', type: 'extension', so: 'intl.so', default: true, standard: true, versions: PHP_LINES },
+  { name: 'mbstring', type: 'extension', so: 'mbstring.so', default: true, standard: true, versions: PHP_LINES },
+  {
+    name: 'opcache',
+    type: 'zend_extension',
+    so: 'opcache.so',
+    default: true,
+    standard: true,
+    versions: PHP_LINES,
+  },
+  { name: 'pdo_mysql', type: 'extension', so: 'pdo_mysql.so', default: true, standard: true, versions: PHP_LINES },
+  { name: 'pdo_pgsql', type: 'extension', so: 'pdo_pgsql.so', default: true, standard: true, versions: PHP_LINES },
+  {
+    name: 'redis',
+    type: 'extension',
+    so: 'redis.so',
+    default: false,
+    standard: false,
+    versions: PHP_LINES,
+    requires: ['igbinary'],
+  },
+  { name: 'sodium', type: 'extension', so: 'sodium.so', default: true, standard: true, versions: PHP_LINES },
+  {
+    name: 'xdebug',
+    type: 'zend_extension',
+    so: 'xdebug.so',
+    default: false,
+    standard: false,
+    versions: PHP_LINES,
+  },
+  { name: 'zip', type: 'extension', so: 'zip.so', default: true, standard: true, versions: PHP_LINES },
+];
+
+const phpBuiltins = ['core', 'ctype', 'date', 'filter', 'hash', 'json', 'pcre', 'random', 'spl', 'standard'];
+
+const phpDefaultIni: Record<string, string> = {
+  display_errors: 'On',
+  error_reporting: 'E_ALL',
+  memory_limit: '256M',
+  upload_max_filesize: '64M',
+  post_max_size: '64M',
+  max_execution_time: '120',
+  'date.timezone': 'UTC',
+  'opcache.enable': '1',
+  'opcache.validate_timestamps': '1',
+  'opcache.revalidate_freq': '0',
+};
+
+function seedPHPDefaults(): Record<string, PHPDefaults> {
+  const extensions = Object.fromEntries(
+    phpCatalogExtensions.map((extension) => [extension.name, extension.default]),
+  );
+  return Object.fromEntries(
+    PHP_LINES.map((version) => [
+      version,
+      { version, ini: { ...phpDefaultIni }, extensions: { ...extensions } },
+    ]),
+  );
+}
+
+let phpDefaults = seedPHPDefaults();
+
+function resolvePHPExtensions(
+  version: string,
+  defaults: Record<string, boolean>,
+  overrides: Record<string, boolean> | undefined,
+): PHPResolvedExtension[] {
+  const catalog = new Map(phpCatalogExtensions.map((extension) => [extension.name, extension]));
+  const selected = new Map<string, PHPResolvedExtension>();
+  for (const extension of phpCatalogExtensions) {
+    const enabled =
+      overrides?.[extension.name] ?? defaults[extension.name] ?? extension.default;
+    if (!enabled) continue;
+    selected.set(extension.name, {
+      name: extension.name,
+      type: extension.type,
+      so: extension.so,
+      required: false,
+    });
+  }
+  for (const extension of catalog.values()) {
+    if (!selected.has(extension.name)) continue;
+    for (const requirement of extension.requires ?? []) {
+      const dependency = catalog.get(requirement);
+      if (!dependency) continue;
+      selected.set(requirement, {
+        name: dependency.name,
+        type: dependency.type,
+        so: dependency.so,
+        required: true,
+        required_by: [extension.name],
+      });
+    }
+  }
+  return Array.from(selected.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function renderPHPIni(site: Site, defaults: PHPDefaults): string {
+  const resolved = resolvePHPExtensions(
+    site.php_version,
+    defaults.extensions,
+    site.php_extensions,
+  );
+  const overrides = Object.entries(site.php_ini ?? {});
+  const lines = [
+    '; Generated by devstack. Do not edit.',
+    '',
+    '; BEGIN devstack version defaults',
+    ...Object.entries(defaults.ini).map(([key, value]) => `${key} = ${value}`),
+    '; END devstack version defaults',
+    '',
+    '; BEGIN devstack site overrides',
+    ...overrides.map(([key, value]) => `${key} = ${value}`),
+    '; END devstack site overrides',
+    '',
+    '[PHP]',
+    PHP_MANAGED_BEGIN,
+    ...resolved.map((extension) => `${extension.type}=${extension.so}`),
+    PHP_MANAGED_END,
+    '',
+  ];
+  return lines.join('\n');
+}
+
 type EventListener = (event: DaemonEvent) => void;
 const eventListeners = new Set<EventListener>();
 
@@ -59,6 +225,9 @@ const sites: Site[] = [
     backend_path: '/home/dev/projects/blog',
     kind: 'static',
     php_version: '',
+    php_build: '',
+    php_ini_raw: '',
+    php_config_hash: '',
     node_version: '',
     command: '',
     env: {
@@ -91,6 +260,9 @@ const sites: Site[] = [
     backend_path: '/home/dev/projects/shop',
     kind: 'node',
     php_version: '',
+    php_build: '',
+    php_ini_raw: '',
+    php_config_hash: '',
     node_version: '24.9.0',
     command: 'npm run dev',
     env: {
@@ -126,6 +298,9 @@ const sites: Site[] = [
     backend_path: '/home/dev/projects/api',
     kind: 'node',
     php_version: '',
+    php_build: '',
+    php_ini_raw: '',
+    php_config_hash: '',
     node_version: '22.20.0',
     command: 'npm start',
     env: {
@@ -169,6 +344,36 @@ const runtimes: RuntimeBuild[] = [
     installed_at: iso(-days(58)),
     size: 49_807_360,
   },
+  {
+    id: 'php@8.4.4-r1',
+    kind: 'php',
+    version: '8.4.4',
+    backend: 'local',
+    path: '/home/dev/.devstack/runtimes/php/8.4.4-r1',
+    checksum: '5c1f8d7e2a9b4c6d0e3f7a1b8c5d2e9f4a6b0c3d7e1f8a2b5c9d4e6f0a3b7c1d',
+    installed_at: iso(-days(22)),
+    size: 78_643_200,
+  },
+  {
+    id: 'php@8.3.14-r2',
+    kind: 'php',
+    version: '8.3.14',
+    backend: 'local',
+    path: '/home/dev/.devstack/runtimes/php/8.3.14-r2',
+    checksum: '8b3e6a1c4f7d9b2e5a0c8f3d6b1e4a7c9f2d5b8e0a3c6f1d4b7e9a2c5f8d0b3e',
+    installed_at: iso(-days(47)),
+    size: 77_594_240,
+  },
+  {
+    id: 'php@8.5.0-r1',
+    kind: 'php',
+    version: '8.5.0',
+    backend: 'local',
+    path: '/home/dev/.devstack/runtimes/php/8.5.0-r1',
+    checksum: '1d7b4e9a2c5f8b0d3e6a1c4f7b9d2e5a8c0f3b6d1e4a7c9f2b5d8e0a3c6f1b4d',
+    installed_at: iso(-days(9)),
+    size: 79_691_776,
+  },
 ];
 
 const catalog: CatalogEntry[] = [
@@ -198,6 +403,36 @@ const catalog: CatalogEntry[] = [
     url: 'https://nodejs.org/dist/v24.9.0/node-v24.9.0-linux-x64.tar.xz',
     sha256: '9a4f7c02e1d8b63a5f0c92d47e18ba6c3f5d20e9a7b4c61d8f30e2a95c7b4d18',
     size: 51_904_512,
+  },
+  {
+    id: 'php@8.4.5-r1',
+    kind: 'php',
+    version: '8.4.5',
+    build: 'linux-x64',
+    revision: 1,
+    url: 'https://devstack.invalid/php/php-8.4.5-r1-linux-x64.tar.gz',
+    sha256: 'a2c5f8b0d3e6a1c4f7b9d2e5a8c0f3b6d1e4a7c9f2b5d8e0a3c6f1b4d7e9a2c5',
+    size: 78_905_344,
+  },
+  {
+    id: 'php@8.5.1-r1',
+    kind: 'php',
+    version: '8.5.1',
+    build: 'linux-x64',
+    revision: 1,
+    url: 'https://devstack.invalid/php/php-8.5.1-r1-linux-x64.tar.gz',
+    sha256: 'e4a7c9f2b5d8e0a3c6f1b4d7e9a2c5f8b0d3e6a1c4f7b9d2e5a8c0f3b6d1e4a7',
+    size: 79_953_408,
+  },
+  {
+    id: 'php@8.5.1-r2',
+    kind: 'php',
+    version: '8.5.1',
+    build: 'linux-x64',
+    revision: 2,
+    url: 'https://devstack.invalid/php/php-8.5.1-r2-linux-x64.tar.gz',
+    sha256: 'c9f2b5d8e0a3c6f1b4d7e9a2c5f8b0d3e6a1c4f7b9d2e5a8c0f3b6d1e4a7c9f2',
+    size: 79_958_016,
   },
 ];
 
@@ -709,6 +944,7 @@ export const mockApi = {
     if (!directories[projectPath]) {
       throw new ApiError('INVALID_REQUEST', 'Project path must be an existing readable directory.', 400);
     }
+    let phpBuild: RuntimeBuild | undefined;
     if (request.kind === 'node') {
       const runtime = runtimes.find(
         (entry) => entry.kind === 'node' && entry.version === request.node_version,
@@ -721,6 +957,29 @@ export const mockApi = {
         );
       }
     }
+    if (request.kind === 'php') {
+      phpBuild = request.php_build
+        ? runtimes.find((entry) => entry.kind === 'php' && entry.id === request.php_build)
+        : runtimes
+            .filter(
+              (entry) =>
+                entry.kind === 'php' &&
+                (!request.php_version || phpLineOf(entry.version) === request.php_version),
+            )
+            .sort(
+              (a, b) =>
+                b.version.localeCompare(a.version, undefined, { numeric: true }) ||
+                phpRevisionOf(b.id) - phpRevisionOf(a.id),
+            )[0];
+      if (!phpBuild) {
+        throw new ApiError(
+          'RUNTIME_MISSING',
+          `PHP ${request.php_version ?? ''} is not installed. Install a PHP runtime first.`,
+          409,
+        );
+      }
+    }
+    const phpVersion = phpBuild ? phpLineOf(phpBuild.version) : '';
     const id = `s_${name.replace(/[^a-z0-9]/g, '')}_${sites.length + 1}`;
     const site: Site = {
       id,
@@ -731,12 +990,19 @@ export const mockApi = {
       host_path: projectPath,
       backend_path: projectPath,
       kind: request.kind,
-      php_version: '',
+      php_version: phpVersion,
+      php_build: phpBuild?.id ?? '',
+      php_extensions:
+        request.kind === 'php' ? { ...(request.php_extensions ?? {}) } : undefined,
+      php_ini: request.kind === 'php' ? { ...(request.php_ini ?? {}) } : undefined,
+      php_ini_raw: request.kind === 'php' ? (request.php_ini_raw ?? '') : '',
+      php_config_hash:
+        request.kind === 'php' ? mockHash(`${phpBuild?.id ?? ''}${request.php_ini_raw ?? ''}`) : '',
       node_version: request.kind === 'node' ? (request.node_version ?? '') : '',
       command: request.kind === 'node' ? (request.command ?? '') : '',
       env: request.env ?? {},
       document_root: request.document_root ?? '',
-      front_controller: false,
+      front_controller: request.front_controller ?? request.kind === 'php',
       spa_fallback: request.spa_fallback ?? false,
       tls: request.tls ?? true,
       force_https: request.force_https ?? false,
@@ -821,10 +1087,14 @@ export const mockApi = {
     await wait(250, 450);
     const entry = catalog.find((item) => item.id === id);
     if (!entry) throw new ApiError('NOT_FOUND', `Runtime “${id}” is not in the catalog.`, 404);
-    if (runtimes.some((item) => item.kind === entry.kind && item.version === entry.version)) {
+    const installed =
+      entry.kind === 'php'
+        ? runtimes.some((item) => item.id === entry.id)
+        : runtimes.some((item) => item.kind === entry.kind && item.version === entry.version);
+    if (installed) {
       throw new ApiError(
         'RUNTIME_ALREADY_INSTALLED',
-        `${entry.kind === 'node' ? 'Node' : entry.kind} ${entry.version} is already installed.`,
+        `${entry.kind === 'node' ? 'Node' : 'PHP'} ${entry.version} is already installed.`,
         409,
       );
     }
@@ -833,12 +1103,19 @@ export const mockApi = {
       kind: entry.kind,
       version: entry.version,
       backend: 'local',
-      path: `/home/dev/.devstack/runtimes/${entry.kind}/${entry.version}`,
+      path:
+        entry.kind === 'php'
+          ? `/home/dev/.devstack/runtimes/php/${entry.version}-r${entry.revision ?? 1}`
+          : `/home/dev/.devstack/runtimes/${entry.kind}/${entry.version}`,
       checksum: entry.sha256,
       installed_at: new Date().toISOString(),
       size: entry.size,
     });
-    emitEvent('runtime.installed', undefined, `Node ${entry.version} was installed`);
+    emitEvent(
+      'runtime.installed',
+      undefined,
+      `${entry.kind === 'node' ? 'Node' : 'PHP'} ${entry.version} was installed`,
+    );
     return clone(runtimes[runtimes.length - 1]);
   },
 
@@ -847,18 +1124,214 @@ export const mockApi = {
     const index = runtimes.findIndex((item) => item.id === buildID);
     if (index < 0) throw new ApiError('NOT_FOUND', 'Runtime build was not found.', 404);
     const runtime = runtimes[index];
-    const usedBy = sites.filter(
-      (site) => site.kind === 'node' && site.node_version === runtime.version,
+    if (runtime.kind === 'php') {
+      const line = phpLineOf(runtime.version);
+      const usedBy = sites
+        .filter(
+          (site) =>
+            site.kind === 'php' &&
+            (site.php_build === runtime.id ||
+              (!site.php_build && site.php_version === line)),
+        )
+        .map((site) => site.name)
+        .sort();
+      if (usedBy.length > 0) {
+        throw new ApiError(
+          'PHP_VERSION_IN_USE',
+          `PHP ${runtime.version} is used by ${usedBy.join(', ')}.`,
+          409,
+          { build: runtime.id, sites: usedBy },
+        );
+      }
+    } else {
+      const usedBy = sites.filter(
+        (site) => site.kind === 'node' && site.node_version === runtime.version,
+      );
+      if (usedBy.length > 0) {
+        throw new ApiError(
+          'RUNTIME_IN_USE',
+          `Node ${runtime.version} is used by ${usedBy.map((site) => site.name).join(', ')}.`,
+          409,
+        );
+      }
+    }
+    runtimes.splice(index, 1);
+    emitEvent(
+      'runtime.removed',
+      undefined,
+      `${runtime.kind === 'php' ? 'PHP' : 'Node'} ${runtime.version} was removed`,
     );
-    if (usedBy.length > 0) {
+  },
+
+  async getPHPInfo(ref: string): Promise<PHPInfo> {
+    await wait();
+    const site = findSite(ref);
+    if (site.kind !== 'php') {
+      throw new ApiError('INVALID_REQUEST', `${site.name} is not a PHP site.`, 400);
+    }
+    const build = runtimes.find((entry) => entry.kind === 'php' && entry.id === site.php_build);
+    if (!build) {
       throw new ApiError(
-        'RUNTIME_IN_USE',
-        `Node ${runtime.version} is used by ${usedBy.map((site) => site.name).join(', ')}.`,
+        'RUNTIME_MISSING',
+        `PHP build ${site.php_build || site.php_version} is not installed.`,
         409,
       );
     }
-    runtimes.splice(index, 1);
-    emitEvent('runtime.removed', undefined, `Node ${runtime.version} was removed`);
+    const defaults = phpDefaults[phpLineOf(build.version)] ?? phpDefaults['8.4'];
+    const available = phpCatalogExtensions
+      .filter((extension) => extension.versions.includes(phpLineOf(build.version)))
+      .map((extension) => clone(extension));
+    const generated = renderPHPIni(site, defaults);
+    return {
+      site: clone(site),
+      build: clone(build),
+      defaults: clone(defaults),
+      extensions: resolvePHPExtensions(
+        phpLineOf(build.version),
+        defaults.extensions,
+        site.php_extensions,
+      ),
+      available_extensions: available,
+      builtins: [...phpBuiltins],
+      ini: clone(site.php_ini ?? {}),
+      ini_raw: site.php_ini_raw,
+      generated_ini: generated,
+      fpm_config: `[global]\nerror_log = /proc/self/fd/2\n\n[www]\nlisten = 127.0.0.1:${site.fastcgi_port || 43000}\nuser = dev\npm = ondemand\npm.max_children = 5\nchdir = ${site.backend_path}/${site.document_root || '.'}\n`,
+      config_hash: site.php_config_hash || mockHash(generated),
+    };
+  },
+
+  async applyPHP(ref: string, change: PHPChange): Promise<Site> {
+    await wait(250, 450);
+    const site = findSite(ref);
+    if (site.kind !== 'php') {
+      throw new ApiError('INVALID_REQUEST', `${site.name} is not a PHP site.`, 400);
+    }
+    const targetBuild = change.build
+      ? runtimes.find((entry) => entry.kind === 'php' && entry.id === change.build)
+      : undefined;
+    if (change.build && !targetBuild) {
+      throw new ApiError('RUNTIME_MISSING', `PHP build ${change.build} is not installed.`, 409);
+    }
+    if (targetBuild?.id === FAILING_PHP_BUILD) {
+      throw new ApiError(
+        'PHP_CONFIG_INVALID',
+        `PHP ${targetBuild.version} failed validation; the site stayed on PHP ${site.php_version}.`,
+        422,
+        {
+          line: 4,
+          field: 'build',
+          message: 'The staged FPM master exited before it became ready.',
+          output: `php-fpm: failed to load ${targetBuild.path}/etc/php.ini (line 4)\nphp-fpm: test failed; previous master kept`,
+        },
+      );
+    }
+    if (change.version) site.php_version = change.version;
+    if (targetBuild) {
+      site.php_version = phpLineOf(targetBuild.version);
+      site.php_build = targetBuild.id;
+    }
+    if (change.extensions !== undefined) site.php_extensions = { ...change.extensions };
+    if (change.ini !== undefined) site.php_ini = { ...change.ini };
+    if (change.ini_raw !== undefined) site.php_ini_raw = change.ini_raw;
+    const defaults = phpDefaults[site.php_version] ?? phpDefaults['8.4'];
+    site.php_config_hash = mockHash(
+      `${site.php_build}|${site.php_ini_raw}|${JSON.stringify(site.php_ini ?? {})}|${JSON.stringify(site.php_extensions ?? {})}|${JSON.stringify(defaults)}`,
+    );
+    site.updated_at = new Date().toISOString();
+    emitEvent('site.updated', site.id, `${site.name} PHP configuration was applied`);
+    return clone(site);
+  },
+
+  async phpExtensions(version: string): Promise<PHPExtension[]> {
+    await wait(80, 180);
+    if (!PHP_LINES.includes(version)) {
+      throw new ApiError('INVALID_REQUEST', `Unsupported PHP version “${version}”.`, 400);
+    }
+    return clone(
+      phpCatalogExtensions
+        .filter((extension) => extension.versions.includes(version))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    );
+  },
+
+  async getPHPDefaults(version: string): Promise<PHPDefaults> {
+    await wait(80, 180);
+    const defaults = phpDefaults[version];
+    if (!defaults) {
+      throw new ApiError('NOT_FOUND', `No PHP ${version} defaults are available.`, 404);
+    }
+    return clone(defaults);
+  },
+
+  async savePHPDefaults(
+    version: string,
+    change: Pick<PHPDefaults, 'ini' | 'extensions'>,
+  ): Promise<PHPDefaultsResult> {
+    await wait(250, 450);
+    const current = phpDefaults[version];
+    if (!current) {
+      throw new ApiError('NOT_FOUND', `No PHP ${version} defaults are available.`, 404);
+    }
+    const saved: PHPDefaults = {
+      version,
+      ini: { ...current.ini, ...(change.ini ?? {}) },
+      extensions: { ...current.extensions, ...(change.extensions ?? {}) },
+    };
+    phpDefaults = { ...phpDefaults, [version]: saved };
+    const affected = sites.filter(
+      (site) => site.kind === 'php' && site.php_version === version,
+    );
+    const results: PHPMigrationResult[] = affected.map((site) => {
+      site.php_config_hash = mockHash(`${site.id}|${JSON.stringify(saved)}`);
+      return { site: site.name, ok: true };
+    });
+    emitEvent('php.defaults', undefined, `PHP ${version} defaults were saved`);
+    return { defaults: clone(saved), sites: results };
+  },
+
+  async migratePHP(request: PHPMigrationRequest): Promise<PHPMigrationResult[]> {
+    await wait(250, 450);
+    const target = runtimes.find(
+      (entry) => entry.kind === 'php' && entry.id === request.to_build,
+    );
+    if (!target) {
+      throw new ApiError('RUNTIME_MISSING', `PHP build ${request.to_build} is not installed.`, 409);
+    }
+    const affected = sites.filter(
+      (site) => site.kind === 'php' && site.php_version === request.from_version,
+    );
+    if (target.id === FAILING_PHP_BUILD) {
+      return affected.map((site) => ({
+        site: site.name,
+        ok: false,
+        error: `php.ini failed validation on line 4 for ${site.name}`,
+      }));
+    }
+    return affected.map((site) => {
+      site.php_version = phpLineOf(target.version);
+      site.php_build = target.id;
+      site.php_config_hash = mockHash(`${site.id}|${target.id}`);
+      site.updated_at = new Date().toISOString();
+      return { site: site.name, ok: true };
+    });
+  },
+
+  async phpExec(ref: string, argv: string[]): Promise<PHPExecResult> {
+    await wait(80, 200);
+    const site = findSite(ref);
+    if (site.kind !== 'php') {
+      throw new ApiError('INVALID_REQUEST', `${site.name} is not a PHP site.`, 400);
+    }
+    if (argv.includes('--broken')) {
+      return { exit_code: 1, stdout: '', stderr: 'PHP Fatal error: broken snippet\n' };
+    }
+    const build = runtimes.find((entry) => entry.kind === 'php' && entry.id === site.php_build);
+    return {
+      exit_code: 0,
+      stdout: `PHP ${build?.version ?? site.php_version} (cli) (built: devstack mock)\nCopyright (c) The PHP Group\n`,
+      stderr: '',
+    };
   },
 
   async doctor(): Promise<DoctorReport> {

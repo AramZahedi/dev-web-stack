@@ -4,6 +4,7 @@
   import {
     ArrowLeft,
     Check,
+    ChevronDown,
     Copy,
     ExternalLink,
     Eye,
@@ -20,7 +21,11 @@
   } from 'lucide-svelte';
   import * as api from '../lib/api';
   import { copyText } from '../lib/clipboard';
-  import { describeError } from '../lib/errors';
+  import {
+    describeError,
+    describePHPError,
+    type PHPErrorDescription,
+  } from '../lib/errors';
   import {
     checksumPrefix,
     daysUntil,
@@ -30,15 +35,18 @@
     siteUrl,
   } from '../lib/format';
   import { addToast, toastError } from '../lib/stores';
-  import type { Site } from '../lib/types';
+  import type { PHPChange, PHPInfo, PHPRuntimeBuild, RuntimeBuild, Site } from '../lib/types';
   import Badge from '../lib/components/Badge.svelte';
   import Button from '../lib/components/Button.svelte';
   import Card from '../lib/components/Card.svelte';
   import ConfirmDialog from '../lib/components/ConfirmDialog.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
+  import ExtensionToggles from '../lib/components/ExtensionToggles.svelte';
+  import Field from '../lib/components/Field.svelte';
   import IconButton from '../lib/components/IconButton.svelte';
   import LogsPanel from '../lib/components/LogsPanel.svelte';
+  import PHPIniEditor from '../lib/components/PHPIniEditor.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
   import StatusPill from '../lib/components/StatusPill.svelte';
   import VhostPreviewDrawer from '../lib/components/VhostPreviewDrawer.svelte';
@@ -66,6 +74,16 @@
   let previewReturnFocus = $state<HTMLElement | null>(null);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
+  let phpInfo = $state<PHPInfo | null>(null);
+  let phpLoading = $state(false);
+  let phpError = $state<{ code: string; message: string } | null>(null);
+  let phpApplying = $state(false);
+  let phpApplyError = $state<PHPErrorDescription | null>(null);
+  let phpSwitchError = $state<PHPErrorDescription | null>(null);
+  let phpRuntimes = $state<RuntimeBuild[]>([]);
+  let switchOpen = $state(false);
+  let switchBuild = $state('');
+
   const ref = $derived(params?.ref ? decodeURIComponent(params.ref) : '');
 
   const active = $derived(
@@ -82,6 +100,60 @@
         : [],
   );
 
+  const stopped = $derived(
+    Boolean(site && (site.desired_state === 'stopped' || site.status === 'stopped')),
+  );
+
+  function phpLine(version: string): string {
+    const parts = version.split('.');
+    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : version;
+  }
+
+  function phpRevision(id: string): number {
+    const match = /-r([1-9][0-9]*)$/.exec(id);
+    return match ? Number.parseInt(match[1], 10) : 0;
+  }
+
+  const phpBuilds = $derived<PHPRuntimeBuild[]>(
+    phpRuntimes
+      .filter((runtime) => runtime.kind === 'php')
+      .map((runtime) => ({
+        ...runtime,
+        line: phpLine(runtime.version),
+        revision: phpRevision(runtime.id),
+      }))
+      .sort(
+        (a, b) =>
+          b.version.localeCompare(a.version, undefined, { numeric: true }) ||
+          b.revision - a.revision,
+      ),
+  );
+
+  const switchCandidates = $derived(
+    phpBuilds.filter((runtime) => runtime.id !== (site?.php_build || phpInfo?.build.id)),
+  );
+
+  const switchTarget = $derived(
+    phpBuilds.find((runtime) => runtime.id === switchBuild) ?? switchCandidates[0] ?? null,
+  );
+
+  async function loadPHP(): Promise<void> {
+    phpLoading = true;
+    phpError = null;
+    try {
+      const [info, builds] = await Promise.all([
+        api.getPHPInfo(ref),
+        api.listRuntimes().catch(() => [] as RuntimeBuild[]),
+      ]);
+      phpInfo = info;
+      phpRuntimes = builds;
+    } catch (caught) {
+      phpError = describeError(caught);
+    } finally {
+      phpLoading = false;
+    }
+  }
+
   async function load(initial = false): Promise<void> {
     if (initial) loading = true;
     error = null;
@@ -93,6 +165,7 @@
     }
     try {
       site = await api.getSite(ref);
+      if (site.kind === 'php') await loadPHP();
     } catch (caught) {
       const described = describeError(caught);
       if (described.code === 'NOT_FOUND') {
@@ -150,6 +223,53 @@
       toastError(`Could not ${action} ${site.name}`, `${described.code}: ${described.message}`);
     } finally {
       busyAction = null;
+    }
+  }
+
+  async function applyPHP(change: PHPChange): Promise<void> {
+    if (!site || phpApplying) return;
+    const current = site;
+    phpApplying = true;
+    phpApplyError = null;
+    try {
+      await api.applyPHP(current.id, change);
+      addToast({
+        kind: 'success',
+        title: 'PHP settings applied',
+        message: stopped
+          ? 'Configuration validated. Changes apply on next start.'
+          : 'Validated, staged, and swapped onto the new FPM master.',
+      });
+      await load();
+    } finally {
+      phpApplying = false;
+    }
+  }
+
+  async function onExtensionsChange(value: Record<string, boolean>): Promise<void> {
+    phpSwitchError = null;
+    try {
+      await applyPHP({ extensions: value });
+    } catch (caught) {
+      phpApplyError = describePHPError(caught);
+    }
+  }
+
+  function openSwitch(): void {
+    phpSwitchError = null;
+    switchBuild = switchCandidates[0]?.id ?? '';
+    switchOpen = true;
+  }
+
+  async function switchPHP(): Promise<void> {
+    const target = switchTarget;
+    if (!site || !target) return;
+    switchOpen = false;
+    phpSwitchError = null;
+    try {
+      await applyPHP({ version: target.line, build: target.id });
+    } catch (caught) {
+      phpSwitchError = describePHPError(caught);
     }
   }
 
@@ -335,6 +455,12 @@
               <dt>Runtime</dt>
               <dd class="mono">{runtimeLabel(site)}</dd>
             </div>
+            {#if site.kind === 'php'}
+              <div class="row">
+                <dt>PHP build</dt>
+                <dd class="mono break">{site.php_build || '—'}</dd>
+              </div>
+            {/if}
             <div class="row">
               <dt>Backend</dt>
               <dd class="capitalize">{site.backend}</dd>
@@ -480,6 +606,140 @@
       </aside>
     </div>
 
+    {#if site.kind === 'php'}
+      <section class="php-section" aria-labelledby="php-heading">
+        <div class="php-head">
+          <div class="php-head-copy">
+            <p class="php-eyebrow">PHP</p>
+            <h3 id="php-heading">Runtime configuration</h3>
+            <p class="php-sub">
+              <span>PHP {site.php_version || phpInfo?.build.version}</span>
+              <span class="mono">{site.php_build || phpInfo?.build.id || 'No build pinned'}</span>
+              <span class="mono">
+                FPM
+                {site.fastcgi_port ? `127.0.0.1:${site.fastcgi_port}` : 'not allocated while stopped'}
+              </span>
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onclick={openSwitch}
+            disabled={switchCandidates.length === 0 || phpApplying}
+            title={switchCandidates.length === 0 ? 'No other PHP build is installed' : 'Switch PHP version or build'}
+          >
+            <RotateCw size={12} strokeWidth={2} aria-hidden="true" />
+            Switch build
+          </Button>
+        </div>
+
+        {#if stopped}
+          <p class="php-note" role="status">
+            This site is stopped. Configuration changes are validated now and apply on next start.
+          </p>
+        {/if}
+
+        {#if phpSwitchError}
+          <div class="php-error" role="alert">
+            <div class="php-error-title">
+              <TriangleAlert size={14} strokeWidth={2} aria-hidden="true" />
+              <span>PHP switch failed. The previous build was kept; validate-then-swap rolled back.</span>
+            </div>
+            <p class="php-error-meta">
+              <span class="mono">{phpSwitchError.code}</span>
+              <span>{phpSwitchError.message}</span>
+            </p>
+            {#if phpSwitchError.details?.message}
+              <p class="php-error-line">{phpSwitchError.details.message}</p>
+            {/if}
+            {#if phpSwitchError.details?.line !== undefined}
+              <p class="php-error-line">Line {phpSwitchError.details.line}</p>
+            {/if}
+            {#if phpSwitchError.details?.output}
+              <pre class="php-output" aria-label="PHP switch validation output">{phpSwitchError.details.output}</pre>
+            {/if}
+          </div>
+        {/if}
+
+        {#if phpApplyError && !phpSwitchError}
+          <div class="php-error" role="alert">
+            <div class="php-error-title">
+              <TriangleAlert size={14} strokeWidth={2} aria-hidden="true" />
+              <span>PHP extension change failed. The previous configuration was kept.</span>
+            </div>
+            <p class="php-error-meta">
+              <span class="mono">{phpApplyError.code}</span>
+              <span>{phpApplyError.message}</span>
+            </p>
+            {#if phpApplyError.details?.message}
+              <p class="php-error-line">{phpApplyError.details.message}</p>
+            {/if}
+            {#if phpApplyError.details?.line !== undefined}
+              <p class="php-error-line">Line {phpApplyError.details.line}</p>
+            {/if}
+            {#if phpApplyError.details?.output}
+              <pre class="php-output" aria-label="PHP validation output">{phpApplyError.details.output}</pre>
+            {/if}
+          </div>
+        {/if}
+
+        {#if phpLoading && !phpInfo}
+          <div class="php-loading" aria-busy="true" aria-label="Loading PHP configuration">
+            <Skeleton width="160px" height="12px" />
+            <Skeleton width="100%" height="120px" radius="8px" />
+            <Skeleton width="72%" height="10px" />
+          </div>
+        {:else if phpError}
+          <ErrorBanner
+            title="Could not load PHP configuration"
+            code={phpError.code}
+            message={phpError.message}
+            onretry={loadPHP}
+          />
+        {:else if phpInfo}
+          <div class="php-grid">
+            <div class="php-editor">
+              <PHPIniEditor
+                ini={phpInfo.ini}
+                raw={phpInfo.ini_raw}
+                generated={phpInfo.generated_ini}
+                onApply={applyPHP}
+                disabled={phpApplying}
+              />
+            </div>
+            <div class="php-side">
+              <h4>Extensions</h4>
+              <p class="php-side-copy">
+                Inherit follows the PHP {site.php_version} defaults. On and Off are site-specific
+                overrides; required dependencies are added automatically.
+              </p>
+              <ExtensionToggles
+                extensions={phpInfo.available_extensions}
+                builtins={phpInfo.builtins}
+                value={site.php_extensions ?? {}}
+                onchange={onExtensionsChange}
+                disabled={phpApplying}
+              />
+              <dl class="php-meta">
+                <div>
+                  <dt>Config hash</dt>
+                  <dd class="mono">{phpInfo.config_hash ? `${phpInfo.config_hash.slice(0, 12)}…` : '—'}</dd>
+                </div>
+                <div>
+                  <dt>Resolved</dt>
+                  <dd>{phpInfo.extensions.length} extension{phpInfo.extensions.length === 1 ? '' : 's'}</dd>
+                </div>
+                <div>
+                  <dt>Defaults line</dt>
+                  <dd class="mono">PHP {phpInfo.defaults.version}</dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+        {/if}
+      </section>
+    {/if}
+
     <section class="danger" aria-labelledby="danger-title">
       <div class="danger-copy">
         <p class="danger-eyebrow">Danger zone</p>
@@ -512,6 +772,37 @@
     if (!deleting) deleteOpen = false;
   }}
 />
+
+<ConfirmDialog
+  open={switchOpen}
+  title={site ? `Switch ${site.name} to another PHP build?` : 'Switch PHP build?'}
+  description="devstack writes and validates the new php.ini and FPM configuration, stages a new master, then swaps traffic. If validation or readiness fails, the previous build stays active and its master is kept — this is the rollback path."
+  confirmLabel="Switch build"
+  busy={phpApplying}
+  onconfirm={switchPHP}
+  oncancel={() => {
+    if (!phpApplying) switchOpen = false;
+  }}
+>
+  {#snippet details()}
+    {#if switchCandidates.length === 0}
+      <p class="switch-empty">No other PHP build is installed. Install one from Runtimes first.</p>
+    {:else}
+      <Field id="switch-php-build" label="Target build">
+        <div class="select-wrap">
+          <select id="switch-php-build" class="input mono" bind:value={switchBuild}>
+            {#each switchCandidates as runtime (runtime.id)}
+              <option value={runtime.id}>
+                PHP {runtime.version} (r{runtime.revision}) · line {runtime.line}
+              </option>
+            {/each}
+          </select>
+          <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+        </div>
+      </Field>
+    {/if}
+  {/snippet}
+</ConfirmDialog>
 
 {#if site}
   <VhostPreviewDrawer
@@ -910,6 +1201,219 @@
     overflow-wrap: anywhere;
   }
 
+  .php-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .php-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    padding-bottom: 11px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .php-head-copy {
+    min-width: 0;
+  }
+
+  .php-eyebrow {
+    color: var(--muted-2);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+
+  .php-head h3 {
+    margin-top: 1px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .php-sub {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 10.5px;
+    overflow-wrap: anywhere;
+  }
+
+  .php-note {
+    padding: 7px 9px;
+    border: 1px solid color-mix(in srgb, var(--info) 28%, var(--border));
+    border-radius: var(--radius);
+    background: var(--info-soft);
+    color: var(--info-fg);
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+
+  .php-error {
+    padding: 9px 11px;
+    border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border));
+    border-left: 3px solid var(--danger);
+    border-radius: var(--radius-lg);
+    background: var(--danger-soft);
+  }
+
+  .php-error-title {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    color: var(--fg);
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.45;
+  }
+
+  .php-error-title :global(svg) {
+    flex: none;
+    margin-top: 1px;
+    color: var(--danger-fg);
+  }
+
+  .php-error-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+
+  .php-error-meta .mono {
+    color: var(--danger-fg);
+  }
+
+  .php-error-line {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+
+  .php-output {
+    margin: 6px 0 0;
+    padding: 9px;
+    max-height: 160px;
+    overflow: auto;
+    border: 1px solid color-mix(in srgb, var(--danger) 22%, var(--border));
+    border-radius: var(--radius);
+    background: var(--log-bg);
+    color: var(--log-fg);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+
+  .php-loading {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    padding: 4px 0;
+  }
+
+  .php-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(280px, 1fr);
+    align-items: start;
+    gap: 18px;
+  }
+
+  .php-editor,
+  .php-side {
+    min-width: 0;
+  }
+
+  .php-side h4 {
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+
+  .php-side-copy {
+    margin: 2px 0 9px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .php-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 12px 0 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .php-meta > div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 5px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .php-meta > div:first-child {
+    border-top: 0;
+  }
+
+  .php-meta dt {
+    color: var(--muted);
+    font-size: 9.5px;
+  }
+
+  .php-meta dd {
+    margin: 0;
+    color: var(--fg);
+    font-size: 9.5px;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .select-wrap {
+    position: relative;
+  }
+
+  .select-wrap :global(select) {
+    appearance: none;
+    width: 100%;
+    padding-right: 30px;
+  }
+
+  .select-wrap :global(svg) {
+    position: absolute;
+    top: 50%;
+    right: 9px;
+    transform: translateY(-50%);
+    color: var(--muted);
+    pointer-events: none;
+  }
+
+  .switch-empty {
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border));
+    border-radius: var(--radius);
+    background: var(--warning-soft);
+    color: var(--warning-fg);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
   .state-card {
     max-width: 640px;
     margin: 40px auto;
@@ -941,6 +1445,10 @@
 
   @media (max-width: 900px) {
     .detail-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .php-grid {
       grid-template-columns: minmax(0, 1fr);
     }
 

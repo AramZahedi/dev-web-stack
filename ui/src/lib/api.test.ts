@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyPHP,
   createSite,
+  getPHPDefaults,
+  getPHPInfo,
   getVhostStatus,
   listSites,
+  migratePHP,
+  phpExec,
+  phpExtensions,
   previewVhost,
   resetApiClientForTests,
   restartSite,
+  savePHPDefaults,
   setServingMode,
   startSite,
   stopSite,
@@ -241,5 +248,124 @@ describe('api client', () => {
       name: 'ApiError',
       code: 'NETWORK_ERROR',
     });
+  });
+
+  it('applies PHP settings with the CSRF token and no managed block', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'csrf-php' }))
+      .mockResolvedValueOnce(jsonResponse({ name: 'blog', kind: 'php' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await applyPHP('blog', {
+      version: '8.4',
+      ini: { memory_limit: '512M' },
+      ini_raw: '; keep\n',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe('/api/v1/sites/blog/php');
+    expect(init.method).toBe('PUT');
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-php');
+    expect(JSON.parse(String(init.body))).toEqual({
+      version: '8.4',
+      ini: { memory_limit: '512M' },
+      ini_raw: '; keep\n',
+    });
+    expect(String(init.body)).not.toContain('devstack extensions (managed)');
+  });
+
+  it('loads PHP info and extensions without CSRF and encodes the version', async () => {
+    const info = {
+      site: { name: 'blog', kind: 'php' },
+      build: { id: 'php@8.4.4-r1', kind: 'php', version: '8.4.4' },
+      ini: {},
+      ini_raw: '',
+      generated_ini: '; BEGIN devstack extensions (managed)\n',
+    };
+    const extensions = [
+      { name: 'xdebug', type: 'zend_extension', so: 'xdebug.so', default: false },
+    ];
+    const defaults = {
+      version: '8.4',
+      ini: { memory_limit: '256M' },
+      extensions: { xdebug: false },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(info))
+      .mockResolvedValueOnce(jsonResponse(extensions))
+      .mockResolvedValueOnce(jsonResponse(defaults));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getPHPInfo('blog')).resolves.toMatchObject({ build: { id: 'php@8.4.4-r1' } });
+    await expect(phpExtensions('8.4')).resolves.toEqual(extensions);
+    await expect(getPHPDefaults('8.4')).resolves.toEqual(defaults);
+
+    const [infoUrl, infoInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(infoUrl).toBe('/api/v1/sites/blog/php');
+    expect(infoInit.method ?? 'GET').toBe('GET');
+    expect(new Headers(infoInit.headers).get('X-CSRF-Token')).toBeNull();
+    const [extensionsUrl, extensionsInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(extensionsUrl).toBe('/api/v1/php/extensions?version=8.4');
+    expect(extensionsInit.method ?? 'GET').toBe('GET');
+    expect(new Headers(extensionsInit.headers).get('X-CSRF-Token')).toBeNull();
+  });
+
+  it('saves PHP defaults with a PUT and CSRF token', async () => {
+    const result = {
+      defaults: { version: '8.4', ini: { memory_limit: '256M' }, extensions: { xdebug: false } },
+      sites: [{ site: 'blog', ok: true }],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'csrf-defaults' }))
+      .mockResolvedValueOnce(jsonResponse(result));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      savePHPDefaults('8.4', { ini: { memory_limit: '256M' }, extensions: { xdebug: false } }),
+    ).resolves.toMatchObject({ defaults: { version: '8.4' } });
+
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe('/api/v1/php/defaults/8.4');
+    expect(init.method).toBe('PUT');
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-defaults');
+    expect(JSON.parse(String(init.body))).toEqual({
+      ini: { memory_limit: '256M' },
+      extensions: { xdebug: false },
+    });
+  });
+
+  it('migrates PHP builds and executes PHP with CSRF-protected bodies', async () => {
+    const results = [{ site: 'blog', ok: true }];
+    const execResult = { exit_code: 0, stdout: 'PHP 8.4.4', stderr: '' };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'csrf-migrate' }))
+      .mockResolvedValueOnce(jsonResponse(results))
+      .mockResolvedValueOnce(jsonResponse(execResult));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      migratePHP({ from_version: '8.4', to_version: '8.5', to_build: 'php@8.5.0-r1' }),
+    ).resolves.toEqual(results);
+    await expect(phpExec('blog', ['-v'])).resolves.toEqual(execResult);
+
+    const [migrateUrl, migrateInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(migrateUrl).toBe('/api/v1/php/migrate');
+    expect(migrateInit.method).toBe('POST');
+    expect(new Headers(migrateInit.headers).get('X-CSRF-Token')).toBe('csrf-migrate');
+    expect(JSON.parse(String(migrateInit.body))).toEqual({
+      from_version: '8.4',
+      to_version: '8.5',
+      to_build: 'php@8.5.0-r1',
+    });
+    const [execUrl, execInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(execUrl).toBe('/api/v1/sites/blog/php/exec');
+    expect(execInit.method).toBe('POST');
+    expect(new Headers(execInit.headers).get('X-CSRF-Token')).toBe('csrf-migrate');
+    expect(JSON.parse(String(execInit.body))).toEqual({ argv: ['-v'] });
   });
 });

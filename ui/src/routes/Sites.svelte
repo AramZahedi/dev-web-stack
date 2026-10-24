@@ -76,6 +76,7 @@
   });
 
   const nodeBuilds = $derived(runtimes.filter((runtime) => runtime.kind === 'node').length);
+  const phpBuilds = $derived(runtimes.filter((runtime) => runtime.kind === 'php').length);
   const unavailable = $derived(Boolean(error) && sites.length === 0);
 
   async function load(initial = false): Promise<void> {
@@ -227,7 +228,9 @@
       {:else}
         <p class="tile-value mono">{unavailable ? '—' : runtimes.length}</p>
         <p class="tile-context">
-          {unavailable ? 'Unavailable' : `${nodeBuilds} Node ${nodeBuilds === 1 ? 'build' : 'builds'} installed`}
+          {unavailable
+            ? 'Unavailable'
+            : `${nodeBuilds} Node · ${phpBuilds} PHP ${nodeBuilds + phpBuilds === 1 ? 'build' : 'builds'}`}
         </p>
       {/if}
     </div>

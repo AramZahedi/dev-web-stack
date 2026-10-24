@@ -8,6 +8,14 @@ import type {
   FsListing,
   Health,
   LogLine,
+  PHPChange,
+  PHPDefaults,
+  PHPDefaultsResult,
+  PHPExecResult,
+  PHPExtension,
+  PHPInfo,
+  PHPMigrationRequest,
+  PHPMigrationResult,
   RuntimeBuild,
   Session,
   Settings,
@@ -102,7 +110,7 @@ async function fetchSession(): Promise<string> {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   mutation?: boolean;
   /** Endpoints that return no meaningful JSON payload (lifecycle actions, deletes). */
@@ -226,6 +234,50 @@ export async function removeRuntime(buildID: string): Promise<void> {
   await request<void>(`/runtimes/${encodeURIComponent(buildID)}`, {
     method: 'DELETE',
     voidResponse: true,
+  });
+}
+
+export async function getPHPInfo(ref: string): Promise<PHPInfo> {
+  if (isMockMode) return mockApi.getPHPInfo(ref);
+  return request<PHPInfo>(`${sitePath(ref)}/php`);
+}
+
+export async function applyPHP(ref: string, change: PHPChange): Promise<Site> {
+  if (isMockMode) return mockApi.applyPHP(ref, change);
+  return request<Site>(`${sitePath(ref)}/php`, { method: 'PUT', body: change });
+}
+
+export async function phpExtensions(version: string): Promise<PHPExtension[]> {
+  if (isMockMode) return mockApi.phpExtensions(version);
+  return request<PHPExtension[]>(`/php/extensions?version=${encodeURIComponent(version)}`);
+}
+
+export async function getPHPDefaults(version: string): Promise<PHPDefaults> {
+  if (isMockMode) return mockApi.getPHPDefaults(version);
+  return request<PHPDefaults>(`/php/defaults/${encodeURIComponent(version)}`);
+}
+
+export async function savePHPDefaults(
+  version: string,
+  defaults: Pick<PHPDefaults, 'ini' | 'extensions'>,
+): Promise<PHPDefaultsResult> {
+  if (isMockMode) return mockApi.savePHPDefaults(version, defaults);
+  return request<PHPDefaultsResult>(`/php/defaults/${encodeURIComponent(version)}`, {
+    method: 'PUT',
+    body: defaults,
+  });
+}
+
+export async function migratePHP(change: PHPMigrationRequest): Promise<PHPMigrationResult[]> {
+  if (isMockMode) return mockApi.migratePHP(change);
+  return request<PHPMigrationResult[]>('/php/migrate', { method: 'POST', body: change });
+}
+
+export async function phpExec(ref: string, argv: string[]): Promise<PHPExecResult> {
+  if (isMockMode) return mockApi.phpExec(ref, argv);
+  return request<PHPExecResult>(`${sitePath(ref)}/php/exec`, {
+    method: 'POST',
+    body: { argv },
   });
 }
 

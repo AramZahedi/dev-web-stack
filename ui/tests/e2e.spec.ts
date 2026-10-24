@@ -7,6 +7,9 @@ import { expect, test, type Page } from '@playwright/test';
 
 const SITE_NAME = 'portfolio';
 const SITE_PATH = '/home/dev/projects/scratch';
+const PHP_SITE_NAME = 'phpdemo';
+const PHP_BUILD = 'php@8.4.4-r1';
+const PHP_FAILING_BUILD = 'php@8.5.0-r1';
 
 interface MockSite {
   name: string;
@@ -137,6 +140,119 @@ test('Add Site browses a folder, applies options, and navigates to the new site'
   });
 });
 
+test('PHP site creation, ini/extensions, and failed build switch roll back', async ({ page }) => {
+  await open(page, '#/sites/new');
+
+  await expect(page.getByRole('heading', { name: 'Project details' })).toBeVisible();
+  await page.locator('#site-name').fill(PHP_SITE_NAME);
+
+  await page.getByRole('button', { name: 'Browse' }).click();
+  const browser = page.getByRole('dialog', { name: 'Choose a project folder' });
+  await browser.getByRole('button', { name: 'projects', exact: true }).click();
+  await browser.getByRole('button', { name: 'scratch', exact: true }).click();
+  await browser.getByRole('button', { name: 'Use this folder' }).click();
+  await expect(browser).toBeHidden();
+
+  await page.locator('label.kind-card').filter({ hasText: 'A PHP-FPM pool' }).click();
+  await expect(page.locator('#kind-php')).toBeChecked();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'How should it run?' })).toBeVisible();
+
+  const build = page.locator('#php-build');
+  await expect(build).toBeVisible();
+  await build.selectOption(PHP_BUILD);
+  await page.locator('#php-document-root').fill('public');
+  await expect(page.getByRole('switch', { name: 'Front controller' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'Domain and options' })).toBeVisible();
+  await page.getByRole('button', { name: 'Create site' }).click();
+  await page.waitForURL(/#\/sites\/s_/);
+
+  await expect(page.getByRole('heading', { name: PHP_SITE_NAME })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Runtime configuration' })).toBeVisible();
+  await expect(page.getByText(PHP_BUILD, { exact: true }).first()).toBeVisible();
+
+  // The create payload carries the selected line, build, document root, and
+  // front-controller flag.
+  const created = await page.evaluate(async (name) => {
+    const modulePath = '/src/lib/mock.ts';
+    const mock = (await import(modulePath)) as {
+      mockApi: {
+        getSite(ref: string): Promise<{
+          kind: string;
+          php_version: string;
+          php_build: string;
+          document_root: string;
+          front_controller: boolean;
+        }>;
+      };
+    };
+    return mock.mockApi.getSite(name);
+  }, PHP_SITE_NAME);
+  expect(created).toMatchObject({
+    kind: 'php',
+    php_version: '8.4',
+    php_build: PHP_BUILD,
+    document_root: 'public',
+    front_controller: true,
+  });
+
+  // Extensions apply immediately; xdebug starts inherited (off).
+  const xdebug = page.getByRole('group', { name: 'xdebug' });
+  await expect(xdebug.getByText('Inherit (off)')).toBeVisible();
+  await xdebug.getByRole('button', { name: 'Enable xdebug' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'PHP settings applied' })).toBeVisible();
+
+  const raw = page.getByLabel('Site php.ini section');
+  await expect(raw).not.toHaveValue(/devstack extensions \(managed\)/);
+  await raw.fill('memory_limit = 512M\ndisplay_errors = On\n');
+  await page.getByRole('button', { name: 'Apply PHP settings' }).click();
+  // The editor disables itself while the mutation is in flight; wait for the
+  // round-trip and the follow-up reload before reading the record back.
+  await expect(page.getByRole('button', { name: 'Apply PHP settings' })).toBeEnabled();
+  await expect(raw).toHaveValue('memory_limit = 512M\ndisplay_errors = On\n');
+
+  const applied = await page.evaluate(async (name) => {
+    const modulePath = '/src/lib/mock.ts';
+    const mock = (await import(modulePath)) as {
+      mockApi: {
+        getSite(ref: string): Promise<{
+          php_extensions?: Record<string, boolean>;
+          php_ini_raw: string;
+        }>;
+      };
+    };
+    return mock.mockApi.getSite(name);
+  }, PHP_SITE_NAME);
+  expect(applied.php_extensions).toMatchObject({ xdebug: true });
+  expect(applied.php_ini_raw).toContain('memory_limit = 512M');
+
+  // The mock rejects this build to exercise validate-then-swap rollback.
+  await page.getByRole('button', { name: 'Switch build' }).click();
+  const dialog = page.getByRole('dialog', { name: `Switch ${PHP_SITE_NAME} to another PHP build?` });
+  await dialog.locator('#switch-php-build').selectOption(PHP_FAILING_BUILD);
+  await dialog.getByRole('button', { name: 'Switch build', exact: true }).click();
+
+  await expect(
+    page.getByText(/The previous build was kept; validate-then-swap rolled back/),
+  ).toBeVisible();
+  await expect(page.getByText(/PHP_CONFIG_INVALID/)).toBeVisible();
+  await expect(page.getByText('Line 4', { exact: true })).toBeVisible();
+
+  const afterFailure = await page.evaluate(async (name) => {
+    const modulePath = '/src/lib/mock.ts';
+    const mock = (await import(modulePath)) as {
+      mockApi: { getSite(ref: string): Promise<{ php_build: string }> };
+    };
+    return mock.mockApi.getSite(name);
+  }, PHP_SITE_NAME);
+  expect(afterFailure.php_build).toBe(PHP_BUILD);
+});
+
 test('Site detail streams logs, pauses/resumes, and stops/starts the site', async ({ page }) => {
   await open(page, '#/sites/blog');
 
@@ -175,7 +291,7 @@ test('Site detail streams logs, pauses/resumes, and stops/starts the site', asyn
 test('Runtimes asks for confirmation and installs a build', async ({ page }) => {
   await open(page, '#/runtimes');
 
-  await expect(page.getByRole('heading', { name: 'Verified Node runtimes' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Verified runtimes' })).toBeVisible();
   const installed = page.locator('section[aria-labelledby="installed-heading"]');
   const available = page.locator('section[aria-labelledby="available-heading"]');
   await expect(installed.getByRole('heading', { name: 'Node 24.9.0' })).toBeVisible();
@@ -337,7 +453,7 @@ test.describe('375px viewport', () => {
       name: 'Runtimes',
       hash: '#/runtimes',
       ready: async (page: Page) => {
-        await expect(page.getByRole('heading', { name: 'Verified Node runtimes' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Verified runtimes' })).toBeVisible();
       },
     },
     {
