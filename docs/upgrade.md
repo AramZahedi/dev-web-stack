@@ -5,9 +5,9 @@ This guide covers forward upgrades of a Linux install. Upgrades replace the
 up device state before the store applies a schema migration. Downgrades are not
 supported.
 
-M1 release archives are unsigned and Linux x86_64 only. The version numbers
-below (`0.2.0`) are placeholders; no release tag has been published from this
-branch yet. There is no automatic update check or self-update, and M1 does not
+M1 release archives are unsigned and Linux x86_64 only. The current published
+release is `v0.1.0`; the later version numbers below (`0.2.0`) are examples for
+a future upgrade. There is no automatic update check or self-update, and M1 does not
 create a diagnostics bundle: use `devstack doctor --json` plus service logs for
 support.
 

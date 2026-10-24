@@ -1,5 +1,12 @@
 # dev-web-stack — Plan 2 (PHP) Handoff / Status
 
+> **Later completion note (2026-10-25):** the production PHP gate described here
+> was completed in Plan 4. The `v0.1.0` catalog contains real 8.2.35, 8.3.36,
+> 8.4.27, and 8.5.12 entries from `php-runtimes-2026-10-25`; real 8.2/8.5
+> side-by-side and in-flight continuity pass. See the
+> [M1 handoff](2026-10-24-m1-handoff.md) and
+> [Plan 4 acceptance report](../plans/2026-10-24-dev-web-stack-plan-4-acceptance.md).
+
 - **Date:** 2026-10-24
 - **Branch:** `plan-2-php` (created from `plan-1-foundation` at `4f7ab97`)
 - **Remote:** `origin` (`git@github.com:AramZahedi/dev-web-stack.git`)

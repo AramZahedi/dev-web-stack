@@ -3,29 +3,25 @@
 A local web development stack for Linux: static, Node, and PHP sites served at
 trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 
-> **Status:** M1's Linux scope is implemented on branch `plan-4-release`. Plan 1
-> (foundation) and Plan 2 (PHP) automated acceptance pass. Plan 4 adds unsigned,
-> checksummed Linux x86_64 release archives. The installer is tested with local
-> source/archive fixtures and a fake `curl`; the HTTPS download path has not
-> been exercised against a real release server, and no release is published yet.
-> Plan 4 also adds forward upgrades with an automatic pre-migration SQLite
-> backup; a gated PHP catalog
-> merge; and the full Linux M1 acceptance runner. See the
+> **Status:** the Linux M1 release is published as `v0.1.0`. Plan 1
+> (foundation), Plan 2 (PHP), and Plan 4 (packaging/release) automated
+> acceptance pass; the final Linux run is **19 PASS, 0 FAIL, 1 SKIP,
+> 1 BLOCKED**. The skip is the manual browser/root/UI set; the block is
+> Windows/WSL (Plan 3, deferred by user request). The installer's public
+> `--release 0.1.0` path, the runtime downloads, Apache HTTPS, and in-flight PHP
+> continuity were exercised. See the
 > [Plan 4 acceptance report](docs/superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md)
-> and the [M1 handoff](docs/superpowers/status/2026-10-24-m1-handoff.md). This
-> branch has not been merged and no release tag or GitHub release has been
-> published from it.
+> and the [M1 handoff](docs/superpowers/status/2026-10-24-m1-handoff.md).
 >
-> **M1 is Linux-only and unsigned.** Windows/WSL (Plan 3) is deferred by user
-> request: there is no `devstack-agent`, named-pipe helper, `install.ps1`, or
-> Windows artifact. Signed packages/installers, diagnostics bundles,
-> auto-update, remote catalogs, arm64, and log aggregation are M4 work.
+> **M1 is Linux-only and unsigned.** Windows/WSL is deferred: there is no
+> `devstack-agent`, named-pipe helper, `install.ps1`, or Windows artifact.
+> Signed packages/installers, diagnostics bundles, auto-update, remote catalogs,
+> arm64, and log aggregation are M4 work.
 >
-> **PHP is not installable from the shipped catalog yet.** The production PHP
-> catalog stays empty until the release pipeline publishes checksummed
-> `php-<version>-r<revision>-linux-x64.tar.gz` archives and their entries are
-> merged. The real PHP 8.2/8.5 side-by-side gate is **BLOCKED** on those
-> artifacts. See [PHP](docs/php.md).
+> **PHP 8.2–8.5 are installable from the shipped catalog.** The app release
+> embeds `php@8.2.35-r1`, `8.3.36-r1`, `8.4.27-r1`, and `8.5.12-r1`; the
+> `php-runtimes-2026-10-25` release provides checksummed archives and SPDX
+> SBOMs. The real 8.2/8.5 side-by-side gate passes. See [PHP](docs/php.md).
 >
 > **Support surface:** `devstack doctor --json` is the diagnostic snapshot to
 > attach to a bug report. M1 does not create a diagnostics zip/bundle, and it
@@ -53,10 +49,10 @@ devstack init
 A downloaded archive can be installed with
 `--archive devstack_0.1.0_linux_amd64.tar.gz --checksums checksums.txt`.
 
-No release tag has been published from this branch yet. Until one is, use the
-source install above or a local archive produced with
-`make release VERSION=<semver>`. The release path is documented in
-[Release](docs/release.md).
+`v0.1.0` is published and `./install.sh --release 0.1.0` downloads and verifies
+the public archive. For local development, use the source install above or a
+local archive produced with `make release VERSION=<semver>`. The release path is
+documented in [Release](docs/release.md).
 
 `install.sh` runs as your normal user and uses `sudo` for the helper binary,
 configuration, and system unit. It does not install packages. `devstack init`
@@ -155,25 +151,22 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
   `devstack`, `devstack-helper`, `install.sh`, `README.md`, and `LICENSE` when
   present, plus a SHA-256 `checksums.txt`. There is no Windows, WSL, macOS,
   arm64, or `devstack-agent` artifact. Signed packages/installers are M4.
-- **PHP installation is gated.** The production catalog has no PHP entries until
-  the release pipeline publishes checksummed archives and merges their entries.
-  `devstack runtime list` shows only Node builds in shipped releases. The build,
-  smoke, SBOM, and catalog-generation steps run in CI; this repository does not
-  publish artifacts or commit catalog changes.
-- **The real multi-version PHP gate is blocked.** PHP 8.2 and 8.5 side-by-side
-  acceptance requires the checksummed artifacts produced by the Task 11 CI
-  pipeline. Until those are published, tests use fixture catalog rows plus the
-  system PHP 8.4 build; this does not prove production PHP installation works.
-  See the
-  [Plan 2 acceptance report](docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
+- **PHP installation is published.** The `v0.1.0` catalog embeds PHP 8.2.35,
+  8.3.36, 8.4.27, and 8.5.12 with checksummed archives in
+  `php-runtimes-2026-10-25`. `devstack runtime list` shows those builds, and the
+  final acceptance downloaded 8.2.35/8.5.12 and served both. A newer version
+  needs a newer app release that embeds its catalog entry.
+- **The real multi-version PHP gate passes.** Published 8.2.35 and 8.5.12
+  artifacts were served side by side; the final public-catalog acceptance
+  downloaded both and verified their checksums. See [PHP](docs/php.md).
 - `imap` is omitted from the current PHP build pipeline because the verified
   upstream release does not cover the manifest's PHP 8.2/8.3 pairing; see
   [build/php/README.md](build/php/README.md).
 - Automated external serving is verified with real nginx on high ports. The Plan
-  2 nginx PHP vhost passes `nginx -t`; the Apache HTTP PHP vhost passes
-  `httpd -t`. Only the Apache HTTPS vhost is skipped on this workstation because
-  `mod_ssl` is absent. Real Apache serving and browser-trust checks remain manual
-  acceptance items; see the
+  2 nginx PHP vhost passes `nginx -t`; the Apache HTTP and HTTPS PHP vhosts pass
+  `httpd -t`. With `mod_ssl` installed, a live Apache TLS listener served a real
+  request through PHP-FPM. Real Apache mode switching and browser-trust checks
+  remain manual acceptance items; see the
   [Plan 1 acceptance report](docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md)
   and the
   [Plan 2 acceptance report](docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
@@ -181,17 +174,17 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
   Apache serving are MANUAL and were not run** in this unprivileged acceptance.
   The acceptance runner never edits `/etc/hosts`, host trust stores, or system
   services.
-- **In-flight request continuity across a successful PHP swap is NOT
-  MEASURED.** The tests prove validate-then-swap and rollback, not concurrent
-  request survival.
+- **In-flight request continuity across a successful PHP swap passes.** The
+  load test completed 89/89 requests with 0 failures while a new generation
+  replaced the old one; a 2-second drain grace protects queued connections.
 - Node HMR WebSockets are covered by automated proxy tests, but no browser HMR
   session was part of the acceptance pass.
 - The PHP full source build and FPM smoke test are verified by CI on
-  `ubuntu-22.04`, not by the local development environment.
-- The release/installer/workflow tests validate the checked-in configuration,
-  but this local acceptance did not observe a CI run. CI is not claimed green
-  here. The manual platform matrix (Ubuntu 22.04/24.04, Debian 12, Fedora 44,
-  Windows/WSL) was not run; local acceptance used Fedora 44.
+  `ubuntu-22.04`; the published artifacts were downloaded and exercised in the
+  final acceptance run.
+- App CI, the tag-driven release workflow, and master CI are green. The manual
+  platform matrix (Ubuntu 22.04/24.04, Debian 12, Fedora 44, Windows/WSL) was
+  not run as a full matrix; local acceptance used Fedora 44.
 
 ## Documentation
 

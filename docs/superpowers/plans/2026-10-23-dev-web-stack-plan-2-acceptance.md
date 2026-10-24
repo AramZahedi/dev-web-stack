@@ -1,5 +1,12 @@
 # Plan 2 Acceptance Report
 
+> **Later completion note (2026-10-25):** the managed-artifact and production
+> catalog gates recorded here as BLOCKED were completed in Plan 4. Real 8.2.35,
+> 8.3.36, 8.4.27, and 8.5.12 archives are published, the catalog contains them,
+> Apache HTTPS and in-flight PHP continuity pass, and the final Linux acceptance
+> is 19 PASS / 0 FAIL / 1 SKIP / 1 BLOCKED. See the
+> [Plan 4 acceptance report](2026-10-24-dev-web-stack-plan-4-acceptance.md).
+
 - **Date:** 2026-10-24
 - **Base revision:** `65ad1bf` (`docs: record plan 2 status through task 11`), plus
   the acceptance test, review-fix, and documentation commits in this change set.

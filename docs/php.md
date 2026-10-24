@@ -4,15 +4,13 @@ devstack runs PHP sites on per-site `php-fpm` masters and serves them through
 FastCGI. Each site can pin a PHP major.minor line and an exact build, keep its
 own `php.ini`, and toggle shared extensions.
 
-> **Artifact gate:** the production catalog shipped in `devstack` currently has
-> no PHP builds. `devstack runtime list` shows Node builds only, and PHP site
-> creation or `devstack runtime install` will report that no PHP build is
-> available until the release pipeline publishes checksummed
-> `php-<version>-r<revision>-linux-x64.tar.gz` archives and a release job merges
-> their catalog entries with `cmd/catalogmerge`. The build pipeline in this
-> repository produces those artifacts in CI; it does not publish them
-> automatically. Do not expect PHP installation to work from a release build
-> yet.
+> **Artifact gate: resolved.** The production catalog shipped in `devstack`
+> contains PHP 8.2.35, 8.3.36, 8.4.27, and 8.5.12 builds from the
+> `php-runtimes-2026-10-25` release. `devstack runtime list` shows the Node and
+> PHP builds embedded in the binary. The archives are published with checksums
+> and SPDX SBOMs; the catalog entries were merged with `cmd/catalogmerge`.
+> A newly published version still requires a new release binary before
+> `devstack runtime install` can see it.
 
 ## Acceptance status
 
@@ -24,24 +22,23 @@ ports in **43000-43999**, and verifies direct FastCGI responses, built-in proxy
 responses, per-site `php.ini`, Xdebug isolation, a rejected malformed ini while
 the old master keeps serving, a failed build switch with rollback and port
 release, migration, removal blocking, stop/start, and the Doctor PHP checks. The
-generated nginx PHP vhost passes real `nginx -t`; the Apache config test is
-skipped because this workstation has no `mod_ssl`.
+rendered Apache PHP vhost passes `httpd -t` over HTTP and HTTPS; a live Apache
+TLS listener served a real request through PHP-FPM. The in-flight load test
+completed 89/89 requests with a successful generation swap.
 
-This does **not** mean production PHP installation works yet. The test builds a
-filtered catalog manifest from the embedded fixture plus the system `php -m` and
-present `.so` files, precisely because the shipped catalog has no PHP entries.
-The release gate still requires checksummed 8.2 and 8.5 artifacts from the Task
-11 CI pipeline and a real 8.2/8.5 side-by-side run. The Plan 4 Linux acceptance
-runner re-runs this system-PHP acceptance and records the real 8.2/8.5 gate as
-**BLOCKED** and in-flight continuity as **NOT MEASURED**. See the
+The release catalog now contains real 8.2.35, 8.3.36, 8.4.27, and 8.5.12
+entries. `TestPHPCrossLineAcceptance` registered extracted 8.2.35 and 8.5.12
+artifacts and served both side by side. The final public-catalog acceptance run
+downloaded both archives from the runtime release, verified their checksums,
+and passed. See the
 [Plan 2 acceptance report](superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md)
 and the
 [Plan 4 acceptance report](superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md).
 
-## Install a PHP build (after the artifact gate opens)
+## Install a PHP build
 
-A PHP site needs an installed build on its line. Once catalog entries are
-published, install the exact build:
+A PHP site needs an installed build on its line. Install the exact build from
+the published catalog:
 
 ```sh
 devstack runtime list
@@ -51,7 +48,10 @@ devstack runtime install php@8.4.27-r1
 Use `--yes` to skip the confirmation prompt. The release catalog is embedded in
 the binary, so a new release is required before a newly published build becomes
 available to `devstack runtime install`. Builds are linux-x64 and are pinned by
-SHA-256 and size; a modified or truncated download is rejected.
+SHA-256 and size; a modified or truncated download is rejected. The final
+acceptance downloaded the published 8.2.35/8.5.12 archives and served them; the
+CLI runtime-install wrapper itself is covered by the installer/runtime fixture
+tests, not a separate live CLI run.
 
 Contributors can build an artifact locally with the pipeline; see
 [build/php/README.md](../build/php/README.md). A locally built archive is for
@@ -305,11 +305,11 @@ directive that FPM rejects. The artifact bundles non-glibc libraries and uses an
 `$ORIGIN`-relative RPATH; the host must still provide glibc compatible with the
 Ubuntu 22.04 build baseline (glibc 2.35 or newer).
 
-### No PHP build is available
+### Requested PHP build is not available
 
-This is the artifact gate, not a local failure. `devstack runtime list` will
-show no PHP entries until the release pipeline publishes artifacts and a release
-binary embeds their catalog entries. The build and smoke commands verify
+The current release embeds 8.2.35, 8.3.36, 8.4.27, and 8.5.12. A requested
+different version or revision is not in this binary; it needs a newer release
+whose embedded catalog contains it. The build and smoke commands verify
 artifacts in CI, but merging `php-catalog.json` into
 `internal/catalog/catalog.json` is a gated release step, not a CI commit.
 
@@ -350,11 +350,11 @@ version and revision; and writes atomically. `--check` writes nothing.
 Malformed, duplicate, HTTP, missing-artifact, or mismatched-artifact entries fail
 with a non-zero exit and no partial output.
 
-**Current state: BLOCKED.** No real 8.2, 8.3, 8.4, or 8.5 artifacts have been
-published from this environment, so the production catalog stays Node-only. The
-gate opens only after all four archives and their checksums are uploaded to a
-real HTTPS release host and the merge above passes in `--check` mode. A release
-that embeds the merged catalog must then be built and published.
+**Current state: PUBLISHED.** The four real archives and checksums are at
+`https://github.com/AramZahedi/dev-web-stack/releases/tag/php-runtimes-2026-10-25`.
+The merge passed in `--check` mode, the catalog was committed at `784c830`, and
+the `v0.1.0` release embeds it. The repository variable
+`PHP_DOWNLOAD_BASE_URL` points at the PHP release for future catalog jobs.
 
 ## Build and release gate
 
@@ -379,17 +379,18 @@ The pipeline is in [build/php/README.md](../build/php/README.md) and
 
 The workflow never edits `internal/catalog/catalog.json` and does not publish a
 release. Publication and the catalog merge happen only after the artifacts are
-uploaded to the real release host, and the production PHP catalog stays empty
-until then.
+uploaded to the real release host. That happened for
+`php-runtimes-2026-10-25`; the production catalog is no longer empty.
 
 The merge is performed by `cmd/catalogmerge` (see the command above and the
-[release guide](release.md#php-catalog-gate-still-blocked)). The release
+[release guide](release.md#php-catalog-gate-completed)). The release
 workflow does not run it: the tag-driven release publishes the CLI and helper
 only. Keeping the merge out of the release workflow prevents a tagged build from
 silently embedding URLs or checksums that were never published.
 
-**Remaining BLOCKED gate:** real PHP 8.2/8.5 side-by-side acceptance still
-requires published artifacts, the merged catalog, and a release binary that
-contains it. Until all four lines have real archives with matching checksums,
-the production catalog stays Node-only and this gate is reported as BLOCKED,
-not passed.
+**Real PHP 8.2/8.5 side-by-side acceptance is PASS:** the published 8.2.35 and
+8.5.12 archives were served side by side, and the final public-catalog
+acceptance downloaded both from the runtime release and verified their
+checksums. The release guide's
+[PHP catalog gate](release.md#php-catalog-gate-completed) records the completed
+merge.

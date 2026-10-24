@@ -1,5 +1,13 @@
 # dev-web-stack M1 — Plan 4: Release Packaging, Upgrade, and M1 Acceptance (Linux)
 
+> **Completion note (2026-10-25):** this plan was executed. The app is released
+> as `v0.1.0`, the PHP runtime archives are published in
+> `php-runtimes-2026-10-25`, and the production catalog has real 8.2.35,
+> 8.3.36, 8.4.27, and 8.5.12 entries. The “catalog stays empty” and “BLOCKED”
+> statements below describe the state when the plan was written; the final
+> result is in the [Plan 4 acceptance report](2026-10-24-dev-web-stack-plan-4-acceptance.md)
+> and the [M1 handoff](../status/2026-10-24-m1-handoff.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Use checkboxes (`- [ ]`) for tracking.
 
 **Goal:** Ship a reproducible, checksum-verified Linux x86_64 release of dev-web-stack; let `install.sh` install or upgrade from a published archive; preserve data across schema migrations; make the PHP catalog publication a gated release step; polish the docs; and run an honest full-M1 acceptance for the Linux scope.

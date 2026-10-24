@@ -5,10 +5,10 @@ PHP sites at trusted `https://<name>.test` URLs and manages the daemon, helper,
 hosts entries, and local certificate authority.
 
 This document covers the Linux install. External nginx/Apache serving is
-available now. PHP is implemented, but its production build artifacts are gated
-until the release pipeline publishes them (see [PHP](php.md)). M1 is Linux-only;
-Windows/WSL (Plan 3) is deferred by user request. Release archives are unsigned
-and checksum-verified. See [Sites](sites.md), [Vhosts](vhosts.md), and
+available. PHP 8.2–8.5 builds are published in the `v0.1.0` catalog (see
+[PHP](php.md)). M1 is Linux-only; Windows/WSL (Plan 3) is deferred by user
+request. Release archives are unsigned and checksum-verified. See
+[Sites](sites.md), [Vhosts](vhosts.md), and
 [TLS and trust](tls.md) for day-to-day use, and [Release](release.md) for the
 packaging and publication path.
 
@@ -93,11 +93,11 @@ archive, and a release downloaded from GitHub.
 plain-HTTP fallback. `--archive` and `--checksums` must be supplied together and
 cannot be combined with `--release`.
 
-No release tag has been published from this branch yet, so `--release` will
-return 404 until a release is published. Use the source install or a local
-archive produced with `make release VERSION=<semver>` in the meantime. Release
-archives are **unsigned**; the SHA-256 manifest detects corruption and
-tampering in transit, not a compromised release host.
+`v0.1.0` is published, so `--release 0.1.0` downloads and verifies the public
+archive. For local development you can still use the source install or a local
+archive produced with `make release VERSION=<semver>`. Release archives are
+**unsigned**; the SHA-256 manifest detects corruption and tampering in transit,
+not a compromised release host.
 
 Before any file is written, the installer:
 
@@ -378,8 +378,8 @@ markers by hand.
   available for static, Node, and PHP sites. The external server must already be
   installed and own 80/443; Apache PHP vhosts additionally need `proxy_fcgi`.
 - Static, Node, and PHP sites are supported. PHP sites need an installed build;
-  the production PHP catalog is gated until release artifacts are published
-  (see [PHP](php.md)).
+  `v0.1.0` embeds PHP 8.2.35, 8.3.36, 8.4.27, and 8.5.12 entries from the
+  published runtime release (see [PHP](php.md)).
 - Linux x86_64 and systemd only. Windows/WSL (Plan 3) is **deferred by user
   request**; there is no `devstack-agent`, `install.ps1`, or Windows release.
 - Release archives are unsigned and Linux x86_64 only. Signed packages and

@@ -17,9 +17,9 @@ PHP catalog merge that runs only after real PHP artifacts are published.
   Installing a newer release is an explicit installer run.
 - **No diagnostics bundle:** M1 does not create a diagnostics zip/bundle.
   `devstack doctor --json` is the support surface.
-- **Not published yet:** this branch has no release tag and no GitHub release.
-  The commands below describe the release path; they do not claim a published
-  artifact exists.
+- **Published:** the app release is `v0.1.0`; the PHP runtime release is
+  `php-runtimes-2026-10-25`. Both carry checksummed archives. The app release
+  also attaches `install.sh`.
 
 Windows/WSL is deferred with Plan 3; signing, diagnostics bundles, and
 auto-update are M4 non-goals. The Plan 4 acceptance report records the release,
@@ -128,14 +128,14 @@ linux/amd64 only, writes `checksums.txt`, and attaches `install.sh` to the
 release. The configuration's `before` hook runs the UI build again so the
 embedded dashboard matches the tagged source.
 
-The workflow is configured to run `goreleaser check`, so a live CI run is the
-first full GoReleaser validation when GoReleaser is not installed locally. The
-local `test/release/workflow_test.sh` only validates the checked-in workflow and
-configuration contract; it does not prove CI is green or that a release was
-published.
+The workflow runs `goreleaser check` and passed at `v0.1.0` (run
+`40139716377`), publishing the app archive, `checksums.txt`, and `install.sh`.
+The local `test/release/workflow_test.sh` validates the checked-in workflow and
+configuration contract; the live run is the evidence for the published release.
 
 The release workflow does **not** publish a PHP catalog. PHP catalog publication
-is a separate gated step described below.
+is a separate gated step described below; it was completed for
+`php-runtimes-2026-10-25`.
 
 ## Install from a release
 
@@ -183,12 +183,13 @@ migration; if it cannot be created or the backups directory cannot be rotated,
 the migration is not applied. A fresh database skips the backup. See
 [upgrade.md](upgrade.md) for the full upgrade and recovery procedure.
 
-## PHP catalog gate (still BLOCKED)
+## PHP catalog gate (completed)
 
-The production catalog `internal/catalog/catalog.json` intentionally contains
-**no PHP entries** in this environment. The PHP workflow
+The production catalog `internal/catalog/catalog.json` now contains four PHP
+entries: `php@8.2.35-r1`, `php@8.3.36-r1`, `php@8.4.27-r1`, and
+`php@8.5.12-r1`, alongside the two Node entries. The PHP workflow
 `.github/workflows/php.yml` builds and uploads a `php-catalog` artifact
-(`{entries:[...]}`) for PHP 8.2, 8.3, 8.4, and 8.5, but it does not publish the
+(`{entries:[...]}`) for PHP 8.2, 8.3, 8.4, and 8.5; it does not publish the
 archives or edit the embedded catalog.
 
 A release may merge that artifact only after all four checksummed
@@ -254,9 +255,13 @@ replaced by the validated set, sorted by version and then revision. The write is
 atomic, and malformed, duplicate, or HTTP entries fail without leaving partial
 output. `--check` validates the complete merge without writing.
 
-Until real 8.2-8.5 artifacts are published, this step remains **BLOCKED**:
-do not invent URLs, checksums, sizes, or catalog entries. The production
-catalog must stay Node-only and `devstack runtime list` may show no PHP builds.
+The four archives are published at
+`https://github.com/AramZahedi/dev-web-stack/releases/tag/php-runtimes-2026-10-25`,
+and the repository variable `PHP_DOWNLOAD_BASE_URL` points there. The catalog
+was merged and committed at `784c830`; `catalogmerge --check` validated two
+Node entries plus four PHP entries. The real 8.2/8.5 side-by-side acceptance
+passed from those published URLs. Do not invent replacements: future version
+bumps must rerun the same gated merge with real checksummed artifacts.
 
 ## Release checklist
 
@@ -273,6 +278,7 @@ catalog must stay Node-only and `devstack runtime list` may show no PHP builds.
    `sha256sum -c checksums.txt` and the final archive member list.
 6. Test `./install.sh --dry-run --release <version>` on a clean machine or
    sandbox before announcing the release.
-7. Leave the PHP catalog unchanged unless the four real artifacts and their
-   checksums exist. If they do, run the gated merge above, commit the catalog,
-   and build the release from that commit.
+7. For a PHP version bump, publish the four real artifacts first, run the gated
+   merge above, commit the catalog, and build the release from that commit.
+   The current catalog already contains 8.2–8.5; do not remove or hand-edit
+   those entries without replacement artifacts.
