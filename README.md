@@ -33,6 +33,17 @@ make build
 devstack init
 ```
 
+To install a published release instead of building, pass `--release`; the
+installer downloads a SHA-256-verified archive over HTTPS:
+
+```sh
+./install.sh --release 0.1.0
+devstack init
+```
+
+A downloaded archive can be installed with
+`--archive devstack_0.1.0_linux_amd64.tar.gz --checksums checksums.txt`.
+
 `install.sh` runs as your normal user and uses `sudo` for the helper binary,
 configuration, and system unit. It does not install packages. `devstack init`
 installs the local CA in the OS/browser trust stores, writes the hosts block,
@@ -40,7 +51,9 @@ starts the helper forwarders and daemon, and runs diagnostics. The helper's
 `auto_forward` setting restores ports 80/443 whenever the service restarts.
 Then open <https://devstack.test>.
 
-Full instructions: [docs/install.md](docs/install.md).
+Full instructions: [docs/install.md](docs/install.md). To upgrade an existing
+install, keep the helper config and run `./install.sh --upgrade`, then
+`devstack init`; see the [upgrade guide](docs/upgrade.md).
 
 ## Serving modes
 
@@ -110,8 +123,9 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
 - Plan 1 serves static and Node sites on Linux. Plan 2 adds PHP sites, per-site
   FPM masters, php.ini/extension controls, and PHP vhost previews. Its automated
   acceptance test passes against system PHP 8.4.4 using a filtered fixture
-  catalog. Windows/WSL (Plan 3) and packaging/release work (Plan 4) are not
-  included.
+  catalog. Windows/WSL (Plan 3) is deferred. Linux release archives and verified
+  installer release/upgrade modes are documented in
+  [Install](docs/install.md) and [Upgrade](docs/upgrade.md).
 - **PHP installation is gated.** The production catalog has no PHP entries until
   the release pipeline publishes checksummed archives and merges their entries.
   `devstack runtime list` shows only Node builds in shipped releases. The build,
@@ -143,7 +157,8 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
 
 | Guide | Contents |
 |---|---|
-| [Install](docs/install.md) | prerequisites, installer, systemd, config, logs, upgrade, uninstall |
+| [Install](docs/install.md) | prerequisites, installer, release archives, systemd, config, logs, uninstall |
+| [Upgrade](docs/upgrade.md) | preflight, stop/install/start, database backup, protocol mismatch, verification, rollback limits |
 | [Sites](docs/sites.md) | first static site, Node sites, lifecycle commands, limitations |
 | [PHP](docs/php.md) | PHP builds, sites, ini and extensions, migration, FPM ports, troubleshooting, artifact gate |
 | [Vhosts](docs/vhosts.md) | external nginx/Apache serving, PHP FastCGI prerequisites, mode switching, preview, TLS custody, troubleshooting |
@@ -178,8 +193,8 @@ Dev mode uses the mock API unless `VITE_API_MODE` is set; use
 | `build/php/` | PHP source/PECL pin lock, build, smoke, and lock scripts |
 | `build/helper.yaml.example` | helper configuration reference |
 | `.github/workflows/php.yml` | PHP build matrix, smoke, SBOM, and catalog artifact |
-| `install.sh` | Linux installer |
+| `install.sh` | source, verified release archive, and upgrade installer |
 | `test/e2e/linux.sh` | unprivileged Linux end-to-end test |
-| `docs/` | install, sites, PHP, vhosts, and TLS guides |
+| `docs/` | install, upgrade, sites, PHP, vhosts, and TLS guides |
 
 Design and implementation plans live in `docs/superpowers/`.

@@ -22,7 +22,16 @@ var ErrNotFound = errors.New("not found")
 
 // Store is a handle to the devstack SQLite database.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
+
+	// now is overridable in tests so backup retention can use deterministic
+	// timestamps. Production stores always use time.Now.
+	now func() time.Time
+
+	// migrations is overridable in tests to simulate a pending schema change
+	// without adding fake production migration files.
+	migrations []migration
 }
 
 // Open opens (and creates when needed) the SQLite database at path, applies the
@@ -53,7 +62,7 @@ func Open(path string) (*Store, error) {
 	// other processes touching the same file.
 	db.SetMaxOpenConns(1)
 
-	s := &Store{db: db}
+	s := &Store{db: db, path: abs}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate %s: %w", abs, err)

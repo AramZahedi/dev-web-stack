@@ -28,6 +28,10 @@ To build from source:
 - `make`, `curl`, `bash`, and coreutils.
 - `golangci-lint` only for `make lint`.
 
+To install a published release instead of building, you do not need Go or Node.
+You need `bash`, `tar`, `sha256sum` (or `shasum`), `sudo`, and `curl` when you
+use `--release`.
+
 To trust the local CA in Chrome and Firefox, install NSS tools:
 
 ```sh
@@ -63,9 +67,48 @@ This builds the dashboard first, then writes `dist/devstack` and
 The installer must run as your normal user, not as root. It uses `sudo` for the
 root-owned helper files and system unit.
 
+There are three sources: the local `dist/` build (default), a local release
+archive, and a release downloaded from GitHub.
+
 ```sh
+# From this checkout after `make build`:
 ./install.sh
+
+# From a published release (downloads over HTTPS):
+./install.sh --release 0.1.0
+
+# From a release archive you already downloaded:
+./install.sh --archive devstack_0.1.0_linux_amd64.tar.gz --checksums checksums.txt
+
+# From a mirror or CI artifact host (HTTPS only):
+./install.sh --release 0.1.0 --base-url https://artifacts.example.test/devstack
 ```
+
+`--release` downloads `devstack_<version>_linux_amd64.tar.gz` and
+`checksums.txt` from
+`https://github.com/AramZahedi/dev-web-stack/releases/download/v<version>/`.
+`--base-url` replaces that root and must start with `https://`; there is no
+plain-HTTP fallback. `--archive` and `--checksums` must be supplied together and
+cannot be combined with `--release`.
+
+Before any file is written, the installer:
+
+1. Requires exactly one lowercase SHA-256 line for the archive in
+   `checksums.txt` and compares it with the archive bytes.
+2. Lists the archive and rejects absolute paths, `..` components, duplicate or
+   unexpected members, and every non-regular member, including symlinks and
+   hardlinks.
+3. Extracts with `tar -xzf --no-same-owner --no-same-permissions` into a fresh
+   temporary directory.
+4. Checks that `devstack`, `devstack-helper`, `install.sh`, and `README.md` are
+   present and that `devstack version --json` reports the requested release.
+   A checksum or identity failure aborts before any `sudo` or `install`
+   command.
+
+The installer never pipes a remote script into a shell. The archive's
+`install.sh` is verified as a member but is not executed. Run the installer from
+your checkout, or use the copy in the archive with `--archive` and `--checksums`
+pointing at the downloaded tarball and manifest.
 
 It is safe to re-run and performs these steps:
 
@@ -85,16 +128,15 @@ it with the generated defaults, or `--keep-config` to make that behavior
 explicit. The installer does not install packages, configure nginx/Apache, or
 run `devstack init`.
 
-On an upgrade, the installer restarts an active user unit, or stops a detached
-daemon left by an earlier `devstack init` before `devstack init` starts the unit
-again. A headless session without a user systemd manager keeps the detached
-fallback used by the CLI.
-
 Preview the steps without changing anything:
 
 ```sh
 ./install.sh --dry-run
 ```
+
+`--dry-run` still checks the release checksum, member safety, extraction, and
+packaged version; it only prints the install/service commands instead of
+running them.
 
 If `~/.local/bin` is not on `PATH`, add it in your shell profile:
 
@@ -218,15 +260,41 @@ go to the journal; `daemon.log` is only used by the detached fallback.
 
 ## Upgrade
 
-1. Build the new binaries.
-2. Run `./install.sh` again. It replaces the binaries and units, keeps an
-   existing helper config unless `--force-config` is used, and restarts an
-   active user daemon unit.
-3. Run `devstack init` to re-apply trust, hosts, and forwarders.
-4. Run `devstack doctor`.
+Upgrades are forward-only. Install the new release with the same installer
+entry point you used originally, keeping the existing helper configuration:
 
-Downgrades are not supported. Back up `~/.devstack` if you need to preserve site
-metadata and certificates.
+```sh
+./install.sh --upgrade --release 0.2.0
+# or, from a source checkout:
+make build && ./install.sh --upgrade
+# or, from a downloaded archive:
+./install.sh --upgrade --archive devstack_0.2.0_linux_amd64.tar.gz --checksums checksums.txt
+```
+
+`--upgrade` requires an existing `~/.local/bin/devstack`, stops the user daemon
+(through `systemctl --user` or the detached `devstack daemon stop` path) before
+replacing binaries, aborts if the stop fails, keeps `/etc/devstack/helper.yaml`
+unless `--force-config` is given, and restarts the helper and daemon. It does
+not run `devstack init`; run it as the follow-up so hosts, forwarders, trust,
+and the daemon protocol are re-synced:
+
+```sh
+devstack init
+devstack doctor
+```
+
+Before the first schema migration of an existing database, the store writes a
+consistent SQLite backup with `VACUUM INTO` to
+`${DEVSTACK_HOME:-~/.devstack}/backups/state.db.pre-migrate-<UTC timestamp>.bak`.
+It keeps the three newest backups and refuses to migrate if the backup cannot be
+written or old backups cannot be rotated. A fresh database skips the backup
+because there is no state to preserve.
+
+Downgrades are not supported. The database schema is forward-only; restoring an
+older binary against a migrated database is not a supported path. Keep
+`~/.devstack` and the pre-migration backup if you need to recover data. See the
+[upgrade guide](upgrade.md) for preflight, protocol-mismatch remediation,
+verification, and rollback limits.
 
 ## Uninstall
 
@@ -255,8 +323,9 @@ rm -f ~/.config/systemd/user/devstack-daemon.service
 systemctl --user daemon-reload
 ```
 
-`~/.devstack` contains the SQLite database, site logs, installed Node runtimes,
-and the daemon CA bundle. Remove it only when you no longer need that state.
+`~/.devstack` contains the SQLite database, pre-migration backups, site logs,
+installed Node runtimes, and the daemon CA bundle. Remove it only when you no
+longer need that state.
 `/etc/devstack/helper.yaml` and `/var/lib/devstack-helper` can be removed after
 the helper is disabled.
 
@@ -299,5 +368,5 @@ markers by hand.
 - Linux x86_64 and systemd only. Windows/WSL support is planned later.
 - The helper, CA, hosts block, and trust targets are machine-global but scoped
   to the single installing UID.
-- Installer copies locally built binaries; it does not download release
-  artifacts or install OS packages.
+- The installer can use locally built binaries or a GitHub release archive. It
+  does not install OS packages or configure a system nginx/Apache.
