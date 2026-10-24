@@ -34,7 +34,7 @@ docker run -d --name devstack --restart unless-stopped \
   -p 127.0.0.1:8080:80 -p 127.0.0.1:8443:443 -p 127.0.0.1:7070:7070 \
   -v "$PWD/.docker-data/devstack:/home/devstack/.devstack" \
   -v "$PWD/.docker-data/helper:/var/lib/devstack-helper" \
-  -v "$PWD/projects:/workspace" \
+  -v "$PWD/projects:/home/devstack/projects" \
   -v /etc/hosts:/host-hosts \
   devstack:0.1.0-docker
 ```
@@ -91,7 +91,8 @@ created with `--no-https` when only HTTP is needed.
 - `.docker-data/devstack`: daemon config, database, certificates, logs, installed
   runtimes.
 - `.docker-data/helper`: CA and helper/vhost state.
-- `projects`: put site files here and add sites with paths under `/workspace`.
+- `projects`: put site files here and add sites with paths under
+  `/home/devstack/projects` (also available as `/workspace`).
 
 Runtimes are installed on demand from the dashboard or inside the container:
 

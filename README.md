@@ -75,7 +75,8 @@ docker compose up -d --build
 
 The dashboard is exposed at <http://localhost:7070>; sites use
 `http://<name>.test:8080` and `https://<name>.test:8443`. The helper maintains
-the host hosts block, and state lives in `.docker-data`. See the
+the host hosts block, state lives in `.docker-data`, and site files belong in
+`projects/`. See the
 [Docker guide](docker/README.md) for mappings, CA trust, and customization.
 
 ## Serving modes

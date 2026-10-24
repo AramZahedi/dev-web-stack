@@ -50,8 +50,13 @@ done
 [ "$HELPER_HTTP_PORT" != "$HELPER_HTTPS_PORT" ] || die "helper HTTP and HTTPS ports must differ"
 
 install -d -m 0755 /etc/devstack /var/lib/devstack-helper /run/devstack-helper
-install -d -o devstack -g devstack -m 0755 "$DEVSTACK_HOME" /workspace
-chown devstack:devstack "$DEVSTACK_HOME"
+install -d -o devstack -g devstack -m 0755 "$DEVSTACK_HOME" /home/devstack/projects
+chown devstack:devstack "$DEVSTACK_HOME" /home/devstack/projects
+# Keep /workspace working for sites created before the home-mounted layout.
+if [ -e /workspace ] && [ ! -L /workspace ]; then
+  rmdir /workspace 2>/dev/null || true
+fi
+ln -sfn /home/devstack/projects /workspace
 
 HOSTS_PATH=/etc/hosts
 if [ -f /host-hosts ] && [ ! -L /host-hosts ]; then

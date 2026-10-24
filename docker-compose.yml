@@ -29,7 +29,7 @@ services:
     volumes:
       - ./.docker-data/devstack:/home/devstack/.devstack
       - ./.docker-data/helper:/var/lib/devstack-helper
-      - ./projects:/workspace
+      - ./projects:/home/devstack/projects
       - /etc/hosts:/host-hosts
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${DEVSTACK_CONTAINER_UI_PORT}/api/v1/health"]

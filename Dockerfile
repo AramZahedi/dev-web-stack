@@ -50,7 +50,7 @@ RUN groupadd --gid "${DEVSTACK_GID}" devstack \
     && useradd --uid "${DEVSTACK_UID}" --gid devstack --create-home \
        --home-dir /home/devstack --shell /bin/bash devstack \
     && install -d -o devstack -g devstack -m 0755 \
-       /home/devstack/.devstack /workspace \
+       /home/devstack/.devstack /home/devstack/projects \
     && install -d -m 0755 /etc/devstack /var/lib/devstack-helper /run/devstack-helper
 
 COPY --from=build /src/dist/devstack /usr/local/bin/devstack
