@@ -153,8 +153,10 @@ jobs:
           trap 'rm -rf "$extract"' EXIT
           tar -xzf "$archive" -C "$extract" devstack
           reported="$("$extract/devstack" version --json | jq -er '.version')"
-          if [[ $reported != "$VERSION" ]]; then
-            echo "snapshot devstack reports $reported, expected $VERSION" >&2
+          # Snapshot builds append -SNAPSHOT-<commit>; the published build must
+          # still be the exact tag version.
+          if [[ $reported != "$VERSION" && $reported != "$VERSION"-SNAPSHOT-* ]]; then
+            echo "snapshot devstack reports $reported, expected $VERSION or $VERSION-SNAPSHOT-*" >&2
             exit 1
           fi
           echo "snapshot archive verified: $archive ($reported)"
