@@ -2177,3 +2177,14 @@ func TestDaemonStopCleansStaleStartTicksWhenProcessIsGone(t *testing.T) {
 		}
 	}
 }
+
+func TestSiteURLUsesPublicPortEnvironment(t *testing.T) {
+	t.Setenv("DEVSTACK_PUBLIC_HTTP_PORT", "8080")
+	t.Setenv("DEVSTACK_PUBLIC_HTTPS_PORT", "8443")
+	if got, want := siteURL(model.Site{Domain: "blog.test", TLS: true}), "https://blog.test:8443"; got != want {
+		t.Fatalf("siteURL(TLS) = %q, want %q", got, want)
+	}
+	if got, want := siteURL(model.Site{Domain: "blog.test", TLS: false}), "http://blog.test:8080"; got != want {
+		t.Fatalf("siteURL(no TLS) = %q, want %q", got, want)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -171,5 +172,33 @@ func TestWriteInPlaceTruncatesOldSuffix(t *testing.T) {
 	}
 	if string(data) != "new" {
 		t.Fatalf("content = %q, want new", data)
+	}
+}
+
+func TestWriteAtomicFallsBackWhenRenameIsBusy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	previous := renameFile
+	t.Cleanup(func() { renameFile = previous })
+	renameFile = func(string, string) error { return syscall.EBUSY }
+
+	if err := WriteAtomic(path, []byte("in-place"), 0); err != nil {
+		t.Fatalf("WriteAtomic with busy rename: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "in-place" {
+		t.Fatalf("content = %q", data)
+	}
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".hosts.tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary files remain: %v", matches)
 	}
 }

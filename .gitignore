@@ -16,3 +16,7 @@ ui/dist/*
 
 # Local browser automation artifacts
 .playwright-mcp/
+
+# Docker local state
+/.docker-data/
+/projects/

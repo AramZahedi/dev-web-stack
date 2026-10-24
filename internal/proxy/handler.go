@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -36,11 +37,11 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 	// A route with TLS disabled still has a valid certificate, but HTTPS must
 	// never serve content for it: send the browser back to HTTP.
 	if !route.TLS && req.TLS != nil {
-		redirectPermanent(w, req, "http", redirectHost(route, host))
+		redirectPermanent(w, req, "http", redirectHost(route, host, "http"))
 		return
 	}
 	if route.ForceHTTPS && route.TLS && req.TLS == nil {
-		redirectPermanent(w, req, "https", redirectHost(route, host))
+		redirectPermanent(w, req, "https", redirectHost(route, host, "https"))
 		return
 	}
 
@@ -173,11 +174,42 @@ func writeUpstreamFailure(w http.ResponseWriter, req *http.Request, route Route)
 	})
 }
 
-func redirectHost(route Route, requestHost string) string {
+func redirectHost(route Route, requestHost, scheme string) string {
+	host := requestHost
 	if route.Host != "" {
-		return normalizeHost(route.Host)
+		host = normalizeHost(route.Host)
 	}
-	return requestHost
+	if host == "" {
+		return host
+	}
+	if port := publicURLPort(scheme); port != "" {
+		if trimmed, _, err := net.SplitHostPort(host); err == nil {
+			host = trimmed
+		}
+		return net.JoinHostPort(host, port)
+	}
+	return host
+}
+
+// publicURLPort returns the non-default host port a browser must use for the
+// given scheme. The container image sets these so redirects keep the published
+// 8080/8443 mappings instead of falling back to 80/443.
+func publicURLPort(scheme string) string {
+	key := "DEVSTACK_PUBLIC_HTTP_PORT"
+	defaultPort := "80"
+	if scheme == "https" {
+		key = "DEVSTACK_PUBLIC_HTTPS_PORT"
+		defaultPort = "443"
+	}
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" || value == defaultPort {
+		return ""
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 || n > 65535 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
 
 func redirectPermanent(w http.ResponseWriter, req *http.Request, scheme, host string) {

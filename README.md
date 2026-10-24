@@ -65,6 +65,19 @@ Full instructions: [docs/install.md](docs/install.md). To upgrade an existing
 install, keep the helper config and run `./install.sh --upgrade`, then
 `devstack init`; see the [upgrade guide](docs/upgrade.md).
 
+### Docker
+
+A Fedora 44 image is included for an isolated install:
+
+```sh
+docker compose up -d --build
+```
+
+The dashboard is exposed at <http://localhost:7070>; sites use
+`http://<name>.test:8080` and `https://<name>.test:8443`. The helper maintains
+the host hosts block, and state lives in `.docker-data`. See the
+[Docker guide](docker/README.md) for mappings, CA trust, and customization.
+
 ## Serving modes
 
 Serving is `builtin` by default: the helper owns ports 80/443 and the Go proxy
@@ -193,6 +206,7 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
 | [Install](docs/install.md) | prerequisites, installer, release archives, systemd, config, logs, uninstall |
 | [Upgrade](docs/upgrade.md) | preflight, stop/install/start, database backup, protocol mismatch, verification, rollback limits |
 | [Release](docs/release.md) | tag/version, archive/checksums, GoReleaser workflow, release checklist, PHP catalog gate |
+| [Docker](docker/README.md) | Fedora 44 image, host port mappings (8080/8443/7070), persistent data, CA export |
 | [Sites](docs/sites.md) | first static site, Node sites, lifecycle commands, limitations |
 | [PHP](docs/php.md) | PHP builds, sites, ini and extensions, migration, FPM ports, troubleshooting, artifact gate |
 | [Vhosts](docs/vhosts.md) | external nginx/Apache serving, PHP FastCGI prerequisites, mode switching, preview, TLS custody, troubleshooting |

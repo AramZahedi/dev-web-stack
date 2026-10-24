@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -518,6 +520,9 @@ func siteURL(site model.Site) string {
 	if host == "" {
 		host = strings.TrimSpace(site.Name) + ".test"
 	}
+	if port := publicSitePort(site.TLS); port != "" {
+		host = net.JoinHostPort(host, port)
+	}
 	return scheme + "://" + host
 }
 
@@ -529,7 +534,30 @@ func listingURL(site model.Site) string {
 	if host == "" {
 		host = strings.TrimSpace(site.Name) + ".test"
 	}
+	if port := publicSitePort(true); port != "" {
+		host = net.JoinHostPort(host, port)
+	}
 	return "https://" + host
+}
+
+// publicSitePort is the non-default host port published for a site URL. It is
+// empty on a normal port-80/443 install and set by the container image.
+func publicSitePort(tls bool) string {
+	key := "DEVSTACK_PUBLIC_HTTP_PORT"
+	defaultPort := "80"
+	if tls {
+		key = "DEVSTACK_PUBLIC_HTTPS_PORT"
+		defaultPort = "443"
+	}
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" || value == defaultPort {
+		return ""
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 || n > 65535 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
 
 // streamSiteLogs renders the daemon's SSE log stream. A finite snapshot is the

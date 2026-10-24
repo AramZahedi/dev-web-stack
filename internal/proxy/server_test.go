@@ -691,3 +691,70 @@ func writeMaskedWebSocketFrame(w io.Writer, op byte, payload []byte) error {
 	_, err := w.Write(frame)
 	return err
 }
+
+func TestServerForceHTTPSRedirectUsesPublicHTTPSPort(t *testing.T) {
+	t.Setenv("DEVSTACK_PUBLIC_HTTP_PORT", "8080")
+	t.Setenv("DEVSTACK_PUBLIC_HTTPS_PORT", "8443")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cert := testTLSCertificate(t)
+	_, httpAddr, _ := startProxyServer(t, Snapshot{
+		Routes: map[string]Route{"blog.test": {
+			SiteID: "site-1", Host: "blog.test", Kind: KindStatic,
+			Upstream: upstreamAddr(t, upstream.URL), TLS: true, ForceHTTPS: true,
+		}},
+		Certs:       map[string]*tls.Certificate{"blog.test": cert},
+		DefaultCert: cert,
+	}, 0)
+
+	req, err := http.NewRequest("GET", "http://"+httpAddr+"/deep/path?x=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "blog.test:8080"
+	resp, err := noRedirectClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got, want := resp.Header.Get("Location"), "https://blog.test:8443/deep/path?x=1"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+func TestServerTLSDisabledRedirectUsesPublicHTTPPort(t *testing.T) {
+	t.Setenv("DEVSTACK_PUBLIC_HTTP_PORT", "8080")
+	t.Setenv("DEVSTACK_PUBLIC_HTTPS_PORT", "8443")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cert := testTLSCertificate(t)
+	_, _, httpsAddr := startProxyServer(t, Snapshot{
+		Routes: map[string]Route{"blog.test": {
+			SiteID: "site-1", Host: "blog.test", Kind: KindNode,
+			Upstream: upstreamAddr(t, upstream.URL), TLS: false,
+		}},
+		Certs:       map[string]*tls.Certificate{"blog.test": cert},
+		DefaultCert: cert,
+	}, 0)
+
+	client := tlsClientFor(httpsAddr)
+	req, err := http.NewRequest("GET", "https://blog.test:8443/keep?q=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "blog.test:8443"
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got, want := resp.Header.Get("Location"), "http://blog.test:8080/keep?q=1"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}

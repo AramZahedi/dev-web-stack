@@ -16,6 +16,10 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 )
 
+// renameFile is replaceable in tests so the bind-mount EBUSY fallback can be
+// exercised without a real mount.
+var renameFile = os.Rename
+
 const (
 	// BeginMarker opens the managed block.
 	BeginMarker = "# BEGIN devstack"
@@ -161,8 +165,14 @@ func WriteAtomic(path string, data []byte, mode fs.FileMode) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("hosts: close %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := renameFile(tmp, path); err != nil {
 		_ = os.Remove(tmp)
+		// A single-file bind mount cannot be replaced by rename: the kernel
+		// reports EBUSY because the mount point is busy. Fall back to an
+		// in-place rewrite so a container can manage a mounted hosts file.
+		if errors.Is(err, syscall.EBUSY) {
+			return writeInPlace(path, data, mode)
+		}
 		return fmt.Errorf("hosts: rename %s to %s: %w", tmp, path, err)
 	}
 	// Make the rename itself durable. Directory fsync is best effort because

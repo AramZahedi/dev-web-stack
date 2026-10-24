@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatRelative, checksumPrefix, daysUntil } from './format';
+import { formatBytes, formatRelative, checksumPrefix, daysUntil, siteUrl } from './format';
 
 describe('format helpers', () => {
   it('formats bytes with binary units', () => {
@@ -23,5 +23,17 @@ describe('format helpers', () => {
     const future = new Date(Date.now() + 10 * 86_400_000).toISOString();
     expect(daysUntil(future)).toBeGreaterThanOrEqual(9);
     expect(daysUntil(undefined)).toBeNull();
+  });
+
+  it('adds non-default public ports to site URLs', () => {
+    expect(siteUrl({ domain: 'blog.test', tls: true }, { http: '8080', https: '8443' })).toBe(
+      'https://blog.test:8443',
+    );
+    expect(siteUrl({ domain: 'blog.test', tls: false }, { http: '8080', https: '8443' })).toBe(
+      'http://blog.test:8080',
+    );
+    expect(siteUrl({ domain: 'blog.test', tls: true }, { http: '80', https: '443' })).toBe(
+      'https://blog.test',
+    );
   });
 });

@@ -73,8 +73,30 @@ export function formatRelative(value: string | Date | undefined): string {
   return relativeFormat.format(Math.round(seconds / 31_536_000), 'year');
 }
 
-export function siteUrl(site: Pick<Site, 'domain' | 'tls'>): string {
-  return `${site.tls ? 'https' : 'http'}://${site.domain}`;
+export interface PublicPorts {
+  http?: string;
+  https?: string;
+}
+
+const configuredPublicPorts: PublicPorts = {
+  http: import.meta.env.VITE_PUBLIC_HTTP_PORT as string | undefined,
+  https: import.meta.env.VITE_PUBLIC_HTTPS_PORT as string | undefined,
+};
+
+function urlPort(port: string | undefined, defaultPort: string): string {
+  const value = port?.trim();
+  if (!value || value === defaultPort || !/^\d+$/.test(value)) return '';
+  const n = Number(value);
+  return n >= 1 && n <= 65535 ? `:${n}` : '';
+}
+
+export function siteUrl(
+  site: Pick<Site, 'domain' | 'tls'>,
+  ports: PublicPorts = configuredPublicPorts,
+): string {
+  const scheme = site.tls ? 'https' : 'http';
+  const port = urlPort(scheme === 'https' ? ports.https : ports.http, scheme === 'https' ? '443' : '80');
+  return `${scheme}://${site.domain}${port}`;
 }
 
 export function runtimeLabel(site: Pick<Site, 'kind' | 'node_version' | 'php_version'>): string {
