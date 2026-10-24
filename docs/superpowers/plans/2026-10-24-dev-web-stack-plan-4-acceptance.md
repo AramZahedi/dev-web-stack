@@ -329,7 +329,19 @@ install: dry run: no files or services will be changed
 ```
 
 That run contacted the public `v0.1.0` release and verified the real archive
-checksum. A full non-dry installation was still not performed on the host.
+checksum. The downloaded archive was also extracted and inspected:
+
+```text
+$ ./devstack version --json
+{"version":"0.1.0","commit":"4f33469","string":"0.1.0 (4f33469)","protocol":"1","os":"linux","arch":"amd64","go_version":"go1.26.0"}
+
+$ strings devstack | grep 'php@8.2.35-r1\|php@8.5.12-r1'
+"id": "php@8.2.35-r1",
+"id": "php@8.5.12-r1",
+```
+
+The release binary therefore contains the PHP catalog, not just the source
+tree. A full non-dry installation was still not performed on the host.
 
 ## Upgrade and database-backup verification
 
