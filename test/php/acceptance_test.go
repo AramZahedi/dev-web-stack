@@ -8,10 +8,12 @@ package php
 // the system layout matches the managed all-shared build layout.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -31,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -797,6 +801,34 @@ func (h *acceptanceHarness) createSite(name, project string, extensions map[stri
 	return site
 }
 
+func (h *acceptanceHarness) registerRuntime(version, root string) string {
+	h.t.Helper()
+	id := catalog.FormatID("php", version, 1)
+	if err := h.store.UpsertRuntime(context.Background(), model.RuntimeBuild{
+		ID: id, Kind: "php", Version: version, Backend: model.BackendLocal,
+		Path: root, InstalledAt: time.Now().UTC(),
+	}); err != nil {
+		h.t.Fatalf("register PHP %s: %v", version, err)
+	}
+	return id
+}
+
+func (h *acceptanceHarness) createSiteWithBuild(name, project, buildID, version string) model.Site {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	site, err := h.svc.Create(ctx, sites.CreateRequest{
+		Name: name, Path: project, Kind: string(model.SitePHP),
+		PHPVersion: version, PHPBuild: buildID,
+	})
+	if err != nil {
+		h.t.Fatalf("create PHP site %s: %v", name, err)
+	}
+	h.siteNames = append(h.siteNames, site.Name)
+	h.notePort(site)
+	return site
+}
+
 func (h *acceptanceHarness) applyPHP(name string, change sites.PHPChange) model.Site {
 	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -1462,10 +1494,6 @@ func testRealApacheConfig(t *testing.T, h *acceptanceHarness, site model.Site) {
 		version := apacheVersion(ctx, httpd)
 		t.Skipf("%s is installed but proxy_fcgi_module is not loaded; PHP vhost configtest skipped", version)
 	}
-	configFile := apacheConfigFile(ctx, httpd)
-	if configFile == "" {
-		t.Skip("cannot locate the Apache server configuration; configtest skipped")
-	}
 	prefix := t.TempDir()
 	tlsDir := filepath.Join(prefix, "tls")
 	files := h.vhostSet(t, vhost.ServerApache, site, 18080, 18443, tlsDir)
@@ -1476,10 +1504,8 @@ func testRealApacheConfig(t *testing.T, h *acceptanceHarness, site model.Site) {
 	httpOnly := firstApacheVirtualHost(t, string(content), 18080)
 	vhostPath := filepath.Join(prefix, "php-http-vhost.conf")
 	writeFile(t, vhostPath, []byte(httpOnly), 0o644)
-	// -c processes the directive after the main config, so Include sees the
-	// real module and handler definitions. -C would include the vhost first and
-	// fail on SetHandler/proxy_fcgi even when the server is healthy.
-	output, err := exec.CommandContext(ctx, httpd, "-t", "-f", configFile, "-c", "Include "+vhostPath).CombinedOutput()
+	httpConfigPath := writeApacheTestConfig(t, prefix, 18080, vhostPath)
+	output, err := exec.CommandContext(ctx, httpd, "-t", "-f", httpConfigPath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Apache HTTP PHP configtest failed: %v\n%s", err, output)
 	}
@@ -1517,19 +1543,138 @@ func testRealApacheConfig(t *testing.T, h *acceptanceHarness, site model.Site) {
 	writeFile(t, filepath.Join(tlsDir, site.ID+".crt"), siteCert, 0o644)
 	writeFile(t, filepath.Join(tlsDir, site.ID+".key"), siteKey, 0o600)
 
-	tlsFiles := h.vhostSet(t, vhost.ServerApache, tlsSite, 18080, 18443, tlsDir)
+	httpsPort := freeLoopbackPort(t)
+	tlsFiles := h.vhostSet(t, vhost.ServerApache, tlsSite, 18080, httpsPort, tlsDir)
 	tlsContent, ok := tlsFiles[vhostSiteFilename(tlsSite)]
 	if !ok {
 		t.Fatalf("rendered Apache TLS set is missing the site vhost")
 	}
-	httpsOnly := firstApacheVirtualHost(t, string(tlsContent), 18443)
+	httpsOnly := firstApacheVirtualHost(t, string(tlsContent), httpsPort)
 	tlsVhostPath := filepath.Join(prefix, "php-https-vhost.conf")
 	writeFile(t, tlsVhostPath, []byte(httpsOnly), 0o644)
-	output, err = exec.CommandContext(ctx, httpd, "-t", "-f", configFile, "-c", "Include "+tlsVhostPath).CombinedOutput()
+	httpsConfigPath := writeApacheTestConfig(t, prefix, httpsPort, tlsVhostPath)
+	output, err = exec.CommandContext(ctx, httpd, "-t", "-f", httpsConfigPath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Apache HTTPS PHP configtest failed: %v\n%s", err, output)
 	}
 	t.Logf("Apache HTTPS PHP configtest: %s", strings.TrimSpace(string(output)))
+	serveApacheHTTPS(t, httpd, httpsConfigPath, httpsPort, site)
+}
+
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("allocate loopback port: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release loopback port: %v", err)
+	}
+	return port
+}
+
+// writeApacheTestConfig writes a minimal Apache configuration that loads the
+// host modules and includes one rendered vhost.
+func writeApacheTestConfig(t *testing.T, prefix string, port int, vhostPath string) string {
+	t.Helper()
+	runDir := filepath.Join(prefix, fmt.Sprintf("apache-run-%d", port))
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	serverRoot := "/etc/httpd"
+	if _, err := os.Stat(filepath.Join(serverRoot, "conf.modules.d")); err != nil {
+		serverRoot = "/etc/apache2"
+	}
+	configPath := filepath.Join(prefix, fmt.Sprintf("apache-%d.conf", port))
+	config := fmt.Sprintf(`ServerRoot "%s"
+ServerName localhost
+PidFile "%s/httpd.pid"
+DefaultRuntimeDir "%s"
+Mutex default
+ErrorLog "%s/error.log"
+LogLevel warn
+Listen 127.0.0.1:%d
+IncludeOptional /etc/httpd/conf.modules.d/*.conf
+IncludeOptional /etc/apache2/mods-enabled/*.load
+TypesConfig /etc/mime.types
+SSLSessionCache "shmcb:%s/ssl_scache(512000)"
+SSLRandomSeed startup builtin
+Include "%s"
+`, serverRoot, runDir, runDir, runDir, port, runDir, vhostPath)
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return configPath
+}
+
+func serveApacheHTTPS(t *testing.T, httpd, configPath string, port int, site model.Site) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, httpd, "-f", configPath, "-D", "FOREGROUND")
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start Apache: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	defer func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+	}()
+
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Apache exited before listening: %v\n%s", err, output.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Apache did not listen on %s: %v\n%s", addr, err, output.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true, // test CA; the SAN is verified by the vhost test
+			ServerName:         site.Domain,
+		}},
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://"+addr+"/index.php", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = site.Domain
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Apache HTTPS request failed: %v\n%s", err, output.String())
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "DOCROOT=primary") {
+		t.Fatalf("Apache HTTPS response = %d %q\n%s", resp.StatusCode, body, output.String())
+	}
+	t.Logf("Apache HTTPS PHP service served %s over TLS", site.Domain)
 }
 
 func vhostSiteFilename(site model.Site) string {
@@ -1594,4 +1739,142 @@ func findExecutable(names ...string) string {
 		}
 	}
 	return ""
+}
+
+// TestPHPInflightSwapContinuity drives sustained traffic through the proxy
+// while a successful PHP generation swap is applied. It fails if any request
+// receives a 5xx or a connection error during the swap.
+func TestPHPInflightSwapContinuity(t *testing.T) {
+	root := systemPHPRoot(t)
+	phpVersion := systemPHPVersion(t, root)
+	if catalog.LineOf(phpVersion) != acceptancePHPLine {
+		t.Skipf("system PHP at %s is %s; this test requires PHP %s", root, phpVersion, acceptancePHPLine)
+	}
+	extensionDir := systemPHPExtensionDir(t, root)
+	modules := systemPHPModules(t, root)
+	manifest := filteredPHPManifest(t, extensionDir, modules)
+	h := newAcceptanceHarness(t, root, phpVersion, manifest)
+
+	project := filepath.Join(h.home, "projects", "inflight")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "slow.php"), []byte(`<?php
+usleep(200000);
+header('Content-Type: text/plain');
+echo "ok";
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	site := h.createSite("inflight", project, nil)
+
+	server := httptest.NewServer(h.router.Handler())
+	defer server.Close()
+
+	var (
+		wg       sync.WaitGroup
+		stop     = make(chan struct{})
+		okCount  atomic.Int64
+		errCount atomic.Int64
+		firstErr atomic.Value
+	)
+	client := &http.Client{Timeout: 5 * time.Second}
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				req, err := http.NewRequest(http.MethodGet, server.URL+"/slow.php", nil)
+				if err != nil {
+					errCount.Add(1)
+					firstErr.CompareAndSwap(nil, err)
+					continue
+				}
+				req.Host = site.Domain
+				resp, err := client.Do(req)
+				if err != nil {
+					errCount.Add(1)
+					firstErr.CompareAndSwap(nil, err)
+					continue
+				}
+				_, readErr := io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if readErr != nil || resp.StatusCode != http.StatusOK {
+					errCount.Add(1)
+					if readErr != nil {
+						firstErr.CompareAndSwap(nil, readErr)
+					} else {
+						firstErr.CompareAndSwap(nil, fmt.Errorf("status %d", resp.StatusCode))
+					}
+					continue
+				}
+				okCount.Add(1)
+			}
+		}()
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	if _, err := h.svc.ApplyPHP(context.Background(), site.ID, sites.PHPChange{
+		Ini: map[string]string{"memory_limit": "256M"},
+	}); err != nil {
+		close(stop)
+		wg.Wait()
+		t.Fatalf("apply PHP change during load: %v", err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	if okCount.Load() == 0 {
+		t.Fatal("no successful requests were made")
+	}
+	if failed := errCount.Load(); failed != 0 {
+		t.Fatalf("%d/%d requests failed during PHP swap; first error: %v", failed, okCount.Load()+failed, firstErr.Load())
+	}
+	t.Logf("PHP in-flight swap: %d requests succeeded, 0 failed", okCount.Load())
+}
+
+// TestPHPCrossLineAcceptance runs two real managed PHP artifacts side by side.
+// The caller supplies extracted 8.2 and 8.5 roots; the production catalog is
+// exercised separately by the acceptance catalog gate.
+func TestPHPCrossLineAcceptance(t *testing.T) {
+	root82 := strings.TrimSpace(os.Getenv("DEVSTACK_PHP_82_ROOT"))
+	root85 := strings.TrimSpace(os.Getenv("DEVSTACK_PHP_85_ROOT"))
+	if root82 == "" || root85 == "" {
+		t.Skip("DEVSTACK_PHP_82_ROOT and DEVSTACK_PHP_85_ROOT are required for cross-line acceptance")
+	}
+	manifest, err := catalog.LoadPHP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newAcceptanceHarness(t, root82, "8.2.35", manifest)
+	build85 := h.registerRuntime("8.5.12", root85)
+
+	project82 := writeProject(t, h.home, "cross-82", "PHP_LINE=8.2")
+	project85 := writeProject(t, h.home, "cross-85", "PHP_LINE=8.5")
+	site82 := h.createSiteWithBuild("cross82", project82, h.buildID, "8.2")
+	site85 := h.createSiteWithBuild("cross85", project85, build85, "8.5")
+
+	for _, tc := range []struct {
+		site    model.Site
+		version string
+		line    string
+	}{
+		{site82, "8.2.35", "8.2"},
+		{site85, "8.5.12", "8.5"},
+	} {
+		body := proxyGet(t, h.router, tc.site.Domain, "/index.php")
+		if !strings.Contains(body, "PHP_VERSION="+tc.version) {
+			t.Fatalf("%s body = %q, want PHP_VERSION=%s", tc.line, body, tc.version)
+		}
+		if !strings.Contains(body, "PHP_LINE="+tc.line) {
+			t.Fatalf("%s body = %q, want PHP_LINE=%s", tc.line, body, tc.line)
+		}
+	}
+	t.Logf("PHP cross-line acceptance: 8.2.35 and 8.5.12 served side by side")
 }

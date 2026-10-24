@@ -13,8 +13,8 @@ func TestLoadProductionCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(cat.Entries) != 2 {
-		t.Fatalf("Load returned %d entries, want 2", len(cat.Entries))
+	if len(cat.Entries) != 6 {
+		t.Fatalf("Load returned %d entries, want 6", len(cat.Entries))
 	}
 
 	want := map[string]struct {
@@ -33,8 +33,50 @@ func TestLoadProductionCatalog(t *testing.T) {
 			size:   56807066,
 		},
 	}
+	wantPHP := map[string]struct {
+		url    string
+		sha256 string
+		size   int64
+	}{
+		"php@8.2.35-r1": {
+			url:    "https://github.com/AramZahedi/dev-web-stack/releases/download/php-runtimes-2026-10-25/php-8.2.35-r1-linux-x64.tar.gz",
+			sha256: "d46d33864e44abb45cb7fe93b6d17f21e8c95dbb011946be6fa94e18f2328d8a",
+			size:   240637304,
+		},
+		"php@8.3.36-r1": {
+			url:    "https://github.com/AramZahedi/dev-web-stack/releases/download/php-runtimes-2026-10-25/php-8.3.36-r1-linux-x64.tar.gz",
+			sha256: "13cb17fc011b25ed252a931d17adbd173106eabee1baf8e25699be75a83e7baa",
+			size:   240885758,
+		},
+		"php@8.4.27-r1": {
+			url:    "https://github.com/AramZahedi/dev-web-stack/releases/download/php-runtimes-2026-10-25/php-8.4.27-r1-linux-x64.tar.gz",
+			sha256: "e9b11892703d4788094960ee20fc0aa67e046a3de7d92c209da9cffa11f6678c",
+			size:   242291453,
+		},
+		"php@8.5.12-r1": {
+			url:    "https://github.com/AramZahedi/dev-web-stack/releases/download/php-runtimes-2026-10-25/php-8.5.12-r1-linux-x64.tar.gz",
+			sha256: "5de8588f20f4238ef843b67b5738060e8ed42c76aa84fbb81a8900dd32fd2f57",
+			size:   245214512,
+		},
+	}
 
 	for _, entry := range cat.Entries {
+		if entry.Kind == "php" {
+			expected, ok := wantPHP[entry.ID]
+			if !ok {
+				t.Fatalf("unexpected PHP catalog entry %q", entry.ID)
+			}
+			if entry.Build != "linux-x64" || entry.Revision != 1 {
+				t.Errorf("%s build/revision = %q/%d", entry.ID, entry.Build, entry.Revision)
+			}
+			if entry.URL != expected.url || entry.SHA256 != expected.sha256 || entry.Size != expected.size {
+				t.Errorf("%s PHP artifact metadata does not match", entry.ID)
+			}
+			if entry.ID != "php@"+entry.Version+"-r1" {
+				t.Errorf("%s id does not encode php@version-r1", entry.ID)
+			}
+			continue
+		}
 		expected, ok := want[entry.ID]
 		if !ok {
 			t.Fatalf("unexpected catalog entry %q", entry.ID)

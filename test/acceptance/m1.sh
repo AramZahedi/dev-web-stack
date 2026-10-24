@@ -288,9 +288,9 @@ phase_php_acceptance() {
 	fi
 
 	local status=0
-	printf '+ DEVSTACK_PHP_ROOT=%s go test ./test/php -run TestPHPSubsystemAcceptance -count=1 -v\n' "${php_root}"
+	printf '+ DEVSTACK_PHP_ROOT=%s go test ./test/php -run "TestPHPSubsystemAcceptance|TestPHPInflightSwapContinuity" -count=1 -v\n' "${php_root}"
 	(cd "${REPO_ROOT}" && DEVSTACK_PHP_ROOT="${php_root}" \
-		go test ./test/php -run TestPHPSubsystemAcceptance -count=1 -v)
+		go test ./test/php -run 'TestPHPSubsystemAcceptance|TestPHPInflightSwapContinuity' -count=1 -v)
 	status=$?
 	if [ "${status}" -ne 0 ]; then
 		return "${status}"
@@ -301,6 +301,10 @@ phase_php_acceptance() {
 	fi
 	if ! grep -q '^--- PASS: TestPHPSubsystemAcceptance' "${CURRENT_PHASE_LOG}"; then
 		note "FAIL: the acceptance test did not report PASS or SKIP for TestPHPSubsystemAcceptance"
+		return 1
+	fi
+	if ! grep -q '^--- PASS: TestPHPInflightSwapContinuity' "${CURRENT_PHASE_LOG}"; then
+		note "FAIL: the in-flight PHP continuity test did not report PASS"
 		return 1
 	fi
 	grep -E '^acceptance: (PHP|blog|api|xdebug|per-site|malformed|incomplete|failed-switch|candidate|built-in|updated|removal|migrated|doctor)' \
@@ -395,17 +399,76 @@ phase_catalog_gate() {
 		note "FAIL: catalog parser returned a non-numeric PHP entry count (malformed schema): ${count}"
 		return 1
 	fi
+	if [ "${count}" -eq 4 ]; then
+		if ! jq -e '[.entries[] | select(.kind == "php") |
+			select((.url | startswith("https://")) and
+				(.sha256 | test("^[0-9a-f]{64}$")) and
+				(.size > 0))] | length == 4' "${catalog}" >/dev/null; then
+			note "FAIL: ${catalog} has PHP entries with an invalid URL, checksum, or size"
+			return 1
+		fi
+		note "PASS: 4 published PHP entries (8.2-8.5) have HTTPS URLs, checksums, and sizes"
+		return 0
+	fi
 	if [ "${count}" -ne 0 ]; then
-		note "FAIL: ${catalog} contains ${count} PHP entries; this runner cannot verify them without published 8.2-8.5 artifacts"
+		note "FAIL: ${catalog} contains ${count} PHP entries; expected exactly 4 (8.2-8.5)"
 		return 1
 	fi
-	note "BLOCKED: ${catalog} is valid and Node-only (0 PHP entries); no real 8.2-8.5 artifacts are published"
+	note "BLOCKED: ${catalog} is valid and Node-only (0 PHP entries)"
 	return 78
 }
 
 phase_php_side_by_side() {
-	note "BLOCKED: real PHP 8.2 and 8.5 side-by-side acceptance needs published checksummed artifacts and catalog entries"
-	return 78
+	local catalog="${REPO_ROOT}/internal/catalog/catalog.json"
+	local php82="${DEVSTACK_PHP_82_ROOT:-}"
+	local php85="${DEVSTACK_PHP_85_ROOT:-}"
+	local work=""
+	if [ -z "${php82}" ] || [ -z "${php85}" ]; then
+		if ! command -v jq >/dev/null 2>&1; then
+			note "FAIL: jq is required to read the PHP catalog"
+			return 1
+		fi
+		work="$(mktemp -d "${TMPDIR:-/tmp}/devstack-php-side-by-side.XXXXXX")"
+		for line in 8.2 8.5; do
+			local url sha size tarball root
+			url="$(jq -r --arg line "$line" '.entries[] | select(.kind == "php" and (.version | startswith($line + "."))) | .url' "${catalog}" | head -n1)"
+			sha="$(jq -r --arg line "$line" '.entries[] | select(.kind == "php" and (.version | startswith($line + "."))) | .sha256' "${catalog}" | head -n1)"
+			size="$(jq -r --arg line "$line" '.entries[] | select(.kind == "php" and (.version | startswith($line + "."))) | .size' "${catalog}" | head -n1)"
+			if [ -z "${url}" ] || [ -z "${sha}" ] || [ -z "${size}" ]; then
+				note "FAIL: no catalog entry for PHP ${line}"
+				rm -rf "${work}"
+				return 1
+			fi
+			tarball="${work}/php-${line}.tar.gz"
+			root="${work}/php-${line}"
+			mkdir -p "${root}"
+			printf '+ curl %s\n' "${url}"
+			if ! curl -fL --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 20 -o "${tarball}" "${url}"; then
+				note "FAIL: could not download PHP ${line} artifact"
+				rm -rf "${work}"
+				return 1
+			fi
+			if [ "$(stat -c '%s' "${tarball}")" != "${size}" ] ||
+				[ "$(sha256sum "${tarball}" | awk '{print $1}')" != "${sha}" ]; then
+				note "FAIL: PHP ${line} artifact size/checksum does not match the catalog"
+				rm -rf "${work}"
+				return 1
+			fi
+			tar -xzf "${tarball}" -C "${root}" --strip-components=1 ||
+				{
+					note "FAIL: could not extract PHP ${line} artifact"
+					rm -rf "${work}"
+					return 1
+				}
+			if [ "$line" = "8.2" ]; then php82="${root}"; else php85="${root}"; fi
+		done
+	fi
+	local status=0
+	(cd "${REPO_ROOT}" && DEVSTACK_PHP_82_ROOT="${php82}" DEVSTACK_PHP_85_ROOT="${php85}" \
+		go test ./test/php -run TestPHPCrossLineAcceptance -count=1 -v)
+	status=$?
+	[ -n "${work}" ] && rm -rf "${work}"
+	return "${status}"
 }
 
 phase_windows_wsl() {
@@ -429,8 +492,17 @@ phase_apache_https() {
 		note "SKIP: Apache ssl_module is not loaded; Apache HTTPS vhost is not tested"
 		return 77
 	fi
-	note "SKIP: no separate Apache HTTPS service test in this runner; the PHP acceptance phase covers the config test when mod_ssl is available"
-	return 77
+	local php_log="${LOG_DIR}/14-real_PHP_acceptance.log"
+	if [ -f "${php_log}" ] && grep -q 'Apache HTTPS PHP service served' "${php_log}"; then
+		note "Apache HTTPS PHP vhost served a real TLS request"
+		return 0
+	fi
+	if [ -f "${php_log}" ] && grep -q '^--- SKIP: TestPHPSubsystemAcceptance' "${php_log}"; then
+		note "SKIP: PHP acceptance skipped, so the live Apache HTTPS test was not run"
+		return 77
+	fi
+	note "FAIL: mod_ssl is loaded but the live Apache HTTPS test did not run"
+	return 1
 }
 
 phase_manual_checks() {
@@ -439,8 +511,13 @@ phase_manual_checks() {
 }
 
 phase_inflight() {
-	note "SKIP: in-flight request continuity across a successful PHP swap is NOT MEASURED"
-	return 77
+	local php_log="${LOG_DIR}/14-real_PHP_acceptance.log"
+	if [ -f "${php_log}" ] && grep -q 'PHP in-flight swap: .* 0 failed' "${php_log}"; then
+		note "$(grep -m1 'PHP in-flight swap:' "${php_log}")"
+		return 0
+	fi
+	note "FAIL: the in-flight PHP continuity test did not record a zero-failure swap"
+	return 1
 }
 
 print_summary() {

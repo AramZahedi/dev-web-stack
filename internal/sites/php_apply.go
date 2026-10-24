@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
@@ -20,6 +21,12 @@ import (
 // ErrRuntimeInUse reports that an installed PHP build is still pinned by a
 // site and cannot be removed safely.
 var ErrRuntimeInUse = errors.New("sites: PHP runtime is in use")
+
+// phpDrainGrace lets requests that were already queued on the old FastCGI
+// listener finish after the route snapshot points at the new generation. New
+// requests go to the new port; stopping the old master immediately can reset
+// connections that were accepted but not yet dispatched.
+const phpDrainGrace = 2 * time.Second
 
 // PHPChange is a partial PHP configuration change. Empty Version and Build
 // keep the current row; nil maps and a nil raw pointer keep the current
@@ -390,6 +397,13 @@ func (s *Service) drainPHPGenerationsLocked(ctx context.Context, site model.Site
 	generations := []string{phpDefaultGeneration}
 	if oldHash != "" && oldHash != newHash {
 		generations = append(generations, oldHash)
+	}
+	if len(generations) != 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(phpDrainGrace):
+		}
 	}
 	stopped := true
 	for _, generation := range generations {
