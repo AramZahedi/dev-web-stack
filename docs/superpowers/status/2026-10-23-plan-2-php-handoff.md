@@ -3,325 +3,401 @@
 - **Date:** 2026-10-24
 - **Branch:** `plan-2-php` (created from `plan-1-foundation` at `4f7ab97`)
 - **Remote:** `origin` (`git@github.com:AramZahedi/dev-web-stack.git`)
-- **Head before this handoff commit:** `1b9221a` (`fix: bound PHP FastCGI health attempts by the readiness deadline`)
-- **Origin `plan-2-php` before this handoff:** `988d4d8`; this handoff adds the next commit and must be pushed.
+- **Head at this handoff:** `b9f38c8` (`fix: close plan 2 final review findings`)
+- **Origin `plan-2-php` before this handoff:** `c1e5f33`; this handoff adds the next
+  docs commit and must be pushed.
 - **Origin `plan-1-foundation`:** `4f7ab97` (Plan 1 complete, pushed).
-- **Working tree at handoff:** clean.
-- **Paused before:** Plan 2 **Task 5**. Task 5 has not been started.
-- **Plan 1:** Tasks 1–26 complete and reviewed; automated acceptance PASS;
-  manual browser/root/Apache/uninstall checks blocked.
+- **Working tree at handoff:** clean except this handoff/plan doc edit.
+- **Verification at `b9f38c8`:** `go test ./...` PASS (all packages, including the
+  real-FPM `test/php` acceptance test). The final fix report also records
+  `go test ./... -race`, focused suites, UI Vitest/check/build, Playwright 19/19,
+  `make build`, and no FPM listeners on 43000–43999.
+- **Plan 1:** Tasks 1–26 complete; automated acceptance PASS; manual
+  browser/root/Apache/uninstall checks remain blocked.
+- **Plan 2:** Tasks 1–12 complete and task-reviewed; automated acceptance PASS on
+  system PHP 8.4.4. **Final whole-branch review is not clean** — see §2. Do not
+  merge `plan-2-php` until the two open Important findings are fixed and
+  re-reviewed.
+- **Plan 3 (Windows/WSL):** **skipped/deferred by user request.** Keep the Windows
+  build for later. Do not start Plan 3.
+- **Next implementation plan:** Plan 4 (packaging/release), Linux-only for now.
+  Write it after closing the Plan 2 open findings (or at the user's direction).
 
-## Plan 2 status
+---
+
+## 1. Exact next step
+
+### 1.1 Close the two open final-review findings
+
+Start from `plan-2-php` at this handoff tip, run `go test ./...` (passes), then
+dispatch one fix implementer on **`opencode-go/deepseek-v4.1-flash#max`** with the
+two findings below. The original findings list and fix report live in the
+git-ignored workspace:
+
+- `.superpowers/sdd/2026-10-23-dev-web-stack-plan-2-php/final-review-fixes.md`
+- `.superpowers/sdd/2026-10-23-dev-web-stack-plan-2-php/final-review-fix-report.md`
+
+They will not exist on another machine; this handoff carries the essential detail.
+
+#### Open Important A — retained generation/port can still be pruned
+
+The final fix retains a staged generation and its port when `StopPHP` fails
+(`internal/sites/php_apply.go:236-244`), but a later successful apply prunes every
+hash directory except its own current/previous row hashes
+(`internal/sites/php_apply.go:300-308`, `:370-402`). The retained generation is not
+a row hash, so the still-live master's directory can be deleted. The existing
+regression test (`TestApplyPHPRollbackRetainsGenerationWhenStopFails`,
+`internal/sites/php_apply_test.go:1362-1397`) stops at the retention assertion and
+never applies again.
+
+Also: `internal/sites/service.go:946-951` uses the cleanup context in
+`restoreSiteStateLocked`, but `internal/sites/service.go:987-992` still releases
+`current.FastCGIPort` when `previous.FastCGIPort == 0` even after that stop returned
+an error. No test covers that path.
+
+Required fix:
+- Track retained live generations/ports (for example a service-level keep set) and
+  exclude them from every later prune; or skip pruning while any retained live
+  generation exists.
+- Only release a port after the corresponding stop succeeds; if the stop fails,
+  retain the port and return/join the error.
+- Add tests: failed stop then a later successful apply must **not** delete the
+  retained generation; `restoreSiteStateLocked` must not release a port when its
+  stop failed.
+
+#### Open Important B — `PHPExec` on a running site can repin the row without swapping FPM
+
+The stopped-site defaults fix (`internal/sites/php.go:562-596`) recomposes and, when
+the hash differs, writes a new generation and persists `PHPConfigHash = files.Hash`
+(`:575-588`). For a **running** site the `default` master keeps the old generation;
+`PHPExec` does not start a master. A later `ApplyPHP` probe
+(`internal/sites/php_apply.go:154-164`) sees the row hash already equals the composed
+hash and takes `persistPHPRowOnlyLocked`, so the new defaults never reach the running
+master.
+
+Required fix (choose one, with a regression test):
+- For a running site, `PHPExec` should compose/use a temporary/current generation
+  without persisting `PHPConfigHash`; the next Start/Apply must still see the old
+  stored hash and swap/recompose; or
+- Stage and swap the master before persisting the new hash; or
+- Persist the new hash but mark the site “restart required” and ensure Apply does not
+  treat the master as current.
+
+Add a test: running site, edit version defaults, run `PHPExec` (new ini must be used
+for the exec), then `ApplyPHP`/restart must actually apply the new config to the
+serving master. The existing `TestStoppedPHPStartAndExecPickUpEditedDefaults`
+(`internal/sites/php_apply_test.go:1255`) only covers a stopped site.
+
+#### Open Minor
+
+- `internal/sites/php_apply.go:197-200`: the hash-equality branch releases the
+  allocated port before `persistPHPRowOnlyLocked` writes the row with that port. The
+  branch is currently unreachable because the FPM hash includes the listen port, but
+  fix the ordering or clear the row port.
+- `ui/src/routes/Runtimes.svelte:772`: the migration list's `aria-label` still says
+  “Sites using the build” although it now lists every site on the PHP line. Make it
+  match the visible line-wide wording.
+- Out-of-scope/knowledge: legacy PHP rows with empty `php_version` can appear in the
+  migration dialog because `CheckRuntimeRemoval` reports any site pinning the build,
+  while `MigratePHP` skips rows whose `PHPVersion` is empty. Fix in a later CLI/UI
+  pass if it matters.
+
+After fixing:
+- Run `go test ./... -race -count=1`, the real acceptance,
+  `go test ./internal/sites`, UI tests/check/build, and the PHP/Runtimes Playwright
+  tests.
+- Dispatch a scoped re-review (same model) against the fix diff; all findings must be
+  ADDRESSED with no new Critical/Important breakage.
+- Update this handoff/plan status before merges.
+
+### 1.2 Then write and execute Plan 4 (packaging/release), skipping Plan 3
+
+Plan 4 scope from the plan series (Linux-only while Windows is deferred):
+
+- Signed binaries/packages and a release workflow.
+- Upgrade path and versioning.
+- Diagnostics bundle.
+- Documentation polish.
+- Full M1 acceptance (including the existing Plan 1/Plan 2 automated gates).
+- Publication of real PHP catalog entries **only after** the Task 11 CI pipeline has
+  published checksummed artifacts. No invented PHP URLs/checksums.
+- Do **not** implement Windows/WSL (Plan 3); the WSL agent, named-pipe helper, Windows
+  trust stores, and `install.ps1` are explicitly deferred.
+
+Plan 4 does not exist yet. Write it from the M1 design/spec and the Plan 2 artifact
+gate, then execute with one implementer per task, task reviews, and a final
+whole-branch review. Use **`opencode-go/deepseek-v4.1-flash#max`** for every subagent.
+
+---
+
+## 2. Final whole-branch review status
+
+The final review covered `4f7ab97..c1e5f33` (31 commits, ~1.4 MB diff) and returned
+**“Ready to merge with fixes.”** One Critical and seven Important findings were sent
+to one fix wave. `b9f38c8` (`fix: close plan 2 final review findings`) addressed most
+of them, but the scoped re-review found:
+
+| Finding | Status |
+|---|---|
+| **C1** Built-in proxy source disclosure via `.php.tmp`/`.php.swp` | **ADDRESSED** — suffixes added; proxy/native parity helper + tests. |
+| **I1** Cleanup context/port ownership/prune live generation | **PARTIALLY ADDRESSED / OPEN** — contexts and enumeration fixed; retained live generation can still be pruned by a later apply; `restoreSiteStateLocked` can release a port after a failed stop; tests missing. |
+| **I2** `memcached` missing igbinary dependency | **ADDRESSED** — `requires:["igbinary"]` + tests. |
+| **I3** Stopped sites don't pick up edited defaults | **ADDRESSED for stopped sites** — compose/compare before reuse; stopped test passes. |
+| **I4** 8.5 stale opcache override / poisoned defaults | **ADDRESSED** — overrides dropped on line switch; stored defaults/site maps sanitized; tests. |
+| **I5** Dashboard Inherit baseline | **ADDRESSED** — `defaults` prop; SiteDetail/drawer pass edited baseline; tests. |
+| **I6** Migration dialog moves unlisted same-line sites | **ADDRESSED** — union with `phpSitesOn(line)`, same-line target default, tests. |
+| **I7** Apache HTTP configtest gated on mod_ssl | **ADDRESSED** — HTTP requires only `proxy_fcgi_module`; HTTP PASS, HTTPS SKIP. |
+| Minor: hash-branch port leak | ADDRESSED for release, but ordering minor remains (see §1.1). |
+| Minor: builtin membership validation | ADDRESSED. |
+| Minor: Line 0 / AddSite focus | ADDRESSED. |
+| Minor: start store-failure cleanup | ADDRESSED. |
+| Minor: absent runtime removal idempotence | ADDRESSED. |
+| **New Important** | **OPEN** — running-site `PHPExec` repins `PHPConfigHash` without swapping the master; later ApplyPHP can see a false no-op. |
+| New Minor | `Runtimes` migration list ARIA label stale; hash-branch release-before-persist ordering. |
+
+Do not mark Plan 2 merge-complete until A and B above are fixed and re-reviewed.
+The acceptance results themselves remain valid for the code at `b9f38c8`; the open
+issues are edge/cross-path defects, not acceptance failures.
+
+---
+
+## 3. Plan 2 task status and commits
 
 | Task | Status | Commits |
 |---|---|---|
-| 1. PHP build pinning/store/catalog/extension metadata | **Complete, reviewed** | `8f1da67`, `f1ed063` |
-| 2. `php.ini` composition/validation | **Complete, reviewed** | `d0c50ff`, `0499c52` |
-| 3. FastCGI client + php-fpm config | **Complete, reviewed** | `376f5cb`, `926bfd0` |
-| 4. Local backend PHP process/build resolution | **Complete, reviewed** | `78e0f17`, `1b9221a` |
-| 5. PHP site create/start/stop/delete/vhost publication | **Not started** | — |
-| 6. Validate-then-swap version/ini/extensions | Not started | — |
-| 7. Built-in proxy PHP/FastCGI transport | Not started | — |
-| 8. PHP nginx/Apache vhosts/helper/Doctor | Not started | — |
-| 9. REST API, typed client, CLI | Not started | — |
-| 10. Dashboard PHP screens/editing | Not started | — |
-| 11. PHP build pipeline/CI/catalog generator/docs | Not started | — |
-| 12. Plan 2 acceptance | Not started | — |
+| Plan 2 plan | Committed | `2a02cdb` |
+| 1. PHP build pinning/store/catalog/extension metadata | Complete, reviewed | `8f1da67`, `f1ed063` |
+| 2. `php.ini` composition/validation | Complete, reviewed | `d0c50ff`, `0499c52` |
+| 3. FastCGI client + php-fpm config | Complete, reviewed | `376f5cb`, `926bfd0` |
+| 4. Local backend PHP process/build resolution | Complete, reviewed | `78e0f17`, `1b9221a` |
+| Handoff before Task 5 | Committed/pushed | `c0ff9d8` |
+| 5. PHP site create/start/stop/delete/vhost | Complete, reviewed | `5af2298`, `d739759` |
+| Docs through Task 6 | Committed | `7166a69` |
+| 6. Validate-then-swap version/ini/extensions | Complete, reviewed | `9f8f795` |
+| 7. Built-in proxy PHP/FastCGI transport | Complete, reviewed | `bdcfaaf` |
+| Docs through Task 7 | Committed | `ae56eb2` |
+| 8. PHP nginx/Apache vhosts/helper/Doctor | Complete, reviewed | `9fa1911` |
+| Docs through Task 8 | Committed | `e2d16b3` |
+| 9. REST API/typed client/CLI/daemon | Complete, reviewed | `5126eba`, `70fc7d7` |
+| Docs through Task 9 | Committed | `2aeab8d` |
+| 10. Dashboard PHP screens/editing | Complete, reviewed | `0efb5ca`, `e8796ff` |
+| Docs through Task 10 | Committed | `f8dc656` |
+| 11. PHP build pipeline/CI/catalog generator/docs | Complete, reviewed | `3a22864`, `ae9d4b6` |
+| Docs through Task 11 | Committed | `65ad1bf` |
+| 12. Plan 2 acceptance | Complete, reviewed | `d2b37e9`, `a8db13f` |
+| Plan 2 completion docs | Committed | `c1e5f33` |
+| Final review fix wave | Committed, re-review open | `b9f38c8` |
 
-**Do not redo Tasks 1–4.** The next step is Task 5 only.
-
----
-
-## 1. Exact next step — implement Plan 2 Task 5
-
-Start from the current `plan-2-php` tip (after this handoff is pushed):
-
-```sh
-cd /path/to/dev-web-stack
-git fetch origin
-git switch plan-2-php
-git pull --ff-only
-go test ./...                       # should pass
-BASE=$(git rev-parse HEAD)          # record this for the Task 5 review package
-```
-
-Generate the Task 5 brief:
-
-```sh
-bash <superpowers>/skills/subagent-driven-development/scripts/task-brief \
-  docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-php.md 5
-```
-
-Dispatch **one** implementer with:
-
-- The printed Task 5 brief as the single source of requirements.
-- Context from Tasks 1–4 (interfaces below), not the whole session.
-- Report path:
-  `.superpowers/sdd/2026-10-23-dev-web-stack-plan-2-php/task-5-report.md`
-- Model **`opencode-go/deepseek-v4.1-flash#max`**.
-- No subagents/reviewer for the implementer.
-- Commit at the end; then generate the review package:
-
-```sh
-bash <superpowers>/skills/subagent-driven-development/scripts/review-package \
-  docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-php.md \
-  "$BASE" "$(git rev-parse HEAD)"
-```
-
-Dispatch a fresh task reviewer on **`opencode-go/deepseek-v4.1-flash#max`**
-with the task brief, implementer report, diff package, Global Constraints,
-and Review Focus. Run the fix loop (max five rounds) before Task 6.
+Original handoff after Task 4: `c0ff9d8`. Plan 1 tip: `4f7ab97`.
 
 ---
 
-## 2. What is implemented (Tasks 1–4)
+## 4. What is implemented (condensed)
 
-### Task 1 — PHP build pinning, store schema, revisioned catalog, extension metadata
+### Task 1 — Build pinning, store, revisioned catalog, extensions
+- `model.Site.PHPBuild`, `PHPIniRaw`, `PHPConfigHash`; migration `0003_php_build.sql`
+  (`sites.php_build`, `php_ini_raw`, `php_config_hash`, `site_php_config.applied_at`).
+- Revisioned IDs `php@8.4.4-r1`; `ParseID`/`FormatID`/`ForKindVersion`/`NewestForLine`;
+  Node IDs keep revision 0.
+- Embedded `internal/catalog/php.json` extension manifest + per-version defaults.
+- `runtime.Manager.EnsureBuild` is store-first: an intact installed build is returned
+  even if the current catalog no longer lists it; catalog install/repair only for
+  missing/stale paths.
+- Production `internal/catalog/catalog.json` still has **no PHP entries**.
 
-Commits: `8f1da67` (`feat: pin PHP builds by revision and add extension metadata`),
-`f1ed063` (`fix: return intact installed PHP builds before catalog lookup`).
+### Task 2 — `php.ini`
+- `internal/phpini`: `Compose`, `ExtractSiteSection`, `Parse`, `ValidateOverrides`,
+  `ValidateRaw`, `Lint` (real PHP), `ErrInvalidConfig`, `ValidationError`, `LintError`.
+- Order: base → `[PHP]` reset → sorted version defaults → site overrides → raw →
+  `[PHP]` reset → managed extension block.
+- Managed block: `extension_dir`, `extension=`, `zend_extension=`, markers rejected
+  from raw/overrides. CA aliases (`curl.cainfo`/`openssl.cafile`) emitted unless the
+  effective defaults/overrides set them.
 
-- `internal/model`: `Site.PHPBuild`, `PHPIniRaw`, `PHPConfigHash`; existing
-  `PHPVersion`, `PHPIni`, `PHPExtensions` retained.
-- `internal/store/migrations/0003_php_build.sql`: `sites.php_build`,
-  `sites.php_ini_raw`, `sites.php_config_hash`, `site_php_config.applied_at`.
-  Forward-only migration; upgrade from a real 0001/0002 DB is tested.
-- Store methods for PHP defaults and per-site applied config; JSON persistence.
-- Revisioned catalog IDs:
-  - Node: `node@24.22.1` (revision 0).
-  - PHP: `php@8.4.4-r1` (revision ≥ 1).
-  - `ParseID`/`FormatID`; `ForKindVersion` newest revision;
-    `NewestForLine` newest version then revision; `Find` exact.
-- `internal/catalog/php.json` + `php.go`: embedded PHP extension manifest:
-  builtins, standard/extras, `.so` names, defaults, supported versions,
-  dependencies; `filter` is built-in; `imap` only 8.2/8.3; opcache/xdebug zend;
-  redis/apcu require igbinary; unknown/builtin/unsupported/cycle rejection.
-- Runtime paths: PHP `<version>-r<revision>-<build>`; Node paths preserved.
-  `NewManagerWithCatalog` is the fixture seam. `EnsureBuild` is **store-first**:
-  an intact installed build is returned even if the current catalog no longer
-  lists it; catalog install/repair only for missing/stale paths.
-- **Production `internal/catalog/catalog.json` still contains no PHP entries.**
-  Do not invent PHP URLs/checksums. CI Task 11 must publish real artifacts.
+### Task 3 — FastCGI + php-fpm config
+- `internal/fcgi`: v1 responder, chunked params, STDIN, response streaming, bounded
+  headers (256 KiB/line, 1 MiB total), bounded stderr, cancellation, protocol status.
+- `internal/phpfpm`: exact pool (`dynamic`, max 5, start 2, min spare 1, max spare 3,
+  `catch_workers_output=yes`, `clear_env=no`), quoted paths/env (literal `$`),
+  `listen` 43000–43999, `Validate` rejects malformed ini even when FPM exits 0.
+- `error_log=/proc/self/fd/2`; supervisor supplies a pipe so FPM output reaches the
+  redacted site stream with source `fpm`.
 
-Deferred minors: `Ensure` revision ambiguity; `InstalledForLine` does not
-filter backend/verify; `ParsePHP` does not require every supported line; some
-false-value assertions; manifest test gaps; `manager.go` ~1,507 lines/duplicate
-comparator; `intactInstalledBuild` trusts manifest presence without full
-`Verify`.
+### Task 4 — Local backend
+- `backend.SiteSpec` PHP fields; `EnsureRuntimeBuild`; `PHPStager`
+  (`PreparePHP`/`StartPHP`/`StopPHP`).
+- Default generation = bare site ID; other generations = `<siteID>#<generation>`.
+- Per-site FPM master; health poll 30s overall, 2s per FastCGI attempt; failure stops
+  the master, releases the port, includes log tail.
+- `Exec` runs build `bin/php`, build bin first on PATH, `PHP_INI_SCAN_DIR=`,
+  `PHPRC=<generated ini>`; explicit `-c` wins.
 
-### Task 2 — `php.ini` composition and validation
+### Task 5 — Site lifecycle
+- `CreateRequest`/`UpdateRequest` PHP fields; `PHPBackend` fallback to `Backend`;
+  default `PHPCommands`; lazy manifest load; `ErrRuntimeMissing`.
+- Installed-store-only build resolution; exact ID or newest version/revision for line.
+- FastCGI port allocated before hosts; compose/validate/write immutable
+  `sites/<id>/<hash>/` generation (`0700`/`0600`/`0644`); commit stable copies;
+  create/start/stop/delete rollback; Delete stops FPM, releases both ports, removes
+  only `sites/<id>`.
+- `PHPExec` (stopped sites, generated ini, bypass flags rejected); `ValidatePHP`
+  temp compose; front-controller/document-root updates.
+- `proxy.KindPHP` and route fields added early; sites routes use `FastCGIPort`,
+  absolute docroot, front controller. FPM log path `/proc/self/fd/2`. `phpSiteDir`
+  rejects `.`.
 
-Commits: `d0c50ff` (`feat: compose and validate per-site php.ini`), `0499c52`
-(`fix: scope php.ini managed blocks and CA aliases`).
+### Task 6 — Apply/defaults/migrate/removal
+- `ApplyPHP` merges version/build/extensions/ini/raw; running site allocates new port
+  **before** composing (hash includes port), writes/validates, stages `PreparePHP`/
+  `StartPHP` on generation=hash, publishes row/snapshot/routes/vhosts, commits stable
+  copies, stops default + previous hash generation, releases old port only after
+  successful stops, prunes current+previous.
+- No-op when hash matches; stopped apply allocates/persists a port but starts nothing;
+  `SavePHPDefaults` fills missing keys from embedded baseline and applies to running
+  sites independently; `MigratePHP` line-wide; `CheckRuntimeRemoval` blocks exact
+  builds and legacy empty-build rows by line.
+- `startPHPLocked` idempotent after staged apply.
 
-- `internal/phpini`:
-  - `Compose`, `ExtractSiteSection`, `Parse`, `ValidateOverrides`,
-    `ValidateRaw`, `ErrInvalidConfig`, `ValidationError`, `LintError`,
-    `Runner`, `ExecRunner`, `Lint`.
-  - Order: base → `[PHP]` reset → sorted version defaults → sorted site
-    overrides → raw verbatim → `[PHP]` reset → managed extension block.
-  - Managed block: `extension_dir`, `extension=`, `zend_extension=`; these and
-    the markers are rejected from raw/overrides.
-  - `curl.cainfo`/`openssl.cafile`: emitted unless **effective** version
-    defaults/overrides set them; base/raw do not suppress them.
-  - Injection rejection: NUL/CR/LF, invalid keys, managed directives/markers.
-  - Real PHP lint with `PHP_INI_SCAN_DIR=`; 10s timeout; missing/non-regular ini
-    is rejected before invoking PHP; line-number parsing.
-- `ExtractSiteSection` returns the sorted overrides **plus** raw text. Callers
-  must not re-supply the same overrides when feeding it back as `Config.Raw`.
+### Task 7 — Built-in proxy
+- `KindPHP` dispatch to `servePHP`; FastCGI 120s deadline; full CGI params; synthesized
+  `HTTP_HOST`/`X-Forwarded-*`; body length exact/-1.
+- Path resolution: NUL/`..`/dotfiles rejected; EvalSymlinks containment; directories
+  `index.php` then `index.html`; `.php` case-folded; `PATH_INFO`; front controller;
+  backup suffixes denied; static files via `http.ServeContent` no-store.
+- Response strips hop-by-hop/Status/HSTS; HEAD body suppressed; branded 502.
 
-Deferred minors: `#` comments/CRLF raw rejected; `Parse` returns quoted
-literals; real OPcache probe assumes shared opcache.
+### Task 8 — Native vhosts/helper/Doctor
+- PHP vhost validation: running requires docroot + 43000–43999; stopped may use 0 and
+  omit root; FrontController PHP-only; `ErrPHPUnsupported` removed.
+- nginx `location ~*` PHP, deny dotfiles/backups before PHP, front-controller named
+  location, fixed `SCRIPT_FILENAME`, `PATH_INFO $uri`.
+- Apache `(?i)\.php$` `SetHandler proxy:fcgi`, `DirectoryIndex`, front-controller
+  rewrite inside `<Directory>`, backup/dotfile/`_devstack` denial.
+- Helper already resolves/contains running PHP docroots via `vhost.ValidateSiteSpec`
+  + existing path checks; tests added.
+- Doctor `php-builds`, `php-config`, `php-ports`, `php-master`; skip when unused;
+  `Deps.PHP` wired to site service.
 
-### Task 3 — FastCGI client and php-fpm configuration
+### Task 9 — API/client/CLI/daemon
+- Seven routes under `/api/v1` (site PHP info/apply/exec, extensions, defaults,
+  migrate); CSRF/session/host checks inherited; errors map `PHP_VERSION_IN_USE` 409,
+  `RUNTIME_MISSING` 409, `PHP_CONFIG_INVALID` 422 with line/output/field/message.
+- Runtime delete calls `CheckRuntimeRemoval`; absent build 404 handled idempotently
+  after final fix.
+- Typed client methods; create/update PHP fields; CLI `site add --kind php`,
+  `site php`, `site ini`, `site ext`, `runtime migrate`, `php --site`; install prompt
+  includes version/size/revision/SHA; `--json`; remediation.
+- Daemon loads `catalog.LoadPHP()` once, passes manifest, PHPBackend, PHPCommands.
 
-Commits: `376f5cb` (`feat: add FastCGI client and php-fpm configuration`),
-`926bfd0` (`fix: bound FastCGI headers and escape FPM values`).
+### Task 10 — Dashboard
+- Types/API functions; PHP runtime grouping, defaults drawer, build switch, ini editor,
+  extension toggles; `used_by` derived from `php_build`/line; migration dialog lists
+  all line sites; managed block read-only; `PHP_CONFIG_INVALID` line/output.
+- Inherit labels use edited defaults baseline after final fix.
+- Playwright PHP flow in mock mode.
 
-- `internal/fcgi`:
-  - FastCGI v1 responder, one request per connection; `BEGIN_REQUEST`,
-    chunked params (`nameLen,valueLen,name,value`; 1-byte/4-byte lengths),
-    STDIN 32 KiB chunks, empty terminators, `ABORT_REQUEST` on cancel,
-    `STDOUT`/`STDERR`/`END_REQUEST`.
-  - CGI `Status:` default 200, headers, blank line; protocol status 0/1/2/3;
-    body streamed; bounded stderr (64 KiB); context cancellation closes the
-    connection and returns the context error.
-  - **Header bounds:** per-line 256 KiB, total 1 MiB. A newline-free over-cap
-    line is rejected before unbounded buffering. `readHeaderLine` is the
-    bounded reader.
-  - Real php-fpm interop test guards the name/value order.
-- `internal/phpfpm`:
-  - `Config`, `Render`, `Argv`, `ErrConfigInvalid`, `Validate`.
-  - `[global]` pid/error_log/daemonize=no/log_level=notice; `[www]` listen,
-    dynamic pool exact values, catch output, clear_env=no, chdir,
-    security.limit_extensions=.php, optional user/group, sorted env.
-  - Quote/escape paths/env, including literal `$`; reject NUL/CR/LF, non-IP
-    listen hosts, ports outside 43000–43999, relative paths.
-  - `Argv`: `[fpmBin, "--nodaemonize", "--fpm-config", configPath, "-c", iniPath]`.
-  - `Validate`: 10s, `PHP_INI_SCAN_DIR=`, missing file pre-check, real-FPM
-    output scan rejecting `PHP:` syntax errors / `ERROR:` even when php-fpm
-    exits 0; accept notice-only success.
-- Task 3 concerns: ABORT best effort; `/proc/self/fd/2` cannot be opened by this
-  machine's php-fpm (pass a real log path in Task 4+); `Response.Status` is the
-  reason phrase, `StatusCode` numeric.
+### Task 11 — Build pipeline/CI/catalog/docs
+- `build/php/` scripts: `build.sh`, `smoke.sh`, `latest-patch.sh`, `update-lock.sh`,
+  `extensions.lock`, `base-php.ini`, README.
+- Verified PHP source pins: 8.2.35, 8.3.36, 8.4.27, 8.5.12 (real SHA-256 in lock).
+- Verified PECL pins (redis, apcu, xdebug, imagick, memcached, ssh2, yaml, igbinary,
+  msgpack, grpc, pcov); `imap` deliberately blocked/documented (c-client / version
+  constraints). `igbinary 3.2.17RC1` is used because it supports PHP 8.5.
+- PHP 8.5 has built-in OPcache, no `opcache.so`; `php.json` has
+  `builtin_by_version: {"8.5":["opcache"]}` and omits opcache from 8.5 defaults.
+- `cmd/phpcatalog` verifies artifact name/size/SHA/base URL, emits one entry, refuses
+  to overwrite `internal/catalog/catalog.json`; `cmd/php-smoke` runs a real FPM
+  FastCGI health, refuses root.
+- CI matrix 8.2–8.5 on ubuntu-22.04 with deps, shell checks, build/smoke, SBOM,
+  checksum, upload, dependent catalog job. Release base URL is required; CI does not
+  commit catalog changes. No published PHP artifacts in this environment.
+- Docs state the artifact gate.
 
-Deferred minors: stdin goroutine can remain blocked on caller `Body`; invalid
-UTF-8 path bytes replaced; empty `Status:` treated as absent; some test timer/
-deadlock/timeout robustness; test-only helpers in `records.go`; large
-`client_test.go`; unanchored `] ERROR:` match; real `-tt` test lacks timeout.
-
-### Task 4 — Local backend PHP process path and build resolution
-
-Commits: `78e0f17` (`feat: run per-site php-fpm masters in the local backend`),
-`1b9221a` (`fix: bound PHP FastCGI health attempts by the readiness deadline`).
-
-- `backend.SiteSpec` gained: `PHPVersion`, `PHPBuild`, `PHPBuildPath`,
-  `PHPIniPath`, `FPMConfigPath`, `PHPHealthScript`.
-- `RuntimeProvider.EnsureBuild(ctx, buildID)` and
-  `Backend.EnsureRuntimeBuild(ctx, buildID)`; `Local` delegates to the runtime
-  provider.
-- `backend.PHPStager`:
-  `PreparePHP`, `StartPHP`, `StopPHP`.
-- `internal/backend/php.go`:
-  - `Prepare` for PHP stores generation `default`; `PreparePHP` stages other
-    generations in memory.
-  - Supervisor IDs: default = bare site ID; other = `<siteID>#<generation>`.
-    Latest successfully started generation is active; `StopPHP` promotes the
-    most recently started remaining generation; `Stop` stops every generation.
-  - Validation: non-empty build ID; executable `bin/php`/`sbin/php-fpm`;
-    clean absolute ini/FPM/health paths; FastCGI port 43000–43999; safe
-    generation; site ID/kind; document root exists.
-  - Start: `phpfpm.Argv`, build `bin` first on PATH,
-    `PHP_INI_SCAN_DIR=`, document-root cwd, TCP readiness, FastCGI health poll
-    up to 30s, logs source `fpm`. Failure stops the master, releases the port,
-    and includes the last 200 log lines.
-  - **Health deadline fix:** overall 30s context; each FastCGI attempt gets a
-    2s budget capped by the remaining overall budget and is canceled after the
-    attempt; an unresponsive master fails within the deadline.
-  - `Exec`: build `bin/php`, build bin first on PATH, `PHP_INI_SCAN_DIR=`,
-    `PHPRC=<generated ini>` (Task 5's explicit `-c` still wins), site cwd.
-- `internal/runtime/php_smoke.go`:
-  - `var phpSmoke = smokePHPBuild` test hook.
-  - Runs `bin/php -v`, `sbin/php-fpm -v`, starts a temp FPM on a free
-    43000–43999 port with temp ini/config/health, sends one FastCGI request,
-    requires `200 ok`, stops the process group.
-  - `installEntry`: smoke after extraction/manifest, before atomic rename;
-    failure removes temp tree, no runtime row. Success registers.
-- Conformance/fakes updated for the new methods; `internal/sites/fakes_test.go`
-  has the new backend method/seams.
-- Task 4 concerns: `PHPRC` is used for the brief's bare `php -r` test; smoke
-  port bind/release has a test-only race; staged non-default generations are
-  in-memory only across daemon restarts; `StopPHP` retains the prepared entry
-  (stopped), promotion ignores it; `phpSmoke` is a global hook (tests restore
-  it, no `t.Parallel()` in affected tests). Install lock is held during smoke.
-
-Deferred minors: health-failure stop error ignored and state cleared on stop
-failure; duplicate default stop/single context across generations; `PreparePHP`
-can overwrite a running generation's spec; `Exec` prefers prepared over staged;
-unsafe site IDs accepted until Start; mismatch branches untested; failure test
-lacks deferred cleanup; test port bind/release races; always-nil
-`phpProcessSpec` error; large `php.go`/`php_test.go`/`php_smoke.go`; caller-
-cancel error classification in `waitPHPHealth`.
+### Task 12 — Acceptance
+- `test/php/acceptance_test.go` uses real system PHP 8.4.4, real FPM/backend/sites/
+  store/logs/certs/router, filtered manifest from present `.so` files + real built-ins.
+- Verified: per-site 8.4, per-site ini, xdebug isolation, malformed ini line 2 with
+  old master serving, failed switch rollback, candidate port OS-level free, delete/
+  stop/StopAll port-free checks, proxy FastCGI, nginx `-t`, Apache HTTP configtest
+  PASS (HTTPS SKIP: no mod_ssl), Doctor PHP checks OK, stop/start.
+- Acceptance report:
+  `docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md`.
+- System PHP: 8.4.4 at `/usr/local/php`; extension dir
+  `/usr/local/php/lib/php/extensions/no-debug-non-zts-20240924`; filtered shared
+  extensions observed: imagick, opcache, pcov, pdo_pgsql, redis, xdebug, zip.
+- FPM ports observed: 43000 (blog), 43001 (api), 43002 (blog after xdebug),
+  43003 (blog after ini), failed-switch candidate 43999.
 
 ---
 
-## 3. Plan 2 binding architecture and rulings
+## 5. Blockers / honest gaps
 
-- Sites pin exact build IDs (`PHPBuild`), not just versions. `PHPVersion` is the
-  line/version; `PHPBuild` is the revisioned ID.
-- One `php-fpm` master per running site. Config is
-  `sites/<id>/<config-hash>/php-fpm.conf`; FastCGI TCP port 43000–43999;
-  Node HTTP ports remain 41000–42999.
-- FPM exact pool: dynamic, max_children 5, start_servers 2, min_spare 1,
-  max_spare 3; readiness 30s; stop grace 10s; restart policy as Plan 1.
-- `php.ini` order and markers as Task 2; managed extension block/dir read-only in
-  the raw editor. Required baseline values follow spec §11.3.
-- Extensions: standard defaults except `ffi`; extras default off; `imap`
-  8.2/8.3 only; opcache/xdebug zend; redis/apcu require igbinary; dependency
-  order from catalog metadata; no independent PECL updates in M1.
-- Validation: `php -c <ini> -r 'exit(0);'` + `php-fpm -t`; errors block apply;
-  failed apply leaves old master serving.
-- `phpSmoke` must pass before a PHP build is registered.
-- **Artifact gate:** production `catalog.json` has no PHP entries until CI
-  publishes checksummed archives. Task 11 builds/smoke-tests/checksums/SBOMs/
-  uploads; release job generates entries. Tests use fixture catalogs/tarballs;
-  acceptance may use `/usr/local/php` and must mark managed-artifact checks
-  blocked if no published build exists.
-- Preflight rulings already recorded:
-  - Interface changes update every compile-time fake in the same task.
-  - No invented production PHP URLs/checksums.
-  - Task 12 may mark managed-artifact checks blocked if CI artifacts are absent.
-  - `PHPIni`/`PHPIniRaw` persist together; raw is authoritative for comments/
-    unknown directives; managed extension block is generated only by
-    `phpini.Compose`.
-  - `filter` is built-in and not toggleable.
-- All subagents must use `opencode-go/deepseek-v4.1-flash#max`.
+1. **Plan 2 final review open** — the two Important findings in §1.1; not merge-ready.
+2. **Production PHP artifacts** — `internal/catalog/catalog.json` has no PHP entries.
+   Task 11 CI has not published checksummed tarballs; the real 8.2/8.5 side-by-side
+   is BLOCKED. Do not invent URLs/checksums.
+3. **Apache HTTPS** — `mod_ssl` is absent on this workstation; Apache HTTP PHP config
+   test passes, HTTPS vhost is SKIP. Real Apache serving remains manual.
+4. **In-flight request continuity across a successful swap** — not measured.
+5. **Cross-build migration** — acceptance migrates a same-path `php@8.4.4-r2`
+   revision; it does not prove switching between different real builds (blocked on
+   artifacts).
+6. **`imap`** — build pipeline blocked/documented; UI may still offer the toggle
+   until a later cleanup; enabling it will fail validation.
+7. **Plan 1 manual blockers** — browser trust, fresh root init/uninstall/80/443, real
+   Apache serving, live UI daemon, browser HMR/WebSocket remain manual.
+8. **Windows/WSL** — entirely deferred; no agent, named pipe, Windows trust, or
+   `install.ps1`.
 
 ---
 
-## 4. Plan 1 baseline and manual blockers
+## 6. Verification / environment
 
-Plan 1 is pushed at `4f7ab97` on `plan-1-foundation`:
+Host: Fedora Linux 44 x86_64. Go 1.27.3; Node 22.23.1/npm 10.9.8.
+PHP 8.4.4 CLI `/usr/local/php/bin/php`; FPM `/usr/local/php/sbin/php-fpm`.
+nginx 1.28.0; Apache 2.4.69 (no mod_ssl); system nginx owns 80/443.
 
-- Go CLI/daemon/helper, SQLite v2 (now v3), logs/SSE, supervisor, builtin
-  proxy/static, Node runtimes, certs/SNI, hosts/CA/trust, forwarders, Doctor,
-  REST API, Svelte dashboard, Linux install/systemd, CI, real high-port nginx
-  E2E.
-- Optional helper-managed native nginx/Apache vhosts with one `serving_mode`,
-  atomic releases, bridge hashes, mode switching, CLI/API/UI/Doctor, high-port
-  E2E.
-- Automated acceptance PASS: `go test ./...`, `go test -race ./...`, `go vet`,
-  `make build`, E2E, UI 27 tests + 18 Playwright, shellcheck, install dry-run,
-  systemd verify.
-- **Manual acceptance blocked/partial:** real Chrome/Firefox trust (no
-  certutil/CA install), fresh init/uninstall/root 80/443 (active system nginx,
-  system changes), real Apache (`mod_ssl` absent), live UI against a real
-  daemon, browser HMR/WebSocket. See
-  `docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md`.
-- Deep details: `docs/superpowers/status/2026-10-22-plan-1-handoff.md`.
+At `b9f38c8`:
+- `go test ./...` PASS.
+- `go test ./... -race -count=1` PASS (fix report).
+- `DEVSTACK_PHP_ROOT=/usr/local/php go test ./test/php -run TestPHPSubsystemAcceptance -v -count=1` PASS.
+- `go test ./internal/backend ./internal/sites ./internal/proxy ./internal/phpfpm ./internal/phpini -v` PASS.
+- `go test ./internal/vhost ./internal/helper ./internal/doctor` PASS.
+- `cd ui && npm test -- --run` PASS (51 tests), `npm run check` PASS, `npm run build` PASS,
+  `npx playwright test` 19/19 PASS.
+- `make build` PASS.
+- No FPM listeners left on 43000–43999 after acceptance.
 
----
-
-## 5. Environment and verification
-
-- Host: Fedora Linux 44 x86_64.
-- Go 1.27.3; Node 22.23.1/npm 10.9.8.
-- PHP 8.4.4 CLI `/usr/local/php/bin/php`; FPM
-  `/usr/local/php/sbin/php-fpm`; extension dir under
-  `/usr/local/php/lib/php/extensions/...`.
-- nginx 1.28.0; Apache 2.4.69 installed but no `mod_ssl`; system nginx owns
-  80/443 on this workstation.
-- At `1b9221a`: **`go test ./...` PASS**.
-- Task 4 targeted/full/race/vet/gofmt and real-FPM tests: PASS.
-- Task 3 targeted/race/vet and real-FPM validation: PASS.
-- Task 2 real-PHP lint: PASS.
-- No Plan 2 E2E exists yet; Plan 1 E2E still covers builtin + external nginx.
-
-Commands:
+Useful commands:
 
 ```sh
 go test ./...
-go test -race ./internal/fcgi ./internal/phpfpm ./internal/backend ./internal/runtime
-go vet ./...
-cd ui && npm ci && npm test && npm run check && npm run build
+go test -race ./...
+go test ./test/php -run TestPHPSubsystemAcceptance -v -count=1
+go test ./internal/backend ./internal/sites ./internal/proxy ./internal/phpfpm ./internal/phpini -v
+cd ui && npm ci && npm test -- --run && npm run check && npm run build
+cd ui && npx playwright test
 make build
-E2E_SKIP_BUILD=1 bash test/e2e/linux.sh   # Plan 1 builtin + nginx vhost E2E
 ```
 
 The local SDD ledger/reports are git-ignored under
-`.superpowers/sdd/2026-10-23-dev-web-stack-plan-2-php/`. They will not exist on
-another machine; regenerate briefs/reports from the plan and git history.
+`.superpowers/sdd/2026-10-23-dev-web-stack-plan-2-php/`. The committed handoff is the
+portable record. On another machine, regenerate briefs/review packages from the plan
+and git history.
 
 ---
 
-## 6. Repository map (current)
+## 7. Repository map (current)
 
 ```
 cmd/devstack/            CLI + daemon
 cmd/devstack-helper/     privileged helper
+cmd/phpcatalog/          PHP catalog entry generator
+cmd/php-smoke/           FPM/FastCGI artifact smoke command
+build/php/               PHP build/smoke/lock/CI scripts + base ini
 internal/config/         config/paths (serving_mode; external requires 7070)
-internal/model/          Site (PHPBuild/PHPIniRaw/PHPConfigHash), RuntimeBuild
-internal/store/          SQLite + migrations 0001-0003; PHP defaults/site config
+internal/model/          Site (PHP fields), RuntimeBuild, PHPDefaults, SitePHPConfig
+internal/store/          SQLite migrations 0001-0003; PHP defaults/config
 internal/logs/           rotation/ring/SSE/redaction
 internal/supervisor/     process groups/readiness/backoff
 internal/backend/        local static/Node/PHP; PHPStager; runtime smoke
@@ -329,25 +405,26 @@ internal/helperproto/    RPC + vhost types
 internal/helper/         auth, hosts, CA/trust, forwarders, vhost manager
 internal/helperclient/   helper RPC client
 internal/forwarder/      80/443 forwarders
-internal/proxy/          router/TLS/HTTP upstream; PHP FastCGI Task 7
+internal/proxy/          router/TLS/HTTP upstream; PHP FastCGI transport
 internal/staticserve/    static handler
 internal/certs/          certs/renewal/PEM
-internal/catalog/        Node catalog + php.json manifest; no production PHP entries
+internal/catalog/        Node catalog + php.json; no PHP entries in catalog.json
 internal/runtime/        downloads/extraction/verify; revisioned PHP; phpSmoke
-internal/vhost/          nginx/Apache renderers; PHP templates Task 8
-internal/sites/          lifecycle/external mode; PHP lifecycle Tasks 5-6
-internal/doctor/         diagnostics/repair
-internal/api/            REST/SSE/auth/UI
-internal/daemon/         startup/shutdown/reconcile
-internal/client/         Unix-socket client
-internal/cli/            Cobra commands
+internal/vhost/          nginx/Apache renderers incl. PHP templates
+internal/sites/          lifecycle, PHP config/apply/exec/validation, routes/vhosts
+internal/doctor/         diagnostics incl. PHP checks
+internal/api/            REST/SSE/auth/UI; PHP handlers
+internal/daemon/         startup/shutdown/reconcile; PHP wiring
+internal/client/         Unix-socket client; PHP methods
+internal/cli/            Cobra commands; PHP site/ini/ext/runtime/php
 internal/phpini/         php.ini compose/validate
 internal/fcgi/           FastCGI client/records
 internal/phpfpm/         php-fpm config/render/validate
 ui/                      Svelte 5 dashboard + mock/real API + Playwright
-api/openapi.yaml         API contract
+test/php/                real-FPM acceptance
+api/openapi.yaml         API contract incl. PHP routes
 build/systemd/           units
-docs/                    install/sites/tls/vhosts + superpowers plans/specs
+docs/                    install/sites/tls/vhosts/php + superpowers plans/specs
 test/e2e/linux.sh        Plan 1 builtin + high-port nginx E2E
 install.sh               Linux installer
 ```
@@ -359,48 +436,47 @@ FastCGI 43000–43999.
 
 ---
 
-## 7. Remaining work
+## 8. Plan 3 / Plan 4
 
-### Plan 2
-
-- **Task 5:** PHP site creation/start/stop/deletion, build resolution,
-  FastCGI port allocation, store/route update, vhost publication. This is the
-  next task. It consumes `PHPStager`, `SiteSpec` PHP fields, runtime
-  `EnsureBuild`, and Plan 1 site/vhost services.
-- **Task 6:** validate-then-swap version/build/ini/extensions; new master,
-  health, store/route/vhost atomicity, rollback; port/process cleanup.
-- **Task 7:** built-in proxy PHP route and FastCGI transport; SCRIPT_FILENAME/
-  PATH_INFO/index/front controller; source containment.
-- **Task 8:** PHP nginx `fastcgi_pass` and Apache `proxy:fcgi` vhosts, helper
-  validation, Doctor.
-- **Task 9:** REST API, typed client, CLI (`site`, `php --site`, runtimes).
-- **Task 10:** dashboard PHP screens/editing, design-system compliant.
-- **Task 11:** `build/php/` relocatable builds 8.2–8.5, CI matrix, smoke tests,
-  checksums/SBOM, catalog generator, docs.
-- **Task 12:** Plan 2 acceptance with real FPM/FastCGI/ini/extensions/version
-  switch rollback and external templates; mark managed-artifact portions blocked
-  if no published PHP build exists.
-
-### Plan 3 — Windows/WSL2
-
-Not written. Scope: managed Debian 12 WSL distro, `devstack-agent`, process/PHP
-FPM inside WSL, path translation, Windows helper named pipe, cert/trust stores,
-Firefox policy, `install.ps1`, WSL lifecycle, conformance. External vhosts are
-Linux-only.
-
-### Plan 4 — Packaging/release
-
-Not written. Scope: signed binaries/packages, release workflow, upgrade,
-diagnostics bundle, docs polish, full M1 acceptance.
+- **Plan 3 — Windows/WSL: SKIPPED by user request.** Keep for later. Do not implement
+  the WSL agent, named-pipe helper, Windows cert/trust stores, Firefox policy,
+  `install.ps1`, or WSL lifecycle.
+- **Plan 4 — packaging/release (next):** signed binaries/packages, release workflow,
+  upgrade, diagnostics bundle, docs polish, full M1 acceptance, and publication of
+  the real PHP catalog entries after CI artifacts exist. Linux-only while Windows is
+  deferred. No invented production PHP URL/checksum. Write the plan first; then
+  execute with subagent-driven development.
 
 ---
 
-## 8. Push state
+## 9. Commit/push state
 
-Before this handoff, `plan-2-php` was at `988d4d8` on the remote. This handoff
-adds one docs commit on top of:
+Before this handoff, `plan-2-php` was at `b9f38c8` (one commit ahead of origin
+`c1e5f33`). This handoff adds a docs commit on top of:
 
 ```
+b9f38c8 fix: close plan 2 final review findings
+c1e5f33 docs: record plan 2 completion and acceptance
+a8db13f fix: prove PHP acceptance cleanup and built-ins
+d2b37e9 docs: record plan 2 acceptance results
+65ad1bf docs: record plan 2 status through task 11
+ae9d4b6 fix: make PHP 8.5 artifacts and smoke checks trustworthy
+3a22864 feat: add PHP build pipeline, catalog generation, and docs
+f8dc656 docs: record plan 2 status through task 10
+e8796ff fix: keep PHP defaults safe when loading fails
+0efb5ca feat: add PHP runtime, ini, and extension controls to the dashboard
+2aeab8d docs: record plan 2 status through task 9
+70fc7d7 fix: classify PHP config and exec argument errors
+5126eba feat: expose PHP settings and runtime migration in the API and CLI
+e2d16b3 docs: record plan 2 status through task 8
+9fa1911 feat: add PHP vhost templates and Doctor checks
+ae56eb2 docs: record plan 2 status through task 7
+bdcfaaf feat: proxy PHP requests over FastCGI
+7166a69 docs: record plan 2 implementation rulings through task 6
+9f8f795 feat: apply PHP version, ini, and extension changes with rollback
+d739759 fix: keep PHP logs and updates consistent
+5af2298 feat: create and run per-site PHP sites
+c0ff9d8 docs: update plan 2 PHP handoff through task 4
 1b9221a fix: bound PHP FastCGI health attempts by the readiness deadline
 78e0f17 feat: run per-site php-fpm masters in the local backend
 926bfd0 fix: bound FastCGI headers and escape FPM values
@@ -422,4 +498,5 @@ git rev-list --left-right --count origin/plan-2-php...HEAD   # expect 0 0
 git status --short --branch                                  # clean
 ```
 
-Paused — do not start Task 5 until the next session resumes.
+Paused at the user's request. Next: close the two open final-review findings
+(§1.1), re-review, then write/execute Plan 4. Do not start Plan 3.
