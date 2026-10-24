@@ -247,7 +247,9 @@ if [[ $artifact_line == '8.5' ]]; then
 fi
 
 # Every PECL package pinned in the lock must load and report extension_loaded.
-# Preload igbinary for the serializer integrations that are compiled against it.
+# Start from the validated standard set, because the generated site ini always
+# loads it: redis, for example, requires session.so. Preload igbinary for the
+# serializer integrations that are compiled against it.
 # shellcheck disable=SC1090
 source "$lock_file"
 for package in "${pecl_packages[@]}"; do
@@ -257,7 +259,7 @@ for package in "${pecl_packages[@]}"; do
 		die "PECL package $package is not pinned in $lock_file; run build/php/update-lock.sh"
 	so="$package.so"
 	[[ -f "$ext_dir/$so" ]] || die "locked extension $so is missing from the artifact"
-	args=(-n -d "extension_dir=$ext_dir")
+	args=("${standard_args[@]}")
 	case "$package" in
 	redis | apcu | memcached)
 		[[ -f "$ext_dir/igbinary.so" ]] ||

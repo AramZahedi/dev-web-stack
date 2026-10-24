@@ -628,7 +628,8 @@
         "8.5"
       ],
       "requires": [
-        "igbinary"
+        "igbinary",
+        "session"
       ]
     },
     {

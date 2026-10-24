@@ -141,7 +141,7 @@ func TestPHPManifestBuiltinsAreVersionAware(t *testing.T) {
 	}
 }
 
-func TestPHPManifestIgbinaryIntegrationsDeclareDependency(t *testing.T) {
+func TestPHPManifestPECLDependencies(t *testing.T) {
 	m, err := LoadPHP()
 	if err != nil {
 		t.Fatal(err)
@@ -162,25 +162,44 @@ func TestPHPManifestIgbinaryIntegrationsDeclareDependency(t *testing.T) {
 			t.Errorf("%s requires = %v, want igbinary", name, extension.Requires)
 		}
 	}
-
-	resolved, err := m.Resolve("8.4", map[string]bool{"memcached": true})
-	if err != nil {
-		t.Fatal(err)
+	// redis.so declares session as a required module; the standard shared set
+	// loads it in real sites, so the manifest must declare it too.
+	if redis := byName["redis"]; !slices.Contains(redis.Requires, "session") {
+		t.Errorf("redis requires = %v, want session", redis.Requires)
 	}
-	index := func(name string) int {
-		for i, extension := range resolved {
-			if extension.Name == name {
-				return i
+
+	for _, test := range []struct {
+		name string
+		deps []string
+	}{
+		{name: "memcached", deps: []string{"igbinary"}},
+		{name: "redis", deps: []string{"igbinary", "session"}},
+	} {
+		resolved, err := m.Resolve("8.4", map[string]bool{test.name: true})
+		if err != nil {
+			t.Fatalf("resolve %s: %v", test.name, err)
+		}
+		index := func(name string) int {
+			for i, extension := range resolved {
+				if extension.Name == name {
+					return i
+				}
+			}
+			return -1
+		}
+		parent := index(test.name)
+		if parent < 0 {
+			t.Fatalf("%s missing from resolved order = %+v", test.name, resolved)
+		}
+		for _, dependency := range test.deps {
+			if at := index(dependency); at < 0 || at > parent {
+				t.Fatalf("resolved order = %+v, want %s before %s", resolved, dependency, test.name)
 			}
 		}
-		return -1
-	}
-	igbinary, memcached := index("igbinary"), index("memcached")
-	if igbinary < 0 || memcached < 0 || igbinary > memcached {
-		t.Fatalf("resolved order = %+v, want igbinary before memcached", resolved)
-	}
-	if !resolved[igbinary].Required || !slices.Contains(resolved[igbinary].RequiredBy, "memcached") {
-		t.Fatalf("igbinary = %+v, want required by memcached", resolved[igbinary])
+		igbinary := index("igbinary")
+		if !resolved[igbinary].Required || !slices.Contains(resolved[igbinary].RequiredBy, test.name) {
+			t.Fatalf("igbinary = %+v, want required by %s", resolved[igbinary], test.name)
+		}
 	}
 }
 
