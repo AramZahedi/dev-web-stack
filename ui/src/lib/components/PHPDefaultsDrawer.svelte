@@ -2,7 +2,7 @@
   import { tick } from 'svelte';
   import { ChevronDown, Plus, Trash2 } from 'lucide-svelte';
   import * as api from '../api';
-  import { describeError } from '../errors';
+  import { describePHPError, type PHPErrorDescription } from '../errors';
   import type { PHPExtension, PHPDefaults, PHPMigrationResult, Site } from '../types';
   import Button from './Button.svelte';
   import ErrorBanner from './ErrorBanner.svelte';
@@ -31,17 +31,28 @@
   type Phase = 'edit' | 'confirm' | 'result';
 
   let activeVersion = $state('');
+  let loadedVersion = $state<string | null>(null);
   let phase = $state<Phase>('edit');
   let loading = $state(false);
   let saving = $state(false);
-  let error = $state<{ code: string; message: string } | null>(null);
+  let loadError = $state<PHPErrorDescription | null>(null);
+  let error = $state<PHPErrorDescription | null>(null);
   let extensions = $state<PHPExtension[]>([]);
   let rows = $state<IniRow[]>([]);
   let overrides = $state<Record<string, boolean>>({});
   let results = $state<PHPMigrationResult[] | null>(null);
   let rowSeq = 0;
   let requestSeq = 0;
+  let retryToken = $state(0);
   let wasOpen = false;
+
+  const canSave = $derived(
+    !loading &&
+      !saving &&
+      !loadError &&
+      loadedVersion !== null &&
+      loadedVersion === activeVersion,
+  );
 
   const versionOptions = $derived(
     Array.from(new Set([...versions, version])).sort((a, b) =>
@@ -67,6 +78,7 @@
       activeVersion = version;
       phase = 'edit';
       results = null;
+      loadError = null;
       error = null;
     } else if (!open) {
       wasOpen = false;
@@ -75,25 +87,38 @@
 
   $effect(() => {
     if (!open || !activeVersion) return;
+    void retryToken;
     const target = activeVersion;
     const requestID = ++requestSeq;
     loading = true;
+    loadedVersion = null;
+    loadError = null;
     error = null;
+    extensions = [];
+    rows = [];
+    overrides = {};
+    results = null;
+    phase = 'edit';
     Promise.all([api.getPHPDefaults(target), api.phpExtensions(target)])
       .then(([defaults, catalog]) => {
         if (requestID !== requestSeq) return;
         applyLoaded(defaults, catalog);
-        phase = 'edit';
-        results = null;
+        loadedVersion = target;
       })
       .catch((caught) => {
         if (requestID !== requestSeq) return;
-        error = describeError(caught);
+        loadError = describePHPError(caught);
+        loadedVersion = null;
       })
       .finally(() => {
         if (requestID === requestSeq) loading = false;
       });
   });
+
+  function retryLoad(): void {
+    loadError = null;
+    retryToken += 1;
+  }
 
   function applyLoaded(defaults: PHPDefaults, catalog: PHPExtension[]): void {
     extensions = catalog;
@@ -155,12 +180,13 @@
 
   function review(): void {
     error = null;
+    if (!canSave || loadedVersion !== activeVersion) return;
     if (!buildIni()) return;
     phase = 'confirm';
   }
 
   async function save(): Promise<void> {
-    if (saving) return;
+    if (saving || !canSave || loadedVersion !== activeVersion) return;
     const ini = buildIni();
     if (!ini) {
       phase = 'edit';
@@ -177,7 +203,7 @@
       phase = 'result';
       onsaved?.();
     } catch (caught) {
-      error = describeError(caught);
+      error = describePHPError(caught);
       phase = 'edit';
     } finally {
       saving = false;
@@ -254,16 +280,33 @@
           <Skeleton width={`${92 - (index % 3) * 12}%`} height="30px" radius="7px" />
         {/each}
       </div>
-    {:else if error && rows.length === 0 && extensions.length === 0}
-      <ErrorBanner title="PHP defaults error" code={error.code} message={error.message} />
+    {:else if loadError}
+      <ErrorBanner
+        title="Could not load PHP defaults"
+        code={loadError.code}
+        message={loadError.message}
+        onretry={retryLoad}
+      />
     {:else}
       {#if error}
-        <ErrorBanner
-          title="Could not save PHP defaults"
-          code={error.code}
-          message={error.message}
-          ondismiss={() => (error = null)}
-        />
+        <div class="php-error" role="alert">
+          <div class="error-title">
+            <span class="code mono">{error.code}</span>
+            <span>{error.message}</span>
+          </div>
+          {#if error.details?.message}
+            <p class="detail">{error.details.message}</p>
+          {/if}
+          {#if error.details?.line !== undefined && error.details.line > 0}
+            <p class="detail">Line {error.details.line}</p>
+          {/if}
+          {#if error.details?.field}
+            <p class="detail">Field <span class="mono">{error.details.field}</span></p>
+          {/if}
+          {#if error.details?.output}
+            <pre class="output" aria-label="PHP defaults validation output">{error.details.output}</pre>
+          {/if}
+        </div>
       {/if}
       <div class="form">
         <Field id="defaults-version" label="PHP line">
@@ -369,12 +412,12 @@
       <Button variant="primary" onclick={close}>Done</Button>
     {:else if phase === 'confirm'}
       <Button variant="ghost" onclick={() => (phase = 'edit')} disabled={saving}>Back</Button>
-      <Button variant="primary" onclick={save} loading={saving} disabled={saving}>
+      <Button variant="primary" onclick={save} loading={saving} disabled={saving || !canSave}>
         Save and apply
       </Button>
     {:else}
       <Button variant="ghost" onclick={close} disabled={saving || loading}>Cancel</Button>
-      <Button variant="primary" onclick={review} disabled={loading || saving}>
+      <Button variant="primary" onclick={review} disabled={!canSave}>
         Save defaults
       </Button>
     {/if}
@@ -417,6 +460,55 @@
     color: var(--muted);
     font-size: 11px;
     line-height: 1.5;
+  }
+
+  .php-error {
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+    border-left: 3px solid var(--danger);
+    border-radius: var(--radius-lg);
+    background: var(--danger-soft);
+  }
+
+  .error-title {
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+    color: var(--fg);
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 1.45;
+  }
+
+  .code {
+    padding: 0 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--danger) 14%, transparent);
+    color: var(--danger-fg);
+    font-size: 10px;
+  }
+
+  .detail {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .output {
+    margin: 6px 0 0;
+    padding: 9px;
+    max-height: 160px;
+    overflow: auto;
+    border: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border));
+    border-radius: var(--radius);
+    background: var(--log-bg);
+    color: var(--log-fg);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
   }
 
   .select-wrap {

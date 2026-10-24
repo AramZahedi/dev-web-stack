@@ -38,6 +38,41 @@ const BUILD_B: RuntimeBuild = {
   installed_at: '2026-10-21T10:00:00Z',
 };
 
+const BUILD_C: RuntimeBuild = {
+  id: 'php@8.5.0-r1',
+  kind: 'php',
+  version: '8.5.0',
+  backend: 'local',
+  path: '/home/dev/.devstack/runtimes/php/8.5.0-r1',
+  checksum: 'c'.repeat(64),
+  installed_at: '2026-10-22T10:00:00Z',
+};
+
+const PHP_EXTENSIONS = [
+  {
+    name: 'opcache',
+    type: 'zend_extension' as const,
+    so: 'opcache.so',
+    default: true,
+    standard: true,
+    versions: ['8.4', '8.5'],
+  },
+  {
+    name: 'xdebug',
+    type: 'zend_extension' as const,
+    so: 'xdebug.so',
+    default: false,
+    standard: false,
+    versions: ['8.4', '8.5'],
+  },
+];
+
+const DEFAULTS_84 = {
+  version: '8.4',
+  ini: { memory_limit: '256M' },
+  extensions: { opcache: true, xdebug: false },
+};
+
 const PHP_SITE: Site = {
   id: 's_blog',
   name: 'blog',
@@ -90,6 +125,14 @@ async function openMigrationDialog(): Promise<HTMLElement> {
   await fireEvent.click(within(row as HTMLElement).getByRole('button', { name: /Remove/ }));
   await fireEvent.click(await screen.findByRole('button', { name: 'Remove build' }));
   return screen.findByRole('dialog', { name: /Migrate sites off PHP 8.4.4/ });
+}
+
+async function openDefaultsDrawer(): Promise<HTMLElement> {
+  const row = (await screen.findByRole('heading', { name: 'PHP 8.4.4' })).closest('article');
+  expect(row).not.toBeNull();
+  const lineBlock = row?.closest('.line-block') as HTMLElement;
+  await fireEvent.click(within(lineBlock).getByRole('button', { name: /Defaults/ }));
+  return screen.findByRole('dialog', { name: /PHP .* defaults/ });
 }
 
 describe('Runtimes PHP removal', () => {
@@ -208,6 +251,119 @@ describe('Runtimes PHP removal', () => {
     });
     expect(await within(dialog).findByText('Defaults saved for PHP 8.4.')).toBeTruthy();
     expect(within(dialog).getByText('Applied')).toBeTruthy();
+  });
+
+  it('disables saving when the initial defaults load fails', async () => {
+    mockApi.getPHPDefaults.mockRejectedValue(new ApiError('INTERNAL', 'defaults unavailable', 500));
+    mockApi.phpExtensions.mockResolvedValue(PHP_EXTENSIONS);
+
+    render(Runtimes);
+    const dialog = await openDefaultsDrawer();
+
+    expect(await within(dialog).findByText('defaults unavailable')).toBeTruthy();
+    expect(within(dialog).queryByLabelText('Default directive 1 value')).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Retry' })).toBeTruthy();
+    const save = within(dialog).getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+
+    await fireEvent.click(save);
+    expect(mockApi.savePHPDefaults).not.toHaveBeenCalled();
+  });
+
+  it('does not save the previous line defaults after a failed version switch', async () => {
+    mockApi.listRuntimes.mockResolvedValue([BUILD_A, BUILD_B, BUILD_C]);
+    mockApi.getPHPDefaults.mockImplementation((version: string) =>
+      version === '8.4'
+        ? Promise.resolve(DEFAULTS_84)
+        : Promise.reject(new ApiError('INTERNAL', '8.5 defaults unavailable', 500)),
+    );
+    mockApi.phpExtensions.mockResolvedValue(PHP_EXTENSIONS);
+
+    render(Runtimes);
+    const dialog = await openDefaultsDrawer();
+    const memory = (await within(dialog).findByLabelText(
+      'Default directive 1 value',
+    )) as HTMLInputElement;
+    expect(memory.value).toBe('256M');
+
+    const select = within(dialog).getByLabelText('PHP line') as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: '8.5' } });
+
+    expect(await within(dialog).findByText('8.5 defaults unavailable')).toBeTruthy();
+    expect(within(dialog).queryByLabelText('Default directive 1 value')).toBeNull();
+    const save = within(dialog).getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+
+    await fireEvent.click(save);
+    expect(mockApi.savePHPDefaults).not.toHaveBeenCalled();
+  });
+
+  it('retries the selected line and enables saving after a load failure', async () => {
+    mockApi.getPHPDefaults
+      .mockRejectedValueOnce(new ApiError('INTERNAL', 'defaults unavailable', 500))
+      .mockResolvedValue(DEFAULTS_84);
+    mockApi.phpExtensions.mockResolvedValue(PHP_EXTENSIONS);
+
+    render(Runtimes);
+    const dialog = await openDefaultsDrawer();
+    await within(dialog).findByText('defaults unavailable');
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
+
+    const memory = (await within(dialog).findByLabelText(
+      'Default directive 1 value',
+    )) as HTMLInputElement;
+    expect(memory.value).toBe('256M');
+    const save = within(dialog).getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    expect(mockApi.getPHPDefaults).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows PHP_CONFIG_INVALID details when saving defaults is rejected', async () => {
+    mockApi.getPHPDefaults.mockResolvedValue(DEFAULTS_84);
+    mockApi.phpExtensions.mockResolvedValue(PHP_EXTENSIONS);
+    mockApi.savePHPDefaults.mockRejectedValue(
+      new ApiError('PHP_CONFIG_INVALID', 'bad defaults', 422, {
+        line: 4,
+        field: 'ini',
+        output: 'syntax error',
+      }),
+    );
+
+    render(Runtimes);
+    const dialog = await openDefaultsDrawer();
+    await within(dialog).findByLabelText('Default directive 1 value');
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save defaults' }));
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save and apply' }));
+
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert.textContent).toContain('PHP_CONFIG_INVALID');
+    expect(alert.textContent).toContain('bad defaults');
+    expect(alert.textContent).toContain('Line 4');
+    expect(alert.textContent).toContain('Field');
+    expect(alert.textContent).toContain('ini');
+    expect(alert.textContent).toContain('syntax error');
+  });
+
+  it('does not render Line 0 for line-less save errors', async () => {
+    mockApi.getPHPDefaults.mockResolvedValue(DEFAULTS_84);
+    mockApi.phpExtensions.mockResolvedValue(PHP_EXTENSIONS);
+    mockApi.savePHPDefaults.mockRejectedValue(
+      new ApiError('PHP_CONFIG_INVALID', 'bad defaults', 422, {
+        line: 0,
+        output: 'syntax error',
+      }),
+    );
+
+    render(Runtimes);
+    const dialog = await openDefaultsDrawer();
+    await within(dialog).findByLabelText('Default directive 1 value');
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save defaults' }));
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save and apply' }));
+
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert.textContent).toContain('PHP_CONFIG_INVALID');
+    expect(alert.textContent).not.toContain('Line 0');
   });
 
   it('disables remove for a PHP build pinned by a site', async () => {
