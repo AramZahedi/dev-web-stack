@@ -1,0 +1,19 @@
+[Unit]
+Description=devstack user daemon
+Documentation=https://github.com/AramZahedi/dev-web-stack/blob/master/docs/install.md
+After=network.target
+
+[Service]
+Type=simple
+Environment=HOME=%h
+Environment=DEVSTACK_HOME=%h/.devstack
+ExecStart=%h/.local/bin/devstack daemon run
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+KillMode=mixed
+NoNewPrivileges=yes
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

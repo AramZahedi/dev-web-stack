@@ -1,0 +1,1078 @@
+{
+  "builtin": [
+    "core",
+    "ctype",
+    "date",
+    "filter",
+    "hash",
+    "json",
+    "pcre",
+    "random",
+    "spl",
+    "standard"
+  ],
+  "builtin_by_version": {
+    "8.5": [
+      "opcache"
+    ]
+  },
+  "extensions": [
+    {
+      "name": "bcmath",
+      "type": "extension",
+      "so": "bcmath.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "bz2",
+      "type": "extension",
+      "so": "bz2.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "calendar",
+      "type": "extension",
+      "so": "calendar.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "curl",
+      "type": "extension",
+      "so": "curl.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "dba",
+      "type": "extension",
+      "so": "dba.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "dom",
+      "type": "extension",
+      "so": "dom.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "exif",
+      "type": "extension",
+      "so": "exif.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "ffi",
+      "type": "extension",
+      "so": "ffi.so",
+      "default": false,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "fileinfo",
+      "type": "extension",
+      "so": "fileinfo.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "ftp",
+      "type": "extension",
+      "so": "ftp.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "gd",
+      "type": "extension",
+      "so": "gd.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "gettext",
+      "type": "extension",
+      "so": "gettext.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "gmp",
+      "type": "extension",
+      "so": "gmp.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "iconv",
+      "type": "extension",
+      "so": "iconv.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "intl",
+      "type": "extension",
+      "so": "intl.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "ldap",
+      "type": "extension",
+      "so": "ldap.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "mbstring",
+      "type": "extension",
+      "so": "mbstring.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "mysqli",
+      "type": "extension",
+      "so": "mysqli.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "opcache",
+      "type": "zend_extension",
+      "so": "opcache.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "openssl",
+      "type": "extension",
+      "so": "openssl.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "pcntl",
+      "type": "extension",
+      "so": "pcntl.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "pdo",
+      "type": "extension",
+      "so": "pdo.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "pdo_mysql",
+      "type": "extension",
+      "so": "pdo_mysql.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "pdo_pgsql",
+      "type": "extension",
+      "so": "pdo_pgsql.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "pdo_sqlite",
+      "type": "extension",
+      "so": "pdo_sqlite.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "pgsql",
+      "type": "extension",
+      "so": "pgsql.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "phar",
+      "type": "extension",
+      "so": "phar.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "posix",
+      "type": "extension",
+      "so": "posix.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "readline",
+      "type": "extension",
+      "so": "readline.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "session",
+      "type": "extension",
+      "so": "session.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "simplexml",
+      "type": "extension",
+      "so": "simplexml.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "soap",
+      "type": "extension",
+      "so": "soap.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "sockets",
+      "type": "extension",
+      "so": "sockets.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "sodium",
+      "type": "extension",
+      "so": "sodium.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "sqlite3",
+      "type": "extension",
+      "so": "sqlite3.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "sysvmsg",
+      "type": "extension",
+      "so": "sysvmsg.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "sysvsem",
+      "type": "extension",
+      "so": "sysvsem.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "sysvshm",
+      "type": "extension",
+      "so": "sysvshm.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "tidy",
+      "type": "extension",
+      "so": "tidy.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "tokenizer",
+      "type": "extension",
+      "so": "tokenizer.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "xml",
+      "type": "extension",
+      "so": "xml.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "xmlreader",
+      "type": "extension",
+      "so": "xmlreader.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "xmlwriter",
+      "type": "extension",
+      "so": "xmlwriter.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "xsl",
+      "type": "extension",
+      "so": "xsl.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "zip",
+      "type": "extension",
+      "so": "zip.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "zlib",
+      "type": "extension",
+      "so": "zlib.so",
+      "default": true,
+      "standard": true,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "redis",
+      "type": "extension",
+      "so": "redis.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ],
+      "requires": [
+        "igbinary",
+        "session"
+      ]
+    },
+    {
+      "name": "apcu",
+      "type": "extension",
+      "so": "apcu.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ],
+      "requires": [
+        "igbinary"
+      ]
+    },
+    {
+      "name": "xdebug",
+      "type": "zend_extension",
+      "so": "xdebug.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "imagick",
+      "type": "extension",
+      "so": "imagick.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "memcached",
+      "type": "extension",
+      "so": "memcached.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ],
+      "requires": [
+        "igbinary"
+      ]
+    },
+    {
+      "name": "ssh2",
+      "type": "extension",
+      "so": "ssh2.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "yaml",
+      "type": "extension",
+      "so": "yaml.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "igbinary",
+      "type": "extension",
+      "so": "igbinary.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "msgpack",
+      "type": "extension",
+      "so": "msgpack.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "grpc",
+      "type": "extension",
+      "so": "grpc.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "pcov",
+      "type": "extension",
+      "so": "pcov.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3",
+        "8.4",
+        "8.5"
+      ]
+    },
+    {
+      "name": "imap",
+      "type": "extension",
+      "so": "imap.so",
+      "default": false,
+      "standard": false,
+      "versions": [
+        "8.2",
+        "8.3"
+      ]
+    }
+  ],
+  "versions": {
+    "8.2": {
+      "ini": {
+        "display_errors": "On",
+        "error_reporting": "E_ALL",
+        "memory_limit": "256M",
+        "upload_max_filesize": "64M",
+        "post_max_size": "64M",
+        "max_execution_time": "120",
+        "date.timezone": "UTC",
+        "opcache.enable": "1",
+        "opcache.validate_timestamps": "1",
+        "opcache.revalidate_freq": "0"
+      },
+      "extensions": {
+        "bcmath": true,
+        "bz2": true,
+        "calendar": true,
+        "curl": true,
+        "dba": true,
+        "dom": true,
+        "exif": true,
+        "ffi": false,
+        "fileinfo": true,
+        "ftp": true,
+        "gd": true,
+        "gettext": true,
+        "gmp": true,
+        "iconv": true,
+        "intl": true,
+        "ldap": true,
+        "mbstring": true,
+        "mysqli": true,
+        "opcache": true,
+        "openssl": true,
+        "pcntl": true,
+        "pdo": true,
+        "pdo_mysql": true,
+        "pdo_pgsql": true,
+        "pdo_sqlite": true,
+        "pgsql": true,
+        "phar": true,
+        "posix": true,
+        "readline": true,
+        "session": true,
+        "simplexml": true,
+        "soap": true,
+        "sockets": true,
+        "sodium": true,
+        "sqlite3": true,
+        "sysvmsg": true,
+        "sysvsem": true,
+        "sysvshm": true,
+        "tidy": true,
+        "tokenizer": true,
+        "xml": true,
+        "xmlreader": true,
+        "xmlwriter": true,
+        "xsl": true,
+        "zip": true,
+        "zlib": true,
+        "redis": false,
+        "apcu": false,
+        "xdebug": false,
+        "imagick": false,
+        "memcached": false,
+        "ssh2": false,
+        "yaml": false,
+        "igbinary": false,
+        "msgpack": false,
+        "grpc": false,
+        "pcov": false,
+        "imap": false
+      }
+    },
+    "8.3": {
+      "ini": {
+        "display_errors": "On",
+        "error_reporting": "E_ALL",
+        "memory_limit": "256M",
+        "upload_max_filesize": "64M",
+        "post_max_size": "64M",
+        "max_execution_time": "120",
+        "date.timezone": "UTC",
+        "opcache.enable": "1",
+        "opcache.validate_timestamps": "1",
+        "opcache.revalidate_freq": "0"
+      },
+      "extensions": {
+        "bcmath": true,
+        "bz2": true,
+        "calendar": true,
+        "curl": true,
+        "dba": true,
+        "dom": true,
+        "exif": true,
+        "ffi": false,
+        "fileinfo": true,
+        "ftp": true,
+        "gd": true,
+        "gettext": true,
+        "gmp": true,
+        "iconv": true,
+        "intl": true,
+        "ldap": true,
+        "mbstring": true,
+        "mysqli": true,
+        "opcache": true,
+        "openssl": true,
+        "pcntl": true,
+        "pdo": true,
+        "pdo_mysql": true,
+        "pdo_pgsql": true,
+        "pdo_sqlite": true,
+        "pgsql": true,
+        "phar": true,
+        "posix": true,
+        "readline": true,
+        "session": true,
+        "simplexml": true,
+        "soap": true,
+        "sockets": true,
+        "sodium": true,
+        "sqlite3": true,
+        "sysvmsg": true,
+        "sysvsem": true,
+        "sysvshm": true,
+        "tidy": true,
+        "tokenizer": true,
+        "xml": true,
+        "xmlreader": true,
+        "xmlwriter": true,
+        "xsl": true,
+        "zip": true,
+        "zlib": true,
+        "redis": false,
+        "apcu": false,
+        "xdebug": false,
+        "imagick": false,
+        "memcached": false,
+        "ssh2": false,
+        "yaml": false,
+        "igbinary": false,
+        "msgpack": false,
+        "grpc": false,
+        "pcov": false,
+        "imap": false
+      }
+    },
+    "8.4": {
+      "ini": {
+        "display_errors": "On",
+        "error_reporting": "E_ALL",
+        "memory_limit": "256M",
+        "upload_max_filesize": "64M",
+        "post_max_size": "64M",
+        "max_execution_time": "120",
+        "date.timezone": "UTC",
+        "opcache.enable": "1",
+        "opcache.validate_timestamps": "1",
+        "opcache.revalidate_freq": "0"
+      },
+      "extensions": {
+        "bcmath": true,
+        "bz2": true,
+        "calendar": true,
+        "curl": true,
+        "dba": true,
+        "dom": true,
+        "exif": true,
+        "ffi": false,
+        "fileinfo": true,
+        "ftp": true,
+        "gd": true,
+        "gettext": true,
+        "gmp": true,
+        "iconv": true,
+        "intl": true,
+        "ldap": true,
+        "mbstring": true,
+        "mysqli": true,
+        "opcache": true,
+        "openssl": true,
+        "pcntl": true,
+        "pdo": true,
+        "pdo_mysql": true,
+        "pdo_pgsql": true,
+        "pdo_sqlite": true,
+        "pgsql": true,
+        "phar": true,
+        "posix": true,
+        "readline": true,
+        "session": true,
+        "simplexml": true,
+        "soap": true,
+        "sockets": true,
+        "sodium": true,
+        "sqlite3": true,
+        "sysvmsg": true,
+        "sysvsem": true,
+        "sysvshm": true,
+        "tidy": true,
+        "tokenizer": true,
+        "xml": true,
+        "xmlreader": true,
+        "xmlwriter": true,
+        "xsl": true,
+        "zip": true,
+        "zlib": true,
+        "redis": false,
+        "apcu": false,
+        "xdebug": false,
+        "imagick": false,
+        "memcached": false,
+        "ssh2": false,
+        "yaml": false,
+        "igbinary": false,
+        "msgpack": false,
+        "grpc": false,
+        "pcov": false
+      }
+    },
+    "8.5": {
+      "ini": {
+        "display_errors": "On",
+        "error_reporting": "E_ALL",
+        "memory_limit": "256M",
+        "upload_max_filesize": "64M",
+        "post_max_size": "64M",
+        "max_execution_time": "120",
+        "date.timezone": "UTC",
+        "opcache.enable": "1",
+        "opcache.validate_timestamps": "1",
+        "opcache.revalidate_freq": "0"
+      },
+      "extensions": {
+        "bcmath": true,
+        "bz2": true,
+        "calendar": true,
+        "curl": true,
+        "dba": true,
+        "dom": true,
+        "exif": true,
+        "ffi": false,
+        "fileinfo": true,
+        "ftp": true,
+        "gd": true,
+        "gettext": true,
+        "gmp": true,
+        "iconv": true,
+        "intl": true,
+        "ldap": true,
+        "mbstring": true,
+        "mysqli": true,
+        "openssl": true,
+        "pcntl": true,
+        "pdo": true,
+        "pdo_mysql": true,
+        "pdo_pgsql": true,
+        "pdo_sqlite": true,
+        "pgsql": true,
+        "phar": true,
+        "posix": true,
+        "readline": true,
+        "session": true,
+        "simplexml": true,
+        "soap": true,
+        "sockets": true,
+        "sodium": true,
+        "sqlite3": true,
+        "sysvmsg": true,
+        "sysvsem": true,
+        "sysvshm": true,
+        "tidy": true,
+        "tokenizer": true,
+        "xml": true,
+        "xmlreader": true,
+        "xmlwriter": true,
+        "xsl": true,
+        "zip": true,
+        "zlib": true,
+        "redis": false,
+        "apcu": false,
+        "xdebug": false,
+        "imagick": false,
+        "memcached": false,
+        "ssh2": false,
+        "yaml": false,
+        "igbinary": false,
+        "msgpack": false,
+        "grpc": false,
+        "pcov": false
+      }
+    }
+  }
+}

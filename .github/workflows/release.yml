@@ -1,0 +1,169 @@
+name: Release
+
+# Tag-driven Linux amd64 release. The workflow intentionally runs only from an
+# annotated or lightweight tag matching v<major>.<minor>.<patch>; a manual
+# dispatch must name an existing tag explicitly. Packaging is defined by
+# .goreleaser.yaml and validated with `goreleaser check` before publishing.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build (v<major>.<minor>.<patch>)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish the Linux release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve and validate the release tag
+        id: tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ $EVENT_NAME == "workflow_dispatch" ]]; then
+            tag="$INPUT_TAG"
+          else
+            tag="$REF_NAME"
+            if [[ $REF_TYPE != "tag" ]]; then
+              echo "release workflow must run from a tag, got ref type '$REF_TYPE'" >&2
+              exit 1
+            fi
+          fi
+          if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag must look like v<major>.<minor>.<patch>, got '$tag'" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "Releasing $tag (version $version)"
+
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify the tag points at the checked-out commit
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          tagged="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if [[ $head != "$tagged" ]]; then
+            echo "checked-out HEAD $head is not tag $TAG ($tagged)" >&2
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: UI install, check, test, and build
+        working-directory: ui
+        run: npm ci && npm run check && npm test && npm run build
+
+      - name: Test with the race detector
+        # CGO stays enabled for -race. GoReleaser disables cgo per build in
+        # .goreleaser.yaml, so the published binaries remain static.
+        run: go test ./... -race
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Release, installer, and workflow contract tests
+        run: |
+          bash test/release/release_test.sh
+          bash test/release/installer_test.sh
+          bash test/release/workflow_test.sh
+
+      - name: Validate the GoReleaser configuration
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
+      - name: Build a snapshot archive for inspection
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish
+
+      - name: Inspect the snapshot release archive
+        shell: bash
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find dist -maxdepth 1 -type f \
+            -name 'devstack_*_linux_amd64.tar.gz' -print)
+          if [[ ${#archives[@]} -ne 1 ]]; then
+            printf 'expected exactly one Linux archive, found %d\n' "${#archives[@]}" >&2
+            ls -l dist >&2 || true
+            exit 1
+          fi
+          archive="${archives[0]}"
+          checksums="dist/checksums.txt"
+          [[ -f $checksums ]] || { echo "missing $checksums" >&2; exit 1; }
+          (cd dist && sha256sum -c checksums.txt)
+          expected=(devstack devstack-helper install.sh README.md)
+          if [[ -f LICENSE ]]; then
+            expected+=(LICENSE)
+          fi
+          actual="$(tar -tzf "$archive" | LC_ALL=C sort)"
+          wanted="$(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)"
+          if [[ $actual != "$wanted" ]]; then
+            printf 'unexpected archive members:\n%s\nwant:\n%s\n' "$actual" "$wanted" >&2
+            exit 1
+          fi
+          extract="$(mktemp -d)"
+          trap 'rm -rf "$extract"' EXIT
+          tar -xzf "$archive" -C "$extract" devstack
+          reported="$("$extract/devstack" version --json | jq -er '.version')"
+          if [[ $reported != "$VERSION" ]]; then
+            echo "snapshot devstack reports $reported, expected $VERSION" >&2
+            exit 1
+          fi
+          echo "snapshot archive verified: $archive ($reported)"
+
+      - name: Build and publish the release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

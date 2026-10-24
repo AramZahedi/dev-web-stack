@@ -1,0 +1,45 @@
+# Copy to /etc/devstack/helper.yaml. install.sh generates this file with the
+# invoking user's UID. Values omitted from the file keep the helper defaults;
+# command-line flags override the file.
+socket: /run/devstack-helper/helper.sock
+state_dir: /var/lib/devstack-helper
+hosts: /etc/hosts
+
+# Empty trusts the distribution's detected CA anchor directory
+# (/etc/pki/ca-trust/source/anchors on Fedora, /usr/local/share/ca-certificates
+# on Debian/Ubuntu). Set a path to override it.
+trust_dir: ""
+
+# Only this UID may call the helper. This must be the user who runs devstack.
+allow_uid: 1000
+
+# Privileged listeners owned by the root helper. They forward to the daemon's
+# unprivileged proxy ports.
+forward_http_port: 80
+forward_https_port: 443
+proxy_http_port: 8080
+proxy_https_port: 8443
+
+# Bind the privileged forwarders at helper startup. This restores 80/443 after
+# a service restart or reboot without running `devstack init` again. Set false
+# when another server owns those ports; `devstack init` can still enable the
+# forwarders explicitly.
+auto_forward: true
+
+# Helper-managed nginx/Apache vhosts. vhost_root owns the vhosts/ and tls/
+# trees; vhost_state records mode, releases, and owned TLS files.
+vhost_root: /etc/devstack
+vhost_state: /var/lib/devstack-helper/vhosts.json
+
+# Listen ports rendered into the external server's vhosts. Production uses
+# 80/443. High ports exist for unprivileged tests and are not a production
+# configuration option.
+vhost_http_port: 80
+vhost_https_port: 443
+
+# Bridge include directories. Empty auto-detects and verifies that the main
+# server config actually loads the directory.
+nginx_include_dir: ""
+apache_include_dir: ""
+
+log_level: info

@@ -1,0 +1,251 @@
+name: PHP builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      download_base_url:
+        description: HTTPS base URL where the php-<version>-r<revision>-linux-x64.tar.gz assets will be published
+        required: true
+        type: string
+  push:
+    branches: [master, plan-2-php]
+    paths:
+      - "build/php/**"
+      - "cmd/phpcatalog/**"
+      - "cmd/php-smoke/**"
+      - "internal/catalog/php.json"
+      - "internal/fcgi/**"
+      - "internal/phpfpm/**"
+      - "test/php/**"
+      - ".github/workflows/php.yml"
+  pull_request:
+    paths:
+      - "build/php/**"
+      - "cmd/phpcatalog/**"
+      - "cmd/php-smoke/**"
+      - "internal/catalog/php.json"
+      - "internal/fcgi/**"
+      - "internal/phpfpm/**"
+      - "test/php/**"
+      - ".github/workflows/php.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: php-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate PHP download base URL
+    runs-on: ubuntu-22.04
+    outputs:
+      base_url: ${{ steps.base.outputs.base_url }}
+      available: ${{ steps.base.outputs.available }}
+    steps:
+      - name: Resolve the release asset base URL
+        id: base
+        env:
+          INPUT_BASE_URL: ${{ github.event.inputs.download_base_url }}
+          REPOSITORY_BASE_URL: ${{ vars.PHP_DOWNLOAD_BASE_URL }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          base_url="$INPUT_BASE_URL"
+          if [[ -z $base_url && $EVENT_NAME != "workflow_dispatch" ]]; then
+            base_url="$REPOSITORY_BASE_URL"
+          fi
+          if [[ -z $base_url ]]; then
+            if [[ $EVENT_NAME == "workflow_dispatch" ]]; then
+              echo "download_base_url is required for workflow_dispatch runs" >&2
+              exit 1
+            fi
+            echo "No PHP_DOWNLOAD_BASE_URL repository variable is configured; catalog generation will be skipped." >&2
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ $base_url != https://* ]]; then
+            echo "PHP download base URL must start with https://: $base_url" >&2
+            exit 1
+          fi
+          echo "Using PHP download base URL: $base_url"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "base_url=$base_url" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build PHP ${{ matrix.line }}
+    needs: validate
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        line: ["8.2", "8.3", "8.4", "8.5"]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install PHP build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf bison build-essential file jq libtool patchelf pkg-config re2c shellcheck xz-utils \
+            libbz2-dev libcurl4-openssl-dev libffi-dev libfreetype6-dev libgdbm-dev libgmp-dev \
+            libicu-dev libjpeg-dev libldap2-dev libmagickwand-dev libmemcached-dev libonig-dev libpng-dev \
+            libpq-dev libreadline-dev libsasl2-dev libsodium-dev libsqlite3-dev libssh2-1-dev libssl-dev \
+            libtidy-dev libwebp-dev libxml2-dev libxslt1-dev libyaml-dev libzip-dev zlib1g-dev
+
+      - name: Cache PHP and PECL source downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/devstack/php-sources
+          key: php-sources-${{ matrix.line }}-${{ hashFiles('build/php/extensions.lock') }}
+          restore-keys: |
+            php-sources-${{ matrix.line }}-
+
+      - name: Resolve the locked version
+        id: lock
+        env:
+          PHP_LINE: ${{ matrix.line }}
+        run: |
+          set -euo pipefail
+          source build/php/extensions.lock
+          key="PHP_${PHP_LINE//./_}_VERSION"
+          version="${!key:-}"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check shell syntax
+        run: bash -n build/php/*.sh test/php/*.sh
+
+      - name: Lint shell scripts
+        run: shellcheck --severity=error build/php/*.sh test/php/*.sh
+
+      - name: Test the smoke archive link policy
+        run: bash test/php/smoke_links_test.sh
+
+      - name: Test the catalog generator and smoke command
+        run: |
+          go test ./cmd/phpcatalog ./cmd/php-smoke
+          go vet ./cmd/phpcatalog ./cmd/php-smoke
+
+      - name: Build the PHP artifact
+        run: |
+          bash build/php/build.sh \
+            --line "${{ matrix.line }}" \
+            --version "${{ steps.lock.outputs.version }}" \
+            --revision 1 \
+            --output dist/php
+
+      - name: Smoke test the artifact
+        run: |
+          bash build/php/smoke.sh \
+            "dist/php/php-${{ steps.lock.outputs.version }}-r1-linux-x64.tar.gz"
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate an SBOM
+        env:
+          VERSION: ${{ steps.lock.outputs.version }}
+        run: |
+          set -euo pipefail
+          tree="$RUNNER_TEMP/php-sbom"
+          mkdir -p "$tree"
+          tar -xzf "dist/php/php-${VERSION}-r1-linux-x64.tar.gz" -C "$tree"
+          syft "dir:$tree" -o spdx-json > "dist/php/php-${VERSION}-r1-linux-x64.spdx.json"
+
+      - name: Write the SHA-256 checksum
+        working-directory: dist/php
+        env:
+          VERSION: ${{ steps.lock.outputs.version }}
+        run: |
+          sha256sum "php-${VERSION}-r1-linux-x64.tar.gz" > "php-${VERSION}-r1-linux-x64.tar.gz.sha256"
+
+      - name: Upload the artifact, checksum, and SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-build-${{ matrix.line }}
+          path: |
+            dist/php/php-${{ steps.lock.outputs.version }}-r1-linux-x64.tar.gz
+            dist/php/php-${{ steps.lock.outputs.version }}-r1-linux-x64.tar.gz.sha256
+            dist/php/php-${{ steps.lock.outputs.version }}-r1-linux-x64.spdx.json
+          if-no-files-found: error
+
+  catalog:
+    name: Combine PHP catalog entries
+    needs: [build, validate]
+    if: needs.validate.outputs.available == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download all PHP build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: php-build-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate php-catalog.json
+        env:
+          PHP_DOWNLOAD_BASE_URL: ${{ needs.validate.outputs.base_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/catalog
+          shopt -s nullglob
+          tarballs=(artifacts/*.tar.gz)
+          if [[ ${#tarballs[@]} -ne 4 ]]; then
+            echo "expected 4 PHP artifacts, found ${#tarballs[@]}" >&2
+            exit 1
+          fi
+          for tarball in "${tarballs[@]}"; do
+            name=$(basename "$tarball")
+            version=$(printf '%s' "$name" | sed -E 's/^php-([0-9]+\.[0-9]+\.[0-9]+)-r[1-9][0-9]*-linux-x64\.tar\.gz$/\1/')
+            if [[ -z $version || $version == "$name" ]]; then
+              echo "unexpected PHP artifact name: $name" >&2
+              exit 1
+            fi
+            checksum_file="$tarball.sha256"
+            if [[ ! -f $checksum_file ]]; then
+              echo "missing checksum file: $checksum_file" >&2
+              exit 1
+            fi
+            expected=$(awk '{print $1}' "$checksum_file")
+            actual=$(sha256sum "$tarball" | awk '{print $1}')
+            if [[ $expected != "$actual" ]]; then
+              echo "checksum mismatch for $name: $expected != $actual" >&2
+              exit 1
+            fi
+            size=$(stat -c '%s' "$tarball")
+            go run ./cmd/phpcatalog \
+              --version "$version" \
+              --revision 1 \
+              --artifact "$tarball" \
+              --sha256 "$actual" \
+              --size "$size" \
+              --base-url "$PHP_DOWNLOAD_BASE_URL" \
+              --output "dist/catalog/php-$version-r1.json"
+          done
+          jq -s 'sort_by(.version) | {entries: .}' dist/catalog/*.json > dist/php-catalog.json
+          cat dist/php-catalog.json
+
+      - name: Upload php-catalog.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-catalog
+          path: dist/php-catalog.json
+          if-no-files-found: error

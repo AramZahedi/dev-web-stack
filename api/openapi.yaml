@@ -1,0 +1,1869 @@
+openapi: 3.1.0
+info:
+  title: devstack local API
+  version: 0.1.0
+  description: |
+    Loopback-only REST API for the devstack daemon. Every request must use an
+    allowed Host header (127.0.0.1, localhost, or devstack.test, with any
+    numeric port); foreign hosts receive 403 before authentication or routing.
+
+    Read-only API GETs and SSE streams do not require a session cookie: the
+    listener is loopback-only and every request has already passed the Host
+    allowlist. Mutations (POST, PATCH, DELETE) require the `devstack_session`
+    cookie and the matching `X-CSRF-Token`; `GET /api/v1/session` creates the
+    cookie when absent and returns that token. CLI requests over the Unix
+    domain socket are authenticated by peer credentials through
+    `WithSocketAuth` and do not need the cookie or the CSRF header, but they
+    still pass the Host allowlist.
+
+    Server-sent events (logs and events) use `data: <json>\n\n` frames with
+    comment keepalives every 15 seconds. The API request-body guard is
+    configured separately from the machine's `max_request_body_mb` setting and
+    defaults to 1024 MiB.
+servers:
+  - url: http://127.0.0.1:7070
+    description: Dashboard/API listener
+  - url: http://localhost:7070
+    description: Dashboard/API listener (localhost)
+  - url: http://devstack.test
+    description: Dashboard host through the local proxy
+security: []
+tags:
+  - name: health
+  - name: session
+  - name: sites
+  - name: php
+  - name: events
+  - name: runtimes
+  - name: trust
+  - name: doctor
+  - name: filesystem
+  - name: settings
+  - name: vhosts
+  - name: dashboard
+paths:
+  /api/v1/health:
+    get:
+      tags: [health]
+      summary: Report daemon health and version
+      operationId: health
+      security: []
+      responses:
+        "200":
+          description: The daemon is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+
+  /api/v1/session:
+    get:
+      tags: [session]
+      summary: Create or read the dashboard session
+      description: |
+        Sets the `devstack_session` cookie when absent and returns the CSRF
+        token for the presented session. The cookie is HttpOnly, SameSite=Strict,
+        and Secure when the request is TLS or carries X-Forwarded-Proto https.
+      operationId: getSession
+      security: []
+      responses:
+        "200":
+          description: The session's CSRF token.
+          headers:
+            Set-Cookie:
+              description: Present only when a new session was created.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+
+  /api/v1/sites:
+    get:
+      tags: [sites]
+      summary: List sites
+      operationId: listSites
+      security: []
+      responses:
+        "200":
+          description: Sites ordered by name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Site"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [sites]
+      summary: Create and start a site
+      operationId: createSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSiteRequest"
+      responses:
+        "201":
+          description: The created site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Domain conflict, hosts-sync failure, or port conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: Request body exceeds the configured limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    get:
+      tags: [sites]
+      summary: Get one site
+      operationId: getSite
+      security: []
+      responses:
+        "200":
+          description: The requested site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [sites]
+      summary: Partially update a site
+      operationId: updateSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSiteRequest"
+      responses:
+        "200":
+          description: The updated site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Domain conflict or hosts-sync failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [sites]
+      summary: Stop and delete a site
+      operationId: deleteSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "204":
+          description: The site was deleted.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Hosts synchronization failed; the stopped row was kept for retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/start:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites]
+      summary: Start a site
+      operationId: startSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "202":
+          description: The start action completed.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/stop:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites]
+      summary: Stop a site
+      operationId: stopSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "202":
+          description: The stop action completed.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/restart:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites]
+      summary: Restart a site
+      operationId: restartSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "202":
+          description: The restart action completed.
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/logs/stream:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+      - name: follow
+        in: query
+        required: false
+        description: |
+          When true (the default), keep the subscription open and stream new
+          lines. When false, return the recent buffered lines and close the
+          response immediately.
+        schema:
+          type: boolean
+          default: true
+    get:
+      tags: [sites]
+      summary: Stream or snapshot log lines for a site
+      description: |
+        Server-sent event stream. Each data frame is a LogLine. With
+        follow=true the subscription ends when the client disconnects; with
+        follow=false the response contains the recent snapshot and ends.
+      operationId: streamSiteLogs
+      security: []
+      responses:
+        "200":
+          description: A text/event-stream of log lines.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+            X-Accel-Buffering:
+              schema:
+                type: string
+                enum: ["no"]
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/LogLine"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/php:
+    get:
+      tags: [sites, php]
+      summary: Get a site's effective PHP configuration
+      operationId: getSitePHP
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/SiteRef"
+      responses:
+        "200":
+          description: The persisted row, pinned build, defaults, extensions, and rendered configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHPInfo"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [sites, php]
+      summary: Merge and apply a site PHP configuration change
+      description: |
+        Empty version/build keep the current values. Absent extension/ini maps
+        and an absent ini_raw keep the current overrides; present values
+        (including empty ones) replace them. A running site validates the new
+        generation before swapping its FPM master.
+      operationId: applySitePHP
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/SiteRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PHPChangeRequest"
+      responses:
+        "200":
+          description: The updated site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: No installed build can satisfy the requested PHP line or build id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The generated php.ini or php-fpm configuration is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/php/exec:
+    post:
+      tags: [sites, php]
+      summary: Run the site's PHP binary
+      description: |
+        Forwards only the supplied argv after the generated `-c php.ini`.
+        Arguments that would bypass the generated ini (`-n`, `-c`, or
+        `--php-ini`) are rejected.
+      operationId: execSitePHP
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/SiteRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PHPExecRequest"
+      responses:
+        "200":
+          description: The PHP process result. A non-zero exit code is a successful API call.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHPExecResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: No installed PHP build can satisfy the site's configured line.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/php/extensions:
+    get:
+      tags: [php]
+      summary: List PHP extensions available on one line
+      operationId: listPHPExtensions
+      security: []
+      parameters:
+        - name: version
+          in: query
+          required: true
+          description: PHP major.minor line (8.2, 8.3, 8.4, or 8.5).
+          schema:
+            type: string
+            examples: ["8.4"]
+      responses:
+        "200":
+          description: Extensions that support the line, sorted by name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PHPExtension"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/php/defaults/{version}:
+    get:
+      tags: [php]
+      summary: Get the editable defaults for one PHP line
+      operationId: getPHPDefaults
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PHPVersion"
+      responses:
+        "200":
+          description: The version's ini and extension defaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHPDefaults"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [php]
+      summary: Save defaults and re-apply them to running sites
+      operationId: savePHPDefaults
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/PHPVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PHPDefaultsRequest"
+      responses:
+        "200":
+          description: The saved defaults and per-site apply outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHPDefaultsResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          description: The defaults contain an invalid ini directive or extension.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/php/migrate:
+    post:
+      tags: [php]
+      summary: Migrate every site on a PHP line to a target build
+      operationId: migratePHP
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PHPMigrationRequest"
+      responses:
+        "200":
+          description: One result per affected site.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PHPMigrationResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The target PHP build is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/events:
+    get:
+      tags: [events]
+      summary: Stream daemon diagnostic events
+      description: |
+        Server-sent event stream. The store is polled once per second and new
+        events are emitted in ascending ID order. Keepalive comments are sent
+        every 15 seconds.
+      operationId: streamEvents
+      security: []
+      responses:
+        "200":
+          description: A text/event-stream of events.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+            X-Accel-Buffering:
+              schema:
+                type: string
+                enum: ["no"]
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/runtimes:
+    get:
+      tags: [runtimes]
+      summary: List installed runtime builds
+      operationId: listRuntimes
+      security: []
+      responses:
+        "200":
+          description: Installed builds ordered by kind and version.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RuntimeBuild"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/runtimes/available:
+    get:
+      tags: [runtimes]
+      summary: List catalog builds that can be installed
+      operationId: availableRuntimes
+      security: []
+      responses:
+        "200":
+          description: Checksum-pinned catalog entries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CatalogEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/runtimes/install:
+    post:
+      tags: [runtimes]
+      summary: Download, verify, and install a runtime build
+      operationId: installRuntime
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstallRuntimeRequest"
+      responses:
+        "201":
+          description: The installed build.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeBuild"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The requested build is not in the pinned catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/runtimes/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Installed runtime build id.
+        schema:
+          type: string
+    delete:
+      tags: [runtimes]
+      summary: Remove an installed runtime build
+      operationId: removeRuntime
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "204":
+          description: The build was removed (or was already absent).
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/trust:
+    get:
+      tags: [trust]
+      summary: Report CA trust per target
+      operationId: trustStatus
+      security: []
+      responses:
+        "200":
+          description: One result per trust store or browser profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustTargets"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/HelperUnavailable"
+    delete:
+      tags: [trust]
+      summary: Remove the devstack CA from user trust stores
+      operationId: removeTrust
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: One result per trust store or browser profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustTargets"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/HelperUnavailable"
+
+  /api/v1/trust/repair:
+    post:
+      tags: [trust]
+      summary: Install the devstack CA into user trust stores
+      operationId: repairTrust
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: One result per trust store or browser profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustTargets"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          $ref: "#/components/responses/HelperUnavailable"
+
+  /api/v1/doctor:
+    get:
+      tags: [doctor]
+      summary: Run doctor checks
+      operationId: runDoctorChecks
+      security: []
+      responses:
+        "200":
+          description: The doctor report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/doctor/run:
+    post:
+      tags: [doctor]
+      summary: Run doctor checks
+      operationId: runDoctor
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: The doctor report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorReport"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/doctor/repair:
+    post:
+      tags: [doctor]
+      summary: Re-apply idempotent repairs and rerun checks
+      operationId: repairDoctor
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: The refreshed doctor report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorReport"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/vhosts/status:
+    get:
+      tags: [vhosts]
+      summary: Report the helper-managed external serving state
+      description: |
+        Reports the helper's persisted mode, server version, bridge state,
+        config-test result, current release, and last sync. Read-only requests
+        do not require a session.
+      operationId: getVhostStatus
+      security: []
+      responses:
+        "200":
+          description: Current vhost status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VhostStatus"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/vhosts/mode:
+    post:
+      tags: [vhosts]
+      summary: Switch the serving mode
+      description: |
+        Switches between builtin, nginx, and apache. The daemon stops or starts
+        the built-in proxy and static backends as required and persists the
+        mode only after the helper succeeds. Returns the refreshed status.
+      operationId: setVhostMode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VhostModeRequest"
+      responses:
+        "200":
+          description: The refreshed vhost status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VhostStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The mode is unavailable, a sync is busy, or the bridge include is missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The rendered configuration failed the server config test.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/vhosts/sync:
+    post:
+      tags: [vhosts]
+      summary: Reinstall the complete vhost set
+      operationId: syncVhosts
+      responses:
+        "200":
+          description: The refreshed vhost status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VhostStatus"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The mode is unavailable, a sync is busy, or the bridge include is missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The rendered configuration failed the server config test.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The vhost sync failed and the previous release was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The server reload failed and the previous release was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/vhosts/preview:
+    get:
+      tags: [vhosts]
+      summary: Render one site vhost without installing it
+      description: |
+        Renders the site's nginx or Apache configuration as plain text. The
+        preview never writes vhost files and never calls the helper.
+      operationId: previewVhost
+      security: []
+      parameters:
+        - name: site
+          in: query
+          required: true
+          description: Site id or name.
+          schema:
+            type: string
+        - name: server
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [nginx, apache]
+      responses:
+        "200":
+          description: The rendered site vhost.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VhostPreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/fs:
+    get:
+      tags: [filesystem]
+      summary: List subdirectories for the project picker
+      description: |
+        Absolute directories only. Files are never listed and file contents are
+        never returned. When the server has a configured user home, paths are
+        resolved through symlinks and confined to that home.
+      operationId: browseFilesystem
+      security: []
+      parameters:
+        - name: path
+          in: query
+          required: true
+          description: Absolute directory path.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sorted child directories.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsListing"
+        "400":
+          description: Missing, relative, non-directory, or unreadable path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Path is outside the configured user home.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/settings:
+    get:
+      tags: [settings]
+      summary: Report machine settings
+      operationId: getSettings
+      security: []
+      responses:
+        "200":
+          description: Effective machine settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Settings"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /:
+    get:
+      tags: [dashboard]
+      summary: Serve the dashboard SPA
+      description: |
+        Serves index.html for application routes and static files that exist in
+        the embedded dashboard. Assets under /assets/ are served separately.
+      operationId: dashboardIndex
+      security: []
+      responses:
+        "200":
+          description: Dashboard HTML or a static file.
+          content:
+            text/html:
+              schema:
+                type: string
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          description: The dashboard build is not present.
+
+  /assets/{path}:
+    get:
+      tags: [dashboard]
+      summary: Serve a hashed dashboard asset
+      operationId: dashboardAsset
+      security: []
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Asset path below /assets/.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The asset with its MIME type.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          description: The asset does not exist.
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: devstack_session
+      description: |
+        Random 32-byte session value created by GET /api/v1/session. Required
+        for mutations; read-only GETs and SSE streams do not need it.
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: |
+        HMAC-SHA256(server secret, session) returned by GET /api/v1/session.
+        Required for cookie-authenticated mutations.
+    socketPeerAuth:
+      type: apiKey
+      in: header
+      name: X-Devstack-Socket
+      description: |
+        Documentation-only marker for the Unix-socket transport. The server
+        authenticates socket peers with SO_PEERCRED via WithSocketAuth and does
+        not read this header.
+
+  parameters:
+    SiteRef:
+      name: ref
+      in: path
+      required: true
+      description: Site id or unique site name.
+      schema:
+        type: string
+    PHPVersion:
+      name: version
+      in: path
+      required: true
+      description: PHP major.minor line (8.2, 8.3, 8.4, or 8.5).
+      schema:
+        type: string
+        examples: ["8.4"]
+
+  responses:
+    BadRequest:
+      description: Invalid JSON, missing field, or failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: The dashboard session cookie is missing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: CSRF token is missing or invalid, or the Host header is not allowed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ForbiddenHost:
+      description: The Host header is not in the loopback allowlist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: Unexpected daemon failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    HelperUnavailable:
+      description: The privileged helper is unreachable or rejected the request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: The requested service is not configured in this daemon.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    MethodNotAllowed:
+      description: The path exists but does not accept this HTTP method.
+      headers:
+        Allow:
+          description: Comma-separated methods supported by the path.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          examples:
+            - INVALID_REQUEST
+            - NOT_FOUND
+            - DOMAIN_CONFLICT
+            - HOSTS_SYNC_FAILED
+            - RUNTIME_MISSING
+            - PHP_VERSION_IN_USE
+            - PHP_CONFIG_INVALID
+            - TRUST_MISSING
+            - PORT_IN_USE
+            - PAYLOAD_TOO_LARGE
+            - FORBIDDEN
+            - UNAUTHORIZED
+            - HELPER_UNAVAILABLE
+            - METHOD_NOT_ALLOWED
+            - INTERNAL
+        message:
+          type: string
+          description: Human-readable explanation.
+        details:
+          description: Optional structured context.
+
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          examples: [ok]
+        version:
+          type: string
+          examples: [dev]
+
+    Session:
+      type: object
+      required: [csrf_token]
+      properties:
+        csrf_token:
+          type: string
+          description: HMAC-SHA256(server secret, session) in lowercase hex.
+
+    SiteKind:
+      type: string
+      enum: [static, php, node]
+
+    BackendKind:
+      type: string
+      enum: [local, wsl]
+
+    DesiredState:
+      type: string
+      enum: [running, stopped]
+
+    SiteStatus:
+      type: string
+      enum: [stopped, starting, running, stopping, crashed, error]
+
+    Site:
+      type: object
+      required:
+        - id
+        - name
+        - domain
+        - www
+        - backend
+        - host_path
+        - backend_path
+        - kind
+        - desired_state
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        domain:
+          type: string
+          examples: [blog.test]
+        www:
+          type: boolean
+        backend:
+          $ref: "#/components/schemas/BackendKind"
+        host_path:
+          type: string
+        backend_path:
+          type: string
+        kind:
+          $ref: "#/components/schemas/SiteKind"
+        php_version:
+          type: string
+        php_build:
+          type: string
+        php_extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+        php_ini:
+          type: object
+          additionalProperties:
+            type: string
+        php_ini_raw:
+          type: string
+        php_config_hash:
+          type: string
+        node_version:
+          type: string
+        command:
+          type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        document_root:
+          type: string
+        front_controller:
+          type: boolean
+        spa_fallback:
+          type: boolean
+        tls:
+          type: boolean
+        force_https:
+          type: boolean
+        desired_state:
+          $ref: "#/components/schemas/DesiredState"
+        status:
+          $ref: "#/components/schemas/SiteStatus"
+        http_port:
+          type: integer
+          minimum: 0
+        fastcgi_port:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateSiteRequest:
+      type: object
+      required: [name, path, kind]
+      properties:
+        name:
+          type: string
+          description: Unique site name; the domain is derived as <name>.test.
+        path:
+          type: string
+          description: Absolute project directory on the host.
+        host_path:
+          type: string
+          description: Alias for path, accepted for the M1 appendix shape.
+        kind:
+          $ref: "#/components/schemas/SiteKind"
+        node_version:
+          type: string
+        command:
+          type: string
+        document_root:
+          type: string
+        php_version:
+          type: string
+          description: PHP major.minor line; required for php sites.
+        php_build:
+          type: string
+          description: Installed build id; omitted selects the newest installed build for the line.
+        php_extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+        php_ini:
+          type: object
+          additionalProperties:
+            type: string
+        php_ini_raw:
+          type: string
+        front_controller:
+          type: boolean
+        www:
+          type: boolean
+        tls:
+          type: boolean
+        force_https:
+          type: boolean
+        spa_fallback:
+          type: boolean
+        env:
+          type: object
+          additionalProperties:
+            type: string
+
+    UpdateSiteRequest:
+      type: object
+      description: Omitted scalar fields are unchanged. An empty env object clears the environment.
+      properties:
+        domain:
+          type: string
+        www:
+          type: boolean
+        tls:
+          type: boolean
+        force_https:
+          type: boolean
+        spa_fallback:
+          type: boolean
+        front_controller:
+          type: boolean
+        command:
+          type: string
+        document_root:
+          type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+
+    PHPChangeRequest:
+      type: object
+      description: |
+        Empty version/build keep the current values. Absent maps and an absent
+        ini_raw keep the current overrides; present values replace them.
+      properties:
+        version:
+          type: string
+          description: PHP major.minor line.
+        build:
+          type: string
+          description: Installed build id.
+        extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+        ini:
+          type: object
+          additionalProperties:
+            type: string
+        ini_raw:
+          type: string
+          nullable: true
+
+    PHPExecRequest:
+      type: object
+      required: [argv]
+      properties:
+        argv:
+          type: array
+          items:
+            type: string
+          description: Arguments forwarded to the site's PHP binary.
+
+    PHPExecResult:
+      type: object
+      required: [exit_code, stdout, stderr]
+      properties:
+        exit_code:
+          type: integer
+        stdout:
+          type: string
+        stderr:
+          type: string
+
+    PHPExtension:
+      type: object
+      required: [name, type, so, default, standard, versions]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [extension, zend_extension]
+        so:
+          type: string
+        default:
+          type: boolean
+        standard:
+          type: boolean
+        versions:
+          type: array
+          items:
+            type: string
+        requires:
+          type: array
+          items:
+            type: string
+
+    PHPResolvedExtension:
+      type: object
+      required: [name, type, so, required]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [extension, zend_extension]
+        so:
+          type: string
+        required:
+          type: boolean
+          description: True when the extension is enabled by defaults or a dependency.
+        required_by:
+          type: array
+          items:
+            type: string
+
+    PHPDefaults:
+      type: object
+      required: [version, ini, extensions]
+      properties:
+        version:
+          type: string
+        ini:
+          type: object
+          additionalProperties:
+            type: string
+        extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+
+    PHPDefaultsRequest:
+      type: object
+      description: The path version is authoritative; a version in the body is ignored.
+      properties:
+        ini:
+          type: object
+          additionalProperties:
+            type: string
+        extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+
+    PHPMigrationResult:
+      type: object
+      required: [site, ok]
+      properties:
+        site:
+          type: string
+        ok:
+          type: boolean
+        error:
+          type: string
+
+    PHPDefaultsResult:
+      type: object
+      required: [defaults, sites]
+      properties:
+        defaults:
+          $ref: "#/components/schemas/PHPDefaults"
+        sites:
+          type: array
+          items:
+            $ref: "#/components/schemas/PHPMigrationResult"
+
+    PHPMigrationRequest:
+      type: object
+      required: [from_version]
+      properties:
+        from_version:
+          type: string
+          description: Source PHP major.minor line.
+        to_version:
+          type: string
+          description: Target line; required unless to_build is supplied.
+        to_build:
+          type: string
+          description: Exact installed target build; also implies the target line.
+
+    PHPInfo:
+      type: object
+      required:
+        - site
+        - build
+        - defaults
+        - extensions
+        - available_extensions
+        - builtins
+        - ini
+        - ini_raw
+        - generated_ini
+        - fpm_config
+        - config_hash
+      properties:
+        site:
+          $ref: "#/components/schemas/Site"
+        build:
+          $ref: "#/components/schemas/RuntimeBuild"
+        defaults:
+          $ref: "#/components/schemas/PHPDefaults"
+        extensions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PHPResolvedExtension"
+        available_extensions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PHPExtension"
+        builtins:
+          type: array
+          items:
+            type: string
+        ini:
+          type: object
+          additionalProperties:
+            type: string
+        ini_raw:
+          type: string
+        generated_ini:
+          type: string
+        fpm_config:
+          type: string
+        config_hash:
+          type: string
+
+    RuntimeBuild:
+      type: object
+      required: [id, kind, version, backend, path, checksum, installed_at]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          examples: [node, php]
+        version:
+          type: string
+        backend:
+          $ref: "#/components/schemas/BackendKind"
+        path:
+          type: string
+        checksum:
+          type: string
+        installed_at:
+          type: string
+          format: date-time
+
+    CatalogEntry:
+      type: object
+      required: [id, kind, version, build, url, sha256, size]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        version:
+          type: string
+        build:
+          type: string
+          examples: [linux-x64]
+        url:
+          type: string
+          format: uri
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        size:
+          type: integer
+          format: int64
+
+    InstallRuntimeRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: Catalog entry id.
+
+    CheckStatus:
+      type: string
+      enum: [ok, warn, fail, skipped]
+
+    DoctorCheck:
+      type: object
+      required: [id, title, status, detail, remediation]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        status:
+          $ref: "#/components/schemas/CheckStatus"
+        detail:
+          type: string
+        remediation:
+          type: string
+
+    DoctorReport:
+      type: object
+      required: [checks, ok]
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DoctorCheck"
+        ok:
+          type: boolean
+
+    TrustTarget:
+      type: object
+      required: [name, ok, detail]
+      properties:
+        name:
+          type: string
+        ok:
+          type: boolean
+        detail:
+          type: string
+
+    TrustTargets:
+      type: array
+      items:
+        $ref: "#/components/schemas/TrustTarget"
+
+    FsEntry:
+      type: object
+      required: [name, path]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+
+    FsListing:
+      type: object
+      required: [path, entries]
+      properties:
+        path:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/FsEntry"
+
+    Settings:
+      type: object
+      required:
+        - home
+        - user_home
+        - wsl_distro
+        - http_port
+        - https_port
+        - ui_port
+        - auto_start_sites
+        - serving_mode
+        - graceful_stop_seconds
+        - max_request_body_mb
+        - log_max_mb
+        - log_keep
+      properties:
+        home:
+          type: string
+          description: Machine root under which devstack keeps state.
+        user_home:
+          type: string
+        wsl_distro:
+          type: string
+        http_port:
+          type: integer
+        https_port:
+          type: integer
+        ui_port:
+          type: integer
+        auto_start_sites:
+          type: boolean
+        serving_mode:
+          type: string
+          enum: [builtin, nginx, apache]
+          description: Active serving mode; builtin uses the Go proxy.
+        graceful_stop_seconds:
+          type: integer
+        max_request_body_mb:
+          type: integer
+          description: |
+            Machine config value. The API's actual transport guard is
+            Config.MaxBodyBytes, configured separately and defaulting to
+            1024 MiB.
+        log_max_mb:
+          type: integer
+        log_keep:
+          type: integer
+
+    VhostStatus:
+      type: object
+      required:
+        - mode
+        - server
+        - server_version
+        - bridge_path
+        - include_present
+        - current_release
+        - config_ok
+        - last_sync
+      properties:
+        mode:
+          type: string
+          enum: [builtin, nginx, apache]
+        server:
+          type: string
+        server_version:
+          type: string
+        bridge_path:
+          type: string
+        include_present:
+          type: boolean
+        current_release:
+          type: string
+        config_ok:
+          type: boolean
+        last_error:
+          type: string
+        last_sync:
+          type: string
+          format: date-time
+        service_active:
+          type: boolean
+          description: Whether the selected nginx/Apache systemd service is active.
+        default_server_conflict:
+          type: boolean
+          description: A foreign server configuration already declares default_server on the devstack listen ports; the devstack 404 vhost is installed without the marker.
+        tls_dir:
+          type: string
+          description: Helper-managed TLS directory reported by the helper.
+        tls_dir_mode:
+          type: integer
+          format: uint32
+          description: Permission bits of the TLS directory.
+        tls_files:
+          type: array
+          description: Metadata for files in the helper-managed TLS directory.
+          items:
+            type: object
+            required: [name, mode, regular]
+            properties:
+              name:
+                type: string
+              mode:
+                type: integer
+                format: uint32
+              regular:
+                type: boolean
+
+    VhostModeRequest:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [builtin, nginx, apache]
+
+    VhostPreview:
+      type: object
+      required: [server, site, content]
+      properties:
+        server:
+          type: string
+          enum: [nginx, apache]
+        site:
+          type: string
+        content:
+          type: string
+          description: Rendered native server configuration as plain text.
+
+    LogLine:
+      type: object
+      required: [time, site_id, source, text]
+      properties:
+        time:
+          type: string
+          format: date-time
+        site_id:
+          type: string
+        source:
+          type: string
+          examples: [app, fpm, proxy, supervisor]
+        text:
+          type: string
+
+    Event:
+      type: object
+      required: [id, type, message, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        site_id:
+          type: string
+        type:
+          type: string
+          examples: [site.running, site.stopped, doctor.repaired]
+        message:
+          type: string
+        created_at:
+          type: string
+          format: date-time

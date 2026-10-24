@@ -1,0 +1,69 @@
+# GoReleaser v2 configuration for the Linux amd64 M1 release.
+#
+# Linux amd64 is the only supported release target. Windows/WSL and the
+# devstack-agent are deferred with Plan 3, and signing/diagnostics bundles are
+# M4, so neither appears here.
+#
+# `make ui` runs before GoReleaser builds the binaries so the dashboard stays
+# embedded, exactly like build/release.sh. The archive name, member set, and
+# checksum file match the local packager.
+version: 2
+
+project_name: devstack
+
+before:
+  hooks:
+    - make ui
+
+builds:
+  - id: devstack
+    main: ./cmd/devstack
+    binary: devstack
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/AramZahedi/dev-web-stack/internal/version.Version={{ .Version }}
+      - -X github.com/AramZahedi/dev-web-stack/internal/version.Commit={{ .ShortCommit }}
+
+  - id: devstack-helper
+    main: ./cmd/devstack-helper
+    binary: devstack-helper
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/AramZahedi/dev-web-stack/internal/version.Version={{ .Version }}
+      - -X github.com/AramZahedi/dev-web-stack/internal/version.Commit={{ .ShortCommit }}
+
+archives:
+  - id: devstack
+    formats:
+      - tar.gz
+    name_template: devstack_{{ .Version }}_linux_amd64
+    files:
+      - install.sh
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  # GoReleaser v2 types extra_files as ExtraFile objects, so `glob` is
+  # required. Task 3/CI must run `goreleaser check`; GoReleaser is not
+  # installed in this local environment.
+  extra_files:
+    - glob: install.sh

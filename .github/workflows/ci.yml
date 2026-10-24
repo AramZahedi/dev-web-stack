@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: UI install, check, test, and build
+        working-directory: ui
+        run: npm ci && npm run check && npm test && npm run build
+
+      - name: Install Playwright Chromium
+        working-directory: ui
+        run: npx playwright install --with-deps chromium
+
+      - name: UI end-to-end
+        working-directory: ui
+        run: npm run test:e2e
+
+      # nginx is used by the external-vhost E2E: the script runs a real nginx
+      # from a temporary prefix on high ports and wraps reloads in ${TMP}/bin.
+      # Apache and certutil are installed for later external-vhost and
+      # browser-trust coverage. Services are stopped and disabled so the test
+      # never touches a system server or binds 80/443.
+      - name: Install Linux E2E tools
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            apache2 curl libnss3-tools nginx shellcheck
+          sudo systemctl stop nginx apache2 || true
+          sudo systemctl disable nginx apache2 || true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test with race detector
+        run: go test -race ./...
+
+      - name: Catalog merge tool tests
+        run: go test ./cmd/catalogmerge -count=1
+
+      - name: Compile check
+        run: go build ./...
+
+      - name: Build release binaries
+        run: make build
+
+      - name: Release, installer, and workflow tests
+        run: |
+          bash test/release/release_test.sh
+          bash test/release/installer_test.sh
+          bash test/release/workflow_test.sh
+
+      - name: Shell, installer, and unit checks
+        run: |
+          bash -n install.sh test/e2e/linux.sh build/release.sh test/release/*.sh
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck --severity=error install.sh test/e2e/linux.sh build/release.sh test/release/*.sh
+          else
+            echo "shellcheck is unavailable; skipping (bash -n already passed)"
+          fi
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          sed "s|/usr/local/lib/devstack/devstack-helper|$PWD/dist/devstack-helper|" \
+            build/systemd/devstack-helper.service >"$tmp/devstack-helper.service"
+          sed "s|%h/.local/bin/devstack|$PWD/dist/devstack|" \
+            build/systemd/devstack-daemon.service >"$tmp/devstack-daemon.service"
+          systemd-analyze verify "$tmp/devstack-helper.service" "$tmp/devstack-daemon.service"
+
+          ./install.sh --dry-run
+
+      # The script uses temporary HOME/state/hosts/trust paths and high ports.
+      # When nginx is installed and port 7070 is free it also exercises a real
+      # builtin -> nginx -> builtin switch; otherwise those steps skip with a
+      # message. It never binds 80/443 or modifies the real trust stores, so no
+      # sudo is needed for the E2E flow.
+      - name: Linux installer and daemon E2E
+        run: E2E_SKIP_BUILD=1 bash test/e2e/linux.sh

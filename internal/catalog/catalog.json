@@ -1,0 +1,62 @@
+{
+  "entries": [
+    {
+      "id": "node@24.22.1",
+      "kind": "node",
+      "version": "24.22.1",
+      "build": "linux-x64",
+      "url": "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.gz",
+      "sha256": "eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c",
+      "size": 58290700
+    },
+    {
+      "id": "node@22.23.4",
+      "kind": "node",
+      "version": "22.23.4",
+      "build": "linux-x64",
+      "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.gz",
+      "sha256": "b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406",
+      "size": 56807066
+    },
+    {
+      "id": "php@8.2.35-r1",
+      "kind": "php",
+      "version": "8.2.35",
+      "build": "linux-x64",
+      "revision": 1,
+      "url": "https://github.com/AramZahedi/dev-web-stack/releases/download/php-runtimes-2026-10-25/php-8.2.35-r1-linux-x64.tar.gz",
+      "sha256": "d46d33864e44abb45cb7fe93b6d17f21e8c95dbb011946be6fa94e18f2328d8a",
+      "size": 240637304
+    },
+    {
+      "id": "php@8.3.36-r1",
+      "kind": "php",
+      "version": "8.3.36",
+      "build": "linux-x64",
+      "revision": 1,
+      "url": "https://github.com/AramZahedi/dev-web-stack/releases/download/php-runtimes-2026-10-25/php-8.3.36-r1-linux-x64.tar.gz",
+      "sha256": "13cb17fc011b25ed252a931d17adbd173106eabee1baf8e25699be75a83e7baa",
+      "size": 240885758
+    },
+    {
+      "id": "php@8.4.27-r1",
+      "kind": "php",
+      "version": "8.4.27",
+      "build": "linux-x64",
+      "revision": 1,
+      "url": "https://github.com/AramZahedi/dev-web-stack/releases/download/php-runtimes-2026-10-25/php-8.4.27-r1-linux-x64.tar.gz",
+      "sha256": "e9b11892703d4788094960ee20fc0aa67e046a3de7d92c209da9cffa11f6678c",
+      "size": 242291453
+    },
+    {
+      "id": "php@8.5.12-r1",
+      "kind": "php",
+      "version": "8.5.12",
+      "build": "linux-x64",
+      "revision": 1,
+      "url": "https://github.com/AramZahedi/dev-web-stack/releases/download/php-runtimes-2026-10-25/php-8.5.12-r1-linux-x64.tar.gz",
+      "sha256": "5de8588f20f4238ef843b67b5738060e8ed42c76aa84fbb81a8900dd32fd2f57",
+      "size": 245214512
+    }
+  ]
+}
