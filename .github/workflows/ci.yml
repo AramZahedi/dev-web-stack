@@ -12,7 +12,7 @@ jobs:
   test:
     name: Test and build
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -61,17 +61,26 @@ jobs:
       - name: Test with race detector
         run: go test -race ./...
 
+      - name: Catalog merge tool tests
+        run: go test ./cmd/catalogmerge -count=1
+
       - name: Compile check
         run: go build ./...
 
       - name: Build release binaries
         run: make build
 
+      - name: Release, installer, and workflow tests
+        run: |
+          bash test/release/release_test.sh
+          bash test/release/installer_test.sh
+          bash test/release/workflow_test.sh
+
       - name: Shell, installer, and unit checks
         run: |
-          bash -n install.sh test/e2e/linux.sh
+          bash -n install.sh test/e2e/linux.sh build/release.sh test/release/*.sh
           if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck --severity=error install.sh test/e2e/linux.sh
+            shellcheck --severity=error install.sh test/e2e/linux.sh build/release.sh test/release/*.sh
           else
             echo "shellcheck is unavailable; skipping (bash -n already passed)"
           fi

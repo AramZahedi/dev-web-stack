@@ -8,10 +8,11 @@ own `php.ini`, and toggle shared extensions.
 > no PHP builds. `devstack runtime list` shows Node builds only, and PHP site
 > creation or `devstack runtime install` will report that no PHP build is
 > available until the release pipeline publishes checksummed
-> `php-<version>-r<revision>-linux-x64.tar.gz` archives and the release job
-> merges their catalog entries. The build pipeline in this repository produces
-> those artifacts in CI; it does not publish them automatically. Do not expect
-> PHP installation to work from a release build yet.
+> `php-<version>-r<revision>-linux-x64.tar.gz` archives and a release job merges
+> their catalog entries with `cmd/catalogmerge`. The build pipeline in this
+> repository produces those artifacts in CI; it does not publish them
+> automatically. Do not expect PHP installation to work from a release build
+> yet.
 
 ## Acceptance status
 
@@ -306,7 +307,43 @@ This is the artifact gate, not a local failure. `devstack runtime list` will
 show no PHP entries until the release pipeline publishes artifacts and a release
 binary embeds their catalog entries. The build and smoke commands verify
 artifacts in CI, but merging `php-catalog.json` into
-`internal/catalog/catalog.json` is a release step, not a CI commit.
+`internal/catalog/catalog.json` is a gated release step, not a CI commit.
+
+Do not hand-edit the catalog and do not invent a URL, checksum, or size. The
+merge tool refuses anything that is not a complete 8.2-8.5 set of HTTPS,
+checksummed `php-<version>-r<revision>-linux-x64.tar.gz` entries:
+
+```sh
+# Validate the generated artifact against the current catalog. Writes nothing.
+make php-catalog-merge \
+  PHP_CATALOG_JSON=dist/php-catalog.json \
+  CATALOG=internal/catalog/catalog.json \
+  PHP_CATALOG_CHECK=1
+```
+
+The equivalent direct command (add `--output <path>` to avoid updating the
+catalog in place):
+
+```sh
+go run ./cmd/catalogmerge \
+  --catalog internal/catalog/catalog.json \
+  --php-catalog dist/php-catalog.json \
+  --check
+```
+
+`catalogmerge` requires at least one entry for each of PHP 8.2, 8.3, 8.4, and
+8.5; validates `kind=php`, `build=linux-x64`, a positive revision, HTTPS, a
+64-character lowercase SHA-256, a positive size, unique IDs, and the archive
+basename; preserves non-PHP entries in order; replaces existing PHP entries with
+the new set sorted by version and revision; and writes atomically. `--check`
+writes nothing. Malformed, duplicate, or HTTP entries fail with a non-zero exit
+and no partial output.
+
+**Current state: BLOCKED.** No real 8.2, 8.3, 8.4, or 8.5 artifacts have been
+published from this environment, so the production catalog stays Node-only. The
+gate opens only after all four archives and their checksums are uploaded to a
+real HTTPS release host and the merge above passes in `--check` mode. A release
+that embeds the merged catalog must then be built and published.
 
 ## Build and release gate
 
@@ -333,3 +370,15 @@ The workflow never edits `internal/catalog/catalog.json` and does not publish a
 release. Publication and the catalog merge happen only after the artifacts are
 uploaded to the real release host, and the production PHP catalog stays empty
 until then.
+
+The merge is performed by `cmd/catalogmerge` (see the command above and the
+[release guide](release.md#php-catalog-gate-still-blocked)). The release
+workflow does not run it: the tag-driven release publishes the CLI and helper
+only. Keeping the merge out of the release workflow prevents a tagged build from
+silently embedding URLs or checksums that were never published.
+
+**Remaining BLOCKED gate:** real PHP 8.2/8.5 side-by-side acceptance still
+requires published artifacts, the merged catalog, and a release binary that
+contains it. Until all four lines have real archives with matching checksums,
+the production catalog stays Node-only and this gate is reported as BLOCKED,
+not passed.
