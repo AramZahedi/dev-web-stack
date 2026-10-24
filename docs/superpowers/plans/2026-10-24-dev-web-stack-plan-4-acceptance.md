@@ -6,6 +6,7 @@
 - **Acceptance/docs commit:** `dfb0fc1` — `docs: record Linux M1 release acceptance`
 - **Clean-checkout fix:** `6cc78ce` — `fix: make M1 acceptance reproducible from a clean checkout`
 - **Final-review fix:** `8bd6dc5` — `fix: verify catalog artifacts and isolate release tests`
+- **Post-M1 audit fixes:** `c8eef74`, `a19b5be` — verified audit remediation and independent-review follow-up
 - **Plan:** [Plan 4 — Release Packaging, Upgrade, and M1 Acceptance (Linux)](2026-10-24-dev-web-stack-plan-4-release.md)
 - **Spec:** [M1 design §21](../specs/2026-10-22-dev-web-stack-m1-design.md#21-acceptance-criteria)
 - **Handoff:** [2026-10-24 M1 handoff](../status/2026-10-24-m1-handoff.md)
@@ -32,6 +33,12 @@ this branch. The separate PHP build/smoke workflow was observed green at
 
 A SKIP or BLOCKED phase is never counted as a pass. The runner exits 0 only
 because no phase FAILed; it prints the blocked/skip gates in the same table.
+
+The post-M1 audit fix waves changed code covered by this report but did not add
+or remove acceptance phases. The runner was rerun at the audited tip and retained
+the same 15 PASS / 0 FAIL / 3 SKIP / 3 BLOCKED result. The audit's external
+findings and residual accepted risks are recorded in the M1 handoff §1.1 and the
+working audit ledger.
 
 ## Environment
 
