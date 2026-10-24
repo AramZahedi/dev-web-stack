@@ -448,10 +448,22 @@ func newVersionCmd() *cobra.Command {
 			jsonMode, _ := cmd.Root().PersistentFlags().GetBool("json")
 			if jsonMode {
 				return (&App{jsonOutput: true}).writeJSON(cmd, struct {
-					Version string `json:"version"`
-					Commit  string `json:"commit,omitempty"`
-					String  string `json:"string"`
-				}{Version: version.Version, Commit: version.Commit, String: version.String()})
+					Version   string `json:"version"`
+					Commit    string `json:"commit,omitempty"`
+					String    string `json:"string"`
+					Protocol  string `json:"protocol"`
+					OS        string `json:"os"`
+					Arch      string `json:"arch"`
+					GoVersion string `json:"go_version"`
+				}{
+					Version:   version.Version,
+					Commit:    version.Commit,
+					String:    version.String(),
+					Protocol:  helperproto.Version,
+					OS:        goruntime.GOOS,
+					Arch:      goruntime.GOARCH,
+					GoVersion: goruntime.Version(),
+				})
 			}
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), version.String())
 			return err

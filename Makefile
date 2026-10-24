@@ -14,7 +14,7 @@ PHP_ARTIFACT   ?= $(PHP_OUTPUT)/php-$(PHP_VERSION)-r$(PHP_REVISION)-linux-x64.ta
 PHP_BASE_URL   ?=
 PHP_SMOKE_BIN  ?=
 
-.PHONY: build test lint ui e2e clean php-build php-smoke php-catalog php-test
+.PHONY: build test lint ui e2e clean php-build php-smoke php-catalog php-test release release-test
 
 build: ui
 	mkdir -p dist
@@ -39,6 +39,14 @@ e2e: build
 
 clean:
 	rm -rf dist
+
+# Build the local Linux amd64 release archive with checksums. VERSION is a
+# plain semver; build/release.sh normalizes a leading "v" and validates it.
+release:
+	bash build/release.sh --version "$(VERSION)"
+
+release-test:
+	bash test/release/release_test.sh
 
 # PHP artifacts are built and published by the php.yml CI workflow. These
 # targets are for contributors who have the build dependencies from

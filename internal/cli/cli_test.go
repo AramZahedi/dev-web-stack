@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
+	"github.com/AramZahedi/dev-web-stack/internal/version"
 )
 
 // fakeClient implements Client for CLI tests. It never touches a daemon.
@@ -1271,20 +1273,30 @@ func TestCLIRemoveRequiresYes(t *testing.T) {
 	}
 }
 
-func TestCLIVersion(t *testing.T) {
+func TestVersion(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{}
 	out := runCLI(t, fake, "version")
-	if strings.TrimSpace(out) == "" {
-		t.Fatal("version output is empty")
+	if got := strings.TrimSpace(out); got != version.String() {
+		t.Fatalf("plain version output = %q, want %q", got, version.String())
 	}
 	out = runCLI(t, fake, "version", "--json")
 	var got map[string]string
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("%q %v", out, err)
 	}
-	if got["version"] == "" {
-		t.Fatalf("version = %+v", got)
+	want := map[string]string{
+		"version":    version.Version,
+		"string":     version.String(),
+		"protocol":   helperproto.Version,
+		"os":         runtime.GOOS,
+		"arch":       runtime.GOARCH,
+		"go_version": runtime.Version(),
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("%s = %q, want %q (json: %s)", key, got[key], value, out)
+		}
 	}
 }
 
