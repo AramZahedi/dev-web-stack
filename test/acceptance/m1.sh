@@ -72,15 +72,15 @@ PHASE_NAMES=()
 PHASE_RESULTS=()
 PHASE_SECONDS=()
 PHASE_NOTES=()
+PHASE_LOGS=()
+SUMMARY_PRINTED=0
 
 cleanup() {
 	local status=$?
 	set +e
 	trap - EXIT INT TERM
-	if [ "${status}" -ne 0 ]; then
+	if [ "${SUMMARY_PRINTED}" -eq 0 ] && [ "${status}" -ne 0 ]; then
 		printf '\nacceptance: phase logs kept at %s\n' "${LOG_DIR}" >&2
-	else
-		rm -rf -- "${LOG_DIR}"
 	fi
 }
 trap cleanup EXIT
@@ -93,10 +93,6 @@ note() {
 		printf '%s\n' "${text}" >>"${CURRENT_PHASE_NOTE}"
 	fi
 	printf '%s\n' "${text}"
-}
-
-phase_log() {
-	printf '%s\n' "$CURRENT_PHASE_LOG"
 }
 
 run_phase() {
@@ -137,6 +133,7 @@ run_phase() {
 	PHASE_RESULTS+=("${result}")
 	PHASE_SECONDS+=("${duration}")
 	PHASE_NOTES+=("$(tr '\n' ' ' <"${note_file}" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')")
+	PHASE_LOGS+=("${log}")
 
 	printf '    %-8s %ss\n' "${result}" "${duration}"
 	if [ "${result}" = "FAIL" ]; then
@@ -161,13 +158,13 @@ port_has_listener() {
 }
 
 phase_go_vet() {
-	printf '+ go vet ./...\n'
-	go vet ./...
+	printf '+ (cd %s && go vet ./...)\n' "${REPO_ROOT}"
+	(cd "${REPO_ROOT}" && go vet ./...)
 }
 
 phase_go_test() {
-	printf '+ go test ./... -count=1\n'
-	go test ./... -count=1
+	printf '+ (cd %s && go test ./... -count=1)\n' "${REPO_ROOT}"
+	(cd "${REPO_ROOT}" && go test ./... -count=1)
 }
 
 phase_go_race() {
@@ -175,8 +172,8 @@ phase_go_race() {
 		note "SKIP: --quick skips the race-detector phase"
 		return 77
 	fi
-	printf '+ go test ./... -race -count=1\n'
-	go test ./... -race -count=1
+	printf '+ (cd %s && go test ./... -race -count=1)\n' "${REPO_ROOT}"
+	(cd "${REPO_ROOT}" && go test ./... -race -count=1)
 }
 
 phase_ui_check() {
@@ -209,13 +206,11 @@ phase_playwright() {
 	fi
 
 	local browser=""
-	set +e
 	browser="$(cd "${REPO_ROOT}/ui" && node -e '
 const { chromium } = require("@playwright/test");
 process.stdout.write(chromium.executablePath());
 ' 2>>"${CURRENT_PHASE_LOG}")"
 	local status=$?
-	set -e
 	if [ "${status}" -ne 0 ] || [ -z "${browser}" ]; then
 		note "SKIP: Playwright cannot resolve the Chromium executable; no browser install was attempted"
 		return 77
@@ -229,7 +224,10 @@ process.stdout.write(chromium.executablePath());
 }
 
 phase_make_build() {
-	printf '+ make -C %s build\n' "${REPO_ROOT}"
+	# This is also the restore step after release_test.sh's default-output case
+	# rewrites dist/devstack with its test version. It is the only `npm ci`
+	# path, so it must precede the UI phases on a clean checkout.
+	printf '+ make -C %s build (restores final dist after the release archive test)\n' "${REPO_ROOT}"
 	make -C "${REPO_ROOT}" build
 }
 
@@ -256,10 +254,8 @@ phase_install_dry_run() {
 phase_e2e() {
 	local status=0
 	printf '+ E2E_SKIP_BUILD=1 bash test/e2e/linux.sh\n'
-	set +e
 	(cd "${REPO_ROOT}" && E2E_SKIP_BUILD=1 bash test/e2e/linux.sh)
 	status=$?
-	set -e
 	if [ "${status}" -ne 0 ]; then
 		return "${status}"
 	fi
@@ -284,11 +280,9 @@ phase_php_acceptance() {
 
 	local status=0
 	printf '+ DEVSTACK_PHP_ROOT=/usr/local/php go test ./test/php -run TestPHPSubsystemAcceptance -count=1 -v\n'
-	set +e
 	(cd "${REPO_ROOT}" && DEVSTACK_PHP_ROOT=/usr/local/php \
 		go test ./test/php -run TestPHPSubsystemAcceptance -count=1 -v)
 	status=$?
-	set -e
 	if [ "${status}" -ne 0 ]; then
 		return "${status}"
 	fi
@@ -309,19 +303,15 @@ phase_fpm_ports() {
 	local listeners=""
 	local status=0
 	if command -v ss >/dev/null 2>&1; then
-		set +e
 		listeners="$(ss -H -ltn '( sport >= :43000 and sport <= :43999 )')"
 		status=$?
-		set -e
 		if [ "${status}" -ne 0 ]; then
 			note "FAIL: ss could not inspect TCP listeners on 43000-43999"
 			return 1
 		fi
 	elif command -v lsof >/dev/null 2>&1; then
-		set +e
 		listeners="$(lsof -nP -iTCP:43000-43999 -sTCP:LISTEN 2>/dev/null)"
 		status=$?
-		set -e
 		if [ "${status}" -ne 0 ] && [ "${status}" -ne 1 ]; then
 			note "FAIL: lsof could not inspect TCP listeners on 43000-43999"
 			return 1
@@ -339,13 +329,83 @@ phase_fpm_ports() {
 	return 0
 }
 
+catalog_php_count() {
+	local catalog="$1"
+	if command -v jq >/dev/null 2>&1; then
+		jq -e '.entries | type == "array"' "${catalog}" >/dev/null 2>&1 || return 2
+		jq -e '[.entries[] | select((.kind != "node") and (.kind != "php"))] | length == 0' \
+			"${catalog}" >/dev/null 2>&1 || return 3
+		jq -r '[.entries[] | select(.kind == "php")] | length' "${catalog}" || return 2
+		return 0
+	fi
+	if command -v python3 >/dev/null 2>&1; then
+		python3 - "${catalog}" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        document = json.load(handle)
+except Exception as exc:  # noqa: BLE001 - report any parser failure
+    print(f"catalog JSON invalid: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+
+entries = document.get("entries") if isinstance(document, dict) else None
+if not isinstance(entries, list):
+    print("catalog has no entries array", file=sys.stderr)
+    raise SystemExit(3)
+for entry in entries:
+    if not isinstance(entry, dict) or entry.get("kind") not in ("node", "php"):
+        print("catalog has an entry with an unexpected kind", file=sys.stderr)
+        raise SystemExit(4)
+print(sum(1 for entry in entries if entry.get("kind") == "php"))
+PY
+		return $?
+	fi
+	return 4
+}
+
 phase_catalog_gate() {
 	local catalog="${REPO_ROOT}/internal/catalog/catalog.json"
-	if grep -Eq '"kind"[[:space:]]*:[[:space:]]*"php"' "${catalog}"; then
-		note "BLOCKED: catalog contains PHP entries, but this runner has no published 8.2-8.5 artifacts to verify them against"
-		return 78
+	local status=0
+	local count=""
+
+	if [ ! -f "${catalog}" ]; then
+		note "FAIL: ${catalog} is missing; the production catalog cannot be validated"
+		return 1
 	fi
-	note "BLOCKED: production PHP catalog is intentionally Node-only; no real 8.2-8.5 artifacts are published"
+
+	count="$(catalog_php_count "${catalog}")"
+	status=$?
+
+	case "${status}" in
+	0) ;;
+	2)
+		note "FAIL: ${catalog} is not valid catalog JSON"
+		return 1
+		;;
+	3)
+		note "FAIL: ${catalog} has no entries array"
+		return 1
+		;;
+	4)
+		note "FAIL: ${catalog} has an entry with an unexpected kind, or neither jq nor python3 is available"
+		return 1
+		;;
+	*)
+		note "FAIL: catalog validation failed with status ${status}"
+		return 1
+		;;
+	esac
+	if ! [[ "${count}" =~ ^[0-9]+$ ]]; then
+		note "FAIL: catalog parser returned a non-numeric PHP entry count: ${count}"
+		return 1
+	fi
+	if [ "${count}" -ne 0 ]; then
+		note "FAIL: ${catalog} contains ${count} PHP entries; this runner cannot verify them without published 8.2-8.5 artifacts"
+		return 1
+	fi
+	note "BLOCKED: ${catalog} is valid and Node-only (0 PHP entries); no real 8.2-8.5 artifacts are published"
 	return 78
 }
 
@@ -396,14 +456,17 @@ print_summary() {
 	local skips=0
 	local blocked=0
 	local notes=""
+	local log_name=""
 
+	SUMMARY_PRINTED=1
 	printf '\n'
-	printf '%-10s %-36s %6s  %s\n' "STATUS" "PHASE" "SECS" "NOTE"
-	printf '%-10s %-36s %6s  %s\n' "----------" "------------------------------------" "------" "----"
+	printf '%-10s %-34s %5s %-30s %s\n' "STATUS" "PHASE" "SECS" "LOG" "NOTE"
+	printf '%-10s %-34s %5s %-30s %s\n' "----------" "----------------------------------" "-----" "------------------------------" "----"
 	for i in "${!PHASE_NAMES[@]}"; do
 		notes="${PHASE_NOTES[$i]}"
-		printf '%-10s %-36s %6s  %s\n' \
-			"${PHASE_RESULTS[$i]}" "${PHASE_NAMES[$i]}" "${PHASE_SECONDS[$i]}" "${notes}"
+		log_name="${PHASE_LOGS[$i]#"${LOG_DIR}/"}"
+		printf '%-10s %-34s %5s %-30s %s\n' \
+			"${PHASE_RESULTS[$i]}" "${PHASE_NAMES[$i]}" "${PHASE_SECONDS[$i]}" "${log_name}" "${notes}"
 		case "${PHASE_RESULTS[$i]}" in
 		PASS) passes=$((passes + 1)) ;;
 		SKIP) skips=$((skips + 1)) ;;
@@ -413,6 +476,7 @@ print_summary() {
 	done
 	printf '\nTOTAL: %d PASS, %d FAIL, %d SKIP, %d BLOCKED\n' \
 		"${passes}" "${failures}" "${skips}" "${blocked}"
+	printf 'Logs: %s\n' "${LOG_DIR}"
 	if [ "${failures}" -ne 0 ]; then
 		printf 'RESULT: FAIL (%d phase(s) failed)\n' "${failures}"
 		return 1
@@ -421,15 +485,20 @@ print_summary() {
 	return 0
 }
 
+# Order matters for a clean checkout:
+# - `release archive test` intentionally rewrites dist/devstack with a test
+#   version, so `make build` follows it and restores the final binaries.
+# - `make build` is the only `npm ci` path, so it precedes the UI phases.
+# - The installer test and E2E then use the restored final binaries.
 run_phase "go vet" phase_go_vet
 run_phase "go test" phase_go_test
 run_phase "go test race" phase_go_race
+run_phase "release archive test" phase_release_test
+run_phase "make build" phase_make_build
 run_phase "ui check" phase_ui_check
 run_phase "ui unit tests" phase_ui_test
 run_phase "ui build" phase_ui_build
 run_phase "ui Playwright" phase_playwright
-run_phase "make build" phase_make_build
-run_phase "release archive test" phase_release_test
 run_phase "installer test" phase_installer_test
 run_phase "release workflow test" phase_workflow_test
 run_phase "installer dry-run" phase_install_dry_run

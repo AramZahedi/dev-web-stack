@@ -3,6 +3,8 @@
 - **Date:** 2026-10-24
 - **Branch:** `plan-4-release`
 - **Base revision:** `a0e0e4f` (`Merge branch 'plan-2-php' into plan-4-release`)
+- **Acceptance/docs commit:** `dfb0fc1` — `docs: record Linux M1 release acceptance`
+- **Clean-checkout fix:** `fix: make M1 acceptance reproducible from a clean checkout` (follow-up commit)
 - **Plan:** [Plan 4 — Release Packaging, Upgrade, and M1 Acceptance (Linux)](2026-10-24-dev-web-stack-plan-4-release.md)
 - **Spec:** [M1 design §21](../specs/2026-10-22-dev-web-stack-m1-design.md#21-acceptance-criteria)
 - **Handoff:** [2026-10-24 M1 handoff](../status/2026-10-24-m1-handoff.md)
@@ -56,8 +58,10 @@ No acceptance-spawned FPM masters or listeners remained afterwards.
 - refuses to run as root;
 - checks for required tools (`go`, `npm`, `node`, `make`, `bash`, `tar`, `curl`,
   `sha256sum`, `mktemp`);
-- runs every phase into a temporary log, records status and duration, and prints
-  the last 80 log lines when a phase fails;
+- runs every phase into a temporary log, records status, duration, and the log
+  basename, and prints the last 80 log lines when a phase fails;
+- prints the temporary log directory at the end of the table; logs are kept
+  under `${TMPDIR:-/tmp}/devstack-acceptance.*` for inspection;
 - returns `0` only when no phase is `FAIL`; `SKIP` and `BLOCKED` are printed and
   counted but do not fail the run;
 - never calls `devstack init`, never runs a non-dry-run `install.sh`, never
@@ -65,6 +69,21 @@ No acceptance-spawned FPM masters or listeners remained afterwards.
 
 `--quick` skips only the race phase. `--skip-playwright` skips only Playwright.
 Neither option converts a skipped gate into a pass.
+
+The phase order is deliberate for a clean checkout:
+
+1. `release archive test` runs before `make build`. That test intentionally
+   rewrites `dist/devstack` with its `0.0.0-test` binary.
+2. `make build` follows it, restores the final `dist` binaries, runs the only
+   `npm ci` step, and builds the dashboard before any UI phase.
+3. UI check/unit/build/Playwright, the installer/workflow tests, installer
+   dry-run, E2E, and real-PHP acceptance then run against the restored final
+   binaries.
+
+This order makes `make acceptance` work when `ui/node_modules` and `ui/dist`
+are absent, and prevents the runner from ending with a test-version
+`dist/devstack`. A clean-checkout run was performed after the fix; see
+[Clean-checkout verification](#clean-checkout-verification).
 
 ## Full acceptance result
 
@@ -74,21 +93,22 @@ Command:
 make acceptance
 ```
 
-The run took about 85 seconds on this workstation and produced:
+A clean source tree (no `ui/node_modules`, only `ui/dist/.gitkeep`, no `dist/`)
+produced this result in about 90 seconds:
 
 ```text
 STATUS     PHASE                                  SECS  NOTE
 ---------- ------------------------------------ ------  ----
-PASS       go vet                                    0
+PASS       go vet                                    1
 PASS       go test                                   5
-PASS       go test race                             11
-PASS       ui check                                  4
+PASS       go test race                             13
+PASS       release archive test                      5
+PASS       make build                                6
+PASS       ui check                                  3
 PASS       ui unit tests                            11
 PASS       ui build                                  5
 PASS       ui Playwright                            31
-PASS       make build                                7
-PASS       release archive test                      5
-PASS       installer test                            0
+PASS       installer test                            1
 PASS       release workflow test                     0
 PASS       installer dry-run                         0
 PASS       linux E2E                                 2  e2e: SKIP node vhost check (no installed Node runtime)
@@ -104,6 +124,12 @@ SKIP       in-flight continuity                      0  not measured
 TOTAL: 15 PASS, 0 FAIL, 3 SKIP, 3 BLOCKED
 RESULT: PASS (no FAIL; SKIP/BLOCKED are not passes)
 ```
+
+The release archive test runs before `make build` on purpose: its default-output
+case rewrites `dist/devstack` with the `0.0.0-test` binary, and the following
+`make build` restores the final binaries before the UI, installer, E2E, and PHP
+phases. The UI phases therefore see the `npm ci` result from `make build`, and
+the run does not finish with a test-version `dist/devstack`.
 
 The E2E phase passed both the builtin flow and the real nginx high-port flow;
 its only internal skip was the Node vhost check because no Node runtime was
@@ -134,6 +160,49 @@ The `--quick --skip-playwright` run proves the skip flags are explicit and do
 not alter the pass/fail result. It still ran unit tests, UI tests/build, release
 tests, E2E, real PHP acceptance, and the listener check.
 
+## Clean-checkout verification
+
+The dependency-order fix was verified in a clean source tree built from
+`dfb0fc1` plus the fix diff, not the long-lived checkout:
+
+```sh
+clean=/tmp/opencode/devstack-clean-acceptance
+git archive dfb0fc1 | tar -x -C "$clean"
+git diff --binary | (cd "$clean" && git apply)
+test -d "$clean/ui/node_modules"   # absent before the run
+find "$clean/ui/dist" -mindepth 1 ! -name .gitkeep   # no built assets
+test -d "$clean/dist"               # absent before the run
+(cd "$clean" && bash test/acceptance/m1.sh)
+```
+
+Result: **15 PASS, 0 FAIL, 3 SKIP, 3 BLOCKED**, exit 0. The `release archive
+test` phase ran first and rewrote `dist/devstack` with its test version; the
+following `make build` ran `npm ci`, built the dashboard, and restored the final
+binaries. After the run:
+
+```text
+$ ./dist/devstack version --json
+{"version":"dev","string":"dev","protocol":"1","os":"linux","arch":"amd64","go_version":"go1.27.3"}
+```
+
+The final binary was not `0.0.0-test` or `0.0.0-defaultpath`. `ui/node_modules`
+and `ui/dist` were created by the build and the UI/Playwright phases passed.
+This is the evidence that `make acceptance` no longer depends on a pre-existing
+`ui/node_modules` or `ui/dist`.
+
+The PHP catalog gate's negative branches were exercised with a temporary
+catalog before the run:
+
+| Catalog state | Gate result |
+|---|---|
+| Valid Node-only (`{"entries":[{"kind":"node"}]}`) | **BLOCKED** |
+| Missing `internal/catalog/catalog.json` | **FAIL** |
+| Contains a PHP entry | **FAIL** |
+| Invalid JSON | **FAIL** |
+
+The gate no longer silently treats a missing or PHP-bearing catalog as
+BLOCKED.
+
 ## M1 §21 item-by-item mapping
 
 Status values are deliberately mixed where one criterion contains both an
@@ -151,7 +220,7 @@ other.
 | 7 | Start/stop/restart from CLI and UI; logs stream; daemon restart reconciles healthy processes, stops orphans, preserves desired state | **PASS (automated)** / **MANUAL** (live UI) | E2E stopped and restarted the daemon, verified the site and forwarder recovered, and verified no `serve-static` orphan remained. Playwright covers the UI in mock mode (19/19). A live browser session against a real daemon was not run. |
 | 8 | Fresh Windows install provisions the WSL distro and agent; static/PHP/Node and trust checks pass; `C:` and distro paths both work | **DEFERRED** | Plan 3 (Windows/WSL) is deferred by user request. There is no agent, named-pipe helper, `install.ps1`, Windows trust-store work, or WSL lifecycle in this branch. |
 | 9 | `devstack trust remove` and `devstack uninstall` revert hosts, CA, listeners, units, and processes; project files untouched; Doctor diagnoses broken preconditions | **MANUAL/BLOCKED** | The unprivileged runner does not write trust stores, `/etc/hosts`, units, or privileged listeners. Unit-level trust/uninstall tests exist, but the real root install/uninstall and each intentionally broken precondition were not run. |
-| 10 | CI green, race clean, helper RPC and archive-extraction security tests pass, no privileged process writes user config | **PASS (local race/security)** / **NOT VERIFIED (CI)** | `go test ./... -race` PASS. `TestHelperRejectsWrongUID`, runtime traversal/symlink/hardlink extraction tests, and installer extraction checks PASS. The workflow contract test PASSes, but no CI run was observed; CI is not claimed green. |
+| 10 | CI green, race clean, helper RPC and archive-extraction security tests pass, no privileged process writes user config | **PASS (race + named security tests)** / **NOT VERIFIED (CI)** / **NOT MEASURED (privileged config writes)** | `go test ./... -race` PASS. `TestHelperRejectsWrongUID` PASS; `TestExtractionRejectsTraversalAndSymlink` (parent traversal, absolute path, absolute/escaping/ancestor/chain symlinks, write-through chain, wrapper-relative escape, hardlink, device), `TestExtractionRejectsSymlinkChainWithoutWritingOutside`, and `TestInstallVerifiesChecksumAndExtractsSafely` PASS; installer archive checks PASS. The workflow contract test PASSes, but no CI run was observed. No test proves the “no privileged process writes user config” subcriterion; it is not claimed. |
 | 11 | Docs cover install, first site, PHP versions/ini/extensions, TLS repair, WSL paths/performance, upgrades, uninstall | **PASS (Linux)** / **DEFERRED** (WSL) | README and `docs/install.md`, `upgrade.md`, `release.md`, `php.md`, and `vhosts.md` were updated for release install, upgrade backup, Linux-only/unsigned scope, the PHP catalog gate, `doctor --json`, and no diagnostics bundle. WSL documentation is intentionally absent until Plan 3. |
 | 12 | External serving works end to end for nginx/Apache; broken vhost leaves the previous mode serving; uninstall removes our vhosts/bridge/TLS without touching unrelated vhosts | **PASS (nginx automated)** / **SKIP** (Apache HTTPS) / **MANUAL** (Apache serving, uninstall) | Real nginx ran from a temporary prefix on high ports; `builtin → nginx → builtin` served the static site, applied the force-HTTPS redirect, and restored the forwarder. The Node vhost step was skipped because no Node runtime was installed. Rollback tests `TestSetModeRestoresOnFailure` and `TestSetModeExternalRestoresOldBridgeOnNewFailure` PASS. The Apache HTTP PHP vhost passed real `httpd -t`; Apache HTTPS was **SKIP** because `ssl_module` is not loaded. Real Apache serving and privileged vhost/uninstall cleanup remain manual. |
 
@@ -309,6 +378,14 @@ that assert `0644`/`0640` preservation. The runner no longer changes the umask;
 `mktemp -d` already creates its log directory as `0700`. The second full run
 passed with 15 PASS, 0 FAIL. No product code or test assertion was changed to
 make the run pass.
+
+The Task 4 review then found a clean-checkout dependency-order bug: UI phases ran
+before the only `npm ci` path, and the release archive test could leave a
+test-version `dist/devstack`. The fix moves the release archive test before
+`make build`, which restores the final binaries and prepares the UI before the
+UI/Playwright phases, and makes the catalog gate FAIL for a missing, malformed,
+or PHP-bearing catalog. The clean-tree run above verifies both fixes. The runner
+also now prints each phase's log basename and the kept log directory.
 
 ## Final verification commands
 
