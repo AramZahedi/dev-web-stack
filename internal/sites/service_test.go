@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -663,6 +664,65 @@ func TestCreateNodeSiteEnsuresRuntime(t *testing.T) {
 	}
 	if got := fakes.certs.ensuredFor(site.ID); !reflect.DeepEqual(got, []string{"shop.test"}) {
 		t.Fatalf("certificate domains = %v (certificates are issued even when TLS serving is off)", got)
+	}
+}
+
+func TestPHPSiteRouteCarriesFastCGIConfiguration(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	if err := os.MkdirAll(filepath.Join(fakes.root, "public"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	site := mustCreate(t, svc, fakes, CreateRequest{
+		Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4",
+		DocumentRoot: ".", FrontController: true, TLS: true,
+	})
+
+	route, ok := fakes.router.Lookup("blog.test")
+	if !ok {
+		t.Fatal("PHP route missing")
+	}
+	if route.Kind != proxy.KindPHP {
+		t.Fatalf("route kind = %q, want %q", route.Kind, proxy.KindPHP)
+	}
+	if want := net.JoinHostPort("127.0.0.1", strconv.Itoa(site.FastCGIPort)); route.Upstream != want {
+		t.Fatalf("route upstream = %q, want %q", route.Upstream, want)
+	}
+	if got, want := route.DocumentRoot, filepath.Clean(fakes.root); got != want {
+		t.Fatalf("route document root = %q, want %q", got, want)
+	}
+	if !route.FrontController {
+		t.Fatal("route did not carry the front controller")
+	}
+	if !route.TLS {
+		t.Fatal("route did not carry TLS")
+	}
+
+	frontController := false
+	updated, err := svc.Update(ctx, site.Name, UpdateRequest{
+		DocumentRoot:    "public",
+		FrontController: &frontController,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DocumentRoot != "public" {
+		t.Fatalf("updated document root = %q", updated.DocumentRoot)
+	}
+
+	route, ok = fakes.router.Lookup("blog.test")
+	if !ok {
+		t.Fatal("PHP route missing after update")
+	}
+	if want := filepath.Join(fakes.root, "public"); route.DocumentRoot != want {
+		t.Fatalf("route document root after update = %q, want %q", route.DocumentRoot, want)
+	}
+	if route.FrontController {
+		t.Fatal("route front controller was not updated")
+	}
+	if want := net.JoinHostPort("127.0.0.1", strconv.Itoa(updated.FastCGIPort)); route.Upstream != want {
+		t.Fatalf("route upstream after update = %q, want %q", route.Upstream, want)
 	}
 }
 

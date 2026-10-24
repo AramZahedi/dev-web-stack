@@ -133,6 +133,18 @@ func TestRouterPreservesPHPRouteFields(t *testing.T) {
 	}
 }
 
+func TestPHPProxyReverseProxyRejectsKindPHP(t *testing.T) {
+	r := NewRouter()
+	if _, err := r.reverseProxy(Route{
+		SiteID:   "php-site",
+		Host:     "blog.test",
+		Kind:     KindPHP,
+		Upstream: "127.0.0.1:43001",
+	}); err == nil {
+		t.Fatal("reverseProxy accepted a PHP route")
+	}
+}
+
 func TestRouterUpstreamTimeouts(t *testing.T) {
 	r := NewRouter()
 	if got := r.staticTransport.ResponseHeaderTimeout; got != staticResponseHeaderTimeout {

@@ -1,9 +1,10 @@
 // Package proxy implements the builtin devstack reverse proxy: it routes
-// requests by exact Host to static or Node upstreams and selects TLS
+// requests by exact Host to static, Node, or PHP upstreams and selects TLS
 // certificates by SNI.
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/AramZahedi/dev-web-stack/internal/fcgi"
 )
 
 // Kind is the backend kind behind a route. Static upstreams are served by the
@@ -46,6 +49,17 @@ type Route struct {
 	TLS             bool
 }
 
+// fcgiClient is the FastCGI client behavior the proxy needs. One client is one
+// connection and carries at most one request.
+type fcgiClient interface {
+	Do(ctx context.Context, req fcgi.Request) (*fcgi.Response, error)
+	Close() error
+}
+
+// fcgiDialer opens a FastCGI connection. Tests replace Router.fcgiDial to
+// script the transport without opening a socket.
+type fcgiDialer func(ctx context.Context, addr string) (fcgiClient, error)
+
 // Snapshot is the complete routing table and certificate set at one point in
 // time. Callers must not mutate a snapshot after passing it to Replace.
 type Snapshot struct {
@@ -63,6 +77,7 @@ type Router struct {
 
 	staticTransport *http.Transport
 	nodeTransport   *http.Transport
+	fcgiDial        fcgiDialer
 	handler         http.Handler
 }
 
@@ -71,6 +86,9 @@ func NewRouter() *Router {
 	r := &Router{
 		staticTransport: newUpstreamTransport(staticResponseHeaderTimeout),
 		nodeTransport:   newUpstreamTransport(nodeResponseHeaderTimeout),
+		fcgiDial: func(ctx context.Context, addr string) (fcgiClient, error) {
+			return fcgi.Dial(ctx, addr)
+		},
 	}
 	r.handler = http.HandlerFunc(r.serveHTTP)
 	return r

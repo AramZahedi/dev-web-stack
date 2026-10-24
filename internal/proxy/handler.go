@@ -44,6 +44,11 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if route.Kind == KindPHP {
+		r.servePHP(w, req, route)
+		return
+	}
+
 	proxy, err := r.reverseProxy(route)
 	if err != nil {
 		r.logProxyError(route, err)
@@ -66,6 +71,10 @@ func (r *Router) reverseProxy(route Route) (*httputil.ReverseProxy, error) {
 		transport = r.nodeTransport
 	case KindStatic, "":
 		// Static sites are HTTP services started by the local backend.
+	case KindPHP:
+		// PHP routes are served by the FastCGI transport, never as HTTP
+		// upstreams.
+		return nil, errors.New("proxy: PHP routes are served over FastCGI")
 	default:
 		return nil, fmt.Errorf("proxy: unknown route kind %q", route.Kind)
 	}
