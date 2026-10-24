@@ -120,6 +120,12 @@ root_real=$(cd -- "$root" && pwd -P)
 # realpath -m follows links that exist (matching the runtime manager) and
 # resolves dangling targets lexically. A link may not point at itself or an
 # ancestor, which the runtime installer also rejects.
+# Write the find output to a file and check find's status before iterating. A
+# process substitution would swallow a traversal failure and skip every link,
+# turning the symlink check into a fail-open pass.
+link_listing="$work/symlinks.list"
+find "$root_real" -type l -print0 >"$link_listing" ||
+	die "could not list archive symlinks under $top"
 while IFS= read -r -d '' link; do
 	rel=${link#"$root_real"/}
 	target=$(readlink -- "$link") || die "could not read archive symlink $rel"
@@ -138,7 +144,7 @@ while IFS= read -r -d '' link; do
 	if [[ $resolved == "$identity" || $identity == "$resolved"/* ]]; then
 		die "archive symlink $rel points at itself or an ancestor"
 	fi
-done < <(find "$root_real" -type l -print0)
+done <"$link_listing"
 
 [[ -x "$root/bin/php" ]] || die "$top/bin/php is missing or not executable"
 [[ -x "$root/sbin/php-fpm" ]] || die "$top/sbin/php-fpm is missing or not executable"

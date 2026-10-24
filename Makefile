@@ -17,6 +17,7 @@ PHP_SMOKE_BIN  ?=
 # .github/workflows/php.yml and the catalog document to merge it into.
 PHP_CATALOG_JSON  ?=
 CATALOG           ?=
+PHP_ARTIFACTS_DIR ?= artifacts
 PHP_CATALOG_CHECK ?= 0
 
 .PHONY: build test lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test acceptance
@@ -93,15 +94,19 @@ php-catalog:
 # Merge the PHP workflow's php-catalog.json artifact into a catalog document.
 # This is a gated release step, not a CI commit: the production catalog stays
 # Node-only until real checksummed 8.2-8.5 artifacts are published. Passing
-# CATALOG and PHP_CATALOG_JSON explicitly is required so a typo cannot update
-# the embedded catalog by accident. PHP_CATALOG_CHECK=1 validates and writes
-# nothing.
+# CATALOG, PHP_CATALOG_JSON, and PHP_ARTIFACTS_DIR explicitly (or accepting the
+# documented artifacts/ default) is required so a typo cannot update the
+# embedded catalog by accident. The artifact directory must contain the exact
+# tarballs named by the catalog entries; missing, extra, non-regular, or
+# checksum/size-mismatched files fail the merge. PHP_CATALOG_CHECK=1 validates
+# and writes nothing.
 php-catalog-merge:
 	@test -n "$(PHP_CATALOG_JSON)" || { echo "PHP_CATALOG_JSON is required (path to php-catalog.json)" >&2; exit 1; }
 	@test -n "$(CATALOG)" || { echo "CATALOG is required (path to the catalog document to update)" >&2; exit 1; }
 	@test -f "$(PHP_CATALOG_JSON)" || { echo "missing PHP catalog JSON: $(PHP_CATALOG_JSON)" >&2; exit 1; }
 	@test -f "$(CATALOG)" || { echo "missing catalog document: $(CATALOG)" >&2; exit 1; }
-	go run ./cmd/catalogmerge --catalog "$(CATALOG)" --php-catalog "$(PHP_CATALOG_JSON)" $(if $(filter 1,$(PHP_CATALOG_CHECK)),--check,)
+	@test -d "$(PHP_ARTIFACTS_DIR)" || { echo "missing PHP artifacts directory: $(PHP_ARTIFACTS_DIR)" >&2; exit 1; }
+	go run ./cmd/catalogmerge --catalog "$(CATALOG)" --php-catalog "$(PHP_CATALOG_JSON)" --artifacts "$(PHP_ARTIFACTS_DIR)" $(if $(filter 1,$(PHP_CATALOG_CHECK)),--check,)
 
 php-test:
 	go test ./cmd/phpcatalog ./cmd/php-smoke

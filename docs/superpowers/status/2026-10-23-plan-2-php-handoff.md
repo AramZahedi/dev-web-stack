@@ -4,8 +4,10 @@
 - **Branch:** `plan-2-php` (created from `plan-1-foundation` at `4f7ab97`)
 - **Remote:** `origin` (`git@github.com:AramZahedi/dev-web-stack.git`)
 - **Head before this handoff commit:** `6add708` (`fix: retain stopped PHP row port on cleanup`)
-- **Origin `plan-2-php` before this handoff:** `5ec96fd`; after this docs commit it
-  must be pushed.
+- **Origin `plan-2-php` (actual remote tip):** `fec5917`
+  (`fix: load standard PHP modules in PECL smoke checks`). It includes this
+  handoff and the two approved CI smoke fixes (`0baf4af`, `fec5917`), and is
+  merged into `plan-4-release` at `a0e0e4f`.
 - **Origin `plan-1-foundation`:** `4f7ab97` (Plan 1 complete, pushed).
 - **Working tree at handoff:** clean except this handoff/plan doc edit.
 - **Verification at `6add708`:** `go test ./... -race -count=1` PASS (all packages,
@@ -409,8 +411,10 @@ FastCGI 43000–43999.
 
 ## 9. Commit/push state
 
-Before this handoff, `plan-2-php` was at `6add708` (two commits ahead of origin
-`5ec96fd`). This handoff adds a docs commit on top of:
+At handoff time, `plan-2-php` was at `6add708`, two commits ahead of the then
+origin `5ec96fd`. The branch was then pushed with this handoff and the approved
+CI smoke fixes; its actual remote tip is now **`fec5917`**. The history below is
+the handoff-time snapshot, before those two smoke fixes:
 
 ```
 6add708 fix: retain stopped PHP row port on cleanup
@@ -449,14 +453,13 @@ f1ed063 fix: return intact installed PHP builds before catalog lookup
 2a02cdb docs: add plan 2 PHP implementation plan
 ```
 
-After committing/pushing this handoff:
+Current state (verified against `origin`):
 
 ```sh
-git push origin plan-2-php
-git fetch origin
-git rev-list --left-right --count origin/plan-2-php...HEAD   # expect 0 0
-git status --short --branch                                  # clean
+git rev-parse origin/plan-2-php        # fec5917
+git rev-parse plan-4-release           # local fix-wave tip; origin is 6cc78ce until push
+git log --oneline -1 origin/plan-2-php # fix: load standard PHP modules in PECL smoke checks
 ```
 
-Plan 2 is complete and merge-ready. Next: write and execute Plan 4
-(packaging/release), Linux-only. Do not start Plan 3.
+Plan 2 is complete, merge-ready, and merged into `plan-4-release`. Plan 4 is
+implemented for the Linux M1 scope. Do not start Plan 3 (Windows/WSL).

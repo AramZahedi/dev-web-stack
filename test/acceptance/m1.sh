@@ -55,7 +55,7 @@ if [ "$(id -u)" -eq 0 ]; then
 	exit 2
 fi
 
-for tool in go npm node make bash tar curl sha256sum mktemp; do
+for tool in go npm node make bash tar curl sha256sum mktemp jq; do
 	if ! command -v "${tool}" >/dev/null 2>&1; then
 		printf 'acceptance: required tool not found: %s\n' "${tool}" >&2
 		exit 2
@@ -224,10 +224,10 @@ process.stdout.write(chromium.executablePath());
 }
 
 phase_make_build() {
-	# This is also the restore step after release_test.sh's default-output case
-	# rewrites dist/devstack with its test version. It is the only `npm ci`
-	# path, so it must precede the UI phases on a clean checkout.
-	printf '+ make -C %s build (restores final dist after the release archive test)\n' "${REPO_ROOT}"
+	# This is the only `npm ci` path, so it must precede the UI phases on a
+	# clean checkout. The release archive test uses a temporary build directory
+	# and no longer rewrites dist/devstack.
+	printf '+ make -C %s build\n' "${REPO_ROOT}"
 	make -C "${REPO_ROOT}" build
 }
 
@@ -329,40 +329,17 @@ phase_fpm_ports() {
 	return 0
 }
 
+# catalog_php_count returns 0 and prints the PHP entry count for a well-formed
+# catalog. Distinct non-zero statuses let the gate report parser, JSON, schema,
+# and kind failures separately instead of collapsing them into BLOCKED.
 catalog_php_count() {
 	local catalog="$1"
-	if command -v jq >/dev/null 2>&1; then
-		jq -e '.entries | type == "array"' "${catalog}" >/dev/null 2>&1 || return 2
-		jq -e '[.entries[] | select((.kind != "node") and (.kind != "php"))] | length == 0' \
-			"${catalog}" >/dev/null 2>&1 || return 3
-		jq -r '[.entries[] | select(.kind == "php")] | length' "${catalog}" || return 2
-		return 0
-	fi
-	if command -v python3 >/dev/null 2>&1; then
-		python3 - "${catalog}" <<'PY'
-import json
-import sys
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as handle:
-        document = json.load(handle)
-except Exception as exc:  # noqa: BLE001 - report any parser failure
-    print(f"catalog JSON invalid: {exc}", file=sys.stderr)
-    raise SystemExit(2)
-
-entries = document.get("entries") if isinstance(document, dict) else None
-if not isinstance(entries, list):
-    print("catalog has no entries array", file=sys.stderr)
-    raise SystemExit(3)
-for entry in entries:
-    if not isinstance(entry, dict) or entry.get("kind") not in ("node", "php"):
-        print("catalog has an entry with an unexpected kind", file=sys.stderr)
-        raise SystemExit(4)
-print(sum(1 for entry in entries if entry.get("kind") == "php"))
-PY
-		return $?
-	fi
-	return 4
+	command -v jq >/dev/null 2>&1 || return 4
+	jq -e . "${catalog}" >/dev/null 2>&1 || return 2
+	jq -e '.entries | type == "array"' "${catalog}" >/dev/null 2>&1 || return 3
+	jq -e '[.entries[] | select((.kind != "node") and (.kind != "php"))] | length == 0' \
+		"${catalog}" >/dev/null 2>&1 || return 5
+	jq -r '[.entries[] | select(.kind == "php")] | length' "${catalog}" || return 2
 }
 
 phase_catalog_gate() {
@@ -385,11 +362,15 @@ phase_catalog_gate() {
 		return 1
 		;;
 	3)
-		note "FAIL: ${catalog} has no entries array"
+		note "FAIL: ${catalog} has a malformed schema (missing or non-array entries)"
 		return 1
 		;;
 	4)
-		note "FAIL: ${catalog} has an entry with an unexpected kind, or neither jq nor python3 is available"
+		note "FAIL: jq is not available to validate ${catalog}"
+		return 1
+		;;
+	5)
+		note "FAIL: ${catalog} has an entry with an unexpected kind (only node or php is allowed)"
 		return 1
 		;;
 	*)
@@ -398,7 +379,7 @@ phase_catalog_gate() {
 		;;
 	esac
 	if ! [[ "${count}" =~ ^[0-9]+$ ]]; then
-		note "FAIL: catalog parser returned a non-numeric PHP entry count: ${count}"
+		note "FAIL: catalog parser returned a non-numeric PHP entry count (malformed schema): ${count}"
 		return 1
 	fi
 	if [ "${count}" -ne 0 ]; then
@@ -486,10 +467,10 @@ print_summary() {
 }
 
 # Order matters for a clean checkout:
-# - `release archive test` intentionally rewrites dist/devstack with a test
-#   version, so `make build` follows it and restores the final binaries.
 # - `make build` is the only `npm ci` path, so it precedes the UI phases.
-# - The installer test and E2E then use the restored final binaries.
+# - The release archive test uses a temporary --build-dir, so it cannot disturb
+#   dist/devstack; `make build` still runs before the UI phases for npm ci.
+# - The installer test and E2E then use the built final binaries.
 run_phase "go vet" phase_go_vet
 run_phase "go test" phase_go_test
 run_phase "go test race" phase_go_race

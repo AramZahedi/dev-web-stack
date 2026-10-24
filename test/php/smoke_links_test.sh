@@ -138,4 +138,17 @@ mkdir -p "$work/bad-name"
 cp "$work/safe-relative/$tarball_name" "$work/bad-name/php-8.2.35-linux-x64.tar.gz"
 expect_rejected "$work/bad-name/php-8.2.35-linux-x64.tar.gz" 'tarball name must be' archive-name
 
+# A directory the build user cannot traverse makes find fail. The link check
+# must fail closed with an explicit error instead of skipping every link and
+# continuing to the later bin/php check.
+unreadable="$work/unreadable"
+mkdir -p "$unreadable/stage/$top/secret"
+tar -cf "$unreadable/raw.tar" -C "$unreadable/stage" --mode='0000' "$top/secret" ||
+	fail 'unreadable-dir: could not create the fixture tar'
+gzip -n -c "$unreadable/raw.tar" >"$unreadable/$tarball_name" ||
+	fail 'unreadable-dir: could not gzip the fixture'
+tar -tvzf "$unreadable/$tarball_name" | grep -q '^d' ||
+	fail 'unreadable-dir: fixture did not record a directory entry'
+expect_rejected "$unreadable/$tarball_name" 'could not list archive symlinks' unreadable-dir
+
 printf 'smoke_links_test: ok\n'

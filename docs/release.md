@@ -79,14 +79,21 @@ make release VERSION=0.2.0
 It builds the UI (unless `--skip-ui` is passed directly to
 `build/release.sh`), cross-compiles both binaries with `CGO_ENABLED=0` for
 `linux/amd64`, and writes the archive plus `checksums.txt` under
-`dist/release/`. The packaged binary is executed to confirm it reports the
-requested version.
+`dist/release/`. The intermediate binaries go to `dist/` by default; pass
+`--build-dir <dir>` to use another directory. Tar member mtimes are pinned to
+`SOURCE_DATE_EPOCH` (default `0`) and gzip runs with `-n`, so two builds of the
+same source and version are byte-identical. The packaged binary is executed to
+confirm it reports the requested version.
 
 Run the archive contract test with:
 
 ```sh
 make release-test
 ```
+
+The test uses a temporary `--build-dir`, so it never overwrites or creates
+`dist/devstack`/`dist/devstack-helper`. It also compares two independent builds
+and asserts the archive and checksums are identical.
 
 ## Tag-driven release workflow
 
@@ -110,7 +117,9 @@ Before GoReleaser runs, the workflow:
 1. installs Go from `go.mod` and Node 22;
 2. runs the UI install, type check, unit tests, and production build;
 3. runs `go test ./... -race` and `go vet ./...`;
-4. runs `goreleaser check` to validate `.goreleaser.yaml`.
+4. runs `goreleaser check` to validate `.goreleaser.yaml`;
+5. builds a GoReleaser snapshot, verifies `checksums.txt`, and inspects the
+   archive member set and packaged version before publishing.
 
 It then runs `goreleaser release --clean` through
 `goreleaser/goreleaser-action@v6` with `GITHUB_TOKEN`. GoReleaser uses the
@@ -184,21 +193,32 @@ archives or edit the embedded catalog.
 
 A release may merge that artifact only after all four checksummed
 `php-<version>-r<revision>-linux-x64.tar.gz` archives have been published at a
-real HTTPS host. The merge is a release-preparation step, not a CI commit, and
-it must land in a commit before the release tag is created; a tag cannot add
-catalog entries retroactively.
+real HTTPS host. Download those exact tarballs from the PHP workflow run (or
+from the published host) into one local directory; `catalogmerge` verifies each
+file's name, regular-file type, byte size, and SHA-256 before it writes
+anything. The merge is a release-preparation step, not a CI commit, and it must
+land in a commit before the release tag is created; a tag cannot add catalog
+entries retroactively.
 
 ```sh
+# Download the archives named by the generated php-catalog.json into the
+# default artifacts/ directory (override with PHP_ARTIFACTS_DIR). The directory
+# must contain exactly those tarballs and no other files.
+mkdir -p artifacts
+# ... copy or download php-<version>-r<revision>-linux-x64.tar.gz files here ...
+
 # Validate first. --check writes nothing.
 make php-catalog-merge \
   PHP_CATALOG_JSON=dist/php-catalog.json \
   CATALOG=internal/catalog/catalog.json \
+  PHP_ARTIFACTS_DIR=artifacts \
   PHP_CATALOG_CHECK=1
 
 # Then merge and commit the updated catalog with the release.
 make php-catalog-merge \
   PHP_CATALOG_JSON=dist/php-catalog.json \
-  CATALOG=internal/catalog/catalog.json
+  CATALOG=internal/catalog/catalog.json \
+  PHP_ARTIFACTS_DIR=artifacts
 ```
 
 The equivalent direct command is:
@@ -207,20 +227,26 @@ The equivalent direct command is:
 go run ./cmd/catalogmerge \
   --catalog internal/catalog/catalog.json \
   --php-catalog dist/php-catalog.json \
+  --artifacts artifacts \
   --check
 ```
 
 Drop `--check` to write the catalog in place, or add `--output <path>` to write
-the merged document elsewhere.
+the merged document elsewhere. `--artifacts` is required; a missing, extra,
+unreadable, non-regular, or mismatched tarball aborts the merge.
 
 `catalogmerge` refuses to write unless every incoming entry:
 
 - has `kind: php` and `build: linux-x64`;
+- belongs to exactly PHP 8.2, 8.3, 8.4, or 8.5 (an extra line is rejected);
 - uses `revision >= 1` and an ID matching `php@<version>-r<revision>`;
-- has an HTTPS URL with no query, fragment, or userinfo, whose basename is
-  exactly `php-<version>-r<revision>-linux-x64.tar.gz`;
+- has an HTTPS URL with a non-empty hostname, no query, fragment, userinfo, or
+  empty path segment, whose basename is exactly
+  `php-<version>-r<revision>-linux-x64.tar.gz`;
 - has a 64-character lowercase SHA-256 and a positive size;
-- has a unique ID.
+- has a unique ID; and
+- has a regular local artifact in `--artifacts` whose bytes match that size and
+  SHA-256.
 
 It also requires at least one entry for each of PHP 8.2, 8.3, 8.4, and 8.5.
 Non-PHP entries are preserved in their existing order. Existing PHP entries are

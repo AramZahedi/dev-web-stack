@@ -315,13 +315,16 @@ artifacts in CI, but merging `php-catalog.json` into
 
 Do not hand-edit the catalog and do not invent a URL, checksum, or size. The
 merge tool refuses anything that is not a complete 8.2-8.5 set of HTTPS,
-checksummed `php-<version>-r<revision>-linux-x64.tar.gz` entries:
+checksummed `php-<version>-r<revision>-linux-x64.tar.gz` entries, and it requires
+the actual tarballs in an `--artifacts` directory:
 
 ```sh
-# Validate the generated artifact against the current catalog. Writes nothing.
+# Download the archives named by php-catalog.json into artifacts/ (the default
+# PHP_ARTIFACTS_DIR), then validate against the current catalog. Writes nothing.
 make php-catalog-merge \
   PHP_CATALOG_JSON=dist/php-catalog.json \
   CATALOG=internal/catalog/catalog.json \
+  PHP_ARTIFACTS_DIR=artifacts \
   PHP_CATALOG_CHECK=1
 ```
 
@@ -332,16 +335,20 @@ catalog in place):
 go run ./cmd/catalogmerge \
   --catalog internal/catalog/catalog.json \
   --php-catalog dist/php-catalog.json \
+  --artifacts artifacts \
   --check
 ```
 
 `catalogmerge` requires at least one entry for each of PHP 8.2, 8.3, 8.4, and
-8.5; validates `kind=php`, `build=linux-x64`, a positive revision, HTTPS, a
+8.5 and rejects any other PHP line; validates `kind=php`, `build=linux-x64`, a
+positive revision, HTTPS with a non-empty hostname and no empty path segment, a
 64-character lowercase SHA-256, a positive size, unique IDs, and the archive
-basename; preserves non-PHP entries in order; replaces existing PHP entries with
-the new set sorted by version and revision; and writes atomically. `--check`
-writes nothing. Malformed, duplicate, or HTTP entries fail with a non-zero exit
-and no partial output.
+basename; verifies that every entry has a regular local tarball whose size and
+SHA-256 match and that the directory contains no extra files; preserves non-PHP
+entries in order; replaces existing PHP entries with the new set sorted by
+version and revision; and writes atomically. `--check` writes nothing.
+Malformed, duplicate, HTTP, missing-artifact, or mismatched-artifact entries fail
+with a non-zero exit and no partial output.
 
 **Current state: BLOCKED.** No real 8.2, 8.3, 8.4, or 8.5 artifacts have been
 published from this environment, so the production catalog stays Node-only. The

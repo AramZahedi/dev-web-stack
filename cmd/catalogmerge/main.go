@@ -2,12 +2,14 @@
 // .github/workflows/php.yml into a devstack catalog document.
 //
 // Every incoming PHP entry is validated before anything is written: it must be
-// a linux-x64 PHP build for revision 1 or newer, use HTTPS, carry a lowercase
-// SHA-256 and a positive size, and point at the exact archive name for its
-// version and revision. The merge replaces all existing PHP entries with the
-// validated set (sorted by version, then revision) and preserves every non-PHP
-// entry in its existing order. The output is written atomically and --check
-// validates without writing.
+// a linux-x64 PHP build on line 8.2, 8.3, 8.4, or 8.5, for revision 1 or newer,
+// use HTTPS, carry a lowercase SHA-256 and a positive size, and point at the
+// exact archive name for its version and revision. The required --artifacts
+// directory must contain every named tarball, and each file must be a regular
+// file whose bytes match the pinned size and checksum. The merge replaces all
+// existing PHP entries with the validated set (sorted by version, then
+// revision) and preserves every non-PHP entry in its existing order. The output
+// is written atomically and --check validates without writing.
 //
 // The production catalog stays Node-only until real 8.2-8.5 artifacts have
 // been published with checksums; this command is the gated release step that
@@ -16,6 +18,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -48,16 +52,20 @@ var (
 type Options struct {
 	Catalog    string
 	PHPCatalog string
+	Artifacts  string
 	Output     string
 	Check      bool
 }
 
-// mergeCatalogs validates the incoming PHP document and returns a catalog with
-// every existing PHP entry replaced by the incoming set. Non-PHP entries keep
-// their current relative order.
-func mergeCatalogs(current, incoming catalog.Catalog) (catalog.Catalog, error) {
+// mergeCatalogs validates the incoming PHP document and its local artifacts,
+// then returns a catalog with every existing PHP entry replaced by the incoming
+// set. Non-PHP entries keep their current relative order.
+func mergeCatalogs(current, incoming catalog.Catalog, artifactsDir string) (catalog.Catalog, error) {
 	phpEntries, err := validatePHPCatalog(incoming)
 	if err != nil {
+		return catalog.Catalog{}, err
+	}
+	if err := verifyArtifacts(artifactsDir, phpEntries); err != nil {
 		return catalog.Catalog{}, err
 	}
 
@@ -87,11 +95,18 @@ func validatePHPCatalog(document catalog.Catalog) ([]catalog.Entry, error) {
 		if err := validatePHPEntry(entry); err != nil {
 			return nil, fmt.Errorf("entry %d (%q): %w", i, entry.ID, err)
 		}
+		line := catalog.LineOf(entry.Version)
+		if !supportedPHLine(line) {
+			return nil, fmt.Errorf(
+				"entry %d (%q): unsupported PHP line %q (want exactly one of %s)",
+				i, entry.ID, line, strings.Join(requiredPHPLines, ", "),
+			)
+		}
 		if _, ok := seenIDs[entry.ID]; ok {
 			return nil, fmt.Errorf("entry %d (%q): duplicate id", i, entry.ID)
 		}
 		seenIDs[entry.ID] = struct{}{}
-		seenLines[catalog.LineOf(entry.Version)] = struct{}{}
+		seenLines[line] = struct{}{}
 		entries = append(entries, entry)
 	}
 
@@ -115,6 +130,88 @@ func validatePHPCatalog(document catalog.Catalog) ([]catalog.Entry, error) {
 		return entries[i].Revision < entries[j].Revision
 	})
 	return entries, nil
+}
+
+// supportedPHLine reports whether line is one of the four release lines.
+func supportedPHLine(line string) bool {
+	for _, supported := range requiredPHPLines {
+		if line == supported {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyArtifacts proves that every validated PHP entry has a real local
+// artifact. The release workflow downloads the PHP workflow's tarballs into one
+// directory; each entry must name a regular file in that directory whose bytes
+// match the pinned size and SHA-256. Extra files, symlinks, and directories are
+// rejected so the directory cannot hide an unrelated or partial artifact.
+func verifyArtifacts(dir string, entries []catalog.Entry) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("artifacts directory %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("artifacts directory %s is not a directory", dir)
+	}
+
+	expected := make(map[string]catalog.Entry, len(entries))
+	for _, entry := range entries {
+		name := path.Base(entry.URL)
+		expected[name] = entry
+	}
+
+	directoryEntries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("list artifacts directory %s: %w", dir, err)
+	}
+	for _, directoryEntry := range directoryEntries {
+		name := directoryEntry.Name()
+		entry, ok := expected[name]
+		if !ok {
+			return fmt.Errorf("unexpected artifact %s in %s", name, dir)
+		}
+		artifactFile := filepath.Join(dir, name)
+		fileInfo, err := os.Lstat(artifactFile)
+		if err != nil {
+			return fmt.Errorf("inspect artifact %s: %w", name, err)
+		}
+		if !fileInfo.Mode().IsRegular() {
+			return fmt.Errorf("artifact %s is not a regular file (mode %s)", name, fileInfo.Mode())
+		}
+		file, err := os.Open(artifactFile)
+		if err != nil {
+			return fmt.Errorf("read artifact %s: %w", name, err)
+		}
+		hash := sha256.New()
+		size, copyErr := io.Copy(hash, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return fmt.Errorf("read artifact %s: %w", name, copyErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("read artifact %s: %w", name, closeErr)
+		}
+		if size != entry.Size {
+			return fmt.Errorf("artifact %s size %d does not match catalog size %d", name, size, entry.Size)
+		}
+		sum := hex.EncodeToString(hash.Sum(nil))
+		if sum != entry.SHA256 {
+			return fmt.Errorf("artifact %s sha256 %s does not match catalog sha256 %s", name, sum, entry.SHA256)
+		}
+		delete(expected, name)
+	}
+
+	if len(expected) != 0 {
+		missing := make([]string, 0, len(expected))
+		for name := range expected {
+			missing = append(missing, name)
+		}
+		sort.Strings(missing)
+		return fmt.Errorf("missing artifact(s) in %s: %s", dir, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // validatePHPEntry enforces the catalog invariants the installer relies on,
@@ -153,8 +250,8 @@ func validatePHPEntry(entry catalog.Entry) error {
 	if parsed.Scheme != "https" {
 		return fmt.Errorf("url %q must use https", entry.URL)
 	}
-	if parsed.Host == "" {
-		return fmt.Errorf("url %q has no host", entry.URL)
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return fmt.Errorf("url %q has no hostname", entry.URL)
 	}
 	if parsed.User != nil {
 		return fmt.Errorf("url %q must not contain userinfo", entry.URL)
@@ -167,6 +264,9 @@ func validatePHPEntry(entry catalog.Entry) error {
 	}
 	if strings.HasSuffix(parsed.Path, "/") {
 		return fmt.Errorf("url %q must point at a file, not a directory", entry.URL)
+	}
+	if strings.Contains(parsed.Path, "//") {
+		return fmt.Errorf("url %q contains an empty path segment (double slash)", entry.URL)
 	}
 	wantName := fmt.Sprintf("php-%s-r%d-linux-x64.tar.gz", entry.Version, entry.Revision)
 	if path.Base(parsed.Path) != wantName {
@@ -294,10 +394,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 	var opts Options
 	flags.StringVar(&opts.Catalog, "catalog", "", "current catalog document (read; default output)")
 	flags.StringVar(&opts.PHPCatalog, "php-catalog", "", "php-catalog.json document generated by the PHP workflow")
+	flags.StringVar(&opts.Artifacts, "artifacts", "", "directory containing the PHP tarballs named by the catalog entries")
 	flags.StringVar(&opts.Output, "output", "", "write the merged catalog here instead of --catalog")
 	flags.BoolVar(&opts.Check, "check", false, "validate the merge without writing anything")
 	flags.Usage = func() {
-		fmt.Fprintf(stderr, "usage: catalogmerge --catalog <path> --php-catalog <path> [--output <path>] [--check]\n\n")
+		fmt.Fprintf(stderr, "usage: catalogmerge --catalog <path> --php-catalog <path> --artifacts <dir> [--output <path>] [--check]\n\n")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -311,6 +412,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	if opts.PHPCatalog == "" {
 		return errors.New("--php-catalog is required")
+	}
+	if opts.Artifacts == "" {
+		return errors.New("--artifacts is required (directory containing the PHP tarballs)")
 	}
 
 	output := opts.Output
@@ -326,7 +430,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	merged, err := mergeCatalogs(current, incoming)
+	merged, err := mergeCatalogs(current, incoming, opts.Artifacts)
 	if err != nil {
 		return err
 	}

@@ -171,7 +171,10 @@ invoke() {
 	: >"${COMMAND_LOG}"
 	: >"${CURL_LOG}"
 	set +e
-	INVOKE_OUT="$(PATH="${TOOLS}:${PATH}" HOME="${FAKE_HOME}" XDG_CONFIG_HOME="${FAKE_HOME}/.config" "$binary" "$@" 2>&1)"
+	INVOKE_OUT="$(PATH="${TOOLS}:${PATH}" HOME="${FAKE_HOME}" \
+		XDG_CONFIG_HOME="${FAKE_HOME}/.config" \
+		DEVSTACK_HOME="${FAKE_HOME}/.devstack" \
+		"$binary" "$@" 2>&1)"
 	INVOKE_STATUS=$?
 	set -e
 }

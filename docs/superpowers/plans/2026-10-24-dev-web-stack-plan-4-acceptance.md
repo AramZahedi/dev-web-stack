@@ -57,32 +57,38 @@ No acceptance-spawned FPM masters or listeners remained afterwards.
 
 - refuses to run as root;
 - checks for required tools (`go`, `npm`, `node`, `make`, `bash`, `tar`, `curl`,
-  `sha256sum`, `mktemp`);
+  `sha256sum`, `mktemp`, `jq`);
 - runs every phase into a temporary log, records status, duration, and the log
   basename, and prints the last 80 log lines when a phase fails;
 - prints the temporary log directory at the end of the table; logs are kept
   under `${TMPDIR:-/tmp}/devstack-acceptance.*` for inspection;
 - returns `0` only when no phase is `FAIL`; `SKIP` and `BLOCKED` are printed and
   counted but do not fail the run;
-- never calls `devstack init`, never runs a non-dry-run `install.sh`, never
-  writes `/etc/hosts` or a trust store, and never binds 80/443.
+- never calls `devstack init`, never performs a non-sandboxed install, never
+  writes `/etc/hosts` or a trust store, and never binds 80/443. The installer
+  test does execute `install.sh` non-dry-run, but only with fake
+  `sudo`/`systemctl` commands and temporary install roots;
+- requires `jq` for the catalog gate. A missing parser, invalid JSON, a
+  malformed schema, an unexpected entry kind, or a PHP-bearing catalog all
+  FAIL; only a valid, Node-only catalog is BLOCKED on the unpublished PHP
+  artifacts.
 
 `--quick` skips only the race phase. `--skip-playwright` skips only Playwright.
 Neither option converts a skipped gate into a pass.
 
 The phase order is deliberate for a clean checkout:
 
-1. `release archive test` runs before `make build`. That test intentionally
-   rewrites `dist/devstack` with its `0.0.0-test` binary.
-2. `make build` follows it, restores the final `dist` binaries, runs the only
-   `npm ci` step, and builds the dashboard before any UI phase.
+1. `make build` is the only `npm ci` path, so it precedes the UI phases and
+   builds the dashboard on a clean tree.
+2. The release archive test uses a temporary `--build-dir`, so it never
+   rewrites or creates `dist/devstack`; the final binaries from `make build`
+   remain in place for the installer, E2E, and real-PHP phases.
 3. UI check/unit/build/Playwright, the installer/workflow tests, installer
-   dry-run, E2E, and real-PHP acceptance then run against the restored final
-   binaries.
+   dry-run, E2E, and real-PHP acceptance run against those final binaries.
 
 This order makes `make acceptance` work when `ui/node_modules` and `ui/dist`
-are absent, and prevents the runner from ending with a test-version
-`dist/devstack`. A clean-checkout run was performed after the fix; see
+are absent, and `make release-test` cannot leave a test-version binary in
+`dist/`. A clean-checkout run was performed after the fix; see
 [Clean-checkout verification](#clean-checkout-verification).
 
 ## Full acceptance result
@@ -125,11 +131,11 @@ TOTAL: 15 PASS, 0 FAIL, 3 SKIP, 3 BLOCKED
 RESULT: PASS (no FAIL; SKIP/BLOCKED are not passes)
 ```
 
-The release archive test runs before `make build` on purpose: its default-output
-case rewrites `dist/devstack` with the `0.0.0-test` binary, and the following
-`make build` restores the final binaries before the UI, installer, E2E, and PHP
-phases. The UI phases therefore see the `npm ci` result from `make build`, and
-the run does not finish with a test-version `dist/devstack`.
+The release archive test runs with a temporary `--build-dir` for both its
+explicit-output and default-output cases, so it never writes `dist/devstack` or
+`dist/devstack-helper`. `make build` still runs before the UI, installer, E2E,
+and PHP phases because it is the only `npm ci` path; the UI phases therefore see
+its result, and the run cannot finish with a test-version `dist/devstack`.
 
 The E2E phase passed both the builtin flow and the real nginx high-port flow;
 its only internal skip was the Node vhost check because no Node runtime was
@@ -147,7 +153,7 @@ installed in the temporary home. The UI Playwright suite passed 19/19.
 | UI build | `(cd ui && npm run build)` | PASS |
 | Playwright | `(cd ui && npm run test:e2e)` | PASS, **19/19** with bundled Chromium |
 | Build | `make build` | PASS; dashboard embedded, `dist/devstack` and `dist/devstack-helper` built |
-| Release archive | `bash test/release/release_test.sh` | PASS; exact members, checksum verification, corrupt-archive rejection, version/protocol check |
+| Release archive | `bash test/release/release_test.sh` | PASS; exact members, checksum verification, corrupt-archive rejection, version/protocol check, reproducibility, and no `dist/` writes |
 | Installer | `bash test/release/installer_test.sh` | PASS; 14 checks, including upgrade dry-run and failed-stop abort |
 | Release workflow contract | `bash test/release/workflow_test.sh` | PASS; static workflow/config assertions |
 | Installer dry-run | `bash install.sh --dry-run` | PASS; no files or services changed |
@@ -162,23 +168,24 @@ tests, E2E, real PHP acceptance, and the listener check.
 
 ## Clean-checkout verification
 
-The dependency-order fix was verified in a clean source tree built from
-`dfb0fc1` plus the fix diff, not the long-lived checkout:
+The fix wave was verified from a clean `git worktree` at the final fix commit,
+not from the long-lived checkout (which has build outputs and node modules):
 
 ```sh
 clean=/tmp/opencode/devstack-clean-acceptance
-git archive dfb0fc1 | tar -x -C "$clean"
-git diff --binary | (cd "$clean" && git apply)
-test -d "$clean/ui/node_modules"   # absent before the run
-find "$clean/ui/dist" -mindepth 1 ! -name .gitkeep   # no built assets
-test -d "$clean/dist"               # absent before the run
+rm -rf "$clean"
+git worktree add --detach "$clean" HEAD
+test ! -d "$clean/ui/node_modules"                  # absent before the run
+test -z "$(find "$clean/ui/dist" -mindepth 1 ! -name .gitkeep -print -quit)"
+test ! -d "$clean/dist"                             # absent before the run
 (cd "$clean" && bash test/acceptance/m1.sh)
+git worktree remove --force "$clean"
 ```
 
 Result: **15 PASS, 0 FAIL, 3 SKIP, 3 BLOCKED**, exit 0. The `release archive
-test` phase ran first and rewrote `dist/devstack` with its test version; the
-following `make build` ran `npm ci`, built the dashboard, and restored the final
-binaries. After the run:
+test` phase used a temporary build directory and left `dist/` untouched;
+`make build` ran `npm ci` and built the dashboard before the UI phases. After
+the run:
 
 ```text
 $ ./dist/devstack version --json
@@ -231,13 +238,18 @@ contract:
 
 ```text
 archive: /tmp/devstack-release-test.sKMDfF/out/devstack_0.0.0-test_linux_amd64.tar.gz
-sha256:  7830c4178e9cb41d20cb92b19e24add93180a86a174473f69a4a413de9648fef
+sha256:  12b7967558711f128d9c915b7e1454cba9a16205a5ef9c2813858f3ad39b2c48
 release-test: ok: archive members are exactly: devstack devstack-helper install.sh README.md LICENSE
 release-test: ok: no devstack-agent, Windows, or darwin members
 release-test: ok: packaged install.sh and both binaries are executable
 release-test: ok: packaged devstack reports version 0.0.0-test and protocol 1
 release-test: ok: checksums.txt verifies the archive
 release-test: ok: checksum verification rejects a corrupted archive
+release-test: ok: leading v is normalised in the archive filename
+release-test: ok: two builds of 0.0.0-test are byte-identical (12b7967558711f128d9c915b7e1454cba9a16205a5ef9c2813858f3ad39b2c48)
+release-test: ok: invalid versions and path traversal are rejected
+release-test: ok: default output is dist/release from an unrelated working directory
+release-test: ok: build outputs are isolated; dist/devstack is unchanged or absent
 release-test: all release archive contract checks passed
 ```
 
@@ -246,7 +258,8 @@ dry-run mode:
 
 ```sh
 bash build/release.sh --version 0.0.0-acceptance --skip-ui \
-  --output /tmp/opencode/release-evidence
+  --output /tmp/opencode/release-evidence \
+  --build-dir /tmp/opencode/release-build
 sha256sum -c /tmp/opencode/release-evidence/checksums.txt
 tar -tzf /tmp/opencode/release-evidence/devstack_0.0.0-acceptance_linux_amd64.tar.gz
 bash install.sh --dry-run \
@@ -270,12 +283,15 @@ install: dry run: no files or services will be changed
 ```
 
 The archive SHA-256 was
-`8e944b84afec8febfaa537349954eac2a2aa5fed9b60bc32276f0d0b2e6e9df1`.
+`6c4366f12be4fbf075ebafc29956313611d47b82cfd533d6f2924d7f4122f20a`.
 The installer test additionally rejects a corrupted checksum, traversal,
 absolute paths, symlinks, hardlinks, a wrong packaged version, invalid option
-combinations, and a failed daemon stop before binary replacement. No real
-(non-dry-run) install was performed, because that would modify host units,
-config, and privileged paths.
+combinations, and a failed daemon stop before binary replacement. The only
+non-dry installer execution is the test's sandboxed fake-`sudo`/`systemctl`
+install, which writes into temporary roots. No host install was performed,
+because that would modify real units, config, and privileged paths. The HTTPS
+release-download mode is exercised with a fake `curl` serving local fixtures;
+no real release server was contacted.
 
 ## Upgrade and database-backup verification
 
@@ -381,11 +397,13 @@ make the run pass.
 
 The Task 4 review then found a clean-checkout dependency-order bug: UI phases ran
 before the only `npm ci` path, and the release archive test could leave a
-test-version `dist/devstack`. The fix moves the release archive test before
-`make build`, which restores the final binaries and prepares the UI before the
-UI/Playwright phases, and makes the catalog gate FAIL for a missing, malformed,
-or PHP-bearing catalog. The clean-tree run above verifies both fixes. The runner
-also now prints each phase's log basename and the kept log directory.
+test-version `dist/devstack`. The fix makes `make build` precede the UI phases
+and gives `build/release.sh` a `--build-dir` option that the release test points
+at a temporary directory, so `dist/devstack` is never touched. The catalog gate
+now preflights `jq` and FAILs for a missing parser, invalid JSON, a malformed
+schema, an unexpected kind, or a PHP-bearing catalog. The clean-tree run above
+verifies the fixes. The runner also prints each phase's log basename and the
+kept log directory.
 
 ## Final verification commands
 

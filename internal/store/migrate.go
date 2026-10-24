@@ -136,17 +136,67 @@ func (s *Store) backupBeforeMigration(ctx context.Context) error {
 		now = s.now()
 	}
 	target := filepath.Join(dir, migrationBackupFilename(s.path, now))
-	if _, err := s.db.ExecContext(ctx, `VACUUM INTO `+sqliteStringLiteral(target)); err != nil {
-		// Remove a partial file so a failed backup cannot be mistaken for a
-		// usable snapshot on the next start.
-		_ = os.Remove(target)
+	temporary := target + ".tmp"
+	// VACUUM INTO refuses to overwrite its destination. A stale temp file from
+	// an interrupted previous run is safe to discard; the final target is never
+	// touched until the new snapshot is complete.
+	if err := os.Remove(temporary); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale backup temporary %s: %w", temporary, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO `+sqliteStringLiteral(temporary)); err != nil {
+		// Remove only the partial temporary file. An existing valid target is
+		// left exactly as it was.
+		_ = os.Remove(temporary)
 		return fmt.Errorf("write backup %s: %w", target, err)
 	}
-	if err := os.Chmod(target, 0o600); err != nil {
-		return fmt.Errorf("restrict backup %s: %w", target, err)
+	if err := commitBackup(temporary, target); err != nil {
+		return fmt.Errorf("finalize backup %s: %w", target, err)
 	}
 	if err := pruneMigrationBackups(dir, filepath.Base(s.path)); err != nil {
 		return err
+	}
+	return nil
+}
+
+// commitBackup makes the finished temporary snapshot private and durable, then
+// renames it over the target. On any failure it removes the temporary file and
+// never removes or truncates an existing target.
+func commitBackup(temporary, target string) error {
+	return commitBackupRename(temporary, target, os.Rename)
+}
+
+// commitBackupRename is commitBackup with an injectable rename for failure
+// tests.
+func commitBackupRename(temporary, target string, rename func(string, string) error) error {
+	discard := func() { _ = os.Remove(temporary) }
+
+	if err := os.Chmod(temporary, 0o600); err != nil {
+		discard()
+		return fmt.Errorf("restrict backup %s: %w", temporary, err)
+	}
+	file, err := os.Open(temporary)
+	if err != nil {
+		discard()
+		return fmt.Errorf("open backup %s for sync: %w", temporary, err)
+	}
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if syncErr != nil {
+		discard()
+		return fmt.Errorf("sync backup %s: %w", temporary, syncErr)
+	}
+	if closeErr != nil {
+		discard()
+		return fmt.Errorf("close backup %s: %w", temporary, closeErr)
+	}
+	if err := rename(temporary, target); err != nil {
+		discard()
+		return fmt.Errorf("replace backup %s: %w", target, err)
+	}
+	// Make the rename durable where the filesystem supports directory fsync.
+	if directory, err := os.Open(filepath.Dir(target)); err == nil {
+		_ = directory.Sync()
+		_ = directory.Close()
 	}
 	return nil
 }
@@ -163,7 +213,8 @@ func pruneMigrationBackups(dir, dbBase string) error {
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".bak") {
+		if entry.IsDir() || !strings.HasPrefix(name, prefix) ||
+			!strings.HasSuffix(name, ".bak") || strings.HasSuffix(name, ".tmp") {
 			continue
 		}
 		names = append(names, name)
@@ -185,17 +236,6 @@ func pruneMigrationBackups(dir, dbBase string) error {
 // explicitly; this is not used for user-facing SQL.
 func sqliteStringLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
-}
-
-// migrationApplied reports whether version has already been recorded.
-func (s *Store) migrationApplied(ctx context.Context, version int) (bool, error) {
-	var found int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&found)
-	if err != nil {
-		return false, fmt.Errorf("check migration %d: %w", version, err)
-	}
-	return found > 0, nil
 }
 
 // applyMigration runs one migration and records it in a single transaction, so

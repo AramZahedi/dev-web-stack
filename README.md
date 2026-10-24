@@ -5,9 +5,11 @@ trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 
 > **Status:** M1's Linux scope is implemented on branch `plan-4-release`. Plan 1
 > (foundation) and Plan 2 (PHP) automated acceptance pass. Plan 4 adds unsigned,
-> checksummed Linux x86_64 release archives; installer-tested source, archive,
-> and HTTPS release-download paths (no release is published yet); forward
-> upgrades with an automatic pre-migration SQLite backup; a gated PHP catalog
+> checksummed Linux x86_64 release archives. The installer is tested with local
+> source/archive fixtures and a fake `curl`; the HTTPS download path has not
+> been exercised against a real release server, and no release is published yet.
+> Plan 4 also adds forward upgrades with an automatic pre-migration SQLite
+> backup; a gated PHP catalog
 > merge; and the full Linux M1 acceptance runner. See the
 > [Plan 4 acceptance report](docs/superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md)
 > and the [M1 handoff](docs/superpowers/status/2026-10-24-m1-handoff.md). This

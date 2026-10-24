@@ -109,6 +109,45 @@ jobs:
           version: "~> v2"
           args: check
 
+      - name: Build a snapshot archive for inspection
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish
+
+      - name: Inspect the snapshot release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find dist -maxdepth 1 -type f \
+            -name 'devstack_*_linux_amd64.tar.gz' -print)
+          if [[ ${#archives[@]} -ne 1 ]]; then
+            printf 'expected exactly one Linux archive, found %d\n' "${#archives[@]}" >&2
+            ls -l dist >&2 || true
+            exit 1
+          fi
+          archive="${archives[0]}"
+          checksums="dist/checksums.txt"
+          [[ -f $checksums ]] || { echo "missing $checksums" >&2; exit 1; }
+          (cd dist && sha256sum -c checksums.txt)
+          expected=(devstack devstack-helper install.sh README.md)
+          if [[ -f LICENSE ]]; then
+            expected+=(LICENSE)
+          fi
+          actual="$(tar -tzf "$archive" | LC_ALL=C sort)"
+          wanted="$(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)"
+          if [[ $actual != "$wanted" ]]; then
+            printf 'unexpected archive members:\n%s\nwant:\n%s\n' "$actual" "$wanted" >&2
+            exit 1
+          fi
+          extract="$(mktemp -d)"
+          trap 'rm -rf "$extract"' EXIT
+          tar -xzf "$archive" -C "$extract" devstack
+          "$extract/devstack" version --json |
+            jq -e '.version | type == "string" and length > 0' >/dev/null
+          echo "snapshot archive verified: $archive"
+
       - name: Build and publish the release
         uses: goreleaser/goreleaser-action@v6
         with:

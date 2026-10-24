@@ -25,6 +25,16 @@ func openStoreAt(t *testing.T, path string) *Store {
 	return s
 }
 
+func migrationRecorded(t *testing.T, s *Store, version int) bool {
+	t.Helper()
+	var found int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&found); err != nil {
+		t.Fatalf("check migration %d: %v", version, err)
+	}
+	return found > 0
+}
+
 func migrationBackupFiles(t *testing.T, dir string) []string {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(dir, "backups", "*.pre-migrate-*.bak"))
@@ -95,6 +105,9 @@ func TestPendingMigrationBackupBeforeApply(t *testing.T) {
 	if info.Size() == 0 {
 		t.Fatal("backup is empty")
 	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("backup mode = %o, want 600", got)
+	}
 	if !strings.Contains(filepath.Base(backup), "state.db.pre-migrate-") {
 		t.Fatalf("unexpected backup name %s", filepath.Base(backup))
 	}
@@ -130,8 +143,8 @@ func TestPendingMigrationBackupBeforeApply(t *testing.T) {
 	if probes != 1 {
 		t.Fatal("the pending migration was not applied to the live database")
 	}
-	if applied, err := s.migrationApplied(ctx, 9999); err != nil || !applied {
-		t.Fatalf("migration 9999 applied = %v, err = %v", applied, err)
+	if !migrationRecorded(t, s, 9999) {
+		t.Fatal("migration 9999 was not recorded")
 	}
 }
 
@@ -167,11 +180,7 @@ func TestMigrationBackupFailureBlocksMigration(t *testing.T) {
 		t.Fatalf("migrate error does not mention the backup: %v", err)
 	}
 
-	applied, err := s.migrationApplied(ctx, 9998)
-	if err != nil {
-		t.Fatalf("check migration state: %v", err)
-	}
-	if applied {
+	if migrationRecorded(t, s, 9998) {
 		t.Fatal("migration was recorded even though the backup failed")
 	}
 	var probes int
@@ -214,5 +223,120 @@ func TestMigrationBackupRetentionKeepsThree(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "backups", name)); err != nil {
 			t.Fatalf("expected backup %s: %v", name, err)
 		}
+	}
+}
+
+func TestBackupCommitKeepsExistingTargetOnRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "state.db.pre-migrate-test.bak")
+	temporary := target + ".tmp"
+	if err := os.WriteFile(target, []byte("existing valid backup\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.WriteFile(temporary, []byte("partial snapshot\n"), 0o600); err != nil {
+		t.Fatalf("write temporary: %v", err)
+	}
+
+	err := commitBackupRename(temporary, target, func(string, string) error {
+		return errors.New("injected rename failure")
+	})
+	if err == nil {
+		t.Fatal("commitBackupRename succeeded despite the injected rename failure")
+	}
+	content, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read existing target: %v", readErr)
+	}
+	if string(content) != "existing valid backup\n" {
+		t.Fatalf("existing target changed after a failed rename: %q", content)
+	}
+	if _, statErr := os.Stat(temporary); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed commit left the temporary file behind: %v", statErr)
+	}
+}
+
+func TestBackupCommitSets0600AndRemovesTemp(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "state.db.pre-migrate-test.bak")
+	temporary := target + ".tmp"
+	if err := os.WriteFile(temporary, []byte("snapshot\n"), 0o644); err != nil {
+		t.Fatalf("write temporary: %v", err)
+	}
+
+	if err := commitBackup(temporary, target); err != nil {
+		t.Fatalf("commitBackup: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("target mode = %o, want 600", got)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(content) != "snapshot\n" {
+		t.Fatalf("target content = %q", content)
+	}
+	if _, statErr := os.Stat(temporary); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("successful commit left the temporary file behind: %v", statErr)
+	}
+}
+
+func TestBackupReplacesStaleTempFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	s := openStoreAt(t, path)
+	base := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	target := filepath.Join(dir, "backups", migrationBackupFilename(path, base))
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatalf("create backups dir: %v", err)
+	}
+	if err := os.WriteFile(target+".tmp", []byte("stale partial snapshot\n"), 0o600); err != nil {
+		t.Fatalf("write stale temporary: %v", err)
+	}
+	s.now = func() time.Time { return base }
+
+	if err := s.backupBeforeMigration(ctx); err != nil {
+		t.Fatalf("backupBeforeMigration: %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("backup target missing: %v", err)
+	}
+	if _, err := os.Stat(target + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale temporary file was not cleaned up: %v", err)
+	}
+}
+
+func TestMigrationBackupRetentionIgnoresTemporaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	backups := filepath.Join(dir, "backups")
+	if err := os.MkdirAll(backups, 0o700); err != nil {
+		t.Fatalf("create backups dir: %v", err)
+	}
+	base := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(dir, "state.db")
+	for i := 0; i < 4; i++ {
+		name := migrationBackupFilename(path, base.Add(time.Duration(i)*time.Second))
+		if err := os.WriteFile(filepath.Join(backups, name), []byte("backup\n"), 0o600); err != nil {
+			t.Fatalf("write backup: %v", err)
+		}
+	}
+	orphan := migrationBackupFilename(path, base.Add(10*time.Second)) + ".tmp"
+	if err := os.WriteFile(filepath.Join(backups, orphan), []byte("partial\n"), 0o600); err != nil {
+		t.Fatalf("write orphan temporary: %v", err)
+	}
+
+	if err := pruneMigrationBackups(backups, filepath.Base(path)); err != nil {
+		t.Fatalf("pruneMigrationBackups: %v", err)
+	}
+	if files := migrationBackupFiles(t, dir); len(files) != migrationBackupKeep {
+		t.Fatalf("backup count = %d, want %d: %v", len(files), migrationBackupKeep, files)
+	}
+	if _, err := os.Stat(filepath.Join(backups, orphan)); err != nil {
+		t.Fatalf("temporary file was removed by retention: %v", err)
 	}
 }

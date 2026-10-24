@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Release archive contract test for build/release.sh.
 #
-# The test builds a throwaway release with --skip-ui (ui/dist is committed to
-# the build by the normal `make ui` step), then asserts the archive contract:
-# exact members, no agent/Windows/darwin payloads, a real SHA-256 manifest, a
-# packaged binary that reports the requested version and protocol, and an
-# executable installer.
+# The test builds throwaway releases with --skip-ui (ui/dist is committed to
+# the build by the normal `make ui` step) and a temporary --build-dir, then
+# asserts the archive contract: exact members, no agent/Windows/darwin payloads,
+# a real SHA-256 manifest, a packaged binary that reports the requested version
+# and protocol, an executable installer, byte-identical rebuilds, and no writes
+# to the developer's dist/devstack*.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -28,7 +29,22 @@ pass() {
 
 [ -x "${RELEASE_SCRIPT}" ] || fail "missing executable ${RELEASE_SCRIPT}"
 
+# snapshot_file returns "absent" or the file's SHA-256, so the release test can
+# prove it did not touch a developer's existing dist binaries.
+snapshot_file() {
+	if [ -e "$1" ]; then
+		sha256sum "$1" | cut -d' ' -f1
+	else
+		printf 'absent'
+	fi
+}
+
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/devstack-release-test.XXXXXX")"
+TEST_BUILD_DIR="${TMP}/build"
+DIST_BIN="${REPO_ROOT}/dist/devstack"
+DIST_HELPER="${REPO_ROOT}/dist/devstack-helper"
+DIST_BIN_BEFORE="$(snapshot_file "${DIST_BIN}")"
+DIST_HELPER_BEFORE="$(snapshot_file "${DIST_HELPER}")"
 DEFAULT_RELEASE_DIR=""
 DEFAULT_ARCHIVE=""
 DEFAULT_CHECKSUMS=""
@@ -55,7 +71,8 @@ OUT="${TMP}/out"
 mkdir -p "${OUT}"
 
 log "building ${VERSION} in ${OUT}"
-"${RELEASE_SCRIPT}" --version "${VERSION}" --skip-ui --output "${OUT}"
+"${RELEASE_SCRIPT}" --version "${VERSION}" --skip-ui \
+	--output "${OUT}" --build-dir "${TEST_BUILD_DIR}/explicit"
 
 ARCHIVE="${OUT}/${ARCHIVE_NAME}"
 CHECKSUMS="${OUT}/checksums.txt"
@@ -137,7 +154,8 @@ pass "checksum verification rejects a corrupted archive"
 # tag can be passed directly without producing devstack_v<version>_...
 VOUT="${TMP}/vout"
 mkdir -p "${VOUT}"
-"${RELEASE_SCRIPT}" --version "v${VERSION}" --skip-ui --output "${VOUT}"
+"${RELEASE_SCRIPT}" --version "v${VERSION}" --skip-ui \
+	--output "${VOUT}" --build-dir "${TEST_BUILD_DIR}/version-prefix"
 [ -f "${VOUT}/${ARCHIVE_NAME}" ] ||
 	fail "leading v was not normalised to ${ARCHIVE_NAME}"
 for candidate in "${VOUT}"/*; do
@@ -149,6 +167,23 @@ for candidate in "${VOUT}"/*; do
 	esac
 done
 pass "leading v is normalised in the archive filename"
+
+# Regression: the archive is reproducible. Two builds of the same source and
+# version, in separate build/output directories, must produce identical bytes.
+DET_A="${TMP}/determinism-a"
+DET_B="${TMP}/determinism-b"
+mkdir -p "${DET_A}" "${DET_B}"
+"${RELEASE_SCRIPT}" --version "${VERSION}" --skip-ui \
+	--output "${DET_A}" --build-dir "${TEST_BUILD_DIR}/determinism-a"
+"${RELEASE_SCRIPT}" --version "${VERSION}" --skip-ui \
+	--output "${DET_B}" --build-dir "${TEST_BUILD_DIR}/determinism-b"
+DET_A_SHA="$(sha256sum "${DET_A}/${ARCHIVE_NAME}" | cut -d' ' -f1)"
+DET_B_SHA="$(sha256sum "${DET_B}/${ARCHIVE_NAME}" | cut -d' ' -f1)"
+[ "${DET_A_SHA}" = "${DET_B_SHA}" ] ||
+	fail "two builds produced different archives: ${DET_A_SHA} != ${DET_B_SHA}"
+cmp -s "${DET_A}/checksums.txt" "${DET_B}/checksums.txt" ||
+	fail "two builds produced different checksums.txt files"
+pass "two builds of ${VERSION} are byte-identical (${DET_A_SHA})"
 
 # Regression: invalid versions and path traversal must be rejected before any
 # output directory is created, so they cannot influence the archive filename.
@@ -179,7 +214,8 @@ if [ -f "${DEFAULT_ARCHIVE}" ]; then
 	mv "${DEFAULT_ARCHIVE}" "${DEFAULT_BACKUP}/archive"
 fi
 DEFAULT_RELEASE_TOUCHED=1
-if ! (cd "${TMP}" && "${RELEASE_SCRIPT}" --version "${DEFAULT_VERSION}" --skip-ui); then
+if ! (cd "${TMP}" && "${RELEASE_SCRIPT}" --version "${DEFAULT_VERSION}" --skip-ui \
+	--build-dir "${TEST_BUILD_DIR}/default-path"); then
 	fail "default output build failed"
 fi
 [ -f "${DEFAULT_ARCHIVE}" ] ||
@@ -189,5 +225,22 @@ fi
 grep -Fq "devstack_${DEFAULT_VERSION}_linux_amd64.tar.gz" "${DEFAULT_CHECKSUMS}" ||
 	fail "default checksums.txt does not name the default archive"
 pass "default output is dist/release from an unrelated working directory"
+
+# Regression: the release builds use --build-dir, so running make release-test
+# can never overwrite a developer's dist/devstack with a test-version binary.
+DIST_BIN_AFTER="$(snapshot_file "${DIST_BIN}")"
+DIST_HELPER_AFTER="$(snapshot_file "${DIST_HELPER}")"
+[ "${DIST_BIN_BEFORE}" = "${DIST_BIN_AFTER}" ] ||
+	fail "release test changed ${DIST_BIN} (before ${DIST_BIN_BEFORE}, after ${DIST_BIN_AFTER})"
+[ "${DIST_HELPER_BEFORE}" = "${DIST_HELPER_AFTER}" ] ||
+	fail "release test changed ${DIST_HELPER} (before ${DIST_HELPER_BEFORE}, after ${DIST_HELPER_AFTER})"
+if [ "${DIST_BIN_AFTER}" != "absent" ]; then
+	case "$("${DIST_BIN}" version --json 2>/dev/null || true)" in
+	*'"version":"0.0.0-test"'* | *'"version":"0.0.0-defaultpath"'*)
+		fail "release test left a test-version binary at ${DIST_BIN}"
+		;;
+	esac
+fi
+pass "build outputs are isolated; ${DIST_BIN#"${REPO_ROOT}/"} is unchanged or absent"
 
 log "all release archive contract checks passed"
