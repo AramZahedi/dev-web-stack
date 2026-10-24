@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -53,6 +54,18 @@ type fakeClient struct {
 	lastHome     string
 	newClientErr error
 	err          error
+
+	phpInfo       sites.PHPInfo
+	phpChange     sites.PHPChange
+	phpResult     backend.Result
+	phpArgv       []string
+	phpDefaults   model.PHPDefaults
+	phpSaved      []model.PHPDefaults
+	phpSaveResult sites.PHPDefaultsResult
+	phpExtensions []catalog.Extension
+	phpMigrations []sites.PHPMigrationResult
+	migrationReq  sites.PHPMigrationRequest
+	migrationErr  error
 
 	vhostStatus    helperproto.VhostStatusResponse
 	servingModeSet bool
@@ -220,6 +233,109 @@ func (f *fakeClient) RemoveRuntime(_ context.Context, buildID string) error {
 	}
 	f.removals = append(f.removals, buildID)
 	return nil
+}
+
+func (f *fakeClient) PHPInfo(_ context.Context, ref string) (sites.PHPInfo, error) {
+	if err := f.maybeErr(); err != nil {
+		return sites.PHPInfo{}, err
+	}
+	info := f.phpInfo
+	if info.Site.Name == "" {
+		info.Site = f.site
+		if info.Site.Name == "" {
+			info.Site = model.Site{Name: ref, Kind: model.SitePHP}
+		}
+	}
+	if info.Ini == nil {
+		info.Ini = info.Site.PHPIni
+	}
+	if info.IniRaw == "" {
+		info.IniRaw = info.Site.PHPIniRaw
+	}
+	if info.GeneratedIni == "" {
+		info.GeneratedIni = "; generated\nmemory_limit = " + defaultString(info.Site.PHPIni["memory_limit"], "128M") + "\n"
+	}
+	return info, nil
+}
+
+func (f *fakeClient) ApplyPHP(_ context.Context, _ string, change sites.PHPChange) (model.Site, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.Site{}, err
+	}
+	f.phpChange = change
+	site := f.site
+	if site.Name == "" {
+		site = model.Site{Name: "site", Kind: model.SitePHP}
+	}
+	if change.Version != "" {
+		site.PHPVersion = change.Version
+	}
+	if change.Build != "" {
+		site.PHPBuild = change.Build
+	}
+	if change.Extensions != nil {
+		site.PHPExtensions = change.Extensions
+	}
+	if change.Ini != nil {
+		site.PHPIni = change.Ini
+	}
+	if change.IniRaw != nil {
+		site.PHPIniRaw = *change.IniRaw
+	}
+	f.site = site
+	return site, nil
+}
+
+func (f *fakeClient) PHPExtensions(_ context.Context, _ string) ([]catalog.Extension, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	if f.phpExtensions == nil {
+		return []catalog.Extension{}, nil
+	}
+	return f.phpExtensions, nil
+}
+
+func (f *fakeClient) PHPDefaults(_ context.Context, version string) (model.PHPDefaults, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.PHPDefaults{}, err
+	}
+	defaults := f.phpDefaults
+	if defaults.Version == "" {
+		defaults.Version = version
+	}
+	return defaults, nil
+}
+
+func (f *fakeClient) SavePHPDefaults(_ context.Context, d model.PHPDefaults) (sites.PHPDefaultsResult, error) {
+	if err := f.maybeErr(); err != nil {
+		return sites.PHPDefaultsResult{}, err
+	}
+	f.phpSaved = append(f.phpSaved, d)
+	result := f.phpSaveResult
+	if result.Defaults.Version == "" {
+		result.Defaults = d
+	}
+	return result, nil
+}
+
+func (f *fakeClient) MigratePHP(_ context.Context, req sites.PHPMigrationRequest) ([]sites.PHPMigrationResult, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	f.migrationReq = req
+	if f.migrationErr != nil {
+		return nil, f.migrationErr
+	}
+	return f.phpMigrations, nil
+}
+
+func (f *fakeClient) PHPExec(_ context.Context, _ string, argv []string) (backend.Result, error) {
+	if err := f.maybeErr(); err != nil {
+		return backend.Result{}, err
+	}
+	f.phpArgv = append([]string(nil), argv...)
+	return f.phpResult, nil
 }
 
 func (f *fakeClient) VhostStatus(_ context.Context) (helperproto.VhostStatusResponse, error) {
@@ -390,9 +506,9 @@ func TestCLISiteAddEnvAndValidation(t *testing.T) {
 
 	t.Run("invalid kind", func(t *testing.T) {
 		fake := &fakeClient{}
-		code, _, stderr := runCLIExit(t, fake, "site", "add", "--name", "php", "--path", "/tmp/php", "--kind", "php")
+		code, _, stderr := runCLIExit(t, fake, "site", "add", "--name", "blog", "--path", "/tmp/blog", "--kind", "perl")
 		if code == 0 {
-			t.Fatal("want non-zero exit for kind php")
+			t.Fatal("want non-zero exit for kind perl")
 		}
 		if !strings.Contains(stderr, "INVALID_KIND") || fake.addReq.Name != "" {
 			t.Fatalf("stderr = %q, add request = %+v", stderr, fake.addReq)
@@ -1692,5 +1808,301 @@ func TestCLIVhostErrorRemediations(t *testing.T) {
 				t.Fatalf("stderr = %q, want code %s and %q", stderr, tt.code, tt.want)
 			}
 		})
+	}
+}
+
+func TestCLISitePHPShowsAndSwitches(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{site: model.Site{Name: "blog", Kind: model.SitePHP, PHPVersion: "8.4", PHPBuild: "php@8.4.4-r1"}}
+	out := runCLI(t, fake, "site", "php", "blog")
+	if !strings.Contains(out, "8.4") || !strings.Contains(out, "php@8.4.4-r1") {
+		t.Fatalf("output = %q", out)
+	}
+
+	out = runCLI(t, fake, "site", "php", "blog", "8.5", "--build", "php@8.5.0-r1", "--yes")
+	if fake.phpChange.Version != "8.5" || fake.phpChange.Build != "php@8.5.0-r1" {
+		t.Fatalf("%+v", fake.phpChange)
+	}
+	if !strings.Contains(out, "8.5") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestCLISitePHPListShowsInstalledAndAvailable(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{
+		site:     model.Site{Name: "blog", Kind: model.SitePHP, PHPVersion: "8.4"},
+		runtimes: []model.RuntimeBuild{{ID: "php@8.4.4-r1", Kind: "php", Version: "8.4.4"}},
+		available: []catalog.Entry{
+			{ID: "php@8.4.4-r1", Kind: "php", Version: "8.4.4", Revision: 1},
+			{ID: "php@8.4.5-r1", Kind: "php", Version: "8.4.5", Revision: 1},
+			{ID: "php@8.5.0-r1", Kind: "php", Version: "8.5.0", Revision: 1},
+		},
+	}
+	out := runCLI(t, fake, "site", "php", "blog", "--list")
+	if !strings.Contains(out, "INSTALLED") || !strings.Contains(out, "AVAILABLE") ||
+		!strings.Contains(out, "php@8.4.4-r1") || !strings.Contains(out, "php@8.4.5-r1") {
+		t.Fatalf("list output = %q", out)
+	}
+	if strings.Contains(out, "php@8.5.0-r1") {
+		t.Fatalf("list includes another line: %q", out)
+	}
+}
+
+func TestCLISiteAddInstallsMissingPHPRuntime(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{
+		available: []catalog.Entry{{
+			ID: "php@8.4.4-r1", Kind: "php", Version: "8.4.4", Revision: 1,
+			Build: "linux-x64", SHA256: strings.Repeat("c", 64), Size: 12 << 20,
+		}},
+	}
+	out := runCLI(t, fake, "site", "add",
+		"--name", "blog", "--path", "/tmp/blog", "--kind", "php",
+		"--php", "8.4", "--front-controller", "--yes")
+	if !reflect.DeepEqual(fake.installs, []string{"php@8.4.4-r1"}) {
+		t.Fatalf("installs = %v", fake.installs)
+	}
+	if fake.addReq.PHPVersion != "8.4" || fake.addReq.PHPBuild != "php@8.4.4-r1" || !fake.addReq.FrontController {
+		t.Fatalf("add request = %+v", fake.addReq)
+	}
+	if !strings.Contains(out, "https://blog.test") {
+		t.Fatalf("output = %q", out)
+	}
+
+	t.Run("already installed", func(t *testing.T) {
+		installed := &fakeClient{
+			available: []catalog.Entry{{ID: "php@8.4.4-r1", Kind: "php", Version: "8.4.4", Revision: 1}},
+			runtimes:  []model.RuntimeBuild{{ID: "php@8.4.4-r1", Kind: "php", Version: "8.4.4"}},
+		}
+		runCLI(t, installed, "site", "add", "--name", "blog", "--path", "/tmp/blog", "--kind", "php", "--php", "8.4", "--yes")
+		if len(installed.installs) != 0 {
+			t.Fatalf("installs = %v, want none", installed.installs)
+		}
+		if installed.addReq.PHPBuild != "php@8.4.4-r1" {
+			t.Fatalf("add request = %+v", installed.addReq)
+		}
+	})
+
+	t.Run("require php version", func(t *testing.T) {
+		code, _, stderr := runCLIExit(t, &fakeClient{}, "site", "add", "--name", "blog", "--path", "/tmp/blog", "--kind", "php")
+		if code == 0 || !strings.Contains(stderr, "--php") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
+
+	t.Run("reject node flags", func(t *testing.T) {
+		code, _, stderr := runCLIExit(t, &fakeClient{}, "site", "add", "--name", "blog", "--path", "/tmp/blog", "--kind", "php", "--php", "8.4", "--command", "npm start", "--yes")
+		if code == 0 || !strings.Contains(stderr, "INVALID_FLAGS") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
+
+	t.Run("no catalog entry", func(t *testing.T) {
+		code, _, stderr := runCLIExit(t, &fakeClient{}, "site", "add", "--name", "blog", "--path", "/tmp/blog", "--kind", "php", "--php", "8.2", "--yes")
+		if code == 0 || !strings.Contains(stderr, "RUNTIME_UNAVAILABLE") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
+}
+
+func TestCLISiteIniMergesAndApplies(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{site: model.Site{
+		Name: "blog", Kind: model.SitePHP, PHPVersion: "8.4", PHPBuild: "php@8.4.4-r1",
+		PHPIni:    map[string]string{"memory_limit": "256M", "opcache.enable": "1"},
+		PHPIniRaw: "display_errors = Off\n",
+	}}
+	out := runCLI(t, fake, "site", "ini", "blog")
+	if !strings.Contains(out, "memory_limit") {
+		t.Fatalf("output = %q", out)
+	}
+
+	out = runCLI(t, fake, "site", "ini", "blog",
+		"--set", "memory_limit=512M", "--unset", "opcache.enable",
+		"--raw", "display_errors = On\n", "--yes")
+	if fake.phpChange.Ini["memory_limit"] != "512M" {
+		t.Fatalf("ini = %+v", fake.phpChange.Ini)
+	}
+	if _, ok := fake.phpChange.Ini["opcache.enable"]; ok {
+		t.Fatalf("unset key survived: %+v", fake.phpChange.Ini)
+	}
+	if fake.phpChange.IniRaw == nil || *fake.phpChange.IniRaw != "display_errors = On\n" {
+		t.Fatalf("ini raw = %#v", fake.phpChange.IniRaw)
+	}
+	if !strings.Contains(out, "blog") {
+		t.Fatalf("output = %q", out)
+	}
+
+	code, _, stderr := runCLIExit(t, fake, "site", "ini", "blog", "--raw", "x", "--raw-file", "/tmp/x")
+	if code == 0 || !strings.Contains(stderr, "INVALID_FLAGS") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	code, _, stderr = runCLIExit(t, fake, "site", "ini", "blog", "--set", "missing")
+	if code == 0 || !strings.Contains(stderr, "KEY=VALUE") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestCLISiteExtToggleAndList(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{
+		site: model.Site{Name: "blog", Kind: model.SitePHP, PHPExtensions: map[string]bool{"curl": false}},
+		phpInfo: sites.PHPInfo{
+			Extensions: []catalog.ResolvedExtension{{Name: "curl", Type: catalog.ExtensionShared, SO: "curl.so"}},
+			AvailableExtensions: []catalog.Extension{
+				{Name: "curl", Type: catalog.ExtensionShared, SO: "curl.so", Default: true},
+				{Name: "xdebug", Type: catalog.ExtensionZend, SO: "xdebug.so"},
+			},
+			Defaults: model.PHPDefaults{Extensions: map[string]bool{"curl": true}},
+			Builtins: []string{"json"},
+		},
+	}
+	out := runCLI(t, fake, "site", "ext", "blog")
+	if !strings.Contains(out, "curl") || !strings.Contains(out, "xdebug") || !strings.Contains(out, "json") {
+		t.Fatalf("output = %q", out)
+	}
+
+	runCLI(t, fake, "site", "ext", "blog", "--enable", "xdebug", "--disable", "curl", "--inherit", "intl", "--yes")
+	if fake.phpChange.Extensions["xdebug"] != true {
+		t.Fatalf("%+v", fake.phpChange)
+	}
+	if value, ok := fake.phpChange.Extensions["curl"]; !ok || value {
+		t.Fatalf("curl override = %v (present %t)", value, ok)
+	}
+	if _, ok := fake.phpChange.Extensions["intl"]; ok {
+		t.Fatalf("inherited key survived: %+v", fake.phpChange.Extensions)
+	}
+}
+
+func TestCLIRuntimeMigrate(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{
+		sites: []model.Site{
+			{Name: "blog", Kind: model.SitePHP, PHPVersion: "8.4"},
+			{Name: "shop", Kind: model.SitePHP, PHPVersion: "8.4"},
+			{Name: "docs", Kind: model.SiteStatic},
+		},
+		phpMigrations: []sites.PHPMigrationResult{{Site: "blog", OK: true}, {Site: "shop", OK: true}},
+	}
+	out := runCLI(t, fake, "runtime", "migrate", "8.4", "--to", "php@8.5.0-r1", "--yes")
+	if fake.migrationReq.FromVersion != "8.4" || fake.migrationReq.ToVersion != "8.5" || fake.migrationReq.ToBuild != "php@8.5.0-r1" {
+		t.Fatalf("migration request = %+v", fake.migrationReq)
+	}
+	if !strings.Contains(out, "blog") || !strings.Contains(out, "shop") {
+		t.Fatalf("output = %q", out)
+	}
+	if strings.Contains(out, "docs") {
+		t.Fatalf("output lists an unaffected site: %q", out)
+	}
+
+	failures := &fakeClient{
+		sites:         []model.Site{{Name: "blog", Kind: model.SitePHP, PHPVersion: "8.4"}},
+		phpMigrations: []sites.PHPMigrationResult{{Site: "blog", OK: false, Error: "boom"}},
+	}
+	code, stdout, stderr := runCLIExit(t, failures, "runtime", "migrate", "8.4", "--to", "8.5", "--yes")
+	if code == 0 {
+		t.Fatal("want non-zero exit when a site fails")
+	}
+	if !strings.Contains(stdout, "blog") || !strings.Contains(stdout, "boom") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if !strings.Contains(stderr, "PHP_MIGRATION_FAILED") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestCLIPHPExecPassesArgsAfterDash(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{phpResult: backend.Result{ExitCode: 0, Stdout: "PHP 8.4.4\n"}}
+	out := runCLI(t, fake, "php", "--site", "blog", "--", "-v")
+	if !strings.Contains(out, "PHP 8.4.4") || !reflect.DeepEqual(fake.phpArgv, []string{"-v"}) {
+		t.Fatalf("%q %+v", out, fake.phpArgv)
+	}
+
+	jsonOut := runCLI(t, fake, "php", "--site", "blog", "--json", "--", "-v")
+	var result struct {
+		ExitCode int    `json:"exit_code"`
+		Stdout   string `json:"stdout"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil || result.Stdout != "PHP 8.4.4\n" {
+		t.Fatalf("json = %q %v", jsonOut, err)
+	}
+
+	failing := &fakeClient{phpResult: backend.Result{ExitCode: 2, Stderr: "parse error\n"}}
+	code, stdout, stderr := runCLIExit(t, failing, "php", "--site", "blog", "--", "-r", "bad")
+	if code == 0 {
+		t.Fatal("want non-zero exit for a non-zero PHP exit")
+	}
+	if !strings.Contains(stderr, "parse error") || !strings.Contains(stderr, "PHP_EXEC_FAILED") {
+		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
+	}
+
+	code, _, stderr = runCLIExit(t, fake, "php", "--", "-v")
+	if code == 0 || !strings.Contains(stderr, "--site") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestCLIRuntimeInstallPromptShowsCatalogMetadata(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{available: []catalog.Entry{{
+		ID: "php@8.4.4-r1", Kind: "php", Version: "8.4.4", Revision: 3,
+		Build: "linux-x64", SHA256: strings.Repeat("d", 64), Size: 12 << 20,
+	}}}
+	code, stdout, _ := runCLIExitInput(t, fake, "n\n", "runtime", "install", "php@8.4.4-r1")
+	if code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	for _, want := range []string{"8.4.4", "revision 3", "12", strings.Repeat("d", 64)} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("prompt %q is missing %q", stdout, want)
+		}
+	}
+	if len(fake.installs) != 0 {
+		t.Fatalf("cancelled install still ran: %v", fake.installs)
+	}
+
+	unknown := &fakeClient{}
+	code, stdout, _ = runCLIExitInput(t, unknown, "y\n", "runtime", "install", "php@9.9.9-r1")
+	if code != 0 || !strings.Contains(stdout, "php@9.9.9-r1") {
+		t.Fatalf("code=%d stdout=%q", code, stdout)
+	}
+	if !reflect.DeepEqual(unknown.installs, []string{"php@9.9.9-r1"}) {
+		t.Fatalf("unknown id install = %v", unknown.installs)
+	}
+
+	node := &fakeClient{available: []catalog.Entry{{
+		ID: "node@24.22.1", Kind: "node", Version: "24.22.1",
+		SHA256: strings.Repeat("e", 64), Size: 30 << 20, Build: "linux-x64",
+	}}}
+	code, stdout, _ = runCLIExitInput(t, node, "n\n", "runtime", "install", "node@24.22.1")
+	if code != 0 || !strings.Contains(stdout, "24.22.1") || !strings.Contains(stdout, strings.Repeat("e", 64)) {
+		t.Fatalf("code=%d stdout=%q", code, stdout)
+	}
+}
+
+func TestCLISiteShowPHPFields(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{site: model.Site{
+		Name: "blog", Kind: model.SitePHP, PHPVersion: "8.4", PHPBuild: "php@8.4.4-r1",
+		FrontController: true,
+		PHPIni:          map[string]string{"memory_limit": "512M", "date.timezone": "UTC"},
+		PHPExtensions:   map[string]bool{"xdebug": true},
+	}}
+	out := runCLI(t, fake, "site", "show", "blog")
+	for _, want := range []string{"PHP version", "8.4", "php@8.4.4-r1", "Front controller", "INI overrides", "Extension overrides"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q is missing %q", out, want)
+		}
+	}
+}
+
+func TestCLIPHPRemediations(t *testing.T) {
+	if got := apiRemediation("PHP_VERSION_IN_USE"); !strings.Contains(got, "site php") || !strings.Contains(got, "runtime migrate") {
+		t.Fatalf("PHP_VERSION_IN_USE remediation = %q", got)
+	}
+	if got := apiRemediation("PHP_CONFIG_INVALID"); !strings.Contains(got, "site ini") {
+		t.Fatalf("PHP_CONFIG_INVALID remediation = %q", got)
 	}
 }

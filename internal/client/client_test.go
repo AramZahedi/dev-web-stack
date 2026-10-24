@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -193,6 +194,66 @@ func (f *fakeAPI) mux() *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/sites/{ref}/{action}", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
 		f.writeErrorOr(w, func() { w.WriteHeader(http.StatusAccepted) })
+	})
+	mux.HandleFunc("GET /api/v1/sites/{ref}/php", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, sites.PHPInfo{
+				Site:         model.Site{ID: "site-1", Name: "blog", Kind: model.SitePHP, PHPVersion: "8.4", PHPBuild: "php@8.4.4-r1"},
+				GeneratedIni: "memory_limit = 128M\n",
+				Ini:          map[string]string{"memory_limit": "128M"},
+			})
+		})
+	})
+	mux.HandleFunc("PUT /api/v1/sites/{ref}/php", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, model.Site{ID: "site-1", Name: "blog", Kind: model.SitePHP, PHPVersion: "8.5", PHPBuild: "php@8.5.0-r1"})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/sites/{ref}/php/exec", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]any{
+				"exit_code": 2,
+				"stdout":    "PHP 8.4.4\n",
+				"stderr":    "warning\n",
+			})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/php/extensions", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, []catalog.Extension{{
+				Name: "curl", Type: catalog.ExtensionShared, SO: "curl.so", Default: true, Versions: []string{"8.4"},
+			}})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/php/defaults/{version}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, model.PHPDefaults{
+				Version:    r.PathValue("version"),
+				Ini:        map[string]string{"memory_limit": "256M"},
+				Extensions: map[string]bool{"xdebug": false},
+			})
+		})
+	})
+	mux.HandleFunc("PUT /api/v1/php/defaults/{version}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			version := r.PathValue("version")
+			writeTestJSON(w, http.StatusOK, sites.PHPDefaultsResult{
+				Defaults: model.PHPDefaults{Version: version},
+				Sites:    []sites.PHPMigrationResult{{Site: "blog", OK: true}},
+			})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/php/migrate", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, []sites.PHPMigrationResult{{Site: "blog", OK: true}})
+		})
 	})
 	mux.HandleFunc("GET /api/v1/sites/{ref}/logs/stream", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
@@ -407,6 +468,137 @@ func TestClientRoutesAndPayloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	api.last(t, http.MethodDelete, "/api/v1/sites/"+site.ID)
+}
+
+func TestClientPHPApplyAndExec(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	ctx := context.Background()
+
+	info, err := c.PHPInfo(ctx, "blog")
+	if err != nil || info.Site.Name != "blog" || !strings.Contains(info.GeneratedIni, "memory_limit") {
+		t.Fatalf("info = %+v %v", info, err)
+	}
+	api.last(t, http.MethodGet, "/api/v1/sites/blog/php")
+
+	raw := "display_errors = On\n"
+	site, err := c.ApplyPHP(ctx, "blog", sites.PHPChange{
+		Version:    "8.5",
+		Build:      "php@8.5.0-r1",
+		Extensions: map[string]bool{"xdebug": false},
+		Ini:        map[string]string{"memory_limit": "512M"},
+		IniRaw:     &raw,
+	})
+	if err != nil || site.PHPVersion != "8.5" {
+		t.Fatalf("apply = %+v %v", site, err)
+	}
+	apply := api.last(t, http.MethodPut, "/api/v1/sites/blog/php")
+	for _, want := range []string{`"version":"8.5"`, `"build":"php@8.5.0-r1"`, `"xdebug":false`, `"memory_limit":"512M"`, `"ini_raw":"display_errors = On\n"`} {
+		if !strings.Contains(apply.body, want) {
+			t.Fatalf("apply payload missing %s: %s", want, apply.body)
+		}
+	}
+
+	if _, err := c.ApplyPHP(ctx, "blog", sites.PHPChange{Extensions: map[string]bool{}, Ini: map[string]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	clear := api.last(t, http.MethodPut, "/api/v1/sites/blog/php")
+	if !strings.Contains(clear.body, `"extensions":{}`) || !strings.Contains(clear.body, `"ini":{}`) {
+		t.Fatalf("empty maps must clear overrides: %s", clear.body)
+	}
+	if strings.Contains(clear.body, "ini_raw") {
+		t.Fatalf("nil ini_raw must be omitted: %s", clear.body)
+	}
+
+	result, err := c.PHPExec(ctx, "blog", []string{"-v"})
+	if err != nil || result.ExitCode != 2 || result.Stdout != "PHP 8.4.4\n" || result.Stderr != "warning\n" {
+		t.Fatalf("exec = %+v %v", result, err)
+	}
+	exec := api.last(t, http.MethodPost, "/api/v1/sites/blog/php/exec")
+	if !strings.Contains(exec.body, `"argv":["-v"]`) {
+		t.Fatalf("exec payload = %s", exec.body)
+	}
+}
+
+func TestClientPHPRoutingAndCreatePayload(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	ctx := context.Background()
+
+	extensions, err := c.PHPExtensions(ctx, "8.4")
+	if err != nil || len(extensions) != 1 || extensions[0].Name != "curl" {
+		t.Fatalf("extensions = %+v %v", extensions, err)
+	}
+	extReq := api.last(t, http.MethodGet, "/api/v1/php/extensions")
+	if extReq.query != "version=8.4" {
+		t.Fatalf("extensions query = %q", extReq.query)
+	}
+
+	defaults, err := c.PHPDefaults(ctx, "8.4")
+	if err != nil || defaults.Version != "8.4" || defaults.Ini["memory_limit"] != "256M" {
+		t.Fatalf("defaults = %+v %v", defaults, err)
+	}
+	api.last(t, http.MethodGet, "/api/v1/php/defaults/8.4")
+
+	result, err := c.SavePHPDefaults(ctx, model.PHPDefaults{
+		Version:    "8.4",
+		Ini:        map[string]string{"memory_limit": "1G"},
+		Extensions: map[string]bool{"xdebug": true},
+	})
+	if err != nil || result.Defaults.Version != "8.4" || len(result.Sites) != 1 {
+		t.Fatalf("save defaults = %+v %v", result, err)
+	}
+	save := api.last(t, http.MethodPut, "/api/v1/php/defaults/8.4")
+	if !strings.Contains(save.body, `"memory_limit":"1G"`) || !strings.Contains(save.body, `"xdebug":true`) {
+		t.Fatalf("save defaults payload = %s", save.body)
+	}
+
+	migration, err := c.MigratePHP(ctx, sites.PHPMigrationRequest{FromVersion: "8.4", ToVersion: "8.5", ToBuild: "php@8.5.0-r1"})
+	if err != nil || len(migration) != 1 || !migration[0].OK {
+		t.Fatalf("migration = %+v %v", migration, err)
+	}
+	migrate := api.last(t, http.MethodPost, "/api/v1/php/migrate")
+	if !strings.Contains(migrate.body, `"from_version":"8.4"`) || !strings.Contains(migrate.body, `"to_build":"php@8.5.0-r1"`) {
+		t.Fatalf("migrate payload = %s", migrate.body)
+	}
+
+	if _, err := c.AddSite(ctx, sites.CreateRequest{
+		Name: "blog", Path: "/tmp/blog", Kind: "php",
+		PHPVersion: "8.4", PHPBuild: "php@8.4.4-r1",
+		PHPExtensions:   map[string]bool{"xdebug": true},
+		PHPIni:          map[string]string{"memory_limit": "512M"},
+		PHPIniRaw:       "display_errors = On\n",
+		FrontController: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	create := api.last(t, http.MethodPost, "/api/v1/sites")
+	for _, want := range []string{`"php_version":"8.4"`, `"php_build":"php@8.4.4-r1"`, `"php_extensions":{"xdebug":true}`, `"php_ini_raw":"display_errors = On\n"`, `"front_controller":true`} {
+		if !strings.Contains(create.body, want) {
+			t.Fatalf("create payload missing %s: %s", want, create.body)
+		}
+	}
+
+	front := false
+	if _, err := c.UpdateSite(ctx, "site-1", sites.UpdateRequest{FrontController: &front}); err != nil {
+		t.Fatal(err)
+	}
+	update := api.last(t, http.MethodPatch, "/api/v1/sites/site-1")
+	if !strings.Contains(update.body, `"front_controller":false`) {
+		t.Fatalf("update payload = %s", update.body)
+	}
 }
 
 func TestClientVhostMethods(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/api"
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
@@ -195,6 +196,12 @@ func Run(ctx context.Context, opts Options) error {
 	if err := local.InstallCA(ctx, rootPEM); err != nil {
 		return fmt.Errorf("daemon: install CA bundle: %w", err)
 	}
+	// Load the embedded PHP manifest once at startup. A malformed manifest is
+	// a build error and must fail startup rather than every later PHP call.
+	phpManifest, err := catalog.LoadPHP()
+	if err != nil {
+		return fmt.Errorf("daemon: load PHP catalog: %w", err)
+	}
 
 	certManager := certs.NewManager(st, helper, paths.PKI, nil)
 	router := proxy.NewRouter()
@@ -207,16 +214,19 @@ func Run(ctx context.Context, opts Options) error {
 	})
 	d.proxy = proxyServer
 	siteService := sites.NewService(sites.Deps{
-		Store:   st,
-		Backend: local,
-		Helper:  helper,
-		Certs:   certManager,
-		Vhosts:  helper,
-		Proxy:   proxyServer,
-		Router:  router,
-		Ports:   domain.NewPortAllocator(),
-		Config:  cfg,
-		Logs:    logStore,
+		Store:       st,
+		Backend:     local,
+		Helper:      helper,
+		Certs:       certManager,
+		Vhosts:      helper,
+		Proxy:       proxyServer,
+		Router:      router,
+		Ports:       domain.NewPortAllocator(),
+		Config:      cfg,
+		Logs:        logStore,
+		PHP:         sites.NewPHPCommands(),
+		PHPBackend:  local,
+		PHPManifest: &phpManifest,
 	})
 	d.certs = certManager
 	d.sites = siteService

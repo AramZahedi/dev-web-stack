@@ -25,12 +25,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/phpfpm"
+	"github.com/AramZahedi/dev-web-stack/internal/phpini"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
@@ -60,6 +63,7 @@ const (
 	codeDomainConflict     = "DOMAIN_CONFLICT"
 	codeHostsSyncFailed    = "HOSTS_SYNC_FAILED"
 	codeRuntimeMissing     = "RUNTIME_MISSING"
+	codePHPVersionInUse    = "PHP_VERSION_IN_USE"
 	codePHPConfigInvalid   = "PHP_CONFIG_INVALID"
 	codeTrustMissing       = "TRUST_MISSING"
 	codePortInUse          = "PORT_IN_USE"
@@ -87,6 +91,15 @@ type SiteService interface {
 	Stop(ctx context.Context, ref string) error
 	Restart(ctx context.Context, ref string) error
 	Delete(ctx context.Context, ref string) error
+
+	ApplyPHP(ctx context.Context, ref string, change sites.PHPChange) (model.Site, error)
+	PHPInfo(ctx context.Context, ref string) (sites.PHPInfo, error)
+	PHPDefaults(ctx context.Context, version string) (model.PHPDefaults, error)
+	SavePHPDefaults(ctx context.Context, d model.PHPDefaults) (sites.PHPDefaultsResult, error)
+	MigratePHP(ctx context.Context, req sites.PHPMigrationRequest) ([]sites.PHPMigrationResult, error)
+	PHPExec(ctx context.Context, ref string, argv []string) (backend.Result, error)
+	ValidatePHP(ctx context.Context, site model.Site) error
+	CheckRuntimeRemoval(ctx context.Context, buildID string) error
 }
 
 // RuntimeService is the runtime manager surface used by the API.
@@ -238,7 +251,15 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/sites/{ref}/start", s.handleStartSite},
 		{http.MethodPost, "/api/v1/sites/{ref}/stop", s.handleStopSite},
 		{http.MethodPost, "/api/v1/sites/{ref}/restart", s.handleRestartSite},
+		{http.MethodGet, "/api/v1/sites/{ref}/php", s.handlePHPInfo},
+		{http.MethodPut, "/api/v1/sites/{ref}/php", s.handleApplyPHP},
+		{http.MethodPost, "/api/v1/sites/{ref}/php/exec", s.handlePHPExec},
 		{http.MethodGet, "/api/v1/sites/{ref}/logs/stream", s.handleLogsStream},
+
+		{http.MethodGet, "/api/v1/php/extensions", s.handlePHPExtensions},
+		{http.MethodGet, "/api/v1/php/defaults/{version}", s.handlePHPDefaults},
+		{http.MethodPut, "/api/v1/php/defaults/{version}", s.handleSavePHPDefaults},
+		{http.MethodPost, "/api/v1/php/migrate", s.handleMigratePHP},
 
 		{http.MethodGet, "/api/v1/events", s.handleEvents},
 
@@ -674,6 +695,20 @@ func classifyError(err error) (int, string, string, any) {
 	if errors.Is(err, runtimemgr.ErrNoCatalogEntry) {
 		return http.StatusConflict, codeRuntimeMissing, err.Error(), nil
 	}
+	if errors.Is(err, sites.ErrRuntimeInUse) {
+		var inUse *sites.RuntimeInUseError
+		details := any(nil)
+		if errors.As(err, &inUse) {
+			details = map[string]any{"sites": inUse.Sites}
+		}
+		return http.StatusConflict, codePHPVersionInUse, err.Error(), details
+	}
+	if errors.Is(err, sites.ErrRuntimeMissing) {
+		return http.StatusConflict, codeRuntimeMissing, err.Error(), nil
+	}
+	if errors.Is(err, phpini.ErrInvalidConfig) || errors.Is(err, phpfpm.ErrConfigInvalid) {
+		return http.StatusUnprocessableEntity, codePHPConfigInvalid, err.Error(), phpConfigDetails(err)
+	}
 	switch {
 	case errors.Is(err, helperproto.ErrServingModeUnavailable):
 		return http.StatusConflict, codeServingModeUnavailable, err.Error(), nil
@@ -726,6 +761,24 @@ func classifyError(err error) (int, string, string, any) {
 	}
 }
 
+// phpConfigDetails extracts the actionable field from a PHP configuration
+// error. Errors that wrap the sentinel without a typed cause return nil.
+func phpConfigDetails(err error) any {
+	var lint *phpini.LintError
+	if errors.As(err, &lint) {
+		return map[string]any{"line": lint.Line, "output": lint.Output}
+	}
+	var validation *phpini.ValidationError
+	if errors.As(err, &validation) {
+		return map[string]any{"line": validation.Line, "message": validation.Message}
+	}
+	var config *phpfpm.ConfigError
+	if errors.As(err, &config) {
+		return map[string]any{"field": config.Field, "message": config.Message}
+	}
+	return nil
+}
+
 // looksLikeValidationError recognises the service's actionable validation
 // messages without exposing an internal sentinel for every rule.
 func looksLikeValidationError(message string) bool {
@@ -749,6 +802,7 @@ func looksLikeValidationError(message string) bool {
 		"reserved",
 		"site name",
 		"document root",
+		"php site",
 	}
 	for _, marker := range markers {
 		if strings.Contains(message, marker) {

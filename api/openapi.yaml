@@ -32,6 +32,7 @@ tags:
   - name: health
   - name: session
   - name: sites
+  - name: php
   - name: events
   - name: runtimes
   - name: trust
@@ -326,6 +327,239 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/php:
+    get:
+      tags: [sites, php]
+      summary: Get a site's effective PHP configuration
+      operationId: getSitePHP
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/SiteRef"
+      responses:
+        "200":
+          description: The persisted row, pinned build, defaults, extensions, and rendered configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHPInfo"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [sites, php]
+      summary: Merge and apply a site PHP configuration change
+      description: |
+        Empty version/build keep the current values. Absent extension/ini maps
+        and an absent ini_raw keep the current overrides; present values
+        (including empty ones) replace them. A running site validates the new
+        generation before swapping its FPM master.
+      operationId: applySitePHP
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/SiteRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PHPChangeRequest"
+      responses:
+        "200":
+          description: The updated site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: No installed build can satisfy the requested PHP line or build id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The generated php.ini or php-fpm configuration is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/php/exec:
+    post:
+      tags: [sites, php]
+      summary: Run the site's PHP binary
+      description: |
+        Forwards only the supplied argv after the generated `-c php.ini`.
+        Arguments that would bypass the generated ini (`-n`, `-c`, or
+        `--php-ini`) are rejected.
+      operationId: execSitePHP
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/SiteRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PHPExecRequest"
+      responses:
+        "200":
+          description: The PHP process result. A non-zero exit code is a successful API call.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHPExecResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: No installed PHP build can satisfy the site's configured line.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/php/extensions:
+    get:
+      tags: [php]
+      summary: List PHP extensions available on one line
+      operationId: listPHPExtensions
+      security: []
+      parameters:
+        - name: version
+          in: query
+          required: true
+          description: PHP major.minor line (8.2, 8.3, 8.4, or 8.5).
+          schema:
+            type: string
+            examples: ["8.4"]
+      responses:
+        "200":
+          description: Extensions that support the line, sorted by name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PHPExtension"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/php/defaults/{version}:
+    get:
+      tags: [php]
+      summary: Get the editable defaults for one PHP line
+      operationId: getPHPDefaults
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PHPVersion"
+      responses:
+        "200":
+          description: The version's ini and extension defaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHPDefaults"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [php]
+      summary: Save defaults and re-apply them to running sites
+      operationId: savePHPDefaults
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/PHPVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PHPDefaultsRequest"
+      responses:
+        "200":
+          description: The saved defaults and per-site apply outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHPDefaultsResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          description: The defaults contain an invalid ini directive or extension.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/php/migrate:
+    post:
+      tags: [php]
+      summary: Migrate every site on a PHP line to a target build
+      operationId: migratePHP
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PHPMigrationRequest"
+      responses:
+        "200":
+          description: One result per affected site.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PHPMigrationResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The target PHP build is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -860,6 +1094,14 @@ components:
       description: Site id or unique site name.
       schema:
         type: string
+    PHPVersion:
+      name: version
+      in: path
+      required: true
+      description: PHP major.minor line (8.2, 8.3, 8.4, or 8.5).
+      schema:
+        type: string
+        examples: ["8.4"]
 
   responses:
     BadRequest:
@@ -936,6 +1178,8 @@ components:
             - DOMAIN_CONFLICT
             - HOSTS_SYNC_FAILED
             - RUNTIME_MISSING
+            - PHP_VERSION_IN_USE
+            - PHP_CONFIG_INVALID
             - TRUST_MISSING
             - PORT_IN_USE
             - PAYLOAD_TOO_LARGE
@@ -1020,6 +1264,8 @@ components:
           $ref: "#/components/schemas/SiteKind"
         php_version:
           type: string
+        php_build:
+          type: string
         php_extensions:
           type: object
           additionalProperties:
@@ -1028,6 +1274,10 @@ components:
           type: object
           additionalProperties:
             type: string
+        php_ini_raw:
+          type: string
+        php_config_hash:
+          type: string
         node_version:
           type: string
         command:
@@ -1084,6 +1334,24 @@ components:
           type: string
         document_root:
           type: string
+        php_version:
+          type: string
+          description: PHP major.minor line; required for php sites.
+        php_build:
+          type: string
+          description: Installed build id; omitted selects the newest installed build for the line.
+        php_extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+        php_ini:
+          type: object
+          additionalProperties:
+            type: string
+        php_ini_raw:
+          type: string
+        front_controller:
+          type: boolean
         www:
           type: boolean
         tls:
@@ -1111,6 +1379,8 @@ components:
           type: boolean
         spa_fallback:
           type: boolean
+        front_controller:
+          type: boolean
         command:
           type: string
         document_root:
@@ -1119,6 +1389,204 @@ components:
           type: object
           additionalProperties:
             type: string
+
+    PHPChangeRequest:
+      type: object
+      description: |
+        Empty version/build keep the current values. Absent maps and an absent
+        ini_raw keep the current overrides; present values replace them.
+      properties:
+        version:
+          type: string
+          description: PHP major.minor line.
+        build:
+          type: string
+          description: Installed build id.
+        extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+        ini:
+          type: object
+          additionalProperties:
+            type: string
+        ini_raw:
+          type: string
+          nullable: true
+
+    PHPExecRequest:
+      type: object
+      required: [argv]
+      properties:
+        argv:
+          type: array
+          items:
+            type: string
+          description: Arguments forwarded to the site's PHP binary.
+
+    PHPExecResult:
+      type: object
+      required: [exit_code, stdout, stderr]
+      properties:
+        exit_code:
+          type: integer
+        stdout:
+          type: string
+        stderr:
+          type: string
+
+    PHPExtension:
+      type: object
+      required: [name, type, so, default, standard, versions]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [extension, zend_extension]
+        so:
+          type: string
+        default:
+          type: boolean
+        standard:
+          type: boolean
+        versions:
+          type: array
+          items:
+            type: string
+        requires:
+          type: array
+          items:
+            type: string
+
+    PHPResolvedExtension:
+      type: object
+      required: [name, type, so, required]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [extension, zend_extension]
+        so:
+          type: string
+        required:
+          type: boolean
+          description: True when the extension is enabled by defaults or a dependency.
+        required_by:
+          type: array
+          items:
+            type: string
+
+    PHPDefaults:
+      type: object
+      required: [version, ini, extensions]
+      properties:
+        version:
+          type: string
+        ini:
+          type: object
+          additionalProperties:
+            type: string
+        extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+
+    PHPDefaultsRequest:
+      type: object
+      description: The path version is authoritative; a version in the body is ignored.
+      properties:
+        ini:
+          type: object
+          additionalProperties:
+            type: string
+        extensions:
+          type: object
+          additionalProperties:
+            type: boolean
+
+    PHPMigrationResult:
+      type: object
+      required: [site, ok]
+      properties:
+        site:
+          type: string
+        ok:
+          type: boolean
+        error:
+          type: string
+
+    PHPDefaultsResult:
+      type: object
+      required: [defaults, sites]
+      properties:
+        defaults:
+          $ref: "#/components/schemas/PHPDefaults"
+        sites:
+          type: array
+          items:
+            $ref: "#/components/schemas/PHPMigrationResult"
+
+    PHPMigrationRequest:
+      type: object
+      required: [from_version]
+      properties:
+        from_version:
+          type: string
+          description: Source PHP major.minor line.
+        to_version:
+          type: string
+          description: Target line; required unless to_build is supplied.
+        to_build:
+          type: string
+          description: Exact installed target build; also implies the target line.
+
+    PHPInfo:
+      type: object
+      required:
+        - site
+        - build
+        - defaults
+        - extensions
+        - available_extensions
+        - builtins
+        - ini
+        - ini_raw
+        - generated_ini
+        - fpm_config
+        - config_hash
+      properties:
+        site:
+          $ref: "#/components/schemas/Site"
+        build:
+          $ref: "#/components/schemas/RuntimeBuild"
+        defaults:
+          $ref: "#/components/schemas/PHPDefaults"
+        extensions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PHPResolvedExtension"
+        available_extensions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PHPExtension"
+        builtins:
+          type: array
+          items:
+            type: string
+        ini:
+          type: object
+          additionalProperties:
+            type: string
+        ini_raw:
+          type: string
+        generated_ini:
+          type: string
+        fpm_config:
+          type: string
+        config_hash:
+          type: string
 
     RuntimeBuild:
       type: object

@@ -36,6 +36,11 @@ type PHPCommands interface {
 // NewService: the binaries are only invoked when a PHP operation needs them.
 type defaultPHPCommands struct{}
 
+// NewPHPCommands returns the production PHP configuration validator.
+func NewPHPCommands() PHPCommands { return defaultPHPCommands{} }
+
+var _ PHPCommands = defaultPHPCommands{}
+
 // Lint validates iniPath with the build's PHP binary.
 func (defaultPHPCommands) Lint(ctx context.Context, phpBin, iniPath string) error {
 	return phpini.Lint(ctx, phpini.ExecRunner{}, phpBin, iniPath)

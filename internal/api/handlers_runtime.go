@@ -72,6 +72,12 @@ func (s *Server) handleRemoveRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "runtime id is required", nil)
 		return
 	}
+	if s.sites != nil {
+		if err := s.sites.CheckRuntimeRemoval(r.Context(), buildID); err != nil {
+			s.writeServiceError(w, r, err)
+			return
+		}
+	}
 	if err := s.runtimes.Remove(r.Context(), buildID); err != nil {
 		s.writeServiceError(w, r, err)
 		return

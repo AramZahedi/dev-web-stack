@@ -27,6 +27,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
@@ -1211,6 +1212,21 @@ type fakeSiteService struct {
 	updates []sites.UpdateRequest
 	actions []string
 	err     error
+
+	phpErr          error
+	phpInfo         sites.PHPInfo
+	phpChange       sites.PHPChange
+	phpDefaults     model.PHPDefaults
+	phpDefaultsErr  error
+	savedDefaults   []model.PHPDefaults
+	phpSaveResult   sites.PHPDefaultsResult
+	phpMigration    []sites.PHPMigrationResult
+	phpMigrationErr error
+	migrationReq    sites.PHPMigrationRequest
+	phpExecResult   backend.Result
+	phpExecErr      error
+	phpArgv         []string
+	checkRemovalErr error
 }
 
 func (f *fakeSiteService) Create(_ context.Context, req sites.CreateRequest) (model.Site, error) {
@@ -1223,25 +1239,31 @@ func (f *fakeSiteService) Create(_ context.Context, req sites.CreateRequest) (mo
 	}
 	f.nextID++
 	site := model.Site{
-		ID:           fmt.Sprintf("s%d", f.nextID),
-		Name:         req.Name,
-		Domain:       strings.ToLower(req.Name) + ".test",
-		WWW:          req.WWW,
-		Backend:      model.BackendLocal,
-		HostPath:     req.Path,
-		BackendPath:  req.Path,
-		Kind:         model.SiteKind(req.Kind),
-		NodeVersion:  req.NodeVersion,
-		Command:      req.Command,
-		Env:          req.Env,
-		DocumentRoot: req.DocumentRoot,
-		TLS:          req.TLS,
-		ForceHTTPS:   req.ForceHTTPS,
-		SPAFallback:  req.SPAFallback,
-		DesiredState: model.DesiredRunning,
-		Status:       model.StatusRunning,
-		CreatedAt:    time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
-		UpdatedAt:    time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
+		ID:              fmt.Sprintf("s%d", f.nextID),
+		Name:            req.Name,
+		Domain:          strings.ToLower(req.Name) + ".test",
+		WWW:             req.WWW,
+		Backend:         model.BackendLocal,
+		HostPath:        req.Path,
+		BackendPath:     req.Path,
+		Kind:            model.SiteKind(req.Kind),
+		NodeVersion:     req.NodeVersion,
+		Command:         req.Command,
+		Env:             req.Env,
+		DocumentRoot:    req.DocumentRoot,
+		TLS:             req.TLS,
+		ForceHTTPS:      req.ForceHTTPS,
+		SPAFallback:     req.SPAFallback,
+		PHPVersion:      req.PHPVersion,
+		PHPBuild:        req.PHPBuild,
+		PHPExtensions:   req.PHPExtensions,
+		PHPIni:          req.PHPIni,
+		PHPIniRaw:       req.PHPIniRaw,
+		FrontController: req.FrontController,
+		DesiredState:    model.DesiredRunning,
+		Status:          model.StatusRunning,
+		CreatedAt:       time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:       time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
 	}
 	f.sites[site.ID] = site
 	f.created = append(f.created, req)
@@ -1269,6 +1291,9 @@ func (f *fakeSiteService) Update(_ context.Context, ref string, req sites.Update
 	}
 	if req.SPAFallback != nil {
 		site.SPAFallback = *req.SPAFallback
+	}
+	if req.FrontController != nil {
+		site.FrontController = *req.FrontController
 	}
 	if req.Command != "" {
 		site.Command = req.Command
@@ -1336,6 +1361,108 @@ func (f *fakeSiteService) action(action, ref string) error {
 	}
 	f.actions = append(f.actions, action)
 	return nil
+}
+
+func (f *fakeSiteService) ApplyPHP(_ context.Context, ref string, change sites.PHPChange) (model.Site, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.phpChange = change
+	if f.phpErr != nil {
+		return model.Site{}, f.phpErr
+	}
+	site, ok := f.find(ref)
+	if !ok {
+		return model.Site{}, fmt.Errorf("sites: site %q: %w", ref, store.ErrNotFound)
+	}
+	if change.Version != "" {
+		site.PHPVersion = change.Version
+	}
+	if change.Build != "" {
+		site.PHPBuild = change.Build
+	}
+	if change.Extensions != nil {
+		site.PHPExtensions = change.Extensions
+	}
+	if change.Ini != nil {
+		site.PHPIni = change.Ini
+	}
+	if change.IniRaw != nil {
+		site.PHPIniRaw = *change.IniRaw
+	}
+	f.sites[site.ID] = site
+	return site, nil
+}
+
+func (f *fakeSiteService) PHPInfo(_ context.Context, ref string) (sites.PHPInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.phpErr != nil {
+		return sites.PHPInfo{}, f.phpErr
+	}
+	info := f.phpInfo
+	if info.Site.Name == "" {
+		if site, ok := f.find(ref); ok {
+			info.Site = site
+		}
+	}
+	return info, nil
+}
+
+func (f *fakeSiteService) PHPDefaults(_ context.Context, version string) (model.PHPDefaults, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.phpDefaultsErr != nil {
+		return model.PHPDefaults{}, f.phpDefaultsErr
+	}
+	defaults := f.phpDefaults
+	if defaults.Version == "" {
+		defaults.Version = version
+	}
+	return defaults, nil
+}
+
+func (f *fakeSiteService) SavePHPDefaults(_ context.Context, d model.PHPDefaults) (sites.PHPDefaultsResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.phpErr != nil {
+		return sites.PHPDefaultsResult{}, f.phpErr
+	}
+	f.savedDefaults = append(f.savedDefaults, d)
+	result := f.phpSaveResult
+	if result.Defaults.Version == "" {
+		result.Defaults = d
+	}
+	return result, nil
+}
+
+func (f *fakeSiteService) MigratePHP(_ context.Context, req sites.PHPMigrationRequest) ([]sites.PHPMigrationResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.migrationReq = req
+	if f.phpMigrationErr != nil {
+		return nil, f.phpMigrationErr
+	}
+	return f.phpMigration, nil
+}
+
+func (f *fakeSiteService) PHPExec(_ context.Context, ref string, argv []string) (backend.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.phpArgv = append([]string(nil), argv...)
+	if f.phpExecErr != nil {
+		return backend.Result{}, f.phpExecErr
+	}
+	return f.phpExecResult, nil
+}
+
+func (f *fakeSiteService) ValidatePHP(context.Context, model.Site) error {
+	return f.phpErr
+}
+
+func (f *fakeSiteService) CheckRuntimeRemoval(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.checkRemovalErr
 }
 
 func (f *fakeSiteService) find(ref string) (model.Site, bool) {

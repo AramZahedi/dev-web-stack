@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
@@ -155,17 +156,23 @@ func (c *Client) GetSite(ctx context.Context, ref string) (model.Site, error) {
 // AddSite creates and starts a site.
 func (c *Client) AddSite(ctx context.Context, req sites.CreateRequest) (model.Site, error) {
 	payload := createSitePayload{
-		Name:         req.Name,
-		Path:         req.Path,
-		Kind:         req.Kind,
-		NodeVersion:  req.NodeVersion,
-		Command:      req.Command,
-		DocumentRoot: req.DocumentRoot,
-		WWW:          req.WWW,
-		TLS:          req.TLS,
-		ForceHTTPS:   req.ForceHTTPS,
-		SPAFallback:  req.SPAFallback,
-		Env:          req.Env,
+		Name:            req.Name,
+		Path:            req.Path,
+		Kind:            req.Kind,
+		NodeVersion:     req.NodeVersion,
+		Command:         req.Command,
+		DocumentRoot:    req.DocumentRoot,
+		WWW:             req.WWW,
+		TLS:             req.TLS,
+		ForceHTTPS:      req.ForceHTTPS,
+		SPAFallback:     req.SPAFallback,
+		Env:             req.Env,
+		PHPVersion:      req.PHPVersion,
+		PHPBuild:        req.PHPBuild,
+		PHPExtensions:   req.PHPExtensions,
+		PHPIni:          req.PHPIni,
+		PHPIniRaw:       req.PHPIniRaw,
+		FrontController: req.FrontController,
 	}
 	var site model.Site
 	err := c.doJSON(ctx, http.MethodPost, "/api/v1/sites", payload, &site)
@@ -175,13 +182,14 @@ func (c *Client) AddSite(ctx context.Context, req sites.CreateRequest) (model.Si
 // UpdateSite applies a partial site update.
 func (c *Client) UpdateSite(ctx context.Context, ref string, req sites.UpdateRequest) (model.Site, error) {
 	payload := updateSitePayload{
-		Domain:       req.Domain,
-		WWW:          req.WWW,
-		TLS:          req.TLS,
-		ForceHTTPS:   req.ForceHTTPS,
-		SPAFallback:  req.SPAFallback,
-		Command:      req.Command,
-		DocumentRoot: req.DocumentRoot,
+		Domain:          req.Domain,
+		WWW:             req.WWW,
+		TLS:             req.TLS,
+		ForceHTTPS:      req.ForceHTTPS,
+		SPAFallback:     req.SPAFallback,
+		FrontController: req.FrontController,
+		Command:         req.Command,
+		DocumentRoot:    req.DocumentRoot,
 	}
 	if req.Env != nil {
 		env := req.Env
@@ -190,6 +198,88 @@ func (c *Client) UpdateSite(ctx context.Context, ref string, req sites.UpdateReq
 	var site model.Site
 	err := c.doJSON(ctx, http.MethodPatch, "/api/v1/sites/"+url.PathEscape(ref), payload, &site)
 	return site, err
+}
+
+// PHPInfo returns a site's effective PHP configuration.
+func (c *Client) PHPInfo(ctx context.Context, ref string) (sites.PHPInfo, error) {
+	var info sites.PHPInfo
+	err := c.doJSON(ctx, http.MethodGet, "/api/v1/sites/"+url.PathEscape(ref)+"/php", nil, &info)
+	return info, err
+}
+
+// ApplyPHP merges and applies a site PHP configuration change.
+func (c *Client) ApplyPHP(ctx context.Context, ref string, change sites.PHPChange) (model.Site, error) {
+	payload := phpSettingsPayload{
+		Version:    change.Version,
+		Build:      change.Build,
+		Extensions: change.Extensions,
+		Ini:        change.Ini,
+		IniRaw:     change.IniRaw,
+	}
+	var site model.Site
+	err := c.doJSON(ctx, http.MethodPut, "/api/v1/sites/"+url.PathEscape(ref)+"/php", payload, &site)
+	return site, err
+}
+
+// PHPExtensions lists the catalog extensions available on a PHP line.
+func (c *Client) PHPExtensions(ctx context.Context, version string) ([]catalog.Extension, error) {
+	query := url.Values{}
+	query.Set("version", version)
+	var extensions []catalog.Extension
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/php/extensions?"+query.Encode(), nil, &extensions); err != nil {
+		return nil, err
+	}
+	if extensions == nil {
+		extensions = []catalog.Extension{}
+	}
+	return extensions, nil
+}
+
+// PHPDefaults returns the editable defaults for a PHP line.
+func (c *Client) PHPDefaults(ctx context.Context, version string) (model.PHPDefaults, error) {
+	var defaults model.PHPDefaults
+	err := c.doJSON(ctx, http.MethodGet, "/api/v1/php/defaults/"+url.PathEscape(version), nil, &defaults)
+	return defaults, err
+}
+
+// SavePHPDefaults saves the defaults for a PHP line and returns the per-site
+// apply outcome.
+func (c *Client) SavePHPDefaults(ctx context.Context, d model.PHPDefaults) (sites.PHPDefaultsResult, error) {
+	payload := phpDefaultsPayload{Version: d.Version, Ini: d.Ini, Extensions: d.Extensions}
+	var result sites.PHPDefaultsResult
+	err := c.doJSON(ctx, http.MethodPut, "/api/v1/php/defaults/"+url.PathEscape(d.Version), payload, &result)
+	return result, err
+}
+
+// MigratePHP moves every site on a PHP line to a target build.
+func (c *Client) MigratePHP(ctx context.Context, req sites.PHPMigrationRequest) ([]sites.PHPMigrationResult, error) {
+	payload := phpMigrationPayload{
+		FromVersion: req.FromVersion,
+		ToVersion:   req.ToVersion,
+		ToBuild:     req.ToBuild,
+	}
+	var results []sites.PHPMigrationResult
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/php/migrate", payload, &results); err != nil {
+		return nil, err
+	}
+	if results == nil {
+		results = []sites.PHPMigrationResult{}
+	}
+	return results, nil
+}
+
+// PHPExec runs the site's PHP binary with the generated php.ini and the
+// supplied argv.
+func (c *Client) PHPExec(ctx context.Context, ref string, argv []string) (backend.Result, error) {
+	payload := phpExecPayload{Argv: argv}
+	if payload.Argv == nil {
+		payload.Argv = []string{}
+	}
+	var response phpExecResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/sites/"+url.PathEscape(ref)+"/php/exec", payload, &response); err != nil {
+		return backend.Result{}, err
+	}
+	return backend.Result{ExitCode: response.ExitCode, Stdout: response.Stdout, Stderr: response.Stderr}, nil
 }
 
 // SiteAction starts, stops, or restarts a site.
@@ -423,26 +513,65 @@ func decodeError(resp *http.Response) error {
 }
 
 type createSitePayload struct {
-	Name         string            `json:"name"`
-	Path         string            `json:"path"`
-	Kind         string            `json:"kind"`
-	NodeVersion  string            `json:"node_version,omitempty"`
-	Command      string            `json:"command,omitempty"`
-	DocumentRoot string            `json:"document_root,omitempty"`
-	WWW          bool              `json:"www"`
-	TLS          bool              `json:"tls"`
-	ForceHTTPS   bool              `json:"force_https"`
-	SPAFallback  bool              `json:"spa_fallback"`
-	Env          map[string]string `json:"env,omitempty"`
+	Name            string            `json:"name"`
+	Path            string            `json:"path"`
+	Kind            string            `json:"kind"`
+	NodeVersion     string            `json:"node_version,omitempty"`
+	Command         string            `json:"command,omitempty"`
+	DocumentRoot    string            `json:"document_root,omitempty"`
+	WWW             bool              `json:"www"`
+	TLS             bool              `json:"tls"`
+	ForceHTTPS      bool              `json:"force_https"`
+	SPAFallback     bool              `json:"spa_fallback"`
+	Env             map[string]string `json:"env,omitempty"`
+	PHPVersion      string            `json:"php_version,omitempty"`
+	PHPBuild        string            `json:"php_build,omitempty"`
+	PHPExtensions   map[string]bool   `json:"php_extensions,omitempty"`
+	PHPIni          map[string]string `json:"php_ini,omitempty"`
+	PHPIniRaw       string            `json:"php_ini_raw,omitempty"`
+	FrontController bool              `json:"front_controller"`
 }
 
 type updateSitePayload struct {
-	Domain       string             `json:"domain,omitempty"`
-	WWW          *bool              `json:"www,omitempty"`
-	TLS          *bool              `json:"tls,omitempty"`
-	ForceHTTPS   *bool              `json:"force_https,omitempty"`
-	SPAFallback  *bool              `json:"spa_fallback,omitempty"`
-	Command      string             `json:"command,omitempty"`
-	DocumentRoot string             `json:"document_root,omitempty"`
-	Env          *map[string]string `json:"env,omitempty"`
+	Domain          string             `json:"domain,omitempty"`
+	WWW             *bool              `json:"www,omitempty"`
+	TLS             *bool              `json:"tls,omitempty"`
+	ForceHTTPS      *bool              `json:"force_https,omitempty"`
+	SPAFallback     *bool              `json:"spa_fallback,omitempty"`
+	FrontController *bool              `json:"front_controller,omitempty"`
+	Command         string             `json:"command,omitempty"`
+	DocumentRoot    string             `json:"document_root,omitempty"`
+	Env             *map[string]string `json:"env,omitempty"`
+}
+
+// phpSettingsPayload is the transport shape of sites.PHPChange. Nil maps and
+// a nil IniRaw keep the current overrides.
+type phpSettingsPayload struct {
+	Version    string            `json:"version,omitempty"`
+	Build      string            `json:"build,omitempty"`
+	Extensions map[string]bool   `json:"extensions"`
+	Ini        map[string]string `json:"ini"`
+	IniRaw     *string           `json:"ini_raw,omitempty"`
+}
+
+type phpExecPayload struct {
+	Argv []string `json:"argv"`
+}
+
+type phpExecResponse struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
+
+type phpDefaultsPayload struct {
+	Version    string            `json:"version,omitempty"`
+	Ini        map[string]string `json:"ini,omitempty"`
+	Extensions map[string]bool   `json:"extensions,omitempty"`
+}
+
+type phpMigrationPayload struct {
+	FromVersion string `json:"from_version"`
+	ToVersion   string `json:"to_version,omitempty"`
+	ToBuild     string `json:"to_build,omitempty"`
 }

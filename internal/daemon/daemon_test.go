@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helper"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -405,6 +406,39 @@ func TestDaemonServesAndRestartsCleanly(t *testing.T) {
 		if _, err := os.Stat(PidPath(home)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("pid file still exists after shutdown: %v", err)
 		}
+	}
+}
+
+func TestDaemonPHPAPIIsWired(t *testing.T) {
+	useBuiltBinary(t)
+	home := t.TempDir()
+	opts := testOptions(t, home, startTestHelper(t))
+	run := startDaemon(t, opts)
+	defer run.stop(t)
+
+	client := unixHTTPClient(SocketPath(home), 5*time.Second)
+
+	resp, data := apiRequest(t, client, http.MethodGet, "/api/v1/php/extensions?version=8.4", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("extensions = %d %s", resp.StatusCode, data)
+	}
+	var extensions []catalog.Extension
+	if err := json.Unmarshal(data, &extensions); err != nil || len(extensions) == 0 {
+		t.Fatalf("extensions = %d %v", len(extensions), err)
+	}
+
+	resp, data = apiRequest(t, client, http.MethodGet, "/api/v1/php/defaults/8.4", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("defaults = %d %s", resp.StatusCode, data)
+	}
+	var defaults model.PHPDefaults
+	if err := json.Unmarshal(data, &defaults); err != nil || defaults.Version != "8.4" || len(defaults.Ini) == 0 {
+		t.Fatalf("defaults = %+v %v", defaults, err)
+	}
+
+	resp, data = apiRequest(t, client, http.MethodDelete, "/api/v1/runtimes/php@8.4.4-r1", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("remove uninstalled runtime = %d %s", resp.StatusCode, data)
 	}
 }
 

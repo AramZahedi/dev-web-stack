@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,9 @@ func (a *App) newSiteCmd() *cobra.Command {
 		a.newSiteAddCmd(),
 		a.newSiteListCmd(),
 		a.newSiteShowCmd(),
+		a.newSitePHPShowCmd(),
+		a.newSiteIniCmd(),
+		a.newSiteExtCmd(),
 		a.newSiteActionCmd("start"),
 		a.newSiteActionCmd("stop"),
 		a.newSiteActionCmd("restart"),
@@ -41,17 +45,20 @@ func (a *App) newSiteCmd() *cobra.Command {
 }
 
 type siteAddOptions struct {
-	name         string
-	path         string
-	kind         string
-	node         string
-	command      string
-	documentRoot string
-	www          bool
-	noHTTPS      bool
-	forceHTTPS   bool
-	spa          bool
-	env          []string
+	name            string
+	path            string
+	kind            string
+	node            string
+	php             string
+	phpBuild        string
+	frontController bool
+	command         string
+	documentRoot    string
+	www             bool
+	noHTTPS         bool
+	forceHTTPS      bool
+	spa             bool
+	env             []string
 }
 
 func (a *App) newSiteAddCmd() *cobra.Command {
@@ -67,8 +74,11 @@ func (a *App) newSiteAddCmd() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&opts.name, "name", "", "site name (the domain becomes <name>.test)")
 	flags.StringVar(&opts.path, "path", "", "project directory")
-	flags.StringVar(&opts.kind, "kind", "static", "site kind: static or node")
+	flags.StringVar(&opts.kind, "kind", "static", "site kind: static, php, or node")
 	flags.StringVar(&opts.node, "node", "", "Node version (for example 22 or 24)")
+	flags.StringVar(&opts.php, "php", "", "PHP version line (for example 8.4)")
+	flags.StringVar(&opts.phpBuild, "php-build", "", "exact PHP build id (for example php@8.4.4-r1)")
+	flags.BoolVar(&opts.frontController, "front-controller", false, "route requests to the site's index.php")
 	flags.StringVar(&opts.command, "command", "", "Node start command")
 	flags.StringVar(&opts.documentRoot, "document-root", "", "document root relative to the project")
 	flags.BoolVar(&opts.www, "www", false, "also serve www.<name>.test")
@@ -93,16 +103,26 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 		return &Error{Code: "INVALID_ARGUMENT", Message: "--path is required", Remediation: "Pass the project directory, for example `--path ~/projects/blog`."}
 	}
 	switch kind {
-	case string(model.SiteStatic), string(model.SiteNode):
+	case string(model.SiteStatic), string(model.SiteNode), string(model.SitePHP):
 	default:
 		return &Error{
 			Code:        "INVALID_KIND",
-			Message:     fmt.Sprintf("unsupported site kind %q (want static or node)", opts.kind),
-			Remediation: "Use `--kind static` or `--kind node`; PHP is not available in this release.",
+			Message:     fmt.Sprintf("unsupported site kind %q (want static, php, or node)", opts.kind),
+			Remediation: "Use `--kind static`, `--kind php`, or `--kind node`.",
 		}
 	}
 	if opts.noHTTPS && opts.forceHTTPS {
 		return &Error{Code: "INVALID_FLAGS", Message: "--no-https and --force-https cannot be used together", Remediation: "Choose one TLS mode."}
+	}
+	if kind == string(model.SitePHP) {
+		if strings.TrimSpace(opts.php) == "" {
+			return &Error{Code: "INVALID_ARGUMENT", Message: "PHP sites require --php", Remediation: "Pass `--php 8.4` (or another supported line)."}
+		}
+		if strings.TrimSpace(opts.node) != "" || strings.TrimSpace(opts.command) != "" || opts.spa {
+			return &Error{Code: "INVALID_FLAGS", Message: "--node, --command, and --spa are only valid for node sites", Remediation: "Remove the Node flags, or use `--kind node`."}
+		}
+	} else if strings.TrimSpace(opts.php) != "" || strings.TrimSpace(opts.phpBuild) != "" || opts.frontController {
+		return &Error{Code: "INVALID_FLAGS", Message: "--php, --php-build, and --front-controller are only valid for PHP sites", Remediation: "Use `--kind php`, or remove the PHP flags."}
 	}
 	if kind == string(model.SiteStatic) {
 		if strings.TrimSpace(opts.node) != "" || strings.TrimSpace(opts.command) != "" {
@@ -135,19 +155,30 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 			return err
 		}
 	}
+	phpVersion := ""
+	phpBuild := ""
+	if kind == string(model.SitePHP) {
+		phpVersion, phpBuild, err = a.resolvePHP(ctx, c, cmd, opts.php, opts.phpBuild)
+		if err != nil {
+			return err
+		}
+	}
 
 	site, err := c.AddSite(ctx, sites.CreateRequest{
-		Name:         name,
-		Path:         path,
-		Kind:         kind,
-		NodeVersion:  nodeVersion,
-		Command:      strings.TrimSpace(opts.command),
-		DocumentRoot: strings.TrimSpace(opts.documentRoot),
-		WWW:          opts.www,
-		TLS:          !opts.noHTTPS,
-		ForceHTTPS:   opts.forceHTTPS,
-		SPAFallback:  opts.spa,
-		Env:          env,
+		Name:            name,
+		Path:            path,
+		Kind:            kind,
+		NodeVersion:     nodeVersion,
+		Command:         strings.TrimSpace(opts.command),
+		DocumentRoot:    strings.TrimSpace(opts.documentRoot),
+		WWW:             opts.www,
+		TLS:             !opts.noHTTPS,
+		ForceHTTPS:      opts.forceHTTPS,
+		SPAFallback:     opts.spa,
+		Env:             env,
+		PHPVersion:      phpVersion,
+		PHPBuild:        phpBuild,
+		FrontController: opts.frontController,
 	})
 	if err != nil {
 		return err
@@ -335,6 +366,11 @@ func (a *App) newSiteShowCmd() *cobra.Command {
 				{"Path", defaultString(site.HostPath, "-")},
 				{"Document root", defaultString(site.DocumentRoot, ".")},
 				{"Node version", defaultString(site.NodeVersion, "-")},
+				{"PHP version", defaultString(site.PHPVersion, "-")},
+				{"PHP build", defaultString(site.PHPBuild, "-")},
+				{"Front controller", fmt.Sprintf("%t", site.FrontController)},
+				{"INI overrides", strconv.Itoa(len(site.PHPIni))},
+				{"Extension overrides", strconv.Itoa(len(site.PHPExtensions))},
 				{"Command", defaultString(site.Command, "-")},
 				{"TLS", fmt.Sprintf("%t", site.TLS)},
 				{"Force HTTPS", fmt.Sprintf("%t", site.ForceHTTPS)},

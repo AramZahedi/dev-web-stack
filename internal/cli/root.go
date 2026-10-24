@@ -19,6 +19,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -54,6 +55,13 @@ type Client interface {
 	AvailableRuntimes(ctx context.Context) ([]catalog.Entry, error)
 	InstallRuntime(ctx context.Context, id string) (model.RuntimeBuild, error)
 	RemoveRuntime(ctx context.Context, buildID string) error
+	PHPInfo(ctx context.Context, ref string) (sites.PHPInfo, error)
+	ApplyPHP(ctx context.Context, ref string, change sites.PHPChange) (model.Site, error)
+	PHPExtensions(ctx context.Context, version string) ([]catalog.Extension, error)
+	PHPDefaults(ctx context.Context, version string) (model.PHPDefaults, error)
+	SavePHPDefaults(ctx context.Context, d model.PHPDefaults) (sites.PHPDefaultsResult, error)
+	MigratePHP(ctx context.Context, req sites.PHPMigrationRequest) ([]sites.PHPMigrationResult, error)
+	PHPExec(ctx context.Context, ref string, argv []string) (backend.Result, error)
 	VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error)
 	SetServingMode(ctx context.Context, mode string) (helperproto.VhostStatusResponse, error)
 	SyncVhosts(ctx context.Context) (helperproto.VhostStatusResponse, error)
@@ -104,6 +112,7 @@ func NewRootCmd(newClient func(home string) (Client, error)) *cobra.Command {
 		app.newDaemonCmd(),
 		app.newSiteCmd(),
 		app.newRuntimeCmd(),
+		app.newPHPCmd(),
 		app.newTrustCmd(),
 		app.newVhostCmd(),
 		app.newUICmd(),
@@ -235,6 +244,10 @@ func apiRemediation(code string) string {
 		return "Choose another name, or remove the site that already owns the domain."
 	case "RUNTIME_MISSING":
 		return "Install the required runtime with `devstack runtime install <id>`."
+	case "PHP_VERSION_IN_USE":
+		return "Move the site with `devstack site php <name> <version>`, or migrate every site with `devstack runtime migrate <from> --to <to>`."
+	case "PHP_CONFIG_INVALID":
+		return "Inspect the generated configuration with `devstack site ini <name>` and fix the reported line, then retry."
 	case "HELPER_UNAVAILABLE":
 		return "Run `devstack init` to start the helper."
 	case "SERVICE_UNAVAILABLE":
