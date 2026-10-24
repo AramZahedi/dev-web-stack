@@ -23,9 +23,12 @@ import (
 // controller and a streamed response.
 const phpRequestTimeout = 120 * time.Second
 
-// phpBackupSuffixes block editor backup files that would otherwise disclose
-// PHP source when served directly.
-var phpBackupSuffixes = []string{".php~", ".php.bak", ".php.orig", ".php.save", ".php.old"}
+// phpBackupSuffixes block editor, swap, and temporary files that would
+// otherwise disclose PHP source when served directly. The native nginx and
+// Apache templates deny the same set; keep the lists in parity.
+var phpBackupSuffixes = []string{
+	".php~", ".php.bak", ".php.orig", ".php.save", ".php.old", ".php.swp", ".php.swo", ".php.tmp",
+}
 
 // phpPathInfoPattern splits /app.php/extra/path into a script and the suffix
 // that FPM must receive as PATH_INFO. Matching is case-insensitive so .PHP

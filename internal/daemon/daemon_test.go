@@ -436,8 +436,10 @@ func TestDaemonPHPAPIIsWired(t *testing.T) {
 		t.Fatalf("defaults = %+v %v", defaults, err)
 	}
 
+	// DELETE is idempotent per the OpenAPI contract: an already-absent build is
+	// not in use and removes as a no-op.
 	resp, data = apiRequest(t, client, http.MethodDelete, "/api/v1/runtimes/php@8.4.4-r1", nil)
-	if resp.StatusCode != http.StatusNotFound {
+	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("remove uninstalled runtime = %d %s", resp.StatusCode, data)
 	}
 }

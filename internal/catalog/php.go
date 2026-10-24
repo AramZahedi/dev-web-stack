@@ -356,7 +356,16 @@ func (m PHPManifest) validate() error {
 
 	for version, names := range m.BuiltinByVersion {
 		for _, name := range names {
-			if ext, ok := extensions[name]; ok && !supportsVersion(ext, version) {
+			if builtin[name] {
+				// Re-listing a global built-in for one line is redundant but
+				// harmless: BuiltinsFor deduplicates it.
+				continue
+			}
+			ext, ok := extensions[name]
+			if !ok {
+				return fmt.Errorf("builtin_by_version[%s] names unknown module %q", version, name)
+			}
+			if !supportsVersion(ext, version) {
 				return fmt.Errorf("builtin_by_version[%s] marks extension %q built-in, but it does not support that version", version, name)
 			}
 		}

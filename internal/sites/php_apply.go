@@ -196,6 +196,7 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 	}
 	if files.Hash == oldHash {
 		next.PHPConfigHash = oldHash
+		releaseNewPort()
 		return s.persistPHPRowOnlyLocked(ctx, current, next)
 	}
 	next.PHPConfigHash = files.Hash
@@ -220,17 +221,30 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 			_ = os.RemoveAll(written)
 		}
 	}
-	stopNewGeneration := func() {
-		if running {
-			_ = s.deps.PHPBackend.StopPHP(ctx, next.ID, files.Hash)
+	// A discard must run even when the caller's context was canceled, or a
+	// staged master can outlive the request that failed and keep listening on a
+	// port the allocator has already handed back.
+	stopNewGeneration := func() error {
+		if !running {
+			return nil
 		}
+		return s.stopPHPGenerationForCleanup(ctx, next.ID, files.Hash)
+	}
+	// discardNewGeneration removes the generation and releases its port only
+	// after the staged master stopped successfully. On a failed stop both are
+	// retained and the error is joined so the leak is visible.
+	discardNewGeneration := func(cause error) error {
+		if err := stopNewGeneration(); err != nil {
+			return errors.Join(cause,
+				fmt.Errorf("sites: stop staged PHP generation for %q: %w", next.Name, err))
+		}
+		removeNewGeneration()
+		releaseNewPort()
+		return cause
 	}
 
 	if err := s.validatePHPFilesLocked(ctx, next, build, written); err != nil {
-		stopNewGeneration()
-		removeNewGeneration()
-		releaseNewPort()
-		return current, err
+		return current, discardNewGeneration(err)
 	}
 
 	if !running {
@@ -253,65 +267,45 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 
 	spec, err := s.phpSiteSpecFromBuildLocked(next, build)
 	if err != nil {
-		stopNewGeneration()
-		removeNewGeneration()
-		releaseNewPort()
-		return current, err
+		return current, discardNewGeneration(err)
 	}
 	if _, err := s.deps.PHPBackend.PreparePHP(ctx, next.ID, files.Hash, spec); err != nil {
-		stopNewGeneration()
-		removeNewGeneration()
-		releaseNewPort()
-		return current, fmt.Errorf("sites: prepare %q: %w", next.Name, err)
+		return current, discardNewGeneration(fmt.Errorf("sites: prepare %q: %w", next.Name, err))
 	}
 	if _, err := s.deps.PHPBackend.StartPHP(ctx, next.ID, files.Hash); err != nil {
-		stopNewGeneration()
-		removeNewGeneration()
-		releaseNewPort()
-		return current, fmt.Errorf("sites: start %q: %w", next.Name, err)
+		return current, discardNewGeneration(fmt.Errorf("sites: start %q: %w", next.Name, err))
 	}
 
-	rollbackUnpublished := func() {
-		stopNewGeneration()
-		removeNewGeneration()
-		releaseNewPort()
-	}
 	next.UpdatedAt = s.currentTime()
 	if err := s.deps.Store.UpdateSite(ctx, next); err != nil {
-		rollbackUnpublished()
-		return current, fmt.Errorf("sites: update %q: %w", next.Name, err)
+		return current, discardNewGeneration(fmt.Errorf("sites: update %q: %w", next.Name, err))
 	}
 	if err := s.saveAppliedPHPConfigLocked(ctx, next); err != nil {
-		rollbackUnpublished()
+		cause := discardNewGeneration(fmt.Errorf("sites: save PHP configuration for %q: %w", next.Name, err))
 		restoreErr := s.restorePHPApplyLocked(ctx, current, false)
-		return current, errors.Join(
-			fmt.Errorf("sites: save PHP configuration for %q: %w", next.Name, err),
-			restoreErr,
-		)
+		return current, errors.Join(cause, restoreErr)
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
-		rollbackUnpublished()
+		cause := discardNewGeneration(fmt.Errorf("sites: publish routes for %q: %w", next.Name, err))
 		restoreErr := s.restorePHPApplyLocked(ctx, current, true)
-		return current, errors.Join(
-			fmt.Errorf("sites: publish routes for %q: %w", next.Name, err),
-			restoreErr,
-		)
+		return current, errors.Join(cause, restoreErr)
 	}
 	if err := s.syncVhostsLocked(ctx, ""); err != nil {
-		rollbackUnpublished()
+		cause := discardNewGeneration(fmt.Errorf("sites: publish vhost for %q: %w", next.Name, err))
 		restoreErr := s.restorePHPApplyLocked(ctx, current, true)
-		return current, errors.Join(
-			fmt.Errorf("sites: publish vhost for %q: %w", next.Name, err),
-			restoreErr,
-		)
+		return current, errors.Join(cause, restoreErr)
 	}
 
 	s.commitPHPFilesBestEffortLocked(ctx, next)
 	drained := s.drainPHPGenerationsLocked(ctx, next, files.Hash, oldHash)
-	if drained && oldPort != 0 && oldPort != newPort {
-		s.deps.Ports.Release(oldPort)
+	if drained {
+		if oldPort != 0 && oldPort != newPort {
+			s.deps.Ports.Release(oldPort)
+		}
+		// Pruning is unsafe after a failed stop: a directory that is not the
+		// current or previous row hash may still back the live master.
+		s.prunePHPGenerationsLocked(ctx, next, files.Hash, oldHash)
 	}
-	s.prunePHPGenerationsLocked(ctx, next, files.Hash, oldHash)
 	return next, nil
 }
 
@@ -444,6 +438,19 @@ func (s *Service) mergePHPChangeLocked(ctx context.Context, current model.Site, 
 	if change.IniRaw != nil {
 		next.PHPIniRaw = *change.IniRaw
 	}
+	// A stale override can become a built-in when the target line changes
+	// (opcache is built into 8.5). Drop those overrides instead of failing the
+	// whole apply with ErrInvalidExtension.
+	cleaned, dropped, err := s.sanitizePHPOverridesLocked(targetVersion, next.PHPExtensions)
+	if err != nil {
+		return current, model.RuntimeBuild{}, err
+	}
+	next.PHPExtensions = cleaned
+	if len(dropped) > 0 {
+		s.emitEvent(ctx, current.ID, "site.updated", fmt.Sprintf(
+			"site %s: dropped extension overrides built into PHP %s: %s",
+			current.Name, targetVersion, strings.Join(dropped, ", ")))
+	}
 	return next, build, nil
 }
 
@@ -492,7 +499,12 @@ func (s *Service) PHPInfo(ctx context.Context, ref string) (PHPInfo, error) {
 	if err != nil {
 		return PHPInfo{}, err
 	}
-	resolved, err := manifest.ResolveWithDefaults(version, defaults.Extensions, site.PHPExtensions)
+	overrides, _, err := s.sanitizePHPOverridesLocked(version, site.PHPExtensions)
+	if err != nil {
+		return PHPInfo{}, err
+	}
+	site.PHPExtensions = overrides
+	resolved, err := manifest.ResolveWithDefaults(version, defaults.Extensions, overrides)
 	if err != nil {
 		return PHPInfo{}, fmt.Errorf("sites: PHP extensions for %q: %w", site.Name, err)
 	}
@@ -630,6 +642,13 @@ func (s *Service) SavePHPDefaults(ctx context.Context, d model.PHPDefaults) (PHP
 	for key, value := range d.Extensions {
 		merged.Extensions[key] = value
 	}
+	// A defaults row or client payload must never toggle a module that the
+	// target line compiles in (for example opcache on 8.5).
+	cleaned, _, err := s.sanitizePHPOverridesLocked(version, merged.Extensions)
+	if err != nil {
+		return PHPDefaultsResult{}, err
+	}
+	merged.Extensions = cleaned
 	if err := phpini.ValidateOverrides(merged.Ini); err != nil {
 		return PHPDefaultsResult{}, fmt.Errorf("sites: PHP %s ini defaults: %w", version, err)
 	}

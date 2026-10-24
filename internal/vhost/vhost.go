@@ -15,6 +15,39 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
+// PHPSourceBackupSuffixes lists the editor, swap, and temporary-file suffixes
+// that native PHP vhosts deny. The built-in proxy's deny list must match this
+// set exactly; both layers protect the same PHP source backups.
+func PHPSourceBackupSuffixes() []string {
+	return []string{"~", ".bak", ".orig", ".save", ".old", ".swp", ".swo", ".tmp"}
+}
+
+// phpSourceBackupPattern renders the suffix alternation used inside both
+// native templates: "~|\.(?:bak|orig|...)". Backups must never be executed or
+// disclosed, so the denial is case-insensitive at the call site.
+func phpSourceBackupPattern() string {
+	var tilde bool
+	var dotted []string
+	for _, suffix := range PHPSourceBackupSuffixes() {
+		if suffix == "~" {
+			tilde = true
+			continue
+		}
+		dotted = append(dotted, strings.TrimPrefix(suffix, "."))
+	}
+	pattern := ""
+	if tilde {
+		pattern = "~"
+	}
+	if len(dotted) > 0 {
+		if pattern != "" {
+			pattern += "|"
+		}
+		pattern += `\.(?:` + strings.Join(dotted, "|") + `)`
+	}
+	return pattern
+}
+
 // Server identifies a supported external web server.
 type Server string
 

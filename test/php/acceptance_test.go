@@ -1073,7 +1073,7 @@ func assertNginxPHPVhost(t *testing.T, config string, port int, site model.Site)
 		"fastcgi_param PATH_INFO $fastcgi_path_info;",
 		"fastcgi_index index.php;",
 		"index index.php index.html;",
-		`location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|tmp))$`,
+		`location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|swo|tmp))$`,
 		"root " + documentRootOf(site) + ";",
 	} {
 		if !strings.Contains(config, want) {
@@ -1087,7 +1087,7 @@ func assertApachePHPVhost(t *testing.T, config string, port int, site model.Site
 	for _, want := range []string{
 		fmt.Sprintf(`SetHandler "proxy:fcgi://127.0.0.1:%d"`, port),
 		"DirectoryIndex index.php index.html",
-		`<FilesMatch "(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$">`,
+		`<FilesMatch "(?i)\.php(~|\.(?:bak|orig|save|old|swp|swo|tmp))$">`,
 		`DocumentRoot "` + documentRootOf(site) + `"`,
 	} {
 		if !strings.Contains(config, want) {
@@ -1454,22 +1454,20 @@ func testRealApacheConfig(t *testing.T, h *acceptanceHarness, site model.Site) {
 		t.Skipf("cannot enumerate Apache modules with %s -M: %v", httpd, err)
 	}
 	moduleList := string(modules)
-	var missing []string
-	for _, module := range []string{"ssl_module", "proxy_fcgi_module"} {
-		if !strings.Contains(moduleList, module) {
-			missing = append(missing, module)
-		}
-	}
-	if len(missing) != 0 {
+	// The HTTP PHP vhost only needs proxy_fcgi. TLS is a separate vhost and a
+	// separate capability; a host without mod_ssl can still prove the PHP
+	// handler configuration.
+	if !strings.Contains(moduleList, "proxy_fcgi_module") {
 		version := apacheVersion(ctx, httpd)
-		t.Skipf("%s is installed but %s not loaded; PHP vhost configtest skipped", version, strings.Join(missing, " and "))
+		t.Skipf("%s is installed but proxy_fcgi_module is not loaded; PHP vhost configtest skipped", version)
 	}
 	configFile := apacheConfigFile(ctx, httpd)
 	if configFile == "" {
 		t.Skip("cannot locate the Apache server configuration; configtest skipped")
 	}
 	prefix := t.TempDir()
-	files := h.vhostSet(t, vhost.ServerApache, site, 18080, 18443, filepath.Join(prefix, "tls"))
+	tlsDir := filepath.Join(prefix, "tls")
+	files := h.vhostSet(t, vhost.ServerApache, site, 18080, 18443, tlsDir)
 	content, ok := files[vhostSiteFilename(site)]
 	if !ok {
 		t.Fatalf("rendered Apache set is missing the site vhost")
@@ -1482,9 +1480,55 @@ func testRealApacheConfig(t *testing.T, h *acceptanceHarness, site model.Site) {
 	// fail on SetHandler/proxy_fcgi even when the server is healthy.
 	output, err := exec.CommandContext(ctx, httpd, "-t", "-f", configFile, "-c", "Include "+vhostPath).CombinedOutput()
 	if err != nil {
-		t.Fatalf("Apache configtest failed: %v\n%s", err, output)
+		t.Fatalf("Apache HTTP PHP configtest failed: %v\n%s", err, output)
 	}
-	t.Logf("Apache configtest: %s", strings.TrimSpace(string(output)))
+	t.Logf("Apache HTTP PHP configtest: %s", strings.TrimSpace(string(output)))
+
+	if !strings.Contains(moduleList, "ssl_module") {
+		t.Logf("Apache HTTPS PHP vhost configtest: SKIP (ssl_module is not loaded; HTTP PHP vhost passed)")
+		return
+	}
+
+	// Prove the TLS vhost too, with real certificate material on disk.
+	tlsSite := site
+	tlsSite.TLS = true
+	if err := os.MkdirAll(tlsDir, 0o755); err != nil {
+		t.Fatalf("create Apache TLS directory: %v", err)
+	}
+	dashboardRecord, err := h.certs.Ensure(context.Background(), certs.DashboardOwner, []string{"devstack.test"})
+	if err != nil {
+		t.Fatalf("ensure dashboard certificate: %v", err)
+	}
+	dashboardCert, dashboardKey, err := h.certs.PEM(dashboardRecord)
+	if err != nil {
+		t.Fatalf("read dashboard certificate: %v", err)
+	}
+	writeFile(t, filepath.Join(tlsDir, "__dashboard__.crt"), dashboardCert, 0o644)
+	writeFile(t, filepath.Join(tlsDir, "__dashboard__.key"), dashboardKey, 0o600)
+	siteRecord, err := h.store.GetCertBySite(context.Background(), site.ID)
+	if err != nil {
+		t.Fatalf("read site certificate: %v", err)
+	}
+	siteCert, siteKey, err := h.certs.PEM(siteRecord)
+	if err != nil {
+		t.Fatalf("read site certificate PEM: %v", err)
+	}
+	writeFile(t, filepath.Join(tlsDir, site.ID+".crt"), siteCert, 0o644)
+	writeFile(t, filepath.Join(tlsDir, site.ID+".key"), siteKey, 0o600)
+
+	tlsFiles := h.vhostSet(t, vhost.ServerApache, tlsSite, 18080, 18443, tlsDir)
+	tlsContent, ok := tlsFiles[vhostSiteFilename(tlsSite)]
+	if !ok {
+		t.Fatalf("rendered Apache TLS set is missing the site vhost")
+	}
+	httpsOnly := firstApacheVirtualHost(t, string(tlsContent), 18443)
+	tlsVhostPath := filepath.Join(prefix, "php-https-vhost.conf")
+	writeFile(t, tlsVhostPath, []byte(httpsOnly), 0o644)
+	output, err = exec.CommandContext(ctx, httpd, "-t", "-f", configFile, "-c", "Include "+tlsVhostPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("Apache HTTPS PHP configtest failed: %v\n%s", err, output)
+	}
+	t.Logf("Apache HTTPS PHP configtest: %s", strings.TrimSpace(string(output)))
 }
 
 func vhostSiteFilename(site model.Site) string {

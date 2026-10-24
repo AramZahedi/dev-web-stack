@@ -276,9 +276,11 @@
             ? 'site-path'
             : key === 'php_build'
               ? 'php-build'
-              : key.startsWith('env-')
-                ? `env-key-${key.slice(4)}`
-                : key.replace(/_/g, '-');
+              : key === 'document_root' && kind === 'php'
+                ? 'php-document-root'
+                : key.startsWith('env-')
+                  ? `env-key-${key.slice(4)}`
+                  : key.replace(/_/g, '-');
     const element = document.getElementById(id);
     element?.focus();
     element?.scrollIntoView({ block: 'center', behavior: scrollBehavior() });

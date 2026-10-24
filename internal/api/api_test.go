@@ -720,6 +720,25 @@ func TestSiteCRUDAndActions(t *testing.T) {
 	assertError(t, rec, http.StatusNotFound, codeNotFound)
 }
 
+func TestRemoveAbsentRuntimeIsIdempotent(t *testing.T) {
+	fx := newFixture(t, Config{UserHome: t.TempDir()})
+	fx.sites.mu.Lock()
+	fx.sites.checkRemovalErr = store.ErrNotFound
+	fx.sites.mu.Unlock()
+
+	const buildID = "php@8.4.4-r9"
+	rec := fx.request(t, "DELETE", "/api/v1/runtimes/"+buildID, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("remove absent runtime code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	fx.runtimes.mu.Lock()
+	removed := append([]string(nil), fx.runtimes.removed...)
+	fx.runtimes.mu.Unlock()
+	if len(removed) != 1 || removed[0] != buildID {
+		t.Fatalf("removed = %v, want [%s]", removed, buildID)
+	}
+}
+
 func TestRuntimesDoctorAndTrustHandlers(t *testing.T) {
 	home := t.TempDir()
 	fx := newFixture(t, Config{UserHome: home})

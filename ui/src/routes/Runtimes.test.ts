@@ -168,6 +168,46 @@ describe('Runtimes PHP removal', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: /Migrate sites off/ })).toBeNull());
   });
 
+  it('lists every site on the target line, not only the 409 build', async () => {
+    const shop: Site = {
+      ...PHP_SITE,
+      id: 's_shop',
+      name: 'shop',
+      domain: 'shop.test',
+      php_build: 'php@8.4.4-r2',
+      fastcgi_port: 43002,
+    };
+    const api: Site = {
+      ...PHP_SITE,
+      id: 's_api',
+      name: 'api',
+      domain: 'api.test',
+      php_version: '8.5',
+      php_build: BUILD_C.id,
+      fastcgi_port: 43003,
+    };
+    mockApi.listSites.mockResolvedValue([shop, api]);
+    mockApi.listRuntimes.mockResolvedValue([BUILD_A, BUILD_B, BUILD_C]);
+    mockApi.removeRuntime.mockRejectedValueOnce(
+      new ApiError('PHP_VERSION_IN_USE', 'PHP 8.4.4 is used by blog.', 409, {
+        build: BUILD_A.id,
+        sites: ['blog'],
+      }),
+    );
+
+    render(Runtimes);
+    const dialog = await openMigrationDialog();
+
+    const listed = within(dialog).getByLabelText('Sites using the build');
+    expect(within(listed).getByText('blog')).toBeTruthy();
+    expect(within(listed).getByText('shop')).toBeTruthy();
+    expect(within(listed).queryByText('api')).toBeNull();
+    expect(within(dialog).getByText(/every site listed/i)).toBeTruthy();
+
+    const select = within(dialog).getByLabelText('Target build') as HTMLSelectElement;
+    expect(select.value).toBe(BUILD_B.id);
+  });
+
   it('keeps the build installed and reports per-site errors when migration fails', async () => {
     mockApi.removeRuntime.mockRejectedValueOnce(
       new ApiError('PHP_VERSION_IN_USE', 'PHP 8.4.4 is used by blog, shop.', 409, {

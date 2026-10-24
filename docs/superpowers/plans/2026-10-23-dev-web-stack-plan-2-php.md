@@ -12,7 +12,7 @@
 
 **Depends on:** `docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-foundation.md` (implemented). Plan 2 preserves every Plan 1 behavior: host allowlist, CSRF/session checks, peer-UID helper, vhost validation, supervisor semantics, and the dashboard design system.
 
-> **Implementation status (2026-10-24):** Tasks 1–12 are complete and reviewed. Plan 2 automated acceptance PASSes on system PHP 8.4.4; the real 8.2/8.5 side-by-side and production catalog publication remain **BLOCKED** on published Task 11 CI artifacts. See `docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md` and `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`.
+> **Implementation status (2026-10-24):** Tasks 1–12 are complete and reviewed. Plan 2 automated acceptance PASSes on system PHP 8.4.4; the real 8.2/8.5 side-by-side and production catalog publication remain **BLOCKED** on published Task 11 CI artifacts. A final whole-branch review fix wave (C1, I1–I7, and selected minors) is implemented and recorded in `.superpowers/sdd/2026-10-23-dev-web-stack-plan-2-php/final-review-fix-report.md`. See `docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md` and `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`.
 
 > **Implementation rulings made while executing Tasks 5–6:**
 > - Task 5 adds `proxy.KindPHP` and `Route.DocumentRoot`/`Route.FrontController` in `internal/proxy/router.go` so the Task 5 routes compile; FastCGI transport stays in Task 7.

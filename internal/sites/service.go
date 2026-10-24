@@ -943,7 +943,10 @@ func (s *Service) stopExternalStaticLocked(ctx context.Context, site model.Site)
 func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current model.Site) error {
 	var errs []error
 	if current.Kind == model.SitePHP {
-		if err := s.stopPHPProcessLocked(ctx, current.ID); err != nil {
+		cleanupCtx, cancel := phpCleanupContext(ctx)
+		err := s.stopPHPProcessLocked(cleanupCtx, current.ID)
+		cancel()
+		if err != nil {
 			errs = append(errs, fmt.Errorf("rollback: stop %q: %w", current.Name, err))
 		}
 	} else if s.deps.Backend != nil {
@@ -1041,10 +1044,12 @@ func (s *Service) refreshExternalStaticLocked(ctx context.Context, site model.Si
 // the original error joined with any rollback failures.
 func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts []string, certIssued bool, port int, cause error) error {
 	errs := []error{cause}
+	phpStopFailed := false
 	if s.deps.Backend != nil && s.siteNeedsBackend(site) {
 		if site.Kind == model.SitePHP {
 			if s.deps.PHPBackend != nil {
-				if err := s.deps.PHPBackend.StopPHP(ctx, site.ID, phpDefaultGeneration); err != nil {
+				if err := s.stopPHPGenerationForCleanup(ctx, site.ID, phpDefaultGeneration); err != nil {
+					phpStopFailed = true
 					errs = append(errs, fmt.Errorf("rollback: stop %q: %w", site.Name, err))
 				}
 			}
@@ -1071,11 +1076,20 @@ func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts 
 		s.deps.Ports.Release(port)
 	}
 	if site.Kind == model.SitePHP {
-		if err := s.removePHPConfigLocked(site.ID); err != nil {
-			errs = append(errs, fmt.Errorf("rollback: remove PHP config for %q: %w", site.Name, err))
-		}
-		if site.FastCGIPort != 0 && s.deps.Ports != nil {
-			s.deps.Ports.Release(site.FastCGIPort)
+		// A failed stop may leave a master listening on the FastCGI port, so
+		// retain its generation directory and port reservation for diagnosis and
+		// a later cleanup instead of advertising a free port.
+		if phpStopFailed {
+			errs = append(errs, fmt.Errorf(
+				"rollback: retained PHP generation and FastCGI port %d for %q after a failed stop",
+				site.FastCGIPort, site.Name))
+		} else {
+			if err := s.removePHPConfigLocked(site.ID); err != nil {
+				errs = append(errs, fmt.Errorf("rollback: remove PHP config for %q: %w", site.Name, err))
+			}
+			if site.FastCGIPort != 0 && s.deps.Ports != nil {
+				s.deps.Ports.Release(site.FastCGIPort)
+			}
 		}
 	}
 	if s.externalServing() {

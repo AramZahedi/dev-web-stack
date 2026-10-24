@@ -6,11 +6,13 @@
     extensions: PHPExtension[];
     builtins: string[];
     value: Record<string, boolean>;
+    /** Effective version baseline for inherited extensions. */
+    defaults?: Record<string, boolean>;
     onchange: (value: Record<string, boolean>) => void;
     disabled?: boolean;
   }
 
-  let { extensions, builtins, value, onchange, disabled = false }: Props = $props();
+  let { extensions, builtins, value, defaults = {}, onchange, disabled = false }: Props = $props();
 
   type Mode = 'inherit' | 'on' | 'off';
 
@@ -20,9 +22,13 @@
     return override ? 'on' : 'off';
   }
 
+  function inheritedState(extension: PHPExtension): boolean {
+    return defaults[extension.name] ?? extension.default;
+  }
+
   function stateLabel(extension: PHPExtension): string {
     const mode = modeOf(extension.name);
-    if (mode === 'inherit') return `Inherit (${extension.default ? 'on' : 'off'})`;
+    if (mode === 'inherit') return `Inherit (${inheritedState(extension) ? 'on' : 'off'})`;
     return mode === 'on' ? 'Enabled for this site' : 'Disabled for this site';
   }
 

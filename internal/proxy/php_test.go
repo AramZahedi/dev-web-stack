@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/fcgi"
+	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
 
 // capturedFCGIRequest records one request handed to the FastCGI transport.
@@ -415,7 +416,10 @@ func TestPHPProxyNeverServesPHPSource(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, "app.PHP", "<?php SECRET_UPPER_PHP")
 	writeTestFile(t, root, "app.php", "<?php SECRET_ORIGINAL")
-	backups := []string{"app.php~", "app.php.bak", "app.php.orig", "app.php.save", "app.php.old"}
+	backups := []string{
+		"app.php~", "app.php.bak", "app.php.orig", "app.php.save", "app.php.old",
+		"app.php.swp", "app.php.swo", "app.php.tmp",
+	}
 	for _, name := range backups {
 		writeTestFile(t, root, name, "<?php SECRET_BACKUP_"+name)
 	}
@@ -453,6 +457,22 @@ func TestPHPProxyNeverServesPHPSource(t *testing.T) {
 				t.Fatalf("backup used FastCGI: %d calls", n)
 			}
 		})
+	}
+}
+
+func TestPHPProxyBackupSuffixesMatchNativeDenyList(t *testing.T) {
+	native := vhost.PHPSourceBackupSuffixes()
+	want := make([]string, 0, len(native))
+	for _, suffix := range native {
+		want = append(want, ".php"+suffix)
+	}
+	if len(phpBackupSuffixes) != len(want) {
+		t.Fatalf("proxy backup suffixes = %v, native deny suffixes = %v", phpBackupSuffixes, want)
+	}
+	for index, suffix := range phpBackupSuffixes {
+		if suffix != want[index] {
+			t.Fatalf("proxy backup suffix %d = %q, native deny suffix = %q", index, suffix, want[index])
+		}
 	}
 }
 

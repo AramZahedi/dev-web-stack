@@ -229,7 +229,7 @@ func writeNginxDotfileDeny(b *strings.Builder) {
 }
 
 func writeNginxSourceBackupDeny(b *strings.Builder) {
-	b.WriteString("    location ~* \\.php(?:~|\\.(?:bak|orig|save|old|swp|tmp))$ {\n")
+	fmt.Fprintf(b, "    location ~* \\.php(?:%s)$ {\n", phpSourceBackupPattern())
 	b.WriteString("        deny all;\n")
 	b.WriteString("    }\n")
 }

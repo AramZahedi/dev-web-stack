@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,6 +46,25 @@ func (e *PHPExecArgumentError) Unwrap() error { return ErrPHPExecArgument }
 // phpDefaultGeneration is the single PHP master generation used by the site
 // lifecycle. Later validate-then-swap work stages extra generations.
 const phpDefaultGeneration = "default"
+
+// phpCleanupTimeout bounds teardown that must complete even when the request
+// context is already canceled.
+const phpCleanupTimeout = 30 * time.Second
+
+// phpCleanupContext detaches cleanup from the caller's cancellation. A client
+// that times out during an apply must not leave an FPM master listening on a
+// port the allocator has released.
+func phpCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(nonNilContext(ctx)), phpCleanupTimeout)
+}
+
+// stopPHPGenerationForCleanup stops one staged generation with a
+// cancellation-proof context.
+func (s *Service) stopPHPGenerationForCleanup(ctx context.Context, siteID, generation string) error {
+	cleanupCtx, cancel := phpCleanupContext(ctx)
+	defer cancel()
+	return s.deps.PHPBackend.StopPHP(cleanupCtx, siteID, generation)
+}
 
 // PHPCommands validates generated PHP configuration. The production
 // implementation shells out to the build's binaries; tests inject fakes.
@@ -184,6 +204,32 @@ func validatePHPBuildRow(build model.RuntimeBuild, line string) error {
 	return nil
 }
 
+// sanitizePHPOverridesLocked drops extension overrides that are built into the
+// requested PHP line. A pre-fix row can carry a stale override (for example an
+// opcache override inherited from PHP 8.4 when the site moved to 8.5); dropping
+// it keeps rendering, inspection, and migration usable instead of failing with
+// ErrInvalidExtension. The dropped names are returned sorted for diagnostics.
+func (s *Service) sanitizePHPOverridesLocked(version string, overrides map[string]bool) (map[string]bool, []string, error) {
+	if len(overrides) == 0 {
+		return overrides, nil, nil
+	}
+	manifest, err := s.phpCatalog()
+	if err != nil {
+		return nil, nil, err
+	}
+	cleaned := cloneBoolMap(overrides)
+	var dropped []string
+	for _, name := range manifest.BuiltinsFor(version) {
+		if _, ok := cleaned[name]; !ok {
+			continue
+		}
+		delete(cleaned, name)
+		dropped = append(dropped, name)
+	}
+	sort.Strings(dropped)
+	return cleaned, dropped, nil
+}
+
 // phpBuildForSiteLocked resolves the build pinned by a site row.
 func (s *Service) phpBuildForSiteLocked(ctx context.Context, site model.Site) (model.RuntimeBuild, error) {
 	line := strings.TrimSpace(site.PHPVersion)
@@ -243,6 +289,21 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 	if err != nil {
 		return site, err
 	}
+	// Heal a pre-fix row that still overrides a module built into this line.
+	version := strings.TrimSpace(site.PHPVersion)
+	if version == "" {
+		version = catalog.LineOf(build.Version)
+	}
+	cleaned, dropped, err := s.sanitizePHPOverridesLocked(version, site.PHPExtensions)
+	if err != nil {
+		return site, err
+	}
+	site.PHPExtensions = cleaned
+	if len(dropped) > 0 {
+		s.emitEvent(ctx, site.ID, "site.updated", fmt.Sprintf(
+			"site %s: dropped extension overrides built into PHP %s: %s",
+			site.Name, version, strings.Join(dropped, ", ")))
+	}
 	// A previously applied site serves from a hash generation, not "default".
 	// Start is idempotent: never stage a second master when one is running.
 	if previous.Status == model.StatusRunning && previous.FastCGIPort != 0 && s.deps.Backend != nil {
@@ -270,13 +331,19 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 		}
 	}
 
-	reused := previous.FastCGIPort != 0 && s.phpConfigFilesExistLocked(site)
+	// Recompute the current configuration instead of trusting the stored hash:
+	// edited version defaults must take effect on the next start of a stopped
+	// site. Reuse is safe only when the rendered hash still matches and every
+	// generation file is present.
+	files, err := s.composePHPFilesLocked(ctx, site, build)
+	if err != nil {
+		releaseAllocated()
+		return site, err
+	}
+	reused := previous.FastCGIPort != 0 &&
+		site.PHPConfigHash == files.Hash &&
+		s.phpConfigFilesExistLocked(site)
 	if !reused {
-		files, err := s.composePHPFilesLocked(ctx, site, build)
-		if err != nil {
-			releaseAllocated()
-			return site, err
-		}
 		site.PHPConfigHash = files.Hash
 		generationDir, err := s.writePHPFilesLocked(site.ID, files)
 		if err != nil {
@@ -299,29 +366,39 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 		return site, fmt.Errorf("sites: prepare %q: %w", site.Name, err)
 	}
 	if _, err := s.deps.PHPBackend.StartPHP(ctx, site.ID, phpDefaultGeneration); err != nil {
-		_ = s.deps.PHPBackend.StopPHP(ctx, site.ID, phpDefaultGeneration)
+		cause := fmt.Errorf("sites: start %q: %w", site.Name, err)
+		if stopErr := s.stopPHPGenerationForCleanup(ctx, site.ID, phpDefaultGeneration); stopErr != nil {
+			return site, errors.Join(cause,
+				fmt.Errorf("sites: stop %q after a failed start: %w", site.Name, stopErr))
+		}
 		releaseAllocated()
-		return site, fmt.Errorf("sites: start %q: %w", site.Name, err)
+		return site, cause
 	}
 
 	oldStatus := site.Status
-	wasRunning := previous.Status == model.StatusRunning
 	site.DesiredState = model.DesiredRunning
 	site.Status = model.StatusRunning
 	site.UpdatedAt = s.currentTime()
 	if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
-		if !wasRunning {
-			_ = s.deps.PHPBackend.StopPHP(ctx, site.ID, phpDefaultGeneration)
+		cause := fmt.Errorf("sites: record running state for %q: %w", site.Name, err)
+		if stopErr := s.stopPHPGenerationForCleanup(ctx, site.ID, phpDefaultGeneration); stopErr != nil {
+			return previous, errors.Join(cause,
+				fmt.Errorf("sites: stop %q after a failed state write: %w", site.Name, stopErr))
 		}
 		releaseAllocated()
-		return previous, fmt.Errorf("sites: record running state for %q: %w", site.Name, err)
+		return previous, cause
 	}
 	if !reused {
 		if err := s.saveAppliedPHPConfigLocked(ctx, site); err != nil {
-			_ = s.deps.PHPBackend.StopPHP(ctx, site.ID, phpDefaultGeneration)
-			_ = s.deps.Store.UpdateSite(ctx, previous)
+			cause := fmt.Errorf("sites: save PHP configuration for %q: %w", site.Name, err)
+			stopErr := s.stopPHPGenerationForCleanup(ctx, site.ID, phpDefaultGeneration)
+			restoreErr := s.deps.Store.UpdateSite(ctx, previous)
+			if stopErr != nil {
+				return previous, errors.Join(cause, restoreErr,
+					fmt.Errorf("sites: stop %q after a failed config save: %w", site.Name, stopErr))
+			}
 			releaseAllocated()
-			return previous, fmt.Errorf("sites: save PHP configuration for %q: %w", site.Name, err)
+			return previous, errors.Join(cause, restoreErr)
 		}
 	}
 	s.commitPHPFilesBestEffortLocked(ctx, site)
@@ -453,6 +530,20 @@ func (s *Service) ensurePHPConfigLocked(ctx context.Context, site model.Site) (m
 		return site, model.RuntimeBuild{}, err
 	}
 	previous := site
+	version := strings.TrimSpace(site.PHPVersion)
+	if version == "" {
+		version = catalog.LineOf(build.Version)
+	}
+	cleaned, dropped, err := s.sanitizePHPOverridesLocked(version, site.PHPExtensions)
+	if err != nil {
+		return site, model.RuntimeBuild{}, err
+	}
+	site.PHPExtensions = cleaned
+	if len(dropped) > 0 {
+		s.emitEvent(ctx, site.ID, "site.updated", fmt.Sprintf(
+			"site %s: dropped extension overrides built into PHP %s: %s",
+			site.Name, version, strings.Join(dropped, ", ")))
+	}
 	allocated := 0
 	if site.FastCGIPort == 0 {
 		port, err := s.deps.Ports.Allocate(domain.PortFastCGI)
@@ -468,14 +559,18 @@ func (s *Service) ensurePHPConfigLocked(ctx context.Context, site model.Site) (m
 		}
 	}
 
-	reused := allocated == 0 && s.phpConfigFilesExistLocked(site)
-	if reused {
-		return site, build, nil
-	}
+	// Compare the current inputs with the stored generation so PHPExec picks up
+	// edited version defaults even when the site is stopped.
 	files, err := s.composePHPFilesLocked(ctx, site, build)
 	if err != nil {
 		releaseAllocated()
 		return site, model.RuntimeBuild{}, err
+	}
+	reused := allocated == 0 &&
+		site.PHPConfigHash == files.Hash &&
+		s.phpConfigFilesExistLocked(site)
+	if reused {
+		return site, build, nil
 	}
 	site.PHPConfigHash = files.Hash
 	generationDir, err := s.writePHPFilesLocked(site.ID, files)

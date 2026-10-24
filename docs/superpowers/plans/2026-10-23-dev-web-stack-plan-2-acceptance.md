@@ -7,10 +7,10 @@
 - **Scope:** the Plan 2 subset of M1 design §21 plus the rollback, template, and
   Doctor checks named in Task 12.
 - **Overall result:** **automated acceptance PASS for the Plan 2 paths on
-  system PHP 8.4.4; one Apache real-config subtest SKIP.** The managed-artifact
-  gate (real PHP 8.2 and 8.5 side by side, production catalog publication) is
-  **BLOCKED** on the Task 11 CI artifacts. This report does not claim production
-  PHP installation works.
+  system PHP 8.4.4; Apache HTTP PHP configtest PASS, Apache HTTPS vhost SKIP
+  (no `mod_ssl`).** The managed-artifact gate (real PHP 8.2 and 8.5 side by
+  side, production catalog publication) is **BLOCKED** on the Task 11 CI
+  artifacts. This report does not claim production PHP installation works.
 
 ## Environment
 
@@ -47,7 +47,7 @@ until checksummed artifacts are published.
 
 | Check | Command | Result |
 |---|---|---|
-| Real acceptance test | `DEVSTACK_PHP_ROOT=/usr/local/php go test ./test/php -run TestPHPSubsystemAcceptance -v` | **PASS** in 0.87 s; one Apache subtest **SKIP** |
+| Real acceptance test | `DEVSTACK_PHP_ROOT=/usr/local/php go test ./test/php -run TestPHPSubsystemAcceptance -v` | **PASS**; Apache HTTP PHP configtest **PASS**, Apache HTTPS vhost **SKIP** (`ssl_module` absent) |
 | Repeatability | `go test ./test/php -run TestPHPSubsystemAcceptance -count=2` | **PASS**; two consecutive iterations in 1.85 s |
 | Absent-root skip | `DEVSTACK_PHP_ROOT=/nonexistent go test ./test/php -run TestPHPSubsystemAcceptance -v` | **SKIP** with `bin/php is not available under /nonexistent` |
 | Race detector | `go test ./... -race` | **PASS**; all packages `ok`, including `test/php` in 2.09 s |
@@ -73,7 +73,8 @@ acceptance: failed-switch candidate FastCGI port 43999 is free (bind 127.0.0.1:4
 acceptance: candidate port 43999 was released after the failed switch
 nginx -t: ... syntax is ok
 nginx -t: ... test is successful
-Apache/2.4.69 (Fedora Linux) is installed but ssl_module not loaded; PHP vhost configtest skipped
+Apache HTTP PHP configtest: Syntax OK
+Apache HTTPS PHP vhost configtest: SKIP (ssl_module is not loaded; HTTP PHP vhost passed)
 acceptance: built-in proxy served blog.test through FastCGI with 512M and xdebug
 acceptance: updated blog document root=public2 front_controller=true
 acceptance: removal of php@8.4.4-r1 blocked by [api blog]
@@ -149,7 +150,7 @@ or a different environment.
 | 8 | FastCGI request direct to FPM | **PASS** | Step 1 and later steps; `fcgi.Dial` GET `/index.php` returns version, ini, Xdebug state | Real supervised `php-fpm` master, not a fake |
 | 9 | FastCGI request through the built-in proxy | **PASS** | Step 7; `router.Handler()` with `Host: blog.test` via `httptest` returns 8.4.4, `512M`, and Xdebug loaded | Route is published by the real site service |
 | 10 | nginx PHP vhost template | **PASS** | Steps 6; `fastcgi_pass`, `SCRIPT_FILENAME`, `PATH_INFO`, directory index, and source-backup denial strings present | Real `nginx -t` against a temp prefix, high ports 18080/18443, and the **TLS branch with the real site certificate plus the dashboard certificate**: syntax ok, test successful |
-| 11 | Apache PHP vhost template | **PASS** (template) / **SKIP** (real configtest) | `proxy:fcgi`, `DirectoryIndex`, and source-backup denial strings present | Real `httpd -t` skipped: Apache 2.4.69 is installed but `ssl_module` is not loaded. The branch checks both `ssl_module` and `proxy_fcgi_module` and uses `httpd -t -c Include` so a future host tests PHP capability after the main config |
+| 11 | Apache PHP vhost template | **PASS** (HTTP real configtest) / **SKIP** (HTTPS vhost) | `proxy:fcgi`, `DirectoryIndex`, and source-backup denial strings present; real `httpd -t -f <main> -c Include <php-http-vhost>` reports `Syntax OK` on high port 18080 | Apache 2.4.69 has `proxy_fcgi_module` but no `ssl_module`, so only the HTTPS vhost is skipped. The HTTP check needs no TLS and uses `-c Include` after the main config; the HTTPS branch is exercised only when `ssl_module` is loaded |
 | 12 | Doctor PHP checks | **PASS** | Acceptance test final step; `php-builds`, `php-config`, `php-ports`, `php-master` all `ok` | Doctor used the real store, real PHP validator, and live FPM port |
 | 13 | Docs | **PASS** | `README.md`, `docs/php.md`, and this report | Documentation states the fixture/system-PHP basis and the artifact gate |
 | 14 | Real PHP 8.2 and 8.5 side by side | **BLOCKED** | Requires checksummed archives and catalog entries from the [Task 11 CI pipeline](../../../.github/workflows/php.yml) | No 8.2/8.5 artifacts are published; the local manifest is 8.4-only fixture data |
@@ -205,8 +206,9 @@ Until then:
 - Tests used fixture catalog rows plus system PHP 8.4.4.
 - `devstack runtime list`/`runtime install` in a release build still cannot
   install PHP; the limitation is documented in `README.md` and `docs/php.md`.
-- The Apache HTTPS config test remains a manual/skip item on this workstation
-  because `mod_ssl` is absent. It is not counted as a pass.
+- The Apache **HTTPS** config test remains a manual/skip item on this
+  workstation because `mod_ssl` is absent. It is not counted as a pass. The
+  Apache HTTP PHP vhost is tested for real and passes.
 
 ## Known limitations and follow-ups
 
@@ -215,9 +217,9 @@ Until then:
 2. **In-flight continuity:** add a concurrent request during a successful apply
    if the release gate needs explicit evidence that no in-flight request is
    terminated.
-3. **Apache real configtest:** rerun on a host with `mod_ssl` and `proxy_fcgi`
-   loaded. The template strings and golden tests pass here; the real HTTPS
-   config test is skipped.
+3. **Apache HTTPS real configtest:** rerun on a host with `mod_ssl` and
+   `proxy_fcgi` loaded. The HTTP PHP vhost, template strings, and golden tests
+   pass here; the real HTTPS config test is skipped.
 4. **Apache SCRIPT_FILENAME/PATH_INFO:** mod_proxy_fcgi supplies these CGI
    parameters at runtime; the Apache template itself does not contain those
    literal strings. nginx asserts them explicitly.

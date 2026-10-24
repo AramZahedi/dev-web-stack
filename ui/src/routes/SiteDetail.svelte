@@ -652,7 +652,7 @@
             {#if phpSwitchError.details?.message}
               <p class="php-error-line">{phpSwitchError.details.message}</p>
             {/if}
-            {#if phpSwitchError.details?.line !== undefined}
+            {#if phpSwitchError.details?.line !== undefined && phpSwitchError.details.line > 0}
               <p class="php-error-line">Line {phpSwitchError.details.line}</p>
             {/if}
             {#if phpSwitchError.details?.output}
@@ -674,7 +674,7 @@
             {#if phpApplyError.details?.message}
               <p class="php-error-line">{phpApplyError.details.message}</p>
             {/if}
-            {#if phpApplyError.details?.line !== undefined}
+            {#if phpApplyError.details?.line !== undefined && phpApplyError.details.line > 0}
               <p class="php-error-line">Line {phpApplyError.details.line}</p>
             {/if}
             {#if phpApplyError.details?.output}
@@ -717,6 +717,7 @@
                 extensions={phpInfo.available_extensions}
                 builtins={phpInfo.builtins}
                 value={site.php_extensions ?? {}}
+                defaults={phpInfo.defaults.extensions}
                 onchange={onExtensionsChange}
                 disabled={phpApplying}
               />

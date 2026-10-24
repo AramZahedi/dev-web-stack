@@ -88,7 +88,11 @@ func (s *Service) renderPHPFilesLocked(ctx context.Context, site model.Site, bui
 	if err != nil {
 		return phpRendered{}, err
 	}
-	resolved, err := manifest.ResolveWithDefaults(site.PHPVersion, defaults.Extensions, site.PHPExtensions)
+	overrides, _, err := s.sanitizePHPOverridesLocked(site.PHPVersion, site.PHPExtensions)
+	if err != nil {
+		return phpRendered{}, err
+	}
+	resolved, err := manifest.ResolveWithDefaults(site.PHPVersion, defaults.Extensions, overrides)
 	if err != nil {
 		return phpRendered{}, fmt.Errorf("sites: PHP extensions for %q: %w", site.Name, err)
 	}
@@ -165,7 +169,7 @@ func validatePHPConfigInputs(site model.Site) error {
 func (s *Service) phpDefaultsLocked(ctx context.Context, version string) (model.PHPDefaults, error) {
 	defaults, err := s.deps.Store.GetPHPDefaults(ctx, version)
 	if err == nil {
-		return defaults, nil
+		return s.sanitizeStoredPHPDefaultsLocked(ctx, defaults, version)
 	}
 	if !errors.Is(err, store.ErrNotFound) {
 		return model.PHPDefaults{}, fmt.Errorf("sites: read PHP %s defaults: %w", version, err)
@@ -191,6 +195,25 @@ func (s *Service) phpDefaultsLocked(ctx context.Context, version string) (model.
 	}
 	if err := s.deps.Store.SavePHPDefaults(ctx, defaults); err != nil {
 		return model.PHPDefaults{}, fmt.Errorf("sites: seed PHP %s defaults: %w", version, err)
+	}
+	return defaults, nil
+}
+
+// sanitizeStoredPHPDefaultsLocked removes built-in extension keys from a stored
+// defaults row and persists the cleaned row. A row written before a line made
+// an extension built-in (for example opcache on 8.5) must not poison every
+// site on that line.
+func (s *Service) sanitizeStoredPHPDefaultsLocked(ctx context.Context, defaults model.PHPDefaults, version string) (model.PHPDefaults, error) {
+	cleaned, dropped, err := s.sanitizePHPOverridesLocked(version, defaults.Extensions)
+	if err != nil {
+		return model.PHPDefaults{}, err
+	}
+	if len(dropped) == 0 {
+		return defaults, nil
+	}
+	defaults.Extensions = cleaned
+	if err := s.deps.Store.SavePHPDefaults(ctx, defaults); err != nil {
+		return model.PHPDefaults{}, fmt.Errorf("sites: sanitize PHP %s defaults: %w", version, err)
 	}
 	return defaults, nil
 }

@@ -540,6 +540,65 @@ func TestCreatePHPRollsBackWhenStorePersistFails(t *testing.T) {
 	}
 }
 
+func TestStartPHPStoreFailureRetainsPortWhenStopFails(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPort := stopped.FastCGIPort
+	stopped.FastCGIPort = 0
+	if err := fakes.store.UpdateSite(ctx, stopped); err != nil {
+		t.Fatal(err)
+	}
+	fakes.ports.Release(oldPort)
+
+	// Reject the running-state write after the new master starts.
+	db, err := sql.Open("sqlite", "file:"+fakes.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_php_site_update BEFORE UPDATE ON sites BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	fakes.backend.stopPHPErr = errors.New("stop failed")
+
+	err = svc.Start(ctx, site.ID)
+	if err == nil || !strings.Contains(err.Error(), "stop failed") {
+		t.Fatalf("start error = %v, want the failed rollback stop", err)
+	}
+	spec, ok := fakes.backend.phpSpec(site.ID, phpDefaultGeneration)
+	if !ok {
+		t.Fatal("no staged default spec")
+	}
+	if !fakes.backend.phpStarted(site.ID, phpDefaultGeneration) {
+		t.Fatal("failed stop should leave the staged master running")
+	}
+	if reserveErr := fakes.ports.Reserve(spec.FastCGIPort); reserveErr == nil {
+		fakes.ports.Release(spec.FastCGIPort)
+		t.Fatalf("FastCGI port %d was released after a failed stop", spec.FastCGIPort)
+	}
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.FastCGIPort != 0 || stored.Status != model.StatusStopped {
+		t.Fatalf("row changed after the rejected state write: %+v", stored)
+	}
+
+	fakes.backend.stopPHPErr = nil
+	if stopErr := fakes.backend.StopPHP(ctx, site.ID, phpDefaultGeneration); stopErr != nil {
+		t.Fatalf("cleanup staged master: %v", stopErr)
+	}
+	fakes.ports.Release(spec.FastCGIPort)
+}
+
 func TestCreatePHPRollsBackWhenConfigCannotBeWritten(t *testing.T) {
 	svc, fakes := newTestService(t)
 	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
@@ -593,6 +652,41 @@ func TestCreatePHPRollsBackWhenRoutePublicationFails(t *testing.T) {
 	}
 	assertNoPHPConfigDir(t, fakes, "site")
 	assertNoReservedFastCGIPorts(t, fakes)
+}
+
+func TestCreatePHPRollbackRetainsGenerationWhenStopFails(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	fakes.certs.loadErr = errors.New("certificate load failed")
+	fakes.backend.stopPHPErr = errors.New("stop failed")
+
+	_, err := svc.Create(ctx, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	if err == nil || !strings.Contains(err.Error(), "stop failed") {
+		t.Fatalf("err = %v, want the failed rollback stop", err)
+	}
+	spec, ok := fakes.backend.phpSpec("site", phpDefaultGeneration)
+	if !ok {
+		t.Fatal("no staged default spec")
+	}
+	if !fakes.backend.phpStarted("site", phpDefaultGeneration) {
+		t.Fatal("failed stop should leave the staged master running")
+	}
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", "site")); statErr != nil {
+		t.Fatalf("generation removed after a failed stop: %v", statErr)
+	}
+	if reserveErr := fakes.ports.Reserve(spec.FastCGIPort); reserveErr == nil {
+		fakes.ports.Release(spec.FastCGIPort)
+		t.Fatalf("FastCGI port %d was released after a failed stop", spec.FastCGIPort)
+	}
+	if sites, _ := svc.List(ctx); len(sites) != 0 {
+		t.Fatalf("site row remains: %+v", sites)
+	}
+
+	fakes.backend.stopPHPErr = nil
+	if stopErr := fakes.backend.StopPHP(ctx, "site", phpDefaultGeneration); stopErr != nil {
+		t.Fatalf("cleanup staged master: %v", stopErr)
+	}
+	fakes.ports.Release(spec.FastCGIPort)
 }
 
 func TestCreatePHPRollsBackWhenVhostPublicationFails(t *testing.T) {

@@ -237,14 +237,20 @@
   }
 
   function openMigration(target: RuntimeBuild, names: string[]): void {
+    const line = phpLine(target.version);
+    // The backend migrates the whole line, not only the build named by the
+    // 409. List the union so no site moves without being shown.
+    const listed = new Set<string>(phpSitesOn(line).map((site) => site.name));
+    for (const name of names) listed.add(name);
     migration = {
       runtime: target,
-      sites: names.length > 0 ? names : usedBy(target),
+      sites: Array.from(listed).sort(),
     };
     migrationError = null;
     migrationResults = null;
     const candidates = phpRuntimes.filter((runtime) => runtime.id !== target.id);
-    migrationTarget = candidates[0]?.id ?? '';
+    const sameLine = candidates.filter((runtime) => runtime.line === line);
+    migrationTarget = (sameLine[0] ?? candidates[0])?.id ?? '';
   }
 
   async function remove(): Promise<void> {
@@ -753,19 +759,25 @@
 <Modal
   open={Boolean(migration)}
   title={migration ? `Migrate sites off PHP ${migration.runtime.version}` : 'Migrate PHP sites'}
-  description="The build is still pinned by sites. Choose another installed PHP build; removal only runs after every site migrates successfully."
+  description={migration
+    ? `This build is still pinned by sites. Migration moves every site on PHP ${phpLine(migration.runtime.version)} to the selected build, not only the sites listed below. Removal only runs after every site migrates successfully.`
+    : 'The build is still pinned by sites. Choose another installed PHP build.'}
   size="md"
   onclose={closeMigration}
 >
   {#if migration}
     <div class="migration">
       <div class="migration-block">
-        <p class="migration-label">Sites to move</p>
+        <p class="migration-label">Sites to move (all sites on PHP {phpLine(migration.runtime.version)})</p>
         <ul class="migration-sites" aria-label="Sites using the build">
           {#each migration.sites as name (name)}
             <li class="mono">{name}</li>
           {/each}
         </ul>
+        <p class="migration-note">
+          Migration targets the PHP {phpLine(migration.runtime.version)} line, so every site listed
+          here moves even when it pins a different revision.
+        </p>
       </div>
 
       <Field id="migration-target" label="Target build">
@@ -1367,6 +1379,13 @@
     background: var(--surface-2);
     color: var(--fg);
     font-size: 10.5px;
+  }
+
+  .migration-note {
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
   }
 
   .migration-empty {

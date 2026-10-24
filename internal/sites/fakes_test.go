@@ -169,6 +169,7 @@ type fakeBackend struct {
 	phpStartErrs   map[string]error
 	phpStopErrs    map[string]error
 	phpStartSeq    int
+	phpStartHook   func()
 	order          *[]string
 	startCalls     int
 	stopCalls      int
@@ -339,14 +340,22 @@ func (f *fakeBackend) StartPHP(_ context.Context, siteID, generation string) (ba
 	f.startedGens[key] = true
 	f.phpActive[siteID] = generation
 	f.status[siteID] = model.StatusRunning
+	if f.phpStartHook != nil {
+		f.phpStartHook()
+	}
 	return backend.ProcessInfo{PID: 4242, StartedAt: time.Now()}, nil
 }
 
 // StopPHP stops one PHP generation. Stopping the active generation promotes
 // the most recently started remaining generation, mirroring the local backend.
-func (f *fakeBackend) StopPHP(_ context.Context, siteID, generation string) error {
+func (f *fakeBackend) StopPHP(ctx context.Context, siteID, generation string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Local.StopPHP refuses to stop once the caller's context is done. Mirror
+	// that so tests can prove cleanup detaches from request cancellation.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.ensurePHPMapsLocked()
 	key := phpFakeKey(siteID, generation)
 	f.stopCalls++

@@ -29,6 +29,14 @@ const EXTENSIONS: PHPExtension[] = [
     versions: ['8.4'],
     requires: ['igbinary'],
   },
+  {
+    name: 'mbstring',
+    type: 'extension',
+    so: 'mbstring.so',
+    default: true,
+    standard: true,
+    versions: ['8.4'],
+  },
 ];
 
 function renderToggles(value: Record<string, boolean>, onchange = vi.fn()) {
@@ -55,6 +63,28 @@ describe('ExtensionToggles', () => {
     expect(within(opcache).getByText('Inherit (on)')).toBeTruthy();
     expect(within(opcache).getByText('zend_extension')).toBeTruthy();
     expect(within(screen.getByRole('group', { name: 'redis' })).queryByText('zend_extension')).toBeNull();
+  });
+
+  it('uses the edited version defaults for inherited labels', () => {
+    render(ExtensionToggles, {
+      props: {
+        extensions: EXTENSIONS,
+        builtins: [],
+        value: { mbstring: true },
+        defaults: { mbstring: false, opcache: false, xdebug: true },
+        onchange: vi.fn(),
+      },
+    });
+
+    const mbstring = screen.getByRole('group', { name: 'mbstring' });
+    // An explicit site override wins over the edited baseline.
+    expect(within(mbstring).getByText('Enabled for this site')).toBeTruthy();
+
+    const opcache = screen.getByRole('group', { name: 'opcache' });
+    expect(within(opcache).getByText('Inherit (off)')).toBeTruthy();
+
+    const xdebug = screen.getByRole('group', { name: 'xdebug' });
+    expect(within(xdebug).getByText('Inherit (on)')).toBeTruthy();
   });
 
   it('removes the override when inherit is chosen', async () => {

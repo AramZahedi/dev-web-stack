@@ -71,6 +71,14 @@
       return override === undefined ? extension.default : override;
     }).length,
   );
+  // The effective baseline after the pending edits, used for inherited labels.
+  const baseline = $derived.by(() => {
+    const values: Record<string, boolean> = {};
+    for (const extension of extensions) {
+      values[extension.name] = overrides[extension.name] ?? extension.default;
+    }
+    return values;
+  });
 
   $effect(() => {
     if (open && !wasOpen) {
@@ -380,13 +388,14 @@
         <div class="block">
           <h3>Extensions</h3>
           <p class="block-copy">
-            Inherit uses the embedded catalog default. Site overrides still win on individual
+            Inherit follows the line default shown here. Site overrides still win on individual
             sites.
           </p>
           <ExtensionToggles
             {extensions}
             builtins={[]}
             value={overrides}
+            defaults={baseline}
             onchange={(next) => (overrides = next)}
           />
         </div>

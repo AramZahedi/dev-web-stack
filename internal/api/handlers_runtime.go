@@ -1,11 +1,13 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
 
 type installRuntimeRequest struct {
@@ -73,7 +75,11 @@ func (s *Server) handleRemoveRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.sites != nil {
-		if err := s.sites.CheckRuntimeRemoval(r.Context(), buildID); err != nil {
+		// The OpenAPI contract defines DELETE as idempotent. A build that is
+		// already absent cannot be in use, so let the runtime manager return its
+		// no-op success instead of surfacing a 404 from the in-use check.
+		if err := s.sites.CheckRuntimeRemoval(r.Context(), buildID); err != nil &&
+			!errors.Is(err, store.ErrNotFound) {
 			s.writeServiceError(w, r, err)
 			return
 		}

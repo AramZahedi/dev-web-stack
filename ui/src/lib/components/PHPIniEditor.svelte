@@ -191,7 +191,7 @@
       {#if error.details?.message}
         <p class="detail">{error.details.message}</p>
       {/if}
-      {#if error.details?.line !== undefined}
+      {#if error.details?.line !== undefined && error.details.line > 0}
         <p class="detail">Line {error.details.line}</p>
       {/if}
       {#if error.details?.field}

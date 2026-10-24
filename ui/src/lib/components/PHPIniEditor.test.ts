@@ -85,4 +85,20 @@ describe('PHPIniEditor', () => {
     expect(screen.getByText(/PHP Parse error/)).toBeTruthy();
     expect(screen.getByRole('alert')).toBeTruthy();
   });
+
+  it('does not render Line 0 for line-less validation errors', async () => {
+    const onApply = vi.fn().mockRejectedValue(
+      new ApiError('PHP_CONFIG_INVALID', 'php.ini could not be validated.', 422, {
+        line: 0,
+        message: 'no line information',
+      }),
+    );
+    render(PHPIniEditor, { props: props({ onApply }) });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Apply PHP settings' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('PHP_CONFIG_INVALID');
+    expect(alert.textContent).not.toContain('Line 0');
+  });
 });

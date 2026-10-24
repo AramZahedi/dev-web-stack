@@ -139,7 +139,7 @@ func writeApachePHPBody(b *strings.Builder, s SiteSpec) {
 	// FilesMatch inspects only the basename, so the source-backup denial is
 	// scoped to the PHP extensions it protects. It is emitted before the PHP
 	// handler so a backup can never be interpreted as executable source.
-	b.WriteString("    <FilesMatch \"(?i)\\.php(~|\\.(bak|orig|save|old|swp|tmp))$\">\n")
+	fmt.Fprintf(b, "    <FilesMatch \"(?i)\\.php(%s)$\">\n", phpSourceBackupPattern())
 	b.WriteString("        Require all denied\n")
 	b.WriteString("    </FilesMatch>\n")
 	b.WriteString("\n")

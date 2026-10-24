@@ -141,6 +141,49 @@ func TestPHPManifestBuiltinsAreVersionAware(t *testing.T) {
 	}
 }
 
+func TestPHPManifestIgbinaryIntegrationsDeclareDependency(t *testing.T) {
+	m, err := LoadPHP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// build.sh compiles these PECL packages with --enable-*-igbinary and
+	// smoke.sh preloads igbinary.so before them. The manifest must resolve the
+	// same order, or enabling one emits an extension that cannot load.
+	byName := make(map[string]Extension, len(m.Extensions))
+	for _, extension := range m.Extensions {
+		byName[extension.Name] = extension
+	}
+	for _, name := range []string{"redis", "apcu", "memcached"} {
+		extension, ok := byName[name]
+		if !ok {
+			t.Fatalf("extension %q is missing", name)
+		}
+		if !slices.Contains(extension.Requires, "igbinary") {
+			t.Errorf("%s requires = %v, want igbinary", name, extension.Requires)
+		}
+	}
+
+	resolved, err := m.Resolve("8.4", map[string]bool{"memcached": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := func(name string) int {
+		for i, extension := range resolved {
+			if extension.Name == name {
+				return i
+			}
+		}
+		return -1
+	}
+	igbinary, memcached := index("igbinary"), index("memcached")
+	if igbinary < 0 || memcached < 0 || igbinary > memcached {
+		t.Fatalf("resolved order = %+v, want igbinary before memcached", resolved)
+	}
+	if !resolved[igbinary].Required || !slices.Contains(resolved[igbinary].RequiredBy, "memcached") {
+		t.Fatalf("igbinary = %+v, want required by memcached", resolved[igbinary])
+	}
+}
+
 func TestPHPManifestCoversSpecExtensions(t *testing.T) {
 	m, err := LoadPHP()
 	if err != nil {
@@ -372,6 +415,9 @@ func TestParsePHPRejectsInvalidManifests(t *testing.T) {
 		{name: "builtin_by_version invalid name", mutate: func(m *PHPManifest) {
 			m.BuiltinByVersion = map[string][]string{"8.4": {"Not-A-Module"}}
 		}, wantErr: "name"},
+		{name: "builtin_by_version unknown module", mutate: func(m *PHPManifest) {
+			m.BuiltinByVersion = map[string][]string{"8.4": {"opchace"}}
+		}, wantErr: "unknown module"},
 		{name: "builtin_by_version duplicate", mutate: func(m *PHPManifest) {
 			m.BuiltinByVersion = map[string][]string{"8.4": {"a", "a"}}
 		}, wantErr: "duplicate"},

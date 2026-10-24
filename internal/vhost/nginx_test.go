@@ -299,7 +299,7 @@ func TestRenderNginxPHPDenyOrdering(t *testing.T) {
 	}
 	text := string(got)
 	dotfile := strings.Index(text, `location ~ /\. {`)
-	backup := strings.Index(text, `location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|tmp))$ {`)
+	backup := strings.Index(text, `location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|swo|tmp))$ {`)
 	php := strings.Index(text, `location ~* ^(.+\.php)(/.*)?$ {`)
 	devstack := strings.Index(text, `location ^~ /_devstack {`)
 	if dotfile < 0 || backup < 0 || php < 0 || devstack < 0 {

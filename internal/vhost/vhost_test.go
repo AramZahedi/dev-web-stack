@@ -584,11 +584,11 @@ func TestPHPVhostDeniesSourceBackups(t *testing.T) {
 		text := string(got)
 		switch server {
 		case ServerNginx:
-			if !strings.Contains(text, `location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|tmp))$`) {
+			if !strings.Contains(text, `location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|swo|tmp))$`) {
 				t.Fatalf("nginx source backup denial missing:\n%s", text)
 			}
 		case ServerApache:
-			if !strings.Contains(text, `(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$`) {
+			if !strings.Contains(text, `(?i)\.php(~|\.(?:bak|orig|save|old|swp|swo|tmp))$`) {
 				t.Fatalf("apache source backup denial missing:\n%s", text)
 			}
 		}
@@ -626,7 +626,7 @@ func TestPHPVhostsHandleUppercaseExtension(t *testing.T) {
 
 			// The rendered deny uses PCRE non-capturing groups; this equivalent
 			// expression proves its case-insensitive suffix behavior.
-			backup := regexp.MustCompile(`(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$`)
+			backup := regexp.MustCompile(`(?i)\.php(~|\.(?:bak|orig|save|old|swp|swo|tmp))$`)
 			for _, uri := range []string{"/index.php~", "/index.PHP.BAK", "/app.php.orig", "/app.PHP.swp"} {
 				if !backup.MatchString(uri) {
 					t.Errorf("nginx source-backup deny does not match %q", uri)
@@ -654,7 +654,7 @@ func TestPHPVhostsHandleUppercaseExtension(t *testing.T) {
 				t.Error("apache PHP FilesMatch matches a static file")
 			}
 
-			backup := regexp.MustCompile(`(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$`)
+			backup := regexp.MustCompile(`(?i)\.php(~|\.(?:bak|orig|save|old|swp|swo|tmp))$`)
 			for _, name := range []string{"index.php~", "index.PHP.BAK", "app.php.orig", "app.PHP.swp"} {
 				if !backup.MatchString(name) {
 					t.Errorf("apache source-backup deny does not match %q", name)

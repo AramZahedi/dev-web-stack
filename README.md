@@ -7,8 +7,8 @@ trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 > (unit, race, vet, build, Linux E2E, UI unit/type/build/Playwright). Plan 2's
 > PHP runtime, per-site FPM, php.ini and extension controls, dashboard, external
 > vhost rendering, and rollback paths pass the automated acceptance test on
-> system PHP 8.4.4, with the real Apache config subtest skipped because this
-> workstation has no `mod_ssl`; see the
+> system PHP 8.4.4, including the real Apache HTTP PHP configtest; only the
+> Apache HTTPS vhost is skipped because this workstation has no `mod_ssl`; see the
 > [Plan 2 acceptance report](docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
 > The managed-artifact multi-version gate (real PHP 8.2/8.5 side by side) is
 > blocked on published Task 11 CI artifacts.
@@ -127,9 +127,10 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
   upstream release does not cover the manifest's PHP 8.2/8.3 pairing; see
   [build/php/README.md](build/php/README.md).
 - Automated external serving is verified with real nginx on high ports. The Plan
-  2 nginx PHP vhost passes `nginx -t`; the Apache PHP config test is skipped on
-  this workstation because `mod_ssl` is absent. Real Apache serving and
-  browser-trust checks remain manual acceptance items; see the
+  2 nginx PHP vhost passes `nginx -t`; the Apache HTTP PHP vhost passes
+  `httpd -t`. Only the Apache HTTPS vhost is skipped on this workstation because
+  `mod_ssl` is absent. Real Apache serving and browser-trust checks remain manual
+  acceptance items; see the
   [Plan 1 acceptance report](docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md)
   and the
   [Plan 2 acceptance report](docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).

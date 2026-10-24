@@ -675,6 +675,73 @@ func TestPHPInfo85TreatsOPcacheAsBuiltin(t *testing.T) {
 	}
 }
 
+func TestApplyPHP85DropsBuiltinExtensionOverrides(t *testing.T) {
+	svc, fakes := newTestService(t)
+	r1 := fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	fakes.installPHPBuild("php@8.5.0-r1", "8.5.0")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php",
+		PHPVersion: "8.4", PHPBuild: r1.ID,
+		PHPExtensions: map[string]bool{"opcache": true, "xdebug": true}})
+
+	updated, err := svc.ApplyPHP(ctx, site.ID, PHPChange{Version: "8.5"})
+	if err != nil {
+		t.Fatalf("8.4->8.5 apply with an opcache override: %v", err)
+	}
+	if _, ok := updated.PHPExtensions["opcache"]; ok {
+		t.Fatalf("row kept the built-in opcache override: %v", updated.PHPExtensions)
+	}
+	if !updated.PHPExtensions["xdebug"] {
+		t.Fatalf("row lost the xdebug override: %v", updated.PHPExtensions)
+	}
+	ini := string(readFile(t, filepath.Join(phpGenerationDir(t, fakes, updated), "php.ini")))
+	if strings.Contains(ini, "opcache.so") || strings.Contains(ini, "zend_extension=opcache") {
+		t.Fatalf("generated 8.5 ini still loads shared opcache:\n%s", ini)
+	}
+	info, err := svc.PHPInfo(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := info.Site.PHPExtensions["opcache"]; ok {
+		t.Fatalf("PHPInfo exposes the stale opcache override: %v", info.Site.PHPExtensions)
+	}
+}
+
+func TestPHP85PoisonedDefaultsRowIsSanitized(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.5.0-r1", "8.5.0")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "api", Path: fakes.root, Kind: "php",
+		PHPVersion: "8.5", PHPBuild: "php@8.5.0-r1"})
+
+	// Simulate a row written before opcache became a per-version built-in.
+	if err := fakes.store.SavePHPDefaults(ctx, model.PHPDefaults{
+		Version:    "8.5",
+		Ini:        map[string]string{"memory_limit": "256M"},
+		Extensions: map[string]bool{"opcache": true, "xdebug": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := svc.PHPInfo(ctx, site.ID)
+	if err != nil {
+		t.Fatalf("PHPInfo with a poisoned defaults row: %v", err)
+	}
+	if _, ok := info.Defaults.Extensions["opcache"]; ok {
+		t.Fatalf("PHPInfo kept the built-in opcache default: %v", info.Defaults.Extensions)
+	}
+	if !info.Defaults.Extensions["xdebug"] {
+		t.Fatalf("sanitization dropped a valid default: %v", info.Defaults.Extensions)
+	}
+	stored, err := fakes.store.GetPHPDefaults(ctx, "8.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stored.Extensions["opcache"]; ok {
+		t.Fatalf("stored defaults were not healed: %v", stored.Extensions)
+	}
+	if strings.Contains(info.GeneratedIni, "opcache.so") {
+		t.Fatalf("8.5 generated ini loads shared opcache:\n%s", info.GeneratedIni)
+	}
+}
+
 func TestPHPInfoComposesInMemoryWhenFilesAreMissing(t *testing.T) {
 	svc, fakes := newTestService(t)
 	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
@@ -1183,6 +1250,207 @@ func TestConcurrentApplySerializes(t *testing.T) {
 	if prepares != 1 {
 		t.Fatalf("final generation prepared %d times, want 1", prepares)
 	}
+}
+
+func TestStoppedPHPStartAndExecPickUpEditedDefaults(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	oldHash := site.PHPConfigHash
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.SavePHPDefaults(ctx, model.PHPDefaults{
+		Version:    "8.4",
+		Ini:        map[string]string{"memory_limit": "640M"},
+		Extensions: map[string]bool{"xdebug": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	started, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.PHPConfigHash == oldHash {
+		t.Fatal("Start reused the stale generation after edited defaults")
+	}
+	ini := string(readFile(t, filepath.Join(phpGenerationDir(t, fakes, started), "php.ini")))
+	if !strings.Contains(ini, "memory_limit = 640M") || !strings.Contains(ini, "zend_extension=xdebug.so") {
+		t.Fatalf("started generation does not reflect edited defaults:\n%s", ini)
+	}
+	spec, ok := fakes.backend.phpSpec(site.ID, phpDefaultGeneration)
+	if !ok || spec.PHPIniPath != filepath.Join(phpGenerationDir(t, fakes, started), "php.ini") {
+		t.Fatalf("started spec = %+v", spec)
+	}
+	info, err := svc.PHPInfo(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(info.GeneratedIni, "memory_limit = 640M") {
+		t.Fatalf("PHPInfo uses a stale generation:\n%s", info.GeneratedIni)
+	}
+
+	if err := svc.Stop(ctx, site.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SavePHPDefaults(ctx, model.PHPDefaults{
+		Version: "8.4",
+		Ini:     map[string]string{"memory_limit": "768M"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PHPExec(ctx, site.ID, []string{"-r", "echo 1;"}); err != nil {
+		t.Fatal(err)
+	}
+	exec, ok := fakes.backend.lastExec()
+	if !ok || len(exec.Argv) < 3 {
+		t.Fatalf("exec argv = %v", exec.Argv)
+	}
+	execIni := string(readFile(t, exec.Argv[2]))
+	if !strings.Contains(execIni, "memory_limit = 768M") {
+		t.Fatalf("PHPExec used a stale php.ini:\n%s", execIni)
+	}
+}
+
+func TestApplyPHPCanceledContextStopsTheStagedMaster(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	oldHash, oldPort := site.PHPConfigHash, site.FastCGIPort
+
+	applyCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel after the new master starts, so the row write fails and the
+	// rollback stop would see an already-canceled context.
+	fakes.backend.phpStartHook = cancel
+
+	_, err := svc.ApplyPHP(applyCtx, site.ID, PHPChange{Ini: map[string]string{"memory_limit": "512M"}})
+	if err == nil {
+		t.Fatal("canceled apply succeeded")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+
+	stagedHash, stagedPort := lastStagedApply(t, fakes, site.ID)
+	if fakes.backend.phpStarted(site.ID, stagedHash) {
+		t.Fatal("staged master still runs after a canceled apply")
+	}
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, stagedHash)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("staged generation directory was not removed: %v", statErr)
+	}
+	if reserveErr := fakes.ports.Reserve(stagedPort); reserveErr != nil {
+		t.Fatalf("staged FastCGI port %d was not released: %v", stagedPort, reserveErr)
+	}
+	fakes.ports.Release(stagedPort)
+	if !fakes.backend.phpStarted(site.ID, phpDefaultGeneration) {
+		t.Fatal("old master stopped during rollback")
+	}
+	stored, getErr := fakes.store.GetSite(ctx, site.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if stored.PHPConfigHash != oldHash || stored.FastCGIPort != oldPort {
+		t.Fatalf("row changed after canceled apply: %+v", stored)
+	}
+}
+
+func TestApplyPHPRollbackRetainsGenerationWhenStopFails(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	// Force a publish failure after the new master is live, then make the
+	// rollback stop fail as well.
+	fakes.certs.err = errors.New("route publish failed")
+	fakes.backend.stopPHPErr = errors.New("stop failed")
+
+	_, err := svc.ApplyPHP(ctx, site.ID, PHPChange{Ini: map[string]string{"memory_limit": "512M"}})
+	if err == nil {
+		t.Fatal("apply succeeded")
+	}
+	for _, want := range []string{"route publish failed", "stop failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	}
+	stagedHash, stagedPort := lastStagedApply(t, fakes, site.ID)
+	if !fakes.backend.phpStarted(site.ID, stagedHash) {
+		t.Fatal("fake stop failure did not leave the staged master running")
+	}
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, stagedHash)); statErr != nil {
+		t.Fatalf("generation removed after a failed stop: %v", statErr)
+	}
+	if reserveErr := fakes.ports.Reserve(stagedPort); reserveErr == nil {
+		fakes.ports.Release(stagedPort)
+		t.Fatalf("FastCGI port %d was released after a failed stop", stagedPort)
+	}
+
+	fakes.backend.stopPHPErr = nil
+	if stopErr := fakes.backend.StopPHP(ctx, site.ID, stagedHash); stopErr != nil {
+		t.Fatalf("cleanup staged master: %v", stopErr)
+	}
+	fakes.ports.Release(stagedPort)
+}
+
+func TestApplyPHPFailedDrainSkipsPruning(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	liveHash, livePort := site.PHPConfigHash, site.FastCGIPort
+
+	// A document-root update publishes a new row hash while the default master
+	// keeps serving the generation it started with. The next apply drains
+	// "default"; if that stop fails, pruning must not delete the live
+	// generation just because it is neither the current nor previous row hash.
+	publicTwo := filepath.Join(fakes.root, "public2")
+	if err := os.MkdirAll(publicTwo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := svc.Update(ctx, site.ID, UpdateRequest{DocumentRoot: "public2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.PHPConfigHash == liveHash {
+		t.Fatal("document-root update did not publish a new hash")
+	}
+
+	fakes.backend.phpStopErrs[phpFakeKey(site.ID, phpDefaultGeneration)] = errors.New("drain stop failed")
+	applied, err := svc.ApplyPHP(ctx, site.ID, PHPChange{Ini: map[string]string{"memory_limit": "512M"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, liveHash)); statErr != nil {
+		t.Fatalf("live default generation was pruned after a failed drain: %v", statErr)
+	}
+	if reserveErr := fakes.ports.Reserve(livePort); reserveErr == nil {
+		fakes.ports.Release(livePort)
+		t.Fatalf("old FastCGI port %d was released despite a failed drain", livePort)
+	}
+	if applied.FastCGIPort == livePort {
+		t.Fatalf("apply did not allocate a new FastCGI port: %d", applied.FastCGIPort)
+	}
+	if !fakes.backend.phpStarted(site.ID, phpDefaultGeneration) {
+		t.Fatal("fake drain failure should leave the default generation running")
+	}
+}
+
+func lastStagedApply(t *testing.T, fakes *testFakes, siteID string) (string, int) {
+	t.Helper()
+	hash, port := "", 0
+	for _, event := range fakes.backend.phpEventList() {
+		if event.Op != "prepare" || event.SiteID != siteID || event.Generation == phpDefaultGeneration {
+			continue
+		}
+		hash, port = event.Generation, event.Port
+	}
+	if hash == "" {
+		t.Fatal("no staged apply generation was prepared")
+	}
+	return hash, port
 }
 
 func phpEventIndex(events []fakePHPOperation, op, siteID, generation string) int {

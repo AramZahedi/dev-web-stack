@@ -290,7 +290,7 @@ func TestRenderApachePHP(t *testing.T) {
 		"DirectoryIndex index.php index.html",
 		`<FilesMatch "(?i)\.php$">`,
 		`SetHandler "proxy:fcgi://127.0.0.1:43001"`,
-		`<FilesMatch "(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$">`,
+		`<FilesMatch "(?i)\.php(~|\.(?:bak|orig|save|old|swp|swo|tmp))$">`,
 		"RewriteEngine On",
 		"RewriteCond %{REQUEST_FILENAME} !-f",
 		"RewriteCond %{REQUEST_FILENAME} !-d",
@@ -330,7 +330,7 @@ func TestRenderApachePHPDenials(t *testing.T) {
 	text := string(got)
 	for _, want := range []string{
 		`<FilesMatch "^\.">`,
-		`<FilesMatch "(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$">`,
+		`<FilesMatch "(?i)\.php(~|\.(?:bak|orig|save|old|swp|swo|tmp))$">`,
 		`<LocationMatch "(^|/)\.">`,
 		`<LocationMatch "^/_devstack(/|$)">`,
 	} {
@@ -338,7 +338,7 @@ func TestRenderApachePHPDenials(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, text)
 		}
 	}
-	backup := strings.Index(text, `FilesMatch "(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$"`)
+	backup := strings.Index(text, `FilesMatch "(?i)\.php(~|\.(?:bak|orig|save|old|swp|swo|tmp))$"`)
 	php := strings.Index(text, `FilesMatch "(?i)\.php$"`)
 	if backup < 0 || php < 0 {
 		t.Fatalf("missing a PHP FilesMatch section:\n%s", text)
