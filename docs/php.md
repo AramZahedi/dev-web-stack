@@ -13,6 +13,26 @@ own `php.ini`, and toggle shared extensions.
 > those artifacts in CI; it does not publish them automatically. Do not expect
 > PHP installation to work from a release build yet.
 
+## Acceptance status
+
+The Plan 2 automated acceptance test
+(`test/php/acceptance_test.go`) passes on this workstation against the system
+PHP **8.4.4** installation at `/usr/local/php`. It registers fixture build rows
+`php@8.4.4-r1` and `php@8.4.4-r2`, starts real supervised `php-fpm` masters on
+ports in **43000-43999**, and verifies direct FastCGI responses, built-in proxy
+responses, per-site `php.ini`, Xdebug isolation, a rejected malformed ini while
+the old master keeps serving, a failed build switch with rollback and port
+release, migration, removal blocking, stop/start, and the Doctor PHP checks. The
+generated nginx PHP vhost passes real `nginx -t`; the Apache config test is
+skipped because this workstation has no `mod_ssl`.
+
+This does **not** mean production PHP installation works yet. The test builds a
+filtered catalog manifest from the embedded fixture plus the system `php -m` and
+present `.so` files, precisely because the shipped catalog has no PHP entries.
+The release gate still requires checksummed 8.2 and 8.5 artifacts from the Task
+11 CI pipeline and a real 8.2/8.5 side-by-side run. See the
+[Plan 2 acceptance report](superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
+
 ## Install a PHP build (after the artifact gate opens)
 
 A PHP site needs an installed build on its line. Once catalog entries are

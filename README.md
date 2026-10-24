@@ -5,9 +5,13 @@ trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 
 > **Status:** Plan 1 implementation and its automated acceptance suite pass
 > (unit, race, vet, build, Linux E2E, UI unit/type/build/Playwright). Plan 2's
-> PHP runtime, per-site FPM, php.ini and extension controls, dashboard, and
-> external vhost rendering are implemented and covered by automated tests; the
-> final Plan 2 acceptance run is tracked separately.
+> PHP runtime, per-site FPM, php.ini and extension controls, dashboard, external
+> vhost rendering, and rollback paths pass the automated acceptance test on
+> system PHP 8.4.4, with the real Apache config subtest skipped because this
+> workstation has no `mod_ssl`; see the
+> [Plan 2 acceptance report](docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
+> The managed-artifact multi-version gate (real PHP 8.2/8.5 side by side) is
+> blocked on published Task 11 CI artifacts.
 >
 > **PHP is not installable from the shipped catalog yet.** The production PHP
 > catalog stays empty until the CI/release pipeline publishes checksummed
@@ -104,19 +108,31 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
 ## Status and limitations
 
 - Plan 1 serves static and Node sites on Linux. Plan 2 adds PHP sites, per-site
-  FPM masters, php.ini/extension controls, and PHP vhost previews. Windows/WSL
-  (Plan 3) and packaging/release work (Plan 4) are not included.
+  FPM masters, php.ini/extension controls, and PHP vhost previews. Its automated
+  acceptance test passes against system PHP 8.4.4 using a filtered fixture
+  catalog. Windows/WSL (Plan 3) and packaging/release work (Plan 4) are not
+  included.
 - **PHP installation is gated.** The production catalog has no PHP entries until
   the release pipeline publishes checksummed archives and merges their entries.
   `devstack runtime list` shows only Node builds in shipped releases. The build,
   smoke, SBOM, and catalog-generation steps run in CI; this repository does not
   publish artifacts or commit catalog changes.
+- **The real multi-version PHP gate is blocked.** PHP 8.2 and 8.5 side-by-side
+  acceptance requires the checksummed artifacts produced by the Task 11 CI
+  pipeline. Until those are published, tests use fixture catalog rows plus the
+  system PHP 8.4 build; this does not prove production PHP installation works.
+  See the
+  [Plan 2 acceptance report](docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
 - `imap` is omitted from the current PHP build pipeline because the verified
   upstream release does not cover the manifest's PHP 8.2/8.3 pairing; see
   [build/php/README.md](build/php/README.md).
-- Automated external serving is verified with real nginx on high ports. Real
-  Apache serving and browser-trust checks remain manual acceptance items; see
-  the [Plan 1 acceptance report](docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md).
+- Automated external serving is verified with real nginx on high ports. The Plan
+  2 nginx PHP vhost passes `nginx -t`; the Apache PHP config test is skipped on
+  this workstation because `mod_ssl` is absent. Real Apache serving and
+  browser-trust checks remain manual acceptance items; see the
+  [Plan 1 acceptance report](docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-acceptance.md)
+  and the
+  [Plan 2 acceptance report](docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md).
 - Node HMR WebSockets are covered by automated proxy tests, but no browser HMR
   session was part of the acceptance pass.
 - The PHP full source build and FPM smoke test are verified by CI on
