@@ -12,7 +12,7 @@
 
 **Depends on:** `docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-foundation.md` (implemented). Plan 2 preserves every Plan 1 behavior: host allowlist, CSRF/session checks, peer-UID helper, vhost validation, supervisor semantics, and the dashboard design system.
 
-> **Implementation status (2026-10-24):** Tasks 1–10 are complete and reviewed. Task 11 is the next task. Tasks 11–12 remain. See `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`.
+> **Implementation status (2026-10-24):** Tasks 1–11 are complete and reviewed. Task 12 (acceptance) is the next task. See `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`.
 
 > **Implementation rulings made while executing Tasks 5–6:**
 > - Task 5 adds `proxy.KindPHP` and `Route.DocumentRoot`/`Route.FrontController` in `internal/proxy/router.go` so the Task 5 routes compile; FastCGI transport stays in Task 7.
@@ -27,6 +27,7 @@
 > - Task 8 uses case-insensitive PHP matching in native nginx/Apache vhosts (`location ~*`, `(?i)\.php$`) and places nginx dotfile/source-backup denials before the PHP regex. The brief's case-sensitive sample strings are superseded so `.PHP` cannot fall through to static. Unchanged static vhosts keep Plan 1's ordinary-file behavior.
 > - Task 9 keeps `sites.PHPChange`/`PHPMigrationRequest` transport-neutral and uses private snake_case API/client payloads. `DELETE /api/v1/runtimes/{id}` calls `CheckRuntimeRemoval` before removal. The daemon loads `catalog.LoadPHP()` once and passes explicit PHP deps; `site add --kind php` installs a missing catalog build before Create. Typed `catalog.ErrInvalidExtension` maps to 422 `PHP_CONFIG_INVALID`; typed `sites.ErrPHPExecArgument` maps to 400 `INVALID_REQUEST`.
 > - Task 10 treats `site.php_extensions` as the override map (absent = inherit), `PHPInfo.Extensions` as effective, and `Defaults.Extensions` as the baseline. The raw editor binds only `PHPInfo.IniRaw`; the generated managed block is read-only. Runtime `used_by` is derived client-side from `php_build`/line. The defaults drawer refuses to save unless the active line loaded successfully and shows structured `PHP_CONFIG_INVALID` details.
+> - Task 11 pins only verified upstream PHP/PECL data in `extensions.lock`; PHP 8.5 has no shared `opcache.so`, so `php.json` marks `opcache` as a per-version built-in for 8.5 and omits it from 8.5 defaults. Smoke captures stderr, asserts `extension_loaded` for every expected module, and lints the per-line default extension set. The release asset base URL is required (no default), and the production catalog is not modified by CI.
 
 **Build-artifact dependency (honest gate):** `internal/catalog/catalog.json` contains **no PHP entries until a release publishes real artifacts**. The CI matrix in Task 11 builds, smoke-tests, checksums, SBOMs, and uploads each archive; only then does the release job generate a `php@<version>-r<revision>` entry from the published URL and checksum. Unit and integration tests use fixture catalogs and tarballs; acceptance uses this machine's real `/usr/local/php` when present and skips cleanly when absent. No production PHP URL or checksum is invented in this plan.
 
