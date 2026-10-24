@@ -1216,6 +1216,121 @@ func TestSyncAllowsStoppedStaticWithMissingRoot(t *testing.T) {
 	}
 }
 
+func TestSyncAllowsRunningPHPSite(t *testing.T) {
+	env := newVhostTestEnv(t)
+	cert, key := env.certPEM("blog.test", "www.blog.test")
+	req := env.request("nginx")
+	req.Sites[0] = helperproto.VHostSite{
+		ID:              "s-1",
+		Name:            "blog",
+		Domain:          "blog.test",
+		BackendPath:     env.backend,
+		WWW:             true,
+		Kind:            string(model.SitePHP),
+		DocumentRoot:    env.docroot,
+		BackendPort:     43001,
+		TLS:             true,
+		FrontController: true,
+		DesiredState:    string(model.DesiredRunning),
+		CertPEM:         cert,
+		KeyPEM:          key,
+	}
+
+	if _, err := env.manager.Sync(context.Background(), req); err != nil {
+		t.Fatalf("Sync PHP site: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog-s-1.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"fastcgi_pass 127.0.0.1:43001;",
+		"location ~* ^(.+\\.php)(/.*)?$",
+		"try_files $uri $uri/ @devstack_front_controller;",
+	} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("rendered PHP config is missing %q:\n%s", want, data)
+		}
+	}
+}
+
+func TestSyncAllowsStoppedPHPWithoutPaths(t *testing.T) {
+	env := newVhostTestEnv(t)
+	req := env.request("nginx")
+	req.Sites[0] = helperproto.VHostSite{
+		ID:           "s-1",
+		Name:         "blog",
+		Domain:       "blog.test",
+		Kind:         string(model.SitePHP),
+		DesiredState: string(model.DesiredStopped),
+	}
+
+	if _, err := env.manager.Sync(context.Background(), req); err != nil {
+		t.Fatalf("Sync stopped PHP site without paths: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog-s-1.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("fastcgi_pass")) {
+		t.Fatalf("stopped PHP vhost renders FastCGI:\n%s", data)
+	}
+	if !bytes.Contains(data, []byte("return 503 ")) {
+		t.Fatalf("stopped PHP vhost did not render a 503:\n%s", data)
+	}
+}
+
+func TestSyncRejectsInvalidRunningPHPSites(t *testing.T) {
+	outside := func(env *vhostTestEnv) string {
+		dir := filepath.Join(env.root, "outside", "public")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	tests := []struct {
+		name   string
+		mutate func(*vhostTestEnv, *helperproto.VHostSyncRequest)
+	}{
+		{
+			name: "node-range port",
+			mutate: func(_ *vhostTestEnv, req *helperproto.VHostSyncRequest) {
+				req.Sites[0].Kind = string(model.SitePHP)
+				req.Sites[0].BackendPort = 41001
+			},
+		},
+		{
+			name: "missing document root",
+			mutate: func(_ *vhostTestEnv, req *helperproto.VHostSyncRequest) {
+				req.Sites[0].Kind = string(model.SitePHP)
+				req.Sites[0].BackendPort = 43001
+				req.Sites[0].DocumentRoot = ""
+			},
+		},
+		{
+			name: "document root outside backend",
+			mutate: func(env *vhostTestEnv, req *helperproto.VHostSyncRequest) {
+				req.Sites[0].Kind = string(model.SitePHP)
+				req.Sites[0].BackendPort = 43001
+				req.Sites[0].DocumentRoot = outside(env)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newVhostTestEnv(t)
+			req := env.request("nginx")
+			tc.mutate(env, &req)
+			if _, err := env.manager.Sync(context.Background(), req); !errors.Is(err, helperproto.ErrInvalidRequest) {
+				t.Fatalf("error = %v, want INVALID_REQUEST", err)
+			}
+			if _, err := os.Stat(env.bridge("nginx")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("bridge was written for an invalid PHP site: %v", err)
+			}
+		})
+	}
+}
+
 func TestSyncAllowsContainedSymlinkAndNodeWithoutRoot(t *testing.T) {
 	env := newVhostTestEnv(t)
 	realRoot := filepath.Join(env.backend, "real", "public")
@@ -1276,9 +1391,10 @@ func TestSyncValidatesPortsKindsAndDuplicates(t *testing.T) {
 			},
 		},
 		{
-			name: "php unsupported",
+			name: "php node-range port",
 			mutate: func(_ *vhostTestEnv, req *helperproto.VHostSyncRequest) {
 				req.Sites[0].Kind = string(model.SitePHP)
+				req.Sites[0].BackendPort = 41001
 			},
 		},
 		{

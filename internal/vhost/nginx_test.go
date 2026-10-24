@@ -219,6 +219,122 @@ func TestRenderNginxNodeProxySettings(t *testing.T) {
 	}
 }
 
+func TestRenderNginxPHPFrontController(t *testing.T) {
+	s := phpSite()
+	s.FrontController = true
+
+	got, err := RenderSite(ServerNginx, s)
+	if err != nil {
+		t.Fatalf("RenderSite: %v", err)
+	}
+	for _, want := range []string{
+		"root /home/u/blog/public;",
+		"index index.php index.html;",
+		"autoindex off;",
+		"location ~* ^(.+\\.php)(/.*)?$",
+		"fastcgi_split_path_info ^(.+\\.php)(/.*)$;",
+		"try_files $fastcgi_script_name =404;",
+		"fastcgi_pass 127.0.0.1:43001;",
+		"fastcgi_index index.php;",
+		"fastcgi_read_timeout 120s;",
+		"fastcgi_buffering off;",
+		"fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;",
+		"fastcgi_param SCRIPT_NAME $fastcgi_script_name;",
+		"fastcgi_param PATH_INFO $fastcgi_path_info;",
+		"fastcgi_param DOCUMENT_ROOT $document_root;",
+		"fastcgi_param QUERY_STRING $query_string;",
+		"fastcgi_param REQUEST_METHOD $request_method;",
+		"fastcgi_param REQUEST_URI $request_uri;",
+		"fastcgi_param SERVER_PROTOCOL $server_protocol;",
+		"fastcgi_param GATEWAY_INTERFACE CGI/1.1;",
+		"fastcgi_param HTTPS $https if_not_empty;",
+		"fastcgi_param SERVER_NAME $server_name;",
+		"fastcgi_param SERVER_ADDR $server_addr;",
+		"fastcgi_param SERVER_PORT $server_port;",
+		"fastcgi_param REMOTE_ADDR $remote_addr;",
+		"fastcgi_param REMOTE_PORT $remote_port;",
+		"fastcgi_param CONTENT_TYPE $content_type;",
+		"fastcgi_param CONTENT_LENGTH $content_length;",
+		"location @devstack_front_controller",
+		"fastcgi_param SCRIPT_FILENAME \"/home/u/blog/public/index.php\";",
+		"fastcgi_param SCRIPT_NAME /index.php;",
+		"fastcgi_param PATH_INFO $uri;",
+		"try_files $uri $uri/ @devstack_front_controller;",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	compareGolden(t, "nginx/php-front.conf", got)
+}
+
+func TestRenderNginxPHPNonFrontController(t *testing.T) {
+	got, err := RenderSite(ServerNginx, phpSite())
+	if err != nil {
+		t.Fatalf("RenderSite: %v", err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		"index index.php index.html;",
+		"location ~* ^(.+\\.php)(/.*)?$",
+		"fastcgi_pass 127.0.0.1:43001;",
+		"try_files $uri $uri/ =404;",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "@devstack_front_controller") {
+		t.Errorf("non-front-controller PHP vhost has a front controller location:\n%s", text)
+	}
+}
+
+func TestRenderNginxPHPDenyOrdering(t *testing.T) {
+	s := phpSite()
+	s.FrontController = true
+
+	got, err := RenderSite(ServerNginx, s)
+	if err != nil {
+		t.Fatalf("RenderSite: %v", err)
+	}
+	text := string(got)
+	dotfile := strings.Index(text, `location ~ /\. {`)
+	backup := strings.Index(text, `location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|tmp))$ {`)
+	php := strings.Index(text, `location ~* ^(.+\.php)(/.*)?$ {`)
+	devstack := strings.Index(text, `location ^~ /_devstack {`)
+	if dotfile < 0 || backup < 0 || php < 0 || devstack < 0 {
+		t.Fatalf("missing a denial or PHP location:\n%s", text)
+	}
+	// nginx evaluates regex locations in order and uses the first match, so a
+	// dotfile .php must reach the dotfile denial, not the FastCGI location.
+	if !(dotfile < backup && backup < php) {
+		t.Fatalf("deny locations are not before the PHP location:\n%s", text)
+	}
+	if devstack > php {
+		t.Errorf("the /_devstack denial is rendered after the PHP location:\n%s", text)
+	}
+}
+
+func TestRenderNginxPHPStopped(t *testing.T) {
+	s := phpSite()
+	s.DesiredState = model.DesiredStopped
+
+	got, err := RenderSite(ServerNginx, s)
+	if err != nil {
+		t.Fatalf("RenderSite: %v", err)
+	}
+	text := string(got)
+	if strings.Contains(text, "fastcgi_pass") {
+		t.Errorf("stopped PHP vhost renders FastCGI:\n%s", text)
+	}
+	if strings.Contains(text, "location ~*") {
+		t.Errorf("stopped PHP vhost renders a PHP location:\n%s", text)
+	}
+	if !strings.Contains(text, "return 503 ") {
+		t.Errorf("stopped PHP vhost does not return 503:\n%s", text)
+	}
+}
+
 func TestRenderNginxStaticHardening(t *testing.T) {
 	got, err := RenderSite(ServerNginx, staticSite())
 	if err != nil {

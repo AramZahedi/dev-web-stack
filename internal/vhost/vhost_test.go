@@ -2,9 +2,9 @@ package vhost
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -50,6 +50,22 @@ func nodeSite() SiteSpec {
 		DesiredState: model.DesiredRunning,
 		CertPEM:      testCertPEM,
 		KeyPEM:       testKeyPEM,
+	}
+}
+
+func phpSite() SiteSpec {
+	return SiteSpec{
+		ID:           "php1",
+		Name:         "blog",
+		Domain:       "blog.test",
+		Kind:         model.SitePHP,
+		DocumentRoot: "/home/u/blog/public",
+		BackendPort:  43001,
+		TLS:          true,
+		DesiredState: model.DesiredRunning,
+		CertPEM:      testCertPEM,
+		KeyPEM:       testKeyPEM,
+		CertNotAfter: testCertNotAfter,
 	}
 }
 
@@ -258,12 +274,21 @@ func TestValidateSiteSpec(t *testing.T) {
 	validNodeLow.BackendPort = 41000
 	validNodeHigh := nodeSite()
 	validNodeHigh.BackendPort = 42999
+	validPHP := phpSite()
+	validPHPStoppedNoRoot := phpSite()
+	validPHPStoppedNoRoot.DesiredState = model.DesiredStopped
+	validPHPStoppedNoRoot.DocumentRoot = ""
+	validPHPStoppedNoRoot.BackendPort = 0
+	validPHPStoppedWithPort := phpSite()
+	validPHPStoppedWithPort.DesiredState = model.DesiredStopped
+	validPHPStoppedWithPort.BackendPort = 43999
+	validPHPFrontController := phpSite()
+	validPHPFrontController.FrontController = true
 
 	tests := []struct {
-		name  string
-		spec  SiteSpec
-		want  string
-		isPHP bool
+		name string
+		spec SiteSpec
+		want string
 	}{
 		{name: "valid static", spec: valid},
 		{name: "valid static without tls", spec: validNoTLS},
@@ -272,6 +297,12 @@ func TestValidateSiteSpec(t *testing.T) {
 		{name: "valid stopped node without port", spec: validStoppedNodeNoPort},
 		{name: "valid node low port", spec: validNodeLow},
 		{name: "valid node high port", spec: validNodeHigh},
+		{name: "valid php", spec: validPHP},
+		{name: "valid php low port", spec: func() SiteSpec { s := validPHP; s.BackendPort = 43000; return s }()},
+		{name: "valid php high port", spec: func() SiteSpec { s := validPHP; s.BackendPort = 43999; return s }()},
+		{name: "valid php front controller", spec: validPHPFrontController},
+		{name: "valid stopped php without paths", spec: validPHPStoppedNoRoot},
+		{name: "valid stopped php with port", spec: validPHPStoppedWithPort},
 		{
 			name: "empty id",
 			spec: func() SiteSpec { s := valid; s.ID = ""; return s }(),
@@ -408,14 +439,57 @@ func TestValidateSiteSpec(t *testing.T) {
 			want: "clean",
 		},
 		{
-			name:  "php site",
-			spec:  func() SiteSpec { s := valid; s.Kind = model.SitePHP; return s }(),
-			isPHP: true,
+			name: "php with zero port",
+			spec: func() SiteSpec { s := validPHP; s.BackendPort = 0; return s }(),
+			want: "port",
 		},
 		{
-			name:  "front controller",
-			spec:  func() SiteSpec { s := valid; s.FrontController = true; return s }(),
-			isPHP: true,
+			name: "php with node port",
+			spec: func() SiteSpec { s := validPHP; s.BackendPort = 41001; return s }(),
+			want: "43000",
+		},
+		{
+			name: "php with port below range",
+			spec: func() SiteSpec { s := validPHP; s.BackendPort = 42999; return s }(),
+			want: "43000",
+		},
+		{
+			name: "php with port above range",
+			spec: func() SiteSpec { s := validPHP; s.BackendPort = 44000; return s }(),
+			want: "43000",
+		},
+		{
+			name: "php without document root",
+			spec: func() SiteSpec { s := validPHP; s.DocumentRoot = ""; return s }(),
+			want: "document root",
+		},
+		{
+			name: "php with invalid document root",
+			spec: func() SiteSpec { s := validPHP; s.DocumentRoot = "/tmp/../run"; return s }(),
+			want: "clean",
+		},
+		{
+			name: "stopped php with out of range port",
+			spec: func() SiteSpec { s := validPHP; s.DesiredState = model.DesiredStopped; s.BackendPort = 41001; return s }(),
+			want: "43000",
+		},
+		{
+			name: "static front controller",
+			spec: func() SiteSpec { s := valid; s.FrontController = true; return s }(),
+			want: "front controller",
+		},
+		{
+			name: "node front controller",
+			spec: func() SiteSpec { s := nodeSite(); s.FrontController = true; return s }(),
+			want: "front controller",
+		},
+		{
+			name: "php with no document root stopped front controller",
+			spec: func() SiteSpec {
+				s := validPHPStoppedNoRoot
+				s.FrontController = true
+				return s
+			}(),
 		},
 		{
 			name: "unknown kind",
@@ -457,13 +531,6 @@ func TestValidateSiteSpec(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateSiteSpec(tc.spec)
 			switch {
-			case tc.isPHP:
-				if err == nil {
-					t.Fatalf("ValidateSiteSpec accepted %+v", tc.spec)
-				}
-				if !errors.Is(err, ErrPHPUnsupported) {
-					t.Fatalf("error %v does not wrap ErrPHPUnsupported", err)
-				}
 			case tc.want == "":
 				if err != nil {
 					t.Fatalf("ValidateSiteSpec: %v", err)
@@ -477,6 +544,128 @@ func TestValidateSiteSpec(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateSiteSpecPHP(t *testing.T) {
+	valid := phpSite()
+	if err := ValidateSiteSpec(valid); err != nil {
+		t.Fatalf("ValidateSiteSpec rejected a running PHP site: %v", err)
+	}
+	badPort := valid
+	badPort.BackendPort = 41001
+	if err := ValidateSiteSpec(badPort); err == nil {
+		t.Fatal("accepted a Node-range port for a PHP site")
+	}
+	stopped := valid
+	stopped.DesiredState = model.DesiredStopped
+	stopped.BackendPort = 0
+	if err := ValidateSiteSpec(stopped); err != nil {
+		t.Fatalf("ValidateSiteSpec rejected a stopped PHP site without a port: %v", err)
+	}
+	noRoot := valid
+	noRoot.DocumentRoot = ""
+	if err := ValidateSiteSpec(noRoot); err == nil {
+		t.Fatal("accepted a running PHP site without a document root")
+	}
+	staticFront := staticSite()
+	staticFront.FrontController = true
+	if err := ValidateSiteSpec(staticFront); err == nil {
+		t.Fatal("accepted a static front controller")
+	}
+}
+
+func TestPHPVhostDeniesSourceBackups(t *testing.T) {
+	for _, server := range []Server{ServerNginx, ServerApache} {
+		got, err := RenderSite(server, phpSite())
+		if err != nil {
+			t.Fatalf("%s: RenderSite: %v", server, err)
+		}
+		text := string(got)
+		switch server {
+		case ServerNginx:
+			if !strings.Contains(text, `location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|tmp))$`) {
+				t.Fatalf("nginx source backup denial missing:\n%s", text)
+			}
+		case ServerApache:
+			if !strings.Contains(text, `(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$`) {
+				t.Fatalf("apache source backup denial missing:\n%s", text)
+			}
+		}
+	}
+}
+
+func TestPHPVhostsHandleUppercaseExtension(t *testing.T) {
+	for _, server := range []Server{ServerNginx, ServerApache} {
+		got, err := RenderSite(server, phpSite())
+		if err != nil {
+			t.Fatalf("%s: RenderSite: %v", server, err)
+		}
+		text := string(got)
+		switch server {
+		case ServerNginx:
+			if !strings.Contains(text, `location ~* ^(.+\.php)(/.*)?$`) {
+				t.Fatalf("nginx PHP location is not case-insensitive:\n%s", text)
+			}
+			if strings.Contains(text, `location ~ ^(.+\.php)(/.*)?$`) {
+				t.Fatalf("nginx PHP location is case-sensitive:\n%s", text)
+			}
+			pattern := regexp.MustCompile(`(?m)^\s*location ~\* (\^.*\$) \{$`).FindStringSubmatch(text)
+			if pattern == nil {
+				t.Fatalf("nginx PHP location pattern not found:\n%s", text)
+			}
+			php := regexp.MustCompile("(?i)" + pattern[1])
+			for _, uri := range []string{"/index.PHP", "/index.Php", "/nested/App.PHP/path"} {
+				if !php.MatchString(uri) {
+					t.Errorf("nginx PHP location does not match %q", uri)
+				}
+			}
+			if php.MatchString("/index.html") {
+				t.Error("nginx PHP location matches a static file")
+			}
+
+			// The rendered deny uses PCRE non-capturing groups; this equivalent
+			// expression proves its case-insensitive suffix behavior.
+			backup := regexp.MustCompile(`(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$`)
+			for _, uri := range []string{"/index.php~", "/index.PHP.BAK", "/app.php.orig", "/app.PHP.swp"} {
+				if !backup.MatchString(uri) {
+					t.Errorf("nginx source-backup deny does not match %q", uri)
+				}
+			}
+			for _, uri := range []string{"/index.php", "/index.PHP", "/index.html"} {
+				if backup.MatchString(uri) {
+					t.Errorf("nginx source-backup deny matches %q", uri)
+				}
+			}
+		case ServerApache:
+			if !strings.Contains(text, `FilesMatch "(?i)\.php$"`) {
+				t.Fatalf("apache PHP FilesMatch is not case-insensitive:\n%s", text)
+			}
+			if strings.Contains(text, `FilesMatch "\.php$"`) {
+				t.Fatalf("apache PHP FilesMatch is case-sensitive:\n%s", text)
+			}
+			php := regexp.MustCompile(`(?i)\.php$`)
+			for _, name := range []string{"index.PHP", "index.Php", "app.PHP"} {
+				if !php.MatchString(name) {
+					t.Errorf("apache PHP FilesMatch does not match %q", name)
+				}
+			}
+			if php.MatchString("index.html") {
+				t.Error("apache PHP FilesMatch matches a static file")
+			}
+
+			backup := regexp.MustCompile(`(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$`)
+			for _, name := range []string{"index.php~", "index.PHP.BAK", "app.php.orig", "app.PHP.swp"} {
+				if !backup.MatchString(name) {
+					t.Errorf("apache source-backup deny does not match %q", name)
+				}
+			}
+			for _, name := range []string{"index.php", "index.PHP", "index.html"} {
+				if backup.MatchString(name) {
+					t.Errorf("apache source-backup deny matches %q", name)
+				}
+			}
+		}
 	}
 }
 
@@ -535,7 +724,7 @@ func TestRenderRejectsTraversalAndInjection(t *testing.T) {
 		{"newline root", func(s *SiteSpec) { s.DocumentRoot = "/tmp\nserver" }},
 		{"NUL root", func(s *SiteSpec) { s.DocumentRoot = "/tmp\x00server" }},
 		{"node port out of range", func(s *SiteSpec) { s.Kind = model.SiteNode; s.BackendPort = 80 }},
-		{"php", func(s *SiteSpec) { s.Kind = model.SitePHP }},
+		{"php node-range port", func(s *SiteSpec) { s.Kind = model.SitePHP; s.BackendPort = 41001 }},
 	}
 
 	for _, tc := range bad {

@@ -70,7 +70,8 @@ func writeApacheServingVHost(b *strings.Builder, s SiteSpec, maxBody int64, tls 
 	fmt.Fprintf(b, "    LimitRequestBody %d\n", maxBody)
 	b.WriteString("\n")
 
-	if s.Kind == model.SiteNode {
+	switch s.Kind {
+	case model.SiteNode:
 		scheme := "http"
 		if tls {
 			scheme = "https"
@@ -80,7 +81,9 @@ func writeApacheServingVHost(b *strings.Builder, s SiteSpec, maxBody int64, tls 
 		fmt.Fprintf(b, "    ErrorDocument 503 %s\n", apacheQuote(maintenanceHTML))
 		b.WriteString("\n")
 		writeApacheDenyLocation(b)
-	} else {
+	case model.SitePHP:
+		writeApachePHPBody(b, s)
+	default:
 		writeApacheStaticBody(b, s)
 	}
 	b.WriteString("</VirtualHost>\n")
@@ -110,6 +113,51 @@ func writeApacheStaticBody(b *strings.Builder, s SiteSpec) {
 	writeApacheDenyLocation(b)
 	b.WriteString("\n")
 	b.WriteString("    Header always set Cache-Control \"no-store\"\n")
+}
+
+func writeApachePHPBody(b *strings.Builder, s SiteSpec) {
+	fmt.Fprintf(b, "    DocumentRoot %s\n", apacheQuote(s.DocumentRoot))
+	fmt.Fprintf(b, "    <Directory %s>\n", apacheQuote(s.DocumentRoot))
+	b.WriteString("        Options -Indexes\n")
+	b.WriteString("        AllowOverride None\n")
+	b.WriteString("        Require all granted\n")
+	if s.FrontController {
+		// In per-server (VirtualHost) context REQUEST_FILENAME is the URL path,
+		// so the -f/-d checks would always fail and every asset would be
+		// rewritten. Inside a Directory section it is the mapped filesystem
+		// path, which makes the standard front-controller recipe work.
+		b.WriteString("\n")
+		b.WriteString("        RewriteEngine On\n")
+		b.WriteString("        RewriteCond %{REQUEST_FILENAME} !-f\n")
+		b.WriteString("        RewriteCond %{REQUEST_FILENAME} !-d\n")
+		b.WriteString("        RewriteRule ^(.*)$ /index.php/$1 [L,QSA]\n")
+	}
+	b.WriteString("    </Directory>\n")
+	b.WriteString("\n")
+	b.WriteString("    DirectoryIndex index.php index.html\n")
+	b.WriteString("\n")
+	// FilesMatch inspects only the basename, so the source-backup denial is
+	// scoped to the PHP extensions it protects. It is emitted before the PHP
+	// handler so a backup can never be interpreted as executable source.
+	b.WriteString("    <FilesMatch \"(?i)\\.php(~|\\.(bak|orig|save|old|swp|tmp))$\">\n")
+	b.WriteString("        Require all denied\n")
+	b.WriteString("    </FilesMatch>\n")
+	b.WriteString("\n")
+	b.WriteString("    <FilesMatch \"(?i)\\.php$\">\n")
+	fmt.Fprintf(b, "        SetHandler \"proxy:fcgi://127.0.0.1:%d\"\n", s.BackendPort)
+	b.WriteString("    </FilesMatch>\n")
+	b.WriteString("\n")
+	b.WriteString("    <FilesMatch \"^\\.\">\n")
+	b.WriteString("        Require all denied\n")
+	b.WriteString("    </FilesMatch>\n")
+	b.WriteString("\n")
+	// FilesMatch only inspects the basename, so it misses /project/.git/config.
+	// Deny any URL path segment that starts with a dot as well.
+	b.WriteString("    <LocationMatch \"(^|/)\\.\">\n")
+	b.WriteString("        Require all denied\n")
+	b.WriteString("    </LocationMatch>\n")
+	b.WriteString("\n")
+	writeApacheDenyLocation(b)
 }
 
 func writeApacheDenyLocation(b *strings.Builder) {

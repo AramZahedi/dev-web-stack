@@ -273,6 +273,118 @@ func TestRenderApacheNodeProxySettings(t *testing.T) {
 	}
 }
 
+func TestRenderApachePHP(t *testing.T) {
+	s := phpSite()
+	s.FrontController = true
+
+	got, err := RenderSite(ServerApache, s)
+	if err != nil {
+		t.Fatalf("RenderSite: %v", err)
+	}
+	for _, want := range []string{
+		`DocumentRoot "/home/u/blog/public"`,
+		`<Directory "/home/u/blog/public">`,
+		"Options -Indexes",
+		"AllowOverride None",
+		"Require all granted",
+		"DirectoryIndex index.php index.html",
+		`<FilesMatch "(?i)\.php$">`,
+		`SetHandler "proxy:fcgi://127.0.0.1:43001"`,
+		`<FilesMatch "(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$">`,
+		"RewriteEngine On",
+		"RewriteCond %{REQUEST_FILENAME} !-f",
+		"RewriteCond %{REQUEST_FILENAME} !-d",
+		"RewriteRule ^(.*)$ /index.php/$1 [L,QSA]",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	compareGolden(t, "apache/php.conf", got)
+}
+
+func TestRenderApachePHPNonFrontController(t *testing.T) {
+	got, err := RenderSite(ServerApache, phpSite())
+	if err != nil {
+		t.Fatalf("RenderSite: %v", err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		"DirectoryIndex index.php index.html",
+		`SetHandler "proxy:fcgi://127.0.0.1:43001"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "RewriteRule ^(.*)$ /index.php/$1") {
+		t.Errorf("non-front-controller PHP vhost rewrites to the index:\n%s", text)
+	}
+}
+
+func TestRenderApachePHPDenials(t *testing.T) {
+	got, err := RenderSite(ServerApache, phpSite())
+	if err != nil {
+		t.Fatalf("RenderSite: %v", err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		`<FilesMatch "^\.">`,
+		`<FilesMatch "(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$">`,
+		`<LocationMatch "(^|/)\.">`,
+		`<LocationMatch "^/_devstack(/|$)">`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in:\n%s", want, text)
+		}
+	}
+	backup := strings.Index(text, `FilesMatch "(?i)\.php(~|\.(bak|orig|save|old|swp|tmp))$"`)
+	php := strings.Index(text, `FilesMatch "(?i)\.php$"`)
+	if backup < 0 || php < 0 {
+		t.Fatalf("missing a PHP FilesMatch section:\n%s", text)
+	}
+	if backup > php {
+		t.Errorf("the source-backup denial is rendered after the PHP handler:\n%s", text)
+	}
+}
+
+func TestRenderApachePHPFrontControllerRewriteIsPerDirectory(t *testing.T) {
+	s := phpSite()
+	s.FrontController = true
+
+	got, err := RenderSite(ServerApache, s)
+	if err != nil {
+		t.Fatalf("RenderSite: %v", err)
+	}
+	text := string(got)
+	directory := strings.Index(text, `<Directory "/home/u/blog/public">`)
+	directoryEnd := strings.Index(text, "</Directory>")
+	rule := strings.Index(text, "RewriteRule ^(.*)$ /index.php/$1 [L,QSA]")
+	if directory < 0 || directoryEnd < 0 || rule < 0 {
+		t.Fatalf("missing the Directory section or front-controller rewrite:\n%s", text)
+	}
+	if !(directory < rule && rule < directoryEnd) {
+		t.Fatalf("front-controller rewrite is outside the Directory section, where REQUEST_FILENAME is the URL path:\n%s", text)
+	}
+}
+
+func TestRenderApachePHPStopped(t *testing.T) {
+	s := phpSite()
+	s.DesiredState = model.DesiredStopped
+
+	got, err := RenderSite(ServerApache, s)
+	if err != nil {
+		t.Fatalf("RenderSite: %v", err)
+	}
+	text := string(got)
+	if strings.Contains(text, "SetHandler") || strings.Contains(text, "proxy:fcgi") {
+		t.Errorf("stopped PHP vhost renders FastCGI:\n%s", text)
+	}
+	if !strings.Contains(text, "RewriteRule ^ - [R=503,L]") {
+		t.Errorf("stopped PHP vhost does not return 503:\n%s", text)
+	}
+}
+
 func TestRenderApacheStaticHardening(t *testing.T) {
 	got, err := RenderSite(ServerApache, staticSite())
 	if err != nil {

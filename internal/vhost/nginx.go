@@ -77,6 +77,8 @@ func writeNginxServingServer(b *strings.Builder, s SiteSpec, names string, maxBo
 
 	if s.Kind == model.SiteNode {
 		writeNginxNodeBody(b, s)
+	} else if s.Kind == model.SitePHP {
+		writeNginxPHPBody(b, s)
 	} else {
 		writeNginxStaticBody(b, s)
 	}
@@ -131,11 +133,108 @@ func writeNginxProxyLocation(b *strings.Builder, port int, interceptErrors bool)
 	b.WriteString("    }\n")
 }
 
+func writeNginxPHPBody(b *strings.Builder, s SiteSpec) {
+	fmt.Fprintf(b, "    root %s;\n", nginxValue(s.DocumentRoot))
+	b.WriteString("    index index.php index.html;\n")
+	b.WriteString("    autoindex off;\n")
+	b.WriteString("\n")
+	// nginx uses the first matching regex location. Both dotfiles and PHP
+	// source backups must reach their deny before the FastCGI location.
+	writeNginxDotfileDeny(b)
+	b.WriteString("\n")
+	writeNginxSourceBackupDeny(b)
+	b.WriteString("\n")
+	writeNginxDevstackDeny(b)
+	b.WriteString("\n")
+	b.WriteString("    location / {\n")
+	if s.FrontController {
+		b.WriteString("        try_files $uri $uri/ @devstack_front_controller;\n")
+	} else {
+		b.WriteString("        try_files $uri $uri/ =404;\n")
+	}
+	b.WriteString("    }\n")
+	b.WriteString("\n")
+	writeNginxPHPLocation(b, s.BackendPort)
+	if s.FrontController {
+		b.WriteString("\n")
+		writeNginxPHPFrontControllerLocation(b, s.BackendPort, s.DocumentRoot+"/index.php")
+	}
+}
+
+func writeNginxPHPLocation(b *strings.Builder, port int) {
+	b.WriteString("    location ~* ^(.+\\.php)(/.*)?$ {\n")
+	b.WriteString("        fastcgi_split_path_info ^(.+\\.php)(/.*)$;\n")
+	b.WriteString("        try_files $fastcgi_script_name =404;\n")
+	fmt.Fprintf(b, "        fastcgi_pass 127.0.0.1:%d;\n", port)
+	b.WriteString("        fastcgi_index index.php;\n")
+	b.WriteString("        fastcgi_read_timeout 120s;\n")
+	b.WriteString("        fastcgi_buffering off;\n")
+	writeNginxFastCGIParams(b,
+		"$document_root$fastcgi_script_name",
+		"$fastcgi_script_name",
+		"$fastcgi_path_info",
+	)
+	b.WriteString("    }\n")
+}
+
+func writeNginxPHPFrontControllerLocation(b *strings.Builder, port int, indexPath string) {
+	b.WriteString("    location @devstack_front_controller {\n")
+	fmt.Fprintf(b, "        fastcgi_pass 127.0.0.1:%d;\n", port)
+	b.WriteString("        fastcgi_index index.php;\n")
+	b.WriteString("        fastcgi_read_timeout 120s;\n")
+	b.WriteString("        fastcgi_buffering off;\n")
+	writeNginxFastCGIParams(b,
+		nginxQuotedValue(indexPath),
+		"/index.php",
+		"$uri",
+	)
+	b.WriteString("    }\n")
+}
+
+// writeNginxFastCGIParams renders the explicit CGI environment. HTTP request
+// headers are forwarded automatically by nginx; these values are the ones the
+// FastCGI SAPI needs and that nginx does not synthesize by itself.
+func writeNginxFastCGIParams(b *strings.Builder, scriptFilename, scriptName, pathInfo string) {
+	fmt.Fprintf(b, "        fastcgi_param SCRIPT_FILENAME %s;\n", scriptFilename)
+	fmt.Fprintf(b, "        fastcgi_param SCRIPT_NAME %s;\n", scriptName)
+	fmt.Fprintf(b, "        fastcgi_param PATH_INFO %s;\n", pathInfo)
+	b.WriteString("        fastcgi_param DOCUMENT_ROOT $document_root;\n")
+	b.WriteString("        fastcgi_param QUERY_STRING $query_string;\n")
+	b.WriteString("        fastcgi_param REQUEST_METHOD $request_method;\n")
+	b.WriteString("        fastcgi_param REQUEST_URI $request_uri;\n")
+	b.WriteString("        fastcgi_param SERVER_PROTOCOL $server_protocol;\n")
+	b.WriteString("        fastcgi_param GATEWAY_INTERFACE CGI/1.1;\n")
+	b.WriteString("        fastcgi_param HTTPS $https if_not_empty;\n")
+	b.WriteString("        fastcgi_param SERVER_SOFTWARE nginx/$nginx_version;\n")
+	b.WriteString("        fastcgi_param SERVER_NAME $server_name;\n")
+	b.WriteString("        fastcgi_param SERVER_ADDR $server_addr;\n")
+	b.WriteString("        fastcgi_param SERVER_PORT $server_port;\n")
+	b.WriteString("        fastcgi_param REMOTE_ADDR $remote_addr;\n")
+	b.WriteString("        fastcgi_param REMOTE_PORT $remote_port;\n")
+	b.WriteString("        fastcgi_param CONTENT_TYPE $content_type;\n")
+	b.WriteString("        fastcgi_param CONTENT_LENGTH $content_length;\n")
+	b.WriteString("        fastcgi_param REDIRECT_STATUS 200;\n")
+}
+
 func writeNginxDenyLocations(b *strings.Builder) {
+	writeNginxDotfileDeny(b)
+	b.WriteString("\n")
+	writeNginxDevstackDeny(b)
+}
+
+func writeNginxDotfileDeny(b *strings.Builder) {
 	b.WriteString("    location ~ /\\. {\n")
 	b.WriteString("        deny all;\n")
 	b.WriteString("    }\n")
-	b.WriteString("\n")
+}
+
+func writeNginxSourceBackupDeny(b *strings.Builder) {
+	b.WriteString("    location ~* \\.php(?:~|\\.(?:bak|orig|save|old|swp|tmp))$ {\n")
+	b.WriteString("        deny all;\n")
+	b.WriteString("    }\n")
+}
+
+func writeNginxDevstackDeny(b *strings.Builder) {
 	b.WriteString("    location ^~ /_devstack {\n")
 	b.WriteString("        deny all;\n")
 	b.WriteString("    }\n")
@@ -237,6 +336,12 @@ func nginxValue(value string) string {
 	if nginxBareSafe(value) {
 		return value
 	}
+	return nginxQuotedValue(value)
+}
+
+// nginxQuotedValue always emits a double-quoted nginx string. It is used where
+// the quoting itself must be visible, such as a fixed SCRIPT_FILENAME.
+func nginxQuotedValue(value string) string {
 	var b strings.Builder
 	b.WriteByte('"')
 	for i := 0; i < len(value); i++ {

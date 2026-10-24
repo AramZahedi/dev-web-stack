@@ -29,9 +29,13 @@ type testFakes struct {
 	runtimes  *fakeRuntimes
 	disk      *fakeDisk
 	vhosts    *fakeVhosts
+	php       *fakePHPValidator
 	store     *store.Store
 	hostsPath string
 	home      string
+	dir       string
+
+	phpSiteCount int
 }
 
 // newTestDoctor builds a Service against a temporary SQLite database and hosts
@@ -87,9 +91,11 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 		runtimes:  &fakeRuntimes{},
 		disk:      &fakeDisk{free: 20 << 30},
 		vhosts:    &fakeVhosts{status: helperproto.VhostStatusResponse{Mode: "builtin", ConfigOK: true}},
+		php:       &fakePHPValidator{},
 		store:     st,
 		hostsPath: hostsPath,
 		home:      filepath.Join(dir, "user"),
+		dir:       dir,
 	}
 	fakes.helper = &fakeHelper{
 		status: helperproto.StatusResponse{
@@ -114,6 +120,7 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 		Runtimes:  fakes.runtimes,
 		Disk:      fakes.disk,
 		Vhosts:    fakes.vhosts,
+		PHP:       fakes.php,
 		HostsPath: hostsPath,
 	})
 	return svc, fakes
@@ -650,7 +657,8 @@ func TestEveryNonOKCheckHasRemediationAndNoSudo(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"helper", "ca", "hosts", "trust", "ports", "runtimes", "disk", "wsl",
-		"serving-mode", "vhost-server", "vhost-include", "vhost-config", "vhost-freshness", "vhost-tls"} {
+		"serving-mode", "vhost-server", "vhost-include", "vhost-config", "vhost-freshness", "vhost-tls",
+		"php-builds", "php-config", "php-ports", "php-master"} {
 		if _, ok := checkByID(rep, id); !ok {
 			t.Errorf("missing %s check: %+v", id, rep.Checks)
 		}

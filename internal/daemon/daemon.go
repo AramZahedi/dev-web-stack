@@ -232,6 +232,7 @@ func Run(ctx context.Context, opts Options) error {
 		Runtimes:  runtimeChecker{manager: runtimes},
 		Disk:      diskChecker{},
 		Vhosts:    siteService,
+		PHP:       siteService,
 		HostsPath: opts.HostsPath,
 	})
 

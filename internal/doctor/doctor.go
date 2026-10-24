@@ -11,6 +11,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 )
@@ -53,6 +54,9 @@ type Deps struct {
 	Ports    PortChecker
 	Runtimes RuntimeChecker
 	Disk     DiskChecker
+	// PHP validates a PHP site's composed configuration without starting a
+	// master. It is nil when the daemon was built without PHP support.
+	PHP PHPValidator
 	// Vhosts reports the helper's external serving state. It may be nil in
 	// builtin mode; an external mode without it fails the serving-mode check.
 	Vhosts Vhosts
@@ -96,6 +100,12 @@ type Vhosts interface {
 	ServingMode() string
 }
 
+// PHPValidator validates one PHP site's composed php.ini and php-fpm
+// configuration without starting a master process.
+type PHPValidator interface {
+	ValidatePHP(ctx context.Context, site model.Site) error
+}
+
 // Service runs doctor checks and repairs against a fixed set of dependencies.
 type Service struct {
 	deps Deps
@@ -128,6 +138,7 @@ func (s *Service) Run(ctx context.Context) (Report, error) {
 		s.checkWSL(),
 	}
 	checks = append(checks, s.checkVhosts(ctx)...)
+	checks = append(checks, s.checkPHP(ctx)...)
 	return newReport(checks), nil
 }
 
