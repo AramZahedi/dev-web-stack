@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -251,5 +252,96 @@ func TestClassifyPHPRuntimeAndConfigErrors(t *testing.T) {
 	status, code, _, details = classifyError(sites.ErrRuntimeMissing)
 	if status != http.StatusConflict || code != "RUNTIME_MISSING" || details != nil {
 		t.Fatalf("missing = %d %s %#v", status, code, details)
+	}
+}
+
+func TestAPIPHPInvalidExtensionsReturnConfigInvalid(t *testing.T) {
+	type errorBody struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Details struct {
+			Field   string `json:"field"`
+			Message string `json:"message"`
+		} `json:"details"`
+	}
+	tests := []struct {
+		name    string
+		err     error
+		wantMsg string
+	}{
+		{
+			name:    "unknown",
+			err:     fmt.Errorf("unknown php extension %q: %w", "xdebugd", catalog.ErrInvalidExtension),
+			wantMsg: "xdebugd",
+		},
+		{
+			name:    "unavailable",
+			err:     fmt.Errorf("extension %q is not available on PHP 8.4: %w", "imap", catalog.ErrInvalidExtension),
+			wantMsg: "not available",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, fake := newTestAPIWithFakes(t)
+			fake.sites.phpErr = test.err
+
+			rec := fake.request(t, http.MethodPut, "/api/v1/sites/blog/php", strings.NewReader(`{"extensions":{"xdebugd":true}}`))
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("apply status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			var apply errorBody
+			if err := json.Unmarshal(rec.Body.Bytes(), &apply); err != nil {
+				t.Fatalf("decode apply error: %v", err)
+			}
+			if apply.Code != "PHP_CONFIG_INVALID" || apply.Details.Field != "extensions" ||
+				!strings.Contains(apply.Details.Message, test.wantMsg) {
+				t.Fatalf("apply error = %+v body=%s", apply, rec.Body.String())
+			}
+
+			rec = fake.request(t, http.MethodPut, "/api/v1/php/defaults/8.4",
+				strings.NewReader(`{"extensions":{"xdebugd":true}}`))
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("defaults status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			var defaults errorBody
+			if err := json.Unmarshal(rec.Body.Bytes(), &defaults); err != nil {
+				t.Fatalf("decode defaults error: %v", err)
+			}
+			if defaults.Code != "PHP_CONFIG_INVALID" || defaults.Details.Field != "extensions" ||
+				!strings.Contains(defaults.Details.Message, test.wantMsg) {
+				t.Fatalf("defaults error = %+v body=%s", defaults, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestAPIPHPExecArgumentReturnsInvalidRequest(t *testing.T) {
+	for _, argument := range []string{"-n", "--php-ini=/tmp/evil.ini"} {
+		t.Run(argument, func(t *testing.T) {
+			_, fake := newTestAPIWithFakes(t)
+			fake.sites.phpExecErr = &sites.PHPExecArgumentError{Argument: argument}
+
+			rec := fake.request(t, http.MethodPost, "/api/v1/sites/blog/php/exec",
+				strings.NewReader(`{"argv":["`+argument+`"]}`))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+				Details struct {
+					Argument string `json:"argument"`
+				} `json:"details"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error: %v", err)
+			}
+			if body.Code != "INVALID_REQUEST" || body.Details.Argument != argument {
+				t.Fatalf("error = %+v body=%s", body, rec.Body.String())
+			}
+			if !strings.Contains(body.Message, "php.ini") {
+				t.Fatalf("message = %q, want php.ini guidance", body.Message)
+			}
+		})
 	}
 }

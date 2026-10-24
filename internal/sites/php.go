@@ -21,6 +21,27 @@ import (
 // ErrRuntimeMissing reports that no installed PHP build can satisfy a site.
 var ErrRuntimeMissing = errors.New("sites: PHP runtime is not installed")
 
+// ErrPHPExecArgument reports an argv entry that would bypass the generated
+// php.ini.
+var ErrPHPExecArgument = errors.New("sites: PHP exec argument would bypass the generated php.ini")
+
+// PHPExecArgumentError names the rejected argument and wraps
+// ErrPHPExecArgument.
+type PHPExecArgumentError struct {
+	Argument string
+}
+
+// Error implements error.
+func (e *PHPExecArgumentError) Error() string {
+	if e == nil {
+		return ErrPHPExecArgument.Error()
+	}
+	return fmt.Sprintf("sites: PHP exec argument %q would bypass the generated php.ini", e.Argument)
+}
+
+// Unwrap makes every rejected argument match ErrPHPExecArgument.
+func (e *PHPExecArgumentError) Unwrap() error { return ErrPHPExecArgument }
+
 // phpDefaultGeneration is the single PHP master generation used by the site
 // lifecycle. Later validate-then-swap work stages extra generations.
 const phpDefaultGeneration = "default"
@@ -534,7 +555,7 @@ func validatePHPExecArgv(argv []string) error {
 			strings.HasPrefix(argument, "--php-ini=") ||
 			(strings.HasPrefix(argument, "-c") && !strings.HasPrefix(argument, "--"))
 		if blocked {
-			return fmt.Errorf("sites: PHP exec argument %q would bypass the generated php.ini", argument)
+			return &PHPExecArgumentError{Argument: argument}
 		}
 	}
 	return nil

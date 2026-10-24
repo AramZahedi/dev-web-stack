@@ -1465,3 +1465,35 @@ func reservedFastCGIPorts(t *testing.T, fakes *testFakes) []int {
 func backendResult() backend.Result {
 	return backend.Result{ExitCode: 0, Stdout: "PHP 8.4.4"}
 }
+
+func TestValidatePHPExecArgvReturnsTypedError(t *testing.T) {
+	tests := []struct {
+		name     string
+		argv     []string
+		argument string
+	}{
+		{name: "no ini", argv: []string{"-n"}, argument: "-n"},
+		{name: "config", argv: []string{"-c", "/tmp/evil.ini"}, argument: "-c"},
+		{name: "php ini", argv: []string{"--php-ini=/tmp/evil.ini"}, argument: "--php-ini=/tmp/evil.ini"},
+		{name: "no php ini", argv: []string{"--no-php-ini"}, argument: "--no-php-ini"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validatePHPExecArgv(test.argv)
+			if err == nil || !errors.Is(err, ErrPHPExecArgument) {
+				t.Fatalf("error = %v, want ErrPHPExecArgument", err)
+			}
+			var typed *PHPExecArgumentError
+			if !errors.As(err, &typed) || typed.Argument != test.argument {
+				t.Fatalf("typed error = %#v, want argument %q", typed, test.argument)
+			}
+			if !strings.Contains(err.Error(), test.argument) {
+				t.Fatalf("error %q does not mention %q", err, test.argument)
+			}
+		})
+	}
+
+	if err := validatePHPExecArgv([]string{"-r", "echo 1;", "-v"}); err != nil {
+		t.Fatalf("allowed argv rejected: %v", err)
+	}
+}

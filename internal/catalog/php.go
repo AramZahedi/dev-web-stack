@@ -3,10 +3,17 @@ package catalog
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 )
+
+// ErrInvalidExtension is the sentinel wrapped by every extension-selection
+// error: unknown or built-in names, extensions unavailable on the requested
+// line, and dependency failures. An unsupported PHP version is not an
+// extension error.
+var ErrInvalidExtension = errors.New("catalog: invalid PHP extension")
 
 // ExtensionType is the php.ini directive that loads an extension.
 type ExtensionType string
@@ -133,14 +140,14 @@ func (m PHPManifest) resolve(version string, base, overrides map[string]bool) ([
 
 	validate := func(name string) (Extension, error) {
 		if builtin[name] {
-			return Extension{}, fmt.Errorf("built-in module %q cannot be toggled", name)
+			return Extension{}, fmt.Errorf("%w: built-in module %q cannot be toggled", ErrInvalidExtension, name)
 		}
 		ext, ok := extensions[name]
 		if !ok {
-			return Extension{}, fmt.Errorf("unknown php extension %q", name)
+			return Extension{}, fmt.Errorf("%w: unknown php extension %q", ErrInvalidExtension, name)
 		}
 		if !supportsVersion(ext, version) {
-			return Extension{}, fmt.Errorf("extension %q is not available on PHP %s", name, version)
+			return Extension{}, fmt.Errorf("%w: extension %q is not available on PHP %s", ErrInvalidExtension, name, version)
 		}
 		return ext, nil
 	}
@@ -176,22 +183,22 @@ func (m PHPManifest) resolve(version string, base, overrides map[string]bool) ([
 	visit = func(name string, path []string) error {
 		switch state[name] {
 		case visiting:
-			return fmt.Errorf("php extension dependency cycle: %s", strings.Join(append(path, name), " -> "))
+			return fmt.Errorf("%w: php extension dependency cycle: %s", ErrInvalidExtension, strings.Join(append(path, name), " -> "))
 		case visited:
 			return nil
 		}
 		ext, ok := extensions[name]
 		if !ok {
-			return fmt.Errorf("unknown php extension %q", name)
+			return fmt.Errorf("%w: unknown php extension %q", ErrInvalidExtension, name)
 		}
 		state[name] = visiting
 		for _, dependency := range ext.Requires {
 			dep, ok := extensions[dependency]
 			if !ok {
-				return fmt.Errorf("extension %q requires unknown extension %q", name, dependency)
+				return fmt.Errorf("%w: extension %q requires unknown extension %q", ErrInvalidExtension, name, dependency)
 			}
 			if !supportsVersion(dep, version) {
-				return fmt.Errorf("extension %q requires %q, which is not available on PHP %s", name, dependency, version)
+				return fmt.Errorf("%w: extension %q requires %q, which is not available on PHP %s", ErrInvalidExtension, name, dependency, version)
 			}
 			enabled[dependency] = true
 			if err := visit(dependency, append(path, name)); err != nil {

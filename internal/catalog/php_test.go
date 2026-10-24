@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -334,5 +335,48 @@ func TestResolveRejectsCycleInConstructedManifest(t *testing.T) {
 	}
 	if _, err := m.Resolve("8.4", nil); err == nil || !strings.Contains(strings.ToLower(err.Error()), "cycle") {
 		t.Fatalf("Resolve error = %v, want cycle", err)
+	}
+}
+
+func TestResolveWrapsErrInvalidExtension(t *testing.T) {
+	m, err := LoadPHP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		overrides map[string]bool
+	}{
+		{name: "unknown", overrides: map[string]bool{"nope": true}},
+		{name: "built-in", overrides: map[string]bool{"core": true}},
+		{name: "unavailable", overrides: map[string]bool{"imap": true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := m.Resolve("8.4", test.overrides); err == nil || !errors.Is(err, ErrInvalidExtension) {
+				t.Fatalf("Resolve(%s) error = %v, want ErrInvalidExtension", test.name, err)
+			}
+		})
+	}
+
+	cycle := PHPManifest{
+		Builtin: []string{"core"},
+		Extensions: []Extension{
+			{Name: "a", Type: ExtensionShared, SO: "a.so", Versions: []string{"8.4"}, Requires: []string{"b"}},
+			{Name: "b", Type: ExtensionShared, SO: "b.so", Versions: []string{"8.4"}, Requires: []string{"a"}},
+		},
+		Versions: map[string]PHPVersionDefaults{
+			"8.4": {Extensions: map[string]bool{"a": true, "b": false}},
+		},
+	}
+	if _, err := cycle.Resolve("8.4", nil); err == nil || !errors.Is(err, ErrInvalidExtension) {
+		t.Fatalf("cycle Resolve error = %v, want ErrInvalidExtension", err)
+	}
+
+	if _, err := m.Resolve("9.9", nil); err == nil || errors.Is(err, ErrInvalidExtension) {
+		t.Fatalf("unsupported version error = %v, want a non-extension error", err)
+	}
+	if _, err := ParsePHP([]byte("{")); err == nil || errors.Is(err, ErrInvalidExtension) {
+		t.Fatalf("malformed manifest error = %v, want a non-extension error", err)
 	}
 }

@@ -709,6 +709,20 @@ func classifyError(err error) (int, string, string, any) {
 	if errors.Is(err, phpini.ErrInvalidConfig) || errors.Is(err, phpfpm.ErrConfigInvalid) {
 		return http.StatusUnprocessableEntity, codePHPConfigInvalid, err.Error(), phpConfigDetails(err)
 	}
+	if errors.Is(err, catalog.ErrInvalidExtension) {
+		return http.StatusUnprocessableEntity, codePHPConfigInvalid, err.Error(), map[string]any{
+			"field":   "extensions",
+			"message": err.Error(),
+		}
+	}
+	if errors.Is(err, sites.ErrPHPExecArgument) {
+		details := any(nil)
+		var argument *sites.PHPExecArgumentError
+		if errors.As(err, &argument) {
+			details = map[string]any{"argument": argument.Argument}
+		}
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), details
+	}
 	switch {
 	case errors.Is(err, helperproto.ErrServingModeUnavailable):
 		return http.StatusConflict, codeServingModeUnavailable, err.Error(), nil
