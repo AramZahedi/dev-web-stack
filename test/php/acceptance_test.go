@@ -66,6 +66,17 @@ func TestPHPSubsystemAcceptance(t *testing.T) {
 	extensionDir := systemPHPExtensionDir(t, root)
 	modules := systemPHPModules(t, root)
 	manifest := filteredPHPManifest(t, extensionDir, modules)
+	uncatalogued := uncataloguedSharedModules(t, extensionDir, manifest)
+	for _, name := range uncatalogued {
+		if containsString(manifest.Builtin, name) {
+			t.Fatalf("uncatalogued shared module %q was misclassified as built in", name)
+		}
+	}
+	if len(uncatalogued) == 0 {
+		t.Log("acceptance: no uncatalogued shared modules are present")
+	} else {
+		t.Logf("acceptance: uncatalogued shared modules not loaded by the generated ini: %s", strings.Join(uncatalogued, ","))
+	}
 
 	h := newAcceptanceHarness(t, root, phpVersion, manifest)
 	t.Logf("acceptance: PHP %s build %s at %s", phpVersion, h.buildID, root)
@@ -171,6 +182,8 @@ func TestPHPSubsystemAcceptance(t *testing.T) {
 			afterBadSwitch.PHPConfigHash, afterBadSwitch.FastCGIPort)
 	}
 	assertPHPResponse(t, h.directBody(afterBadSwitch), phpVersion, "512M", true, "primary")
+	assertRouteAndVhostPort(t, h, afterBadSwitch, afterBadSwitch.FastCGIPort)
+	requirePortFree(t, candidate, "failed-switch candidate", 10*time.Second)
 	if err := h.ports.Reserve(candidate); err != nil {
 		t.Fatalf("candidate FastCGI port %d was not released: %v", candidate, err)
 	}
@@ -284,6 +297,7 @@ func TestPHPSubsystemAcceptance(t *testing.T) {
 	if _, err := os.Stat(apiConfigDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("api config dir %s still exists after delete: %v", apiConfigDir, err)
 	}
+	requirePortFree(t, apiPort, "deleted api", 10*time.Second)
 	if err := h.ports.Reserve(apiPort); err != nil {
 		t.Fatalf("api FastCGI port %d was not released: %v", apiPort, err)
 	}
@@ -298,6 +312,7 @@ func TestPHPSubsystemAcceptance(t *testing.T) {
 	if err := h.svc.Stop(timeoutContext(t, 60*time.Second), blog.Name); err != nil {
 		t.Fatalf("stop blog: %v", err)
 	}
+	requirePortFree(t, beforeStop.FastCGIPort, "stopped blog", 10*time.Second)
 	stopped := h.getSite(blog.Name)
 	if stopped.Status != model.StatusStopped {
 		t.Fatalf("blog status after stop = %q, want stopped", stopped.Status)
@@ -432,8 +447,10 @@ var manifestModulePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 // filteredPHPManifest builds a catalog matching the real system installation.
 // It keeps only shared modules whose .so exists and which support PHP 8.4,
 // preserves their type/SO/default/requires fields, drops requires that cannot be
-// satisfied without pretending an absent .so exists, and treats every remaining
-// `php -m` module as built into the binary.
+// satisfied without pretending an absent .so exists, and classifies a remaining
+// `php -m` module as built in only when no matching .so exists. Uncatalogued
+// shared modules stay out of both lists: the generated ini cannot load them and
+// they are not compiled into the binary.
 func filteredPHPManifest(t *testing.T, extensionDir string, modules []string) catalog.PHPManifest {
 	t.Helper()
 	base, err := catalog.LoadPHP()
@@ -444,6 +461,7 @@ func filteredPHPManifest(t *testing.T, extensionDir string, modules []string) ca
 	if !ok {
 		t.Fatalf("embedded manifest has no PHP %s defaults", acceptancePHPLine)
 	}
+	presentSO := extensionSharedObjects(t, extensionDir)
 
 	shared := make(map[string]bool)
 	var extensions []catalog.Extension
@@ -451,8 +469,7 @@ func filteredPHPManifest(t *testing.T, extensionDir string, modules []string) ca
 		if !containsString(extension.Versions, acceptancePHPLine) {
 			continue
 		}
-		info, err := os.Stat(filepath.Join(extensionDir, extension.SO))
-		if err != nil || !info.Mode().IsRegular() {
+		if !presentSO[extension.SO] {
 			continue
 		}
 		extension.Versions = []string{acceptancePHPLine}
@@ -475,8 +492,15 @@ func filteredPHPManifest(t *testing.T, extensionDir string, modules []string) ca
 	builtin := make([]string, 0, len(base.Builtin)+len(modules))
 	seen := make(map[string]bool)
 	addBuiltin := func(name string) {
-		name = strings.ToLower(strings.TrimSpace(name))
-		if name == "" || name == "zend opcache" || shared[name] || seen[name] {
+		name = normalizePHPMODule(name)
+		if name == "" || shared[name] || seen[name] {
+			return
+		}
+		// A matching shared object means the system loaded this module from
+		// php.d; it is not compiled into the binary. It may be uncatalogued
+		// (for example mongodb or swoole), in which case devstack must neither
+		// toggle it nor claim it is built in.
+		if presentSO[name+".so"] {
 			return
 		}
 		if !manifestModulePattern.MatchString(name) {
@@ -520,6 +544,61 @@ func filteredPHPManifest(t *testing.T, extensionDir string, modules []string) ca
 		t.Fatalf("filtered PHP manifest is invalid: %v", err)
 	}
 	return validated
+}
+
+// extensionSharedObjects returns the basenames of every shared object in the
+// real extension directory.
+func extensionSharedObjects(t *testing.T, extensionDir string) map[string]bool {
+	t.Helper()
+	entries, err := os.ReadDir(extensionDir)
+	if err != nil {
+		t.Fatalf("read PHP extension directory %s: %v", extensionDir, err)
+	}
+	shared := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".so") {
+			shared[entry.Name()] = true
+		}
+	}
+	if len(shared) == 0 {
+		t.Fatalf("PHP extension directory %s has no shared objects", extensionDir)
+	}
+	return shared
+}
+
+// normalizePHPMODule folds the display names `php -m` uses into catalog names.
+func normalizePHPMODule(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "zend opcache":
+		return "opcache"
+	default:
+		return name
+	}
+}
+
+// uncataloguedSharedModules lists .so files present on the system that the
+// filtered manifest does not represent. The generated devstack ini does not
+// load them, but they must not be misclassified as built into PHP.
+func uncataloguedSharedModules(t *testing.T, extensionDir string, manifest catalog.PHPManifest) []string {
+	t.Helper()
+	present := extensionSharedObjects(t, extensionDir)
+	represented := make(map[string]bool, len(manifest.Extensions))
+	for _, extension := range manifest.Extensions {
+		represented[extension.SO] = true
+	}
+	var uncatalogued []string
+	for name := range present {
+		if represented[name] {
+			continue
+		}
+		uncatalogued = append(uncatalogued, strings.TrimSuffix(name, ".so"))
+	}
+	sort.Strings(uncatalogued)
+	return uncatalogued
 }
 
 func copyStringMap(source map[string]string) map[string]string {
@@ -573,6 +652,9 @@ type acceptanceHarness struct {
 	manifest  catalog.PHPManifest
 	buildID   string
 	siteNames []string
+	// trackedPorts is every FastCGI port a site in this run has owned. Cleanup
+	// proves each one is free after StopAll so a leaked master cannot pass.
+	trackedPorts map[int]string
 }
 
 func newAcceptanceHarness(t *testing.T, root, phpVersion string, manifest catalog.PHPManifest) *acceptanceHarness {
@@ -618,18 +700,19 @@ func newAcceptanceHarness(t *testing.T, root, phpVersion string, manifest catalo
 	}
 
 	h := &acceptanceHarness{
-		t:        t,
-		home:     home,
-		paths:    paths,
-		cfg:      cfg,
-		store:    st,
-		logs:     logStore,
-		local:    local,
-		router:   router,
-		ports:    ports,
-		certs:    certManager,
-		manifest: manifest,
-		buildID:  buildID,
+		t:            t,
+		home:         home,
+		paths:        paths,
+		cfg:          cfg,
+		store:        st,
+		logs:         logStore,
+		local:        local,
+		router:       router,
+		ports:        ports,
+		certs:        certManager,
+		manifest:     manifest,
+		buildID:      buildID,
+		trackedPorts: make(map[int]string),
 	}
 	h.svc = sites.NewService(sites.Deps{
 		Store:       st,
@@ -655,18 +738,43 @@ func (h *acceptanceHarness) cleanup() {
 	defer cancel()
 	for _, name := range h.siteNames {
 		if err := h.svc.Delete(ctx, name); err != nil && !errors.Is(err, store.ErrNotFound) {
-			h.t.Logf("cleanup: delete %s: %v", name, err)
+			h.t.Errorf("cleanup: delete %s: %v", name, err)
 		}
 	}
 	if err := h.local.StopAll(ctx); err != nil {
-		h.t.Logf("cleanup: stop all backends: %v", err)
+		h.t.Errorf("cleanup: stop all backends: %v", err)
+	}
+	for _, port := range sortedPorts(h.trackedPorts) {
+		if err := waitPortFree(port, 10*time.Second); err != nil {
+			h.t.Errorf("cleanup: %s port %d is still bound after StopAll: %v", h.trackedPorts[port], port, err)
+			continue
+		}
+		h.t.Logf("cleanup: %s FastCGI port %d is free after StopAll (127.0.0.1 bind succeeded)", h.trackedPorts[port], port)
 	}
 	if err := h.logs.Close(); err != nil {
-		h.t.Logf("cleanup: close logs: %v", err)
+		h.t.Errorf("cleanup: close logs: %v", err)
 	}
 	if err := h.store.Close(); err != nil {
-		h.t.Logf("cleanup: close store: %v", err)
+		h.t.Errorf("cleanup: close store: %v", err)
 	}
+}
+
+// notePort records a FastCGI port owned by a site so cleanup can prove every
+// listener is gone after StopAll.
+func (h *acceptanceHarness) notePort(site model.Site) {
+	if site.FastCGIPort == 0 {
+		return
+	}
+	h.trackedPorts[site.FastCGIPort] = site.Name
+}
+
+func sortedPorts(ports map[int]string) []int {
+	sorted := make([]int, 0, len(ports))
+	for port := range ports {
+		sorted = append(sorted, port)
+	}
+	sort.Ints(sorted)
+	return sorted
 }
 
 func (h *acceptanceHarness) createSite(name, project string, extensions map[string]bool) model.Site {
@@ -685,6 +793,7 @@ func (h *acceptanceHarness) createSite(name, project string, extensions map[stri
 		h.t.Fatalf("create PHP site %s: %v", name, err)
 	}
 	h.siteNames = append(h.siteNames, site.Name)
+	h.notePort(site)
 	return site
 }
 
@@ -696,6 +805,7 @@ func (h *acceptanceHarness) applyPHP(name string, change sites.PHPChange) model.
 	if err != nil {
 		h.t.Fatalf("apply PHP change to %s: %v", name, err)
 	}
+	h.notePort(site)
 	return site
 }
 
@@ -705,6 +815,7 @@ func (h *acceptanceHarness) getSite(name string) model.Site {
 	if err != nil {
 		h.t.Fatalf("read site %s: %v", name, err)
 	}
+	h.notePort(site)
 	return site
 }
 
@@ -849,6 +960,38 @@ func fastCGIBody(t *testing.T, port int, documentRoot string) string {
 		t.Fatalf("FastCGI response status = %d, want 200 (body: %s)", response.StatusCode, body)
 	}
 	return string(body)
+}
+
+// waitPortFree waits until a TCP listener can bind 127.0.0.1:port and closes
+// it. Unlike PortAllocator.Reserve, this proves the kernel listener is gone.
+func waitPortFree(port int, timeout time.Duration) error {
+	if port <= 0 {
+		return fmt.Errorf("invalid port %d", port)
+	}
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		listener, err := net.Listen("tcp", addr)
+		if err == nil {
+			_ = listener.Close()
+			return nil
+		}
+		lastErr = err
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("port %d on 127.0.0.1 is still bound after %s: %w", port, timeout, lastErr)
+}
+
+func requirePortFree(t *testing.T, port int, label string, timeout time.Duration) {
+	t.Helper()
+	if err := waitPortFree(port, timeout); err != nil {
+		t.Fatalf("%s: %v", label, err)
+	}
+	t.Logf("acceptance: %s FastCGI port %d is free (bind 127.0.0.1:%d succeeded)", label, port, port)
 }
 
 func proxyGet(t *testing.T, router *proxy.Router, host, path string) string {
@@ -1241,6 +1384,10 @@ func testRealNginxConfig(t *testing.T, h *acceptanceHarness, site model.Site) {
 			t.Fatalf("create nginx prefix directory: %v", err)
 		}
 	}
+	// Render the TLS branch too, with the real site certificate, so nginx -t
+	// parses both the HTTP and HTTPS PHP server blocks.
+	site.TLS = true
+	site.ForceHTTPS = false
 	files := h.vhostSet(t, vhost.ServerNginx, site, 18080, 18443, tlsDir)
 	siteConfig, ok := files[vhostSiteFilename(site)]
 	if !ok {
@@ -1261,6 +1408,16 @@ func testRealNginxConfig(t *testing.T, h *acceptanceHarness, site model.Site) {
 	}
 	writeFile(t, filepath.Join(tlsDir, "__dashboard__.crt"), dashboardCert, 0o644)
 	writeFile(t, filepath.Join(tlsDir, "__dashboard__.key"), dashboardKey, 0o600)
+	siteRecord, err := h.store.GetCertBySite(context.Background(), site.ID)
+	if err != nil {
+		t.Fatalf("read site certificate: %v", err)
+	}
+	siteCert, siteKey, err := h.certs.PEM(siteRecord)
+	if err != nil {
+		t.Fatalf("read site certificate PEM: %v", err)
+	}
+	writeFile(t, filepath.Join(tlsDir, site.ID+".crt"), siteCert, 0o644)
+	writeFile(t, filepath.Join(tlsDir, site.ID+".key"), siteKey, 0o600)
 	for name, data := range files {
 		writeFile(t, filepath.Join(vhostsDir, name), data, 0o644)
 	}
@@ -1296,9 +1453,16 @@ func testRealApacheConfig(t *testing.T, h *acceptanceHarness, site model.Site) {
 	if err != nil {
 		t.Skipf("cannot enumerate Apache modules with %s -M: %v", httpd, err)
 	}
-	if !strings.Contains(string(modules), "ssl_module") {
+	moduleList := string(modules)
+	var missing []string
+	for _, module := range []string{"ssl_module", "proxy_fcgi_module"} {
+		if !strings.Contains(moduleList, module) {
+			missing = append(missing, module)
+		}
+	}
+	if len(missing) != 0 {
 		version := apacheVersion(ctx, httpd)
-		t.Skipf("%s is installed but mod_ssl is not loaded; HTTPS PHP vhost configtest skipped", version)
+		t.Skipf("%s is installed but %s not loaded; PHP vhost configtest skipped", version, strings.Join(missing, " and "))
 	}
 	configFile := apacheConfigFile(ctx, httpd)
 	if configFile == "" {
@@ -1313,7 +1477,10 @@ func testRealApacheConfig(t *testing.T, h *acceptanceHarness, site model.Site) {
 	httpOnly := firstApacheVirtualHost(t, string(content), 18080)
 	vhostPath := filepath.Join(prefix, "php-http-vhost.conf")
 	writeFile(t, vhostPath, []byte(httpOnly), 0o644)
-	output, err := exec.CommandContext(ctx, httpd, "-t", "-f", configFile, "-C", "Include "+vhostPath).CombinedOutput()
+	// -c processes the directive after the main config, so Include sees the
+	// real module and handler definitions. -C would include the vhost first and
+	// fail on SetHandler/proxy_fcgi even when the server is healthy.
+	output, err := exec.CommandContext(ctx, httpd, "-t", "-f", configFile, "-c", "Include "+vhostPath).CombinedOutput()
 	if err != nil {
 		t.Fatalf("Apache configtest failed: %v\n%s", err, output)
 	}

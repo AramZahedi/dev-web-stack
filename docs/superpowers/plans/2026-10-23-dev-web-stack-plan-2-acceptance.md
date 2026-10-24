@@ -2,7 +2,7 @@
 
 - **Date:** 2026-10-24
 - **Base revision:** `65ad1bf` (`docs: record plan 2 status through task 11`), plus
-  the acceptance test and documentation changes in this commit.
+  the acceptance test, review-fix, and documentation commits in this change set.
 - **Plan:** [Plan 2 — PHP](2026-10-23-dev-web-stack-plan-2-php.md)
 - **Scope:** the Plan 2 subset of M1 design §21 plus the rollback, template, and
   Doctor checks named in Task 12.
@@ -21,7 +21,8 @@
 | PHP | **8.4.4** at `/usr/local/php` (`bin/php`, `sbin/php-fpm`) |
 | PHP extension dir | `/usr/local/php/lib/php/extensions/no-debug-non-zts-20240924` |
 | Filtered shared extensions | `imagick`, `opcache`, `pcov`, `pdo_pgsql`, `redis`, `xdebug`, `zip` |
-| Filtered built-in modules | manifest built-ins plus lowercase `php -m` modules not represented by those shared extensions (including `pdo`, `session`, `libxml`) |
+| Filtered built-in modules | manifest built-ins plus lowercased `php -m` modules with no matching `.so` in the extension dir and no filtered shared entry (for example `pdo`, `session`, `libxml`); uncatalogued shared modules `mongodb` and `swoole` are excluded |
+| Uncatalogued shared modules | `mongodb.so`, `swoole.so` exist on the system and load through `php.d`; the embedded manifest does not catalog them, so devstack does not classify or load them |
 | Build rows used | `php@8.4.4-r1` (system path), `php@8.4.4-r2` (valid revision on the same path after the rollback check) |
 | FPM ports observed | blog `43000`, api `43001`, blog after Xdebug `43002`, blog after ini `43003`, failed-switch candidate `43999` |
 | nginx | 1.28.0 at `/usr/local/nginx/sbin/nginx` |
@@ -46,9 +47,10 @@ until checksummed artifacts are published.
 
 | Check | Command | Result |
 |---|---|---|
-| Real acceptance test | `DEVSTACK_PHP_ROOT=/usr/local/php go test ./test/php -run TestPHPSubsystemAcceptance -v` | **PASS** in 0.85 s; one Apache subtest **SKIP** |
+| Real acceptance test | `DEVSTACK_PHP_ROOT=/usr/local/php go test ./test/php -run TestPHPSubsystemAcceptance -v` | **PASS** in 0.87 s; one Apache subtest **SKIP** |
+| Repeatability | `go test ./test/php -run TestPHPSubsystemAcceptance -count=2` | **PASS**; two consecutive iterations in 1.85 s |
 | Absent-root skip | `DEVSTACK_PHP_ROOT=/nonexistent go test ./test/php -run TestPHPSubsystemAcceptance -v` | **SKIP** with `bin/php is not available under /nonexistent` |
-| Race detector | `go test ./... -race` | **PASS**; all packages `ok`, including `test/php` in 2.07 s |
+| Race detector | `go test ./... -race` | **PASS**; all packages `ok`, including `test/php` in 2.09 s |
 | Focused PHP packages | `go test ./internal/backend ./internal/sites ./internal/proxy ./internal/phpfpm ./internal/phpini -v` | **PASS**; five packages `ok` |
 | Build | `make build` | **PASS**; dashboard + `dist/devstack` + `dist/devstack-helper` built |
 | Vhost templates | `go test ./internal/vhost -run 'TestRenderNginxPHP\|TestRenderApachePHP' -v` | **PASS**; 9 tests |
@@ -59,6 +61,7 @@ until checksummed artifacts are published.
 ```text
 acceptance: PHP 8.4.4 build php@8.4.4-r1 at /usr/local/php
 acceptance: extension dir /usr/local/php/lib/php/extensions/no-debug-non-zts-20240924
+acceptance: uncatalogued shared modules not loaded by the generated ini: mongodb,swoole
 acceptance: filtered extensions imagick,opcache,pcov,pdo_pgsql,redis,xdebug,zip
 acceptance: blog site id=... build=php@8.4.4-r1 fastcgi=43000
 acceptance: api site id=... build=php@8.4.4-r1 fastcgi=43001
@@ -66,21 +69,67 @@ acceptance: xdebug isolation verified on blog port 43002; api port 43001 unaffec
 acceptance: per-site memory_limit verified; blog=43003 api=43001
 acceptance: malformed raw ini rejected at line 2: sites: compose php.ini for "blog": phpini: line 2: expected a key = value directive
 acceptance: incomplete build switch rejected: sites: validate php-fpm.conf for "blog": phpfpm: invalid configuration: fork/exec .../php-incomplete/sbin/php-fpm: no such file or directory
+acceptance: failed-switch candidate FastCGI port 43999 is free (bind 127.0.0.1:43999 succeeded)
 acceptance: candidate port 43999 was released after the failed switch
 nginx -t: ... syntax is ok
 nginx -t: ... test is successful
-Apache/2.4.69 (Fedora Linux) is installed but mod_ssl is not loaded; HTTPS PHP vhost configtest skipped
+Apache/2.4.69 (Fedora Linux) is installed but ssl_module not loaded; PHP vhost configtest skipped
 acceptance: built-in proxy served blog.test through FastCGI with 512M and xdebug
 acceptance: updated blog document root=public2 front_controller=true
 acceptance: removal of php@8.4.4-r1 blocked by [api blog]
 acceptance: migrated both sites to php@8.4.4-r2; php@8.4.4-r1 is no longer referenced
+acceptance: deleted api FastCGI port 43001 is free (bind 127.0.0.1:43001 succeeded)
 acceptance: deleted api site; config dir removed and port 43001 released
+acceptance: stopped blog FastCGI port 43003 is free (bind 127.0.0.1:43003 succeeded)
 acceptance: stop/start kept build php@8.4.4-r2 and healthy master on port 43003
 acceptance: doctor php-builds: PHP builds php@8.4.4-r1 (8.4.4), php@8.4.4-r2 (8.4.4) provide php, php-fpm, and extension modules
 acceptance: doctor php-config: PHP configuration validated for 1 site(s)
 acceptance: doctor php-ports: 1 running PHP site(s) have unique FastCGI ports in 43000-43999
 acceptance: doctor php-master: all 1 running PHP masters accept FastCGI connections on 127.0.0.1
+cleanup: blog FastCGI port 43000 is free after StopAll (127.0.0.1 bind succeeded)
+cleanup: api FastCGI port 43001 is free after StopAll (127.0.0.1 bind succeeded)
+cleanup: blog FastCGI port 43002 is free after StopAll (127.0.0.1 bind succeeded)
+cleanup: blog FastCGI port 43003 is free after StopAll (127.0.0.1 bind succeeded)
 ```
+
+### Port-free and process evidence
+
+The acceptance test now proves listener shutdown at the kernel level, not only in
+the in-memory port allocator. After the failed switch, after site deletion, after
+site stop, and after `local.StopAll`, it binds `127.0.0.1:<port>` with a bounded
+retry and fails if the bind never succeeds. The exact evidence lines are:
+
+```text
+acceptance: failed-switch candidate FastCGI port 43999 is free (bind 127.0.0.1:43999 succeeded)
+acceptance: deleted api FastCGI port 43001 is free (bind 127.0.0.1:43001 succeeded)
+acceptance: stopped blog FastCGI port 43003 is free (bind 127.0.0.1:43003 succeeded)
+cleanup: blog FastCGI port 43000 is free after StopAll (127.0.0.1 bind succeeded)
+cleanup: api FastCGI port 43001 is free after StopAll (127.0.0.1 bind succeeded)
+cleanup: blog FastCGI port 43002 is free after StopAll (127.0.0.1 bind succeeded)
+cleanup: blog FastCGI port 43003 is free after StopAll (127.0.0.1 bind succeeded)
+```
+
+Post-run process and listener checks:
+
+```text
+$ pgrep -a php-fpm
+1397 php-fpm: master process (/usr/local/php/etc/php-fpm.conf)
+... (pre-existing system FPM master and pools; no acceptance-spawned master)
+$ ss -ltn '( sport >= :43000 and sport <= :43999 )'
+State  Recv-Q  Send-Q  Local Address:Port  Peer Address:Port
+(no rows)
+```
+
+Cleanup now reports delete/`StopAll`/log-close/store-close failures with
+`t.Errorf`, then checks every tracked site port after `StopAll`. A leaked FPM
+master or listener fails the acceptance test.
+
+### Migration scope
+
+The successful migration used `php@8.4.4-r2` with the **same install path**
+(`/usr/local/php`). It proves revision pinning, row migration, and removal
+bookkeeping, but it does **not** prove a cross-build or cross-line migration.
+That evidence is part of the blocked real 8.2/8.5 artifact gate below.
 
 ## Plan 2 acceptance checklist
 
@@ -94,13 +143,13 @@ or a different environment.
 | 2 | Per-site `php.ini` | **PASS** | Steps 3–4; blog reports `memory_limit=512M`, api reports `256M` | The change survived a staged master swap and a rejected later edit |
 | 3 | Xdebug isolation | **PASS** | Step 2; blog reports `xdebug=on`, api reports `xdebug=off` | `xdebug.so` present in the filtered manifest; API master unaffected |
 | 4 | Invalid ini rejected with line information while the old master serves | **PASS** | Step 4; `*phpini.ValidationError` line 2; old row/hash/port unchanged; old master still answers `512M`; route and vhost still point at the old port | No route or vhost regression after the failed apply |
-| 5 | Add/remove/update/migrate | **PASS** | Steps 1, 8; second site created, document root/front controller updated, both sites migrated, second site deleted with config dir and port released | Build *rows* are fixture rows; see the artifact gate below |
+| 5 | Add/remove/update/migrate | **PASS** | Steps 1, 8; second site created, document root/front controller updated, both sites migrated, second site deleted with config dir and port released | Build *rows* are fixture rows and migration uses r2 on the **same install path**; this proves revision migration, not cross-build/cross-line migration (blocked below) |
 | 6 | Removal blocked while referenced | **PASS** | Step 8; `CheckRuntimeRemoval(php@8.4.4-r1)` returns `*sites.RuntimeInUseError` naming `[api blog]`; returns nil after migration | Blocking is by build ID, not only by line |
-| 7 | Switch with rollback | **PASS** | Step 5; switch to a candidate without `sbin/php-fpm` fails in FPM validation; row stays `php@8.4.4-r1`; old master answers; candidate port 43999 is released and reusable | Validate-then-swap path exercised with the real backend |
+| 7 | Switch with rollback | **PASS** | Step 5; switch to a candidate without `sbin/php-fpm` fails in FPM validation; row stays `php@8.4.4-r1`; old master answers; `net.Listen` on 43999 succeeds, and the allocator can reserve it again | Validate-then-swap path exercised with the real backend; kernel bind proves the candidate listener is gone |
 | 8 | FastCGI request direct to FPM | **PASS** | Step 1 and later steps; `fcgi.Dial` GET `/index.php` returns version, ini, Xdebug state | Real supervised `php-fpm` master, not a fake |
 | 9 | FastCGI request through the built-in proxy | **PASS** | Step 7; `router.Handler()` with `Host: blog.test` via `httptest` returns 8.4.4, `512M`, and Xdebug loaded | Route is published by the real site service |
-| 10 | nginx PHP vhost template | **PASS** | Steps 6; `fastcgi_pass`, `SCRIPT_FILENAME`, `PATH_INFO`, directory index, and source-backup denial strings present | Real `nginx -t` against a temp prefix, certs, and high ports 18080/18443: syntax ok, test successful |
-| 11 | Apache PHP vhost template | **PASS** (template) / **SKIP** (real configtest) | `proxy:fcgi`, `DirectoryIndex`, and source-backup denial strings present | Real `httpd -t` skipped: Apache 2.4.69 is installed but `mod_ssl` is not loaded |
+| 10 | nginx PHP vhost template | **PASS** | Steps 6; `fastcgi_pass`, `SCRIPT_FILENAME`, `PATH_INFO`, directory index, and source-backup denial strings present | Real `nginx -t` against a temp prefix, high ports 18080/18443, and the **TLS branch with the real site certificate plus the dashboard certificate**: syntax ok, test successful |
+| 11 | Apache PHP vhost template | **PASS** (template) / **SKIP** (real configtest) | `proxy:fcgi`, `DirectoryIndex`, and source-backup denial strings present | Real `httpd -t` skipped: Apache 2.4.69 is installed but `ssl_module` is not loaded. The branch checks both `ssl_module` and `proxy_fcgi_module` and uses `httpd -t -c Include` so a future host tests PHP capability after the main config |
 | 12 | Doctor PHP checks | **PASS** | Acceptance test final step; `php-builds`, `php-config`, `php-ports`, `php-master` all `ok` | Doctor used the real store, real PHP validator, and live FPM port |
 | 13 | Docs | **PASS** | `README.md`, `docs/php.md`, and this report | Documentation states the fixture/system-PHP basis and the artifact gate |
 | 14 | Real PHP 8.2 and 8.5 side by side | **BLOCKED** | Requires checksummed archives and catalog entries from the [Task 11 CI pipeline](../../../.github/workflows/php.yml) | No 8.2/8.5 artifacts are published; the local manifest is 8.4-only fixture data |
@@ -122,6 +171,20 @@ or a different environment.
 3. The Apache vhost assertion initially expected an unquoted `DocumentRoot`.
    The template correctly quotes the path; the assertion now matches the
    rendered form.
+4. Acceptance review found that the candidate-port "released" check only used
+   the in-memory allocator, which never binds. The test now binds
+   `127.0.0.1:43999` (bounded retry) after rollback and logs the result, while
+   keeping the allocator reservation as a second check.
+5. Delete, stop, and `StopAll` cleanup previously did not prove the FPM listener
+   was gone. The test now binds the old API port after delete, the old blog port
+   after stop, and every tracked site port after `StopAll`, with bounded retry.
+6. Cleanup failures for delete/`StopAll`/`logs.Close`/`store.Close` were only
+   logged. They now call `t.Errorf`, and cleanup checks every tracked port after
+   `StopAll`; a leaked master or listener fails acceptance.
+7. The filtered manifest classified `mongodb` and `swoole` as built-ins even
+   though their `.so` files exist and the system `php.d` loads them. The filter
+   now excludes any module with a matching `.so` and logs them as uncatalogued
+   shared modules that the generated devstack ini does not load.
 
 No product code changes were required by the acceptance run.
 
@@ -158,6 +221,8 @@ Until then:
 4. **Apache SCRIPT_FILENAME/PATH_INFO:** mod_proxy_fcgi supplies these CGI
    parameters at runtime; the Apache template itself does not contain those
    literal strings. nginx asserts them explicitly.
-5. **Fixture manifest scope:** `mongodb` and `swoole` appear as built-ins only
-   because the embedded manifest does not catalog them while the system `php -m`
-   reports them. They are not loaded by the generated devstack ini.
+5. **Uncatalogued shared modules:** `mongodb.so` and `swoole.so` are present in
+   the system extension directory and are loaded by the system `php.d`, but the
+   embedded manifest does not catalog them. The filtered manifest excludes them
+   from built-ins, the generated devstack ini does not load them, and they are
+   not site extension toggles.
