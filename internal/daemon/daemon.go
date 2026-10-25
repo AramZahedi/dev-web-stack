@@ -34,6 +34,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/supervisor"
@@ -261,6 +262,7 @@ func Run(ctx context.Context, opts Options) error {
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
 		Vhosts:       siteService,
+		Services:     services.NewCoordinator(services.DefaultCatalog(), st, cfg.Home),
 		Logger:       logger,
 	})
 

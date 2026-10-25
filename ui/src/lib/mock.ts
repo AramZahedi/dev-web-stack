@@ -18,6 +18,7 @@ import type {
   PHPMigrationResult,
   PHPResolvedExtension,
   RuntimeBuild,
+  ServiceView,
   Session,
   Settings,
   ServingMode,
@@ -146,6 +147,49 @@ function seedPHPDefaults(): Record<string, PHPDefaults> {
 
 let phpDefaults = seedPHPDefaults();
 
+const mockServices: ServiceView[] = [
+  {
+    id: 'nginx',
+    display_name: 'Nginx Web Server',
+    group: 'web',
+    state: 'active',
+    active: true,
+    image: 'nginx:1.27-alpine',
+    ports: [
+      { host: 80, container: 80, protocol: 'http', loopback: true },
+      { host: 443, container: 443, protocol: 'https', loopback: true },
+    ],
+    config_path: '/data/devstack/services/nginx/config',
+    data_path: '/data/devstack/services/nginx/data',
+  },
+  {
+    id: 'mysql',
+    display_name: 'MySQL Database',
+    group: 'mysql-family',
+    state: 'installed',
+    active: false,
+    image: 'mysql:8.4',
+    ports: [
+      { host: 3306, container: 3306, protocol: 'tcp', loopback: true },
+    ],
+    config_path: '/data/devstack/services/mysql/config',
+    data_path: '/data/devstack/services/mysql/data',
+  },
+  {
+    id: 'redis',
+    display_name: 'Redis In-Memory Store',
+    group: 'standalone',
+    state: 'not_installed',
+    active: false,
+    image: 'redis:7.4-alpine',
+    ports: [
+      { host: 6379, container: 6379, protocol: 'tcp', loopback: true },
+    ],
+    config_path: '/data/devstack/services/redis/config',
+    data_path: '/data/devstack/services/redis/data',
+  },
+];
+
 function resolvePHPExtensions(
   version: string,
   defaults: Record<string, boolean>,
@@ -245,7 +289,11 @@ const sites: Site[] = [
     },
     document_root: 'public',
     front_controller: false,
+    front_controller_file: 'index.php',
+    front_controller_mode: 'auto',
+    apache_allow_override: 'all',
     spa_fallback: false,
+    spa_fallback_file: 'index.html',
     tls: true,
     force_https: true,
     desired_state: 'running',
@@ -283,7 +331,11 @@ const sites: Site[] = [
     },
     document_root: '',
     front_controller: false,
+    front_controller_file: 'index.php',
+    front_controller_mode: 'auto',
+    apache_allow_override: 'all',
     spa_fallback: false,
+    spa_fallback_file: 'index.html',
     tls: true,
     force_https: true,
     desired_state: 'running',
@@ -320,7 +372,11 @@ const sites: Site[] = [
     },
     document_root: '',
     front_controller: false,
+    front_controller_file: 'index.php',
+    front_controller_mode: 'auto',
+    apache_allow_override: 'all',
     spa_fallback: false,
+    spa_fallback_file: 'index.html',
     tls: false,
     force_https: false,
     desired_state: 'running',
@@ -1013,7 +1069,12 @@ export const mockApi = {
       env: request.env ?? {},
       document_root: request.document_root ?? '',
       front_controller: request.front_controller ?? request.kind === 'php',
+      front_controller_file: request.front_controller_file ?? 'index.php',
+      front_controller_mode: request.front_controller_mode ?? 'auto',
+      apache_allow_override: request.apache_allow_override ?? 'all',
       spa_fallback: request.spa_fallback ?? false,
+      spa_fallback_file: request.spa_fallback_file ?? 'index.html',
+      build: request.build,
       tls: request.tls ?? true,
       force_https: request.force_https ?? false,
       desired_state: 'running',
@@ -1500,6 +1561,20 @@ export const mockApi = {
   async settings(): Promise<Settings> {
     await wait();
     return clone(settings);
+  },
+
+  async listServices(): Promise<ServiceView[]> {
+    await wait();
+    return clone(mockServices);
+  },
+
+  async getService(id: string): Promise<ServiceView> {
+    await wait();
+    const svc = mockServices.find((s) => s.id === id);
+    if (!svc) {
+      throw new ApiError('NOT_FOUND', `Service ${id} not found`, 404);
+    }
+    return clone(svc);
   },
 
   openLogStream(

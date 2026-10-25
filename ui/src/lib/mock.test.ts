@@ -129,3 +129,22 @@ describe('mock PHP 8.5 built-ins', () => {
     }
   });
 });
+
+describe('mock services', () => {
+  it('returns mock services list and allows getting a service by id', async () => {
+    const list = await mockApi.listServices();
+    expect(list.length).toBeGreaterThan(0);
+    const nginx = list.find((s) => s.id === 'nginx');
+    expect(nginx).toBeDefined();
+    expect(nginx?.display_name).toBe('Nginx Web Server');
+
+    const fetched = await mockApi.getService('nginx');
+    expect(fetched.id).toBe('nginx');
+    expect(fetched.state).toBe('active');
+
+    await expect(mockApi.getService('nonexistent')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      status: 404,
+    });
+  });
+});

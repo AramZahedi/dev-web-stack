@@ -103,7 +103,8 @@ const siteColumns = `id, name, domain, www_alias, backend, host_path, backend_pa
 	php_version, php_extensions_json, php_ini_json, php_build, php_ini_raw, php_config_hash,
 	node_version, command, env_json,
 	document_root, front_controller, spa_fallback, tls, force_https, desired_state,
-	status, http_port, fastcgi_port, created_at, updated_at`
+	status, http_port, fastcgi_port, created_at, updated_at,
+	front_controller_file, front_controller_mode, apache_allow_override, spa_fallback_file, build_json`
 
 // CreateSite inserts a new site.
 func (s *Store) CreateSite(ctx context.Context, site model.Site) error {
@@ -112,7 +113,7 @@ func (s *Store) CreateSite(ctx context.Context, site model.Site) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO sites (`+siteColumns+`) VALUES (
-		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
 	if err != nil {
 		return fmt.Errorf("create site %q: %w", site.ID, err)
 	}
@@ -133,7 +134,7 @@ func (s *Store) CreateSiteWithPHPConfig(ctx context.Context, site model.Site, cf
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sites (`+siteColumns+`) VALUES (
-		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
 		return fmt.Errorf("create site %q: %w", site.ID, err)
 	}
 	if err := saveSitePHPConfig(ctx, tx, cfg); err != nil {
@@ -152,6 +153,30 @@ func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
 	if err != nil {
 		return err
 	}
+	fcFile := site.FrontControllerFile
+	if fcFile == "" {
+		fcFile = "index.php"
+	}
+	fcMode := site.FrontControllerMode
+	if fcMode == "" {
+		fcMode = "auto"
+	}
+	override := site.ApacheAllowOverride
+	if override == "" {
+		override = "all"
+	}
+	spaFile := site.SPAFallbackFile
+	if spaFile == "" {
+		spaFile = "index.html"
+	}
+	buildJSON := "{}"
+	if site.Build != nil {
+		b, err := json.Marshal(site.Build)
+		if err != nil {
+			return fmt.Errorf("encode site %q build: %w", site.ID, err)
+		}
+		buildJSON = string(b)
+	}
 	res, err := s.db.ExecContext(ctx, `UPDATE sites SET
 		name = ?, domain = ?, www_alias = ?, backend = ?, host_path = ?, backend_path = ?,
 		kind = ?, php_version = ?, php_extensions_json = ?, php_ini_json = ?,
@@ -159,7 +184,9 @@ func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
 		node_version = ?, command = ?, env_json = ?, document_root = ?,
 		front_controller = ?, spa_fallback = ?, tls = ?, force_https = ?,
 		desired_state = ?, status = ?, http_port = ?, fastcgi_port = ?,
-		updated_at = ?
+		updated_at = ?,
+		front_controller_file = ?, front_controller_mode = ?, apache_allow_override = ?,
+		spa_fallback_file = ?, build_json = ?
 		WHERE id = ?`,
 		site.Name, site.Domain, boolInt(site.WWW), string(site.Backend),
 		site.HostPath, site.BackendPath, string(site.Kind), site.PHPVersion,
@@ -168,7 +195,9 @@ func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
 		site.DocumentRoot, boolInt(site.FrontController), boolInt(site.SPAFallback),
 		boolInt(site.TLS), boolInt(site.ForceHTTPS), string(site.DesiredState),
 		string(site.Status), site.HTTPPort, site.FastCGIPort,
-		site.UpdatedAt.Unix(), site.ID)
+		site.UpdatedAt.Unix(),
+		fcFile, fcMode, override, spaFile, buildJSON,
+		site.ID)
 	if err != nil {
 		return fmt.Errorf("update site %q: %w", site.ID, err)
 	}
@@ -652,6 +681,30 @@ func siteInsertArgs(site model.Site) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	fcFile := site.FrontControllerFile
+	if fcFile == "" {
+		fcFile = "index.php"
+	}
+	fcMode := site.FrontControllerMode
+	if fcMode == "" {
+		fcMode = "auto"
+	}
+	override := site.ApacheAllowOverride
+	if override == "" {
+		override = "all"
+	}
+	spaFile := site.SPAFallbackFile
+	if spaFile == "" {
+		spaFile = "index.html"
+	}
+	buildJSON := "{}"
+	if site.Build != nil {
+		b, err := json.Marshal(site.Build)
+		if err != nil {
+			return nil, fmt.Errorf("encode site %q build: %w", site.ID, err)
+		}
+		buildJSON = string(b)
+	}
 	return []any{
 		site.ID, site.Name, site.Domain, boolInt(site.WWW), string(site.Backend),
 		site.HostPath, site.BackendPath, string(site.Kind), site.PHPVersion,
@@ -661,6 +714,7 @@ func siteInsertArgs(site model.Site) ([]any, error) {
 		boolInt(site.TLS), boolInt(site.ForceHTTPS), string(site.DesiredState),
 		string(site.Status), site.HTTPPort, site.FastCGIPort,
 		site.CreatedAt.Unix(), site.UpdatedAt.Unix(),
+		fcFile, fcMode, override, spaFile, buildJSON,
 	}, nil
 }
 
@@ -700,6 +754,7 @@ func scanSite(scanner rowScanner, label, value string) (model.Site, error) {
 		tlsEnabled, forceHTTPS            int
 		phpExtensions, phpIni, env        string
 		createdAt, updatedAt              int64
+		buildJSON                         string
 	)
 	err := scanner.Scan(
 		&site.ID, &site.Name, &site.Domain, &www, &site.Backend, &site.HostPath,
@@ -709,6 +764,8 @@ func scanSite(scanner rowScanner, label, value string) (model.Site, error) {
 		&frontController, &spaFallback, &tlsEnabled, &forceHTTPS,
 		&site.DesiredState, &site.Status, &site.HTTPPort, &site.FastCGIPort,
 		&createdAt, &updatedAt,
+		&site.FrontControllerFile, &site.FrontControllerMode,
+		&site.ApacheAllowOverride, &site.SPAFallbackFile, &buildJSON,
 	)
 	if err != nil {
 		if label != "" && errors.Is(err, sql.ErrNoRows) {
@@ -728,6 +785,19 @@ func scanSite(scanner rowScanner, label, value string) (model.Site, error) {
 	site.CreatedAt = time.Unix(createdAt, 0).UTC()
 	site.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 
+	if site.FrontControllerFile == "" {
+		site.FrontControllerFile = "index.php"
+	}
+	if site.FrontControllerMode == "" {
+		site.FrontControllerMode = "auto"
+	}
+	if site.ApacheAllowOverride == "" {
+		site.ApacheAllowOverride = "all"
+	}
+	if site.SPAFallbackFile == "" {
+		site.SPAFallbackFile = "index.html"
+	}
+
 	if err := json.Unmarshal([]byte(phpExtensions), &site.PHPExtensions); err != nil {
 		return model.Site{}, fmt.Errorf("decode site %q php extensions: %w", site.ID, err)
 	}
@@ -736,6 +806,15 @@ func scanSite(scanner rowScanner, label, value string) (model.Site, error) {
 	}
 	if err := json.Unmarshal([]byte(env), &site.Env); err != nil {
 		return model.Site{}, fmt.Errorf("decode site %q env: %w", site.ID, err)
+	}
+	if buildJSON != "" && buildJSON != "{}" && buildJSON != "null" {
+		var profile model.BuildProfile
+		if err := json.Unmarshal([]byte(buildJSON), &profile); err != nil {
+			return model.Site{}, fmt.Errorf("decode site %q build: %w", site.ID, err)
+		}
+		if profile.NodeVersion != "" || profile.Command != "" || profile.Output != "" || len(profile.Env) > 0 {
+			site.Build = &profile
+		}
 	}
 	return site, nil
 }

@@ -12,6 +12,15 @@ export type SiteStatus =
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'skipped';
 
 export type ServingMode = 'builtin' | 'nginx' | 'apache';
+export type FrontControllerMode = 'auto' | 'generated' | 'htaccess';
+export type ApacheAllowOverride = 'all' | 'fileinfo' | 'none';
+
+export interface BuildProfile {
+  node_version?: string;
+  command?: string;
+  output?: string;
+  env?: Record<string, string>;
+}
 
 export interface VhostTLSFile {
   name: string;
@@ -65,7 +74,12 @@ export interface Site {
   env: Record<string, string>;
   document_root: string;
   front_controller: boolean;
+  front_controller_file: string;
+  front_controller_mode: FrontControllerMode;
+  apache_allow_override: ApacheAllowOverride;
   spa_fallback: boolean;
+  spa_fallback_file: string;
+  build?: BuildProfile;
   tls: boolean;
   force_https: boolean;
   desired_state: DesiredState;
@@ -99,6 +113,11 @@ export interface CreateSiteRequest {
   php_ini?: Record<string, string>;
   php_ini_raw?: string;
   front_controller?: boolean;
+  front_controller_file?: string;
+  front_controller_mode?: FrontControllerMode;
+  apache_allow_override?: ApacheAllowOverride;
+  spa_fallback_file?: string;
+  build?: BuildProfile;
 }
 
 export interface UpdateSiteRequest {
@@ -109,7 +128,12 @@ export interface UpdateSiteRequest {
   command?: string;
   document_root?: string;
   front_controller?: boolean;
+  front_controller_file?: string;
+  front_controller_mode?: FrontControllerMode;
+  apache_allow_override?: ApacheAllowOverride;
   spa_fallback?: boolean;
+  spa_fallback_file?: string;
+  build?: BuildProfile;
   tls?: boolean;
   force_https?: boolean;
   env?: Record<string, string>;
@@ -297,4 +321,38 @@ export interface DaemonEvent {
   site_id?: string;
   message?: string;
   created_at?: string;
+}
+
+export type ServiceState =
+  | 'not_installed'
+  | 'installed'
+  | 'starting'
+  | 'active'
+  | 'stopping'
+  | 'error';
+
+export type ServiceGroup = 'web' | 'mysql-family' | 'standalone';
+
+export interface ServicePort {
+  host: number;
+  container: number;
+  protocol?: string;
+  loopback?: boolean;
+}
+
+export interface ServiceView {
+  id: string;
+  display_name: string;
+  group: ServiceGroup;
+  state: ServiceState;
+  active: boolean;
+  image: string;
+  ports?: ServicePort[];
+  last_error?: string;
+  config_path?: string;
+  data_path?: string;
+}
+
+export interface ListServicesResponse {
+  services: ServiceView[];
 }

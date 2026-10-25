@@ -40,6 +40,7 @@ tags:
   - name: filesystem
   - name: settings
   - name: vhosts
+  - name: services
   - name: dashboard
 paths:
   /api/v1/health:
@@ -1014,6 +1015,52 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/services:
+    get:
+      tags: [services]
+      summary: List services
+      operationId: listServices
+      security: []
+      responses:
+        "200":
+          description: Combined view of catalog services and stored state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [services]
+                properties:
+                  services:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ServiceView"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+
+  /api/v1/services/{id}:
+    get:
+      tags: [services]
+      summary: Get service by ID
+      operationId: getService
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Service view.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceView"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /:
     get:
       tags: [dashboard]
@@ -1867,3 +1914,45 @@ components:
         created_at:
           type: string
           format: date-time
+
+    ServicePort:
+      type: object
+      required: [host, container]
+      properties:
+        host:
+          type: integer
+        container:
+          type: integer
+        protocol:
+          type: string
+        loopback:
+          type: boolean
+
+    ServiceView:
+      type: object
+      required: [id, display_name, group, state, active, image]
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        group:
+          type: string
+          enum: [web, mysql-family, standalone]
+        state:
+          type: string
+          enum: [not_installed, installed, starting, active, stopping, error]
+        active:
+          type: boolean
+        image:
+          type: string
+        ports:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServicePort"
+        last_error:
+          type: string
+        config_path:
+          type: string
+        data_path:
+          type: string

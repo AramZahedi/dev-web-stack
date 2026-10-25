@@ -28,6 +28,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/version"
@@ -66,6 +67,8 @@ type Client interface {
 	SetServingMode(ctx context.Context, mode string) (helperproto.VhostStatusResponse, error)
 	SyncVhosts(ctx context.Context) (helperproto.VhostStatusResponse, error)
 	PreviewVhost(ctx context.Context, ref, server string) (string, error)
+	ListServices(ctx context.Context) ([]services.View, error)
+	GetService(ctx context.Context, id string) (services.View, error)
 }
 
 // Package-level seams. Tests replace these so no command touches a real
@@ -115,6 +118,7 @@ func NewRootCmd(newClient func(home string) (Client, error)) *cobra.Command {
 		app.newPHPCmd(),
 		app.newTrustCmd(),
 		app.newVhostCmd(),
+		app.newServiceCmd(),
 		app.newUICmd(),
 		app.newUninstallCmd(),
 		newVersionCmd(),

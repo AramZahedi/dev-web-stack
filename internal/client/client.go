@@ -27,6 +27,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 )
@@ -333,6 +334,29 @@ func (c *Client) PreviewVhost(ctx context.Context, ref, server string) (string, 
 		return "", err
 	}
 	return response.Content, nil
+}
+
+type listServicesEnvelope struct {
+	Services []services.View `json:"services"`
+}
+
+// ListServices returns every known service view.
+func (c *Client) ListServices(ctx context.Context) ([]services.View, error) {
+	var env listServicesEnvelope
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/services", nil, &env); err != nil {
+		return nil, err
+	}
+	if env.Services == nil {
+		env.Services = []services.View{}
+	}
+	return env.Services, nil
+}
+
+// GetService returns one service view by ID.
+func (c *Client) GetService(ctx context.Context, id string) (services.View, error) {
+	var view services.View
+	err := c.doJSON(ctx, http.MethodGet, "/api/v1/services/"+url.PathEscape(id), nil, &view)
+	return view, err
 }
 
 // Logs opens the site's log stream. follow=false requests a finite SSE

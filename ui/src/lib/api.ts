@@ -7,6 +7,7 @@ import type {
   DoctorReport,
   FsListing,
   Health,
+  ListServicesResponse,
   LogLine,
   PHPChange,
   PHPDefaults,
@@ -17,6 +18,7 @@ import type {
   PHPMigrationRequest,
   PHPMigrationResult,
   RuntimeBuild,
+  ServiceView,
   Session,
   Settings,
   ServingMode,
@@ -252,6 +254,17 @@ export async function removeRuntime(buildID: string): Promise<void> {
     method: 'DELETE',
     voidResponse: true,
   });
+}
+
+export async function listServices(): Promise<ServiceView[]> {
+  if (isMockMode) return mockApi.listServices();
+  const res = await request<ListServicesResponse>('/services');
+  return res.services ?? [];
+}
+
+export async function getService(id: string): Promise<ServiceView> {
+  if (isMockMode) return mockApi.getService(id);
+  return request<ServiceView>(`/services/${encodeURIComponent(id)}`);
 }
 
 export async function getPHPInfo(ref: string): Promise<PHPInfo> {

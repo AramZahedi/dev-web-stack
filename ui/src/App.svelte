@@ -6,6 +6,7 @@
   import AddSite from './routes/AddSite.svelte';
   import SiteDetail from './routes/SiteDetail.svelte';
   import Runtimes from './routes/Runtimes.svelte';
+  import Services from './routes/Services.svelte';
   import Doctor from './routes/Doctor.svelte';
   import Settings from './routes/Settings.svelte';
   import NotFound from './routes/NotFound.svelte';
@@ -17,6 +18,7 @@
     '/sites': Sites,
     '/sites/new': AddSite,
     '/sites/:ref': SiteDetail,
+    '/services': Services,
     '/runtimes': Runtimes,
     '/doctor': Doctor,
     '/settings': Settings,
@@ -27,7 +29,7 @@
     void initSession();
     void refreshDaemon();
     const closeEvents = openEvents((event) => {
-      if (/^(site|runtime|doctor|trust)\./.test(event.type)) {
+      if (/^(site|runtime|doctor|trust|service)\./.test(event.type)) {
         window.dispatchEvent(new CustomEvent('devstack:refresh'));
       }
     });

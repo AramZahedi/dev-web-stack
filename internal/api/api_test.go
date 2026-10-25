@@ -1262,33 +1262,57 @@ func (f *fakeSiteService) Create(_ context.Context, req sites.CreateRequest) (mo
 		f.err = nil
 		return model.Site{}, err
 	}
+	if err := model.ValidateSiteContracts(req.FrontControllerFile, req.FrontControllerMode, req.ApacheAllowOverride, req.SPAFallbackFile, req.Build); err != nil {
+		return model.Site{}, err
+	}
 	f.nextID++
+	fcFile := req.FrontControllerFile
+	if fcFile == "" {
+		fcFile = "index.php"
+	}
+	fcMode := req.FrontControllerMode
+	if fcMode == "" {
+		fcMode = "auto"
+	}
+	override := req.ApacheAllowOverride
+	if override == "" {
+		override = "all"
+	}
+	spaFile := req.SPAFallbackFile
+	if spaFile == "" {
+		spaFile = "index.html"
+	}
 	site := model.Site{
-		ID:              fmt.Sprintf("s%d", f.nextID),
-		Name:            req.Name,
-		Domain:          strings.ToLower(req.Name) + ".test",
-		WWW:             req.WWW,
-		Backend:         model.BackendLocal,
-		HostPath:        req.Path,
-		BackendPath:     req.Path,
-		Kind:            model.SiteKind(req.Kind),
-		NodeVersion:     req.NodeVersion,
-		Command:         req.Command,
-		Env:             req.Env,
-		DocumentRoot:    req.DocumentRoot,
-		TLS:             req.TLS,
-		ForceHTTPS:      req.ForceHTTPS,
-		SPAFallback:     req.SPAFallback,
-		PHPVersion:      req.PHPVersion,
-		PHPBuild:        req.PHPBuild,
-		PHPExtensions:   req.PHPExtensions,
-		PHPIni:          req.PHPIni,
-		PHPIniRaw:       req.PHPIniRaw,
-		FrontController: req.FrontController,
-		DesiredState:    model.DesiredRunning,
-		Status:          model.StatusRunning,
-		CreatedAt:       time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
-		UpdatedAt:       time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
+		ID:                  fmt.Sprintf("s%d", f.nextID),
+		Name:                req.Name,
+		Domain:              strings.ToLower(req.Name) + ".test",
+		WWW:                 req.WWW,
+		Backend:             model.BackendLocal,
+		HostPath:            req.Path,
+		BackendPath:         req.Path,
+		Kind:                model.SiteKind(req.Kind),
+		NodeVersion:         req.NodeVersion,
+		Command:             req.Command,
+		Env:                 req.Env,
+		DocumentRoot:        req.DocumentRoot,
+		TLS:                 req.TLS,
+		ForceHTTPS:          req.ForceHTTPS,
+		SPAFallback:         req.SPAFallback,
+		PHPVersion:          req.PHPVersion,
+		PHPBuild:            req.PHPBuild,
+		PHPExtensions:       req.PHPExtensions,
+		PHPIni:              req.PHPIni,
+		PHPIniRaw:           req.PHPIniRaw,
+		FrontController:     req.FrontController,
+		FrontControllerFile: fcFile,
+		FrontControllerMode: fcMode,
+		ApacheAllowOverride: override,
+		SPAFallbackFile:     spaFile,
+		Build:               req.Build,
+		DesiredState:        model.DesiredRunning,
+		Status:              model.StatusRunning,
+		CreatedAt:           time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:           time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
 	}
 	f.sites[site.ID] = site
 	f.created = append(f.created, req)
@@ -1301,6 +1325,9 @@ func (f *fakeSiteService) Update(_ context.Context, ref string, req sites.Update
 	site, ok := f.find(ref)
 	if !ok {
 		return model.Site{}, fmt.Errorf("sites: site %q: %w", ref, store.ErrNotFound)
+	}
+	if err := model.ValidateSiteContracts(req.FrontControllerFile, req.FrontControllerMode, req.ApacheAllowOverride, req.SPAFallbackFile, req.Build); err != nil {
+		return model.Site{}, err
 	}
 	if req.Domain != "" {
 		site.Domain = req.Domain
@@ -1319,6 +1346,21 @@ func (f *fakeSiteService) Update(_ context.Context, ref string, req sites.Update
 	}
 	if req.FrontController != nil {
 		site.FrontController = *req.FrontController
+	}
+	if req.FrontControllerFile != "" {
+		site.FrontControllerFile = req.FrontControllerFile
+	}
+	if req.FrontControllerMode != "" {
+		site.FrontControllerMode = req.FrontControllerMode
+	}
+	if req.ApacheAllowOverride != "" {
+		site.ApacheAllowOverride = req.ApacheAllowOverride
+	}
+	if req.SPAFallbackFile != "" {
+		site.SPAFallbackFile = req.SPAFallbackFile
+	}
+	if req.Build != nil {
+		site.Build = req.Build
 	}
 	if req.Command != "" {
 		site.Command = req.Command

@@ -871,3 +871,223 @@ func TestRefreshStatusRepublishesRouteState(t *testing.T) {
 		t.Fatalf("route = %+v, ok=%v, want crashed state", route, ok)
 	}
 }
+
+func TestCreateSiteContractsDefaults(t *testing.T) {
+	svc, fakes := newTestService(t)
+	site, err := svc.Create(ctx, CreateRequest{
+		Name: "defaults-site",
+		Path: fakes.root,
+		Kind: "static",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if site.FrontControllerFile != "index.php" {
+		t.Errorf("FrontControllerFile = %q, want index.php", site.FrontControllerFile)
+	}
+	if site.FrontControllerMode != "auto" {
+		t.Errorf("FrontControllerMode = %q, want auto", site.FrontControllerMode)
+	}
+	if site.ApacheAllowOverride != "all" {
+		t.Errorf("ApacheAllowOverride = %q, want all", site.ApacheAllowOverride)
+	}
+	if site.SPAFallbackFile != "index.html" {
+		t.Errorf("SPAFallbackFile = %q, want index.html", site.SPAFallbackFile)
+	}
+	if site.Build != nil {
+		t.Errorf("Build = %+v, want nil", site.Build)
+	}
+}
+
+func TestCreateSiteContractsValidation(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.5.1-r2", "8.5.1")
+
+	// Valid creation with non-default values
+	validPHP, err := svc.Create(ctx, CreateRequest{
+		Name:                "php-valid",
+		Path:                fakes.root,
+		Kind:                "php",
+		PHPVersion:          "8.5",
+		PHPBuild:            "php@8.5.1-r2",
+		FrontControllerFile: "app.php",
+		FrontControllerMode: "generated",
+		ApacheAllowOverride: "fileinfo",
+		SPAFallbackFile:     "fallback.html",
+		Build: &model.BuildProfile{
+			NodeVersion: "20.0.0",
+			Command:     "npm run build",
+			Output:      "dist",
+		},
+	})
+	if err != nil {
+		t.Fatalf("valid create failed: %v", err)
+	}
+	if validPHP.FrontControllerFile != "app.php" || validPHP.FrontControllerMode != "generated" ||
+		validPHP.ApacheAllowOverride != "fileinfo" || validPHP.SPAFallbackFile != "fallback.html" ||
+		validPHP.Build == nil || validPHP.Build.Command != "npm run build" {
+		t.Fatalf("contract fields not set correctly: %+v", validPHP)
+	}
+
+	tests := []struct {
+		name string
+		req  CreateRequest
+	}{
+		{
+			name: "fc file absolute",
+			req: CreateRequest{
+				Name: "bad-fc-1", Path: fakes.root, Kind: "php", PHPVersion: "8.5", PHPBuild: "php@8.5.1-r2",
+				FrontControllerFile: "/index.php",
+			},
+		},
+		{
+			name: "fc file traversal",
+			req: CreateRequest{
+				Name: "bad-fc-2", Path: fakes.root, Kind: "php", PHPVersion: "8.5", PHPBuild: "php@8.5.1-r2",
+				FrontControllerFile: "../index.php",
+			},
+		},
+		{
+			name: "fc file dot segment",
+			req: CreateRequest{
+				Name: "bad-fc-3", Path: fakes.root, Kind: "php", PHPVersion: "8.5", PHPBuild: "php@8.5.1-r2",
+				FrontControllerFile: "./index.php",
+			},
+		},
+		{
+			name: "fc file not php",
+			req: CreateRequest{
+				Name: "bad-fc-4", Path: fakes.root, Kind: "php", PHPVersion: "8.5", PHPBuild: "php@8.5.1-r2",
+				FrontControllerFile: "index.html",
+			},
+		},
+		{
+			name: "fc mode invalid",
+			req: CreateRequest{
+				Name: "bad-mode", Path: fakes.root, Kind: "php", PHPVersion: "8.5", PHPBuild: "php@8.5.1-r2",
+				FrontControllerMode: "custom",
+			},
+		},
+		{
+			name: "apache override invalid",
+			req: CreateRequest{
+				Name: "bad-override", Path: fakes.root, Kind: "php", PHPVersion: "8.5", PHPBuild: "php@8.5.1-r2",
+				ApacheAllowOverride: "invalid",
+			},
+		},
+		{
+			name: "spa file absolute",
+			req: CreateRequest{
+				Name: "bad-spa-1", Path: fakes.root, Kind: "static",
+				SPAFallbackFile: "/index.html",
+			},
+		},
+		{
+			name: "spa file traversal",
+			req: CreateRequest{
+				Name: "bad-spa-2", Path: fakes.root, Kind: "static",
+				SPAFallbackFile: "../index.html",
+			},
+		},
+		{
+			name: "spa file php",
+			req: CreateRequest{
+				Name: "bad-spa-3", Path: fakes.root, Kind: "static",
+				SPAFallbackFile: "index.php",
+			},
+		},
+		{
+			name: "build missing node version",
+			req: CreateRequest{
+				Name: "bad-build-1", Path: fakes.root, Kind: "static",
+				Build: &model.BuildProfile{Command: "npm run build"},
+			},
+		},
+		{
+			name: "build missing command",
+			req: CreateRequest{
+				Name: "bad-build-2", Path: fakes.root, Kind: "static",
+				Build: &model.BuildProfile{NodeVersion: "20"},
+			},
+		},
+		{
+			name: "build output traversal",
+			req: CreateRequest{
+				Name: "bad-build-3", Path: fakes.root, Kind: "static",
+				Build: &model.BuildProfile{NodeVersion: "20", Command: "npm run build", Output: "../outside"},
+			},
+		},
+		{
+			name: "build output absolute",
+			req: CreateRequest{
+				Name: "bad-build-4", Path: fakes.root, Kind: "static",
+				Build: &model.BuildProfile{NodeVersion: "20", Command: "npm run build", Output: "/dist"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.Create(ctx, tt.req)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tt.name)
+			}
+		})
+	}
+}
+
+func TestUpdateSiteContractsValidation(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.5.1-r2", "8.5.1")
+	site, err := svc.Create(ctx, CreateRequest{
+		Name:       "up-site",
+		Path:       fakes.root,
+		Kind:       "php",
+		PHPVersion: "8.5",
+		PHPBuild:   "php@8.5.1-r2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Invalid updates
+	if _, err := svc.Update(ctx, site.ID, UpdateRequest{FrontControllerFile: "../bad.php"}); err == nil {
+		t.Fatal("expected error for traversal in FrontControllerFile")
+	}
+	if _, err := svc.Update(ctx, site.ID, UpdateRequest{FrontControllerMode: "invalid"}); err == nil {
+		t.Fatal("expected error for invalid FrontControllerMode")
+	}
+	if _, err := svc.Update(ctx, site.ID, UpdateRequest{ApacheAllowOverride: "invalid"}); err == nil {
+		t.Fatal("expected error for invalid ApacheAllowOverride")
+	}
+	if _, err := svc.Update(ctx, site.ID, UpdateRequest{SPAFallbackFile: "index.php"}); err == nil {
+		t.Fatal("expected error for .php SPAFallbackFile")
+	}
+	if _, err := svc.Update(ctx, site.ID, UpdateRequest{Build: &model.BuildProfile{Command: "npm run build"}}); err == nil {
+		t.Fatal("expected error for build with command but no node version")
+	}
+
+	// Valid update
+	updated, err := svc.Update(ctx, site.ID, UpdateRequest{
+		FrontControllerFile: "bootstrap.php",
+		FrontControllerMode: "htaccess",
+		ApacheAllowOverride: "none",
+		SPAFallbackFile:     "app.html",
+		Build: &model.BuildProfile{
+			NodeVersion: "20",
+			Command:     "npm run build",
+			Output:      "dist",
+		},
+	})
+	if err != nil {
+		t.Fatalf("valid update failed: %v", err)
+	}
+	if updated.FrontControllerFile != "bootstrap.php" ||
+		updated.FrontControllerMode != "htaccess" ||
+		updated.ApacheAllowOverride != "none" ||
+		updated.SPAFallbackFile != "app.html" ||
+		updated.Build == nil ||
+		updated.Build.Command != "npm run build" {
+		t.Fatalf("updated fields mismatch: %+v", updated)
+	}
+}
