@@ -106,6 +106,8 @@ type Service struct {
 
 	Environment     map[string]string
 	Healthcheck     *Healthcheck
+	Entrypoint      []string
+	Command         []string
 	ValidateCommand []string
 	ReloadCommand   []string
 	SecurityOpts    []string
@@ -169,6 +171,16 @@ func (c Catalog) Validate() error {
 		}
 		if !validImageRegex.MatchString(s.Image) {
 			return fmt.Errorf("service %q: image %q must be pinned by sha256 digest", s.ID, s.Image)
+		}
+		for _, arg := range s.Entrypoint {
+			if strings.TrimSpace(arg) == "" {
+				return fmt.Errorf("service %q: entrypoint arguments cannot be empty", s.ID)
+			}
+		}
+		for _, arg := range s.Command {
+			if strings.TrimSpace(arg) == "" {
+				return fmt.Errorf("service %q: command arguments cannot be empty", s.ID)
+			}
 		}
 
 		if s.Group == GroupWeb && len(s.Ports) == 0 && s.NetworkMode != "host" {

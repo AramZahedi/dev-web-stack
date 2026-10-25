@@ -36,6 +36,8 @@ type composeService struct {
 	NetworkMode   string                   `yaml:"network_mode,omitempty"`
 	Labels        map[string]string        `yaml:"labels"`
 	Environment   map[string]string        `yaml:"environment,omitempty"`
+	Entrypoint    []string                 `yaml:"entrypoint,omitempty"`
+	Command       []string                 `yaml:"command,omitempty"`
 	Ports         []string                 `yaml:"ports,omitempty"`
 	Volumes       []string                 `yaml:"volumes,omitempty"`
 	DependsOn     []string                 `yaml:"depends_on,omitempty"`
@@ -100,6 +102,16 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 		}
 		if !validImageRegex.MatchString(s.Image) {
 			return nil, fmt.Errorf("service %q: image %q must be pinned by sha256 digest", s.ID, s.Image)
+		}
+		for _, arg := range s.Entrypoint {
+			if strings.TrimSpace(arg) == "" {
+				return nil, fmt.Errorf("service %q: entrypoint arguments cannot be empty", s.ID)
+			}
+		}
+		for _, arg := range s.Command {
+			if strings.TrimSpace(arg) == "" {
+				return nil, fmt.Errorf("service %q: command arguments cannot be empty", s.ID)
+			}
 		}
 
 		switch s.NetworkMode {
@@ -265,6 +277,8 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 				"devstack.service": idStr,
 			},
 			Environment: s.Environment,
+			Entrypoint:  append([]string(nil), s.Entrypoint...),
+			Command:     append([]string(nil), s.Command...),
 			Ports:       ports,
 			Volumes:     volumes,
 			DependsOn:   deps,
