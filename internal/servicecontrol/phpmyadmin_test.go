@@ -169,7 +169,7 @@ func TestManagerRotateCredentialsRestartsActivePhpMyAdmin(t *testing.T) {
 	}
 }
 
-func TestManagerRotateCredentialsReportsPhpMyAdminRestartFailure(t *testing.T) {
+func TestManagerRotateCredentialsRecordsPhpMyAdminRestartWarning(t *testing.T) {
 	rotated := Credentials{Engine: "mysql", Username: "devstack", Password: "new-secret"}
 	prep := &fakePreparer{rotated: rotated}
 	helper := &fakeHelper{
@@ -181,14 +181,21 @@ func TestManagerRotateCredentialsReportsPhpMyAdminRestartFailure(t *testing.T) {
 		map[services.ID]Preparer{services.IDMySQL: prep})
 
 	got, err := manager.RotateCredentials(context.Background(), services.IDMySQL)
-	if err == nil || !strings.Contains(err.Error(), "restart failed") {
-		t.Fatalf("RotateCredentials() error = %v", err)
+	if err != nil {
+		t.Fatalf("RotateCredentials() error = %v, want success with a recorded warning", err)
 	}
 	if got != rotated {
 		t.Fatalf("rotated credentials = %+v, want %+v", got, rotated)
 	}
-	if rec := store.records[services.IDPHPMyAdmin]; rec.State != services.StateError {
-		t.Fatalf("phpmyadmin record = %+v", rec)
+	rec := store.records[services.IDPHPMyAdmin]
+	if rec.State != services.StateActive || !rec.Active {
+		t.Fatalf("phpmyadmin record = %+v, want active after a successful rotation", rec)
+	}
+	if !strings.Contains(rec.LastError, "restart failed") {
+		t.Fatalf("phpmyadmin warning = %q, want the restart failure", rec.LastError)
+	}
+	if rec.LastOperation != "credential-rotation" {
+		t.Fatalf("phpmyadmin last operation = %q, want credential-rotation", rec.LastOperation)
 	}
 }
 

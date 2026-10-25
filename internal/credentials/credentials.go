@@ -30,8 +30,10 @@ var (
 	ErrSecretExists = errors.New("credential secret already exists")
 	// ErrSecretMissing reports a missing credential file.
 	ErrSecretMissing = errors.New("credential secret is missing")
-	// ErrEmptySecret reports an empty or whitespace-only credential file.
+	// ErrEmptySecret reports an empty credential file or value.
 	ErrEmptySecret = errors.New("credential secret is empty")
+	// ErrInvalidSecretValue reports a replacement value with unsafe whitespace.
+	ErrInvalidSecretValue = errors.New("credential secret value contains whitespace")
 	// ErrInvalidSecret reports a secret path that is not a regular file.
 	ErrInvalidSecret = errors.New("credential secret is not a regular file")
 	// ErrInvalidDataDir reports a data path that is not a directory.
@@ -52,6 +54,10 @@ var nameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 type Store struct {
 	Root string
 	Now  func() time.Time
+	// OwnerUID, when nonzero, owns every directory and secret file created or
+	// replaced by this store. The privileged helper sets it to the invoking
+	// user so rotation does not leave root-owned 0600 secrets behind.
+	OwnerUID int
 }
 
 // Dir returns the engine secret directory under the store root.
@@ -94,7 +100,7 @@ func (s *Store) Ensure(engine, dataDir string, names ...string) (map[string]stri
 	}
 
 	if len(unique) == 0 {
-		if err := ensureDir(s.Dir(engine)); err != nil {
+		if err := s.ensureDir(s.Dir(engine)); err != nil {
 			return nil, err
 		}
 		return map[string]string{}, nil
@@ -129,7 +135,7 @@ func (s *Store) Ensure(engine, dataDir string, names ...string) (map[string]stri
 		return nil, fmt.Errorf("%w: engine %q secret %q", ErrDataWithoutSecret, engine, missing[0])
 	}
 
-	if err := ensureDir(s.Dir(engine)); err != nil {
+	if err := s.ensureDir(s.Dir(engine)); err != nil {
 		return nil, err
 	}
 
@@ -200,7 +206,7 @@ func (s *Store) Write(engine, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := ensureDir(s.Dir(engine)); err != nil {
+	if err := s.ensureDir(s.Dir(engine)); err != nil {
 		return "", err
 	}
 	return s.writeNew(engine, name, target)
@@ -222,7 +228,7 @@ func (s *Store) Rotate(engine, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := ensureDir(s.Dir(engine)); err != nil {
+	if err := s.ensureDir(s.Dir(engine)); err != nil {
 		return "", err
 	}
 
@@ -249,14 +255,17 @@ func (s *Store) Replace(engine, name, value string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("%w: secret %q", ErrInvalidName, name)
 	}
-	if value == "" || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\t ") {
+	if value == "" || strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%w: engine %q secret %q", ErrEmptySecret, engine, name)
+	}
+	if strings.ContainsAny(value, "\r\n\t ") {
+		return fmt.Errorf("%w: engine %q secret %q", ErrInvalidSecretValue, engine, name)
 	}
 	target, err := s.secretPath(engine, name)
 	if err != nil {
 		return err
 	}
-	if err := ensureDir(s.Dir(engine)); err != nil {
+	if err := s.ensureDir(s.Dir(engine)); err != nil {
 		return err
 	}
 	return s.writeReplacement(engine, target, value)
@@ -276,6 +285,12 @@ func (s *Store) writeReplacement(engine, target, value string) error {
 	if err := tmp.Chmod(SecretFileMode); err != nil {
 		cleanup()
 		return fmt.Errorf("set temporary secret mode: %w", err)
+	}
+	if s.OwnerUID != 0 {
+		if err := tmp.Chown(s.OwnerUID, -1); err != nil {
+			cleanup()
+			return fmt.Errorf("set temporary secret owner: %w", err)
+		}
 	}
 	if _, err := tmp.WriteString(value); err != nil {
 		cleanup()
@@ -374,6 +389,12 @@ func (s *Store) writeNew(engine, name, path string) (string, error) {
 		cleanup()
 		return "", fmt.Errorf("set credential secret mode: %w", err)
 	}
+	if s.OwnerUID != 0 {
+		if err := file.Chown(s.OwnerUID, -1); err != nil {
+			cleanup()
+			return "", fmt.Errorf("set credential secret owner: %w", err)
+		}
+	}
 	if _, err := file.WriteString(value); err != nil {
 		cleanup()
 		return "", fmt.Errorf("write credential secret for %q: %w", engine, err)
@@ -419,6 +440,20 @@ func inspectDataDir(dataDir string) (exists bool, initialized bool, err error) {
 func validateName(name string) error {
 	if !nameRegex.MatchString(name) {
 		return ErrInvalidName
+	}
+	return nil
+}
+
+func (s *Store) ensureDir(dir string) error {
+	if err := ensureDir(dir); err != nil {
+		return err
+	}
+	if s.OwnerUID != 0 {
+		for _, path := range []string{filepath.Dir(dir), dir} {
+			if err := os.Chown(path, s.OwnerUID, -1); err != nil {
+				return fmt.Errorf("set credential directory owner: %w", err)
+			}
+		}
 	}
 	return nil
 }

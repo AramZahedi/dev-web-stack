@@ -225,7 +225,7 @@ func (m *Manager) Activate(ctx context.Context, id services.ID) error {
 	}
 	if svc.Group == services.GroupMySQLFamily {
 		if err := m.restartPhpMyAdminIfActive(ctx); err != nil {
-			return err
+			return m.recordPhpMyAdminActivationFailure(ctx, err)
 		}
 	}
 	return nil
@@ -315,7 +315,10 @@ func (m *Manager) RotateCredentials(ctx context.Context, id services.ID) (Creden
 	}
 	if svc.Group == services.GroupMySQLFamily {
 		if err := m.restartPhpMyAdminIfActive(ctx); err != nil {
-			return creds, err
+			// Rotation already succeeded and the new credentials are valid.
+			// Record the dependent restart failure as a warning instead of
+			// hiding the rotated credentials from the caller.
+			m.recordPhpMyAdminWarning(ctx, "credential-rotation", err)
 		}
 	}
 	return creds, nil
@@ -345,9 +348,8 @@ func (m *Manager) checkActivationDependencies(ctx context.Context, svc services.
 }
 
 // restartPhpMyAdminIfActive reconciles the standalone phpMyAdmin container
-// after a MySQL-family switch or credential rotation. It records failures on
-// the phpMyAdmin service without rolling back the database operation that
-// already succeeded.
+// after a MySQL-family switch or credential rotation. Callers decide whether a
+// failure fails the database operation or is recorded only as a warning.
 func (m *Manager) restartPhpMyAdminIfActive(ctx context.Context) error {
 	pma, ok := m.catalog.Get(services.IDPHPMyAdmin)
 	if !ok {
@@ -368,13 +370,33 @@ func (m *Manager) restartPhpMyAdminIfActive(ctx context.Context) error {
 		return nil
 	}
 	if err := m.helper.Restart(ctx, string(services.IDPHPMyAdmin)); err != nil {
-		cause := helperFailure("restart phpMyAdmin", err)
-		if recordErr := m.recordFailure(ctx, pma, "restart", true, cause); recordErr != nil {
-			return errors.Join(cause, recordErr)
-		}
-		return cause
+		return helperFailure("restart phpMyAdmin", err)
 	}
 	return m.persist(ctx, pma, services.StateActive, true, "restart", "")
+}
+
+// recordPhpMyAdminActivationFailure persists a restart failure that should
+// fail the database activation that triggered it.
+func (m *Manager) recordPhpMyAdminActivationFailure(ctx context.Context, cause error) error {
+	pma, ok := m.catalog.Get(services.IDPHPMyAdmin)
+	if !ok {
+		return cause
+	}
+	if err := m.recordFailure(ctx, pma, "restart", true, cause); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
+}
+
+// recordPhpMyAdminWarning persists a dependent restart failure without failing
+// an operation that already succeeded. Persistence is best-effort so a warning
+// write can never hide successful credential rotation.
+func (m *Manager) recordPhpMyAdminWarning(ctx context.Context, operation string, cause error) {
+	pma, ok := m.catalog.Get(services.IDPHPMyAdmin)
+	if !ok {
+		return
+	}
+	_ = m.persist(ctx, pma, services.StateActive, true, operation, "warning: "+cause.Error())
 }
 
 func (m *Manager) service(id services.ID) (services.Service, error) {

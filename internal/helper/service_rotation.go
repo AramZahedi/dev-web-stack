@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/credentials"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
+
+const credentialRollbackTimeout = 15 * time.Second
 
 // InputCommandRunner is an optional CommandRunner extension for fixed helper
 // commands that must receive secret input on stdin instead of argv.
@@ -69,6 +72,10 @@ func (c *DockerServiceController) RotateCredentials(ctx context.Context, id serv
 	if err != nil {
 		return err
 	}
+	oldSQL, err := rotationSQL(id, oldPassword)
+	if err != nil {
+		return err
+	}
 	newSQL, err := rotationSQL(id, newPassword)
 	if err != nil {
 		return err
@@ -79,14 +86,22 @@ func (c *DockerServiceController) RotateCredentials(ctx context.Context, id serv
 	}
 
 	if _, err := c.runComposeInput(ctx, []byte(newSQL), args...); err != nil {
-		return rotationFailure(id, "update database account", err, oldPassword, newPassword)
+		// The client can report a failure after the server applied ALTER USER
+		// (for example, a dropped connection). Re-apply the old password so
+		// the account and the unchanged host secret stay consistent.
+		rollbackCtx, cancel := credentialRollbackContext(ctx)
+		defer cancel()
+		if _, rollbackErr := c.runComposeInput(rollbackCtx, []byte(oldSQL), args...); rollbackErr != nil {
+			return rotationFailure(id,
+				"update database account and restore the previous password", errors.Join(err, rollbackErr),
+				oldPassword, newPassword)
+		}
+		return rotationFailure(id, "update database account; previous password restored", err, oldPassword, newPassword)
 	}
 	if err := secrets.Replace(string(id), "devstack_password", newPassword); err != nil {
-		oldSQL, buildErr := rotationSQL(id, oldPassword)
-		if buildErr != nil {
-			return fmt.Errorf("rotate %s credentials: store new secret: %v", id, err)
-		}
-		if _, rollbackErr := c.runComposeInput(ctx, []byte(oldSQL), args...); rollbackErr != nil {
+		rollbackCtx, cancel := credentialRollbackContext(ctx)
+		defer cancel()
+		if _, rollbackErr := c.runComposeInput(rollbackCtx, []byte(oldSQL), args...); rollbackErr != nil {
 			return rotationFailure(id,
 				"store new secret and restore the previous database password", errors.Join(err, rollbackErr),
 				oldPassword, newPassword)
@@ -94,6 +109,14 @@ func (c *DockerServiceController) RotateCredentials(ctx context.Context, id serv
 		return fmt.Errorf("rotate %s credentials: store new secret: %v; the database account was restored", id, err)
 	}
 	return nil
+}
+
+func credentialRollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base := context.Background()
+	if ctx != nil {
+		base = context.WithoutCancel(ctx)
+	}
+	return context.WithTimeout(base, credentialRollbackTimeout)
 }
 
 func rotatableDatabase(id services.ID) bool {
@@ -111,7 +134,7 @@ func rotationSQL(id services.ID, password string) (string, error) {
 	}
 	switch id {
 	case services.IDMySQL, services.IDMariaDB:
-		return fmt.Sprintf("ALTER USER 'devstack'@'%%' IDENTIFIED BY '%s';\nFLUSH PRIVILEGES;\n", password), nil
+		return fmt.Sprintf("ALTER USER 'devstack'@'%%' IDENTIFIED BY '%s';\n", password), nil
 	case services.IDPostgreSQL:
 		return fmt.Sprintf("ALTER ROLE devstack WITH PASSWORD '%s';\n", password), nil
 	default:
@@ -158,7 +181,7 @@ func (c *DockerServiceController) secretStore() ServiceSecretStore {
 	if c.Secrets != nil {
 		return c.Secrets
 	}
-	return &credentials.Store{Root: c.root}
+	return &credentials.Store{Root: c.root, OwnerUID: c.OwnerUID}
 }
 
 func rotationFailure(id services.ID, operation string, cause error, secrets ...string) error {
