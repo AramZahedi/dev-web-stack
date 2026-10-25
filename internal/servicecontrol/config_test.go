@@ -704,6 +704,11 @@ func TestConfigApplyTooLargeAndBinaryContent(t *testing.T) {
 	}); !errors.Is(err, ErrConfigBinary) {
 		t.Fatalf("binary apply error = %v", err)
 	}
+
+	f.write(services.IDNginx, "conf.d/binary.conf", string([]byte{0xff, 0xfe, 0xfd}))
+	if _, err := f.service.Content(context.Background(), services.IDNginx, "conf.d/binary.conf"); !errors.Is(err, ErrConfigBinary) {
+		t.Fatalf("invalid UTF-8 content error = %v, want ErrConfigBinary", err)
+	}
 }
 
 func TestConfigResetRestoresLatestBackup(t *testing.T) {

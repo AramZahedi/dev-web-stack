@@ -569,9 +569,12 @@ func (s *ConfigService) Apply(ctx context.Context, id services.ID, req ConfigApp
 		return ConfigApplyResult{}, fmt.Errorf("write service config %s: %w", clean, err)
 	}
 
-	after, err := manager.Status(clean)
-	if err != nil {
-		return ConfigApplyResult{}, err
+	detached := status.Detached
+	switch resolution {
+	case ConfigResolutionUse:
+		detached = false
+	case ConfigResolutionMerge:
+		detached = true
 	}
 	result := ConfigApplyResult{
 		Service:    string(id),
@@ -580,7 +583,7 @@ func (s *ConfigService) Apply(ctx context.Context, id services.ID, req ConfigApp
 		Changed:    true,
 		Resolution: resolution,
 		BackupPath: backupPath,
-		Detached:   after.Detached,
+		Detached:   detached,
 		Hash:       configHash([]byte(req.Content)),
 		Size:       int64(len(req.Content)),
 		Active:     view.Active,
@@ -1074,7 +1077,7 @@ func readConfigFile(full string) ([]byte, error) {
 	if len(data) > MaxConfigFileBytes {
 		return nil, ErrConfigTooLarge
 	}
-	if bytes.IndexByte(data, 0) >= 0 {
+	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
 		return nil, ErrConfigBinary
 	}
 	return data, nil
