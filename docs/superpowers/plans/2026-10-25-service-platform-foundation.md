@@ -46,6 +46,10 @@ Compose command runner, systemd helper.
 
 Wave 0 is split into safe phases. The maximum is three implementation worktrees.
 
+**Migration numbering correction:** existing migration `0003_php_build.sql` is already
+on `master`. F2 therefore uses `0004_services.sql`; F5 uses
+`0005_site_contracts.sql`.
+
 | Phase | Task | Depends on | Branch | Owns |
 |---|---|---|---|---|
 | 0A | F1 | none | `feat/services-foundation-f1` | `internal/config` layout/permissions |
@@ -161,7 +165,7 @@ git commit -m "feat: add service root layout paths"
 - Test: `internal/services/catalog_test.go`
 - Create: `internal/services/state.go`
 - Test: `internal/services/state_test.go`
-- Create: `internal/store/migrations/0003_services.sql`
+- Create: `internal/store/migrations/0004_services.sql`
 - Modify: `internal/store/store.go`
 - Test: `internal/store/service_state_test.go` (create)
 
@@ -309,7 +313,7 @@ Expected: package/type or undefined-method failures.
 
 - [ ] **Step 4: Implement catalog/state and migration**
 
-Migration `0003_services.sql`:
+Migration `0004_services.sql`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS services (
@@ -336,7 +340,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add internal/services internal/store/migrations/0003_services.sql internal/store/store.go internal/store/service_state_test.go
+git add internal/services internal/store/migrations/0004_services.sql internal/store/store.go internal/store/service_state_test.go
 git commit -m "feat: add service catalog and state registry"
 ```
 
@@ -614,7 +618,7 @@ git commit -m "feat: add editable config conflict engine"
 **Files:**
 - Modify: `internal/model/model.go`
 - Modify: `internal/model/model_test.go`
-- Create: `internal/store/migrations/0004_site_contracts.sql`
+- Create: `internal/store/migrations/0005_site_contracts.sql`
 - Modify: `internal/store/store.go`
 - Test: `internal/store/site_contracts_test.go` (create)
 - Modify: `internal/sites/service.go`
@@ -662,6 +666,8 @@ type BuildProfile struct {
 - Create a site with non-default values; `CreateSite` then `GetSite` must round-trip all
   fields.
 - `GetSiteByName`/`ListSites` must preserve build JSON.
+- Update the schema-version assertions in `internal/store/store_test.go` to expect the
+  new migration version (5 after F2's 4).
 - Default creation uses the documented defaults.
 - Invalid traversal/mode/file values fail in `sites.Create`/`sites.Update`.
 - API create/update JSON accepts and returns the fields.
@@ -674,7 +680,7 @@ Expected: missing fields/columns.
 
 - [ ] **Step 3: Implement**
 
-Migration `0004_site_contracts.sql`:
+Migration `0005_site_contracts.sql`:
 
 ```sql
 ALTER TABLE sites ADD COLUMN front_controller_file TEXT NOT NULL DEFAULT 'index.php';

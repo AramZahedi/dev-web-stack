@@ -53,6 +53,9 @@ F3 and F5 must not edit each other's files.
 
 F6 is serial because it edits the API/CLI/UI hot files after F5.
 
+**Migration numbering:** `0003_php_build.sql` already exists on `master`. F2 uses
+`0004_services.sql`; F5 uses `0005_site_contracts.sql`.
+
 Wave 1 parallelism starts only after Wave 0 is fully merged:
 
 - Lane A: database services;
