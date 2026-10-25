@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-var validImageRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$`)
+// validImageRegex accepts an optional tag followed by a mandatory sha256
+// digest. The plan pins images as `repo:tag@sha256:<digest>`, so the tag is
+// allowed but a floating tag without a digest is still rejected.
+var validImageRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?@sha256:[0-9a-f]{64}$`)
 
 // ID identifies a managed infrastructure service.
 type ID string

@@ -184,6 +184,9 @@ func (m *Manager) Deactivate(ctx context.Context, id services.ID) error {
 	if err != nil {
 		return err
 	}
+	if err := m.checkDeactivationGuard(ctx, id, false); err != nil {
+		return err
+	}
 	if err := m.helper.Deactivate(ctx, string(id)); err != nil {
 		return m.recordFailure(ctx, svc, "deactivate", m.currentActive(ctx, id), helperFailure("deactivate service", err))
 	}
@@ -208,6 +211,9 @@ func (m *Manager) Restart(ctx context.Context, id services.ID) error {
 func (m *Manager) Uninstall(ctx context.Context, id services.ID, deleteData bool) (UninstallResult, error) {
 	svc, err := m.service(id)
 	if err != nil {
+		return UninstallResult{}, err
+	}
+	if err := m.checkDeactivationGuard(ctx, id, true); err != nil {
 		return UninstallResult{}, err
 	}
 	if err := m.helper.Uninstall(ctx, string(id), deleteData); err != nil {
@@ -255,11 +261,61 @@ func (m *Manager) service(id services.ID) (services.Service, error) {
 	return svc, nil
 }
 
+// ServiceValidator is the optional helper capability used by web-server
+// config checks. The P2 helper client exposes Validate and Reload.
+type ServiceValidator interface {
+	Validate(ctx context.Context, id string) error
+	Reload(ctx context.Context, id string) error
+}
+
+// Validate runs the catalog validation command inside a service container.
+func (m *Manager) Validate(ctx context.Context, id services.ID) error {
+	if _, err := m.service(id); err != nil {
+		return err
+	}
+	validator, ok := m.helper.(ServiceValidator)
+	if !ok {
+		return fmt.Errorf("%w: validate is not supported by the service helper", ErrHelperUnavailable)
+	}
+	if err := validator.Validate(ctx, string(id)); err != nil {
+		return helperFailure("validate service", err)
+	}
+	return nil
+}
+
+// Reload gracefully reloads a service container.
+func (m *Manager) Reload(ctx context.Context, id services.ID) error {
+	if _, err := m.service(id); err != nil {
+		return err
+	}
+	validator, ok := m.helper.(ServiceValidator)
+	if !ok {
+		return fmt.Errorf("%w: reload is not supported by the service helper", ErrHelperUnavailable)
+	}
+	if err := validator.Reload(ctx, string(id)); err != nil {
+		return helperFailure("reload service", err)
+	}
+	return nil
+}
+
 func (m *Manager) preparer(id services.ID) Preparer {
 	if prep, ok := m.preparers[id]; ok && prep != nil {
 		return prep
 	}
 	return NoopPreparer{}
+}
+
+// checkDeactivationGuard lets a web-server preparer refuse to stop or remove
+// the container that currently owns 80/443.
+func (m *Manager) checkDeactivationGuard(ctx context.Context, id services.ID, uninstall bool) error {
+	guard, ok := m.preparer(id).(DeactivationGuard)
+	if !ok {
+		return nil
+	}
+	if uninstall {
+		return guard.CanUninstall(ctx, id)
+	}
+	return guard.CanDeactivate(ctx, id)
 }
 
 func (m *Manager) activationFailure(ctx context.Context, svc services.Service, prep Preparer, cause error) error {

@@ -223,7 +223,7 @@ func TestCoordinatorRetainsHostNetworkPorts(t *testing.T) {
 
 func TestCoordinatorListEmptyCatalog(t *testing.T) {
 	ctx := context.Background()
-	coord := services.NewCoordinator(services.DefaultCatalog(), &fakeStore{records: map[services.ID]services.Record{}}, "/data/devstack")
+	coord := services.NewCoordinator(services.Catalog{}, &fakeStore{records: map[services.ID]services.Record{}}, "/data/devstack")
 	list, err := coord.List(ctx)
 	if err != nil {
 		t.Fatalf("List() err = %v", err)
