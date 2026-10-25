@@ -56,9 +56,12 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// Compare with the listeners this process actually bound. config store
 	// settings may already contain a saved-but-not-restarted port change.
 	running := s.runningPorts(current)
-	cfg.HTTPPort = running.HTTPPort
-	cfg.HTTPSPort = running.HTTPSPort
-	cfg.UIPort = running.UIPort
+	// Store settings may already contain a saved-but-not-restarted port change.
+	// Preserve omitted pending values; only the running listeners are exempt
+	// from the bind probe and drive restart_required.
+	cfg.HTTPPort = current.HTTPPort
+	cfg.HTTPSPort = current.HTTPSPort
+	cfg.UIPort = current.UIPort
 	if req.HTTPPort != nil {
 		cfg.HTTPPort = *req.HTTPPort
 	}

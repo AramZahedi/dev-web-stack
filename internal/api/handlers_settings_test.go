@@ -134,6 +134,48 @@ func TestPatchSettingsPersistsListenerPortsAndReportsRestart(t *testing.T) {
 	}
 }
 
+func TestPatchSettingsPreservesOmittedPendingPorts(t *testing.T) {
+	home, fx := settingsTestHome(t)
+	used := map[int]bool{}
+	firstHTTP := settingsFreePort(t, used)
+	firstHTTPS := settingsFreePort(t, used)
+	firstUI := settingsFreePort(t, used)
+	body := fmt.Sprintf(`{"http_port":%d,"https_port":%d,"ui_port":%d}`, firstHTTP, firstHTTPS, firstUI)
+	rec := fx.request(t, http.MethodPatch, "/api/v1/settings", strings.NewReader(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first PATCH = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	nextHTTP := settingsFreePort(t, used)
+	rec = fx.request(t, http.MethodPatch, "/api/v1/settings",
+		strings.NewReader(fmt.Sprintf(`{"http_port":%d}`, nextHTTP)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second PATCH = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		HTTPPort        int  `json:"http_port"`
+		HTTPSPort       int  `json:"https_port"`
+		UIPort          int  `json:"ui_port"`
+		RestartRequired bool `json:"restart_required"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.HTTPPort != nextHTTP || response.HTTPSPort != firstHTTPS || response.UIPort != firstUI {
+		t.Fatalf("second patch reverted omitted pending ports: %+v", response)
+	}
+	if !response.RestartRequired {
+		t.Fatal("restart_required = false while saved ports still differ from running listeners")
+	}
+	loaded, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.HTTPPort != nextHTTP || loaded.HTTPSPort != firstHTTPS || loaded.UIPort != firstUI {
+		t.Fatalf("config ports = %d/%d/%d", loaded.HTTPPort, loaded.HTTPSPort, loaded.UIPort)
+	}
+}
+
 func TestPatchSettingsValidatesPorts(t *testing.T) {
 	t.Run("duplicate", func(t *testing.T) {
 		_, fx := settingsTestHome(t)
