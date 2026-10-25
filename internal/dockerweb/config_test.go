@@ -5,19 +5,7 @@ import (
 	"testing"
 )
 
-func TestBaseConfigsListenOnConfiguredPorts(t *testing.T) {
-	nginx, err := RenderBase(ServerNginx, 8080, 8443)
-	if err != nil {
-		t.Fatalf("RenderBase(nginx): %v", err)
-	}
-	// nginx listens in the generated server blocks, not in nginx.conf.
-	if strings.Contains(string(nginx), "listen 8080") {
-		t.Fatal("nginx base config must not contain per-site listen directives")
-	}
-	if !strings.Contains(string(nginx), "include /etc/nginx/conf.d/generated/*.conf;") {
-		t.Fatal("nginx base config missing generated include")
-	}
-
+func TestApacheBaseConfigListensOnConfiguredPorts(t *testing.T) {
 	apache, err := RenderBase(ServerApache, 8080, 8443)
 	if err != nil {
 		t.Fatalf("RenderBase(apache): %v", err)
@@ -30,6 +18,30 @@ func TestBaseConfigsListenOnConfiguredPorts(t *testing.T) {
 	}
 	if strings.Contains(text, "Listen 80\n") || strings.Contains(text, "Listen 443\n") {
 		t.Error("apache base config must not listen on production ports when overridden")
+	}
+
+	nginx, err := RenderBase(ServerNginx, 8080, 8443)
+	if err != nil {
+		t.Fatalf("RenderBase(nginx): %v", err)
+	}
+	if strings.Contains(string(nginx), "listen ") {
+		t.Error("nginx base config must not contain listen directives; generated server blocks own the ports")
+	}
+}
+
+func TestNginxSiteVhostUsesConfiguredListenPorts(t *testing.T) {
+	f := newRenderFixture(t)
+	f.writeFile(t, "site/index.html", "ok")
+	site := f.site("site", "site", "site.test", "site")
+	site.TLS = true
+	set := baseSet(f, site)
+	set.HTTPListenPort = 8080
+	set.HTTPSListenPort = 8443
+	out := renderOne(t, ServerNginx, set, "site.conf")
+	for _, want := range []string{"listen 8080;", "listen 8443 ssl;"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("nginx site vhost missing %q", want)
+		}
 	}
 }
 

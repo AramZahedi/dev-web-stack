@@ -164,6 +164,11 @@ type Service struct {
 	// directory nor its port may be released until a later stop succeeds. It is
 	// only accessed while mu is held.
 	retainedPHP map[string]map[string]int
+
+	// servingStateErr records a Docker->builtin transition where the builtin
+	// runtime is serving but persisting builtin/native failed. It is surfaced
+	// through VhostStatus and cleared by the next successful state save.
+	servingStateErr string
 }
 
 // NewService returns a service and reserves every port already recorded for a

@@ -249,6 +249,103 @@ func TestDockerToBuiltinSaveFailureStillRestoresBuiltin(t *testing.T) {
 	}
 }
 
+func TestDockerToBuiltinStaticFailureDoesNotEnableForwarders(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	switcher := &fakeDockerSwitch{}
+	forwarders := &fakeForwarders{}
+	svc.deps.DockerSwitch = switcher
+	svc.deps.Forwarders = forwarders
+	fakes.backend.startErr = errors.New("static backend failed")
+	site := model.Site{
+		ID:           "static",
+		Name:         "static",
+		Domain:       "static.test",
+		Kind:         model.SiteStatic,
+		HostPath:     fakes.root,
+		BackendPath:  fakes.root,
+		DocumentRoot: ".",
+		DesiredState: model.DesiredRunning,
+		Status:       model.StatusRunning,
+		HTTPPort:     41001,
+	}
+	if err := fakes.store.CreateSite(context.Background(), site); err != nil {
+		t.Fatalf("create static site: %v", err)
+	}
+
+	err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin)
+	if err == nil {
+		t.Fatal("expected static backend start failure")
+	}
+	if fakes.proxy.isStarted() {
+		t.Fatal("proxy must be stopped when the builtin restore fails")
+	}
+	if len(forwarders.calls) != 0 {
+		t.Fatalf("forwarders must not be enabled before static backends start: %v", forwarders.calls)
+	}
+	stopped, started := switcher.counts()
+	if stopped != 1 || started != 1 || switcher.started[0] != "nginx" {
+		t.Fatalf("switcher stop=%v start=%v, want docker rollback", switcher.stopped, switcher.started)
+	}
+}
+
+func TestDockerToBuiltinSaveFailureReportsDegradedStatus(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	switcher := &fakeDockerSwitch{}
+	svc.deps.DockerSwitch = switcher
+	svc.deps.Forwarders = &fakeForwarders{}
+	svc.deps.DockerSyncer = &fakeDockerSyncer{configOK: true}
+	home := svc.deps.Config.Home
+	svc.deps.Config.Home = ""
+
+	if err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin); err == nil {
+		t.Fatal("expected save failure")
+	}
+	status, err := svc.VhostStatus(context.Background())
+	if err != nil {
+		t.Fatalf("VhostStatus: %v", err)
+	}
+	if status.ConfigOK {
+		t.Fatal("a failed builtin state save must not advertise Docker config as OK")
+	}
+	if !strings.Contains(status.LastError, "saving builtin/native") {
+		t.Fatalf("LastError = %q, want the save recovery error", status.LastError)
+	}
+
+	// Recovery: after storage is fixed, retrying the builtin switch persists
+	// state without stopping an already-stopped container again.
+	svc.deps.Config.Home = home
+	if err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin); err != nil {
+		t.Fatalf("recovery retry: %v", err)
+	}
+	if svc.deps.Config.ServingMode != config.ServingModeBuiltin || svc.deps.Config.ServingProvider != config.ServingProviderNative {
+		t.Fatalf("recovered config = %s/%s", svc.deps.Config.ServingMode, svc.deps.Config.ServingProvider)
+	}
+	stopped, _ := switcher.counts()
+	if stopped != 1 {
+		t.Fatalf("recovery must not stop the already-stopped container again: %v", switcher.stopped)
+	}
+	_ = fakes
+}
+
+func TestDockerProviderWithBuiltinModeIsRejected(t *testing.T) {
+	svc, _ := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeBuiltin
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	switcher := &fakeDockerSwitch{}
+	svc.deps.DockerSwitch = switcher
+	if err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin); err == nil {
+		t.Fatal("provider=docker with mode=builtin must return a clear inconsistency error")
+	}
+	stopped, _ := switcher.counts()
+	if stopped != 0 {
+		t.Fatalf("inconsistent state must not guess a container to stop: %v", switcher.stopped)
+	}
+}
+
 func TestDockerToBuiltinStartFailureRestartsContainer(t *testing.T) {
 	svc, fakes := newTestService(t)
 	svc.deps.Config.ServingMode = config.ServingModeNginx
