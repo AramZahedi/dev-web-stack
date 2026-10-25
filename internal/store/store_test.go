@@ -83,10 +83,14 @@ func TestSiteCRUD(t *testing.T) {
 		NodeVersion:     "22",
 		Command:         "npm start",
 		Env:             map[string]string{"APP_ENV": "local"},
-		DocumentRoot:    "public",
-		FrontController: true,
-		SPAFallback:     true,
-		TLS:             true,
+		DocumentRoot:        "public",
+		FrontController:     true,
+		FrontControllerFile: "index.php",
+		FrontControllerMode: "auto",
+		ApacheAllowOverride: "all",
+		SPAFallback:         true,
+		SPAFallbackFile:     "index.html",
+		TLS:                 true,
 		ForceHTTPS:      true,
 		DesiredState:    model.DesiredRunning,
 		Status:          model.StatusRunning,
@@ -631,8 +635,8 @@ func TestSchemaAndPragmas(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("schema version = %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("schema version = %d, want 5", version)
 	}
 }
 

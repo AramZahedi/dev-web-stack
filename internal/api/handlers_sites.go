@@ -12,24 +12,29 @@ import (
 // from name by the site service; host_path is accepted as an alias for path so
 // the shape in the M1 design appendix also works.
 type createSiteRequest struct {
-	Name            string            `json:"name"`
-	Path            string            `json:"path"`
-	HostPath        string            `json:"host_path"`
-	Kind            string            `json:"kind"`
-	NodeVersion     string            `json:"node_version"`
-	Command         string            `json:"command"`
-	DocumentRoot    string            `json:"document_root"`
-	WWW             bool              `json:"www"`
-	TLS             bool              `json:"tls"`
-	ForceHTTPS      bool              `json:"force_https"`
-	SPAFallback     bool              `json:"spa_fallback"`
-	Env             map[string]string `json:"env"`
-	PHPVersion      string            `json:"php_version"`
-	PHPBuild        string            `json:"php_build"`
-	PHPExtensions   map[string]bool   `json:"php_extensions"`
-	PHPIni          map[string]string `json:"php_ini"`
-	PHPIniRaw       string            `json:"php_ini_raw"`
-	FrontController bool              `json:"front_controller"`
+	Name                string              `json:"name"`
+	Path                string              `json:"path"`
+	HostPath            string              `json:"host_path"`
+	Kind                string              `json:"kind"`
+	NodeVersion         string              `json:"node_version"`
+	Command             string              `json:"command"`
+	DocumentRoot        string              `json:"document_root"`
+	WWW                 bool                `json:"www"`
+	TLS                 bool                `json:"tls"`
+	ForceHTTPS          bool                `json:"force_https"`
+	SPAFallback         bool                `json:"spa_fallback"`
+	SPAFallbackFile     string              `json:"spa_fallback_file"`
+	Env                 map[string]string   `json:"env"`
+	PHPVersion          string              `json:"php_version"`
+	PHPBuild            string              `json:"php_build"`
+	PHPExtensions       map[string]bool     `json:"php_extensions"`
+	PHPIni              map[string]string   `json:"php_ini"`
+	PHPIniRaw           string              `json:"php_ini_raw"`
+	FrontController     bool                `json:"front_controller"`
+	FrontControllerFile string              `json:"front_controller_file"`
+	FrontControllerMode string              `json:"front_controller_mode"`
+	ApacheAllowOverride string              `json:"apache_allow_override"`
+	Build               *model.BuildProfile `json:"build"`
 }
 
 // updateSiteRequest is a partial update. Pointer fields distinguish an omitted
@@ -37,15 +42,20 @@ type createSiteRequest struct {
 // empty object clears it. PHP version, extensions, and ini changes use
 // PUT /sites/{ref}/php instead.
 type updateSiteRequest struct {
-	Domain          string             `json:"domain"`
-	WWW             *bool              `json:"www"`
-	TLS             *bool              `json:"tls"`
-	ForceHTTPS      *bool              `json:"force_https"`
-	SPAFallback     *bool              `json:"spa_fallback"`
-	FrontController *bool              `json:"front_controller"`
-	Command         string             `json:"command"`
-	DocumentRoot    string             `json:"document_root"`
-	Env             *map[string]string `json:"env"`
+	Domain              string              `json:"domain"`
+	WWW                 *bool               `json:"www"`
+	TLS                 *bool               `json:"tls"`
+	ForceHTTPS          *bool               `json:"force_https"`
+	SPAFallback         *bool               `json:"spa_fallback"`
+	SPAFallbackFile     string              `json:"spa_fallback_file"`
+	FrontController     *bool               `json:"front_controller"`
+	FrontControllerFile string              `json:"front_controller_file"`
+	FrontControllerMode string              `json:"front_controller_mode"`
+	ApacheAllowOverride string              `json:"apache_allow_override"`
+	Build               *model.BuildProfile `json:"build"`
+	Command             string              `json:"command"`
+	DocumentRoot        string              `json:"document_root"`
+	Env                 *map[string]string  `json:"env"`
 }
 
 func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
@@ -95,10 +105,15 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		Env:             req.Env,
 		PHPVersion:      req.PHPVersion,
 		PHPBuild:        req.PHPBuild,
-		PHPExtensions:   req.PHPExtensions,
-		PHPIni:          req.PHPIni,
-		PHPIniRaw:       req.PHPIniRaw,
-		FrontController: req.FrontController,
+		PHPExtensions:       req.PHPExtensions,
+		PHPIni:              req.PHPIni,
+		PHPIniRaw:           req.PHPIniRaw,
+		FrontController:     req.FrontController,
+		FrontControllerFile: req.FrontControllerFile,
+		FrontControllerMode: req.FrontControllerMode,
+		ApacheAllowOverride: req.ApacheAllowOverride,
+		SPAFallbackFile:     req.SPAFallbackFile,
+		Build:               req.Build,
 	})
 	if err != nil {
 		s.writeServiceError(w, r, err)
@@ -130,14 +145,19 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	update := sites.UpdateRequest{
-		Domain:          req.Domain,
-		WWW:             req.WWW,
-		TLS:             req.TLS,
-		ForceHTTPS:      req.ForceHTTPS,
-		SPAFallback:     req.SPAFallback,
-		FrontController: req.FrontController,
-		Command:         req.Command,
-		DocumentRoot:    req.DocumentRoot,
+		Domain:              req.Domain,
+		WWW:                 req.WWW,
+		TLS:                 req.TLS,
+		ForceHTTPS:          req.ForceHTTPS,
+		SPAFallback:         req.SPAFallback,
+		SPAFallbackFile:     req.SPAFallbackFile,
+		FrontController:     req.FrontController,
+		FrontControllerFile: req.FrontControllerFile,
+		FrontControllerMode: req.FrontControllerMode,
+		ApacheAllowOverride: req.ApacheAllowOverride,
+		Build:               req.Build,
+		Command:             req.Command,
+		DocumentRoot:        req.DocumentRoot,
 	}
 	if req.Env != nil {
 		update.Env = *req.Env

@@ -98,6 +98,61 @@ func TestSiteJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBuildProfileJSONRoundTrip(t *testing.T) {
+	bp := BuildProfile{
+		NodeVersion: "20.10.0",
+		Command:     "npm run build",
+		Output:      "dist",
+		Env:         map[string]string{"NODE_ENV": "production"},
+	}
+	data, err := json.Marshal(bp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got BuildProfile
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, bp) {
+		t.Fatalf("got %+v, want %+v", got, bp)
+	}
+}
+
+func TestSiteContractsJSONRoundTrip(t *testing.T) {
+	site := Site{
+		ID:                  "s1",
+		Name:                "blog",
+		Domain:              "blog.test",
+		Kind:                SitePHP,
+		FrontControllerFile: "bootstrap.php",
+		FrontControllerMode: "generated",
+		ApacheAllowOverride: "fileinfo",
+		SPAFallbackFile:     "app.html",
+		Build: &BuildProfile{
+			NodeVersion: "20.10.0",
+			Command:     "npm run build",
+			Output:      "dist",
+			Env:         map[string]string{"NODE_ENV": "production"},
+		},
+	}
+	data, err := json.Marshal(site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Site
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.FrontControllerFile != "bootstrap.php" ||
+		got.FrontControllerMode != "generated" ||
+		got.ApacheAllowOverride != "fileinfo" ||
+		got.SPAFallbackFile != "app.html" ||
+		got.Build == nil ||
+		got.Build.Command != "npm run build" {
+		t.Fatalf("site contracts round trip failed: %+v", got)
+	}
+}
+
 func TestPHPConfigJSONRoundTrip(t *testing.T) {
 	defaults := PHPDefaults{
 		Version:    "8.4",

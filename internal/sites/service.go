@@ -41,6 +41,11 @@ type CreateRequest struct {
 	PHPIniRaw                                            string
 	WWW, TLS, ForceHTTPS, SPAFallback, FrontController   bool
 	Env                                                  map[string]string
+	FrontControllerFile                                  string
+	FrontControllerMode                                  string
+	ApacheAllowOverride                                  string
+	SPAFallbackFile                                      string
+	Build                                                *model.BuildProfile
 }
 
 // UpdateRequest describes a partial site update. Empty strings and nil
@@ -48,15 +53,20 @@ type CreateRequest struct {
 // site environment (an empty map clears it). FrontController is accepted for
 // PHP sites only.
 type UpdateRequest struct {
-	Domain          string
-	WWW             *bool
-	TLS             *bool
-	ForceHTTPS      *bool
-	SPAFallback     *bool
-	FrontController *bool
-	Command         string
-	DocumentRoot    string
-	Env             map[string]string
+	Domain              string
+	WWW                 *bool
+	TLS                 *bool
+	ForceHTTPS          *bool
+	SPAFallback         *bool
+	FrontController     *bool
+	FrontControllerFile string
+	FrontControllerMode string
+	ApacheAllowOverride string
+	SPAFallbackFile     string
+	Build               *model.BuildProfile
+	Command             string
+	DocumentRoot        string
+	Env                 map[string]string
 }
 
 // Hosts synchronizes the helper-managed hosts block.
@@ -705,22 +715,63 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		return model.Site{}, fmt.Errorf("sites: check name %q: %w", name, err)
 	}
 
+	fcFile := strings.TrimSpace(req.FrontControllerFile)
+	if fcFile == "" {
+		fcFile = "index.php"
+	}
+	if err := validateFrontControllerFile(fcFile); err != nil {
+		return model.Site{}, err
+	}
+
+	fcMode := strings.ToLower(strings.TrimSpace(req.FrontControllerMode))
+	if fcMode == "" {
+		fcMode = "auto"
+	}
+	if err := validateFrontControllerMode(fcMode); err != nil {
+		return model.Site{}, err
+	}
+
+	override := strings.ToLower(strings.TrimSpace(req.ApacheAllowOverride))
+	if override == "" {
+		override = "all"
+	}
+	if err := validateApacheAllowOverride(override); err != nil {
+		return model.Site{}, err
+	}
+
+	spaFile := strings.TrimSpace(req.SPAFallbackFile)
+	if spaFile == "" {
+		spaFile = "index.html"
+	}
+	if err := validateSPAFallbackFile(spaFile); err != nil {
+		return model.Site{}, err
+	}
+
+	if err := validateBuildProfile(req.Build); err != nil {
+		return model.Site{}, err
+	}
+
 	site := model.Site{
-		Name:         name,
-		Domain:       siteDomain,
-		WWW:          req.WWW,
-		Backend:      model.BackendLocal,
-		HostPath:     project,
-		BackendPath:  project,
-		Kind:         kind,
-		NodeVersion:  strings.TrimSpace(req.NodeVersion),
-		Command:      strings.TrimSpace(req.Command),
-		Env:          cloneEnv(req.Env),
-		DocumentRoot: strings.TrimSpace(req.DocumentRoot),
-		SPAFallback:  req.SPAFallback,
-		TLS:          req.TLS,
-		ForceHTTPS:   req.ForceHTTPS,
-		DesiredState: model.DesiredRunning,
+		Name:                name,
+		Domain:              siteDomain,
+		WWW:                 req.WWW,
+		Backend:             model.BackendLocal,
+		HostPath:            project,
+		BackendPath:         project,
+		Kind:                kind,
+		NodeVersion:         strings.TrimSpace(req.NodeVersion),
+		Command:             strings.TrimSpace(req.Command),
+		Env:                 cloneEnv(req.Env),
+		DocumentRoot:        strings.TrimSpace(req.DocumentRoot),
+		FrontControllerFile: fcFile,
+		FrontControllerMode: fcMode,
+		ApacheAllowOverride: override,
+		SPAFallback:         req.SPAFallback,
+		SPAFallbackFile:     spaFile,
+		Build:               cloneBuildProfile(req.Build),
+		TLS:                 req.TLS,
+		ForceHTTPS:          req.ForceHTTPS,
+		DesiredState:        model.DesiredRunning,
 	}
 
 	switch kind {
@@ -804,6 +855,113 @@ func rejectPHPOnlyCreateFields(req CreateRequest) error {
 	return nil
 }
 
+func validateFrontControllerFile(p string) error {
+	if p == "" {
+		return errors.New("sites: front controller file cannot be empty")
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") || strings.HasPrefix(p, "\\") {
+		return errors.New("sites: front controller file must be a relative path")
+	}
+	if strings.ContainsRune(p, '\x00') {
+		return errors.New("sites: front controller file contains NUL bytes")
+	}
+	if !strings.HasSuffix(strings.ToLower(p), ".php") {
+		return errors.New("sites: front controller file must end with .php")
+	}
+	clean := filepath.Clean(p)
+	if clean == "." || strings.HasPrefix(clean, "..") || strings.Contains(clean, "..") {
+		return errors.New("sites: front controller file cannot traverse outside root")
+	}
+	for _, seg := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == "." || seg == ".." || strings.HasPrefix(seg, ".") {
+			return fmt.Errorf("sites: front controller file contains invalid dot segment %q", seg)
+		}
+	}
+	return nil
+}
+
+func validateFrontControllerMode(mode string) error {
+	switch mode {
+	case "auto", "generated", "htaccess":
+		return nil
+	default:
+		return fmt.Errorf("sites: invalid front controller mode %q (must be auto, generated, or htaccess)", mode)
+	}
+}
+
+func validateApacheAllowOverride(override string) error {
+	switch override {
+	case "all", "fileinfo", "none":
+		return nil
+	default:
+		return fmt.Errorf("sites: invalid apache allow override %q (must be all, fileinfo, or none)", override)
+	}
+}
+
+func validateSPAFallbackFile(p string) error {
+	if p == "" {
+		return errors.New("sites: spa fallback file cannot be empty")
+	}
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") || strings.HasPrefix(p, "\\") {
+		return errors.New("sites: spa fallback file must be a relative path")
+	}
+	if strings.ContainsRune(p, '\x00') {
+		return errors.New("sites: spa fallback file contains NUL bytes")
+	}
+	if strings.HasSuffix(strings.ToLower(p), ".php") {
+		return errors.New("sites: spa fallback file cannot be a .php file")
+	}
+	clean := filepath.Clean(p)
+	if clean == "." || strings.HasPrefix(clean, "..") || strings.Contains(clean, "..") {
+		return errors.New("sites: spa fallback file cannot traverse outside root")
+	}
+	for _, seg := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == "." || seg == ".." || strings.HasPrefix(seg, ".") {
+			return fmt.Errorf("sites: spa fallback file contains invalid dot segment %q", seg)
+		}
+	}
+	return nil
+}
+
+func validateBuildProfile(b *model.BuildProfile) error {
+	if b == nil {
+		return nil
+	}
+	cmd := strings.TrimSpace(b.Command)
+	nodeVer := strings.TrimSpace(b.NodeVersion)
+	out := strings.TrimSpace(b.Output)
+	if cmd == "" && nodeVer == "" && out == "" && len(b.Env) == 0 {
+		return nil
+	}
+	if (cmd == "" && nodeVer != "") || (cmd != "" && nodeVer == "") {
+		return errors.New("sites: build command and node version are required together")
+	}
+	if out != "" {
+		if filepath.IsAbs(out) || strings.HasPrefix(out, "/") || strings.HasPrefix(out, "\\") {
+			return errors.New("sites: build output must be a relative path")
+		}
+		if strings.ContainsRune(out, '\x00') {
+			return errors.New("sites: build output contains NUL bytes")
+		}
+		clean := filepath.Clean(out)
+		if strings.HasPrefix(clean, "..") || strings.Contains(clean, "..") {
+			return errors.New("sites: build output cannot traverse outside project")
+		}
+	}
+	return nil
+}
+
+func cloneBuildProfile(b *model.BuildProfile) *model.BuildProfile {
+	if b == nil {
+		return nil
+	}
+	cp := *b
+	if b.Env != nil {
+		cp.Env = cloneEnv(b.Env)
+	}
+	return &cp
+}
+
 // applyUpdate validates and applies the partial update without touching the
 // store or external systems.
 func (s *Service) applyUpdate(ctx context.Context, current model.Site, req UpdateRequest) (model.Site, error) {
@@ -838,6 +996,40 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 			return model.Site{}, errors.New("sites: front controller requires a php site")
 		}
 		updated.FrontController = *req.FrontController
+	}
+	if req.FrontControllerFile != "" {
+		fcFile := strings.TrimSpace(req.FrontControllerFile)
+		if err := validateFrontControllerFile(fcFile); err != nil {
+			return model.Site{}, err
+		}
+		updated.FrontControllerFile = fcFile
+	}
+	if req.FrontControllerMode != "" {
+		fcMode := strings.ToLower(strings.TrimSpace(req.FrontControllerMode))
+		if err := validateFrontControllerMode(fcMode); err != nil {
+			return model.Site{}, err
+		}
+		updated.FrontControllerMode = fcMode
+	}
+	if req.ApacheAllowOverride != "" {
+		override := strings.ToLower(strings.TrimSpace(req.ApacheAllowOverride))
+		if err := validateApacheAllowOverride(override); err != nil {
+			return model.Site{}, err
+		}
+		updated.ApacheAllowOverride = override
+	}
+	if req.SPAFallbackFile != "" {
+		spaFile := strings.TrimSpace(req.SPAFallbackFile)
+		if err := validateSPAFallbackFile(spaFile); err != nil {
+			return model.Site{}, err
+		}
+		updated.SPAFallbackFile = spaFile
+	}
+	if req.Build != nil {
+		if err := validateBuildProfile(req.Build); err != nil {
+			return model.Site{}, err
+		}
+		updated.Build = cloneBuildProfile(req.Build)
 	}
 	if strings.TrimSpace(req.DocumentRoot) != "" {
 		if updated.Kind == model.SiteNode {

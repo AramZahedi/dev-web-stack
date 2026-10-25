@@ -41,6 +41,14 @@ const (
 	StatusError    SiteStatus = "error"
 )
 
+// BuildProfile configures an optional client-side asset build.
+type BuildProfile struct {
+	NodeVersion string            `json:"node_version,omitempty"`
+	Command     string            `json:"command,omitempty"`
+	Output      string            `json:"output,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+}
+
 // Site is a managed local web project.
 type Site struct {
 	ID          string      `json:"id"`
@@ -63,9 +71,14 @@ type Site struct {
 	Command     string            `json:"command"`
 	Env         map[string]string `json:"env"`
 
-	DocumentRoot    string `json:"document_root"`
-	FrontController bool   `json:"front_controller"`
-	SPAFallback     bool   `json:"spa_fallback"`
+	DocumentRoot        string        `json:"document_root"`
+	FrontController     bool          `json:"front_controller"`
+	FrontControllerFile string        `json:"front_controller_file"`
+	FrontControllerMode string        `json:"front_controller_mode"`
+	ApacheAllowOverride string        `json:"apache_allow_override"`
+	SPAFallback         bool          `json:"spa_fallback"`
+	SPAFallbackFile     string        `json:"spa_fallback_file"`
+	Build               *BuildProfile `json:"build,omitempty"`
 
 	TLS        bool `json:"tls"`
 	ForceHTTPS bool `json:"force_https"`
