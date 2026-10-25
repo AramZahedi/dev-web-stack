@@ -3,14 +3,17 @@ package helper_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helper"
+	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
@@ -183,6 +186,39 @@ func TestServiceHelperEndpoints(t *testing.T) {
 		if err := client.ServiceReload(ctx, badID); !errors.Is(err, helperproto.ErrInvalidRequest) {
 			t.Errorf("ServiceReload(%q) error = %v, want ErrInvalidRequest", badID, err)
 		}
+	}
+}
+
+func TestServiceActivationErrorReturnsServiceConflict(t *testing.T) {
+	cfg := helper.Config{
+		AllowUID: syscall.Getuid(),
+		Service: helper.Service{
+			ServiceActivate: func(context.Context, string) error {
+				return &helper.ServiceActivationError{
+					Service: services.IDNginx,
+					Phase:   "health",
+					Port:    8080,
+					Err:     errors.New("container did not become healthy"),
+				}
+			},
+		},
+	}
+	socketPath, _ := startTestServer(t, cfg)
+	client := dialClient(t, socketPath)
+
+	err := client.ServiceActivate(context.Background(), "nginx")
+	if !errors.Is(err, helperproto.ErrServiceConflict) {
+		t.Fatalf("error = %v, want ErrServiceConflict", err)
+	}
+	var helperErr *helperclient.Error
+	if !errors.As(err, &helperErr) {
+		t.Fatalf("error = %T, want *helperclient.Error", err)
+	}
+	if helperErr.Status != http.StatusConflict || helperErr.Code != helperproto.CodeServiceConflict {
+		t.Fatalf("helper error = %+v, want 409 SERVICE_CONFLICT", helperErr)
+	}
+	if !strings.Contains(helperErr.Message, "health") {
+		t.Fatalf("message = %q, want phase", helperErr.Message)
 	}
 }
 

@@ -6,6 +6,7 @@ import {
   getPHPDefaults,
   getPHPInfo,
   getService,
+  getSettings,
   getVhostStatus,
   listServices,
   listSites,
@@ -261,6 +262,29 @@ describe('api client', () => {
       '/api/v1/services/mysql',
       expect.objectContaining({ method: 'GET' }),
     );
+  });
+
+  it('defaults serving_provider to native for older daemon settings', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        home: '/home/dev/.devstack',
+        user_home: '/home/dev',
+        wsl_distro: 'devstack',
+        http_port: 8080,
+        https_port: 8443,
+        ui_port: 7070,
+        auto_start_sites: true,
+        serving_mode: 'builtin',
+        graceful_stop_seconds: 10,
+        max_request_body_mb: 1024,
+        log_max_mb: 10,
+        log_keep: 5,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const settings = await getSettings();
+    expect(settings.serving_provider).toBe('native');
   });
 
   it('maps an error envelope to ApiError with code, message and details', async () => {

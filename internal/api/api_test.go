@@ -1182,6 +1182,22 @@ func TestOpenAPIDocumentParsesAndDocumentsRoutes(t *testing.T) {
 	if _, ok := settings.Properties["serving_provider"]; !ok {
 		t.Fatal("openapi Settings missing field serving_provider")
 	}
+
+	createSite, ok := doc.Components.Schemas["CreateSiteRequest"]
+	if !ok {
+		t.Fatal("openapi missing CreateSiteRequest schema")
+	}
+	for _, field := range []string{
+		"front_controller_file",
+		"front_controller_mode",
+		"apache_allow_override",
+		"spa_fallback_file",
+		"build",
+	} {
+		if _, ok := createSite.Properties[field]; !ok {
+			t.Fatalf("openapi CreateSiteRequest missing field %q", field)
+		}
+	}
 }
 
 // --- helpers ---------------------------------------------------------------

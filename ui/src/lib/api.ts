@@ -370,7 +370,9 @@ export async function browseFs(path: string): Promise<FsListing> {
 
 export async function getSettings(): Promise<Settings> {
   if (isMockMode) return mockApi.settings();
-  return request<Settings>('/settings');
+  const settings = await request<Settings>('/settings');
+  // Older daemons predate serving_provider; native is the compatible default.
+  return { ...settings, serving_provider: settings.serving_provider ?? 'native' };
 }
 
 export async function getVhostStatus(): Promise<VhostStatus> {

@@ -1095,7 +1095,7 @@ paths:
         "503":
           $ref: "#/components/responses/HelperServiceUnavailable"
         "500":
-          $ref: "#/components/responses/InternalError"
+          $ref: "#/components/responses/HelperError"
 
   /api/v1/services/{id}/install:
     post:
@@ -1120,10 +1120,16 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: The helper reported a service conflict (ports, exclusive group, or health).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/HelperServiceUnavailable"
         "500":
-          $ref: "#/components/responses/InternalError"
+          $ref: "#/components/responses/HelperError"
 
   /api/v1/services/{id}/activate:
     post:
@@ -1151,10 +1157,18 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            The helper reported SERVICE_CONFLICT: an exclusive-group member,
+            host port, or container health blocked activation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/HelperServiceUnavailable"
         "500":
-          $ref: "#/components/responses/InternalError"
+          $ref: "#/components/responses/HelperError"
 
   /api/v1/services/{id}/deactivate:
     post:
@@ -1179,10 +1193,16 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: The helper reported a service conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/HelperServiceUnavailable"
         "500":
-          $ref: "#/components/responses/InternalError"
+          $ref: "#/components/responses/HelperError"
 
   /api/v1/services/{id}/restart:
     post:
@@ -1207,10 +1227,16 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: The helper reported a service conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/HelperServiceUnavailable"
         "500":
-          $ref: "#/components/responses/InternalError"
+          $ref: "#/components/responses/HelperError"
 
   /api/v1/services/{id}/logs:
     get:
@@ -1243,7 +1269,7 @@ paths:
         "503":
           $ref: "#/components/responses/HelperServiceUnavailable"
         "500":
-          $ref: "#/components/responses/InternalError"
+          $ref: "#/components/responses/HelperError"
 
   /api/v1/services/{id}/credentials/reveal:
     post:
@@ -1451,6 +1477,14 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    HelperError:
+      description: |
+        The privileged helper returned a structured internal failure
+        (HELPER_ERROR) rather than a transport failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     ServiceUnavailable:
       description: The requested service is not configured in this daemon.
       content:
@@ -1497,6 +1531,8 @@ components:
             - FORBIDDEN
             - UNAUTHORIZED
             - HELPER_UNAVAILABLE
+            - HELPER_ERROR
+            - SERVICE_CONFLICT
             - METHOD_NOT_ALLOWED
             - INTERNAL
         message:
@@ -1663,14 +1699,44 @@ components:
           type: string
         front_controller:
           type: boolean
+        front_controller_file:
+          type: string
+          description: Relative PHP front-controller file (for example public/index.php).
+        front_controller_mode:
+          type: string
+          enum: [auto, generated, htaccess]
+        apache_allow_override:
+          type: string
+          enum: [all, fileinfo, none]
+        spa_fallback:
+          type: boolean
+        spa_fallback_file:
+          type: string
+          description: Relative fallback file served for non-file paths (for example app.html).
+        build:
+          $ref: "#/components/schemas/BuildProfile"
         www:
           type: boolean
         tls:
           type: boolean
         force_https:
           type: boolean
-        spa_fallback:
-          type: boolean
+        env:
+          type: object
+          additionalProperties:
+            type: string
+
+    BuildProfile:
+      type: object
+      description: Optional client-side asset build profile.
+      required: [node_version, command]
+      properties:
+        node_version:
+          type: string
+        command:
+          type: string
+        output:
+          type: string
         env:
           type: object
           additionalProperties:

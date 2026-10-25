@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
@@ -29,6 +30,9 @@ func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []services.View{}
 	}
+	for i := range list {
+		list[i].LastError = servicecontrol.RedactSecrets(list[i].LastError)
+	}
 	writeJSON(w, http.StatusOK, listServicesResponse{Services: list})
 }
 
@@ -47,6 +51,7 @@ func (s *Server) handleGetService(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, r, err)
 		return
 	}
+	view.LastError = servicecontrol.RedactSecrets(view.LastError)
 	writeJSON(w, http.StatusOK, view)
 }
 
@@ -146,6 +151,17 @@ func (s *Server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"logs": logs})
 }
 
+// auditServiceCredentials records a metadata-only credential access entry. It
+// deliberately excludes the credential values and any free-form error text.
+func (s *Server) auditServiceCredentials(id services.ID, action string, success bool) {
+	s.logger.Info("service credentials access",
+		"audit", "service.credentials",
+		"service", string(id),
+		"action", action,
+		"success", success,
+	)
+}
+
 func (s *Server) handleRevealServiceCredentials(w http.ResponseWriter, r *http.Request) {
 	if s.services == nil {
 		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "service manager is not available", nil)
@@ -158,9 +174,11 @@ func (s *Server) handleRevealServiceCredentials(w http.ResponseWriter, r *http.R
 	}
 	creds, err := s.services.Credentials(r.Context(), id)
 	if err != nil {
+		s.auditServiceCredentials(id, "reveal", false)
 		s.writeServiceError(w, r, err)
 		return
 	}
+	s.auditServiceCredentials(id, "reveal", true)
 	writeJSON(w, http.StatusOK, creds)
 }
 
@@ -176,8 +194,10 @@ func (s *Server) handleRotateServiceCredentials(w http.ResponseWriter, r *http.R
 	}
 	creds, err := s.services.RotateCredentials(r.Context(), id)
 	if err != nil {
+		s.auditServiceCredentials(id, "rotate", false)
 		s.writeServiceError(w, r, err)
 		return
 	}
+	s.auditServiceCredentials(id, "rotate", true)
 	writeJSON(w, http.StatusOK, creds)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,12 +131,13 @@ type fakeHelper struct {
 	uninstallErr  error
 	logsErr       error
 
-	logs        string
-	tail        int
-	deleteData  bool
-	uninstallID string
-	calls       []string
-	trace       *[]string
+	logs             string
+	tail             int
+	deleteData       bool
+	uninstallID      string
+	deactivateCtxErr error
+	calls            []string
+	trace            *[]string
 }
 
 func (h *fakeHelper) record(call string) {
@@ -163,8 +165,9 @@ func (h *fakeHelper) Activate(_ context.Context, id string) error {
 	return h.activateErr
 }
 
-func (h *fakeHelper) Deactivate(_ context.Context, id string) error {
+func (h *fakeHelper) Deactivate(ctx context.Context, id string) error {
 	h.record("helper_deactivate:" + id)
+	h.deactivateCtxErr = ctx.Err()
 	return h.deactivateErr
 }
 
@@ -317,6 +320,73 @@ func TestManagerListMergesCatalogHelperAndStore(t *testing.T) {
 	redis := views[2]
 	if redis.State != services.StateNotInstalled || redis.Installed {
 		t.Fatalf("redis view = %+v", redis)
+	}
+}
+
+func TestManagerListAndGetRedactPasswordInLastError(t *testing.T) {
+	const secret = "super-secret-password"
+	helper := &fakeHelper{statuses: []helperproto.ServiceStatus{{
+		ID:        string(services.IDNginx),
+		State:     string(services.StateError),
+		Installed: true,
+		LastError: `start failed: password=super-secret-password`,
+	}}}
+	store := newFakeStore(services.Record{
+		ID:        services.IDMySQL,
+		State:     services.StateError,
+		LastError: `{"password":"super-secret-password"}`,
+	})
+	manager := newTestManager(t, store, helper, nil)
+
+	views, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoSecretInViews(t, views, secret)
+
+	for _, id := range []services.ID{services.IDNginx, services.IDMySQL} {
+		view, err := manager.Get(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertNoSecretInViews(t, []services.View{view}, secret)
+	}
+}
+
+func assertNoSecretInViews(t *testing.T, views []services.View, secret string) {
+	t.Helper()
+	data, err := json.Marshal(views)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Fatalf("service JSON leaks secret: %s", data)
+	}
+	if len(views) > 0 && views[0].LastError != "" && !strings.Contains(views[0].LastError, "[REDACTED]") {
+		t.Fatalf("last_error was not redacted: %q", views[0].LastError)
+	}
+}
+
+func TestRedactSecrets(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"password equals", "password=super-secret", "password=[REDACTED]"},
+		{"password JSON", `{"password":"super-secret"}`, `{"password":"[REDACTED]"}`},
+		{"password colon", "passwd: super-secret", "passwd: [REDACTED]"},
+		{"mysql pwd", "MYSQL_PWD=super-secret", "MYSQL_PWD=[REDACTED]"},
+		{"DSN", "mysql://devstack:super-secret@tcp(127.0.0.1:3306)/db", "mysql://devstack:[REDACTED]@tcp(127.0.0.1:3306)/db"},
+		{"empty", "", ""},
+		{"no secret", "container failed to start", "container failed to start"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RedactSecrets(tt.in); got != tt.want {
+				t.Fatalf("RedactSecrets(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -504,19 +574,83 @@ func TestManagerActivateHelperFailureCleansUpAndPersistsError(t *testing.T) {
 	}
 }
 
-func TestManagerActivateCommitFailureCleansUp(t *testing.T) {
-	cause := errors.New("commit failed")
-	helper := &fakeHelper{}
-	prep := &fakePreparer{commitErr: cause}
+func TestManagerHelperServiceConflictIsNotUnavailable(t *testing.T) {
+	helper := &fakeHelper{activateErr: fmt.Errorf("%w: host port 8080 is already in use", helperproto.ErrServiceConflict)}
+	prep := &fakePreparer{}
 	store := newFakeStore()
 	manager := newTestManager(t, store, helper, map[services.ID]Preparer{services.IDNginx: prep})
 
 	err := manager.Activate(context.Background(), services.IDNginx)
+	if !errors.Is(err, helperproto.ErrServiceConflict) {
+		t.Fatalf("error = %v, want ErrServiceConflict", err)
+	}
+	if errors.Is(err, ErrHelperUnavailable) {
+		t.Fatalf("error = %v, must not be ErrHelperUnavailable", err)
+	}
+	if len(prep.calls) == 0 || prep.calls[len(prep.calls)-1] != "cleanup_activate:nginx" {
+		t.Fatalf("preparer calls = %v, want cleanup", prep.calls)
+	}
+	rec := store.last(t)
+	if rec.State != services.StateError || rec.Active || !strings.Contains(rec.LastError, "already in use") {
+		t.Fatalf("saved record = %+v", rec)
+	}
+}
+
+func TestManagerHelperInternalErrorIsNotUnavailable(t *testing.T) {
+	helper := &fakeHelper{installErr: fmt.Errorf("%w: docker daemon unavailable", helperproto.ErrInternal)}
+	manager := newTestManager(t, newFakeStore(), helper, nil)
+
+	err := manager.Install(context.Background(), services.IDMySQL)
+	if !errors.Is(err, helperproto.ErrInternal) {
+		t.Fatalf("error = %v, want ErrInternal", err)
+	}
+	if errors.Is(err, ErrHelperUnavailable) {
+		t.Fatalf("error = %v, must not be ErrHelperUnavailable", err)
+	}
+}
+
+func TestManagerHelperTransportErrorIsUnavailable(t *testing.T) {
+	helper := &fakeHelper{installErr: errors.New("dial unix /run/devstack-helper/helper.sock: connection refused")}
+	manager := newTestManager(t, newFakeStore(), helper, nil)
+
+	err := manager.Install(context.Background(), services.IDMySQL)
+	if !errors.Is(err, ErrHelperUnavailable) {
+		t.Fatalf("error = %v, want ErrHelperUnavailable", err)
+	}
+}
+
+func TestManagerActivateCommitFailureStopsContainerAndCleansUp(t *testing.T) {
+	cause := errors.New("commit failed")
+	var trace []string
+	helper := &fakeHelper{trace: &trace}
+	prep := &fakePreparer{commitErr: cause, trace: &trace}
+	store := newFakeStore()
+	manager := newTestManager(t, store, helper, map[services.ID]Preparer{services.IDNginx: prep})
+
+	// The request context is already canceled. The rollback deactivation must
+	// use a fresh, bounded context so the started container is still stopped.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := manager.Activate(ctx, services.IDNginx)
 	if !errors.Is(err, cause) {
 		t.Fatalf("error = %v, want commit cause", err)
 	}
 	if !errors.Is(prep.cleanupCause, cause) {
 		t.Fatalf("cleanup cause = %v, want %v", prep.cleanupCause, cause)
+	}
+	if helper.deactivateCtxErr != nil {
+		t.Fatalf("deactivate context = %v, want non-canceled context", helper.deactivateCtxErr)
+	}
+	wantTrace := []string{
+		"prepare_activate:nginx",
+		"helper_activate:nginx",
+		"commit_activate:nginx",
+		"helper_deactivate:nginx",
+		"cleanup_activate:nginx",
+	}
+	if strings.Join(trace, ",") != strings.Join(wantTrace, ",") {
+		t.Fatalf("trace = %v, want %v", trace, wantTrace)
 	}
 	rec := store.last(t)
 	if rec.State != services.StateError || rec.Active || rec.LastOperation != "activate" {
@@ -620,11 +754,81 @@ func TestManagerUninstallPassesDeleteData(t *testing.T) {
 	store := newFakeStore(services.Record{ID: services.IDMySQL, State: services.StateInstalled})
 	manager := newTestManager(t, store, helper, nil)
 
-	if _, err := manager.Uninstall(context.Background(), services.IDMySQL, true); err != nil {
+	result, err := manager.Uninstall(context.Background(), services.IDMySQL, true)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !helper.deleteData || helper.uninstallID != "mysql" {
 		t.Fatalf("uninstall request = id %q deleteData %t", helper.uninstallID, helper.deleteData)
+	}
+	if result.BackupPath != "" {
+		t.Fatalf("backup path = %q, want empty when no backup exists", result.BackupPath)
+	}
+}
+
+func TestManagerUninstallReturnsNewestNonEmptyBackup(t *testing.T) {
+	root := t.TempDir()
+	backupDir := filepath.Join(root, "backups", "services", "mysql")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(backupDir, "20260101T000000Z.tar.gz")
+	if err := os.WriteFile(oldPath, []byte("old archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(oldPath, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(backupDir, "20260102T000000Z.tar.gz")
+	if err := os.WriteFile(newPath, []byte("new archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newTime := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(newPath, newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+	// An empty archive and a non-archive are newer but must be ignored.
+	emptyPath := filepath.Join(backupDir, "20260103T000000Z.tar.gz")
+	if err := os.WriteFile(emptyPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "notes.txt"), []byte("not a backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newFakeStore(services.Record{ID: services.IDMySQL, State: services.StateInstalled})
+	manager := NewManager(root, store, &fakeHelper{}, testCatalog(), nil)
+	manager.now = func() time.Time { return testNow }
+
+	result, err := manager.Uninstall(context.Background(), services.IDMySQL, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BackupPath != newPath {
+		t.Fatalf("backup path = %q, want %q", result.BackupPath, newPath)
+	}
+}
+
+func TestManagerUninstallOmitsBackupWithoutDeleteData(t *testing.T) {
+	root := t.TempDir()
+	backupDir := filepath.Join(root, "backups", "services", "mysql")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "existing.tar.gz"), []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newFakeStore(services.Record{ID: services.IDMySQL, State: services.StateInstalled})
+	manager := NewManager(root, store, &fakeHelper{}, testCatalog(), nil)
+
+	result, err := manager.Uninstall(context.Background(), services.IDMySQL, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BackupPath != "" {
+		t.Fatalf("backup path = %q, want empty when delete_data is false", result.BackupPath)
 	}
 }
 

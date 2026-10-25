@@ -8,12 +8,34 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
+
+const activationCleanupTimeout = 15 * time.Second
+
+var (
+	secretPattern = regexp.MustCompile(
+		`(?i)(["']?\b(?:password|passwd|pwd|mysql_pwd|secret|token|api[_-]?key)\b["']?\s*[=:]\s*["']?)[^"'\s,;}\]]+`,
+	)
+	dsnSecretPattern = regexp.MustCompile(`(://[^:/@\s]+:)[^@\s]+@`)
+)
+
+// RedactSecrets removes common credential forms from free-form error text so
+// service list/get responses never echo a password.
+func RedactSecrets(text string) string {
+	if text == "" {
+		return text
+	}
+	text = secretPattern.ReplaceAllString(text, `${1}[REDACTED]`)
+	return dsnSecretPattern.ReplaceAllString(text, `${1}[REDACTED]@`)
+}
 
 // Helper is the privileged-helper service RPC surface.
 type Helper interface {
@@ -163,16 +185,18 @@ func (m *Manager) Activate(ctx context.Context, id services.ID) error {
 	}
 	prep := m.preparer(id)
 
-	cause := prep.PrepareActivate(ctx, svc)
-	if cause == nil {
-		if helperErr := m.helper.Activate(ctx, string(id)); helperErr != nil {
-			cause = helperFailure("activate service", helperErr)
+	if cause := prep.PrepareActivate(ctx, svc); cause != nil {
+		return m.activationFailure(ctx, svc, prep, cause)
+	}
+	if cause := m.helper.Activate(ctx, string(id)); cause != nil {
+		return m.activationFailure(ctx, svc, prep, helperFailure("activate service", cause))
+	}
+	if cause := prep.CommitActivate(ctx, svc); cause != nil {
+		// The helper already started the container, so rollback must stop it
+		// even when the request context has been canceled.
+		if stopErr := m.stopActivatedService(ctx, id); stopErr != nil {
+			cause = fmt.Errorf("%w; stop activated service: %v", cause, stopErr)
 		}
-	}
-	if cause == nil {
-		cause = prep.CommitActivate(ctx, svc)
-	}
-	if cause != nil {
 		return m.activationFailure(ctx, svc, prep, cause)
 	}
 	return m.persist(ctx, svc, services.StateActive, true, "activate", "")
@@ -216,7 +240,10 @@ func (m *Manager) Uninstall(ctx context.Context, id services.ID, deleteData bool
 	if err := m.store.DeleteServiceState(ctx, id); err != nil && !errors.Is(err, services.ErrNotFound) {
 		return UninstallResult{}, err
 	}
-	return UninstallResult{}, nil
+	if !deleteData {
+		return UninstallResult{}, nil
+	}
+	return UninstallResult{BackupPath: m.newestServiceBackup(id)}, nil
 }
 
 // Logs returns bounded container logs from the helper.
@@ -263,10 +290,66 @@ func (m *Manager) preparer(id services.ID) Preparer {
 }
 
 func (m *Manager) activationFailure(ctx context.Context, svc services.Service, prep Preparer, cause error) error {
-	if cleanupErr := prep.CleanupActivate(ctx, svc, cause); cleanupErr != nil {
+	// Rollback and error persistence must survive cancellation of the request
+	// that triggered activation.
+	cleanupCtx, cancel := m.detachedContext(ctx)
+	defer cancel()
+
+	if cleanupErr := prep.CleanupActivate(cleanupCtx, svc, cause); cleanupErr != nil {
 		cause = fmt.Errorf("%w; cleanup activation: %v", cause, cleanupErr)
 	}
-	return m.recordFailure(ctx, svc, "activate", false, cause)
+	return m.recordFailure(cleanupCtx, svc, "activate", false, cause)
+}
+
+func (m *Manager) detachedContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base := context.Background()
+	if ctx != nil {
+		base = context.WithoutCancel(ctx)
+	}
+	return context.WithTimeout(base, activationCleanupTimeout)
+}
+
+// stopActivatedService stops a service that the helper started but whose
+// activation could not be committed. It deliberately ignores cancellation of
+// the request context and applies a short bounded timeout.
+func (m *Manager) stopActivatedService(ctx context.Context, id services.ID) error {
+	stopCtx, cancel := m.detachedContext(ctx)
+	defer cancel()
+	return m.helper.Deactivate(stopCtx, string(id))
+}
+
+// newestServiceBackup returns the newest non-empty tar.gz archive written by
+// the helper for the service, or an empty string when no backup exists.
+func (m *Manager) newestServiceBackup(id services.ID) string {
+	if m.root == "" {
+		return ""
+	}
+	dir := filepath.Join(m.root, "backups", "services", string(id))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	newestName := ""
+	var newestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".tar.gz") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			continue
+		}
+		if newestName == "" || info.ModTime().After(newestTime) ||
+			(info.ModTime().Equal(newestTime) && entry.Name() > newestName) {
+			newestName = entry.Name()
+			newestTime = info.ModTime()
+		}
+	}
+	if newestName == "" {
+		return ""
+	}
+	return filepath.Join(dir, newestName)
 }
 
 func (m *Manager) recordFailure(ctx context.Context, svc services.Service, operation string, active bool, cause error) error {
@@ -290,7 +373,7 @@ func (m *Manager) persist(
 		State:         state,
 		Image:         svc.Image,
 		Active:        active,
-		LastError:     lastError,
+		LastError:     RedactSecrets(lastError),
 		LastOperation: operation,
 		UpdatedAt:     updatedAt,
 	}
@@ -333,7 +416,7 @@ func (m *Manager) buildView(
 			view.State = rec.State
 		}
 		view.Active = rec.Active
-		view.LastError = rec.LastError
+		view.LastError = RedactSecrets(rec.LastError)
 		view.Installed = view.State != services.StateNotInstalled
 		if rec.Image != "" {
 			view.Image = rec.Image
@@ -367,7 +450,7 @@ func (m *Manager) buildView(
 			view.DataPath = status.DataPath
 		}
 		if status.LastError != "" {
-			view.LastError = status.LastError
+			view.LastError = RedactSecrets(status.LastError)
 		}
 		if len(status.Ports) > 0 {
 			view.Ports = make([]services.Port, 0, len(status.Ports))
@@ -391,8 +474,17 @@ func helperFailure(operation string, err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, helperproto.ErrInvalidRequest) {
+	// Helper-protocol failures are structured. Transport failures and unknown
+	// errors are the only ones that mean the helper is unavailable.
+	switch {
+	case errors.Is(err, helperproto.ErrInvalidRequest),
+		errors.Is(err, helperproto.ErrServiceConflict),
+		errors.Is(err, helperproto.ErrInternal),
+		errors.Is(err, helperproto.ErrNotImplemented),
+		errors.Is(err, helperproto.ErrUnauthorized),
+		errors.Is(err, helperproto.ErrProtocolMismatch):
 		return err
+	default:
+		return fmt.Errorf("%w: %s: %w", ErrHelperUnavailable, operation, err)
 	}
-	return fmt.Errorf("%w: %s: %w", ErrHelperUnavailable, operation, err)
 }

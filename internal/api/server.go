@@ -72,7 +72,9 @@ const (
 	codeInternal           = "INTERNAL"
 	codePayloadTooLarge    = "PAYLOAD_TOO_LARGE"
 	codeHelperUnavailable  = "HELPER_UNAVAILABLE"
+	codeHelperError        = "HELPER_ERROR"
 	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
+	codeServiceConflict    = "SERVICE_CONFLICT"
 	codeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
 
 	codeServingModeUnavailable = "SERVING_MODE_UNAVAILABLE"
@@ -750,16 +752,19 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 // writeServiceError maps a service error onto the stable API envelope.
+// Free-form errors may carry a password from a database/helper failure, so both
+// the log entry and the response message are redacted.
 func (s *Server) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code, message, details := classifyError(err)
+	safeMessage := servicecontrol.RedactSecrets(message)
 	if status >= http.StatusInternalServerError {
 		s.logger.Error("api request failed",
 			"method", r.Method,
 			"path", r.URL.Path,
-			"error", err,
+			"error", servicecontrol.RedactSecrets(err.Error()),
 		)
 	}
-	writeError(w, status, code, message, details)
+	writeError(w, status, code, safeMessage, details)
 }
 
 // classifyError maps service errors onto HTTP status and stable codes.
@@ -802,6 +807,12 @@ func classifyError(err error) (int, string, string, any) {
 	if errors.Is(err, servicecontrol.ErrHelperUnavailable) {
 		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil
 	}
+	if errors.Is(err, helperproto.ErrServiceConflict) {
+		return http.StatusConflict, codeServiceConflict, err.Error(), nil
+	}
+	if errors.Is(err, helperproto.ErrInternal) {
+		return http.StatusInternalServerError, codeHelperError, err.Error(), nil
+	}
 	if errors.Is(err, sites.ErrPHPExecArgument) {
 		details := any(nil)
 		var argument *sites.PHPExecArgumentError
@@ -828,10 +839,8 @@ func classifyError(err error) (int, string, string, any) {
 	}
 	if errors.Is(err, helperproto.ErrUnauthorized) ||
 		errors.Is(err, helperproto.ErrProtocolMismatch) ||
-		errors.Is(err, helperproto.ErrNotImplemented) ||
-		errors.Is(err, helperproto.ErrInvalidRequest) ||
-		errors.Is(err, helperproto.ErrInternal) {
-		return http.StatusBadGateway, codeHelperUnavailable, err.Error(), nil
+		errors.Is(err, helperproto.ErrNotImplemented) {
+		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil
 	}
 
 	lower := strings.ToLower(err.Error())

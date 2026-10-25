@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -289,6 +291,9 @@ func TestServiceActionErrorMapping(t *testing.T) {
 	}{
 		{"not found", services.ErrNotFound, http.StatusNotFound, "NOT_FOUND"},
 		{"invalid request", fmt.Errorf("%w: bad id", helperproto.ErrInvalidRequest), http.StatusBadRequest, "INVALID_REQUEST"},
+		{"service conflict", fmt.Errorf("%w: host port 8080 is already in use", helperproto.ErrServiceConflict), http.StatusConflict, "SERVICE_CONFLICT"},
+		{"helper internal", fmt.Errorf("%w: docker daemon failed", helperproto.ErrInternal), http.StatusInternalServerError, "HELPER_ERROR"},
+		{"helper not implemented", fmt.Errorf("%w: services", helperproto.ErrNotImplemented), http.StatusServiceUnavailable, "HELPER_UNAVAILABLE"},
 		{"helper unavailable", fmt.Errorf("%w: socket down", servicecontrol.ErrHelperUnavailable), http.StatusServiceUnavailable, "HELPER_UNAVAILABLE"},
 		{"credentials unsupported", servicecontrol.ErrCredentialsUnsupported, http.StatusBadRequest, "INVALID_REQUEST"},
 	}
@@ -433,6 +438,72 @@ func TestServiceCredentials(t *testing.T) {
 	fakeCoord.credentialsErr = servicecontrol.ErrCredentialsUnsupported
 	rec = fx.request(t, http.MethodPost, "/api/v1/services/redis/credentials/reveal", nil)
 	assertError(t, rec, http.StatusBadRequest, "INVALID_REQUEST")
+}
+
+func TestServiceCredentialAuditLogNeverLogsSecrets(t *testing.T) {
+	const secret = "audit-secret-password"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	fakeCoord := &fakeServiceCoordinator{credentials: servicecontrol.Credentials{
+		Engine: "mysql", Username: "devstack", Password: secret, Database: "devstack", Host: "127.0.0.1", Port: 3306,
+	}}
+	fx := newFixture(t, Config{Services: fakeCoord, Logger: logger})
+
+	for _, action := range []string{"reveal", "rotate"} {
+		rec := fx.request(t, http.MethodPost, "/api/v1/services/mysql/credentials/"+action, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s code = %d body = %s", action, rec.Code, rec.Body.String())
+		}
+	}
+
+	fakeCoord.credentialsErr = fmt.Errorf("credential lookup failed for password=%s", secret)
+	rec := fx.request(t, http.MethodPost, "/api/v1/services/mysql/credentials/reveal", nil)
+	if rec.Code < http.StatusInternalServerError {
+		t.Fatalf("failure code = %d, want server error", rec.Code)
+	}
+
+	audit := logs.String()
+	if strings.Contains(audit, secret) {
+		t.Fatalf("audit log leaks credentials: %s", audit)
+	}
+	for _, want := range []string{
+		"service=mysql",
+		"action=reveal",
+		"action=rotate",
+		"success=true",
+		"success=false",
+	} {
+		if !strings.Contains(audit, want) {
+			t.Fatalf("audit log missing %q: %s", want, audit)
+		}
+	}
+}
+
+func TestServiceListAndGetRedactCredentialBearingLastError(t *testing.T) {
+	const secret = "last-error-secret-password"
+	fakeCoord := &fakeServiceCoordinator{
+		views: []services.View{{
+			ID:          services.IDMySQL,
+			DisplayName: "MySQL Database",
+			Group:       services.GroupMySQLFamily,
+			State:       services.StateError,
+			LastError:   `startup failed: password=last-error-secret-password`,
+		}},
+	}
+	fx := newFixture(t, Config{Services: fakeCoord})
+
+	for _, path := range []string{"/api/v1/services", "/api/v1/services/mysql"} {
+		rec := fx.request(t, http.MethodGet, path, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d body = %s", path, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("GET %s leaks secret: %s", path, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "[REDACTED]") {
+			t.Fatalf("GET %s did not redact last_error: %s", path, rec.Body.String())
+		}
+	}
 }
 
 func TestServiceListAndGetNeverIncludeCredentials(t *testing.T) {
