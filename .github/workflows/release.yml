@@ -1,13 +1,9 @@
 name: Release
 
-# Tag-driven Linux amd64 release. The workflow intentionally runs only from an
-# annotated or lightweight tag matching v<major>.<minor>.<patch>; a manual
-# dispatch must name an existing tag explicitly. Packaging is defined by
-# .goreleaser.yaml and validated with `goreleaser check` before publishing.
+# Manual Linux amd64 release. Automatic tag pushes are intentionally disabled;
+# a manual dispatch must name an existing tag explicitly. Packaging is defined
+# by .goreleaser.yaml and validated with `goreleaser check` before publishing.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:

@@ -2,13 +2,15 @@
 # Static contract test for the release workflow and its GoReleaser config.
 #
 # This test never calls GitHub or GoReleaser. It asserts the checked-in YAML
-# keeps the release tag-only, least-privilege, Linux-only, and free of the
-# deferred agent/platform builds, and that CI still runs the packaging tests.
+# keeps releases manual-only, least-privilege, Linux-only, and free of the
+# deferred agent/platform builds, and that manual CI retains the packaging
+# tests.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW="${REPO_ROOT}/.github/workflows/release.yml"
 CI_WORKFLOW="${REPO_ROOT}/.github/workflows/ci.yml"
+PHP_WORKFLOW="${REPO_ROOT}/.github/workflows/php.yml"
 GORELEASER="${REPO_ROOT}/.goreleaser.yaml"
 
 FAILURES=0
@@ -66,13 +68,15 @@ assert_file "${WORKFLOW}"
 assert_file "${GORELEASER}"
 assert_file "${CI_WORKFLOW}"
 
-# --- Trigger contract: tags only, plus an explicit manual tag input. ---
-assert_regex "${WORKFLOW}" '^  push:' "workflow triggers on push"
-assert_regex "${WORKFLOW}" '^    tags:' "push trigger is tag-scoped"
-assert_regex "${WORKFLOW}" '^      - "v\*"$' "push tags match v*"
+# --- Trigger contract: manual only, with an explicit tag input. ---
 assert_regex "${WORKFLOW}" '^  workflow_dispatch:' "manual dispatch is available"
 assert_regex "${WORKFLOW}" '^      tag:' "manual dispatch requires a tag input"
-assert_no_active "${WORKFLOW}" '^[[:space:]]+(branches|pull_request):' "workflow has no branch or pull-request trigger"
+assert_no_active "${WORKFLOW}" '^[[:space:]]+push:' "release has no push trigger"
+assert_no_active "${WORKFLOW}" '^[[:space:]]+(branches|pull_request):' "release has no branch or pull-request trigger"
+assert_regex "${CI_WORKFLOW}" '^  workflow_dispatch:' "CI is manual-only"
+assert_no_active "${CI_WORKFLOW}" '^[[:space:]]+(push|pull_request):' "CI has no push or pull-request trigger"
+assert_regex "${PHP_WORKFLOW}" '^  workflow_dispatch:' "PHP builds are manual-only"
+assert_no_active "${PHP_WORKFLOW}" '^[[:space:]]+(push|pull_request):' "PHP builds have no push or pull-request trigger"
 
 # --- Tag safety: format guard, existing tag checkout, and HEAD <=> tag check. ---
 assert_fixed "${WORKFLOW}" 'release tag must look like' "dispatch/push tag format is guarded"
@@ -147,7 +151,7 @@ assert_fixed "${GORELEASER}" 'extra_files:' "release extra files are configured"
 assert_fixed "${GORELEASER}" 'glob: install.sh' "install.sh is attached to the release"
 assert_no_active "${GORELEASER}" 'php-catalog|catalogmerge|internal/catalog|phpcatalog' "config does not embed a PHP catalog"
 
-# --- CI wiring keeps the release gates. ---
+# --- Manual CI wiring keeps the release gates. ---
 assert_fixed "${CI_WORKFLOW}" 'go test ./cmd/catalogmerge' "CI tests the catalog merge tool"
 assert_fixed "${CI_WORKFLOW}" 'test/release/release_test.sh' "CI runs the release archive test"
 assert_fixed "${CI_WORKFLOW}" 'test/release/installer_test.sh' "CI runs the installer test"

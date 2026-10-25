@@ -7,27 +7,6 @@ on:
         description: HTTPS base URL where the php-<version>-r<revision>-linux-x64.tar.gz assets will be published
         required: true
         type: string
-  push:
-    branches: [master, plan-2-php]
-    paths:
-      - "build/php/**"
-      - "cmd/phpcatalog/**"
-      - "cmd/php-smoke/**"
-      - "internal/catalog/php.json"
-      - "internal/fcgi/**"
-      - "internal/phpfpm/**"
-      - "test/php/**"
-      - ".github/workflows/php.yml"
-  pull_request:
-    paths:
-      - "build/php/**"
-      - "cmd/phpcatalog/**"
-      - "cmd/php-smoke/**"
-      - "internal/catalog/php.json"
-      - "internal/fcgi/**"
-      - "internal/phpfpm/**"
-      - "test/php/**"
-      - ".github/workflows/php.yml"
 
 permissions:
   contents: read
