@@ -47,7 +47,7 @@ func (s *Session) serve(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return fmt.Errorf("%w: %v", ErrUpgrade, err)
 	}
 	defer conn.CloseNow()
-	conn.SetReadLimit(1 << 20)
+	conn.SetReadLimit(4 << 20)
 
 	started := time.Now()
 	reason, code, runErr := s.run(ctx, conn)
