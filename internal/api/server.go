@@ -796,9 +796,13 @@ func phpConfigDetails(err error) any {
 // looksLikeValidationError recognises the service's actionable validation
 // messages without exposing an internal sentinel for every rule.
 func looksLikeValidationError(message string) bool {
+	if strings.HasPrefix(message, "sites:") {
+		return true
+	}
 	markers := []string{
 		"invalid",
 		"is required",
+		"are required",
 		"requires ",
 		"must be",
 		"must not",
@@ -817,6 +821,7 @@ func looksLikeValidationError(message string) bool {
 		"site name",
 		"document root",
 		"php site",
+		"nul byte",
 	}
 	for _, marker := range markers {
 		if strings.Contains(message, marker) {
