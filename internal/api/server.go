@@ -854,7 +854,7 @@ func classifyError(err error) (int, string, string, any) {
 		}
 		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
 	}
-	if errors.Is(err, tooling.ErrUnsupportedTool) {
+	if errors.Is(err, tooling.ErrUnsupportedTool) || errors.Is(err, build.ErrInvalidSetup) {
 		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
 	}
 	if errors.Is(err, tooling.ErrHelperUnavailable) {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -254,5 +255,36 @@ func TestBuildRequestWithUnknownSite(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &payload)
 	if payload.Code != codeNotFound {
 		t.Fatalf("code = %q", payload.Code)
+	}
+}
+
+func TestBuildSetupErrorsAre4xx(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "no profile", err: fmt.Errorf("%w: site %q has no build profile", build.ErrInvalidSetup, "app")},
+		{name: "non-static", err: fmt.Errorf("%w: site %q is not a static site", build.ErrInvalidSetup, "app")},
+		{name: "missing project", err: fmt.Errorf("%w: project directory is not available", build.ErrInvalidSetup)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buildSvc := &fakeBuildService{err: tc.err}
+			fx := newFixture(t, Config{Build: buildSvc})
+			site := model.Site{ID: "site-1", Name: "app", Kind: model.SiteStatic, HostPath: "/home/projects/app"}
+			fx.sites.mu.Lock()
+			fx.sites.sites[site.Name] = site
+			fx.sites.mu.Unlock()
+			rec := fx.request(t, http.MethodPost, "/api/v1/sites/app/build", nil)
+			if rec.Code < 400 || rec.Code >= 500 {
+				t.Fatalf("code = %d body=%s, want 4xx", rec.Code, rec.Body.String())
+			}
+			var payload apiError
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Code != codeInvalidRequest {
+				t.Fatalf("code = %q body=%s", payload.Code, rec.Body.String())
+			}
+		})
 	}
 }

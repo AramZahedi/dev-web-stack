@@ -33,7 +33,7 @@ RuntimeDirectoryMode=0755
 # writable; the helper falls back to an in-place write if the parent /etc mount
 # is read-only. Distribution trust paths are optional and differ between
 # Fedora/RHEL and Debian/Ubuntu.
-ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper /usr/local/bin
+ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper /usr/local/bin -/data/devstack
 # External mode writes exactly one bridge file into the server's include
 # directory. These paths are optional because the selected server (or a
 # custom include layout) may not exist on this machine.

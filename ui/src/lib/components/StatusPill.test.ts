@@ -15,4 +15,9 @@ describe('StatusPill', () => {
     render(StatusPill, { props: { status: 'crashed' } });
     expect(screen.getByLabelText('Status: Crashed').textContent).toContain('Crashed');
   });
+
+  it('labels a degraded site in text, not color alone', () => {
+    render(StatusPill, { props: { status: 'degraded' } });
+    expect(screen.getByLabelText('Status: Degraded').textContent).toContain('Degraded');
+  });
 });

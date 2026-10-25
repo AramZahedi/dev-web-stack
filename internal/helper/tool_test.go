@@ -213,3 +213,29 @@ func TestToolRequestsRejectUnknownIDs(t *testing.T) {
 		t.Fatalf("remove error = %v", err)
 	}
 }
+
+func TestToolRemoveKeepsSystemLinksWhenHomeArtifactRemovalFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can remove files in read-only directories")
+	}
+	socketPath, home := startToolHelper(t)
+	c := dialClient(t, socketPath)
+	ctx := context.Background()
+	prepareManagedTool(t, home, helperproto.ToolComposer)
+	installed, err := c.ToolInstall(ctx, helperproto.ToolComposer, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composerDir := filepath.Join(home, "tools", "composer")
+	if err := os.Chmod(composerDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(composerDir, 0o755) })
+
+	if _, err := c.ToolRemove(ctx, helperproto.ToolComposer); err == nil {
+		t.Fatal("remove succeeded despite an unwritable home artifact")
+	}
+	if _, err := os.Lstat(installed.WrapperPath); err != nil {
+		t.Fatalf("system wrapper was removed before the home artifact: %v", err)
+	}
+}

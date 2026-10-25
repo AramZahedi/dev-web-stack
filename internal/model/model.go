@@ -44,6 +44,7 @@ const (
 	StatusRunning  SiteStatus = "running"
 	StatusStopping SiteStatus = "stopping"
 	StatusCrashed  SiteStatus = "crashed"
+	StatusDegraded SiteStatus = "degraded"
 	StatusError    SiteStatus = "error"
 )
 

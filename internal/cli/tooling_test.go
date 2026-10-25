@@ -41,9 +41,22 @@ func TestPHPCliDefault(t *testing.T) {
 		t.Fatalf("status = %+v", status)
 	}
 
-	runCLI(t, fake, "php", "default", "--clear")
+	fake.phpClearStatus = tooling.PHPDefaultStatus{
+		Build:         &model.RuntimeBuild{ID: "php@8.4.12-r1", Version: "8.4.12"},
+		GlobalIni:     "/home/config/cli/php.ini",
+		ShimInstalled: true,
+	}
+	out = runCLI(t, fake, "php", "default", "--clear")
 	if fake.phpDefaultClear != 1 {
 		t.Fatalf("clear calls = %d", fake.phpDefaultClear)
+	}
+	if !strings.Contains(out, "php@8.4.12-r1") || !strings.Contains(out, "true") {
+		t.Fatalf("clear output does not show the fallback build:\n%s", out)
+	}
+	fake.phpClearStatus = tooling.PHPDefaultStatus{}
+	out = runCLI(t, fake, "php", "default", "--clear")
+	if !strings.Contains(out, "No PHP build is installed") {
+		t.Fatalf("clear output does not report the missing build:\n%s", out)
 	}
 
 	code, _, _ := runCLIExit(t, fake, "php", "default")

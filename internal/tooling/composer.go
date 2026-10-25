@@ -150,9 +150,10 @@ func composerWrapperScript(paths config.Paths) string {
 		"phar=" + shellQuote(phar) + "\n" +
 		"if [ -n \"${DEVSTACK_SITE:-}\" ]; then\n" +
 		"    php=\"$(command -v php)\" || { echo 'devstack: site shell is missing its php shim' >&2; exit 127; }\n" +
+		"    site_dir=\"${DEVSTACK_HOME:-/nonexistent}/tools/sites/${DEVSTACK_SITE}/\"\n" +
 		"    case \"$php\" in\n" +
-		"        \"${DEVSTACK_HOME:-/nonexistent}/tools/\"*) ;;\n" +
-		"        *) echo 'devstack: DEVSTACK_SITE is set but php does not resolve to a devstack site shim' >&2; exit 127 ;;\n" +
+		"        \"$site_dir\"*) ;;\n" +
+		"        *) echo 'devstack: Composer is unavailable in this site shell: no site PHP runtime is on PATH (Composer requires a PHP site)' >&2; exit 127 ;;\n" +
 		"    esac\n" +
 		"else\n" +
 		"    php=" + shellQuote(globalPHP) + "\n" +

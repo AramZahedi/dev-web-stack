@@ -26,11 +26,12 @@ import (
 
 // fakeAPI is a minimal Unix-socket API used by the client tests.
 type fakeAPI struct {
-	mu     sync.Mutex
-	sites  map[string]model.Site
-	routes []recordedRequest
-	err    error
-	delay  time.Duration
+	mu         sync.Mutex
+	sites      map[string]model.Site
+	routes     []recordedRequest
+	err        error
+	delay      time.Duration
+	buildDelay time.Duration
 }
 
 type recordedRequest struct {
@@ -290,6 +291,9 @@ func (f *fakeAPI) mux() *http.ServeMux {
 	})
 	mux.HandleFunc("POST /api/v1/sites/{ref}/build", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
+		if f.buildDelay > 0 {
+			time.Sleep(f.buildDelay)
+		}
 		f.writeErrorOr(w, func() {
 			writeTestJSON(w, http.StatusOK, build.Result{Site: r.PathValue("ref"), Success: true, DurationMS: 7})
 		})
@@ -991,5 +995,42 @@ func TestClientToolingAndBuildMethods(t *testing.T) {
 	logReq := api.last(t, http.MethodGet, "/api/v1/sites/blog/build/logs")
 	if logReq.query != "tail=3" {
 		t.Fatalf("logs query = %q", logReq.query)
+	}
+}
+
+func TestBuildSiteIgnoresDefaultClientTimeout(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{buildDelay: 80 * time.Millisecond}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	c.timeout = 10 * time.Millisecond
+
+	result, err := c.BuildSite(context.Background(), "blog")
+	if err != nil {
+		t.Fatalf("BuildSite used the generic request timeout: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestBuildSiteStillHonorsCallerCancellation(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{buildDelay: 200 * time.Millisecond}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := c.BuildSite(ctx, "blog"); err == nil {
+		t.Fatal("BuildSite ignored caller cancellation")
 	}
 }

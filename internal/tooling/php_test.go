@@ -5,10 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -314,7 +314,7 @@ func TestComposerInstallVerifiesChecksumSizeAndWrapper(t *testing.T) {
 	if !strings.Contains(text, "DEVSTACK_SITE") || !strings.Contains(text, "command -v php") {
 		t.Fatalf("wrapper does not select the site PHP:\n%s", text)
 	}
-	if !strings.Contains(text, "does not resolve to a devstack site shim") {
+	if !strings.Contains(text, `${DEVSTACK_HOME:-/nonexistent}/tools/sites/${DEVSTACK_SITE}/`) || !strings.Contains(text, "Composer requires a PHP site") {
 		t.Fatalf("wrapper can silently fall back to a non-site PHP:\n%s", text)
 	}
 	if !strings.Contains(text, filepath.Join(ShimDir(paths), "php")) {
@@ -398,25 +398,6 @@ func TestComposerWrapperDoesNotInterpolateArguments(t *testing.T) {
 	}
 }
 
-func TestComposerDownloadUsesExactPinnedURL(t *testing.T) {
-	var gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-	old := ComposerURL
-	// The production URL is immutable; this assertions guards accidental
-	// fallback URLs in the source rather than changing the constant.
-	if !strings.Contains(old, "/2.10.3/") {
-		t.Fatalf("ComposerURL = %q", old)
-	}
-	_ = gotPath
-	if _, err := io.ReadAll(strings.NewReader("ok")); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestResolvePHPBuildAndNodeBuild(t *testing.T) {
 	builds := []model.RuntimeBuild{
 		{ID: "php@8.4.10-r1", Kind: "php", Version: "8.4.10"},
@@ -444,5 +425,61 @@ func TestComposerSourceDefaults(t *testing.T) {
 	}
 	if got.SHA256 != strings.ToLower(got.SHA256) {
 		t.Fatalf("sha256 is not lowercase: %q", got.SHA256)
+	}
+}
+
+func TestPHPShimExecutesAbsoluteBinaryWithGlobalIni(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	build := fakePHPBuild(t, home, "8.4.12")
+	out := filepath.Join(t.TempDir(), "args")
+	writeTestScript(t, filepath.Join(build.Path, "bin", "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
+	iniPath := filepath.Join(home, "config", "cli", "php.ini")
+	if err := os.MkdirAll(filepath.Dir(iniPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(iniPath, []byte("[PHP]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsurePHPShims(build, paths, iniPath); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command(filepath.Join(ShimDir(paths), "php"), "-v")
+	if err := command.Run(); err != nil {
+		t.Fatalf("run php shim: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	want := []string{"-c", iniPath, "-v"}
+	if strings.Join(lines, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("argv = %q, want %q", lines, want)
+	}
+}
+
+func TestComposerDownloadHitsTestServerURL(t *testing.T) {
+	payload := []byte("composer fixture")
+	sum := sha256.Sum256(payload)
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	if _, err := installComposer(context.Background(), srv.Client(), paths, composerSource{
+		URL:     srv.URL + "/download/2.10.3/composer.phar",
+		Version: "test",
+		SHA256:  hex.EncodeToString(sum[:]),
+		Size:    int64(len(payload)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/download/2.10.3/composer.phar" {
+		t.Fatalf("downloaded path = %q", gotPath)
 	}
 }

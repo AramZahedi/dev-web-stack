@@ -58,9 +58,10 @@ func ShimDir(paths config.Paths) string {
 }
 
 // SiteShimDir returns the per-site shim directory prepended to a project
-// shell's PATH.
-func SiteShimDir(paths config.Paths, siteID string) string {
-	return filepath.Join(paths.Tools, "sites", siteID, "bin")
+// shell's PATH. The component is the validated site name, matching
+// DEVSTACK_SITE and the Composer wrapper's site-shim check.
+func SiteShimDir(paths config.Paths, siteName string) string {
+	return filepath.Join(paths.Tools, "sites", siteName, "bin")
 }
 
 // ComposerDir returns the managed Composer directory.

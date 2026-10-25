@@ -31,6 +31,10 @@ const (
 // ErrRuntimeMissing reports that a site's selected Node build is not installed.
 var ErrRuntimeMissing = errors.New("build: required Node runtime is not installed")
 
+// ErrInvalidSetup reports a user-fixable build configuration problem such as a
+// missing profile, a non-static site, or an invalid project/output path.
+var ErrInvalidSetup = errors.New("build: invalid build setup")
+
 // Runner executes one build command. The default uses /bin/sh -c.
 type Runner interface {
 	Run(ctx context.Context, dir string, env []string, name string, args []string, output io.Writer) error
@@ -103,10 +107,10 @@ func (s *Service) Build(ctx context.Context, site model.Site) (Result, error) {
 		return result, errors.New("build: logs directory is not configured")
 	}
 	if site.Build == nil {
-		return result, fmt.Errorf("build: site %q has no build profile", site.Name)
+		return result, fmt.Errorf("%w: site %q has no build profile", ErrInvalidSetup, site.Name)
 	}
 	if site.Kind != model.SiteStatic {
-		return result, fmt.Errorf("build: site %q is not a static site", site.Name)
+		return result, fmt.Errorf("%w: site %q is not a static site", ErrInvalidSetup, site.Name)
 	}
 	if s.deps.EUID() == 0 {
 		return result, errors.New("build: refusing to run a build as root; run devstack as the installing user")
@@ -114,10 +118,10 @@ func (s *Service) Build(ctx context.Context, site model.Site) (Result, error) {
 	profile := site.Build
 	result.Command = strings.TrimSpace(profile.Command)
 	if result.Command == "" {
-		return result, fmt.Errorf("build: site %q has no build command", site.Name)
+		return result, fmt.Errorf("%w: site %q has no build command", ErrInvalidSetup, site.Name)
 	}
 	if strings.TrimSpace(site.HostPath) == "" {
-		return result, fmt.Errorf("build: site %q has no project directory", site.Name)
+		return result, fmt.Errorf("%w: site %q has no project directory", ErrInvalidSetup, site.Name)
 	}
 	project, err := filepath.Abs(site.HostPath)
 	if err != nil {
@@ -125,11 +129,11 @@ func (s *Service) Build(ctx context.Context, site model.Site) (Result, error) {
 	}
 	info, err := os.Stat(project)
 	if err != nil || !info.IsDir() {
-		return result, fmt.Errorf("build: project directory %s is not available", project)
+		return result, fmt.Errorf("%w: project directory %s is not available", ErrInvalidSetup, project)
 	}
 	output, err := OutputPath(site)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("%w: %v", ErrInvalidSetup, err)
 	}
 	result.OutputPath = output
 
@@ -167,12 +171,12 @@ func (s *Service) Build(ctx context.Context, site model.Site) (Result, error) {
 
 	if err := ensureOutputParentContained(project, output); err != nil {
 		_ = logFile.Close()
-		return result, err
+		return result, fmt.Errorf("%w: %v", ErrInvalidSetup, err)
 	}
 	snapshot, err := s.snapshot(output)
 	if err != nil {
 		_ = logFile.Close()
-		return result, err
+		return result, fmt.Errorf("%w: %v", ErrInvalidSetup, err)
 	}
 	defer func() {
 		if snapshot.dir != "" {
@@ -190,15 +194,23 @@ func (s *Service) Build(ctx context.Context, site model.Site) (Result, error) {
 	failure := func(message string) (Result, error) {
 		result.Success = false
 		result.Error = message
+		degraded := snapshot.skipped
 		if snapshot.dir != "" {
 			if err := restore(snapshot.dir, output); err != nil {
 				result.RestoreNote = "previous output could not be restored: " + err.Error()
+				degraded = true
 			} else {
 				result.Restored = true
 			}
 		} else if snapshot.skipped {
 			result.RestoreNote = snapshot.note
 			result.Error = message + "; previous output could not be restored because the snapshot was skipped"
+		}
+		if degraded {
+			if result.RestoreNote == "" {
+				result.RestoreNote = "previous output could not be restored"
+			}
+			s.markDegraded(ctx, site)
 		}
 		return result, nil
 	}
@@ -217,6 +229,22 @@ func (s *Service) Build(ctx context.Context, site model.Site) (Result, error) {
 	}
 	result.Success = true
 	return result, nil
+}
+
+// markDegraded records an observed degraded state after a failed build whose
+// previous output could not be restored. Lookup/update failures are ignored:
+// the build result and log already carry the actionable failure.
+func (s *Service) markDegraded(ctx context.Context, site model.Site) {
+	if s.deps.Store == nil || strings.TrimSpace(site.ID) == "" {
+		return
+	}
+	stored, err := s.deps.Store.GetSite(ctx, site.ID)
+	if err != nil {
+		return
+	}
+	stored.Status = model.StatusDegraded
+	stored.UpdatedAt = s.deps.Now()
+	_ = s.deps.Store.UpdateSite(ctx, stored)
 }
 
 // Logs returns the newest build log, bounded to its last tail lines.
@@ -432,17 +460,25 @@ func compareVersions(a, b string) int {
 }
 
 func buildEnvironment(nodeBin string, site model.Site, home string) []string {
-	values := map[string]string{}
-	path := nodeBin
-	if base := os.Getenv("PATH"); base != "" {
-		path += string(os.PathListSeparator) + base
+	basePath := os.Getenv("PATH")
+	if site.Build != nil {
+		if configured := strings.TrimSpace(site.Build.Env["PATH"]); configured != "" {
+			basePath = configured
+		}
 	}
-	values["PATH"] = path
+	values := map[string]string{}
+	values["PATH"] = nodeBin
+	if basePath != "" {
+		values["PATH"] += string(os.PathListSeparator) + basePath
+	}
 	values["DEVSTACK_SITE"] = site.Name
 	values["DEVSTACK_HOME"] = home
 	values["DEVSTACK_PROJECT"] = site.HostPath
 	if site.Build != nil {
 		for key, value := range site.Build.Env {
+			if key == "PATH" {
+				continue
+			}
 			values[key] = value
 		}
 	}
