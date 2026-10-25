@@ -6,10 +6,12 @@ This is the current-state record for resuming the service-platform work. Read it
 
 ## 1. Repository state
 
-- **Code baseline:** `master` at `cb443d8` (Wave 2 merged).
+- **Code baseline:** `master` at `e2ced65` (Wave 2 merged plus the install/activate color fix).
+- **Documentation baseline:** `8c57b2e` (this file and the Next Batch Plan).
 - **Wave 1 merge:** `b4be089`.
 - **Wave 2 merge:** `ec2dca4`.
-- **Last green GitHub CI:** run `40222677123` at `cb443d8`.
+- **Last green GitHub CI:** run `40222677123` at `cb443d8`. No automatic CI runs after the
+  workflow triggers were disabled.
 - **CI policy:** automatic GitHub Actions runs are now disabled. `ci.yml`, `php.yml`,
   and `release.yml` are manual `workflow_dispatch` only. Pushes, pull requests, and tags
   do not start workflows. Manual dispatch is still possible if explicitly invoked.

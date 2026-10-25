@@ -11,6 +11,7 @@
 - **Wave 1 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40214920181` (green)
 - **Wave 2 merge SHA:** `ec2dca4523bf40d931d3e674001d6e832e5e1903`
 - **Wave 2 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40222270689` (green; includes the renewal-test race fix)
+- **Post-Wave-2 code:** `e2ced65` (install/activate action color distinction); documentation continuation at `8c57b2e`.
 - **Next step:** execute the [Next Batch Plan](superpowers/plans/2026-10-26-service-platform-next-batch.md) from [Continuation State](superpowers/status/2026-10-26-continuation.md). See also the
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
