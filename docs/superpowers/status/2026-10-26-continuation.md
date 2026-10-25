@@ -6,7 +6,7 @@ This is the current-state record for resuming the service-platform work. Read it
 
 ## 1. Repository state
 
-- **Code baseline:** `master` at `e2ced65` (Wave 2 merged plus the install/activate color fix).
+- **Code baseline:** `master` at `cbc1605` (Wave 2 merged plus action-color and installed-state fixes).
 - **Documentation baseline:** `8c57b2e` (this file and the Next Batch Plan).
 - **Wave 1 merge:** `b4be089`.
 - **Wave 2 merge:** `ec2dca4`.

@@ -1,7 +1,7 @@
 # Service Platform Next Batch Plan
 
 - **Date:** 2026-10-26
-- **Baseline:** code at `e2ced65` (Wave 2 merged; install/activate color fix); docs at `8c57b2e`. Last automatic CI green was `cb443d8`; automatic CI is now disabled.
+- **Baseline:** code at `cbc1605` (Wave 2 merged; action colors and installed-state fix); docs follow-up. Last automatic CI green was `cb443d8`; automatic CI is now disabled.
 - **Scope owner:** next implementation batch
 - **Status:** planned, not implemented
 
