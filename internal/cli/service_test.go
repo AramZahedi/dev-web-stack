@@ -36,6 +36,29 @@ func TestServiceListTable(t *testing.T) {
 	}
 }
 
+func TestServiceListEmpty(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{
+		servicesList: []services.View{},
+	}
+
+	out := runCLI(t, fake, "service", "list")
+	for _, heading := range []string{"NAME", "GROUP", "STATE", "ACTIVE", "PORT"} {
+		if !strings.Contains(out, heading) {
+			t.Errorf("output missing heading %q, got:\n%s", heading, out)
+		}
+	}
+
+	jsonOut := runCLI(t, fake, "service", "list", "--json")
+	var views []services.View
+	if err := json.Unmarshal([]byte(jsonOut), &views); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if len(views) != 0 {
+		t.Fatalf("expected 0 views, got %d", len(views))
+	}
+}
+
 func TestServiceListJSON(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{

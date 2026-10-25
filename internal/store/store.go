@@ -14,13 +14,12 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
-	"github.com/AramZahedi/dev-web-stack/internal/services"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo)
 )
 
 // ErrNotFound is returned when a requested record does not exist.
-var ErrNotFound = services.ErrNotFound
+var ErrNotFound = errors.New("not found")
 
 // Store is a handle to the devstack SQLite database.
 type Store struct {

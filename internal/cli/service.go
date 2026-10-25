@@ -100,7 +100,7 @@ func formatServicePorts(ports []services.Port) string {
 	}
 	parts := make([]string, 0, len(ports))
 	for _, p := range ports {
-		if p.Host != 0 && p.Container != 0 && p.Host != p.Container {
+		if p.Host != 0 && p.Container != 0 {
 			parts = append(parts, fmt.Sprintf("%d:%d", p.Host, p.Container))
 		} else if p.Host != 0 {
 			parts = append(parts, strconv.Itoa(p.Host))
