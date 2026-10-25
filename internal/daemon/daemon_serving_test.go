@@ -370,23 +370,20 @@ func TestRenewExternalSyncsVhosts(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(10 * time.Second)
+	var renewed model.CertRecord
 	for {
 		status := vhostStatusRequest(t, client)
-		if status.LastSync.After(before) {
+		renewed, err = st.GetCertBySite(context.Background(), site.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.LastSync.After(before) && renewed.NotAfter.After(rec.NotAfter.Add(24*time.Hour)) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("certificate renewal did not sync vhosts; last sync %v, before %v", status.LastSync, before)
+			t.Fatalf("certificate renewal did not complete; last sync %v, before %v, not-after %v", status.LastSync, before, renewed.NotAfter)
 		}
 		time.Sleep(100 * time.Millisecond)
-	}
-
-	renewed, err := st.GetCertBySite(context.Background(), site.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !renewed.NotAfter.After(rec.NotAfter.Add(24 * time.Hour)) {
-		t.Fatalf("certificate was not renewed: %v", renewed.NotAfter)
 	}
 }
 
