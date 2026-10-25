@@ -543,13 +543,35 @@ else
 	[ -f "${FAKE_ROOT}/etc/devstack/helper.yaml" ] || fail "the helper config was not written"
 	grep -Fq "allow_uid: ${TEST_UID}" "${FAKE_ROOT}/etc/devstack/helper.yaml" ||
 		fail "the helper config does not record the installing UID"
-	cmp -s "${FAKE_ROOT}/etc/systemd/system/devstack-helper.service" \
-		"${REPO_ROOT}/build/systemd/devstack-helper.service" ||
-		fail "the archive install wrote a helper unit that differs from build/systemd"
-	cmp -s "${FAKE_HOME}/.config/systemd/user/devstack-daemon.service" \
-		"${REPO_ROOT}/build/systemd/devstack-daemon.service" ||
-		fail "the archive install wrote a daemon unit that differs from build/systemd"
-	pass "packaged install.sh installs both binaries, config, and the expected units"
+	HELPER_UNIT_FILE="${FAKE_ROOT}/etc/systemd/system/devstack-helper.service"
+	DAEMON_UNIT_FILE="${FAKE_HOME}/.config/systemd/user/devstack-daemon.service"
+	[ -f "${HELPER_UNIT_FILE}" ] || fail "the helper unit was not installed"
+	[ -f "${DAEMON_UNIT_FILE}" ] || fail "the daemon unit was not installed"
+	grep -Fq -- "ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper /usr/local/bin -\"${FAKE_HOME}/.devstack\"" \
+		"${HELPER_UNIT_FILE}" ||
+		fail "the generated helper unit cannot write ${FAKE_HOME}/.devstack: $(cat "${HELPER_UNIT_FILE}")"
+	grep -Fq -- "ExecStart=%h/.local/bin/devstack daemon run" "${DAEMON_UNIT_FILE}" ||
+		fail "the generated daemon unit has the wrong ExecStart"
+	[ -d "${FAKE_HOME}/.devstack" ] || fail "the installer did not create the devstack home"
+	: >"${FAKE_HOME}/.devstack/.write-test" ||
+		fail "the devstack home is not writable by the installing user"
+	rm -f "${FAKE_HOME}/.devstack/.write-test"
+	if command -v systemd-analyze >/dev/null 2>&1; then
+		# Verify syntax on copies with ExecStart replaced by /bin/true: the
+		# sandbox has no real devstack binary at the production path, and the
+		# generated ExecStart is asserted separately above.
+		sed 's#^ExecStart=.*#ExecStart=/bin/true#' "${HELPER_UNIT_FILE}" >"${TMP}/helper.verify.service"
+		if ! verify_out="$(systemd-analyze verify "${TMP}/helper.verify.service" 2>&1)"; then
+			fail "the generated helper unit does not parse: ${verify_out}"
+		fi
+		sed 's#^ExecStart=.*#ExecStart=/bin/true#' "${DAEMON_UNIT_FILE}" >"${TMP}/daemon.verify.service"
+		if ! verify_out="$(systemd-analyze verify "${TMP}/daemon.verify.service" 2>&1)"; then
+			fail "the generated daemon unit does not parse: ${verify_out}"
+		fi
+	else
+		log "systemd-analyze is unavailable; unit syntax parse check skipped"
+	fi
+	pass "packaged install.sh installs binaries/config and a parseable unit for the real home"
 fi
 export FAKE_UNIT_ACTIVE=0
 export FAKE_SYSTEMD_SESSION=1

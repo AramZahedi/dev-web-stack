@@ -75,7 +75,7 @@ func (c *Coordinator) Get(ctx context.Context, id ID) (View, error) {
 	if c.store != nil {
 		r, err := c.store.GetServiceState(ctx, id)
 		if err != nil {
-			if !errors.Is(err, ErrNotFound) && err.Error() != "not found" {
+			if !errors.Is(err, ErrNotFound) {
 				return View{}, err
 			}
 		} else {
@@ -90,6 +90,7 @@ func (c *Coordinator) Get(ctx context.Context, id ID) (View, error) {
 func (c *Coordinator) buildView(s Service, rec Record, found bool) View {
 	state := StateNotInstalled
 	active := false
+	installed := false
 	image := s.Image
 	lastErr := ""
 
@@ -97,6 +98,7 @@ func (c *Coordinator) buildView(s Service, rec Record, found bool) View {
 		if rec.State != "" {
 			state = rec.State
 		}
+		installed = installedState(state) || (state != StateNotInstalled && rec.Image != "")
 		active = rec.Active
 		if rec.Image != "" {
 			image = rec.Image
@@ -121,5 +123,6 @@ func (c *Coordinator) buildView(s Service, rec Record, found bool) View {
 		LastError:   lastErr,
 		ConfigPath:  configPath,
 		DataPath:    dataPath,
+		Installed:   installed,
 	}
 }

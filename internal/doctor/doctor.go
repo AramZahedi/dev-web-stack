@@ -63,6 +63,11 @@ type Deps struct {
 	// HostsPath is the hosts file inspected by the hosts check. An empty value
 	// uses /etc/hosts. Tests point it at a temporary file.
 	HostsPath string
+	// ToolBinDir is the system bin directory expected to contain managed tool
+	// shims. Empty uses /usr/local/bin. Tests use a temporary directory.
+	ToolBinDir string
+	// LookPath resolves a bare command. Nil uses exec.LookPath.
+	LookPath func(string) (string, error)
 }
 
 // Helper is the privileged helper surface used by the doctor.
@@ -134,6 +139,7 @@ func (s *Service) Run(ctx context.Context) (Report, error) {
 		s.checkTrust(ctx, helperStatus.CAFingerprint),
 		s.checkPorts(),
 		s.checkRuntimes(ctx),
+		s.checkTools(),
 		s.checkDisk(),
 		s.checkWSL(),
 	}

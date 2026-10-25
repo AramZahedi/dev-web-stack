@@ -17,6 +17,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -107,6 +108,12 @@ type Config struct {
 	// ServiceRoot is the devstack root directory owning service container state.
 	// When set, the helper service controller is wired automatically.
 	ServiceRoot string
+	// ToolRoot is the devstack home holding managed native CLI tools. When set,
+	// the helper tool manager is wired automatically.
+	ToolRoot string
+	// ToolBinDir is the system bin directory that receives php/composer links.
+	// Empty selects /usr/local/bin. Tests use a temporary directory.
+	ToolBinDir string
 	// Logger receives server diagnostics. A nil logger uses slog.Default.
 	Logger *slog.Logger
 	// Service contains the privileged operations exposed by the helper. When
@@ -137,6 +144,12 @@ type Service struct {
 	ServiceDeactivate func(context.Context, string) error
 	ServiceUninstall  func(context.Context, string, bool) error
 	ServiceLogs       func(context.Context, string, int) (string, error)
+	ServiceRestart    func(context.Context, string) error
+	ServiceValidate   func(context.Context, string) error
+	ServiceReload     func(context.Context, string) error
+	ToolStatus        func(context.Context) (helperproto.ToolStatusResponse, error)
+	ToolInstall       func(context.Context, helperproto.ToolInstallRequest) (helperproto.ToolStatus, error)
+	ToolRemove        func(context.Context, string) (helperproto.ToolStatus, error)
 }
 
 // Server is a helper RPC server listening on a Unix-domain socket.
@@ -147,6 +160,7 @@ type Server struct {
 	authority      *Authority
 	vhosts         *VhostManager
 	dockerServices *DockerServiceController
+	tools          *ToolManager
 
 	hostsMu sync.Mutex
 
@@ -210,9 +224,35 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if cfg.ServiceRoot != "" {
 		s.dockerServices = NewDockerServiceController(cfg.ServiceRoot, services.DefaultCatalog(), cfg.Runner)
+		s.dockerServices.OwnerUID = cfg.AllowUID
+		// A Docker web server owns 80/443. The daemon writes this marker before
+		// stopping the builtin forwarders, so a helper restart/reboot must not
+		// re-bind the ports and fight the container.
+		if dockerWebServing(cfg.ServiceRoot) {
+			s.cfg.AutoForward = false
+			cfg.AutoForward = false
+		}
+	}
+	if cfg.ToolRoot != "" {
+		tools, err := NewToolManager(cfg.ToolRoot, cfg.ToolBinDir, cfg.AllowUID, logger)
+		if err != nil {
+			return nil, err
+		}
+		s.tools = tools
 	}
 	s.cfg.Service = s.wireService(s.cfg.Service)
 	return s, nil
+}
+
+// dockerWebServing reports whether the daemon has marked the Docker web
+// provider as the owner of 80/443. The marker is written before forwarders are
+// stopped and cleared after builtin serving is restored.
+func dockerWebServing(root string) bool {
+	data, err := os.ReadFile(filepath.Join(root, "services", ".serving-provider"))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(string(data)), "docker")
 }
 
 // wireService fills in the privileged handlers that the helper owns. Hooks
@@ -285,9 +325,35 @@ func (s *Server) wireService(service Service) Service {
 				return s.dockerServices.Logs(ctx, services.ID(id), tail)
 			}
 		}
+		if service.ServiceRestart == nil {
+			service.ServiceRestart = func(ctx context.Context, id string) error {
+				return s.dockerServices.Restart(ctx, services.ID(id))
+			}
+		}
+		if service.ServiceValidate == nil {
+			service.ServiceValidate = func(ctx context.Context, id string) error {
+				return s.dockerServices.Validate(ctx, services.ID(id))
+			}
+		}
+		if service.ServiceReload == nil {
+			service.ServiceReload = func(ctx context.Context, id string) error {
+				return s.dockerServices.Reload(ctx, services.ID(id))
+			}
+		}
 	}
 	if service.Uninstall == nil {
 		service.Uninstall = s.uninstall
+	}
+	if s.tools != nil {
+		if service.ToolStatus == nil {
+			service.ToolStatus = s.tools.Status
+		}
+		if service.ToolInstall == nil {
+			service.ToolInstall = s.tools.Install
+		}
+		if service.ToolRemove == nil {
+			service.ToolRemove = s.tools.Remove
+		}
 	}
 	return service
 }
@@ -748,6 +814,12 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST "+helperproto.PathServicesUninstall, s.handleServicesUninstall)
 	mux.HandleFunc("GET "+helperproto.PathServicesLogs, s.handleServicesLogs)
 	mux.HandleFunc("POST "+helperproto.PathServicesLogs, s.handleServicesLogs)
+	mux.HandleFunc("POST "+helperproto.PathServicesRestart, s.handleServicesRestart)
+	mux.HandleFunc("POST "+helperproto.PathServicesValidate, s.handleServicesValidate)
+	mux.HandleFunc("POST "+helperproto.PathServicesReload, s.handleServicesReload)
+	mux.HandleFunc("GET "+helperproto.PathToolsStatus, s.handleToolsStatus)
+	mux.HandleFunc("POST "+helperproto.PathToolsInstall, s.handleToolsInstall)
+	mux.HandleFunc("POST "+helperproto.PathToolsRemove, s.handleToolsRemove)
 	return s.authenticate(mux)
 }
 
@@ -1019,13 +1091,67 @@ func (s *Server) handleUninstall(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleToolsStatus(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.ToolStatus == nil {
+		s.notImplemented(w, "ToolStatus")
+		return
+	}
+	resp, err := s.cfg.Service.ToolStatus(r.Context())
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleToolsInstall(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.ToolInstall == nil {
+		s.notImplemented(w, "ToolInstall")
+		return
+	}
+	var req helperproto.ToolInstallRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	status, err := s.cfg.Service.ToolInstall(r.Context(), req)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, helperproto.ToolResponse{Tool: status})
+}
+
+func (s *Server) handleToolsRemove(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.ToolRemove == nil {
+		s.notImplemented(w, "ToolRemove")
+		return
+	}
+	var req helperproto.ToolRemoveRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	status, err := s.cfg.Service.ToolRemove(r.Context(), req.ID)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, helperproto.ToolResponse{Tool: status})
+}
+
 func (s *Server) notImplemented(w http.ResponseWriter, operation string) {
 	s.writeError(w, http.StatusNotImplemented, helperproto.CodeNotImplemented,
 		operation+" is not implemented")
 }
 
 func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
+	var activationErr *ServiceActivationError
 	switch {
+	case errors.As(err, &activationErr):
+		s.writeError(w, http.StatusConflict, helperproto.CodeServiceConflict, err.Error())
+	case errors.Is(err, helperproto.ErrServiceConflict):
+		s.writeError(w, http.StatusConflict, helperproto.CodeServiceConflict, err.Error())
 	case errors.Is(err, helperproto.ErrNotImplemented):
 		s.writeError(w, http.StatusNotImplemented, helperproto.CodeNotImplemented, err.Error())
 	case errors.Is(err, helperproto.ErrInvalidRequest):
@@ -1044,6 +1170,8 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusBadGateway, helperproto.CodeServerReloadFailed, err.Error())
 	case errors.Is(err, helperproto.ErrVhostSyncFailed):
 		s.writeError(w, http.StatusInternalServerError, helperproto.CodeVhostSyncFailed, err.Error())
+	case errors.Is(err, helperproto.ErrToolConflict):
+		s.writeError(w, http.StatusConflict, helperproto.CodeToolConflict, err.Error())
 	default:
 		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
 	}

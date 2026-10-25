@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -27,8 +28,10 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/version"
 )
@@ -70,6 +73,19 @@ type fakeClient struct {
 	migrationReq  sites.PHPMigrationRequest
 	migrationErr  error
 
+	phpDefaultStatus tooling.PHPDefaultStatus
+	phpClearStatus   tooling.PHPDefaultStatus
+	phpDefaultSet    string
+	phpDefaultForce  bool
+	phpDefaultClear  int
+	tools            []helperproto.ToolStatus
+	toolInstallID    string
+	toolInstallForce bool
+	toolRemoveID     string
+
+	buildResult build.Result
+	buildRef    string
+
 	vhostStatus    helperproto.VhostStatusResponse
 	servingModeSet bool
 	servingMode    string
@@ -81,6 +97,15 @@ type fakeClient struct {
 	servicesList []services.View
 	service      services.View
 	serviceMap   map[string]services.View
+
+	serviceActions         []string
+	serviceActionID        string
+	serviceDeleteData      bool
+	serviceUninstallResult servicecontrol.UninstallResult
+	serviceLogs            string
+	serviceLogsTail        int
+	serviceCredentials     servicecontrol.Credentials
+	serviceCredentialCalls []string
 }
 
 func (f *fakeClient) maybeErr() error { return f.err }
@@ -270,6 +295,68 @@ func (f *fakeClient) GetService(_ context.Context, id string) (services.View, er
 		}
 	}
 	return services.View{}, errors.New("service not found")
+}
+
+func (f *fakeClient) serviceAction(action, id string) error {
+	if err := f.maybeErr(); err != nil {
+		return err
+	}
+	f.serviceActions = append(f.serviceActions, action)
+	f.serviceActionID = id
+	return nil
+}
+
+func (f *fakeClient) InstallService(_ context.Context, id string) error {
+	return f.serviceAction("install", id)
+}
+
+func (f *fakeClient) ActivateService(_ context.Context, id string) error {
+	return f.serviceAction("activate", id)
+}
+
+func (f *fakeClient) DeactivateService(_ context.Context, id string) error {
+	return f.serviceAction("deactivate", id)
+}
+
+func (f *fakeClient) RestartService(_ context.Context, id string) error {
+	return f.serviceAction("restart", id)
+}
+
+func (f *fakeClient) UninstallService(_ context.Context, id string, deleteData bool) (servicecontrol.UninstallResult, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.UninstallResult{}, err
+	}
+	f.serviceActions = append(f.serviceActions, "uninstall")
+	f.serviceActionID = id
+	f.serviceDeleteData = deleteData
+	return f.serviceUninstallResult, nil
+}
+
+func (f *fakeClient) ServiceLogs(_ context.Context, id string, tail int) (string, error) {
+	if err := f.maybeErr(); err != nil {
+		return "", err
+	}
+	f.serviceActionID = id
+	f.serviceLogsTail = tail
+	return f.serviceLogs, nil
+}
+
+func (f *fakeClient) ServiceCredentials(_ context.Context, id string) (servicecontrol.Credentials, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.Credentials{}, err
+	}
+	f.serviceActionID = id
+	f.serviceCredentialCalls = append(f.serviceCredentialCalls, "reveal")
+	return f.serviceCredentials, nil
+}
+
+func (f *fakeClient) RotateServiceCredentials(_ context.Context, id string) (servicecontrol.Credentials, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.Credentials{}, err
+	}
+	f.serviceActionID = id
+	f.serviceCredentialCalls = append(f.serviceCredentialCalls, "rotate")
+	return f.serviceCredentials, nil
 }
 
 func (f *fakeClient) PHPInfo(_ context.Context, ref string) (sites.PHPInfo, error) {
@@ -2222,4 +2309,60 @@ func TestSiteURLUsesPublicPortEnvironment(t *testing.T) {
 	if got, want := siteURL(model.Site{Domain: "blog.test", TLS: false}), "http://blog.test:8080"; got != want {
 		t.Fatalf("siteURL(no TLS) = %q, want %q", got, want)
 	}
+}
+
+func (f *fakeClient) PHPDefault(_ context.Context) (tooling.PHPDefaultStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return tooling.PHPDefaultStatus{}, err
+	}
+	return f.phpDefaultStatus, nil
+}
+
+func (f *fakeClient) SetPHPDefault(_ context.Context, value string, force bool) (tooling.PHPDefaultStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return tooling.PHPDefaultStatus{}, err
+	}
+	f.phpDefaultSet = value
+	f.phpDefaultForce = force
+	return f.phpDefaultStatus, nil
+}
+
+func (f *fakeClient) ClearPHPDefault(_ context.Context) (tooling.PHPDefaultStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return tooling.PHPDefaultStatus{}, err
+	}
+	f.phpDefaultClear++
+	return f.phpClearStatus, nil
+}
+
+func (f *fakeClient) Tools(_ context.Context) ([]helperproto.ToolStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	return f.tools, nil
+}
+
+func (f *fakeClient) InstallTool(_ context.Context, id string, force bool) (helperproto.ToolStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return helperproto.ToolStatus{}, err
+	}
+	f.toolInstallID = id
+	f.toolInstallForce = force
+	return helperproto.ToolStatus{ID: id, Installed: true, Managed: true}, nil
+}
+
+func (f *fakeClient) RemoveTool(_ context.Context, id string) (helperproto.ToolStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return helperproto.ToolStatus{}, err
+	}
+	f.toolRemoveID = id
+	return helperproto.ToolStatus{ID: id}, nil
+}
+
+func (f *fakeClient) BuildSite(_ context.Context, ref string) (build.Result, error) {
+	if err := f.maybeErr(); err != nil {
+		return build.Result{}, err
+	}
+	f.buildRef = ref
+	return f.buildResult, nil
 }

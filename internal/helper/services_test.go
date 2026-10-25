@@ -3,14 +3,17 @@ package helper_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helper"
+	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
@@ -24,13 +27,14 @@ func TestServiceHelperEndpoints(t *testing.T) {
 	var recordedDeleteData bool
 	var recordedLogsID string
 	var recordedLogsTail int
+	var recordedRestart, recordedValidate, recordedReload string
 
 	fakeStatus := []helperproto.ServiceStatus{
 		{
 			ID:          "nginx",
 			State:       "active",
 			Active:      true,
-			Image:       "fixture-nginx:latest",
+			Image:       "fixture-nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 			ContainerID: "cid-123456",
 			Health:      "healthy",
 			Ports: []helperproto.ServicePortStatus{
@@ -66,6 +70,18 @@ func TestServiceHelperEndpoints(t *testing.T) {
 				recordedLogsID = id
 				recordedLogsTail = tail
 				return "fake-logs-output", nil
+			},
+			ServiceRestart: func(ctx context.Context, id string) error {
+				recordedRestart = id
+				return nil
+			},
+			ServiceValidate: func(ctx context.Context, id string) error {
+				recordedValidate = id
+				return nil
+			},
+			ServiceReload: func(ctx context.Context, id string) error {
+				recordedReload = id
+				return nil
 			},
 		},
 	}
@@ -126,7 +142,27 @@ func TestServiceHelperEndpoints(t *testing.T) {
 		t.Errorf("recordedLogs = (%q, %d), want (%q, 50)", recordedLogsID, recordedLogsTail, "nginx")
 	}
 
-	// 7. Invalid IDs rejection
+	// 7. Restart, validate, reload
+	if err := client.ServiceRestart(ctx, "nginx"); err != nil {
+		t.Fatalf("ServiceRestart: %v", err)
+	}
+	if recordedRestart != "nginx" {
+		t.Errorf("recordedRestart = %q, want %q", recordedRestart, "nginx")
+	}
+	if err := client.ServiceValidate(ctx, "nginx"); err != nil {
+		t.Fatalf("ServiceValidate: %v", err)
+	}
+	if recordedValidate != "nginx" {
+		t.Errorf("recordedValidate = %q, want %q", recordedValidate, "nginx")
+	}
+	if err := client.ServiceReload(ctx, "nginx"); err != nil {
+		t.Fatalf("ServiceReload: %v", err)
+	}
+	if recordedReload != "nginx" {
+		t.Errorf("recordedReload = %q, want %q", recordedReload, "nginx")
+	}
+
+	// 8. Invalid IDs rejection
 	invalidIDs := []string{"", "../escaped", "nginx/extra", "invalid service!@#"}
 	for _, badID := range invalidIDs {
 		if err := client.ServiceInstall(ctx, badID); !errors.Is(err, helperproto.ErrInvalidRequest) {
@@ -141,14 +177,58 @@ func TestServiceHelperEndpoints(t *testing.T) {
 		if err := client.ServiceUninstall(ctx, badID, false); !errors.Is(err, helperproto.ErrInvalidRequest) {
 			t.Errorf("ServiceUninstall(%q) error = %v, want ErrInvalidRequest", badID, err)
 		}
+		if err := client.ServiceRestart(ctx, badID); !errors.Is(err, helperproto.ErrInvalidRequest) {
+			t.Errorf("ServiceRestart(%q) error = %v, want ErrInvalidRequest", badID, err)
+		}
+		if err := client.ServiceValidate(ctx, badID); !errors.Is(err, helperproto.ErrInvalidRequest) {
+			t.Errorf("ServiceValidate(%q) error = %v, want ErrInvalidRequest", badID, err)
+		}
+		if err := client.ServiceReload(ctx, badID); !errors.Is(err, helperproto.ErrInvalidRequest) {
+			t.Errorf("ServiceReload(%q) error = %v, want ErrInvalidRequest", badID, err)
+		}
+	}
+}
+
+func TestServiceActivationErrorReturnsServiceConflict(t *testing.T) {
+	cfg := helper.Config{
+		AllowUID: syscall.Getuid(),
+		Service: helper.Service{
+			ServiceActivate: func(context.Context, string) error {
+				return &helper.ServiceActivationError{
+					Service: services.IDNginx,
+					Phase:   "health",
+					Port:    8080,
+					Err:     errors.New("container did not become healthy"),
+				}
+			},
+		},
+	}
+	socketPath, _ := startTestServer(t, cfg)
+	client := dialClient(t, socketPath)
+
+	err := client.ServiceActivate(context.Background(), "nginx")
+	if !errors.Is(err, helperproto.ErrServiceConflict) {
+		t.Fatalf("error = %v, want ErrServiceConflict", err)
+	}
+	var helperErr *helperclient.Error
+	if !errors.As(err, &helperErr) {
+		t.Fatalf("error = %T, want *helperclient.Error", err)
+	}
+	if helperErr.Status != http.StatusConflict || helperErr.Code != helperproto.CodeServiceConflict {
+		t.Fatalf("helper error = %+v, want 409 SERVICE_CONFLICT", helperErr)
+	}
+	if !strings.Contains(helperErr.Message, "health") {
+		t.Fatalf("message = %q, want phase", helperErr.Message)
 	}
 }
 
 type fakeDockerRunner struct {
-	mu       sync.Mutex
-	calls    [][]string
-	psOutput string
-	logsOut  string
+	mu        sync.Mutex
+	calls     [][]string
+	psOutput  string
+	logsOut   string
+	upSeen    bool
+	psVisible bool
 }
 
 func (f *fakeDockerRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -159,13 +239,29 @@ func (f *fakeDockerRunner) Run(ctx context.Context, name string, args ...string)
 
 	for _, arg := range args {
 		if arg == "ps" {
+			if !f.psVisible {
+				return []byte("[]"), nil
+			}
 			return []byte(f.psOutput), nil
 		}
 		if arg == "logs" {
 			return []byte(f.logsOut), nil
 		}
+		if arg == "up" {
+			f.upSeen = true
+			f.psVisible = true
+		}
 	}
 	return []byte("ok"), nil
+}
+
+func (f *fakeDockerRunner) probe(ctx context.Context, port int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.upSeen {
+		return nil
+	}
+	return errors.New("port is not listening")
 }
 
 func TestServiceDockerController(t *testing.T) {
@@ -178,7 +274,7 @@ func TestServiceDockerController(t *testing.T) {
 				ID:          services.IDNginx,
 				DisplayName: "Nginx",
 				Group:       services.GroupWeb,
-				Image:       "fixture-nginx:latest",
+				Image:       "fixture-nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 				NetworkMode: "host",
 				Ports: []services.Port{
 					{Host: 8080, Container: 80, Protocol: "http", Loopback: true},
@@ -191,7 +287,7 @@ func TestServiceDockerController(t *testing.T) {
 				ID:          services.IDMySQL,
 				DisplayName: "MySQL",
 				Group:       services.GroupMySQLFamily,
-				Image:       "fixture-mysql:latest",
+				Image:       "fixture-mysql@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				Ports: []services.Port{
 					{Host: 3306, Container: 3306, Protocol: "tcp", Loopback: true},
 				},
@@ -205,6 +301,7 @@ func TestServiceDockerController(t *testing.T) {
 	}
 
 	controller := helper.NewDockerServiceController(root, cat, runner)
+	controller.Probe = runner.probe
 	project := "devstack-" + services.RootHash(root)
 	composePath := filepath.Join(root, "services", "compose.yaml")
 
@@ -230,10 +327,16 @@ func TestServiceDockerController(t *testing.T) {
 	}
 	wantActivateCmd := []string{"docker", "compose", "-p", project, "-f", composePath, "up", "-d", "--no-deps", "nginx"}
 	runner.mu.Lock()
-	lastCmd = runner.calls[len(runner.calls)-1]
+	var activateCmd []string
+	for _, call := range runner.calls {
+		if len(call) > 6 && call[6] == "up" {
+			activateCmd = call
+			break
+		}
+	}
 	runner.mu.Unlock()
-	if !reflect.DeepEqual(lastCmd, wantActivateCmd) {
-		t.Errorf("Activate command = %v, want %v", lastCmd, wantActivateCmd)
+	if !reflect.DeepEqual(activateCmd, wantActivateCmd) {
+		t.Errorf("Activate command = %v, want %v", activateCmd, wantActivateCmd)
 	}
 
 	// 3. Deactivate
@@ -290,7 +393,7 @@ func TestServiceDockerController(t *testing.T) {
 	if nginxStatus == nil {
 		t.Fatalf("nginx status not found")
 	}
-	if nginxStatus.State != "running" || !nginxStatus.Active || nginxStatus.ContainerID != "c123456" {
+	if nginxStatus.State != string(services.StateActive) || !nginxStatus.Active || !nginxStatus.Installed || nginxStatus.ContainerID != "c123456" {
 		t.Errorf("unexpected nginx status: %+v", nginxStatus)
 	}
 

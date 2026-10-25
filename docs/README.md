@@ -20,7 +20,7 @@ machine, and the design for the next service-platform milestone.
 ## Current design and plans
 
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
-  — status: **Approved for implementation**, not implemented.
+  — Waves 0–1 implemented; Wave 2 remains.
 - [M1 design](superpowers/specs/2026-10-22-dev-web-stack-m1-design.md)
   — released Linux foundation.
 - [External vhosts design](superpowers/specs/2026-10-22-external-vhosts-design.md)
@@ -30,7 +30,12 @@ machine, and the design for the next service-platform milestone.
 - [Service platform foundation plan](superpowers/plans/2026-10-25-service-platform-foundation.md)
   — detailed Wave 0 implementation tasks.
 - [Wave 0 kickoff](superpowers/plans/2026-10-25-service-platform-wave0-kickoff.md)
-  — external-agent starting instructions and stop conditions.
+  — foundation execution record.
+- [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md)
+  — service lifecycle, database/web-server/tooling implementation.
+- [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md) and
+  [Wave 1 handoff](superpowers/status/2026-10-25-wave1-handoff.md)
+  — verification and remaining work.
 - [Documentation audit findings](../DOCUMENTATION_AUDIT_FINDINGS.md)
   — reviewed and resolved on 2026-10-25.
 - Implementation plans and acceptance reports live in
@@ -56,6 +61,8 @@ The M1 user documentation remains authoritative for the released native product:
 ## Implementation status in one sentence
 
 The Linux M1 native application is implemented and released as `v0.1.0`. The old
-standalone devstack-in-Docker image was retired on 2026-10-25. The managed Docker
-service platform (nginx/Apache/MySQL/MariaDB/PostgreSQL/Redis/phpMyAdmin plus global
-PHP/Composer and dashboard parity) is designed but **not implemented**.
+standalone devstack-in-Docker image was retired on 2026-10-25. Wave 1 of the managed
+service platform is implemented: Docker nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis,
+credentials, global PHP/Composer, site shell/exec, and static builds. Wave 2
+(phpMyAdmin, ImageMagick CLI, performance/host tuning, credential rotation, external-site
+Docker mounts, and full dashboard action/config/build/terminal panels) is still planned.

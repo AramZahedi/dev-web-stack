@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
 
@@ -93,7 +94,7 @@ func TestServiceStatus(t *testing.T) {
 				Group:       services.GroupWeb,
 				State:       services.StateActive,
 				Active:      true,
-				Image:       "fixture-nginx:latest",
+				Image:       "fixture-nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 				ConfigPath:  "/data/devstack/services/nginx/config",
 				DataPath:    "/data/devstack/services/nginx/data",
 			},
@@ -140,4 +141,251 @@ func TestServiceStatusNotFound(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("expected non-zero exit code for unknown service status, got %d", code)
 	}
+}
+
+func TestServiceLifecycleCommands(t *testing.T) {
+	for _, action := range []string{"install", "activate", "deactivate", "restart"} {
+		t.Run(action, func(t *testing.T) {
+			useTestSeams(t)
+			fake := &fakeClient{}
+
+			out := runCLI(t, fake, "service", action, "nginx")
+			if got := strings.Join(fake.serviceActions, ","); got != action {
+				t.Fatalf("actions = %q, want %q", got, action)
+			}
+			if fake.serviceActionID != "nginx" {
+				t.Fatalf("action ID = %q, want nginx", fake.serviceActionID)
+			}
+			if !strings.Contains(out, "nginx") || !strings.Contains(out, action) {
+				t.Fatalf("output = %q, want id and action", out)
+			}
+		})
+	}
+}
+
+func TestServiceLifecycleJSON(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+
+	out := runCLI(t, fake, "service", "activate", "mysql", "--json")
+	var got struct {
+		ID     string `json:"id"`
+		Action string `json:"action"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v\noutput: %s", err, out)
+	}
+	if got.ID != "mysql" || got.Action != "activate" || got.Status != "ok" {
+		t.Fatalf("unexpected output: %+v", got)
+	}
+}
+
+func TestServiceUninstall(t *testing.T) {
+	t.Run("preserves data by default", func(t *testing.T) {
+		useTestSeams(t)
+		fake := &fakeClient{}
+
+		out := runCLI(t, fake, "service", "uninstall", "mysql")
+		if fake.serviceDeleteData {
+			t.Fatal("delete_data = true by default")
+		}
+		if got := strings.Join(fake.serviceActions, ","); got != "uninstall" {
+			t.Fatalf("actions = %q", got)
+		}
+		if !strings.Contains(out, "mysql") {
+			t.Fatalf("output = %q", out)
+		}
+	})
+
+	t.Run("delete data requires confirmation", func(t *testing.T) {
+		useTestSeams(t)
+		fake := &fakeClient{}
+		code, _, stderr := runCLIExitInput(t, fake, "n\n", "service", "uninstall", "mysql", "--delete-data")
+		if code == 0 {
+			t.Fatal("uninstall --delete-data without confirmation succeeded")
+		}
+		if len(fake.serviceActions) != 0 {
+			t.Fatalf("actions = %v, want none", fake.serviceActions)
+		}
+		if !strings.Contains(stderr, "confirmation") && !strings.Contains(stderr, "declined") {
+			t.Fatalf("stderr = %q, want confirmation failure", stderr)
+		}
+	})
+
+	t.Run("interactive confirmation", func(t *testing.T) {
+		useTestSeams(t)
+		fake := &fakeClient{}
+
+		runCLIExitInput(t, fake, "y\n", "service", "uninstall", "mysql", "--delete-data")
+		if !fake.serviceDeleteData {
+			t.Fatal("delete_data = false, want true")
+		}
+	})
+
+	t.Run("yes flag skips confirmation and prints backup", func(t *testing.T) {
+		useTestSeams(t)
+		fake := &fakeClient{
+			serviceUninstallResult: servicecontrol.UninstallResult{BackupPath: "/data/backups/mysql.tar.gz"},
+		}
+
+		out := runCLI(t, fake, "service", "uninstall", "mysql", "--delete-data", "--yes")
+		if !fake.serviceDeleteData {
+			t.Fatal("delete_data = false, want true")
+		}
+		if !strings.Contains(out, "/data/backups/mysql.tar.gz") {
+			t.Fatalf("output = %q, want backup path", out)
+		}
+	})
+
+	t.Run("json output includes backup path", func(t *testing.T) {
+		useTestSeams(t)
+		fake := &fakeClient{
+			serviceUninstallResult: servicecontrol.UninstallResult{BackupPath: "/data/backups/mysql.tar.gz"},
+		}
+
+		out := runCLI(t, fake, "service", "uninstall", "mysql", "--delete-data", "--yes", "--json")
+		var got struct {
+			ID         string `json:"id"`
+			Action     string `json:"action"`
+			Status     string `json:"status"`
+			BackupPath string `json:"backup_path"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v\noutput: %s", err, out)
+		}
+		if got.ID != "mysql" || got.Action != "uninstall" || got.Status != "ok" || got.BackupPath != "/data/backups/mysql.tar.gz" {
+			t.Fatalf("unexpected output: %+v", got)
+		}
+	})
+}
+
+func TestServiceLogs(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{serviceLogs: "line one\nline two\n"}
+
+	out := runCLI(t, fake, "service", "logs", "mysql", "--tail", "12")
+	if fake.serviceLogsTail != 12 {
+		t.Fatalf("tail = %d, want 12", fake.serviceLogsTail)
+	}
+	if !strings.Contains(out, "line one") || !strings.Contains(out, "line two") {
+		t.Fatalf("output = %q", out)
+	}
+
+	jsonOut := runCLI(t, fake, "service", "logs", "mysql", "--json")
+	var got struct {
+		ID   string `json:"id"`
+		Logs string `json:"logs"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v\noutput: %s", err, jsonOut)
+	}
+	if got.ID != "mysql" || got.Logs != fake.serviceLogs {
+		t.Fatalf("unexpected output: %+v", got)
+	}
+}
+
+func TestServiceLogsRejectsNegativeTail(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+
+	code, _, _ := runCLIExit(t, fake, "service", "logs", "mysql", "--tail", "-1")
+	if code == 0 {
+		t.Fatal("negative tail succeeded")
+	}
+	if fake.serviceLogsTail != 0 {
+		t.Fatalf("client called with tail %d", fake.serviceLogsTail)
+	}
+}
+
+func TestServiceCredentialsReveal(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{serviceCredentials: servicecontrol.Credentials{
+		Engine:   "mysql",
+		Username: "devstack",
+		Password: "secret-password",
+		Database: "devstack",
+		Host:     "127.0.0.1",
+		Port:     3306,
+	}}
+
+	out := runCLI(t, fake, "service", "credentials", "mysql")
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "warning") {
+		t.Fatalf("output = %q, want a credentials warning", out)
+	}
+	for _, want := range []string{"127.0.0.1", "3306", "devstack", "secret-password"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, missing %q", out, want)
+		}
+	}
+	if got := strings.Join(fake.serviceCredentialCalls, ","); got != "reveal" {
+		t.Fatalf("credential calls = %q", got)
+	}
+}
+
+func TestServiceCredentialsJSON(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{serviceCredentials: servicecontrol.Credentials{
+		Engine: "mysql", Username: "devstack", Password: "secret-password", Database: "devstack", Host: "127.0.0.1", Port: 3306,
+	}}
+
+	out := runCLI(t, fake, "service", "credentials", "mysql", "--json")
+	var got servicecontrol.Credentials
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v\noutput: %s", err, out)
+	}
+	if got.Password != "secret-password" || got.Port != 3306 {
+		t.Fatalf("unexpected credentials: %+v", got)
+	}
+}
+
+func TestServiceCredentialsRotate(t *testing.T) {
+	t.Run("requires confirmation", func(t *testing.T) {
+		useTestSeams(t)
+		fake := &fakeClient{serviceCredentials: servicecontrol.Credentials{Password: "new-secret"}}
+
+		code, _, _ := runCLIExitInput(t, fake, "n\n", "service", "credentials", "mysql", "--rotate")
+		if code == 0 {
+			t.Fatal("rotate without confirmation succeeded")
+		}
+		if len(fake.serviceCredentialCalls) != 0 {
+			t.Fatalf("credential calls = %v, want none", fake.serviceCredentialCalls)
+		}
+	})
+
+	t.Run("interactive confirmation rotates", func(t *testing.T) {
+		useTestSeams(t)
+		fake := &fakeClient{serviceCredentials: servicecontrol.Credentials{Password: "new-secret"}}
+
+		out := runCLIExitMust(t, fake, "y\n", "service", "credentials", "mysql", "--rotate")
+		if got := strings.Join(fake.serviceCredentialCalls, ","); got != "rotate" {
+			t.Fatalf("credential calls = %q", got)
+		}
+		if !strings.Contains(out, "new-secret") {
+			t.Fatalf("output = %q, want rotated password", out)
+		}
+	})
+
+	t.Run("yes flag rotates", func(t *testing.T) {
+		useTestSeams(t)
+		fake := &fakeClient{serviceCredentials: servicecontrol.Credentials{Password: "new-secret"}}
+
+		out := runCLI(t, fake, "service", "credentials", "mysql", "--rotate", "--yes")
+		if got := strings.Join(fake.serviceCredentialCalls, ","); got != "rotate" {
+			t.Fatalf("credential calls = %q", got)
+		}
+		if !strings.Contains(out, "new-secret") {
+			t.Fatalf("output = %q, want rotated password", out)
+		}
+	})
+}
+
+func runCLIExitMust(t *testing.T, fake *fakeClient, input string, args ...string) string {
+	t.Helper()
+	code, stdout, stderr := runCLIExitInput(t, fake, input, args...)
+	if code != 0 {
+		t.Fatalf("devstack %s exited %d\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), code, stdout, stderr)
+	}
+	return stdout
 }

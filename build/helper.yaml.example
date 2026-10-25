@@ -26,6 +26,13 @@ proxy_https_port: 8443
 # forwarders explicitly.
 auto_forward: true
 
+# Devstack root owning the managed Compose/config/data tree and native CLI
+# tools. install.sh fills these with the selected devstack home. If
+# service_root is empty, the Docker service RPCs stay disabled.
+service_root: /data/devstack
+tool_root: /data/devstack
+tool_bin_dir: /usr/local/bin
+
 # Helper-managed nginx/Apache vhosts. vhost_root owns the vhosts/ and tls/
 # trees; vhost_state records mode, releases, and owned TLS files.
 vhost_root: /etc/devstack

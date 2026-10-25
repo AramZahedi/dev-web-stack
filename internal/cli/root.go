@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -28,8 +29,10 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/version"
 )
@@ -63,12 +66,27 @@ type Client interface {
 	SavePHPDefaults(ctx context.Context, d model.PHPDefaults) (sites.PHPDefaultsResult, error)
 	MigratePHP(ctx context.Context, req sites.PHPMigrationRequest) ([]sites.PHPMigrationResult, error)
 	PHPExec(ctx context.Context, ref string, argv []string) (backend.Result, error)
+	PHPDefault(ctx context.Context) (tooling.PHPDefaultStatus, error)
+	SetPHPDefault(ctx context.Context, value string, force bool) (tooling.PHPDefaultStatus, error)
+	ClearPHPDefault(ctx context.Context) (tooling.PHPDefaultStatus, error)
+	Tools(ctx context.Context) ([]helperproto.ToolStatus, error)
+	InstallTool(ctx context.Context, id string, force bool) (helperproto.ToolStatus, error)
+	RemoveTool(ctx context.Context, id string) (helperproto.ToolStatus, error)
+	BuildSite(ctx context.Context, ref string) (build.Result, error)
 	VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error)
 	SetServingMode(ctx context.Context, mode string) (helperproto.VhostStatusResponse, error)
 	SyncVhosts(ctx context.Context) (helperproto.VhostStatusResponse, error)
 	PreviewVhost(ctx context.Context, ref, server string) (string, error)
 	ListServices(ctx context.Context) ([]services.View, error)
 	GetService(ctx context.Context, id string) (services.View, error)
+	InstallService(ctx context.Context, id string) error
+	ActivateService(ctx context.Context, id string) error
+	DeactivateService(ctx context.Context, id string) error
+	RestartService(ctx context.Context, id string) error
+	UninstallService(ctx context.Context, id string, deleteData bool) (servicecontrol.UninstallResult, error)
+	ServiceLogs(ctx context.Context, id string, tail int) (string, error)
+	ServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error)
+	RotateServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error)
 }
 
 // Package-level seams. Tests replace these so no command touches a real
@@ -80,6 +98,7 @@ var (
 	stopDaemon    = daemonStop
 	openBrowser   = openURL
 	userHomeDir   = os.UserHomeDir
+	currentEUID   = os.Geteuid
 )
 
 // App holds the values bound to persistent flags and the client factory.
@@ -116,6 +135,10 @@ func NewRootCmd(newClient func(home string) (Client, error)) *cobra.Command {
 		app.newSiteCmd(),
 		app.newRuntimeCmd(),
 		app.newPHPCmd(),
+		app.newToolCmd(),
+		app.newShellCmd(),
+		app.newExecCmd(),
+		app.newShellInitCmd(),
 		app.newTrustCmd(),
 		app.newVhostCmd(),
 		app.newServiceCmd(),

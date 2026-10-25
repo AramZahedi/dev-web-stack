@@ -8,6 +8,9 @@ const (
 	PathServicesDeactivate = "/v1/services/deactivate"
 	PathServicesUninstall  = "/v1/services/uninstall"
 	PathServicesLogs       = "/v1/services/logs"
+	PathServicesRestart    = "/v1/services/restart"
+	PathServicesValidate   = "/v1/services/validate"
+	PathServicesReload     = "/v1/services/reload"
 )
 
 // ServicePortStatus describes the port mapping of an exposed service container.
@@ -23,7 +26,10 @@ type ServiceStatus struct {
 	ID          string              `json:"id"`
 	State       string              `json:"state"`
 	Active      bool                `json:"active"`
+	Installed   bool                `json:"installed"`
 	Image       string              `json:"image"`
+	ConfigPath  string              `json:"config_path"`
+	DataPath    string              `json:"data_path"`
 	ContainerID string              `json:"container_id,omitempty"`
 	Health      string              `json:"health,omitempty"`
 	LastError   string              `json:"last_error,omitempty"`

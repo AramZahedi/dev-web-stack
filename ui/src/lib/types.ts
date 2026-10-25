@@ -7,11 +7,13 @@ export type SiteStatus =
   | 'running'
   | 'stopping'
   | 'crashed'
+  | 'degraded'
   | 'error';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'skipped';
 
 export type ServingMode = 'builtin' | 'nginx' | 'apache';
+export type ServingProvider = 'native' | 'docker';
 export type FrontControllerMode = 'auto' | 'generated' | 'htaccess';
 export type ApacheAllowOverride = 'all' | 'fileinfo' | 'none';
 
@@ -268,6 +270,7 @@ export interface Settings {
   https_port: number;
   ui_port: number;
   serving_mode: ServingMode;
+  serving_provider: ServingProvider;
   wsl_distro: string;
   auto_start_sites: boolean;
   graceful_stop_seconds: number;
@@ -326,6 +329,7 @@ export interface DaemonEvent {
 export type ServiceState =
   | 'not_installed'
   | 'installed'
+  | 'installed_but_stopped'
   | 'starting'
   | 'active'
   | 'stopping'
@@ -346,6 +350,9 @@ export interface ServiceView {
   group: ServiceGroup;
   state: ServiceState;
   active: boolean;
+  installed: boolean;
+  health: string;
+  container_id: string;
   image: string;
   ports?: ServicePort[];
   last_error?: string;

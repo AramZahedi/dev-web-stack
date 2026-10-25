@@ -6,12 +6,13 @@ import "time"
 type State string
 
 const (
-	StateNotInstalled State = "not_installed"
-	StateInstalled    State = "installed"
-	StateStarting     State = "starting"
-	StateActive       State = "active"
-	StateStopping     State = "stopping"
-	StateError        State = "error"
+	StateNotInstalled        State = "not_installed"
+	StateInstalled           State = "installed"
+	StateInstalledButStopped State = "installed_but_stopped"
+	StateStarting            State = "starting"
+	StateActive              State = "active"
+	StateStopping            State = "stopping"
+	StateError               State = "error"
 )
 
 // Record is the persistent database row describing a service's recorded state.
@@ -37,4 +38,17 @@ type View struct {
 	LastError   string `json:"last_error,omitempty"`
 	ConfigPath  string `json:"config_path,omitempty"`
 	DataPath    string `json:"data_path,omitempty"`
+	Health      string `json:"health"`
+	ContainerID string `json:"container_id"`
+	Installed   bool   `json:"installed"`
+}
+
+// installedState reports whether a state implies an image and config scaffold exist.
+func installedState(state State) bool {
+	switch state {
+	case StateInstalled, StateInstalledButStopped, StateStarting, StateActive, StateStopping:
+		return true
+	default:
+		return false
+	}
 }

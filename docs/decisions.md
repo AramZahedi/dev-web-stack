@@ -1,7 +1,7 @@
 # Decision log
 
 - **Last reviewed:** 2026-10-25
-- **Status:** mix of implemented decisions and planned service-platform decisions.
+- **Status:** M1 plus most Wave 1 service decisions are implemented; Wave 2 items remain planned.
 - **Detailed service design:** [2026-10-25 design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 
 This is an ADR-style record. “Current” decisions are shipped or in the released M1 code.

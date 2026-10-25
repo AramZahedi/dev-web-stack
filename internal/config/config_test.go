@@ -37,6 +37,9 @@ func TestDefaultValues(t *testing.T) {
 	if cfg.ServingMode != ServingModeBuiltin {
 		t.Fatalf("ServingMode = %q", cfg.ServingMode)
 	}
+	if cfg.ServingProvider != ServingProviderNative {
+		t.Fatalf("ServingProvider = %q", cfg.ServingProvider)
+	}
 	if cfg.WSLDistro != "devstack" {
 		t.Fatalf("WSLDistro = %q", cfg.WSLDistro)
 	}
@@ -76,6 +79,52 @@ func TestLoadReadsFileAndKeepsDefaults(t *testing.T) {
 	}
 	if cfg.ServingMode != ServingModeBuiltin {
 		t.Fatalf("ServingMode default = %q", cfg.ServingMode)
+	}
+}
+
+func TestLoadLegacyConfigDefaultsServingProvider(t *testing.T) {
+	home := t.TempDir()
+	writeConfig(t, home, "serving_mode: nginx\nui_port: 7070\n")
+
+	cfg, err := Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServingProvider != ServingProviderNative {
+		t.Fatalf("ServingProvider = %q, want %q", cfg.ServingProvider, ServingProviderNative)
+	}
+}
+
+func TestLoadReadsServingProvider(t *testing.T) {
+	home := t.TempDir()
+	writeConfig(t, home, "serving_mode: nginx\nui_port: 7070\nserving_provider: docker\n")
+
+	cfg, err := Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServingProvider != ServingProviderDocker {
+		t.Fatalf("ServingProvider = %q, want %q", cfg.ServingProvider, ServingProviderDocker)
+	}
+}
+
+func TestSaveWritesServingProvider(t *testing.T) {
+	home := t.TempDir()
+	cfg, err := Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ServingProvider = ServingProviderDocker
+	cfg.ServingMode = ServingModeNginx
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "serving_provider: docker") {
+		t.Fatalf("config.yaml missing serving_provider: %s", data)
 	}
 }
 
@@ -171,6 +220,18 @@ func TestValidatePorts(t *testing.T) {
 		{"serving builtin custom ui", func(c *Config) { c.ServingMode = ServingModeBuiltin; c.UIPort = 7071 }, true},
 		{"serving nginx custom ui", func(c *Config) { c.ServingMode = ServingModeNginx; c.UIPort = 7071 }, false},
 		{"serving apache custom ui", func(c *Config) { c.ServingMode = ServingModeApache; c.UIPort = 7071 }, false},
+		{"provider native", func(c *Config) { c.ServingProvider = ServingProviderNative }, true},
+		{"provider docker native mode", func(c *Config) { c.ServingProvider = ServingProviderDocker }, false},
+		{"provider docker nginx", func(c *Config) {
+			c.ServingProvider = ServingProviderDocker
+			c.ServingMode = ServingModeNginx
+		}, true},
+		{"provider docker apache", func(c *Config) {
+			c.ServingProvider = ServingProviderDocker
+			c.ServingMode = ServingModeApache
+		}, true},
+		{"provider empty", func(c *Config) { c.ServingProvider = "" }, false},
+		{"provider unknown", func(c *Config) { c.ServingProvider = "podman" }, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

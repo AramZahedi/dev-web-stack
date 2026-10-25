@@ -34,6 +34,7 @@ vhost_root: /tmp/config/vhosts
 vhost_state: /tmp/config/vhost-state.json
 nginx_include_dir: /tmp/config/nginx.d
 apache_include_dir: /tmp/config/apache.d
+service_root: /tmp/config/devstack
 log_level: debug
 `)
 
@@ -59,6 +60,7 @@ log_level: debug
 		vhostState:       "/tmp/config/vhost-state.json",
 		nginxIncludeDir:  "/tmp/config/nginx.d",
 		apacheIncludeDir: "/tmp/config/apache.d",
+		serviceRoot:      "/tmp/config/devstack",
 		logLevel:         "debug",
 	}
 	if opts != want {

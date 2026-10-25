@@ -15,6 +15,7 @@
     running: 'Running',
     stopping: 'Stopping',
     crashed: 'Crashed',
+    degraded: 'Degraded',
     error: 'Error',
   };
 
@@ -85,6 +86,11 @@
   .error {
     background: var(--danger-soft);
     color: var(--danger-fg);
+  }
+
+  .degraded {
+    background: var(--warning-soft);
+    color: var(--warning-fg);
   }
 
   .spin {

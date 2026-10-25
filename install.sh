@@ -199,11 +199,9 @@ for command in id getent install sudo systemctl; do
 	fi
 done
 if [ "${SOURCE_MODE}" != "source" ]; then
-	for command in tar; do
-		if ! command -v "${command}" >/dev/null 2>&1; then
-			die "required command not found: ${command}"
-		fi
-	done
+	if ! command -v tar >/dev/null 2>&1; then
+		die "required command not found: tar"
+	fi
 	if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
 		die "required command not found: sha256sum or shasum"
 	fi
@@ -427,23 +425,14 @@ resolve_release() {
 	BINARY_DIR="${EXTRACT_DIR}"
 }
 
-# resolve_units prefers the repository's unit files. A packaged install.sh has
-# no build/ tree, so it writes the same units from the definitions below.
+# resolve_units renders both units from the actual install context. The
+# checked-in build/systemd files remain references, but source and archive
+# installs must not silently use a unit with the wrong devstack home.
 resolve_units() {
-	local helper_source="${REPO_ROOT}/build/systemd/devstack-helper.service"
-	local daemon_source="${REPO_ROOT}/build/systemd/devstack-daemon.service"
-	if [ -f "${helper_source}" ] && [ -f "${daemon_source}" ]; then
-		UNIT_DIR="${REPO_ROOT}/build/systemd"
-		return
-	fi
-	if [ "${SOURCE_MODE}" = "source" ]; then
-		die "missing ${helper_source}; run from a complete source checkout"
-	fi
-
 	UNIT_DIR="${TMP_DIR}/systemd"
 	mkdir -p "${UNIT_DIR}"
 	# Keep these definitions in sync with build/systemd/devstack-*.service.
-	cat >"${UNIT_DIR}/devstack-helper.service" <<'EOF'
+	cat >"${UNIT_DIR}/devstack-helper.service" <<EOF
 [Unit]
 Description=devstack privileged helper
 Documentation=https://github.com/AramZahedi/dev-web-stack/blob/master/docs/install.md
@@ -479,7 +468,7 @@ RuntimeDirectoryMode=0755
 # writable; the helper falls back to an in-place write if the parent /etc mount
 # is read-only. Distribution trust paths are optional and differ between
 # Fedora/RHEL and Debian/Ubuntu.
-ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper
+ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper /usr/local/bin -"${DEVSTACK_HOME_DIR}"
 # External mode writes exactly one bridge file into the server's include
 # directory. These paths are optional because the selected server (or a
 # custom include layout) may not exist on this machine.
@@ -544,6 +533,11 @@ else
 	resolve_release
 fi
 resolve_units
+
+# The helper's ReadWritePaths names the devstack home as optional, and both the
+# helper and daemon need it. Create it as the installing user before any
+# privileged install or service restart.
+run install -d -m 0755 "${DEVSTACK_HOME_DIR}"
 
 log "installing for ${USER_NAME} (uid ${USER_UID}, home ${USER_HOME})"
 if [ "${DRY_RUN}" -eq 1 ]; then
@@ -616,6 +610,27 @@ run sudo install -d -m 0755 "${HELPER_CONFIG_DIR}"
 
 if [ -e "${HELPER_CONFIG}" ] && [ "${CONFIG_MODE}" != "force" ]; then
 	log "keeping existing ${HELPER_CONFIG} (use --force-config to replace it)"
+	# Wave 1 added root/service/tool paths. Add only the missing keys so an
+	# upgrade gains the service and tooling RPCs without discarding user edits.
+	config_tmp="${TMP_DIR}/helper.yaml.existing"
+	run sudo cat "${HELPER_CONFIG}" >"${config_tmp}"
+	config_changed=0
+	if ! grep -Eq '^[[:space:]]*service_root[[:space:]]*:' "${config_tmp}"; then
+		printf 'service_root: "%s"\n' "${DEVSTACK_HOME_DIR}" >>"${config_tmp}"
+		config_changed=1
+	fi
+	if ! grep -Eq '^[[:space:]]*tool_root[[:space:]]*:' "${config_tmp}"; then
+		printf 'tool_root: "%s"\n' "${DEVSTACK_HOME_DIR}" >>"${config_tmp}"
+		config_changed=1
+	fi
+	if ! grep -Eq '^[[:space:]]*tool_bin_dir[[:space:]]*:' "${config_tmp}"; then
+		printf 'tool_bin_dir: /usr/local/bin\n' >>"${config_tmp}"
+		config_changed=1
+	fi
+	if [ "${config_changed}" -eq 1 ]; then
+		run sudo install -m 0644 "${config_tmp}" "${HELPER_CONFIG}"
+		log "added missing service/tool paths to ${HELPER_CONFIG}"
+	fi
 else
 	config_tmp="${TMP_DIR}/helper.yaml"
 	cat >"${config_tmp}" <<EOF
@@ -631,6 +646,9 @@ forward_https_port: 443
 proxy_http_port: 8080
 proxy_https_port: 8443
 auto_forward: true
+service_root: "${DEVSTACK_HOME_DIR}"
+tool_root: "${DEVSTACK_HOME_DIR}"
+tool_bin_dir: /usr/local/bin
 log_level: info
 EOF
 	run sudo install -m 0644 "${config_tmp}" "${HELPER_CONFIG}"
@@ -662,6 +680,7 @@ if [ "${DRY_RUN}" -eq 0 ]; then
 		exit 1
 	fi
 	if [ ! -S /run/devstack-helper/helper.sock ]; then
+		# shellcheck disable=SC2016 # backticks are intentional user-facing text
 		printf 'install: warning: helper socket is not ready yet; run `devstack init` after checking the service\n' >&2
 	fi
 fi

@@ -24,20 +24,25 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/api"
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/supervisor"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
 const (
@@ -185,6 +190,7 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 	d.helper = helper
+	toolBinDir := resolveToolBinDir(ctx, helper)
 
 	ca, err := helper.EnsureCA(ctx)
 	if err != nil {
@@ -225,44 +231,106 @@ func Run(ctx context.Context, opts Options) error {
 		Logger:       logger,
 	})
 	d.proxy = proxyServer
+
+	// Service lifecycle wiring is cycle-safe: the manager exists first, the
+	// web switch and Docker config manager use it, the site service consumes
+	// the Docker syncer/switch, and the web provider registers its preparer
+	// once the site service exists.
+	serviceManager := servicecontrol.NewManager(
+		cfg.Home,
+		st,
+		serviceHelper{client: helper},
+		services.DefaultCatalog(),
+		nil,
+	)
+	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
+	dockerWeb, err := dockerweb.NewManager(dockerweb.ManagerConfig{
+		Root:         cfg.Home,
+		Projects:     paths.Projects,
+		Store:        st,
+		Certs:        certManager,
+		Dashboard:    dockerweb.DashboardSpec{Domain: "devstack.test", UIPort: cfg.UIPort},
+		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: docker web config manager: %w", err)
+	}
+
 	siteService := sites.NewService(sites.Deps{
-		Store:       st,
-		Backend:     local,
-		Helper:      helper,
-		Certs:       certManager,
-		Vhosts:      helper,
-		Proxy:       proxyServer,
-		Router:      router,
-		Ports:       domain.NewPortAllocator(),
-		Config:      cfg,
-		Logs:        logStore,
-		PHP:         sites.NewPHPCommands(),
-		PHPBackend:  local,
-		PHPManifest: &phpManifest,
+		Store:        st,
+		Backend:      local,
+		Helper:       helper,
+		Certs:        certManager,
+		Vhosts:       helper,
+		Proxy:        proxyServer,
+		Forwarders:   helper,
+		DockerSyncer: dockerWebSyncer{manager: dockerWeb},
+		DockerSwitch: webSwitch,
+		Router:       router,
+		Ports:        domain.NewPortAllocator(),
+		Config:       cfg,
+		Logs:         logStore,
+		PHP:          sites.NewPHPCommands(),
+		PHPBackend:   local,
+		PHPManifest:  &phpManifest,
 	})
 	d.certs = certManager
 	d.sites = siteService
 
+	webControl := servicecontrol.NewWebServiceControl(serviceManager)
+	webProvider, err := dockerweb.NewProvider(dockerweb.ProviderConfig{
+		State:    siteService,
+		Builtin:  siteService,
+		Syncer:   dockerWeb,
+		Services: webControl,
+		Probe:    dockerweb.LoopbackPortProbe{},
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: docker web provider: %w", err)
+	}
+	preparers := servicecontrol.NewDatabasePreparers(cfg.Home)
+	for id, prep := range servicecontrol.NewWebPreparers(
+		webProvider,
+		servicecontrol.WebGuard{State: siteService},
+	) {
+		preparers[id] = prep
+	}
+	serviceManager.RegisterPreparers(preparers)
+
 	userHome, _ := os.UserHomeDir()
 	doctorService := doctor.NewService(doctor.Deps{
-		Config:    cfg,
-		Home:      userHome,
-		Store:     st,
-		Helper:    helper,
-		Trust:     helper,
-		Ports:     portProbe{},
-		Runtimes:  runtimeChecker{manager: runtimes},
-		Disk:      diskChecker{},
-		Vhosts:    siteService,
-		PHP:       siteService,
-		HostsPath: opts.HostsPath,
+		Config:     cfg,
+		Home:       userHome,
+		Store:      st,
+		Helper:     helper,
+		Trust:      helper,
+		Ports:      portProbe{},
+		Runtimes:   runtimeChecker{manager: runtimes},
+		Disk:       diskChecker{},
+		Vhosts:     siteService,
+		PHP:        siteService,
+		HostsPath:  opts.HostsPath,
+		ToolBinDir: toolBinDir,
+	})
+
+	toolingService := tooling.NewService(tooling.Deps{
+		Store:  st,
+		Paths:  paths,
+		Helper: helper,
+	})
+	buildService := build.NewService(build.Deps{
+		Store:    st,
+		Runtimes: runtimes,
+		Paths:    paths,
 	})
 
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
 		Vhosts:       siteService,
-		Services:     services.NewCoordinator(services.DefaultCatalog(), st, cfg.Home),
+		Services:     serviceManager,
+		Tooling:      toolingService,
+		Build:        buildService,
 		Logger:       logger,
 	})
 
@@ -473,6 +541,7 @@ func (d *daemon) persistSettings(ctx context.Context) {
 		"ui_port":               strconv.Itoa(d.cfg.UIPort),
 		"auto_start_sites":      strconv.FormatBool(d.cfg.AutoStartSites),
 		"serving_mode":          servingMode,
+		"serving_provider":      d.cfg.ServingProvider,
 		"serving_mode_error":    servingModeError,
 		"graceful_stop_seconds": strconv.Itoa(d.cfg.GracefulStopSeconds),
 		"max_request_body_mb":   strconv.Itoa(d.cfg.MaxRequestBodyMB),
@@ -1145,6 +1214,63 @@ func newLogger(level string) (*slog.Logger, error) {
 	}
 	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parsed})
 	return slog.New(handler), nil
+}
+
+// serviceHelper adapts the helper RPC client to servicecontrol.Helper. The
+// client keeps its protocol-prefixed method names for the other privileged
+// surfaces; the manager works in the service domain vocabulary.
+type serviceHelper struct {
+	client *helperclient.Client
+}
+
+func (h serviceHelper) Status(ctx context.Context) ([]helperproto.ServiceStatus, error) {
+	return h.client.ServiceStatus(ctx)
+}
+
+func (h serviceHelper) Install(ctx context.Context, id string) error {
+	return h.client.ServiceInstall(ctx, id)
+}
+
+func (h serviceHelper) Activate(ctx context.Context, id string) error {
+	return h.client.ServiceActivate(ctx, id)
+}
+
+func (h serviceHelper) Deactivate(ctx context.Context, id string) error {
+	return h.client.ServiceDeactivate(ctx, id)
+}
+
+func (h serviceHelper) Restart(ctx context.Context, id string) error {
+	return h.client.ServiceRestart(ctx, id)
+}
+
+func (h serviceHelper) Uninstall(ctx context.Context, id string, deleteData bool) error {
+	return h.client.ServiceUninstall(ctx, id, deleteData)
+}
+
+func (h serviceHelper) Logs(ctx context.Context, id string, tail int) (string, error) {
+	return h.client.ServiceLogs(ctx, id, tail)
+}
+
+func (h serviceHelper) Validate(ctx context.Context, id string) error {
+	return h.client.ServiceValidate(ctx, id)
+}
+
+func (h serviceHelper) Reload(ctx context.Context, id string) error {
+	return h.client.ServiceReload(ctx, id)
+}
+
+// dockerWebSyncer adapts the typed dockerweb.Server boundary to the sites
+// package's string-based syncer/status interfaces.
+type dockerWebSyncer struct {
+	manager *dockerweb.Manager
+}
+
+func (s dockerWebSyncer) Sync(ctx context.Context, server string) error {
+	return s.manager.Sync(ctx, dockerweb.Server(server))
+}
+
+func (s dockerWebSyncer) DockerStatus() (time.Time, bool, string) {
+	return s.manager.DockerStatus()
 }
 
 // portProbe implements doctor.PortChecker.

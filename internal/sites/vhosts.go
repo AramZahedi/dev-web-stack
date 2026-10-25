@@ -34,6 +34,32 @@ func (s *Service) externalServing() bool {
 	return s.servingMode() != config.ServingModeBuiltin
 }
 
+// servingProvider returns the configured provider, treating an unset value as
+// native for compatibility with pre-provider installations.
+func (s *Service) servingProvider() string {
+	provider := strings.TrimSpace(s.deps.Config.ServingProvider)
+	if provider == "" {
+		return config.ServingProviderNative
+	}
+	return provider
+}
+
+// dockerServing reports whether the external mode is owned by a managed
+// service container rather than the native vhost helper.
+func (s *Service) dockerServing() bool {
+	return s.servingProvider() == config.ServingProviderDocker
+}
+
+// ServingProvider returns the effective serving provider.
+func (s *Service) ServingProvider() string {
+	if s == nil {
+		return config.ServingProviderNative
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.servingProvider()
+}
+
 // siteNeedsBackend reports whether a site kind is served by a supervised
 // process in the current mode. External static sites have no process.
 func (s *Service) siteNeedsBackend(site model.Site) bool {
@@ -68,6 +94,34 @@ func (s *Service) VhostStatus(ctx context.Context) (helperproto.VhostStatusRespo
 }
 
 func (s *Service) vhostStatusLocked(ctx context.Context) (helperproto.VhostStatusResponse, error) {
+	if s.dockerServing() {
+		mode := s.servingMode()
+		status := helperproto.VhostStatusResponse{
+			Mode:     mode,
+			Server:   mode,
+			ConfigOK: false,
+		}
+		if s.deps.DockerSyncer == nil {
+			status.LastError = "docker web config syncer is not configured"
+			return status, nil
+		}
+		if provider, ok := s.deps.DockerSyncer.(DockerStatusProvider); ok {
+			lastSync, configOK, lastError := provider.DockerStatus()
+			status.LastSync = lastSync
+			status.ConfigOK = configOK
+			status.LastError = lastError
+		} else {
+			status.ConfigOK = true
+		}
+		if s.servingStateErr != "" {
+			status.ConfigOK = false
+			if status.LastError != "" {
+				status.LastError += "; "
+			}
+			status.LastError += s.servingStateErr
+		}
+		return status, nil
+	}
 	if s.deps.Vhosts == nil {
 		return builtinVhostStatus(), nil
 	}
@@ -96,6 +150,19 @@ func (s *Service) SyncVhosts(ctx context.Context) error {
 }
 
 func (s *Service) syncVhostsLocked(ctx context.Context, excludeID string) error {
+	if s.dockerServing() {
+		if s.deps.DockerSyncer == nil {
+			return errors.New("sites: docker web config syncer is not configured")
+		}
+		mode := s.servingMode()
+		if mode == config.ServingModeBuiltin {
+			return errors.New("sites: docker serving provider requires serving_mode nginx or apache")
+		}
+		if err := s.deps.DockerSyncer.Sync(ctx, mode); err != nil {
+			return fmt.Errorf("sites: sync docker %s vhosts: %w", mode, err)
+		}
+		return nil
+	}
 	if !s.externalServing() {
 		return nil
 	}
@@ -137,6 +204,23 @@ func (s *Service) ReconcileServingMode(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	mode := s.servingMode()
+	if s.dockerServing() {
+		if s.deps.DockerSyncer == nil {
+			return errors.New("sites: docker web config syncer is not configured")
+		}
+		// A helper restart re-enables its AutoForward listeners. The Docker web
+		// container owns 80/443 in this mode, so explicitly release them before
+		// syncing and validating the config.
+		if s.deps.Forwarders != nil {
+			if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, false); err != nil {
+				return fmt.Errorf("sites: release built-in forwarders for docker: %w", err)
+			}
+		}
+		if err := s.deps.DockerSyncer.Sync(ctx, mode); err != nil {
+			return fmt.Errorf("sites: reconcile docker %s vhosts: %w", mode, err)
+		}
+		return nil
+	}
 	if s.deps.Vhosts == nil {
 		if s.externalServing() {
 			return errors.New("sites: vhost helper is not configured")
@@ -157,6 +241,17 @@ func (s *Service) ReconcileServingMode(ctx context.Context) error {
 	}
 	if helperMode == mode {
 		if mode == config.ServingModeBuiltin {
+			// Repair a crashed/canceled Docker transition: the config says
+			// builtin, but a stale owner marker may have suppressed the helper
+			// forwarders. Re-enable them and rewrite the marker.
+			if s.deps.Forwarders != nil {
+				if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, true); err != nil {
+					return fmt.Errorf("sites: restore builtin forwarders: %w", err)
+				}
+			}
+			if err := s.writeServingProviderMarker("native"); err != nil {
+				return fmt.Errorf("sites: repair serving owner marker: %w", err)
+			}
 			return nil
 		}
 		return s.syncVhostsLocked(ctx, "")
@@ -187,6 +282,13 @@ func (s *Service) SetServingMode(ctx context.Context, mode string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.dockerServing() {
+		if mode != config.ServingModeBuiltin {
+			return fmt.Errorf("sites: serving_provider is docker; only a switch to builtin is supported (requested %q)", mode)
+		}
+		return s.switchDockerToBuiltinLocked(ctx)
+	}
 
 	current := s.servingMode()
 	if s.deps.Vhosts == nil {
@@ -392,9 +494,42 @@ func (s *Service) restoreExternalModeLocked(ctx context.Context, previous string
 }
 
 func (s *Service) saveServingModeLocked(ctx context.Context, mode string) error {
+	return s.saveServingStateLocked(ctx, mode, s.servingProvider())
+}
+
+// SaveServingState persists serving_mode and serving_provider together. It is
+// used by the Docker provider's commit and rollback paths.
+func (s *Service) SaveServingState(ctx context.Context, mode, provider string) error {
+	ctx = nonNilContext(ctx)
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if mode == "" {
+		mode = config.ServingModeBuiltin
+	}
+	if provider == "" {
+		provider = config.ServingProviderNative
+	}
+	if !config.ValidServingMode(mode) {
+		return fmt.Errorf("sites: unsupported serving mode %q", mode)
+	}
+	if !config.ValidServingProvider(provider) {
+		return fmt.Errorf("sites: unsupported serving provider %q", provider)
+	}
+	if provider == config.ServingProviderDocker && mode == config.ServingModeBuiltin {
+		return errors.New("sites: serving_provider docker requires serving_mode nginx or apache")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveServingStateLocked(ctx, mode, provider)
+}
+
+func (s *Service) saveServingStateLocked(ctx context.Context, mode, provider string) error {
 	cfg := s.deps.Config
-	previous := cfg.ServingMode
+	previousMode := cfg.ServingMode
+	previousProvider := cfg.ServingProvider
 	cfg.ServingMode = mode
+	cfg.ServingProvider = provider
 	if strings.TrimSpace(cfg.Home) == "" {
 		return errors.New("config home is not set")
 	}
@@ -402,20 +537,206 @@ func (s *Service) saveServingModeLocked(ctx context.Context, mode string) error 
 		return err
 	}
 	s.deps.Config.ServingMode = mode
+	s.deps.Config.ServingProvider = provider
 	if s.deps.Store != nil {
 		if err := s.deps.Store.SetSetting(ctx, "serving_mode", mode); err != nil {
-			// Keep config.yaml and the in-memory mode consistent with the last
-			// successfully persisted setting.
-			s.deps.Config.ServingMode = previous
+			// Keep config.yaml and the in-memory config consistent with the
+			// last successfully persisted setting.
+			s.deps.Config.ServingMode = previousMode
+			s.deps.Config.ServingProvider = previousProvider
 			restore := s.deps.Config
-			restore.ServingMode = previous
+			restore.ServingMode = previousMode
+			restore.ServingProvider = previousProvider
 			restoreErr := restore.Save()
 			return errors.Join(
 				fmt.Errorf("sites: persist serving_mode setting: %w", err),
 				restoreErr,
 			)
 		}
+		if err := s.deps.Store.SetSetting(ctx, "serving_provider", provider); err != nil {
+			s.deps.Config.ServingMode = previousMode
+			s.deps.Config.ServingProvider = previousProvider
+			restore := s.deps.Config
+			restore.ServingMode = previousMode
+			restore.ServingProvider = previousProvider
+			restoreErr := restore.Save()
+			// Best effort: put the already-written mode setting back too.
+			var modeErr error
+			if err := s.deps.Store.SetSetting(ctx, "serving_mode", previousMode); err != nil {
+				modeErr = err
+			}
+			return errors.Join(
+				fmt.Errorf("sites: persist serving_provider setting: %w", err),
+				restoreErr,
+				modeErr,
+			)
+		}
 	}
+	marker := "native"
+	if provider == config.ServingProviderDocker {
+		marker = "docker"
+	}
+	if err := s.writeServingProviderMarker(marker); err != nil {
+		s.servingStateErr = fmt.Sprintf("serving state saved but provider marker failed: %v; retry after fixing storage", err)
+		return fmt.Errorf("sites: %s", s.servingStateErr)
+	}
+	s.servingStateErr = ""
+	return nil
+}
+
+// StopForDocker stops the builtin runtime before a Docker web server takes
+// ownership of 80/443: static backends, the loopback proxy, then the helper
+// forwarders.
+func (s *Service) StopForDocker(ctx context.Context) error {
+	ctx = nonNilContext(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopForDockerLocked(ctx)
+}
+
+func (s *Service) stopForDockerLocked(ctx context.Context) error {
+	var errs []error
+	if err := s.stopStaticBackendsLocked(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("sites: stop static backends for docker: %w", err))
+	}
+	if s.deps.Proxy != nil {
+		if err := s.deps.Proxy.Stop(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("sites: stop built-in proxy for docker: %w", err))
+		}
+	}
+	if s.deps.Forwarders != nil {
+		if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, false); err != nil {
+			errs = append(errs, fmt.Errorf("sites: disable builtin forwarders for docker: %w", err))
+		}
+	}
+	if len(errs) == 0 {
+		if err := s.writeServingProviderMarker("docker"); err != nil {
+			errs = append(errs, fmt.Errorf("sites: persist docker serving owner: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// StartAfterDocker restores the builtin proxy, routes, forwarders, and static
+// backends after the Docker web server has been stopped or a switch failed.
+func (s *Service) StartAfterDocker(ctx context.Context) error {
+	ctx = nonNilContext(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startAfterDockerLocked(ctx)
+}
+
+func (s *Service) startAfterDockerLocked(ctx context.Context) error {
+	restoreProxy := func() {
+		if s.deps.Proxy != nil {
+			_ = s.deps.Proxy.Stop(ctx)
+		}
+	}
+	if err := s.startBuiltinProxyLocked(ctx); err != nil {
+		return fmt.Errorf("sites: start built-in proxy after docker: %w", err)
+	}
+	if err := s.rebuildRoutesLocked(ctx); err != nil {
+		restoreProxy()
+		return fmt.Errorf("sites: publish routes after docker: %w", err)
+	}
+	if err := s.startStaticBackendsLocked(ctx); err != nil {
+		restoreProxy()
+		return fmt.Errorf("sites: start static backends after docker: %w", err)
+	}
+	if s.deps.Forwarders != nil {
+		if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, true); err != nil {
+			restoreProxy()
+			return fmt.Errorf("sites: enable builtin forwarders after docker: %w", err)
+		}
+	}
+	if err := s.writeServingProviderMarker("native"); err != nil {
+		restoreProxy()
+		return fmt.Errorf("sites: persist builtin serving owner: %w", err)
+	}
+	return nil
+}
+
+const servingProviderMarker = ".serving-provider"
+
+// writeServingProviderMarker records which provider owns 80/443 so a helper
+// restart does not re-enable its forwarders over an active Docker web server.
+// It is best effort only for tests/zero-value configs; production always has a
+// Home.
+func (s *Service) writeServingProviderMarker(provider string) error {
+	home := strings.TrimSpace(s.deps.Config.Home)
+	if home == "" {
+		return nil
+	}
+	dir := filepath.Join(home, "services")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".serving-provider-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(provider + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, filepath.Join(dir, servingProviderMarker))
+}
+
+// switchDockerToBuiltinLocked is the explicit provider transition. It stops
+// the active web-server container through the caller-supplied switch (which
+// bypasses WebGuard), restores the complete builtin runtime, then persists
+// builtin/native. A stop failure changes nothing; a restore failure restarts
+// the previous container; a save failure leaves the builtin runtime serving so
+// 80/443 is never stranded.
+func (s *Service) switchDockerToBuiltinLocked(ctx context.Context) error {
+	current := s.servingMode()
+	if current == config.ServingModeBuiltin {
+		return errors.New("sites: serving_provider=docker with serving_mode=builtin is inconsistent; a container may still own 80/443, so refusing to save builtin/native silently")
+	}
+	// A previous switch already restored the builtin runtime but failed to
+	// persist state; retry only the save instead of stopping a container that
+	// is no longer running.
+	if s.servingStateErr != "" {
+		if err := s.saveServingStateLocked(ctx, config.ServingModeBuiltin, config.ServingProviderNative); err != nil {
+			s.servingStateErr = fmt.Sprintf("builtin is serving but saving builtin/native failed: %v; retry the builtin switch after fixing storage", err)
+			return fmt.Errorf("sites: %s", s.servingStateErr)
+		}
+		return nil
+	}
+	if s.deps.DockerSwitch == nil {
+		return errors.New("sites: docker provider switch is not configured")
+	}
+	if err := s.deps.DockerSwitch.StopActiveServer(ctx, current); err != nil {
+		return fmt.Errorf("sites: stop docker %s container for builtin switch: %w", current, err)
+	}
+	if err := s.startAfterDockerLocked(ctx); err != nil {
+		restoreErr := s.deps.DockerSwitch.StartActiveServer(ctx, current)
+		if restoreErr != nil {
+			return errors.Join(
+				fmt.Errorf("sites: restore builtin after stopping docker %s: %w", current, err),
+				fmt.Errorf("sites: restart docker %s container: %w", current, restoreErr),
+			)
+		}
+		return fmt.Errorf("sites: restore builtin after stopping docker %s: %w", current, err)
+	}
+	if err := s.saveServingStateLocked(ctx, config.ServingModeBuiltin, config.ServingProviderNative); err != nil {
+		s.servingStateErr = fmt.Sprintf("builtin is serving but saving builtin/native failed: %v; retry the builtin switch after fixing storage", err)
+		return fmt.Errorf("sites: %s", s.servingStateErr)
+	}
+	s.servingStateErr = ""
 	return nil
 }
 

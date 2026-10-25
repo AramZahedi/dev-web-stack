@@ -17,6 +17,9 @@ func main() {
 	root.SetIn(os.Stdin)
 	if err := root.Execute(); err != nil {
 		cli.PrintError(root, err)
+		if code := cli.ExitCode(err); code > 0 {
+			os.Exit(code)
+		}
 		os.Exit(1)
 	}
 }

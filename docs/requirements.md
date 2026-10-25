@@ -1,8 +1,9 @@
 # Requirements and user concerns
 
 - **Last reviewed:** 2026-10-25
-- **Status labels:** **Implemented** = in the current code/release; **Planned** = in the
-  service-platform design but not built; **Deferred** = explicitly out of scope.
+- **Status labels:** **Implemented** = in the current code/release; **Partial** = a working
+  core exists but a named follow-up remains; **Planned** = in the design but not built;
+  **Deferred** = explicitly out of scope.
 - **Detailed design:** [service containers and performance](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 
 ## 1. Product intent
@@ -26,21 +27,21 @@ containers, not the required runtime for devstack itself.
 | R5 | Builtin Go proxy plus native nginx/Apache modes | Implemented |
 | R6 | Local CA, OS/browser trust, managed hosts block | Implemented |
 | R7 | CLI, embedded dashboard, daemon, privileged helper | Implemented |
-| R8 | Optional Docker tools: nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis, phpMyAdmin, ImageMagick | Planned |
-| R9 | One active web server and one active MySQL-family service at a time | Planned |
-| R10 | Host-owned config/data/certs at a single root | Planned |
-| R11 | Editable configs with conflict/diff protection | Planned |
-| R12 | Native CA/trust even when tools run in containers | Planned |
-| R13 | phpMyAdmin exposed on a localhost port | Planned |
-| R14 | Random per-engine database credentials | Planned |
-| R15 | Native PHP `imagick`; Dockerized ImageMagick CLI | Planned |
-| R16 | Configurable PHP front-controller file and mode | Planned |
-| R17 | Apache project `.htaccess` support | Planned |
-| R18 | Nuxt/Vite static-build profiles and SPA fallback | Planned |
-| R19 | Full dashboard parity with CLI | Planned |
-| R20 | Global `php` and `composer`, with a machine-wide PHP CLI default | Planned |
-| R21 | Auto-tuned nginx/Apache/PHP performance and host tuning | Planned |
-| R22 | Project build/benchmark/terminal workflows in the dashboard | Planned |
+| R8 | Optional Docker tools: nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis, phpMyAdmin, ImageMagick | Partial — containers for nginx/Apache/MySQL/MariaDB/PostgreSQL/Redis; phpMyAdmin/ImageMagick Wave 2 |
+| R9 | One active web server and one active MySQL-family service at a time | Implemented |
+| R10 | Host-owned config/data/certs at a single root | Implemented |
+| R11 | Editable configs with conflict/diff protection | Partial — engine, seeded base, generated vhosts; full dashboard apply/diff Wave 2 |
+| R12 | Native CA/trust even when tools run in containers | Implemented — leaf certs mounted, CA host-only |
+| R13 | phpMyAdmin exposed on a localhost port | Planned — Wave 2 |
+| R14 | Random per-engine database credentials | Partial — generated/revealed/admin grants; rotation Wave 2 |
+| R15 | Native PHP `imagick`; Dockerized ImageMagick CLI | Partial — PHP imagick exists; CLI Wave 2 |
+| R16 | Configurable PHP front-controller file and mode | Implemented |
+| R17 | Apache project `.htaccess` support | Implemented — Docker Apache |
+| R18 | Nuxt/Vite static-build profiles and SPA fallback | Implemented — native build executor |
+| R19 | Full dashboard parity with CLI | Partial — service listing only; action/config/build/terminal panels Wave 2 |
+| R20 | Global `php` and `composer`, with a machine-wide PHP CLI default | Implemented |
+| R21 | Auto-tuned nginx/Apache/PHP performance and host tuning | Planned — Wave 2 |
+| R22 | Project build/benchmark/terminal workflows in the dashboard | Partial — build API/CLI; UI/benchmark/terminal Wave 2 |
 | R23 | Existing native external nginx/Apache mode remains available | Required compatibility |
 | R24 | No automatic root migration from `~/.devstack` | Planned decision |
 | R25 | Keep work committed/pushed and CI green | Process |

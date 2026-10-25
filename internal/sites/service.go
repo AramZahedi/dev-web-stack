@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
@@ -98,24 +99,52 @@ type ProxyControl interface {
 	Stop(ctx context.Context) error
 }
 
+// DockerSyncer renders and installs the Docker web-server config tree. It is
+// used instead of Vhosts when serving_provider=docker.
+type DockerSyncer interface {
+	Sync(ctx context.Context, server string) error
+}
+
+// Forwarders enables or disables the helper's privileged 80/443 forwarders
+// that point at the built-in loopback proxy.
+type Forwarders interface {
+	SetForwarders(ctx context.Context, httpPort, httpsPort int, enable bool) error
+}
+
+// DockerSwitch is the explicit provider-switch boundary used for Docker ->
+// builtin. It bypasses the active-server deactivation guard because the user
+// has chosen to leave the Docker provider.
+type DockerSwitch interface {
+	StopActiveServer(ctx context.Context, server string) error
+	StartActiveServer(ctx context.Context, server string) error
+}
+
+// DockerStatusProvider exposes the last Docker config sync result.
+type DockerStatusProvider interface {
+	DockerStatus() (lastSync time.Time, configOK bool, lastError string)
+}
+
 // Deps is the complete set of service dependencies. Now and NewID are optional
 // and default to the wall clock and a random 128-bit hex id.
 type Deps struct {
-	Store       *store.Store
-	Backend     backend.Backend
-	Helper      Hosts
-	Certs       Certs
-	Vhosts      Vhosts
-	Proxy       ProxyControl
-	Router      *proxy.Router
-	Ports       *domain.PortAllocator
-	Config      config.Config
-	Logs        *logs.Store
-	PHP         PHPCommands
-	PHPBackend  backend.PHPStager
-	PHPManifest *catalog.PHPManifest
-	Now         func() time.Time
-	NewID       func() string
+	Store        *store.Store
+	Backend      backend.Backend
+	Helper       Hosts
+	Certs        Certs
+	Vhosts       Vhosts
+	Proxy        ProxyControl
+	Forwarders   Forwarders
+	DockerSyncer DockerSyncer
+	DockerSwitch DockerSwitch
+	Router       *proxy.Router
+	Ports        *domain.PortAllocator
+	Config       config.Config
+	Logs         *logs.Store
+	PHP          PHPCommands
+	PHPBackend   backend.PHPStager
+	PHPManifest  *catalog.PHPManifest
+	Now          func() time.Time
+	NewID        func() string
 }
 
 // Service owns site lifecycle operations. Mutating operations and status
@@ -136,6 +165,11 @@ type Service struct {
 	// directory nor its port may be released until a later stop succeeds. It is
 	// only accessed while mu is held.
 	retainedPHP map[string]map[string]int
+
+	// servingStateErr records a Docker->builtin transition where the builtin
+	// runtime is serving but persisting builtin/native failed. It is surfaced
+	// through VhostStatus and cleared by the next successful state save.
+	servingStateErr string
 }
 
 // NewService returns a service and reserves every port already recorded for a
@@ -193,8 +227,19 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		return model.Site{}, err
 	}
 
+	buildOutputMissing := false
+	if site.Kind == model.SiteStatic && site.Build != nil {
+		exists, err := build.OutputExists(site)
+		if err != nil {
+			return model.Site{}, fmt.Errorf("sites: build output for %q: %w", site.Name, err)
+		}
+		buildOutputMissing = !exists
+	}
+
 	var port int
 	switch {
+	case buildOutputMissing:
+		// The site is registered stopped until its first successful build.
 	case site.Kind == model.SitePHP:
 		// PHP sites use only a FastCGI port, allocated before any external
 		// side effects.
@@ -255,6 +300,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 
 	site.Status = model.StatusStarting
 	site.DesiredState = model.DesiredRunning
+	if buildOutputMissing {
+		site.Status = model.StatusStopped
+		site.DesiredState = model.DesiredStopped
+	}
 	site.CreatedAt = s.currentTime()
 	site.UpdatedAt = site.CreatedAt
 	if site.Kind == model.SitePHP {
@@ -270,6 +319,13 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		}
 	} else if err := s.deps.Store.CreateSite(ctx, site); err != nil {
 		return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
+	}
+
+	if buildOutputMissing {
+		s.emitEvent(ctx, site.ID, "site.created", fmt.Sprintf(
+			"site %s: build output %s is missing; site created stopped until the first successful build",
+			site.Name, site.Build.Output))
+		return site, nil
 	}
 
 	if site.Kind == model.SitePHP {

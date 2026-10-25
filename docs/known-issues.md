@@ -28,17 +28,33 @@ container bug is historical and no longer relevant to this repository.
 
 ## 2. Planned service-platform gaps
 
-### K1 — Service platform not implemented
+### K1 — Wave 2 items are not implemented
 
-The design is approved, but no service catalog, Compose controller, credential manager,
-build profiles, global PHP shim, dashboard terminal, or `.htaccess` support exists in the
-current code.
+Wave 1 supplies the Docker service catalog, transactional lifecycle API/CLI, database
+credentials/admin bootstrap, Docker nginx/Apache serving, site shells, global
+PHP/Composer, and static builds. Still missing: phpMyAdmin, ImageMagick CLI, credential
+rotation, performance profiles/host tuning/benchmarks, external-site Docker mounts, and
+the full dashboard action/config/build/terminal panels. The Services page is read-only.
 
 ### K2 — Existing native provider vs Docker provider
 
 The existing native external nginx/Apache mode is retained for manually installed
-servers. The planned Services page manages Docker services only. The interaction/provider
-UI is not built.
+servers. Docker nginx/Apache are managed by the service layer; `vhost use builtin` performs
+the explicit Docker→builtin switch. The dashboard does not yet expose service action/
+provider controls.
+
+### K7 — Docker web servers require sites under the managed projects root
+
+Docker nginx/Apache vhosts currently reject sites outside `<devstack-home>/projects`;
+those sites remain available through builtin/native serving. External-site bind mounts
+are a Wave 2 item.
+
+### K8 — Official MySQL process environment retains passwords
+
+The official MySQL entrypoint exports `MYSQL_ROOT_PASSWORD`/`MYSQL_PASSWORD` and does not
+unset them before the final server process. Compose files, logs, and the dashboard never
+contain the values, and ports are loopback-only, but container-local process inspection is
+sensitive. PostgreSQL/MariaDB are unset by their entrypoints.
 
 ### K3 — No automatic root migration
 
@@ -51,11 +67,12 @@ Browser trust, real root install/uninstall on 80/443, and live UI flows were not
 in the unprivileged M1 acceptance. M1 is not claimed as fully accepted despite the Linux
 release.
 
-### K5 — Open implementation decisions
+### K5 — Remaining implementation decisions
 
-Exact image digests, wrapper Dockerfiles, performance formulas, benchmark workloads,
-phpMyAdmin config mechanism, legacy UI amount, Redis password, and Composer version/digest
-remain to be chosen during implementation.
+Wave 1 settled the initial image digests, official httpd image (no wrapper), Composer
+2.10.3 PHAR digest, and Redis no-password default. Wave 2 still needs performance
+formulas/caps, benchmark workloads, phpMyAdmin config mechanism, and the amount of legacy
+native-provider UI to retain.
 
 ### K6 — Host performance tuning changes are global
 
@@ -68,9 +85,14 @@ applied with backup and reset, and only in the serialized performance phase.
 - Native external nginx/Apache mode requires the server to be installed and configured by
   the administrator; devstack does not install packages.
 - Browser trust, root install on 80/443, and live UI gates remain manual.
-- No database services, Redis, phpMyAdmin, or global PHP/Composer shim exist yet.
-- No configurable PHP front-controller filename or `.htaccess` support exists yet.
-- No Nuxt/Vite build profile or dashboard build button exists yet.
+- phpMyAdmin, ImageMagick CLI, performance profiles, host tuning, and credential rotation
+  are not implemented yet.
+- The dashboard service page is read-only; service/config/build/credential actions are
+  API/CLI only until Wave 2.
+- Docker web servers require sites under the managed projects root (K7).
+- `install.sh` now adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
+  existing helper config and restarts it. A manually managed config without
+  `service_root` leaves the service API at helper NOT_IMPLEMENTED until fixed.
 
 ## 4. Deferred/parked work
 
