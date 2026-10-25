@@ -42,6 +42,7 @@ tags:
   - name: settings
   - name: vhosts
   - name: services
+  - name: terminal
   - name: dashboard
 paths:
   /api/v1/health:
@@ -284,6 +285,125 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/terminal/session:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites, terminal]
+      summary: Issue a site terminal ticket
+      description: |
+        Creates a cryptographically random, one-use ticket bound to the site ID
+        and the installing user's UID. The ticket expires within 30 seconds and
+        is consumed by the WebSocket upgrade. Issuance requires the normal
+        dashboard session and CSRF token. The ticket value is never logged.
+      operationId: createSiteTerminalSession
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: A one-use ticket for the site terminal WebSocket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TerminalTicket"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The site project or document root is missing or escapes through a symlink.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: A concurrent terminal session limit was reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: The terminal manager is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/sites/{ref}/terminal:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+      - name: ticket
+        in: query
+        required: true
+        description: One-use ticket returned by POST /sites/{ref}/terminal/session.
+        schema:
+          type: string
+    get:
+      tags: [sites, terminal]
+      summary: Open a site-scoped PTY over WebSocket
+      description: |
+        Upgrades an authenticated request to a WebSocket-backed PTY. The ticket
+        is the capability and must be fresh (<= 30 s) and unused. Origin must be
+        an allowed loopback dashboard host; a missing, `null`, or foreign Origin
+        is rejected with 403. The socket runs the installing user's shell in the
+        site project root with the site's PHP/Node shims, PHPRC, and site
+        environment, never as root or through sudo.
+
+        Text frames are JSON:
+
+        Client to server:
+        - `{"type":"input","data":"..."}` writes UTF-8 input to the PTY.
+        - `{"type":"resize","cols":80,"rows":24}` resizes the PTY (1-1000).
+
+        Server to client:
+        - `{"type":"output","data":"..."}` carries PTY output.
+        - `{"type":"exit","code":0}` is the final frame on a normal shell exit.
+          A non-exit termination adds `reason`: `idle_timeout`, `max_duration`,
+          `output_limit`, or `shutdown`.
+        - `{"type":"error","message":"..."}` reports a recoverable protocol error.
+
+        Binary frames are accepted as raw PTY input. Limits: 4 total sessions,
+        2 per site/user, 30-minute idle timeout, 4-hour absolute maximum, and
+        4 MiB of output per session. Disconnecting kills the shell's process
+        group. Audit logs record start/stop, site, UID, duration, and exit
+        status only; keystrokes and output are never logged.
+      operationId: openSiteTerminal
+      security: []
+      responses:
+        "101":
+          description: Switching Protocols; the WebSocket PTY session follows.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          description: Missing, expired, reused, or wrong-site ticket, or a disallowed Origin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The site project or document root is missing or escapes through a symlink.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: A concurrent terminal session limit was reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The terminal manager is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/sites/{ref}/logs/stream:
     parameters:
@@ -2609,6 +2729,18 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/FsEntry"
+
+    TerminalTicket:
+      type: object
+      required: [ticket, expires_at]
+      properties:
+        ticket:
+          type: string
+          description: One-use, URL-safe ticket. Never log this value.
+        expires_at:
+          type: string
+          format: date-time
+          description: Expiry timestamp; at most 30 seconds after issuance.
 
     Settings:
       type: object

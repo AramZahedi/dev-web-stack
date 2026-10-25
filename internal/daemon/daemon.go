@@ -42,6 +42,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/supervisor"
+	"github.com/AramZahedi/dev-web-stack/internal/terminal"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
@@ -338,6 +339,16 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("daemon: service config manager: %w", err)
 	}
+	terminalManager := terminal.NewManager(terminal.Deps{
+		Paths:    paths,
+		Runtimes: runtimes,
+		PHP:      siteService,
+		Logger:   logger,
+		UID:      os.Getuid(),
+	})
+	// Close runs before d.shutdown because it is deferred later: hijacked
+	// WebSockets are not tracked by http.Server.Shutdown.
+	defer terminalManager.Close()
 
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
@@ -352,6 +363,7 @@ func Run(ctx context.Context, opts Options) error {
 		ServiceConfig: serviceConfigService,
 		Tooling:       toolingService,
 		Build:         buildService,
+		Terminal:      terminalManager,
 		Logger:        logger,
 	})
 

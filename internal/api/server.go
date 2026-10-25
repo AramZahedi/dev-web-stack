@@ -40,6 +40,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
+	"github.com/AramZahedi/dev-web-stack/internal/terminal"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/version"
@@ -81,6 +82,9 @@ const (
 	codeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
 	codeToolConflict       = "TOOL_CONFLICT"
 
+	codeTerminalTicketInvalid  = "TERMINAL_TICKET_INVALID"
+	codeTerminalUnavailable    = "TERMINAL_UNAVAILABLE"
+	codeTerminalLimit          = "TERMINAL_LIMIT"
 	codeServingModeUnavailable = "SERVING_MODE_UNAVAILABLE"
 	codeVhostConfigInvalid     = "VHOST_CONFIG_INVALID"
 	codeVhostSyncFailed        = "VHOST_SYNC_FAILED"
@@ -189,6 +193,13 @@ type BuildService interface {
 	Logs(ctx context.Context, site model.Site, tail int) (build.Logs, error)
 }
 
+// TerminalService issues one-use tickets and serves site-scoped PTY
+// WebSocket sessions. The implementation is internal/terminal.Manager.
+type TerminalService interface {
+	IssueTicket(ctx context.Context, site model.Site) (terminal.Ticket, error)
+	Serve(ctx context.Context, w http.ResponseWriter, r *http.Request, site model.Site, ticket string) error
+}
+
 // ListenerPorts is the set of loopback listener ports the daemon bound at
 // startup. Zero values mean the caller did not supply them.
 type ListenerPorts struct {
@@ -259,6 +270,7 @@ type Config struct {
 	ServiceConfig ServiceConfigService
 	Tooling       ToolService
 	Build         BuildService
+	Terminal      TerminalService
 	Logger        *slog.Logger
 }
 
@@ -275,6 +287,7 @@ type Server struct {
 	serviceConfig ServiceConfigService
 	tooling       ToolService
 	build         BuildService
+	terminal      TerminalService
 	cfg           Config
 
 	secret       [sha256.Size]byte
@@ -319,6 +332,7 @@ func NewServer(
 		serviceConfig:     cfg.ServiceConfig,
 		tooling:           cfg.Tooling,
 		build:             cfg.Build,
+		terminal:          cfg.Terminal,
 		cfg:               cfg,
 		allowedHosts:      normalizeAllowedHosts(cfg.AllowedHosts),
 		ui:                cfg.UI,
@@ -376,6 +390,8 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/sites/{ref}/start", s.handleStartSite},
 		{http.MethodPost, "/api/v1/sites/{ref}/stop", s.handleStopSite},
 		{http.MethodPost, "/api/v1/sites/{ref}/restart", s.handleRestartSite},
+		{http.MethodPost, "/api/v1/sites/{ref}/terminal/session", s.handleTerminalSession},
+		{http.MethodGet, "/api/v1/sites/{ref}/terminal", s.handleTerminalWebSocket},
 		{http.MethodPost, "/api/v1/sites/{ref}/build", s.handleBuildSite},
 		{http.MethodGet, "/api/v1/sites/{ref}/build/logs", s.handleBuildLogs},
 		{http.MethodGet, "/api/v1/sites/{ref}/php", s.handlePHPInfo},
@@ -977,6 +993,20 @@ func classifyError(err error) (int, string, string, any) {
 			details = map[string]any{"argument": argument.Argument}
 		}
 		return http.StatusBadRequest, codeInvalidRequest, err.Error(), details
+	}
+	switch {
+	case errors.Is(err, terminal.ErrTicketInvalid),
+		errors.Is(err, terminal.ErrTicketExpired):
+		return http.StatusForbidden, codeTerminalTicketInvalid, "terminal ticket is invalid or expired", nil
+	case errors.Is(err, terminal.ErrLimit):
+		return http.StatusTooManyRequests, codeTerminalLimit, err.Error(), nil
+	case errors.Is(err, terminal.ErrRoot):
+		return http.StatusForbidden, codeForbidden, err.Error(), nil
+	case errors.Is(err, terminal.ErrSiteInvalid),
+		errors.Is(err, terminal.ErrEnvironment):
+		return http.StatusConflict, codeTerminalUnavailable, err.Error(), nil
+	case errors.Is(err, terminal.ErrClosed):
+		return http.StatusServiceUnavailable, codeTerminalUnavailable, err.Error(), nil
 	}
 	switch {
 	case errors.Is(err, helperproto.ErrServingModeUnavailable):

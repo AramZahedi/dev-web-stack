@@ -52,6 +52,7 @@ type apiFixture struct {
 	doctor   *fakeDoctorService
 	helper   *fakeHelperClient
 	vhosts   *fakeVhostService
+	terminal *fakeTerminalService
 	logs     *logs.Store
 	store    *store.Store
 	session  string
@@ -145,6 +146,10 @@ func newFixture(t *testing.T, cfg Config) *apiFixture {
 		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	cfg.Vhosts = fakeVhosts
+	fakeTerminal := &fakeTerminalService{}
+	if cfg.Terminal == nil {
+		cfg.Terminal = fakeTerminal
+	}
 	srv := NewServer(st, fakeSites, fakeRuntimes, fakeDoctor, logStore, fakeHelper, cfg)
 
 	return &apiFixture{
@@ -155,6 +160,7 @@ func newFixture(t *testing.T, cfg Config) *apiFixture {
 		doctor:   fakeDoctor,
 		helper:   fakeHelper,
 		vhosts:   fakeVhosts,
+		terminal: fakeTerminal,
 		logs:     logStore,
 		store:    st,
 		session:  testSessionValue,
