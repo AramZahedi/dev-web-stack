@@ -82,6 +82,8 @@ type HostValues struct {
 	IPLocalPortRange PortRange `json:"ip_local_port_range"`
 	NoFileSoft       uint64    `json:"nofile_soft"`
 	NoFileHard       uint64    `json:"nofile_hard"`
+	User             string    `json:"user,omitempty"`
+	Group            string    `json:"group,omitempty"`
 }
 
 // Values is one fully computed performance profile.
@@ -133,9 +135,14 @@ func Compute(res Resources, opts Options) (Values, error) {
 	nginx := computeNginx(res, cpu, opts.Profile)
 	apache := computeApache(res, cpu, opts.Profile)
 	php := computePHP(res, cpu, opts.Profile, sites, opts.DisableOpcacheTimestampValidation)
+	php, err = validatePHPMemory(res, php)
+	if err != nil {
+		return Values{}, err
+	}
 	host := computeHost(res, nginx, apache, php)
-	apache.ListenBacklog = host.Somaxconn
-	php.ListenBacklog = host.Somaxconn
+	backlog := clampInt(host.Somaxconn, 1, maxBacklog)
+	apache.ListenBacklog = backlog
+	php.ListenBacklog = backlog
 
 	v := Values{
 		Profile:  opts.Profile,
@@ -317,8 +324,10 @@ func computeApache(res Resources, cpu int, profile Profile) ApacheValues {
 		limit = threads
 	}
 	maxRequestWorkers := (limit / threads) * threads
-	if maxRequestWorkers < threads {
-		maxRequestWorkers = threads
+	if maxRequestWorkers < 2*threads {
+		// Apache's spare-thread invariant needs at least two child processes:
+		// MaxSpareThreads >= MinSpareThreads + ThreadsPerChild.
+		maxRequestWorkers = 2 * threads
 	}
 	serverLimit := (maxRequestWorkers + threads - 1) / threads
 	if serverLimit > maxApacheServerLimit {
@@ -340,8 +349,8 @@ func computeApache(res Resources, cpu int, profile Profile) ApacheValues {
 	}
 
 	spareProcesses := serverLimit / 2
-	if spareProcesses < 1 {
-		spareProcesses = 1
+	if spareProcesses < 2 {
+		spareProcesses = 2
 	}
 	if spareProcesses > 16 {
 		spareProcesses = 16
@@ -387,11 +396,10 @@ func computePHP(res Resources, cpu int, profile Profile, sites []string, disable
 		realpathTTL = 600
 	}
 
-	const perChildBytes = uint64(64 << 20)
 	memBudget := pageAligned(res.EffectiveMemoryBytes()/100*fraction, res.PageSizeBytes)
 	byMemory := maxPHPGlobalChild
-	if memBudget/perChildBytes < uint64(maxPHPGlobalChild) {
-		byMemory = int(memBudget / perChildBytes)
+	if memBudget/phpChildMemoryBytes < uint64(maxPHPGlobalChild) {
+		byMemory = int(memBudget / phpChildMemoryBytes)
 	}
 	byCPU := maxPHPGlobalChild
 	if cpu <= maxPHPGlobalChild/perCPU {
@@ -435,9 +443,9 @@ func computePHP(res Resources, cpu int, profile Profile, sites []string, disable
 	if len(sites) > 0 {
 		perSite = global / len(sites)
 	}
-	opcacheMemory := clampInt(perSite*8, 32, 256)
-	opcacheInterned := clampInt(opcacheMemory/8, 8, 64)
-	opcacheFiles := clampInt(perSite*500, 2000, 100000)
+	opcacheMemory := clampInt(perSite*8, 32, maxOpcacheMemoryMB)
+	opcacheInterned := clampInt(opcacheMemory/8, 8, maxOpcacheInternedMB)
+	opcacheFiles := clampInt(perSite*500, 2000, maxOpcacheFiles)
 	opcacheFiles = ((opcacheFiles + 999) / 1000) * 1000
 
 	return PHPValues{
@@ -455,6 +463,23 @@ func computePHP(res Resources, cpu int, profile Profile, sites []string, disable
 		RealpathCacheSizeKB:     realpathSize,
 		RealpathCacheTTLSeconds: realpathTTL,
 	}
+}
+
+// validatePHPMemory enforces the aggregate PHP memory floor. Every active site
+// needs at least one 64 MiB child and one OPcache allocation, so a host that
+// cannot fit those minimums is rejected instead of silently overcommitting.
+func validatePHPMemory(res Resources, php PHPValues) (PHPValues, error) {
+	if len(php.Sites) == 0 {
+		return php, nil
+	}
+	required := uint64(php.GlobalChildren)*phpChildMemoryBytes +
+		uint64(len(php.Sites))*uint64(php.Opcache.MemoryMB)*(1<<20)
+	if required <= res.EffectiveMemoryBytes() {
+		return php, nil
+	}
+	return PHPValues{}, invalid("php memory budget",
+		"minimum %d MiB for %d sites (%d children x 64 MiB + %d pools x %d MiB OPcache) exceeds available memory %d MiB",
+		required>>20, len(php.Sites), php.GlobalChildren, len(php.Sites), php.Opcache.MemoryMB, res.EffectiveMemoryBytes()>>20)
 }
 
 func computeHost(res Resources, nginx NginxValues, apache ApacheValues, php PHPValues) HostValues {
@@ -534,5 +559,7 @@ func computeHost(res Resources, nginx NginxValues, apache ApacheValues, php PHPV
 		IPLocalPortRange: PortRange{Min: portMin, Max: portMax},
 		NoFileSoft:       soft,
 		NoFileHard:       hard,
+		User:             res.User,
+		Group:            res.Group,
 	}
 }

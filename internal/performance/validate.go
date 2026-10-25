@@ -24,11 +24,12 @@ func (v Values) Validate() error {
 	if err := v.Host.validate(); err != nil {
 		return err
 	}
-	if v.Apache.ListenBacklog != v.Host.Somaxconn {
-		return invalid("apache.listen_backlog", "%d must follow host somaxconn %d", v.Apache.ListenBacklog, v.Host.Somaxconn)
+	wantBacklog := minInt(v.Host.Somaxconn, maxBacklog)
+	if v.Apache.ListenBacklog != wantBacklog {
+		return invalid("apache.listen_backlog", "%d must follow host somaxconn %d (capped at %d)", v.Apache.ListenBacklog, v.Host.Somaxconn, maxBacklog)
 	}
-	if v.PHP.ListenBacklog != v.Host.Somaxconn {
-		return invalid("php.listen_backlog", "%d must follow host somaxconn %d", v.PHP.ListenBacklog, v.Host.Somaxconn)
+	if v.PHP.ListenBacklog != wantBacklog {
+		return invalid("php.listen_backlog", "%d must follow host somaxconn %d (capped at %d)", v.PHP.ListenBacklog, v.Host.Somaxconn, maxBacklog)
 	}
 	if v.Host.NoFileHard < v.Nginx.WorkerRLimitNoFile {
 		return invalid("host.nofile_hard", "%d is below worker_rlimit_nofile %d", v.Host.NoFileHard, v.Nginx.WorkerRLimitNoFile)
@@ -38,6 +39,34 @@ func (v Values) Validate() error {
 		uint64(v.PHP.GlobalChildren)*2 + 32768
 	if v.Host.FileMax < demand {
 		return invalid("host.file_max", "%d is below the computed descriptor demand %d", v.Host.FileMax, demand)
+	}
+	if v.Profile == Custom {
+		return v.validateCustomCaps()
+	}
+	return nil
+}
+
+// validateCustomCaps keeps user-edited profiles inside the engine's own
+// safety bounds. Computed profiles may preserve higher existing host values,
+// but custom values must not exceed the caps the generator would emit.
+func (v Values) validateCustomCaps() error {
+	if v.Host.FileMax > maxFileMax {
+		return invalid("host.file_max", "%d exceeds the custom-profile cap %d", v.Host.FileMax, maxFileMax)
+	}
+	if v.Host.NoFileSoft > maxNoFile || v.Host.NoFileHard > maxNoFile {
+		return invalid("host.nofile", "%d/%d exceeds the custom-profile cap %d", v.Host.NoFileSoft, v.Host.NoFileHard, maxNoFile)
+	}
+	if v.Nginx.OpenFileCacheMax > maxOpenFileCache {
+		return invalid("nginx.open_file_cache", "%d exceeds the custom-profile cap %d", v.Nginx.OpenFileCacheMax, maxOpenFileCache)
+	}
+	if v.PHP.Opcache.MemoryMB > maxOpcacheMemoryMB {
+		return invalid("php.opcache.memory_mb", "%d exceeds the custom-profile cap %d", v.PHP.Opcache.MemoryMB, maxOpcacheMemoryMB)
+	}
+	if v.PHP.Opcache.InternedStringsMB > maxOpcacheInternedMB {
+		return invalid("php.opcache.interned_strings_mb", "%d exceeds the custom-profile cap %d", v.PHP.Opcache.InternedStringsMB, maxOpcacheInternedMB)
+	}
+	if v.PHP.Opcache.MaxAcceleratedFiles > maxOpcacheFiles {
+		return invalid("php.opcache.max_accelerated_files", "%d exceeds the custom-profile cap %d", v.PHP.Opcache.MaxAcceleratedFiles, maxOpcacheFiles)
 	}
 	return nil
 }
@@ -89,6 +118,10 @@ func (a ApacheValues) validate() error {
 	}
 	if a.MinSpareThreads < 1 || a.MinSpareThreads > a.MaxSpareThreads || a.MaxSpareThreads > a.MaxRequestWorkers {
 		return invalid("apache.spare_threads", "min %d, max %d, MaxRequestWorkers %d are inconsistent", a.MinSpareThreads, a.MaxSpareThreads, a.MaxRequestWorkers)
+	}
+	if a.MaxSpareThreads < a.MinSpareThreads+a.ThreadsPerChild {
+		return invalid("apache.spare_threads", "MaxSpareThreads %d must be at least MinSpareThreads %d + ThreadsPerChild %d",
+			a.MaxSpareThreads, a.MinSpareThreads, a.ThreadsPerChild)
 	}
 	if a.AsyncRequestWorkerFactor < 1 || a.AsyncRequestWorkerFactor > 16 {
 		return invalid("apache.async_request_worker_factor", "%d is outside 1-16", a.AsyncRequestWorkerFactor)
@@ -185,11 +218,17 @@ func (h HostValues) validate() error {
 	if h.FileMax < minFileMax {
 		return invalid("host.file_max", "%d is below the %d safety floor", h.FileMax, minFileMax)
 	}
-	if h.Somaxconn < 1 || h.Somaxconn > maxBacklog {
-		return invalid("host.somaxconn", "%d is outside 1-%d", h.Somaxconn, maxBacklog)
+	if h.Somaxconn < 1 {
+		return invalid("host.somaxconn", "must be greater than zero")
 	}
-	if h.NetdevMaxBacklog < 1 || h.NetdevMaxBacklog > maxBacklog {
-		return invalid("host.netdev_max_backlog", "%d is outside 1-%d", h.NetdevMaxBacklog, maxBacklog)
+	if h.NetdevMaxBacklog < 1 {
+		return invalid("host.netdev_max_backlog", "must be greater than zero")
+	}
+	if err := validateAccount("host.user", h.User); err != nil {
+		return err
+	}
+	if err := validateAccount("host.group", h.Group); err != nil {
+		return err
 	}
 	if err := h.IPLocalPortRange.validate("host.ip_local_port_range"); err != nil {
 		return err

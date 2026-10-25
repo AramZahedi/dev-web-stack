@@ -216,3 +216,39 @@ func TestPlanWrappers(t *testing.T) {
 		t.Fatalf("reset plan = %+v", reset)
 	}
 }
+
+func TestPlansMarkStalePHPFragments(t *testing.T) {
+	root := t.TempDir()
+	v := mustCompute(t, testResources(), Balanced, "a", "b")
+	at := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	perfDir := filepath.Join(root, "services", "php", "performance")
+	existing := []string{
+		filepath.Join(perfDir, "a.conf"),
+		filepath.Join(perfDir, "b.conf"),
+		filepath.Join(perfDir, "stale.conf"),
+	}
+	apply, reset, err := BuildPlans(root, v, at, PriorHost{}, existing...)
+	if err != nil {
+		t.Fatalf("BuildPlans: %v", err)
+	}
+	want := []string{filepath.Join(perfDir, "stale.conf")}
+	if !reflect.DeepEqual(apply.Stale, want) {
+		t.Fatalf("apply stale = %v, want %v", apply.Stale, want)
+	}
+	if !reflect.DeepEqual(reset.Stale, want) {
+		t.Fatalf("reset stale = %v, want %v", reset.Stale, want)
+	}
+}
+
+func TestPlansRejectExistingFragmentOutsidePerformanceDir(t *testing.T) {
+	root := t.TempDir()
+	v := mustCompute(t, testResources(), Balanced, "a")
+	at := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	outside := filepath.Join(root, "services", "php", "stale.conf")
+	if _, _, err := BuildPlans(root, v, at, PriorHost{}, outside); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("BuildPlans(outside fragment) error = %v, want ErrInvalid", err)
+	}
+	if _, _, err := BuildPlans(root, v, at, PriorHost{}, "relative.conf"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("BuildPlans(relative fragment) error = %v, want ErrInvalid", err)
+	}
+}

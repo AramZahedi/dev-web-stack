@@ -22,6 +22,9 @@ func TestValuesValidateRejectsUnsafeTuning(t *testing.T) {
 		{"apache server limit mismatch", func(v *Values) { v.Apache.ServerLimit++ }},
 		{"apache start beyond server limit", func(v *Values) { v.Apache.StartServers = v.Apache.ServerLimit + 1 }},
 		{"apache spare inversion", func(v *Values) { v.Apache.MinSpareThreads = v.Apache.MaxSpareThreads + 1 }},
+		{"apache spare gap", func(v *Values) {
+			v.Apache.MaxSpareThreads = v.Apache.MinSpareThreads + v.Apache.ThreadsPerChild - 1
+		}},
 		{"php budget mismatch", func(v *Values) {
 			v.PHP.GlobalChildren++
 		}},

@@ -34,6 +34,8 @@ type Resources struct {
 	PageSizeBytes        uint64  `json:"page_size_bytes"`
 	NoFileSoft           uint64  `json:"nofile_soft"`
 	NoFileHard           uint64  `json:"nofile_hard"`
+	User                 string  `json:"user,omitempty"`
+	Group                string  `json:"group,omitempty"`
 	Sysctl               Sysctl  `json:"sysctl"`
 }
 
@@ -68,6 +70,12 @@ func (r Resources) Validate() error {
 	if r.NoFileSoft > r.NoFileHard {
 		return invalid("nofile", "soft limit %d exceeds hard limit %d", r.NoFileSoft, r.NoFileHard)
 	}
+	if err := validateAccount("user", r.User); err != nil {
+		return err
+	}
+	if err := validateAccount("group", r.Group); err != nil {
+		return err
+	}
 	if err := validateLabel("hostname", r.Hostname); err != nil {
 		return err
 	}
@@ -78,14 +86,15 @@ func (r Resources) Validate() error {
 }
 
 // EffectiveCPUUnits returns the CPU count bounded by the cgroup quota. A
-// fractional quota is rounded to the nearest whole CPU with a floor of one,
-// so quota 1.5 allocates two workers and quota 0.5 allocates one.
+// fractional quota is floored so generated worker counts never exceed the
+// quota, with a floor of one CPU (quota 1.5 allocates one worker; quota 0.5
+// also allocates one).
 func (r Resources) EffectiveCPUUnits() int {
 	cpus := float64(r.CPUCount)
 	if r.CPUQuotaCPUs > 0 && r.CPUQuotaCPUs < cpus {
 		cpus = r.CPUQuotaCPUs
 	}
-	units := int(math.Round(cpus))
+	units := int(math.Floor(cpus))
 	if units < 1 {
 		return 1
 	}
@@ -114,6 +123,26 @@ func (p PortRange) validate(field string) error {
 	}
 	if p.Min >= p.Max {
 		return invalid(field, "minimum %d must be below maximum %d", p.Min, p.Max)
+	}
+	return nil
+}
+
+func validateAccount(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 255 {
+		return invalid(field, "is longer than 255 bytes")
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_', r == '.', r == '-':
+		default:
+			return invalid(field, "%q contains an invalid character", value)
+		}
 	}
 	return nil
 }
