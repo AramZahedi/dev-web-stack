@@ -34,7 +34,7 @@ containers, not the required runtime for devstack itself.
 | R12 | Native CA/trust even when tools run in containers | Implemented — leaf certs mounted, CA host-only |
 | R13 | phpMyAdmin exposed on a localhost port | Implemented — loopback 8082, cookie auth, active DB follow |
 | R14 | Random per-engine database credentials | Implemented — generate/reveal/rotate, admin grants, owner-preserving 0600 |
-| R15 | Native PHP `imagick`; Dockerized ImageMagick CLI | Partial — PHP `imagick` implemented; Docker CLI descoped by user |
+| R15 | Native PHP `imagick` (ImageMagick CLI descoped) | Implemented — PHP `imagick` bundled; Docker CLI removed from product scope |
 | R16 | Configurable PHP front-controller file and mode | Implemented |
 | R17 | Apache project `.htaccess` support | Implemented — Docker Apache |
 | R18 | Nuxt/Vite static-build profiles and SPA fallback | Implemented — native build executor |
@@ -171,7 +171,7 @@ The dashboard must expose:
 - service config editor/diff/apply/reset;
 - credentials reveal/copy/rotate;
 - phpMyAdmin launch;
-- Composer/ImageMagick tool management;
+- Composer tool management;
 - performance apply/reset/benchmark;
 - site terminal/command runner with site PHP/Node context;
 - Doctor/trust repair;

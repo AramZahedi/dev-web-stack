@@ -31,8 +31,7 @@ Native host
     ├── mysql OR mariadb       (one active)
     ├── postgresql
     ├── redis
-    ├── phpmyadmin             (loopback :8082)
-    └── imagemagick            (CLI tool)
+    └── phpmyadmin             (loopback :8082)
 ```
 
 The base product remains native. Docker is not required for builtin serving or PHP/Node
@@ -49,7 +48,6 @@ sites.
 | postgresql | standalone | 5432 | Loopback only |
 | redis | standalone | 6379 | Loopback only; no password by default |
 | phpmyadmin | standalone | 8082 | Follows active MySQL family; cookie login |
-| imagemagick | standalone CLI | none | `devstack tool run imagemagick -- magick ...` |
 
 Every service has `installed` and `active` states. Installing does not activate.
 Activation is transactional and rolls back on failure.
@@ -240,7 +238,7 @@ CLI remains an alternative interface to the same API.
 4. Config ownership/editor/conflict flow and validation.
 5. Native CA mounts and trust verification.
 6. Performance profile, host tuning, PHP-FPM budgets, benchmarks.
-7. `devstack shell`, global PHP/Composer tooling. ImageMagick CLI is descoped.
+7. `devstack shell`, global PHP/Composer tooling. ImageMagick CLI is descoped and has no catalog entry, helper RPC, wrapper, or dashboard row.
 8. Dashboard UI, terminal, builds, CLI parity.
 9. Acceptance: Laravel/Apache `.htaccess`, Nuxt build, credentials, config conflicts,
    service switching, performance, security.
