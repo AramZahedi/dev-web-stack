@@ -360,7 +360,8 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 	step("write-includes", "ok", fmt.Sprintf("%d generated include file(s)", len(files)))
 
 	reloaded := false
-	phpSnapshots, phpErr := s.applyPHPIniLocked(ctx, values)
+	priorApplied, _ := s.loadAppliedLocked(ctx)
+	phpSnapshots, phpErr := s.applyPHPIniLocked(ctx, values, priorApplied)
 	if phpErr != nil {
 		step("php-ini", "failed", phpErr.Error())
 		result.RollbackError = errorString(s.rollbackApplyLocked(ctx, snapshots, phpSnapshots, false, "", false))
@@ -1036,14 +1037,22 @@ func (s *Service) hostPreviewLocked(ctx context.Context, values Values) (HostPre
 	return preview, preview.Warnings
 }
 
-func (s *Service) applyPHPIniLocked(ctx context.Context, values Values) (map[string]map[string]string, error) {
-	applied := make(map[string]map[string]string)
+func (s *Service) applyPHPIniLocked(ctx context.Context, values Values, prior *AppliedState) (map[string]map[string]string, error) {
+	snapshots := make(map[string]map[string]string)
+	if prior != nil {
+		for id, ini := range prior.PHPIni {
+			if ini == nil {
+				ini = map[string]string{}
+			}
+			snapshots[id] = cloneStringMap(ini)
+		}
+	}
 	if s.cfg.Sites == nil || len(values.PHP.Sites) == 0 {
-		return applied, nil
+		return snapshots, nil
 	}
 	list, err := s.cfg.Sites.List(ctx)
 	if err != nil {
-		return applied, err
+		return snapshots, err
 	}
 	byID := make(map[string]model.Site, len(list))
 	for _, site := range list {
@@ -1055,27 +1064,35 @@ func (s *Service) applyPHPIniLocked(ctx context.Context, values Values) (map[str
 		if !ok || site.Kind != model.SitePHP || site.Status != model.StatusRunning {
 			continue
 		}
-		previous := cloneStringMap(site.PHPIni)
-		if previous == nil {
-			// A nil map means "keep current" in PHPChange, so restore must
-			// use an explicit empty map to clear the performance keys.
-			previous = map[string]string{}
+		current := cloneStringMap(site.PHPIni)
+		if current == nil {
+			current = map[string]string{}
 		}
-		merged := cloneStringMap(previous)
+		if _, exists := snapshots[site.ID]; !exists {
+			snapshots[site.ID] = cloneStringMap(current)
+		}
+		merged := cloneStringMap(current)
 		for key, value := range settings {
 			merged[key] = value
 		}
 		if _, err := s.cfg.Sites.ApplyPHP(ctx, site.ID, sites.PHPChange{Ini: merged}); err != nil {
-			return applied, err
+			return snapshots, err
 		}
-		applied[site.ID] = previous
 	}
-	return applied, nil
+	return snapshots, nil
 }
 
 func (s *Service) restorePHPIniLocked(ctx context.Context, previous map[string]map[string]string) error {
 	if s.cfg.Sites == nil || len(previous) == 0 {
 		return nil
+	}
+	list, err := s.cfg.Sites.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list PHP sites: %w", err)
+	}
+	byID := make(map[string]model.Site, len(list))
+	for _, site := range list {
+		byID[site.ID] = site
 	}
 	ids := make([]string, 0, len(previous))
 	for id := range previous {
@@ -1084,7 +1101,25 @@ func (s *Service) restorePHPIniLocked(ctx context.Context, previous map[string]m
 	sort.Strings(ids)
 	var errs []error
 	for _, id := range ids {
-		if _, err := s.cfg.Sites.ApplyPHP(ctx, id, sites.PHPChange{Ini: previous[id]}); err != nil {
+		site, ok := byID[id]
+		if !ok {
+			// The site was removed after the profile was applied; its config
+			// directory is gone, so there is nothing to restore.
+			continue
+		}
+		current := cloneStringMap(site.PHPIni)
+		if current == nil {
+			current = map[string]string{}
+		}
+		original := previous[id]
+		for _, key := range managedPHPIniKeys() {
+			if value, ok := original[key]; ok {
+				current[key] = value
+			} else {
+				delete(current, key)
+			}
+		}
+		if _, err := s.cfg.Sites.ApplyPHP(ctx, id, sites.PHPChange{Ini: current}); err != nil {
 			errs = append(errs, fmt.Errorf("restore PHP site %s: %w", id, err))
 		}
 	}
@@ -1193,6 +1228,19 @@ func (s *Service) benchmarkTargetLocked(ctx context.Context, site model.Site) (s
 	}
 	target := scheme + "://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/"
 	return target, insecure, nil
+}
+
+func managedPHPIniKeys() []string {
+	return []string{
+		"opcache.enable",
+		"opcache.memory_consumption",
+		"opcache.interned_strings_buffer",
+		"opcache.max_accelerated_files",
+		"opcache.validate_timestamps",
+		"opcache.revalidate_freq",
+		"realpath_cache_size",
+		"realpath_cache_ttl",
+	}
 }
 
 func performanceIniSettings(values Values) map[string]string {

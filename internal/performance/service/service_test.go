@@ -733,3 +733,40 @@ func TestServiceApplyWritesApacheWhenActive(t *testing.T) {
 		t.Fatalf("validate calls = %v", servicesFake.validate)
 	}
 }
+
+func TestServiceRepeatedApplyPreservesPHPOriginalSnapshot(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, _, sitesFake, _ := newPerformanceTestService(t)
+	sitesFake.sites = []model.Site{{
+		ID: "php1", Name: "app", Domain: "app.test", Kind: model.SitePHP,
+		Status: model.StatusRunning, PHPVersion: "8.4",
+		PHPIni: map[string]string{"memory_limit": "256M"},
+	}}
+	if _, err := svc.Apply(ctx, ApplyRequest{Confirm: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the applied site row carrying the merged performance keys, and
+	// a user edit made between applies.
+	applied := sitesFake.applied[len(sitesFake.applied)-1]
+	sitesFake.mu.Lock()
+	sitesFake.sites[0].PHPIni = cloneStringMap(applied.Change.Ini)
+	sitesFake.sites[0].PHPIni["max_execution_time"] = "60"
+	sitesFake.mu.Unlock()
+
+	if _, err := svc.Apply(ctx, ApplyRequest{Confirm: true}); err != nil {
+		t.Fatal(err)
+	}
+	sitesFake.applied = nil
+	if _, err := svc.Reset(ctx, ResetRequest{Confirm: true}); err != nil {
+		t.Fatal(err)
+	}
+	restored := sitesFake.applied[0].Change.Ini
+	if restored["memory_limit"] != "256M" || restored["max_execution_time"] != "60" {
+		t.Fatalf("reset lost user PHP settings: %+v", restored)
+	}
+	for _, key := range managedPHPIniKeys() {
+		if _, ok := restored[key]; ok {
+			t.Fatalf("reset left performance key %q in %+v", key, restored)
+		}
+	}
+}
