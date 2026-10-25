@@ -1060,6 +1060,282 @@ paths:
           $ref: "#/components/responses/ForbiddenHost"
         "404":
           $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [services]
+      summary: Uninstall a service
+      description: |
+        Stops and removes the service container. Data is preserved unless
+        `delete_data` is true; the helper writes and verifies a backup before
+        deleting anything. An empty body keeps the default `false`.
+      operationId: uninstallService
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UninstallServiceRequest"
+      responses:
+        "200":
+          description: The uninstall completed; backup_path is present when a backup was written.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UninstallServiceResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/HelperError"
+
+  /api/v1/services/{id}/install:
+    post:
+      tags: [services]
+      summary: Pull the image and scaffold a service
+      operationId: installService
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      responses:
+        "200":
+          description: The service is installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceActionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The helper reported a service conflict (ports, exclusive group, or health).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/HelperError"
+
+  /api/v1/services/{id}/activate:
+    post:
+      tags: [services]
+      summary: Activate a service
+      description: |
+        Serialized by the helper, which stops the conflicting member of an
+        exclusive group (nginx/apache, mysql/mariadb) before starting this one.
+      operationId: activateService
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      responses:
+        "200":
+          description: The service is active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceActionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            The helper reported SERVICE_CONFLICT: an exclusive-group member,
+            host port, or container health blocked activation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/HelperError"
+
+  /api/v1/services/{id}/deactivate:
+    post:
+      tags: [services]
+      summary: Deactivate a service
+      operationId: deactivateService
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      responses:
+        "200":
+          description: The service is stopped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceActionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The helper reported a service conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/HelperError"
+
+  /api/v1/services/{id}/restart:
+    post:
+      tags: [services]
+      summary: Restart a service
+      operationId: restartService
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      responses:
+        "200":
+          description: The service restarted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceActionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The helper reported a service conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/HelperError"
+
+  /api/v1/services/{id}/logs:
+    get:
+      tags: [services]
+      summary: Read bounded service container logs
+      operationId: getServiceLogs
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+        - name: tail
+          in: query
+          required: false
+          description: Number of trailing log lines; zero uses the helper default.
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: The bounded log tail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceLogs"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/HelperError"
+
+  /api/v1/services/{id}/credentials/reveal:
+    post:
+      tags: [services]
+      summary: Reveal a service's credentials
+      description: |
+        Explicit credential reveal. Credentials never appear in list or get
+        responses and are never written to service logs.
+      operationId: revealServiceCredentials
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      responses:
+        "200":
+          description: The service credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceCredentials"
+        "400":
+          description: The service has no credential flow.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/services/{id}/credentials/rotate:
+    post:
+      tags: [services]
+      summary: Rotate a service's credentials
+      description: |
+        Regenerates the credentials and returns them once. The caller must
+        confirm the rotation; the dashboard and CLI do so explicitly.
+      operationId: rotateServiceCredentials
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      responses:
+        "200":
+          description: The rotated service credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceCredentials"
+        "400":
+          description: The service has no credential flow.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /:
     get:
@@ -1149,6 +1425,14 @@ components:
       schema:
         type: string
         examples: ["8.4"]
+    ServiceID:
+      name: id
+      in: path
+      required: true
+      description: Catalog service id (for example nginx, mysql, redis).
+      schema:
+        type: string
+        examples: [nginx]
 
   responses:
     BadRequest:
@@ -1193,8 +1477,22 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    HelperError:
+      description: |
+        The privileged helper returned a structured internal failure
+        (HELPER_ERROR) rather than a transport failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     ServiceUnavailable:
       description: The requested service is not configured in this daemon.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    HelperServiceUnavailable:
+      description: The privileged service helper is unreachable or unavailable.
       content:
         application/json:
           schema:
@@ -1233,6 +1531,8 @@ components:
             - FORBIDDEN
             - UNAUTHORIZED
             - HELPER_UNAVAILABLE
+            - HELPER_ERROR
+            - SERVICE_CONFLICT
             - METHOD_NOT_ALLOWED
             - INTERNAL
         message:
@@ -1399,14 +1699,44 @@ components:
           type: string
         front_controller:
           type: boolean
+        front_controller_file:
+          type: string
+          description: Relative PHP front-controller file (for example public/index.php).
+        front_controller_mode:
+          type: string
+          enum: [auto, generated, htaccess]
+        apache_allow_override:
+          type: string
+          enum: [all, fileinfo, none]
+        spa_fallback:
+          type: boolean
+        spa_fallback_file:
+          type: string
+          description: Relative fallback file served for non-file paths (for example app.html).
+        build:
+          $ref: "#/components/schemas/BuildProfile"
         www:
           type: boolean
         tls:
           type: boolean
         force_https:
           type: boolean
-        spa_fallback:
-          type: boolean
+        env:
+          type: object
+          additionalProperties:
+            type: string
+
+    BuildProfile:
+      type: object
+      description: Optional client-side asset build profile.
+      required: [node_version, command]
+      properties:
+        node_version:
+          type: string
+        command:
+          type: string
+        output:
+          type: string
         env:
           type: object
           additionalProperties:
@@ -1764,6 +2094,7 @@ components:
         - ui_port
         - auto_start_sites
         - serving_mode
+        - serving_provider
         - graceful_stop_seconds
         - max_request_body_mb
         - log_max_mb
@@ -1788,6 +2119,12 @@ components:
           type: string
           enum: [builtin, nginx, apache]
           description: Active serving mode; builtin uses the Go proxy.
+        serving_provider:
+          type: string
+          enum: [native, docker]
+          description: |
+            native uses host-installed nginx/Apache; docker uses the managed
+            service containers. docker requires serving_mode nginx or apache.
         graceful_stop_seconds:
           type: integer
         max_request_body_mb:
@@ -1928,9 +2265,61 @@ components:
         loopback:
           type: boolean
 
+    ServiceActionResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          examples: [ok]
+
+    UninstallServiceRequest:
+      type: object
+      properties:
+        delete_data:
+          type: boolean
+          default: false
+          description: Back up and delete service data after removing the container.
+
+    UninstallServiceResult:
+      type: object
+      properties:
+        backup_path:
+          type: string
+          description: Path to the verified backup written before data deletion.
+
+    ServiceLogs:
+      type: object
+      required: [logs]
+      properties:
+        logs:
+          type: string
+          description: Bounded container log tail.
+
+    ServiceCredentials:
+      type: object
+      required: [engine, username, password, database, host, port]
+      description: |
+        Returned only by the explicit reveal and rotate routes. Credentials are
+        never included in list or get responses.
+      properties:
+        engine:
+          type: string
+          examples: [mysql]
+        username:
+          type: string
+        password:
+          type: string
+        database:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+
     ServiceView:
       type: object
-      required: [id, display_name, group, state, active, image]
+      required: [id, display_name, group, state, active, image, health, container_id, installed]
       properties:
         id:
           type: string
@@ -1941,10 +2330,25 @@ components:
           enum: [web, mysql-family, standalone]
         state:
           type: string
-          enum: [not_installed, installed, starting, active, stopping, error]
+          enum:
+            - not_installed
+            - installed
+            - installed_but_stopped
+            - starting
+            - active
+            - stopping
+            - error
         active:
           type: boolean
         image:
+          type: string
+        installed:
+          type: boolean
+          description: Image and scaffold are present; independent of active.
+        health:
+          type: string
+          description: Container health or an empty string when no health check applies.
+        container_id:
           type: string
         ports:
           type: array

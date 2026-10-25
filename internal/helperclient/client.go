@@ -32,6 +32,7 @@ var (
 	ErrInvalidRequest   = helperproto.ErrInvalidRequest
 	ErrNotImplemented   = helperproto.ErrNotImplemented
 	ErrInternal         = helperproto.ErrInternal
+	ErrServiceConflict  = helperproto.ErrServiceConflict
 
 	ErrServingModeUnavailable = helperproto.ErrServingModeUnavailable
 	ErrVhostConfigInvalid     = helperproto.ErrVhostConfigInvalid
@@ -65,6 +66,8 @@ func (e *Error) Unwrap() error {
 		return helperproto.ErrNotImplemented
 	case helperproto.CodeInternal:
 		return helperproto.ErrInternal
+	case helperproto.CodeServiceConflict:
+		return helperproto.ErrServiceConflict
 	case helperproto.CodeServingModeUnavailable:
 		return helperproto.ErrServingModeUnavailable
 	case helperproto.CodeVhostConfigInvalid:

@@ -27,6 +27,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
@@ -157,23 +158,28 @@ func (c *Client) GetSite(ctx context.Context, ref string) (model.Site, error) {
 // AddSite creates and starts a site.
 func (c *Client) AddSite(ctx context.Context, req sites.CreateRequest) (model.Site, error) {
 	payload := createSitePayload{
-		Name:            req.Name,
-		Path:            req.Path,
-		Kind:            req.Kind,
-		NodeVersion:     req.NodeVersion,
-		Command:         req.Command,
-		DocumentRoot:    req.DocumentRoot,
-		WWW:             req.WWW,
-		TLS:             req.TLS,
-		ForceHTTPS:      req.ForceHTTPS,
-		SPAFallback:     req.SPAFallback,
-		Env:             req.Env,
-		PHPVersion:      req.PHPVersion,
-		PHPBuild:        req.PHPBuild,
-		PHPExtensions:   req.PHPExtensions,
-		PHPIni:          req.PHPIni,
-		PHPIniRaw:       req.PHPIniRaw,
-		FrontController: req.FrontController,
+		Name:                req.Name,
+		Path:                req.Path,
+		Kind:                req.Kind,
+		NodeVersion:         req.NodeVersion,
+		Command:             req.Command,
+		DocumentRoot:        req.DocumentRoot,
+		WWW:                 req.WWW,
+		TLS:                 req.TLS,
+		ForceHTTPS:          req.ForceHTTPS,
+		SPAFallback:         req.SPAFallback,
+		Env:                 req.Env,
+		PHPVersion:          req.PHPVersion,
+		PHPBuild:            req.PHPBuild,
+		PHPExtensions:       req.PHPExtensions,
+		PHPIni:              req.PHPIni,
+		PHPIniRaw:           req.PHPIniRaw,
+		FrontController:     req.FrontController,
+		FrontControllerFile: req.FrontControllerFile,
+		FrontControllerMode: req.FrontControllerMode,
+		ApacheAllowOverride: req.ApacheAllowOverride,
+		SPAFallbackFile:     req.SPAFallbackFile,
+		Build:               req.Build,
 	}
 	var site model.Site
 	err := c.doJSON(ctx, http.MethodPost, "/api/v1/sites", payload, &site)
@@ -359,6 +365,73 @@ func (c *Client) GetService(ctx context.Context, id string) (services.View, erro
 	return view, err
 }
 
+func (c *Client) serviceAction(ctx context.Context, id, action string) error {
+	return c.doJSON(ctx, http.MethodPost, "/api/v1/services/"+url.PathEscape(id)+"/"+action, nil, nil)
+}
+
+// InstallService pulls the service image and scaffolds its directories.
+func (c *Client) InstallService(ctx context.Context, id string) error {
+	return c.serviceAction(ctx, id, "install")
+}
+
+// ActivateService starts the service through the privileged helper.
+func (c *Client) ActivateService(ctx context.Context, id string) error {
+	return c.serviceAction(ctx, id, "activate")
+}
+
+// DeactivateService stops the service through the privileged helper.
+func (c *Client) DeactivateService(ctx context.Context, id string) error {
+	return c.serviceAction(ctx, id, "deactivate")
+}
+
+// RestartService restarts the service through the privileged helper.
+func (c *Client) RestartService(ctx context.Context, id string) error {
+	return c.serviceAction(ctx, id, "restart")
+}
+
+// UninstallService removes the service container. Data is preserved unless
+// deleteData is true.
+func (c *Client) UninstallService(ctx context.Context, id string, deleteData bool) (servicecontrol.UninstallResult, error) {
+	var result servicecontrol.UninstallResult
+	err := c.doJSON(ctx, http.MethodDelete, "/api/v1/services/"+url.PathEscape(id), map[string]bool{
+		"delete_data": deleteData,
+	}, &result)
+	return result, err
+}
+
+// ServiceLogs returns a bounded container log tail.
+func (c *Client) ServiceLogs(ctx context.Context, id string, tail int) (string, error) {
+	query := url.Values{}
+	if tail > 0 {
+		query.Set("tail", strconv.Itoa(tail))
+	}
+	path := "/api/v1/services/" + url.PathEscape(id) + "/logs"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var response struct {
+		Logs string `json:"logs"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return "", err
+	}
+	return response.Logs, nil
+}
+
+// ServiceCredentials explicitly reveals a service's credentials.
+func (c *Client) ServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error) {
+	var creds servicecontrol.Credentials
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/services/"+url.PathEscape(id)+"/credentials/reveal", nil, &creds)
+	return creds, err
+}
+
+// RotateServiceCredentials regenerates and returns a service's credentials.
+func (c *Client) RotateServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error) {
+	var creds servicecontrol.Credentials
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/services/"+url.PathEscape(id)+"/credentials/rotate", nil, &creds)
+	return creds, err
+}
+
 // Logs opens the site's log stream. follow=false requests a finite SSE
 // snapshot of the recent lines; follow=true keeps the live subscription open
 // until the caller closes the body or cancels ctx.
@@ -537,23 +610,28 @@ func decodeError(resp *http.Response) error {
 }
 
 type createSitePayload struct {
-	Name            string            `json:"name"`
-	Path            string            `json:"path"`
-	Kind            string            `json:"kind"`
-	NodeVersion     string            `json:"node_version,omitempty"`
-	Command         string            `json:"command,omitempty"`
-	DocumentRoot    string            `json:"document_root,omitempty"`
-	WWW             bool              `json:"www"`
-	TLS             bool              `json:"tls"`
-	ForceHTTPS      bool              `json:"force_https"`
-	SPAFallback     bool              `json:"spa_fallback"`
-	Env             map[string]string `json:"env,omitempty"`
-	PHPVersion      string            `json:"php_version,omitempty"`
-	PHPBuild        string            `json:"php_build,omitempty"`
-	PHPExtensions   map[string]bool   `json:"php_extensions,omitempty"`
-	PHPIni          map[string]string `json:"php_ini,omitempty"`
-	PHPIniRaw       string            `json:"php_ini_raw,omitempty"`
-	FrontController bool              `json:"front_controller"`
+	Name                string              `json:"name"`
+	Path                string              `json:"path"`
+	Kind                string              `json:"kind"`
+	NodeVersion         string              `json:"node_version,omitempty"`
+	Command             string              `json:"command,omitempty"`
+	DocumentRoot        string              `json:"document_root,omitempty"`
+	WWW                 bool                `json:"www"`
+	TLS                 bool                `json:"tls"`
+	ForceHTTPS          bool                `json:"force_https"`
+	SPAFallback         bool                `json:"spa_fallback"`
+	SPAFallbackFile     string              `json:"spa_fallback_file,omitempty"`
+	Env                 map[string]string   `json:"env,omitempty"`
+	PHPVersion          string              `json:"php_version,omitempty"`
+	PHPBuild            string              `json:"php_build,omitempty"`
+	PHPExtensions       map[string]bool     `json:"php_extensions,omitempty"`
+	PHPIni              map[string]string   `json:"php_ini,omitempty"`
+	PHPIniRaw           string              `json:"php_ini_raw,omitempty"`
+	FrontController     bool                `json:"front_controller"`
+	FrontControllerFile string              `json:"front_controller_file,omitempty"`
+	FrontControllerMode string              `json:"front_controller_mode,omitempty"`
+	ApacheAllowOverride string              `json:"apache_allow_override,omitempty"`
+	Build               *model.BuildProfile `json:"build,omitempty"`
 }
 
 type updateSitePayload struct {

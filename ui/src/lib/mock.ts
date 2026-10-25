@@ -154,6 +154,9 @@ const mockServices: ServiceView[] = [
     group: 'web',
     state: 'active',
     active: true,
+    installed: true,
+    health: 'healthy',
+    container_id: 'd4e5f6a7b8c9',
     image: 'nginx:1.27-alpine',
     ports: [
       { host: 80, container: 80, protocol: 'http', loopback: true },
@@ -168,6 +171,9 @@ const mockServices: ServiceView[] = [
     group: 'mysql-family',
     state: 'installed',
     active: false,
+    installed: true,
+    health: '',
+    container_id: 'a1b2c3d4e5f6',
     image: 'mysql:8.4',
     ports: [
       { host: 3306, container: 3306, protocol: 'tcp', loopback: true },
@@ -181,6 +187,9 @@ const mockServices: ServiceView[] = [
     group: 'standalone',
     state: 'not_installed',
     active: false,
+    installed: false,
+    health: '',
+    container_id: '',
     image: 'redis:7.4-alpine',
     ports: [
       { host: 6379, container: 6379, protocol: 'tcp', loopback: true },
@@ -588,6 +597,7 @@ const settings: Settings = {
   https_port: 8443,
   ui_port: 7070,
   serving_mode: 'builtin',
+  serving_provider: 'native',
   wsl_distro: 'devstack',
   auto_start_sites: true,
   graceful_stop_seconds: 10,

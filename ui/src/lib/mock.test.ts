@@ -141,10 +141,18 @@ describe('mock services', () => {
     const fetched = await mockApi.getService('nginx');
     expect(fetched.id).toBe('nginx');
     expect(fetched.state).toBe('active');
+    expect(fetched.installed).toBe(true);
+    expect(fetched.health).toBeTruthy();
+    expect(fetched.container_id).toBeTruthy();
 
     await expect(mockApi.getService('nonexistent')).rejects.toMatchObject({
       code: 'NOT_FOUND',
       status: 404,
     });
+  });
+
+  it('reports the serving provider in mock settings', async () => {
+    const settings = await mockApi.settings();
+    expect(settings.serving_provider).toBe('native');
   });
 });

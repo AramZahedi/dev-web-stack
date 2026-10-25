@@ -1046,7 +1046,12 @@ func (s *Server) notImplemented(w http.ResponseWriter, operation string) {
 }
 
 func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
+	var activationErr *ServiceActivationError
 	switch {
+	case errors.As(err, &activationErr):
+		s.writeError(w, http.StatusConflict, helperproto.CodeServiceConflict, err.Error())
+	case errors.Is(err, helperproto.ErrServiceConflict):
+		s.writeError(w, http.StatusConflict, helperproto.CodeServiceConflict, err.Error())
 	case errors.Is(err, helperproto.ErrNotImplemented):
 		s.writeError(w, http.StatusNotImplemented, helperproto.CodeNotImplemented, err.Error())
 	case errors.Is(err, helperproto.ErrInvalidRequest):

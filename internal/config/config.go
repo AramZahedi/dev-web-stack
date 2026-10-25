@@ -26,10 +26,28 @@ const (
 	ServingModeApache  = "apache"
 )
 
+// Serving providers. Native keeps the existing host-installed web servers;
+// docker serves through the managed nginx or Apache service containers.
+const (
+	ServingProviderNative = "native"
+	ServingProviderDocker = "docker"
+)
+
 // ValidServingMode reports whether mode is one of the supported serving modes.
 func ValidServingMode(mode string) bool {
 	switch mode {
 	case ServingModeBuiltin, ServingModeNginx, ServingModeApache:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidServingProvider reports whether provider is one of the supported
+// serving providers.
+func ValidServingProvider(provider string) bool {
+	switch provider {
+	case ServingProviderNative, ServingProviderDocker:
 		return true
 	default:
 		return false
@@ -45,9 +63,10 @@ type Config struct {
 	HTTPSPort int `yaml:"https_port"`
 	UIPort    int `yaml:"ui_port"`
 
-	WSLDistro      string `yaml:"wsl_distro"`
-	AutoStartSites bool   `yaml:"auto_start_sites"`
-	ServingMode    string `yaml:"serving_mode"`
+	WSLDistro       string `yaml:"wsl_distro"`
+	AutoStartSites  bool   `yaml:"auto_start_sites"`
+	ServingMode     string `yaml:"serving_mode"`
+	ServingProvider string `yaml:"serving_provider"`
 
 	GracefulStopSeconds int `yaml:"graceful_stop_seconds"`
 	MaxRequestBodyMB    int `yaml:"max_request_body_mb"`
@@ -65,6 +84,7 @@ func Default() Config {
 		WSLDistro:           "devstack",
 		AutoStartSites:      true,
 		ServingMode:         ServingModeBuiltin,
+		ServingProvider:     ServingProviderNative,
 		GracefulStopSeconds: 10,
 		MaxRequestBodyMB:    1024,
 		LogMaxMB:            10,
@@ -146,6 +166,14 @@ func (c Config) Validate() error {
 	if c.ServingMode != ServingModeBuiltin && c.UIPort != 7070 {
 		return fmt.Errorf("serving_mode %q requires ui_port 7070 for the helper-managed dashboard, got %d",
 			c.ServingMode, c.UIPort)
+	}
+	if !ValidServingProvider(c.ServingProvider) {
+		return fmt.Errorf("serving_provider %q must be one of %s or %s", c.ServingProvider,
+			ServingProviderNative, ServingProviderDocker)
+	}
+	if c.ServingProvider == ServingProviderDocker && c.ServingMode == ServingModeBuiltin {
+		return fmt.Errorf("serving_provider %s requires serving_mode %s or %s, got %s",
+			ServingProviderDocker, ServingModeNginx, ServingModeApache, c.ServingMode)
 	}
 	return nil
 }

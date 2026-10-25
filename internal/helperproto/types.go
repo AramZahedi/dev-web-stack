@@ -37,6 +37,7 @@ const (
 	CodeInvalidRequest   = "INVALID_REQUEST"
 	CodeNotImplemented   = "NOT_IMPLEMENTED"
 	CodeInternal         = "INTERNAL"
+	CodeServiceConflict  = "SERVICE_CONFLICT"
 )
 
 // Sentinel errors matched by clients. Servers and privileged operation
@@ -47,6 +48,7 @@ var (
 	ErrInvalidRequest   = errors.New("helper: invalid request")
 	ErrNotImplemented   = errors.New("helper: not implemented")
 	ErrInternal         = errors.New("helper: internal error")
+	ErrServiceConflict  = errors.New("helper: service conflict")
 )
 
 // ErrorResponse is the body of every helper error response.

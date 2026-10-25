@@ -35,6 +35,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/phpfpm"
 	"github.com/AramZahedi/dev-web-stack/internal/phpini"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
@@ -71,7 +72,9 @@ const (
 	codeInternal           = "INTERNAL"
 	codePayloadTooLarge    = "PAYLOAD_TOO_LARGE"
 	codeHelperUnavailable  = "HELPER_UNAVAILABLE"
+	codeHelperError        = "HELPER_ERROR"
 	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
+	codeServiceConflict    = "SERVICE_CONFLICT"
 	codeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
 
 	codeServingModeUnavailable = "SERVING_MODE_UNAVAILABLE"
@@ -138,6 +141,56 @@ type VhostService interface {
 type ServiceService interface {
 	List(ctx context.Context) ([]services.View, error)
 	Get(ctx context.Context, id services.ID) (services.View, error)
+	Install(ctx context.Context, id services.ID) error
+	Activate(ctx context.Context, id services.ID) error
+	Deactivate(ctx context.Context, id services.ID) error
+	Restart(ctx context.Context, id services.ID) error
+	Uninstall(ctx context.Context, id services.ID, deleteData bool) (servicecontrol.UninstallResult, error)
+	Logs(ctx context.Context, id services.ID, tail int) (string, error)
+	Credentials(ctx context.Context, id services.ID) (servicecontrol.Credentials, error)
+	RotateCredentials(ctx context.Context, id services.ID) (servicecontrol.Credentials, error)
+}
+
+// errServiceManagerUnavailable reports that only the read-only service
+// coordinator is configured. Lifecycle actions need the daemon's manager.
+var errServiceManagerUnavailable = errors.New("service manager is not configured")
+
+// readOnlyServiceService preserves the M1 read-only dashboard behavior when a
+// caller does not wire the lifecycle manager. Actions fail with 503.
+type readOnlyServiceService struct {
+	*services.Coordinator
+}
+
+func (readOnlyServiceService) Install(context.Context, services.ID) error {
+	return errServiceManagerUnavailable
+}
+
+func (readOnlyServiceService) Activate(context.Context, services.ID) error {
+	return errServiceManagerUnavailable
+}
+
+func (readOnlyServiceService) Deactivate(context.Context, services.ID) error {
+	return errServiceManagerUnavailable
+}
+
+func (readOnlyServiceService) Restart(context.Context, services.ID) error {
+	return errServiceManagerUnavailable
+}
+
+func (readOnlyServiceService) Uninstall(context.Context, services.ID, bool) (servicecontrol.UninstallResult, error) {
+	return servicecontrol.UninstallResult{}, errServiceManagerUnavailable
+}
+
+func (readOnlyServiceService) Logs(context.Context, services.ID, int) (string, error) {
+	return "", errServiceManagerUnavailable
+}
+
+func (readOnlyServiceService) Credentials(context.Context, services.ID) (servicecontrol.Credentials, error) {
+	return servicecontrol.Credentials{}, errServiceManagerUnavailable
+}
+
+func (readOnlyServiceService) RotateCredentials(context.Context, services.ID) (servicecontrol.Credentials, error) {
+	return servicecontrol.Credentials{}, errServiceManagerUnavailable
 }
 
 // Config configures the API server. AllowedHosts is additive to the required
@@ -216,7 +269,7 @@ func NewServer(
 		keepAliveInterval: defaultKeepAlive,
 	}
 	if s.services == nil && st != nil {
-		s.services = services.NewCoordinator(services.DefaultCatalog(), st, "")
+		s.services = readOnlyServiceService{Coordinator: services.NewCoordinator(services.DefaultCatalog(), st, "")}
 	}
 	if s.ui == nil {
 		s.ui = ui.Dist()
@@ -299,6 +352,14 @@ func (s *Server) apiRoutes() []route {
 
 		{http.MethodGet, "/api/v1/services", s.handleListServices},
 		{http.MethodGet, "/api/v1/services/{id}", s.handleGetService},
+		{http.MethodDelete, "/api/v1/services/{id}", s.handleUninstallService},
+		{http.MethodPost, "/api/v1/services/{id}/install", s.handleInstallService},
+		{http.MethodPost, "/api/v1/services/{id}/activate", s.handleActivateService},
+		{http.MethodPost, "/api/v1/services/{id}/deactivate", s.handleDeactivateService},
+		{http.MethodPost, "/api/v1/services/{id}/restart", s.handleRestartService},
+		{http.MethodGet, "/api/v1/services/{id}/logs", s.handleServiceLogs},
+		{http.MethodPost, "/api/v1/services/{id}/credentials/reveal", s.handleRevealServiceCredentials},
+		{http.MethodPost, "/api/v1/services/{id}/credentials/rotate", s.handleRotateServiceCredentials},
 	}
 }
 
@@ -368,6 +429,7 @@ type settingsResponse struct {
 	UIPort              int    `json:"ui_port"`
 	AutoStartSites      bool   `json:"auto_start_sites"`
 	ServingMode         string `json:"serving_mode"`
+	ServingProvider     string `json:"serving_provider"`
 	GracefulStopSeconds int    `json:"graceful_stop_seconds"`
 	MaxRequestBodyMB    int    `json:"max_request_body_mb"`
 	LogMaxMB            int    `json:"log_max_mb"`
@@ -394,6 +456,7 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 		UIPort:              defaults.UIPort,
 		AutoStartSites:      defaults.AutoStartSites,
 		ServingMode:         defaults.ServingMode,
+		ServingProvider:     defaults.ServingProvider,
 		GracefulStopSeconds: defaults.GracefulStopSeconds,
 		MaxRequestBodyMB:    defaults.MaxRequestBodyMB,
 		LogMaxMB:            defaults.LogMaxMB,
@@ -434,6 +497,7 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 	readString("home", &out.Home)
 	readString("wsl_distro", &out.WSLDistro)
 	readString("serving_mode", &out.ServingMode)
+	readString("serving_provider", &out.ServingProvider)
 	readInt("http_port", &out.HTTPPort)
 	readInt("https_port", &out.HTTPSPort)
 	readInt("ui_port", &out.UIPort)
@@ -688,16 +752,19 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 // writeServiceError maps a service error onto the stable API envelope.
+// Free-form errors may carry a password from a database/helper failure, so both
+// the log entry and the response message are redacted.
 func (s *Server) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code, message, details := classifyError(err)
+	safeMessage := servicecontrol.RedactSecrets(message)
 	if status >= http.StatusInternalServerError {
 		s.logger.Error("api request failed",
 			"method", r.Method,
 			"path", r.URL.Path,
-			"error", err,
+			"error", servicecontrol.RedactSecrets(err.Error()),
 		)
 	}
-	writeError(w, status, code, message, details)
+	writeError(w, status, code, safeMessage, details)
 }
 
 // classifyError maps service errors onto HTTP status and stable codes.
@@ -707,6 +774,9 @@ func classifyError(err error) (int, string, string, any) {
 	}
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, services.ErrNotFound) {
 		return http.StatusNotFound, codeNotFound, err.Error(), nil
+	}
+	if errors.Is(err, errServiceManagerUnavailable) {
+		return http.StatusServiceUnavailable, codeServiceUnavailable, err.Error(), nil
 	}
 	if errors.Is(err, runtimemgr.ErrNoCatalogEntry) {
 		return http.StatusConflict, codeRuntimeMissing, err.Error(), nil
@@ -730,6 +800,18 @@ func classifyError(err error) (int, string, string, any) {
 			"field":   "extensions",
 			"message": err.Error(),
 		}
+	}
+	if errors.Is(err, servicecontrol.ErrCredentialsUnsupported) {
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrHelperUnavailable) {
+		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil
+	}
+	if errors.Is(err, helperproto.ErrServiceConflict) {
+		return http.StatusConflict, codeServiceConflict, err.Error(), nil
+	}
+	if errors.Is(err, helperproto.ErrInternal) {
+		return http.StatusInternalServerError, codeHelperError, err.Error(), nil
 	}
 	if errors.Is(err, sites.ErrPHPExecArgument) {
 		details := any(nil)
@@ -757,10 +839,8 @@ func classifyError(err error) (int, string, string, any) {
 	}
 	if errors.Is(err, helperproto.ErrUnauthorized) ||
 		errors.Is(err, helperproto.ErrProtocolMismatch) ||
-		errors.Is(err, helperproto.ErrNotImplemented) ||
-		errors.Is(err, helperproto.ErrInvalidRequest) ||
-		errors.Is(err, helperproto.ErrInternal) {
-		return http.StatusBadGateway, codeHelperUnavailable, err.Error(), nil
+		errors.Is(err, helperproto.ErrNotImplemented) {
+		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil
 	}
 
 	lower := strings.ToLower(err.Error())
