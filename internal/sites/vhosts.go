@@ -201,6 +201,14 @@ func (s *Service) ReconcileServingMode(ctx context.Context) error {
 		if s.deps.DockerSyncer == nil {
 			return errors.New("sites: docker web config syncer is not configured")
 		}
+		// A helper restart re-enables its AutoForward listeners. The Docker web
+		// container owns 80/443 in this mode, so explicitly release them before
+		// syncing and validating the config.
+		if s.deps.Forwarders != nil {
+			if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, false); err != nil {
+				return fmt.Errorf("sites: release built-in forwarders for docker: %w", err)
+			}
+		}
 		if err := s.deps.DockerSyncer.Sync(ctx, mode); err != nil {
 			return fmt.Errorf("sites: reconcile docker %s vhosts: %w", mode, err)
 		}

@@ -28,6 +28,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
@@ -229,23 +230,71 @@ func Run(ctx context.Context, opts Options) error {
 		Logger:       logger,
 	})
 	d.proxy = proxyServer
+
+	// Service lifecycle wiring is cycle-safe: the manager exists first, the
+	// web switch and Docker config manager use it, the site service consumes
+	// the Docker syncer/switch, and the web provider registers its preparer
+	// once the site service exists.
+	serviceManager := servicecontrol.NewManager(
+		cfg.Home,
+		st,
+		serviceHelper{client: helper},
+		services.DefaultCatalog(),
+		nil,
+	)
+	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
+	dockerWeb, err := dockerweb.NewManager(dockerweb.ManagerConfig{
+		Root:         cfg.Home,
+		Projects:     paths.Projects,
+		Store:        st,
+		Certs:        certManager,
+		Dashboard:    dockerweb.DashboardSpec{Domain: "devstack.test", UIPort: cfg.UIPort},
+		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: docker web config manager: %w", err)
+	}
+
 	siteService := sites.NewService(sites.Deps{
-		Store:       st,
-		Backend:     local,
-		Helper:      helper,
-		Certs:       certManager,
-		Vhosts:      helper,
-		Proxy:       proxyServer,
-		Router:      router,
-		Ports:       domain.NewPortAllocator(),
-		Config:      cfg,
-		Logs:        logStore,
-		PHP:         sites.NewPHPCommands(),
-		PHPBackend:  local,
-		PHPManifest: &phpManifest,
+		Store:        st,
+		Backend:      local,
+		Helper:       helper,
+		Certs:        certManager,
+		Vhosts:       helper,
+		Proxy:        proxyServer,
+		Forwarders:   helper,
+		DockerSyncer: dockerWebSyncer{manager: dockerWeb},
+		DockerSwitch: webSwitch,
+		Router:       router,
+		Ports:        domain.NewPortAllocator(),
+		Config:       cfg,
+		Logs:         logStore,
+		PHP:          sites.NewPHPCommands(),
+		PHPBackend:   local,
+		PHPManifest:  &phpManifest,
 	})
 	d.certs = certManager
 	d.sites = siteService
+
+	webControl := servicecontrol.NewWebServiceControl(serviceManager)
+	webProvider, err := dockerweb.NewProvider(dockerweb.ProviderConfig{
+		State:    siteService,
+		Builtin:  siteService,
+		Syncer:   dockerWeb,
+		Services: webControl,
+		Probe:    dockerweb.LoopbackPortProbe{},
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: docker web provider: %w", err)
+	}
+	preparers := servicecontrol.NewDatabasePreparers(cfg.Home)
+	for id, prep := range servicecontrol.NewWebPreparers(
+		webProvider,
+		servicecontrol.WebGuard{State: siteService},
+	) {
+		preparers[id] = prep
+	}
+	serviceManager.RegisterPreparers(preparers)
 
 	userHome, _ := os.UserHomeDir()
 	doctorService := doctor.NewService(doctor.Deps{
@@ -261,16 +310,6 @@ func Run(ctx context.Context, opts Options) error {
 		PHP:       siteService,
 		HostsPath: opts.HostsPath,
 	})
-
-	// Lanes register their service preparers as the manager is constructed;
-	// Wave 1 wires the core manager with no lane-specific behavior yet.
-	serviceManager := servicecontrol.NewManager(
-		cfg.Home,
-		st,
-		serviceHelper{client: helper},
-		services.DefaultCatalog(),
-		nil,
-	)
 
 	toolingService := tooling.NewService(tooling.Deps{
 		Store:  st,
@@ -1208,6 +1247,28 @@ func (h serviceHelper) Uninstall(ctx context.Context, id string, deleteData bool
 
 func (h serviceHelper) Logs(ctx context.Context, id string, tail int) (string, error) {
 	return h.client.ServiceLogs(ctx, id, tail)
+}
+
+func (h serviceHelper) Validate(ctx context.Context, id string) error {
+	return h.client.ServiceValidate(ctx, id)
+}
+
+func (h serviceHelper) Reload(ctx context.Context, id string) error {
+	return h.client.ServiceReload(ctx, id)
+}
+
+// dockerWebSyncer adapts the typed dockerweb.Server boundary to the sites
+// package's string-based syncer/status interfaces.
+type dockerWebSyncer struct {
+	manager *dockerweb.Manager
+}
+
+func (s dockerWebSyncer) Sync(ctx context.Context, server string) error {
+	return s.manager.Sync(ctx, dockerweb.Server(server))
+}
+
+func (s dockerWebSyncer) DockerStatus() (time.Time, bool, string) {
+	return s.manager.DockerStatus()
 }
 
 // portProbe implements doctor.PortChecker.

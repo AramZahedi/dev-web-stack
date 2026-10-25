@@ -97,6 +97,20 @@ func NewManager(
 	}
 }
 
+// RegisterPreparers adds lane-owned preparers after the manager is constructed.
+// It is used by the daemon when the web provider and database preparers are
+// wired in a cycle-safe order. Existing entries with a nil value are ignored.
+func (m *Manager) RegisterPreparers(preparers map[services.ID]Preparer) {
+	if m.preparers == nil {
+		m.preparers = make(map[services.ID]Preparer, len(preparers))
+	}
+	for id, prep := range preparers {
+		if prep != nil {
+			m.preparers[id] = prep
+		}
+	}
+}
+
 // List returns every catalog service merged with helper status and persisted
 // state. A helper RPC failure is returned rather than shown as not installed.
 func (m *Manager) List(ctx context.Context) ([]services.View, error) {
