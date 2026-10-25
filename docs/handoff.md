@@ -7,8 +7,8 @@
 - **Product status:** Linux M1 released as `v0.1.0`; Wave 0 foundation and Wave 1 service/database/web/tooling work are implemented, reviewed, and merged into the integration branch.
 - **Wave 0 Merge SHA:** `04d1a2d5f111b33995961a90b19cf8df6abaa489`
 - **Wave 0 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40200118349` (green)
-- **Wave 1 integration branch:** `integration/services-wave-1`
-- **Wave 1 merge SHA / CI:** filled by the final merge/CI record in this file.
+- **Wave 1 merge SHA:** `b4be089429b3f63cb7ec94d5c6bf484a4db34da2`
+- **Wave 1 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40214920181` (green)
 - **Next step:** Wave 2 — phpMyAdmin, performance/host tuning, and the dashboard action/config/build/terminal panels. See the
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and

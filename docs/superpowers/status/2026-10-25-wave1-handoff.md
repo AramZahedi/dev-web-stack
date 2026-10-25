@@ -2,7 +2,8 @@
 
 - **Date:** 2026-10-25
 - **Integration branch:** `integration/services-wave-1`
-- **Integration tip at handoff:** captured by the commit containing this file
+- **Merge to master:** `b4be089429b3f63cb7ec94d5c6bf484a4db34da2`
+- **CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40214920181` (green)
 - **Wave 1 status:** implementation, independent lane reviews, fix rounds, integration
   suite, UI suite, installer tests, and live Docker smoke suites pass.
 - **Next wave:** Wave 2 (phpMyAdmin, ImageMagick CLI, performance/host tuning, credential
