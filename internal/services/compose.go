@@ -27,21 +27,23 @@ type composeFile struct {
 }
 
 type composeService struct {
-	ContainerName string                   `yaml:"container_name"`
-	Image         string                   `yaml:"image"`
-	Restart       string                   `yaml:"restart"`
-	NetworkMode   string                   `yaml:"network_mode,omitempty"`
-	Labels        map[string]string        `yaml:"labels"`
-	Environment   map[string]string        `yaml:"environment,omitempty"`
-	Entrypoint    []string                 `yaml:"entrypoint,omitempty"`
-	Command       []string                 `yaml:"command,omitempty"`
-	Ports         []string                 `yaml:"ports,omitempty"`
-	Volumes       []composeVolume          `yaml:"volumes,omitempty"`
-	DependsOn     []string                 `yaml:"depends_on,omitempty"`
-	Healthcheck   *composeHealthcheck      `yaml:"healthcheck,omitempty"`
-	SecurityOpt   []string                 `yaml:"security_opt,omitempty"`
-	CapAdd        []string                 `yaml:"cap_add,omitempty"`
-	Ulimits       map[string]composeUlimit `yaml:"ulimits,omitempty"`
+	ContainerName string                    `yaml:"container_name"`
+	Image         string                    `yaml:"image"`
+	Restart       string                    `yaml:"restart"`
+	NetworkMode   string                    `yaml:"network_mode,omitempty"`
+	Labels        map[string]string         `yaml:"labels"`
+	Environment   map[string]string         `yaml:"environment,omitempty"`
+	ExtraHosts    []string                  `yaml:"extra_hosts,omitempty"`
+	Entrypoint    []string                  `yaml:"entrypoint,omitempty"`
+	Command       []string                  `yaml:"command,omitempty"`
+	Ports         []string                  `yaml:"ports,omitempty"`
+	Volumes       []composeVolume           `yaml:"volumes,omitempty"`
+	Networks      map[string]composeNetwork `yaml:"networks,omitempty"`
+	DependsOn     []string                  `yaml:"depends_on,omitempty"`
+	Healthcheck   *composeHealthcheck       `yaml:"healthcheck,omitempty"`
+	SecurityOpt   []string                  `yaml:"security_opt,omitempty"`
+	CapAdd        []string                  `yaml:"cap_add,omitempty"`
+	Ulimits       map[string]composeUlimit  `yaml:"ulimits,omitempty"`
 }
 
 type composeVolume struct {
@@ -54,6 +56,10 @@ type composeVolume struct {
 
 type composeBind struct {
 	SELinux string `yaml:"selinux,omitempty"`
+}
+
+type composeNetwork struct {
+	Aliases []string `yaml:"aliases,omitempty"`
 }
 
 type composeHealthcheck struct {
@@ -191,20 +197,37 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 			}
 		}
 
+		networkMode := s.NetworkMode
+		if networkMode == "bridge" {
+			// An explicit network_mode: bridge is Docker's default bridge and
+			// cannot carry Compose network aliases. Omitting it attaches the
+			// service to the project's default network instead.
+			networkMode = ""
+		}
+
+		var networks map[string]composeNetwork
+		if len(s.NetworkAliases) > 0 {
+			networks = map[string]composeNetwork{
+				"default": {Aliases: append([]string(nil), s.NetworkAliases...)},
+			}
+		}
+
 		outServices[idStr] = composeService{
 			ContainerName: "devstack-" + idStr,
 			Image:         s.Image,
 			Restart:       "unless-stopped",
-			NetworkMode:   s.NetworkMode,
+			NetworkMode:   networkMode,
 			Labels: map[string]string{
 				"devstack.root":    rootHash,
 				"devstack.service": idStr,
 			},
 			Environment: s.Environment,
+			ExtraHosts:  append([]string(nil), s.ExtraHosts...),
 			Entrypoint:  append([]string(nil), s.Entrypoint...),
 			Command:     append([]string(nil), s.Command...),
 			Ports:       ports,
 			Volumes:     volumes,
+			Networks:    networks,
 			DependsOn:   deps,
 			Healthcheck: healthcheck,
 			SecurityOpt: s.SecurityOpts,

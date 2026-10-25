@@ -432,8 +432,8 @@ func TestRotateCredentialsUnavailable(t *testing.T) {
 	if !errors.Is(err, ErrCredentialsRotationUnavailable) {
 		t.Fatalf("RotateCredentials() error = %v, want ErrCredentialsRotationUnavailable", err)
 	}
-	if !strings.Contains(err.Error(), "Wave 2") {
-		t.Errorf("error = %v, want a clear Wave 2 explanation", err)
+	if !strings.Contains(err.Error(), "privileged helper") {
+		t.Errorf("error = %v, want a clear helper explanation", err)
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatal("rotation error leaks the secret")

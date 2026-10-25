@@ -292,6 +292,7 @@ func TestServiceActionErrorMapping(t *testing.T) {
 		{"not found", services.ErrNotFound, http.StatusNotFound, "NOT_FOUND"},
 		{"invalid request", fmt.Errorf("%w: bad id", helperproto.ErrInvalidRequest), http.StatusBadRequest, "INVALID_REQUEST"},
 		{"service conflict", fmt.Errorf("%w: host port 8080 is already in use", helperproto.ErrServiceConflict), http.StatusConflict, "SERVICE_CONFLICT"},
+		{"database dependency", fmt.Errorf("%w: activate MySQL first", servicecontrol.ErrActiveDatabaseRequired), http.StatusConflict, "SERVICE_CONFLICT"},
 		{"helper internal", fmt.Errorf("%w: docker daemon failed", helperproto.ErrInternal), http.StatusInternalServerError, "HELPER_ERROR"},
 		{"helper not implemented", fmt.Errorf("%w: services", helperproto.ErrNotImplemented), http.StatusServiceUnavailable, "HELPER_UNAVAILABLE"},
 		{"helper unavailable", fmt.Errorf("%w: socket down", servicecontrol.ErrHelperUnavailable), http.StatusServiceUnavailable, "HELPER_UNAVAILABLE"},
