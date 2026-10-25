@@ -7,7 +7,7 @@ This is the current-state record for resuming the service-platform work. Read it
 ## 1. Repository state
 
 - **Code baseline:** `master` at `cbc1605` (Wave 2 merged plus action-color and installed-state fixes).
-- **Documentation baseline:** `8c57b2e` (this file and the Next Batch Plan).
+- **Current runtime build:** `v0.1.0-89-g26069ac` (`26069ac`); docs-only commits after the code baseline do not change behavior.
 - **Wave 1 merge:** `b4be089`.
 - **Wave 2 merge:** `ec2dca4`.
 - **Last green GitHub CI:** run `40222677123` at `cb443d8`. No automatic CI runs after the
@@ -75,7 +75,7 @@ This is ephemeral and not part of the repository state.
 
 - **Dashboard:** `http://127.0.0.1:7070`
 - **Daemon:** running with `--home /home/aram/.devstack`
-- **Binary version:** `v0.1.0-83-gcb443d8`
+- **Binary version:** `v0.1.0-89-g26069ac`
 - **Helper:** running as root with temporary state:
   - socket: `/run/devstack-helper/helper.sock`
   - state: `/tmp/opencode/devstack-runtime/state`
@@ -93,8 +93,13 @@ This is ephemeral and not part of the repository state.
 - **Host port conflicts:** host nginx owns `80/443`, MySQL `3306`, PostgreSQL `5432`, and
   Redis `6379`. Docker service activation for those engines/ports will fail with
   `SERVICE_CONFLICT`; installs are still safe.
-- phpMyAdmin is installed but cannot activate until MySQL or MariaDB is active.
-- Apache shows installed because its image is present; Nginx is not installed.
+- **All catalog services currently show `not_installed`.** `~/.devstack/services` is empty
+  (apart from possible generated files after an action). A cached Docker image alone is
+  not an installation.
+- phpMyAdmin requires MySQL or MariaDB to be active before activation.
+- Apache was incorrectly shown installed after Wave 2 because its image was cached from
+  smoke tests. That status bug is fixed; loading Services no longer creates
+  `services/compose.yaml` as a side effect.
 
 Stop the test runtime:
 
@@ -120,6 +125,16 @@ sudo /data/wwwroot/development/python/dev-web-stack/dist/devstack-helper \
 ```
 
 Then `./dist/devstack --home "$HOME/.devstack" daemon run`.
+
+## 4a. Recent fixes after Wave 2
+
+- Install action is blue (`info`); Activate remains green (`primary`).
+- A service is installed only when `services/<id>/{config,data,logs}` exists. Cached
+  images alone are not installed. `Install` pulls first, then scaffolds; `Activate`
+  rejects uninstalled services.
+- Services status no longer creates `compose.yaml` on page load.
+- Redundant Installed/Active state badges are hidden when the explicit status badge
+  already covers them.
 
 ## 5. Decisions made after Wave 2
 
