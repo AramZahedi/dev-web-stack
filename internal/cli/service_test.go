@@ -2,9 +2,12 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/AramZahedi/dev-web-stack/internal/serviceconfig"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
@@ -388,4 +391,177 @@ func runCLIExitMust(t *testing.T, fake *fakeClient, input string, args ...string
 		t.Fatalf("devstack %s exited %d\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), code, stdout, stderr)
 	}
 	return stdout
+}
+
+func newConfigEditFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "new.conf")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestServiceConfigListTableAndJSON(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{configListing: servicecontrol.ConfigListing{
+		Service: "nginx",
+		Files: []servicecontrol.ConfigStatus{
+			{
+				Path:     "nginx.conf",
+				Class:    serviceconfig.ClassBase,
+				Size:     12,
+				Conflict: servicecontrol.ConfigConflictSummary{Active: false},
+			},
+			{
+				Path:      "conf.d/generated/app.conf",
+				Class:     serviceconfig.ClassGenerated,
+				Generated: true,
+				Modified:  true,
+				Size:      24,
+				Conflict: servicecontrol.ConfigConflictSummary{
+					Active:             true,
+					ResolutionRequired: true,
+					AllowedResolutions: []string{"keep", "use", "merge"},
+				},
+			},
+		},
+	}}
+
+	out := runCLI(t, fake, "service", "config", "list", "nginx")
+	for _, heading := range []string{"PATH", "CLASS", "GENERATED", "MODIFIED", "DETACHED", "SIZE", "CONFLICT"} {
+		if !strings.Contains(out, heading) {
+			t.Errorf("output missing heading %q:\n%s", heading, out)
+		}
+	}
+	if !strings.Contains(out, "conf.d/generated/app.conf") || !strings.Contains(out, "conflict (keep|use|merge)") {
+		t.Fatalf("output missing config rows:\n%s", out)
+	}
+
+	out = runCLI(t, fake, "service", "config", "list", "nginx", "--json")
+	var listing servicecontrol.ConfigListing
+	if err := json.Unmarshal([]byte(out), &listing); err != nil {
+		t.Fatalf("json: %v\n%s", err, out)
+	}
+	if listing.Service != "nginx" || len(listing.Files) != 2 {
+		t.Fatalf("listing = %+v", listing)
+	}
+}
+
+func TestServiceConfigShow(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{configContent: servicecontrol.ConfigContent{
+		ConfigStatus: servicecontrol.ConfigStatus{Path: "nginx.conf", Class: serviceconfig.ClassBase},
+		Content:      "worker_processes auto;\n",
+	}}
+
+	out := runCLI(t, fake, "service", "config", "show", "nginx", "nginx.conf")
+	if out != "worker_processes auto;\n" {
+		t.Fatalf("output = %q", out)
+	}
+	if fake.configActionID != "nginx" || fake.configActionPath != "nginx.conf" {
+		t.Fatalf("request = %q/%q", fake.configActionID, fake.configActionPath)
+	}
+
+	out = runCLI(t, fake, "service", "config", "show", "nginx", "nginx.conf", "--json")
+	var content servicecontrol.ConfigContent
+	if err := json.Unmarshal([]byte(out), &content); err != nil || content.Content != "worker_processes auto;\n" {
+		t.Fatalf("json: %v %q", err, out)
+	}
+}
+
+func TestServiceConfigDiff(t *testing.T) {
+	useTestSeams(t)
+	file := newConfigEditFile(t, "worker_processes 2;\n")
+	fake := &fakeClient{configDiff: servicecontrol.ConfigDiff{
+		Path: "nginx.conf",
+		Diff: "--- a/nginx.conf\n+++ b/nginx.conf\n-worker_processes 1;\n+worker_processes 2;\n",
+		Conflict: servicecontrol.ConfigConflictSummary{
+			Active:             true,
+			Reason:             "tracked generated file has user modifications",
+			AllowedResolutions: []string{"keep", "use", "merge"},
+		},
+	}}
+
+	out := runCLI(t, fake, "service", "config", "diff", "nginx", "nginx.conf", "--file", file)
+	if !strings.Contains(out, "+worker_processes 2;") {
+		t.Fatalf("output = %q", out)
+	}
+	if fake.configActionBody != "worker_processes 2;\n" || fake.configActionPath != "nginx.conf" {
+		t.Fatalf("request = %q/%q", fake.configActionBody, fake.configActionPath)
+	}
+}
+
+func TestServiceConfigApply(t *testing.T) {
+	useTestSeams(t)
+	file := newConfigEditFile(t, "worker_processes 2;\n")
+	fake := &fakeClient{configApply: servicecontrol.ConfigApplyResult{
+		Service: "nginx", Path: "nginx.conf", Action: "apply", Changed: true, Live: true,
+		BackupPath: "/tmp/backup", Hash: "abc", Size: 20,
+	}}
+
+	out := runCLI(t, fake, "service", "config", "apply", "nginx", "nginx.conf",
+		"--file", file, "--resolution", "use", "--yes")
+	if !strings.Contains(out, "Live") || !strings.Contains(out, "true") {
+		t.Fatalf("output = %q", out)
+	}
+	if fake.configResolution != "use" || fake.configActionBody != "worker_processes 2;\n" {
+		t.Fatalf("request = %+v", fake)
+	}
+}
+
+func TestServiceConfigApplyRequiresConfirmation(t *testing.T) {
+	useTestSeams(t)
+	file := newConfigEditFile(t, "worker_processes 2;\n")
+
+	fake := &fakeClient{configApply: servicecontrol.ConfigApplyResult{Service: "nginx", Path: "nginx.conf"}}
+	code, _, _ := runCLIExitInput(t, fake, "n\n", "service", "config", "apply", "nginx", "nginx.conf", "--file", file)
+	if code == 0 {
+		t.Fatal("apply without confirmation succeeded")
+	}
+	if len(fake.configCalls) != 0 {
+		t.Fatalf("calls = %v, want none after declining", fake.configCalls)
+	}
+
+	code, _, _ = runCLIExitInput(t, fake, "y\n", "service", "config", "apply", "nginx", "nginx.conf", "--file", file)
+	if code != 0 {
+		t.Fatalf("confirmed apply exited %d", code)
+	}
+	if len(fake.configCalls) != 1 || fake.configCalls[0] != "apply" {
+		t.Fatalf("calls = %v", fake.configCalls)
+	}
+}
+
+func TestServiceConfigApplyRejectsInvalidResolution(t *testing.T) {
+	useTestSeams(t)
+	file := newConfigEditFile(t, "x\n")
+	fake := &fakeClient{}
+	code, _, _ := runCLIExit(t, fake, "service", "config", "apply", "nginx", "nginx.conf", "--file", file, "--resolution", "overwrite", "--yes")
+	if code == 0 {
+		t.Fatal("invalid resolution succeeded")
+	}
+	if len(fake.configCalls) != 0 {
+		t.Fatalf("calls = %v, want none", fake.configCalls)
+	}
+}
+
+func TestServiceConfigReset(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{configReset: servicecontrol.ConfigApplyResult{
+		Service: "nginx", Path: "nginx.conf", Action: "reset", Changed: true, Live: true,
+		RestoredFrom: "/tmp/backup",
+	}}
+
+	out := runCLI(t, fake, "service", "config", "reset", "nginx", "nginx.conf", "--yes")
+	if !strings.Contains(out, "reset") || !strings.Contains(out, "Restored from") {
+		t.Fatalf("output = %q", out)
+	}
+	if len(fake.configCalls) != 1 || fake.configCalls[0] != "reset" {
+		t.Fatalf("calls = %v", fake.configCalls)
+	}
+
+	code, _, _ := runCLIExitInput(t, fake, "n\n", "service", "config", "reset", "nginx", "nginx.conf")
+	if code == 0 {
+		t.Fatal("reset without confirmation succeeded")
+	}
 }

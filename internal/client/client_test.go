@@ -384,6 +384,53 @@ func (f *fakeAPI) mux() *http.ServeMux {
 			})
 		})
 	})
+	mux.HandleFunc("GET /api/v1/services/{id}/config", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, servicecontrol.ConfigListing{
+				Service: r.PathValue("id"),
+				Files: []servicecontrol.ConfigStatus{{
+					Path: "nginx.conf", Class: "base", Hash: "abc", Size: 12,
+				}},
+			})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/services/{id}/config/content", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, servicecontrol.ConfigContent{
+				ConfigStatus: servicecontrol.ConfigStatus{Path: r.URL.Query().Get("path")},
+				Content:      "worker_processes auto;\n",
+			})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/config/diff", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, servicecontrol.ConfigDiff{
+				Path: "nginx.conf", Diff: "--- a\n+++ b\n", CurrentHash: "a", ProposedHash: "b",
+				Conflict: servicecontrol.ConfigConflictSummary{Active: true, ResolutionRequired: true},
+			})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/config/apply", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, servicecontrol.ConfigApplyResult{
+				Service: r.PathValue("id"), Path: "nginx.conf", Action: "apply",
+				Changed: true, Live: true, BackupPath: "/data/backup",
+			})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/config/reset", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, servicecontrol.ConfigApplyResult{
+				Service: r.PathValue("id"), Path: "nginx.conf", Action: "reset",
+				Changed: true, Live: true, RestoredFrom: "/data/backup",
+			})
+		})
+	})
 	mux.HandleFunc("POST /api/v1/services/{id}/{action}", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
 		f.writeErrorOr(w, func() {
@@ -738,6 +785,63 @@ func TestClientServiceActionsAndCredentials(t *testing.T) {
 		t.Fatalf("rotated = %+v err = %v", rotated, err)
 	}
 	api.last(t, http.MethodPost, "/api/v1/services/mysql/credentials/rotate")
+}
+
+func TestClientServiceConfig(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	listing, err := c.ListServiceConfig(ctx, "nginx")
+	if err != nil || listing.Service != "nginx" || len(listing.Files) != 1 {
+		t.Fatalf("listing = %+v err = %v", listing, err)
+	}
+	api.last(t, http.MethodGet, "/api/v1/services/nginx/config")
+
+	content, err := c.ServiceConfigContent(ctx, "nginx", "conf.d/custom/app.conf")
+	if err != nil || content.Path != "conf.d/custom/app.conf" || content.Content != "worker_processes auto;\n" {
+		t.Fatalf("content = %+v err = %v", content, err)
+	}
+	contentRequest := api.last(t, http.MethodGet, "/api/v1/services/nginx/config/content")
+	if !strings.Contains(contentRequest.query, "path=conf.d%2Fcustom%2Fapp.conf") {
+		t.Fatalf("content query = %q", contentRequest.query)
+	}
+
+	diff, err := c.DiffServiceConfig(ctx, "nginx", "nginx.conf", "worker_processes 2;\n")
+	if err != nil || !diff.Conflict.Active {
+		t.Fatalf("diff = %+v err = %v", diff, err)
+	}
+	diffRequest := api.last(t, http.MethodPost, "/api/v1/services/nginx/config/diff")
+	if !strings.Contains(diffRequest.body, `"path":"nginx.conf"`) ||
+		!strings.Contains(diffRequest.body, `"content":"worker_processes 2;\n"`) {
+		t.Fatalf("diff payload = %s", diffRequest.body)
+	}
+
+	result, err := c.ApplyServiceConfig(ctx, "nginx", servicecontrol.ConfigApplyRequest{
+		Path: "nginx.conf", Content: "worker_processes 2;\n", Resolution: "use",
+	})
+	if err != nil || !result.Changed || result.BackupPath != "/data/backup" {
+		t.Fatalf("apply = %+v err = %v", result, err)
+	}
+	applyRequest := api.last(t, http.MethodPost, "/api/v1/services/nginx/config/apply")
+	if !strings.Contains(applyRequest.body, `"resolution":"use"`) {
+		t.Fatalf("apply payload = %s", applyRequest.body)
+	}
+
+	reset, err := c.ResetServiceConfig(ctx, "nginx", "nginx.conf")
+	if err != nil || reset.RestoredFrom != "/data/backup" {
+		t.Fatalf("reset = %+v err = %v", reset, err)
+	}
+	resetRequest := api.last(t, http.MethodPost, "/api/v1/services/nginx/config/reset")
+	if !strings.Contains(resetRequest.body, `"path":"nginx.conf"`) {
+		t.Fatalf("reset payload = %s", resetRequest.body)
+	}
 }
 
 func TestClientAddSiteCarriesSiteContractFields(t *testing.T) {

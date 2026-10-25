@@ -494,6 +494,53 @@ func (c *Client) ServiceLogs(ctx context.Context, id string, tail int) (string, 
 	return response.Logs, nil
 }
 
+// ListServiceConfig returns metadata for a service's allowed config files.
+func (c *Client) ListServiceConfig(ctx context.Context, id string) (servicecontrol.ConfigListing, error) {
+	var listing servicecontrol.ConfigListing
+	err := c.doJSON(ctx, http.MethodGet, "/api/v1/services/"+url.PathEscape(id)+"/config", nil, &listing)
+	if listing.Files == nil {
+		listing.Files = []servicecontrol.ConfigStatus{}
+	}
+	return listing, err
+}
+
+// ServiceConfigContent returns one allowed service config file's content.
+func (c *Client) ServiceConfigContent(ctx context.Context, id, path string) (servicecontrol.ConfigContent, error) {
+	query := url.Values{}
+	query.Set("path", path)
+	var content servicecontrol.ConfigContent
+	err := c.doJSON(ctx, http.MethodGet,
+		"/api/v1/services/"+url.PathEscape(id)+"/config/content?"+query.Encode(), nil, &content)
+	return content, err
+}
+
+// DiffServiceConfig returns a unified diff and conflict metadata.
+func (c *Client) DiffServiceConfig(ctx context.Context, id, path, content string) (servicecontrol.ConfigDiff, error) {
+	payload := struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}{Path: path, Content: content}
+	var diff servicecontrol.ConfigDiff
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/services/"+url.PathEscape(id)+"/config/diff", payload, &diff)
+	return diff, err
+}
+
+// ApplyServiceConfig writes a config edit, optionally resolving a tracked
+// conflict with keep, use, or merge.
+func (c *Client) ApplyServiceConfig(ctx context.Context, id string, req servicecontrol.ConfigApplyRequest) (servicecontrol.ConfigApplyResult, error) {
+	var result servicecontrol.ConfigApplyResult
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/services/"+url.PathEscape(id)+"/config/apply", req, &result)
+	return result, err
+}
+
+// ResetServiceConfig restores the newest backup for one config file.
+func (c *Client) ResetServiceConfig(ctx context.Context, id, path string) (servicecontrol.ConfigApplyResult, error) {
+	var result servicecontrol.ConfigApplyResult
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/services/"+url.PathEscape(id)+"/config/reset",
+		servicecontrol.ConfigResetRequest{Path: path}, &result)
+	return result, err
+}
+
 // ServiceCredentials explicitly reveals a service's credentials.
 func (c *Client) ServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error) {
 	var creds servicecontrol.Credentials
