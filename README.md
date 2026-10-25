@@ -194,9 +194,10 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
 - The PHP full source build and FPM smoke test are verified by CI on
   `ubuntu-22.04`; the published artifacts were downloaded and exercised in the
   final acceptance run.
-- App CI, the tag-driven release workflow, and master CI are green. The manual
-  platform matrix (Ubuntu 22.04/24.04, Debian 12, Fedora 44, Windows/WSL) was
-  not run as a full matrix; local acceptance used Fedora 44.
+- Historical app CI, release workflow, and master CI runs were green. Automatic
+  GitHub Actions are now disabled and workflows are manual-dispatch only; use the
+  local gate. The manual platform matrix (Ubuntu 22.04/24.04, Debian 12, Fedora 44,
+  Windows/WSL) was not run as a full matrix; local acceptance used Fedora 44.
 
 ## Documentation
 
@@ -257,7 +258,7 @@ Dev mode uses the mock API unless `VITE_API_MODE` is set; use
 | `build/php/` | PHP source/PECL pin lock, build, smoke, and lock scripts |
 | `build/helper.yaml.example` | helper configuration reference |
 | `.github/workflows/php.yml` | PHP build matrix, smoke, SBOM, and catalog artifact |
-| `.github/workflows/release.yml` | tag-driven Linux GoReleaser release |
+| `.github/workflows/release.yml` | manual-dispatch Linux GoReleaser release |
 | `install.sh` | source, verified release archive, and upgrade installer |
 | `test/acceptance/m1.sh` | unprivileged Linux M1 acceptance runner |
 | `test/e2e/linux.sh` | unprivileged Linux end-to-end test |

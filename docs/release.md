@@ -95,18 +95,16 @@ The test uses a temporary `--build-dir`, so it never overwrites or creates
 `dist/devstack`/`dist/devstack-helper`. It also compares two independent builds
 and asserts the archive and checksums are identical.
 
-## Tag-driven release workflow
+## Manual release workflow
 
-`.github/workflows/release.yml` publishes the release. It runs on:
+Automatic GitHub Actions are disabled. `.github/workflows/release.yml` publishes a release
+only when manually dispatched with an existing `tag` input; tag pushes do not start it.
 
-- a pushed tag matching `v*`; or
-- a manual `workflow_dispatch` with an existing `tag` input.
-
-Both paths pass a tag guard before building. The tag must match
+The manual dispatch passes a tag guard before building. The tag must match
 `v<major>.<minor>.<patch>` (with an optional prerelease suffix), the checkout is
 pinned to `refs/tags/<tag>`, and the checked-out commit must equal the tag's
-commit. A branch push, a malformed tag, or a tag that does not resolve fails the
-job; nothing is published.
+commit. A malformed tag or a tag that does not resolve fails the job; nothing is
+published.
 
 The workflow uses least privilege: the workflow default is `contents: read`, and
 only the release job receives `contents: write` for the GitHub release. It does

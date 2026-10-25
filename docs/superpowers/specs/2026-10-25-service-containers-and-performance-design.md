@@ -1,17 +1,26 @@
 # dev-web-stack — Managed Service Containers, Editable Configuration, and Throughput: Design
 
-- **Status:** Approved for implementation (2026-10-25)
+- **Status:** Approved for implementation; partially superseded by the 2026-10-26
+  continuation decisions.
 - **Date:** 2026-10-25
 - **Scope:** Native Linux devstack plus optional Docker-backed services
 - **Related:** `docs/superpowers/specs/2026-10-22-dev-web-stack-m1-design.md`,
   `docs/superpowers/specs/2026-10-22-external-vhosts-design.md`
 
+## 0. Superseded decisions (2026-10-26)
+
+- ImageMagick CLI is **descoped**; no Settings card, catalog entry, or tool RPC.
+  PHP's `imagick` extension remains.
+- Automatic GitHub CI is disabled; workflows are manual dispatch only.
+- The next batch scope and API details are in
+  `docs/superpowers/plans/2026-10-26-service-platform-next-batch.md`.
+
 ## 1. Summary
 
 Devstack remains a native application: CLI, daemon, helper, SQLite state, PHP/Node
 runtimes, and certificates all run on the host. Optional infrastructure services —
-nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis, phpMyAdmin, and ImageMagick CLI — run
-as **separate Docker containers**.
+nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis, and phpMyAdmin — run as **separate
+Docker containers**.
 
 Service configuration and persistent service data live on the host under one configurable
 root, mounted into the containers. Nginx and Apache are installed together but only one

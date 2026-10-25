@@ -20,7 +20,7 @@ machine, and the design for the next service-platform milestone.
 ## Current design and plans
 
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
-  — Waves 0–1 implemented; Wave 2 remains.
+  — Waves 0–2 implemented; next batch planned.
 - [M1 design](superpowers/specs/2026-10-22-dev-web-stack-m1-design.md)
   — released Linux foundation.
 - [External vhosts design](superpowers/specs/2026-10-22-external-vhosts-design.md)
@@ -33,9 +33,12 @@ machine, and the design for the next service-platform milestone.
   — foundation execution record.
 - [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md)
   — service lifecycle, database/web-server/tooling implementation.
+- [Next Batch Plan](superpowers/plans/2026-10-26-service-platform-next-batch.md)
+  — config editor, performance, terminal, ports, UI cleanup.
 - [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md),
-  [Wave 1 handoff](superpowers/status/2026-10-25-wave1-handoff.md), and
-  [Wave 2 handoff](superpowers/status/2026-10-25-wave2-handoff.md)
+  [Wave 1 handoff](superpowers/status/2026-10-25-wave1-handoff.md),
+  [Wave 2 handoff](superpowers/status/2026-10-25-wave2-handoff.md), and
+  [Continuation State](superpowers/status/2026-10-26-continuation.md)
   — verification and remaining work.
 - [Documentation audit findings](../DOCUMENTATION_AUDIT_FINDINGS.md)
   — reviewed and resolved on 2026-10-25.
@@ -62,8 +65,9 @@ The M1 user documentation remains authoritative for the released native product:
 ## Implementation status in one sentence
 
 The Linux M1 native application is implemented and released as `v0.1.0`. The old
-standalone devstack-in-Docker image was retired on 2026-10-25. Waves 0–1 and the Wave 2 phpMyAdmin/dashboard work are implemented: Docker
-nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis, phpMyAdmin, credentials/rotation, global
-PHP/Composer, site shell/exec, static builds, and the dashboard action/build/tooling
-panels. The performance engine is implemented; host-tuning/apply wiring, ImageMagick CLI,
-service config diff/apply, the site terminal, and external-site Docker mounts remain.
+standalone devstack-in-Docker image was retired on 2026-10-25. Waves 0–2 are implemented: Docker nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis,
+phpMyAdmin, credentials/rotation, global PHP/Composer, site shell/exec, static builds,
+and dashboard action/build/tooling panels. The performance engine exists but is not
+wired. Service config editing, performance apply/benchmark, site terminal, editable
+listener ports, and external-site Docker mounts remain. ImageMagick CLI is descoped.
+Automatic GitHub CI is disabled; workflows are manual-dispatch only.

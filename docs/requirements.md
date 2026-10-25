@@ -27,21 +27,21 @@ containers, not the required runtime for devstack itself.
 | R5 | Builtin Go proxy plus native nginx/Apache modes | Implemented |
 | R6 | Local CA, OS/browser trust, managed hosts block | Implemented |
 | R7 | CLI, embedded dashboard, daemon, privileged helper | Implemented |
-| R8 | Optional Docker tools: nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis, phpMyAdmin, ImageMagick | Partial — phpMyAdmin implemented; ImageMagick CLI remains |
+| R8 | Optional Docker tools: nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis, phpMyAdmin | Implemented — ImageMagick CLI descoped |
 | R9 | One active web server and one active MySQL-family service at a time | Implemented |
 | R10 | Host-owned config/data/certs at a single root | Implemented |
 | R11 | Editable configs with conflict/diff protection | Partial — engine, seeded base, generated vhosts; full dashboard config apply/diff remains |
 | R12 | Native CA/trust even when tools run in containers | Implemented — leaf certs mounted, CA host-only |
 | R13 | phpMyAdmin exposed on a localhost port | Implemented — loopback 8082, cookie auth, active DB follow |
 | R14 | Random per-engine database credentials | Implemented — generate/reveal/rotate, admin grants, owner-preserving 0600 |
-| R15 | Native PHP `imagick`; Dockerized ImageMagick CLI | Partial — PHP imagick exists; CLI Wave 2 |
+| R15 | Native PHP `imagick`; Dockerized ImageMagick CLI | Partial — PHP `imagick` implemented; Docker CLI descoped by user |
 | R16 | Configurable PHP front-controller file and mode | Implemented |
 | R17 | Apache project `.htaccess` support | Implemented — Docker Apache |
 | R18 | Nuxt/Vite static-build profiles and SPA fallback | Implemented — native build executor |
-| R19 | Full dashboard parity with CLI | Partial — service actions/credentials, build/profile, tooling, grouped cards; config diff/apply and terminal remain |
+| R19 | Full dashboard parity with CLI | Partial — service actions/credentials, build/profile, tooling; config diff/apply and terminal are next batch |
 | R20 | Global `php` and `composer`, with a machine-wide PHP CLI default | Implemented |
-| R21 | Auto-tuned nginx/Apache/PHP performance and host tuning | Partial — bounded pure profile engine; helper apply/reset/benchmark pending |
-| R22 | Project build/benchmark/terminal workflows in the dashboard | Partial — build profile/run/logs UI; benchmark/terminal pending |
+| R21 | Auto-tuned nginx/Apache/PHP performance and host tuning | Partial — bounded pure profile engine; helper apply/reset/benchmark/UI next batch |
+| R22 | Project build/benchmark/terminal workflows in the dashboard | Partial — build UI implemented; benchmark/terminal next batch |
 | R23 | Existing native external nginx/Apache mode remains available | Required compatibility |
 | R24 | No automatic root migration from `~/.devstack` | Planned decision |
 | R25 | Keep work committed/pushed and CI green | Process |

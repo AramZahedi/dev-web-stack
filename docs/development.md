@@ -53,7 +53,7 @@ go test ./internal/... -count=1
 (cd ui && npm run check && npm test -- --run)
 ```
 
-CI-equivalent:
+Local full gate (CI-equivalent; automatic GitHub Actions are disabled):
 
 ```sh
 go vet ./...
@@ -142,7 +142,7 @@ checks; `--skip-playwright` is available for a faster run but is not a pass.
 - Every entry must have a real HTTPS URL, size, and SHA-256 from a published artifact.
 - Never invent versions, checksums, or URLs.
 - PHP extension manifest is `internal/catalog/php.json`.
-- New PHP artifacts require the PHP workflow and a new devstack release to embed the
+- New PHP artifacts require the manually dispatched PHP workflow and a new devstack release to embed the
   catalog entry.
 
 ## 10. Release
@@ -187,7 +187,8 @@ real `/etc/hosts`, trust stores, or 80/443 in automated tests.
 - Separate docs/design changes from implementation where practical.
 - Run `git diff --check` before committing.
 - Do not commit secrets, service data, generated certificates, or runtime archives.
-- Keep CI green; docs-only commits still run CI.
+- Run the local full gate manually; automatic GitHub Actions are disabled for all pushes,
+  pull requests, and tags.
 
 ## 14. Current constraints to remember
 

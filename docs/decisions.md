@@ -1,7 +1,7 @@
 # Decision log
 
-- **Last reviewed:** 2026-10-25
-- **Status:** M1 plus most Wave 1 service decisions are implemented; Wave 2 items remain planned.
+- **Last reviewed:** 2026-10-26
+- **Status:** M1 and Waves 0–2 implemented; next-batch config/performance/terminal/port work is planned. ImageMagick CLI is descoped; automatic GitHub CI is disabled.
 - **Detailed service design:** [2026-10-25 design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 
 This is an ADR-style record. “Current” decisions are shipped or in the released M1 code.
@@ -29,6 +29,7 @@ items are implementation choices that do not change the product architecture.
 | C15 | Unsigned checksummed releases | Integrity in transit; signing deferred to M4. |
 | C16 | Static/Node/PHP site kinds | Clear runtime model; PHP front controller and Node process supervision are separate. |
 | C17 | Standalone devstack Docker image retired | Removed on 2026-10-25. Docker is reserved for the planned separate service containers. Generic public-port URL/redirect support and the mounted-hosts fallback were retained because they are useful outside the old image. |
+| C18 | Automatic GitHub Actions disabled | Pushes, pull requests, and tags do not start workflows; `ci.yml`, `php.yml`, and `release.yml` are manual dispatch only. Local verification is authoritative. |
 
 ## 2. Planned service-platform decisions
 
@@ -75,8 +76,12 @@ items are implementation choices that do not change the product architecture.
 | S39 | Full vhost parity, including dashboard vhost | Switching to Docker web server must not strand `devstack.test`. |
 | S40 | Deactivating/uninstalling active web server refused until switch | Avoid accidental outage/stranded 80/443. |
 | S41 | Native server conflict is reported, never auto-stopped | No systemd management for tools; user must switch manually. |
-| S42 | ImageMagick CLI container; PHP `imagick` bundled | PHP extension already ships MagickWand libs; CLI is separate tool. |
+| S42 | ImageMagick CLI descoped; PHP `imagick` bundled | User no longer needs the CLI; removing it avoids a separate image/tool surface. PHP `imagick` remains available. |
 | S43 | Existing `/usr/local/bin/php`/`composer` requires `--force` backup | Avoid destroying unrelated tools. |
+| S44 | Service config editing is scoped to `services/<id>/config` | Never expose data, logs, secrets, certs, backups, or arbitrary host paths. |
+| S45 | Performance apply/reset/host tuning is explicit and reversible | Host-wide kernel changes require confirmation, fixed helper targets, backup, verification, and reset. |
+| S46 | Browser terminal is site-scoped and user-only | No root/sudo/Docker socket; PTY ticket bound to UID/site; no arbitrary host command surface. |
+| S47 | Editable Settings ports are daemon listener ports | `http_port`/`https_port`/`ui_port` persist and require restart; public 80/443 remain helper/Docker-owned. |
 
 ## 3. Rejected alternatives
 

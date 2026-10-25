@@ -28,13 +28,13 @@ container bug is historical and no longer relevant to this repository.
 
 ## 2. Planned service-platform gaps
 
-### K1 — Remaining Wave 2/3 items
+### K1 — Remaining next-batch items
 
 Waves 0–1 and the Wave 2 phpMyAdmin/dashboard work are implemented. Still missing:
-performance helper/apply/reset/benchmark wiring, ImageMagick CLI, service config
-editor/diff/apply, site-scoped terminal/command runner, and external-site Docker mounts.
-The performance package is a pure engine today; it is not yet applied to the host or
-dashboard.
+service config editor/diff/apply, performance helper/apply/reset/benchmark wiring and
+dashboard, site-scoped terminal/command runner, editable listener ports, and external-site
+Docker mounts. The performance package is a pure engine today; it is not yet applied to
+the host or dashboard. See the [Next Batch Plan](superpowers/plans/2026-10-26-service-platform-next-batch.md).
 
 ### K2 — Existing native provider vs Docker provider
 
@@ -71,13 +71,33 @@ release.
 
 Waves 1–2 settled the initial image digests, official httpd image (no wrapper), Composer
 2.10.3 PHAR digest, phpMyAdmin config mechanism, Redis no-password default, and bounded
-performance formulas/caps. Remaining: live host-tuning policy/user scope, benchmark
-workloads/result schema, and the amount of legacy native-provider UI to retain.
+performance formulas/caps. Remaining: live host-tuning policy/user scope, benchmark tool
+selection/result schema, exact listener-port restart behavior, and the amount of legacy
+native-provider UI to retain.
 
 ### K6 — Host performance tuning changes are global
 
 The planned host tuning applies sysctl/limits changes to the entire machine. It must be
 applied with backup and reset, and only in the serialized performance phase.
+
+### K9 — ImageMagick CLI descoped
+
+ImageMagick CLI is no longer planned: no Settings card, catalog service, helper tool RPC,
+or image digest. PHP's `imagick` extension remains available per site. Historical design
+text mentioning the CLI is superseded by this decision.
+
+### K10 — Automatic GitHub CI is disabled
+
+`.github/workflows/ci.yml`, `php.yml`, and `release.yml` are `workflow_dispatch` only.
+Pushes, pull requests, and tags do not start workflows. Use the local verification gate in
+the Next Batch Plan. Manual dispatch still works if explicitly invoked.
+
+### K11 — Current test runtime uses `~/.devstack`
+
+The local test daemon uses `--home /home/aram/.devstack` and a temporary root helper state
+under `/tmp/opencode/devstack-runtime`; hosts/trust are intentionally not modified. This
+is not a system install. Host nginx owns 80/443, so Docker web-server activation will
+conflict until those ports are freed. See [Continuation State](superpowers/status/2026-10-26-continuation.md).
 
 ## 3. Current native product limitations
 
@@ -85,12 +105,12 @@ applied with backup and reset, and only in the serialized performance phase.
 - Native external nginx/Apache mode requires the server to be installed and configured by
   the administrator; devstack does not install packages.
 - Browser trust, root install on 80/443, and live UI gates remain manual.
-- phpMyAdmin, ImageMagick CLI, performance profiles, host tuning, and credential rotation
-  are not implemented yet.
-- The dashboard service page is read-only; service/config/build/credential actions are
-  API/CLI only until Wave 2.
+- phpMyAdmin, credentials/rotation, service lifecycle, builds, and most dashboard actions
+  are implemented. Service config editing, performance apply/benchmark, site terminal, and
+  editable listener ports remain.
+- ImageMagick CLI is descoped; PHP `imagick` remains available.
 - Docker web servers require sites under the managed projects root (K7).
-- `install.sh` now adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
+- `install.sh` adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
   existing helper config and restarts it. A manually managed config without
   `service_root` leaves the service API at helper NOT_IMPLEMENTED until fixed.
 

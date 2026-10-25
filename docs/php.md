@@ -384,7 +384,7 @@ uploaded to the real release host. That happened for
 
 The merge is performed by `cmd/catalogmerge` (see the command above and the
 [release guide](release.md#php-catalog-gate-completed)). The release
-workflow does not run it: the tag-driven release publishes the CLI and helper
+workflow does not run it: the manual release workflow publishes the CLI and helper
 only. Keeping the merge out of the release workflow prevents a tagged build from
 silently embedding URLs or checksums that were never published.
 

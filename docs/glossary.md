@@ -21,7 +21,7 @@
 | **base config** | A service main config seeded once, then user-owned. |
 | **custom include** | A user-owned config file never overwritten by devstack. |
 | **conflict** | State where a managed file changed locally and devstack needs to regenerate it; resolved by keep/detach, use generated, merge, or cancel. |
-| **service** | Planned optional Docker infrastructure component (nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis, phpMyAdmin, ImageMagick CLI). |
+| **service** | Optional Docker infrastructure component (nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis, phpMyAdmin). ImageMagick CLI is descoped. |
 | **installed** | Image/config/data exists; the service may be stopped. |
 | **active** | Container is running and healthy, and owns its expected port. |
 | **conflict group** | Mutually exclusive services: nginx/Apache for 80/443; MySQL/MariaDB for 3306. |

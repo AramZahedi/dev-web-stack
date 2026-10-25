@@ -16,7 +16,7 @@ packaging and publication path.
 
 - Linux x86_64 with systemd as PID 1.
 - One installing user per machine. The helper accepts calls from that UID only.
-- Built and tested on Fedora 44; CI runs on Ubuntu 24.04.
+- Built and tested on Fedora 44. Automatic GitHub CI is disabled; local verification is authoritative.
 
 The helper installs to `/usr/local/lib/devstack` and runs as root. The daemon
 runs as your user and never needs root.

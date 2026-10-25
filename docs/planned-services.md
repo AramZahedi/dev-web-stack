@@ -1,14 +1,15 @@
 # Planned service platform
 
-> **Implementation status (2026-10-25):** Waves 0–1 and the Wave 2 phpMyAdmin/dashboard
-> work are implemented: six pinned service containers, phpMyAdmin, Docker nginx/Apache,
-> database credentials/rotation/admin bootstrap, global PHP/Composer, site shell/exec,
-> static builds, and dashboard action/build/tooling panels. The pure performance engine
-> exists; host-tuning/apply wiring, ImageMagick CLI, service config diff/apply, the site
-> terminal, and external-site Docker mounts remain. This document remains the product
-> overview, not a promise that every item is shipped.
+> **Implementation status (2026-10-26):** Waves 0–2 are implemented: six pinned service
+> containers, phpMyAdmin, Docker nginx/Apache, database credentials/rotation/admin
+> bootstrap, global PHP/Composer, site shell/exec, static builds, and dashboard
+> action/build/tooling panels. The pure performance engine exists but is not wired. The
+> next batch covers service config editing, performance apply/reset/benchmark/UI, site
+> terminal, editable listener ports, and UI cleanup. ImageMagick CLI is descoped;
+> external-site Docker mounts remain. This document remains the product overview, not a
+> promise that every item is shipped.
 
-- **Status:** Waves 0–1 implemented; Wave 2 items remain planned.
+- **Status:** Waves 0–2 implemented; next batch planned.
 - **Design status:** Approved for implementation.
 - **Detailed specification:** [service containers, editable config, and throughput](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 - **Current implemented architecture:** [architecture](architecture.md)
@@ -202,7 +203,7 @@ The dashboard can perform every operational task:
 - config editor/diff/apply/reset;
 - credential reveal/copy/rotate;
 - phpMyAdmin launch;
-- Composer/ImageMagick tooling;
+- Composer/PHP tooling;
 - performance apply/reset/benchmark;
 - trust/Doctor repair and logs.
 
@@ -239,7 +240,7 @@ CLI remains an alternative interface to the same API.
 4. Config ownership/editor/conflict flow and validation.
 5. Native CA mounts and trust verification.
 6. Performance profile, host tuning, PHP-FPM budgets, benchmarks.
-7. `devstack shell`, global PHP/Composer, ImageMagick tooling.
+7. `devstack shell`, global PHP/Composer tooling. ImageMagick CLI is descoped.
 8. Dashboard UI, terminal, builds, CLI parity.
 9. Acceptance: Laravel/Apache `.htaccess`, Nuxt build, credentials, config conflicts,
    service switching, performance, security.

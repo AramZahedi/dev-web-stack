@@ -1,9 +1,10 @@
 # Current architecture
 
-- **Status:** describes the implemented Linux M1 system plus Waves 0–1 and the Wave 2
-  phpMyAdmin/dashboard work. Performance host-tuning/apply, ImageMagick CLI, config
-  diff/apply UI, terminal, and external-site Docker mounts remain follow-ups.
-- **Last reviewed:** 2026-10-25
+- **Status:** describes the implemented Linux M1 system plus Waves 0–2. The next batch
+  adds service config editing, performance apply/reset/benchmark/UI, site terminal, and
+  editable listener ports. ImageMagick CLI is descoped; external-site Docker mounts remain
+  a follow-up.
+- **Last reviewed:** 2026-10-26
 - **Planned extension:** [service containers design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 
 ## 1. Purpose
@@ -168,7 +169,7 @@ Unrelated hosts lines are preserved.
 ### Service containers (Wave 1)
 
 - The embedded catalog pins nginx, Apache httpd, MySQL, MariaDB, PostgreSQL, Redis, and
-  phpMyAdmin 5.2.3 by digest. ImageMagick CLI remains a follow-up.
+  phpMyAdmin 5.2.3 by digest. ImageMagick CLI is descoped; PHP `imagick` remains.
 - phpMyAdmin is a standalone loopback:8082 cookie-auth container that follows the active
   MySQL/MariaDB engine through the fixed `db` Compose alias; activating it without an
   active MySQL family is rejected.
@@ -400,9 +401,9 @@ remain follow-ups. CLI/API build, shell, credentials, and service lifecycle path
   run.
 - Waves 0–1 plus phpMyAdmin/rotation and the dashboard action/build/tooling panels are
   implemented.
-- Still pending: performance helper/apply/reset/benchmark + dashboard wiring, ImageMagick
-  CLI, service config diff/apply UI, site terminal/command runner, and external-site
-  Docker mounts.
+- Still pending: performance helper/apply/reset/benchmark + dashboard wiring, service
+  config diff/apply UI, site terminal/command runner, editable listener ports, and
+  external-site Docker mounts.
 - Docker web servers currently serve only sites under the managed `projects/` root.
 - The official MySQL entrypoint can retain password values in the container process
   environment; Compose files/logs do not contain them.

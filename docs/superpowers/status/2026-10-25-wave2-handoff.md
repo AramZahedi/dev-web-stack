@@ -55,14 +55,17 @@
 
 ## Remaining (not shipped)
 
-1. Wire `internal/performance` to helper apply/reset/host tuning, active-server includes,
-   PHP pool/ini merge, benchmark execution/result storage, API/CLI, and dashboard.
-2. ImageMagick CLI tool management (no selected pinned image yet).
-3. Service config editor/diff/apply in the dashboard.
-4. Site-scoped terminal/command runner.
+1. Service config manifest/read/diff/apply/reset API, CLI, and dashboard.
+2. Performance apply/reset/host tuning/benchmark execution/result storage/API/CLI/UI.
+3. Site-scoped PTY terminal/command runner.
+4. Editable listener ports in Settings.
 5. External-site bind mounts for Docker web servers; sites outside `projects/` currently
    use builtin/native serving.
 6. Full Wave 3 acceptance/host benchmark evidence.
+
+ImageMagick CLI is descoped. Automatic GitHub CI is disabled; workflows are manual
+`workflow_dispatch` only. See the [Next Batch Plan](../plans/2026-10-26-service-platform-next-batch.md)
+and [Continuation State](2026-10-26-continuation.md).
 
 ## Review trail
 
