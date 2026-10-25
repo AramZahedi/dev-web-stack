@@ -17,6 +17,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -223,6 +224,14 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if cfg.ServiceRoot != "" {
 		s.dockerServices = NewDockerServiceController(cfg.ServiceRoot, services.DefaultCatalog(), cfg.Runner)
+		s.dockerServices.OwnerUID = cfg.AllowUID
+		// A Docker web server owns 80/443. The daemon writes this marker before
+		// stopping the builtin forwarders, so a helper restart/reboot must not
+		// re-bind the ports and fight the container.
+		if dockerWebServing(cfg.ServiceRoot) {
+			s.cfg.AutoForward = false
+			cfg.AutoForward = false
+		}
 	}
 	if cfg.ToolRoot != "" {
 		tools, err := NewToolManager(cfg.ToolRoot, cfg.ToolBinDir, cfg.AllowUID, logger)
@@ -233,6 +242,17 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	s.cfg.Service = s.wireService(s.cfg.Service)
 	return s, nil
+}
+
+// dockerWebServing reports whether the daemon has marked the Docker web
+// provider as the owner of 80/443. The marker is written before forwarders are
+// stopped and cleared after builtin serving is restored.
+func dockerWebServing(root string) bool {
+	data, err := os.ReadFile(filepath.Join(root, "services", ".serving-provider"))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(string(data)), "docker")
 }
 
 // wireService fills in the privileged handlers that the helper owns. Hooks

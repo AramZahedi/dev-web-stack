@@ -296,6 +296,7 @@ func TestServiceActionErrorMapping(t *testing.T) {
 		{"helper not implemented", fmt.Errorf("%w: services", helperproto.ErrNotImplemented), http.StatusServiceUnavailable, "HELPER_UNAVAILABLE"},
 		{"helper unavailable", fmt.Errorf("%w: socket down", servicecontrol.ErrHelperUnavailable), http.StatusServiceUnavailable, "HELPER_UNAVAILABLE"},
 		{"credentials unsupported", servicecontrol.ErrCredentialsUnsupported, http.StatusBadRequest, "INVALID_REQUEST"},
+		{"credentials rotation unavailable", servicecontrol.ErrCredentialsRotationUnavailable, http.StatusNotImplemented, "CREDENTIAL_ROTATION_UNAVAILABLE"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -400,6 +401,11 @@ func TestServiceLogs(t *testing.T) {
 	for _, query := range []string{"?tail=abc", "?tail=-1"} {
 		rec = fx.request(t, http.MethodGet, "/api/v1/services/mysql/logs"+query, nil)
 		assertError(t, rec, http.StatusBadRequest, "INVALID_REQUEST")
+	}
+
+	rec = fx.request(t, http.MethodGet, "/api/v1/services/mysql/logs?tail=999999", nil)
+	if rec.Code != http.StatusOK || fakeCoord.tail != 1000 {
+		t.Fatalf("capped tail code = %d tail = %d, want 200/1000", rec.Code, fakeCoord.tail)
 	}
 }
 

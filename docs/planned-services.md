@@ -1,5 +1,12 @@
 # Planned service platform
 
+> **Implementation status (2026-10-25):** Waves 0–1 are implemented: six pinned service
+> containers, Docker nginx/Apache, database credentials/admin bootstrap, global
+> PHP/Composer, site shell/exec, and static builds. Remaining Wave 2 items are phpMyAdmin,
+> ImageMagick CLI, credential rotation, performance/host tuning, external-site Docker
+> mounts, and full dashboard action/config/build/terminal panels. This document remains
+> the product overview, not a promise that every item is shipped.
+
 - **Status:** Designed, **not implemented**.
 - **Design status:** Approved for implementation.
 - **Detailed specification:** [service containers, editable config, and throughput](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)

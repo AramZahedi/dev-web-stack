@@ -100,3 +100,45 @@ func TestInstallScriptGeneratedUnitWritesManagedTools(t *testing.T) {
 		t.Fatal("install.sh does not configure tool_root for the helper")
 	}
 }
+
+func TestNewServerSuppressesAutoForwardForDockerMarker(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "services"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "services", ".serving-provider"), []byte("docker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(Config{
+		SocketPath:  filepath.Join(t.TempDir(), "helper.sock"),
+		HostsPath:   filepath.Join(t.TempDir(), "hosts"),
+		AllowUID:    os.Getuid(),
+		ServiceRoot: root,
+		AutoForward: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.cfg.AutoForward {
+		t.Fatal("AutoForward remains enabled with a Docker serving marker")
+	}
+}
+
+func TestNewServerWiresDockerServiceController(t *testing.T) {
+	root := t.TempDir()
+	srv, err := NewServer(Config{
+		SocketPath:  filepath.Join(t.TempDir(), "helper.sock"),
+		HostsPath:   filepath.Join(t.TempDir(), "hosts"),
+		AllowUID:    os.Getuid(),
+		ServiceRoot: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.dockerServices == nil {
+		t.Fatal("Docker service controller is not wired")
+	}
+	if srv.dockerServices.OwnerUID != os.Getuid() {
+		t.Fatalf("OwnerUID = %d, want %d", srv.dockerServices.OwnerUID, os.Getuid())
+	}
+}

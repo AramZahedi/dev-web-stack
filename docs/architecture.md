@@ -1,7 +1,8 @@
 # Current architecture
 
-- **Status:** describes the implemented Linux M1 system plus the Wave 0 service-platform
-  foundation. Service containers and dashboard parity are planned for Waves 1–2.
+- **Status:** describes the implemented Linux M1 system plus Waves 0–1 of the service
+  platform. Wave 2 (phpMyAdmin, performance/host tuning, full dashboard panels) is
+  planned.
 - **Last reviewed:** 2026-10-25
 - **Planned extension:** [service containers design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 
@@ -122,7 +123,7 @@ repository now.
   runtimes/            installed PHP/Node builds
   sites/               generated per-site PHP/FPM configuration
   projects/            default managed project root
-  services/            service Compose/config/data (Wave 0 layout; no containers yet)
+  services/            generated Compose, web/database config, containers' data/logs
   certs/               leaf certificates and keys
   secrets/             service credentials, mode 0700
   tools/               managed CLI tool roots
@@ -145,10 +146,10 @@ paths; the generated per-site configuration is under `sites/`.
 - `events`
 - `php_defaults`
 - `site_php_config`
-- `services` (Wave 0 state; catalog is currently empty)
+- `services` (catalog-backed lifecycle/state for the six Wave 1 service containers)
 
-Site rows also carry the Wave 0 front-controller, `.htaccess`, SPA-fallback, and build
-profile columns. Migrations live in `internal/store/migrations/`. The store is pure-Go
+Site rows also carry the front-controller, `.htaccess`, SPA-fallback, and build profile
+columns. Migrations live in `internal/store/migrations/`. The store is pure-Go
 `modernc.org/sqlite`; no CGO is required.
 
 ### Managed hosts block
@@ -163,6 +164,24 @@ The helper writes one block to `/etc/hosts`:
 ```
 
 Unrelated hosts lines are preserved.
+
+### Service containers (Wave 1)
+
+- The embedded catalog pins nginx, Apache httpd, MySQL, MariaDB, PostgreSQL, and Redis by
+  digest. phpMyAdmin/ImageMagick are Wave 2.
+- The unprivileged daemon owns the service manager/API/CLI and writes database
+  config/credentials under the root. The root helper owns the fixed Compose project:
+  install/pull, exclusive activation, health/port checks, rollback, restart,
+  validate/reload, logs, and backup-verified data deletion.
+- MySQL/MariaDB are exclusive; PostgreSQL and Redis are independent. Data services bind
+  `127.0.0.1`; web containers use Docker host networking for 80/443.
+- The active Docker nginx/Apache owns serving through `/sites`, `/certs`, and generated
+  config. `serving_provider=docker` is distinct from the legacy native provider; switching
+  to builtin stops the container and restores the proxy/forwarders.
+- Service credentials are random, mode 0600, revealed only through explicit API/CLI; the
+  `devstack` database accounts have admin DDL grants.
+- Managed Composer and global PHP/Composer shims live under `tools/` and `/usr/local/bin`;
+  static builds run as the user with a selected Node runtime.
 
 ## 5. TLS and trust
 
@@ -209,14 +228,16 @@ Unrelated hosts lines are preserved.
 
 ### Front controllers
 
-- PHP front controllers are currently hardcoded to `index.php` under the document root.
-- The Go proxy resolves existing files first and routes other requests to `index.php`,
-  preserving `REQUEST_URI`, query strings, method, and body.
-- nginx and Apache native vhosts generate equivalent front-controller rules.
-- Apache currently uses `AllowOverride None`; the planned service platform changes this
-  to support project `.htaccess` in Apache mode.
-- A configurable PHP front-controller filename and static SPA fallback filename are
-  planned, not implemented.
+- Builtin/native front controllers default to `index.php`; the site model supports a
+  configurable relative PHP controller file, mode (`auto|generated|htaccess`), Apache
+  override policy, and static SPA fallback file.
+- Docker nginx/Apache vhosts generate matching rules; Apache honors project `.htaccess`
+  and `AllowOverride` for Docker sites. The legacy native provider still uses its existing
+  `AllowOverride None` behavior.
+- The Go proxy resolves existing files first and routes other requests to the configured
+  controller, preserving `REQUEST_URI`, query strings, method, body, and PATH_INFO.
+- Static SPA fallback is separate from the PHP controller and never swallows missing
+  asset requests.
 
 ## 7. API surface (current)
 
@@ -232,13 +253,16 @@ The daemon exposes the following route groups under `/api/v1`:
 - filesystem browser: directory listing only
 - settings
 - vhosts: status/mode/sync/preview
-- services: read-only list/get (Wave 0; lifecycle routes arrive with Wave 1)
+- services: list/get, install/activate/deactivate/restart/uninstall, logs, credentials
+  reveal/rotate
+- tooling: PHP default/ini/status and managed tool install/remove
+- builds: run a site build and read build logs
 
 The dashboard is embedded from `ui/dist` and served by the daemon. API mutations use a
 session cookie and CSRF token.
 
-The planned service-platform routes (services/builds/credentials/terminal) are in the
-design spec and are not implemented.
+Wave 2 still adds dashboard service action/config/credential/build/terminal panels and
+performance routes; the API/CLI paths above exist now.
 
 ## 8. CLI surface (current)
 
@@ -254,15 +278,21 @@ devstack php ini <name> ...
 devstack php ext <name> ...
 devstack runtime list|install|remove|migrate
 devstack vhost status|use|sync|preview|path
-devstack service list|status <id>
+devstack service list|status <id>|install|activate|deactivate|restart|uninstall|logs|credentials
+devstack shell [--site <name>]
+devstack exec [--site <name>] -- <command...>
+devstack shell-init [--site <name>]
+devstack site build <name>
+devstack site update <name> ...
+devstack php default <line|build>|--status|--clear
+devstack tool list|install|remove|update
 devstack ui
 devstack version
 devstack uninstall --yes
 ```
 
-The service CLI is read-only in Wave 0. There is no service install/activate, site update,
-`devstack shell`, `devstack exec`, global PHP shim, Composer manager, build executor, or
-dashboard terminal yet. These are Wave 1–2 work.
+The dashboard service page is still read-only and the project terminal/performance UI is
+Wave 2. CLI/API build, shell, credentials, and service lifecycle paths exist now.
 
 ## 9. Package map
 
@@ -272,6 +302,9 @@ dashboard terminal yet. These are Wave 1–2 work.
 | `cmd/devstack-helper` | privileged helper entrypoint |
 | `internal/api` | HTTP API, dashboard hosting, session/CSRF |
 | `internal/backend` | site execution backends and local process launch |
+| `internal/build` | native static-build executor, output validation/snapshot/logs |
+| `internal/credentials` | random service credentials, 0600/0700 storage, path guards |
+| `internal/dockerweb` | Docker nginx/Apache vhost renderer, config sync, provider switch |
 | `internal/catalog` | embedded Node/PHP runtime catalog and PHP extension manifest |
 | `internal/certs` | CA/leaf certificate issue, verify, renew, delete |
 | `internal/cli` | Cobra command tree |
@@ -293,8 +326,10 @@ dashboard terminal yet. These are Wave 1–2 work.
 | `internal/proxy` | host router, reverse proxy, PHP FastCGI proxy |
 | `internal/runtime` | download, verify, extract, install/remove runtimes |
 | `internal/serviceconfig` | config manifest, conflict detection, diff, backups |
+| `internal/servicecontrol` | service lifecycle manager, preparers, Docker/web switches |
 | `internal/services` | service catalog, Compose rendering, state views |
 | `internal/sites` | site lifecycle, PHP/FPM generations, routes, vhosts |
+| `internal/tooling` | global PHP/Composer shims, site shell/exec environment |
 | `internal/staticserve` | safe static file serving and SPA fallback |
 | `internal/store` | SQLite persistence and migrations |
 | `internal/supervisor` | child process supervision |
@@ -333,8 +368,16 @@ dashboard terminal yet. These are Wave 1–2 work.
 - Client `Proxy` headers are stripped as hop-by-hop headers before FastCGI/CGI dispatch.
 - The helper's `validateBackendOwnership` requires vhost backend paths to be owned by
   `allow_uid` (or located under the allowed home) before installing native vhosts.
-- Database services are not part of the current product; the planned service platform
-  binds them to loopback.
+- Service containers run from a digest-pinned catalog; requests carry only catalog IDs
+  and validated options. No service container receives the Docker socket.
+- Database/Redis/phpMyAdmin ports bind `127.0.0.1`. Web containers use host networking
+  only for 80/443.
+- Service credentials are 0600/0700, revealed only by an audited explicit action, and
+  redacted from logs/list responses. Docker web files and certificates are mounted
+  read-only; generated config uses conflict/backup rules.
+- Native CA/trust remains host-only; containers receive leaf certs under `/certs`.
+- Shell/exec and builds run as the installing user, never root; build output is confined
+  to the project root and snapshotted/restored on failure.
 
 ## 12. Current limitations
 
@@ -343,10 +386,14 @@ dashboard terminal yet. These are Wave 1–2 work.
   administrator; devstack does not install packages.
 - M1 manual Linux gates (real root 80/443 install, browser trust, live UI) were not fully
   run.
-- The service platform is at the Wave 0 foundation: the catalog is empty, no service
-  container can be activated, and lifecycle/config/credentials APIs are not wired.
-- Global PHP/Composer, site shell/exec, build execution, Docker web servers, phpMyAdmin,
-  performance tuning, and the dashboard terminal are not implemented.
+- Wave 1 implements six service containers, Docker nginx/Apache, credentials, global
+  PHP/Composer, site shell/exec, and static build execution.
+- Wave 2 still needs phpMyAdmin/ImageMagick CLI, credential rotation, performance
+  profiles/host tuning/benchmarks, external-site Docker mounts, and the dashboard
+  action/config/build/terminal panels.
+- Docker web servers currently serve only sites under the managed `projects/` root.
+- The official MySQL entrypoint can retain password values in the container process
+  environment; Compose files/logs do not contain them.
 
 ## 13. Where to go next
 

@@ -77,6 +77,7 @@ const (
 	codeHelperError        = "HELPER_ERROR"
 	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
 	codeServiceConflict    = "SERVICE_CONFLICT"
+	codeCredentialRotate   = "CREDENTIAL_ROTATION_UNAVAILABLE"
 	codeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
 	codeToolConflict       = "TOOL_CONFLICT"
 
@@ -838,6 +839,9 @@ func classifyError(err error) (int, string, string, any) {
 			"field":   "extensions",
 			"message": err.Error(),
 		}
+	}
+	if errors.Is(err, servicecontrol.ErrCredentialsRotationUnavailable) {
+		return http.StatusNotImplemented, codeCredentialRotate, err.Error(), nil
 	}
 	if errors.Is(err, servicecontrol.ErrCredentialsUnsupported) {
 		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil

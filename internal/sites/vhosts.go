@@ -561,6 +561,14 @@ func (s *Service) saveServingStateLocked(ctx context.Context, mode, provider str
 			)
 		}
 	}
+	marker := "native"
+	if provider == config.ServingProviderDocker {
+		marker = "docker"
+	}
+	if err := s.writeServingProviderMarker(marker); err != nil {
+		s.servingStateErr = fmt.Sprintf("serving state saved but provider marker failed: %v; retry after fixing storage", err)
+		return fmt.Errorf("sites: %s", s.servingStateErr)
+	}
 	s.servingStateErr = ""
 	return nil
 }
@@ -588,6 +596,11 @@ func (s *Service) stopForDockerLocked(ctx context.Context) error {
 	if s.deps.Forwarders != nil {
 		if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, false); err != nil {
 			errs = append(errs, fmt.Errorf("sites: disable builtin forwarders for docker: %w", err))
+		}
+	}
+	if len(errs) == 0 {
+		if err := s.writeServingProviderMarker("docker"); err != nil {
+			errs = append(errs, fmt.Errorf("sites: persist docker serving owner: %w", err))
 		}
 	}
 	return errors.Join(errs...)
@@ -625,7 +638,50 @@ func (s *Service) startAfterDockerLocked(ctx context.Context) error {
 			return fmt.Errorf("sites: enable builtin forwarders after docker: %w", err)
 		}
 	}
+	if err := s.writeServingProviderMarker("native"); err != nil {
+		restoreProxy()
+		return fmt.Errorf("sites: persist builtin serving owner: %w", err)
+	}
 	return nil
+}
+
+const servingProviderMarker = ".serving-provider"
+
+// writeServingProviderMarker records which provider owns 80/443 so a helper
+// restart does not re-enable its forwarders over an active Docker web server.
+// It is best effort only for tests/zero-value configs; production always has a
+// Home.
+func (s *Service) writeServingProviderMarker(provider string) error {
+	home := strings.TrimSpace(s.deps.Config.Home)
+	if home == "" {
+		return nil
+	}
+	dir := filepath.Join(home, "services")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".serving-provider-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(provider + "\n"); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, filepath.Join(dir, servingProviderMarker))
 }
 
 // switchDockerToBuiltinLocked is the explicit provider transition. It stops

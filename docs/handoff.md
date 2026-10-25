@@ -4,12 +4,15 @@
 - **Repository:** `https://github.com/AramZahedi/dev-web-stack`
 - **Handoff commit:** the commit containing this file; run `git rev-parse HEAD` for the exact SHA.
 - **Branch:** `master`
-- **Product status:** Linux M1 released as `v0.1.0`; Wave 0 (Service Platform Foundation, tasks F1–F6) is fully implemented, verified, and merged.
+- **Product status:** Linux M1 released as `v0.1.0`; Wave 0 foundation and Wave 1 service/database/web/tooling work are implemented, reviewed, and merged into the integration branch.
 - **Wave 0 Merge SHA:** `04d1a2d5f111b33995961a90b19cf8df6abaa489`
 - **Wave 0 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40200118349` (green)
-- **Next step:** Wave 1 implementation; see the
-  [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md) and
-  [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md).
+- **Wave 1 integration branch:** `integration/services-wave-1`
+- **Wave 1 merge SHA / CI:** filled by the final merge/CI record in this file.
+- **Next step:** Wave 2 — phpMyAdmin, performance/host tuning, and the dashboard action/config/build/terminal panels. See the
+  [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
+  [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
+  [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
 
 This is the continue-on-another-machine document. Read it first, then
 [architecture](architecture.md), [requirements](requirements.md), [decisions](decisions.md),
@@ -29,9 +32,28 @@ and the [service-platform design](superpowers/specs/2026-10-25-service-container
 - Checksummed unsigned Linux release, installer, upgrade path.
 - Existing tests and CI pass for M1.
 - Wave 0 Foundation (tasks F1–F6): root layout/permissions (`/data/devstack`), service catalog & state store with SQLite migration `0004_services.sql`, config manifest/diff/backup/conflict engine, Compose rendering & fixed privileged helper control plane, site config contracts & build profiles with SQLite migration `0005_site_contracts.sql`, and read-only service API/CLI/UI skeleton.
+- Wave 1 service platform:
+  - pinned Docker catalog entries for nginx 1.30.6, Apache httpd 2.4.69, MySQL 8.4.13,
+    MariaDB 11.8.9, PostgreSQL 18.6, and Redis 8.8.3, all digest-pinned;
+  - transactional helper controller with exclusive web/MySQL-family activation, health
+    waits, port ownership checks, rollback, restart, validate/reload, logs, and
+    backup-verified data deletion;
+  - host-owned database config/data/secrets under the devstack root, random 0600
+    credentials, admin DDL bootstrap, MySQL/MariaDB/PostgreSQL/Redis lifecycle;
+  - Docker nginx/Apache provider with container vhosts for static, PHP, and Node sites,
+    TLS/force-HTTPS, stopped 503, default 404, dashboard vhost, SPA fallback,
+    configurable PHP front controllers, Apache `.htaccess`, and Docker→Docker/builtin
+    switching;
+  - native site shell/exec with site PHP/ini/Node precedence;
+  - global PHP CLI default/ini/shims and managed Composer 2.10.3 PHAR;
+  - native static build profiles/executor with output validation, snapshot restore, build
+    logs, and degraded status;
+  - service lifecycle API/CLI, credential reveal (rotation deferred), and read-only
+    dashboard service listing.
+  - Live Docker smoke suites for databases and nginx/Apache pass.
 
 The old standalone devstack-in-Docker image is **retired**. It was removed from the repo
-and reference machine on 2026-10-25. Docker is reserved for the planned separate service
+and reference machine on 2026-10-25. Docker is reserved for the separate service
 containers.
 
 ### Released artifacts
@@ -50,23 +72,19 @@ The next milestone is fully described in:
 docs/superpowers/specs/2026-10-25-service-containers-and-performance-design.md
 ```
 
-It adds:
+Wave 1 implements the core service containers, web serving, database credentials, native
+shells, Composer, and static builds. Wave 2 still adds:
 
-- separate Docker containers for nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis,
-  phpMyAdmin, and ImageMagick CLI;
-- a privileged-helper-controlled fixed Compose project;
-- `/data/devstack` host-owned config/data/certs/secrets;
-- one-active enforcement for web servers and MySQL/MariaDB;
-- editable configs with conflict/diff/backup/validation;
-- native CA/trust with leaf certs mounted into web servers;
-- Apache `.htaccess`, configurable front controllers, Laravel support;
-- Nuxt/Vite static build profiles, output directories, SPA fallback;
-- global PHP and Composer with a machine-wide CLI default;
-- dashboard parity, builds, credentials, config editor, project terminal;
-- resource-aware nginx/Apache/PHP performance and reversible host tuning;
-- full dashboard vhost and web-server parity.
+- the phpMyAdmin container and credential rotation/UI;
+- ImageMagick CLI tool management;
+- resource-aware nginx/Apache/PHP performance profiles, reversible host tuning, and
+  benchmark storage;
+- full dashboard actions for services, config diff/apply, credentials, builds, and
+  scoped command/terminal execution;
+- external-site bind mounts for Docker web servers (sites outside the managed
+  `projects/` root currently require builtin or native serving).
 
-**No code for these features exists yet.** Do not tell users it is shipped.
+**Do not tell users the Wave 2 items are shipped.**
 
 ## 3. Current reference workstation
 
@@ -95,10 +113,18 @@ This is the machine state at handoff. It is not required on the next machine.
 
 See [known issues](known-issues.md). Important current points:
 
-1. The service platform is not implemented.
-2. Manual Linux M1 gates remain open.
-3. No automatic `~/.devstack` → `/data/devstack` migration.
-4. The old standalone Docker image is retired; do not recreate it.
+1. Wave 2 remains: phpMyAdmin, ImageMagick CLI, performance/host tuning, credential
+   rotation, external-site Docker mounts, and full dashboard action/terminal panels.
+2. The dashboard service page is read-only; lifecycle/config/build/credential actions are
+   API/CLI only until Wave 2.
+3. Manual Linux M1 gates remain open.
+4. No automatic `~/.devstack` → `/data/devstack` migration.
+5. Existing helper configs need `service_root`, `tool_root`, and `tool_bin_dir` (and a
+   restart) for service containers and global PHP/Composer; fresh installs get them from
+   `install.sh`.
+6. The official MySQL entrypoint retains its password values in the final container
+   process environment; Compose files and logs do not contain them. This is documented.
+7. The old standalone Docker image is retired; do not recreate it.
 
 ## 5. Resume on another machine
 
@@ -169,17 +195,18 @@ Docker Engine remains installed for the new service containers.
 
 ### 5.5 Next implementation work
 
-Wave 0 is complete. Do not re-run its kickoff.
+Waves 0 and 1 are complete. Do not re-run their kickoffs.
 
-1. Read the [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md).
-2. Complete the serial P1/P2/P3 service-control prerequisites.
-3. Run the database, web-server, and developer-tooling lanes in parallel in isolated
-   worktrees, then merge through `integration/services-wave-1`.
-4. Use the [program plan](superpowers/plans/2026-10-25-service-platform-program.md) for the
+1. Read the [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md) for the
+   implemented contracts, and the design spec for Wave 2 behavior.
+2. Plan and execute Wave 2: phpMyAdmin/credential rotation, performance profiles and
+   reversible host tuning, ImageMagick CLI, external-site Docker mounts, and the remaining
+   dashboard action/config/build/terminal panels.
+3. Use the [program plan](superpowers/plans/2026-10-25-service-platform-program.md) for the
    worktree/merge mechanism and Wave 2–3 parallelism.
-5. Preserve existing M1 behavior and tests.
-6. Keep the existing native external provider compatible.
-7. Do not start Windows/WSL Plan 3 without explicit user instruction.
+4. Preserve existing M1 and Wave 1 behavior/tests.
+5. Keep the native external provider compatible.
+6. Do not start Windows/WSL Plan 3 without explicit user instruction.
 
 ## 6. Current requirements/constraints to preserve
 
@@ -205,9 +232,14 @@ Wave 0 is complete. Do not re-run its kickoff.
   generated configs.
 - The retired Docker CA/state backup is under `/tmp/opencode/`; treat it as sensitive and
   do not copy it into the repo. The old CA was not imported into the host trust stores.
-- The planned database credentials will live under `/data/devstack/secrets` with `0600`;
-  they are not present in the current release.
-- The reference host has no devstack database credentials.
+- Database credentials are generated under `<devstack-home>/secrets/<engine>/` with
+  `0600` files and `0700` directories. The reference host has no devstack database
+  credentials because no service container was activated there.
+- Credentials are revealed only through the explicit API/CLI path; list responses and
+  logs never include them.
+- The official MySQL entrypoint can retain `MYSQL_ROOT_PASSWORD`/`MYSQL_PASSWORD` in the
+  final container process environment; Compose never contains literal passwords. Treat
+  container-local process inspection as sensitive.
 
 ## 8. Useful commands
 

@@ -56,6 +56,7 @@ type options struct {
 	vhostHTTPSPort   int
 	nginxIncludeDir  string
 	apacheIncludeDir string
+	serviceRoot      string
 	toolRoot         string
 	toolBinDir       string
 	logLevel         string
@@ -83,6 +84,7 @@ func parseOptions(args []string) (options, error) {
 		vhostState:     defaultVhostState,
 		vhostHTTPPort:  defaultVhostHTTPPort,
 		vhostHTTPSPort: defaultVhostHTTPSPort,
+		serviceRoot:    os.Getenv("DEVSTACK_HOME"),
 		toolRoot:       os.Getenv("DEVSTACK_HOME"),
 		logLevel:       "info",
 	}
@@ -119,6 +121,7 @@ func parseOptions(args []string) (options, error) {
 	flags.IntVar(&opts.vhostHTTPSPort, "vhost-https-port", opts.vhostHTTPSPort, "helper-managed vhost HTTPS listen port")
 	flags.StringVar(&opts.nginxIncludeDir, "nginx-include-dir", opts.nginxIncludeDir, "nginx bridge include directory (empty detects)")
 	flags.StringVar(&opts.apacheIncludeDir, "apache-include-dir", opts.apacheIncludeDir, "Apache bridge include directory (empty detects)")
+	flags.StringVar(&opts.serviceRoot, "service-root", opts.serviceRoot, "devstack home containing the service Compose/config/data tree (empty disables)")
 	flags.StringVar(&opts.toolRoot, "tool-root", opts.toolRoot, "devstack home containing managed CLI tools (empty disables)")
 	flags.StringVar(&opts.toolBinDir, "tool-bin-dir", opts.toolBinDir, "system bin directory for managed php/composer links")
 	flags.StringVar(&opts.logLevel, "log-level", opts.logLevel, "debug, info, warn, or error")
@@ -166,6 +169,7 @@ func newHelperServer(opts options, logger *slog.Logger) (*helper.Server, error) 
 		VhostHTTPSPort:   opts.vhostHTTPSPort,
 		NginxIncludeDir:  opts.nginxIncludeDir,
 		ApacheIncludeDir: opts.apacheIncludeDir,
+		ServiceRoot:      opts.serviceRoot,
 		ToolRoot:         opts.toolRoot,
 		ToolBinDir:       opts.toolBinDir,
 		Logger:           logger,

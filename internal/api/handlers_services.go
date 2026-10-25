@@ -129,6 +129,7 @@ func (s *Server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "service manager is not available", nil)
 		return
 	}
+	const maxServiceLogTail = 1000
 	tail := 0
 	if raw := strings.TrimSpace(r.URL.Query().Get("tail")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
@@ -137,6 +138,9 @@ func (s *Server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tail = parsed
+		if tail > maxServiceLogTail {
+			tail = maxServiceLogTail
+		}
 	}
 	id := services.ID(strings.TrimSpace(r.PathValue("id")))
 	if id == "" {

@@ -610,6 +610,27 @@ run sudo install -d -m 0755 "${HELPER_CONFIG_DIR}"
 
 if [ -e "${HELPER_CONFIG}" ] && [ "${CONFIG_MODE}" != "force" ]; then
 	log "keeping existing ${HELPER_CONFIG} (use --force-config to replace it)"
+	# Wave 1 added root/service/tool paths. Add only the missing keys so an
+	# upgrade gains the service and tooling RPCs without discarding user edits.
+	config_tmp="${TMP_DIR}/helper.yaml.existing"
+	run sudo cat "${HELPER_CONFIG}" >"${config_tmp}"
+	config_changed=0
+	if ! grep -Eq '^[[:space:]]*service_root[[:space:]]*:' "${config_tmp}"; then
+		printf 'service_root: "%s"\n' "${DEVSTACK_HOME_DIR}" >>"${config_tmp}"
+		config_changed=1
+	fi
+	if ! grep -Eq '^[[:space:]]*tool_root[[:space:]]*:' "${config_tmp}"; then
+		printf 'tool_root: "%s"\n' "${DEVSTACK_HOME_DIR}" >>"${config_tmp}"
+		config_changed=1
+	fi
+	if ! grep -Eq '^[[:space:]]*tool_bin_dir[[:space:]]*:' "${config_tmp}"; then
+		printf 'tool_bin_dir: /usr/local/bin\n' >>"${config_tmp}"
+		config_changed=1
+	fi
+	if [ "${config_changed}" -eq 1 ]; then
+		run sudo install -m 0644 "${config_tmp}" "${HELPER_CONFIG}"
+		log "added missing service/tool paths to ${HELPER_CONFIG}"
+	fi
 else
 	config_tmp="${TMP_DIR}/helper.yaml"
 	cat >"${config_tmp}" <<EOF
@@ -625,6 +646,7 @@ forward_https_port: 443
 proxy_http_port: 8080
 proxy_https_port: 8443
 auto_forward: true
+service_root: "${DEVSTACK_HOME_DIR}"
 tool_root: "${DEVSTACK_HOME_DIR}"
 tool_bin_dir: /usr/local/bin
 log_level: info
