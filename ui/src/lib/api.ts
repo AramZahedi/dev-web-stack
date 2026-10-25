@@ -256,15 +256,26 @@ export async function removeRuntime(buildID: string): Promise<void> {
   });
 }
 
+// Older daemons omit the container runtime fields. Normalize them so the
+// dashboard can rely on the ServiceView contract without optional guards.
+function normalizeService(service: ServiceView): ServiceView {
+  return {
+    ...service,
+    health: service.health ?? '',
+    container_id: service.container_id ?? '',
+    installed: service.installed ?? service.state !== 'not_installed',
+  };
+}
+
 export async function listServices(): Promise<ServiceView[]> {
   if (isMockMode) return mockApi.listServices();
   const res = await request<ListServicesResponse>('/services');
-  return res.services ?? [];
+  return (res.services ?? []).map(normalizeService);
 }
 
 export async function getService(id: string): Promise<ServiceView> {
   if (isMockMode) return mockApi.getService(id);
-  return request<ServiceView>(`/services/${encodeURIComponent(id)}`);
+  return normalizeService(await request<ServiceView>(`/services/${encodeURIComponent(id)}`));
 }
 
 export async function getPHPInfo(ref: string): Promise<PHPInfo> {

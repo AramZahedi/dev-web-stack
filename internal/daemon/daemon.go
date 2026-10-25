@@ -30,10 +30,12 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
@@ -258,11 +260,21 @@ func Run(ctx context.Context, opts Options) error {
 		HostsPath: opts.HostsPath,
 	})
 
+	// Lanes register their service preparers as the manager is constructed;
+	// Wave 1 wires the core manager with no lane-specific behavior yet.
+	serviceManager := servicecontrol.NewManager(
+		cfg.Home,
+		st,
+		serviceHelper{client: helper},
+		services.DefaultCatalog(),
+		nil,
+	)
+
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
 		Vhosts:       siteService,
-		Services:     services.NewCoordinator(services.DefaultCatalog(), st, cfg.Home),
+		Services:     serviceManager,
 		Logger:       logger,
 	})
 
@@ -473,6 +485,7 @@ func (d *daemon) persistSettings(ctx context.Context) {
 		"ui_port":               strconv.Itoa(d.cfg.UIPort),
 		"auto_start_sites":      strconv.FormatBool(d.cfg.AutoStartSites),
 		"serving_mode":          servingMode,
+		"serving_provider":      d.cfg.ServingProvider,
 		"serving_mode_error":    servingModeError,
 		"graceful_stop_seconds": strconv.Itoa(d.cfg.GracefulStopSeconds),
 		"max_request_body_mb":   strconv.Itoa(d.cfg.MaxRequestBodyMB),
@@ -1145,6 +1158,41 @@ func newLogger(level string) (*slog.Logger, error) {
 	}
 	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parsed})
 	return slog.New(handler), nil
+}
+
+// serviceHelper adapts the helper RPC client to servicecontrol.Helper. The
+// client keeps its protocol-prefixed method names for the other privileged
+// surfaces; the manager works in the service domain vocabulary.
+type serviceHelper struct {
+	client *helperclient.Client
+}
+
+func (h serviceHelper) Status(ctx context.Context) ([]helperproto.ServiceStatus, error) {
+	return h.client.ServiceStatus(ctx)
+}
+
+func (h serviceHelper) Install(ctx context.Context, id string) error {
+	return h.client.ServiceInstall(ctx, id)
+}
+
+func (h serviceHelper) Activate(ctx context.Context, id string) error {
+	return h.client.ServiceActivate(ctx, id)
+}
+
+func (h serviceHelper) Deactivate(ctx context.Context, id string) error {
+	return h.client.ServiceDeactivate(ctx, id)
+}
+
+func (h serviceHelper) Restart(ctx context.Context, id string) error {
+	return h.client.ServiceRestart(ctx, id)
+}
+
+func (h serviceHelper) Uninstall(ctx context.Context, id string, deleteData bool) error {
+	return h.client.ServiceUninstall(ctx, id, deleteData)
+}
+
+func (h serviceHelper) Logs(ctx context.Context, id string, tail int) (string, error) {
+	return h.client.ServiceLogs(ctx, id, tail)
 }
 
 // portProbe implements doctor.PortChecker.
