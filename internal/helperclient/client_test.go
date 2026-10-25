@@ -147,6 +147,49 @@ func TestVhostMethodsUseProtocolPathsAndBodies(t *testing.T) {
 	}
 }
 
+func TestServiceActionMethodsUseProtocolPaths(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		requests []string
+	)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		var req helperproto.ServiceActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode action request: %v", err)
+		}
+		if req.ID != "nginx" {
+			t.Errorf("action request ID = %q, want nginx", req.ID)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	client := newUnixClient(t, handler)
+	ctx := context.Background()
+
+	if err := client.ServiceRestart(ctx, "nginx"); err != nil {
+		t.Fatalf("ServiceRestart: %v", err)
+	}
+	if err := client.ServiceValidate(ctx, "nginx"); err != nil {
+		t.Fatalf("ServiceValidate: %v", err)
+	}
+	if err := client.ServiceReload(ctx, "nginx"); err != nil {
+		t.Fatalf("ServiceReload: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		"POST " + helperproto.PathServicesRestart,
+		"POST " + helperproto.PathServicesValidate,
+		"POST " + helperproto.PathServicesReload,
+	}
+	if fmt.Sprint(requests) != fmt.Sprint(want) {
+		t.Fatalf("requests = %v, want %v", requests, want)
+	}
+}
+
 func TestVhostErrorsMapToProtocolSentinels(t *testing.T) {
 	tests := []struct {
 		code   string

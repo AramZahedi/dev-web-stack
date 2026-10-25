@@ -261,6 +261,24 @@ func (c *Client) ServiceUninstall(ctx context.Context, id string, deleteData boo
 	return c.do(ctx, http.MethodPost, helperproto.PathServicesUninstall, req, nil)
 }
 
+// ServiceRestart restarts the specified service container and waits for health.
+func (c *Client) ServiceRestart(ctx context.Context, id string) error {
+	req := helperproto.ServiceActionRequest{ID: id}
+	return c.do(ctx, http.MethodPost, helperproto.PathServicesRestart, req, nil)
+}
+
+// ServiceValidate runs the catalog validation command inside the service container.
+func (c *Client) ServiceValidate(ctx context.Context, id string) error {
+	req := helperproto.ServiceActionRequest{ID: id}
+	return c.do(ctx, http.MethodPost, helperproto.PathServicesValidate, req, nil)
+}
+
+// ServiceReload runs the catalog reload command inside the service container.
+func (c *Client) ServiceReload(ctx context.Context, id string) error {
+	req := helperproto.ServiceActionRequest{ID: id}
+	return c.do(ctx, http.MethodPost, helperproto.PathServicesReload, req, nil)
+}
+
 // ServiceLogs retrieves bounded container logs for the specified service.
 func (c *Client) ServiceLogs(ctx context.Context, id string, tail int) (string, error) {
 	path := fmt.Sprintf("%s?id=%s", helperproto.PathServicesLogs, url.QueryEscape(id))
