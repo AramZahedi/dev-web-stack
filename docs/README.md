@@ -25,6 +25,10 @@ machine, and the design for the next service-platform milestone.
   — released Linux foundation.
 - [External vhosts design](superpowers/specs/2026-10-22-external-vhosts-design.md)
   — native nginx/Apache mode.
+- [Service platform program plan](superpowers/plans/2026-10-25-service-platform-program.md)
+  — parallel worktree/merge mechanism and wave dependency graph.
+- [Service platform foundation plan](superpowers/plans/2026-10-25-service-platform-foundation.md)
+  — detailed Wave 0 implementation tasks.
 - Implementation plans and acceptance reports live in
   [`superpowers/plans/`](superpowers/plans/).
 - Historical plan handoffs and the released M1 handoff live in

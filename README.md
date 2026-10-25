@@ -224,6 +224,8 @@ the [architecture](docs/architecture.md), and the
 | [Glossary](docs/glossary.md) | project terminology and concepts |
 | [Developer guide](docs/development.md) | build/test/debug, package boundaries, migrations, release |
 | [Service-platform design](docs/superpowers/specs/2026-10-25-service-containers-and-performance-design.md) | detailed next-milestone spec (ready for approval) |
+| [Parallel implementation program](docs/superpowers/plans/2026-10-25-service-platform-program.md) | worktree/merge mechanism, waves, dependency graph |
+| [Foundation plan](docs/superpowers/plans/2026-10-25-service-platform-foundation.md) | detailed Wave 0 tasks |
 | [Install](docs/install.md) | prerequisites, installer, release archives, systemd, config, logs, uninstall |
 | [Upgrade](docs/upgrade.md) | preflight, stop/install/start, database backup, protocol mismatch, verification, rollback limits |
 | [Release](docs/release.md) | tag/version, archive/checksums, GoReleaser workflow, release checklist, PHP catalog gate |

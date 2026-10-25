@@ -212,7 +212,8 @@ service-platform implementation.
 ### 5.5 Next implementation work
 
 1. Approve the service-platform design.
-2. Write the implementation plan with the `writing-plans` workflow.
+2. Review the [program plan](superpowers/plans/2026-10-25-service-platform-program.md) and
+   [foundation plan](superpowers/plans/2026-10-25-service-platform-foundation.md).
 3. Implement in the order in §11 of the design: root/service state/helper Compose;
    databases/credentials; web servers/vhost parity; config conflicts; CA; performance;
    PHP/Composer/builds; dashboard/CLI; acceptance.
