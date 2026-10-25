@@ -161,6 +161,12 @@ func TestManagerEnsureBaseSeedsAndPreservesUserEdits(t *testing.T) {
 					t.Errorf("expected directory %s: %v", dir, err)
 				}
 			}
+			if _, err := os.Stat(filepath.Join(serviceDir, "config", ".config-manifest.json")); err != nil {
+				t.Errorf("manifest is not under the config root: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(serviceDir, ".config-manifest.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("manifest must not be at the service root: %v", err)
+			}
 			if err := os.WriteFile(base, []byte("user edited\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -267,7 +273,7 @@ func TestManagerSyncReportsConflictAndPreservesModifiedGeneratedFile(t *testing.
 	if !errors.As(err, &conflict) {
 		t.Fatalf("error type = %T, want *ConflictError: %v", err, err)
 	}
-	if len(conflict.Conflicts) == 0 || conflict.Conflicts[0].Path != "config/conf.d/generated/app.conf" {
+	if len(conflict.Conflicts) == 0 || conflict.Conflicts[0].Path != "conf.d/generated/app.conf" {
 		t.Fatalf("conflicts = %+v", conflict.Conflicts)
 	}
 	data, readErr := os.ReadFile(generated)

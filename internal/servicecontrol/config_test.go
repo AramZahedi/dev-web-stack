@@ -210,7 +210,7 @@ func TestConfigListReturnsMetadataNotContent(t *testing.T) {
 		t.Fatalf("generated conflict = %+v", generated.Conflict)
 	}
 	custom, ok := byPath["conf.d/custom/extra.conf"]
-	if !ok || custom.Class != serviceconfig.ClassCustom || custom.Generated {
+	if !ok || custom.Class != serviceconfig.ClassCustom || custom.Generated || custom.Modified || custom.Conflict.Active {
 		t.Fatalf("custom file = %+v", custom)
 	}
 	encoded, err := json.Marshal(listing)

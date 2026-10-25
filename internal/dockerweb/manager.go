@@ -160,13 +160,17 @@ func (m *Manager) EnsureBase(server Server) error {
 		return err
 	}
 	serviceRoot := filepath.Join(m.servicesDir, string(server))
-	cfg, err := serviceconfig.New(serviceRoot)
+	configRoot := filepath.Join(serviceRoot, "config")
+	if err := serviceconfig.MigrateManifest(serviceRoot, configRoot, "config/"); err != nil {
+		return fmt.Errorf("dockerweb: migrate config manifest: %w", err)
+	}
+	cfg, err := serviceconfig.New(configRoot)
 	if err != nil {
 		return err
 	}
 	for _, dir := range []string{
-		filepath.Join(serviceRoot, "config", "conf.d", "generated"),
-		filepath.Join(serviceRoot, "config", "conf.d", "custom"),
+		filepath.Join(configRoot, "conf.d", "generated"),
+		filepath.Join(configRoot, "conf.d", "custom"),
 		filepath.Join(serviceRoot, "logs"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -174,9 +178,9 @@ func (m *Manager) EnsureBase(server Server) error {
 		}
 	}
 
-	baseRel := "config/nginx.conf"
+	baseRel := "nginx.conf"
 	if server == ServerApache {
-		baseRel = "config/httpd.conf"
+		baseRel = "httpd.conf"
 	}
 	base, err := RenderBase(server, m.httpPort, m.httpsPort)
 	if err != nil {
@@ -198,7 +202,7 @@ func (m *Manager) EnsureBase(server Server) error {
 	if err != nil {
 		return err
 	}
-	if _, err := cfg.SeedBase("config/conf.d/00-devstack-default.conf", files["_default.conf"], 0o644); err != nil {
+	if _, err := cfg.SeedBase("conf.d/00-devstack-default.conf", files["_default.conf"], 0o644); err != nil {
 		return fmt.Errorf("dockerweb: seed default 404 vhost: %w", err)
 	}
 	return nil
@@ -260,7 +264,11 @@ func (m *Manager) Sync(ctx context.Context, server Server) (err error) {
 	}
 
 	serviceRoot := filepath.Join(m.servicesDir, string(server))
-	cfg, err := serviceconfig.New(serviceRoot)
+	configRoot := filepath.Join(serviceRoot, "config")
+	if err := serviceconfig.MigrateManifest(serviceRoot, configRoot, "config/"); err != nil {
+		return fmt.Errorf("dockerweb: migrate config manifest: %w", err)
+	}
+	cfg, err := serviceconfig.New(configRoot)
 	if err != nil {
 		return err
 	}
@@ -273,7 +281,7 @@ func (m *Manager) Sync(ctx context.Context, server Server) (err error) {
 
 	var conflicts []serviceconfig.Conflict
 	for _, name := range sortedKeys(desired) {
-		rel := "config/conf.d/generated/" + name
+		rel := "conf.d/generated/" + name
 		result, err := cfg.WriteGenerated(rel, desired[name], 0o644, "docker web vhost for "+string(server))
 		if err != nil {
 			return err
@@ -286,7 +294,7 @@ func (m *Manager) Sync(ctx context.Context, server Server) (err error) {
 		return &ConflictError{Conflicts: conflicts}
 	}
 
-	if err := m.removeStaleGenerated(cfg, serviceRoot, desired); err != nil {
+	if err := m.removeStaleGenerated(cfg, configRoot, desired); err != nil {
 		return err
 	}
 	return nil
@@ -328,8 +336,8 @@ func (m *Manager) siteSpec(ctx context.Context, site model.Site) (SiteSpec, erro
 	}, nil
 }
 
-func (m *Manager) removeStaleGenerated(cfg *serviceconfig.Manager, serviceRoot string, desired map[string][]byte) error {
-	dir := filepath.Join(serviceRoot, "config", "conf.d", "generated")
+func (m *Manager) removeStaleGenerated(cfg *serviceconfig.Manager, configRoot string, desired map[string][]byte) error {
+	dir := filepath.Join(configRoot, "conf.d", "generated")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -344,7 +352,7 @@ func (m *Manager) removeStaleGenerated(cfg *serviceconfig.Manager, serviceRoot s
 		if _, ok := desired[entry.Name()]; ok {
 			continue
 		}
-		rel := "config/conf.d/generated/" + entry.Name()
+		rel := "conf.d/generated/" + entry.Name()
 		status, err := cfg.Status(rel)
 		if err != nil {
 			return err

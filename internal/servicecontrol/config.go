@@ -794,6 +794,9 @@ func (s *ConfigService) prepare(id services.ID) (services.Service, string, *serv
 		return services.Service{}, "", nil, err
 	}
 	configRoot := filepath.Join(serviceRoot, "config")
+	if err := serviceconfig.MigrateManifest(serviceRoot, configRoot, "config/"); err != nil {
+		return services.Service{}, "", nil, fmt.Errorf("migrate service config manifest: %w", err)
+	}
 	manager, err := serviceconfig.New(configRoot)
 	if err != nil {
 		return services.Service{}, "", nil, fmt.Errorf("open service config manager: %w", err)
@@ -1021,11 +1024,18 @@ func configStatus(manager *serviceconfig.Manager, rel string, data []byte, info 
 	if info != nil {
 		size = info.Size()
 	}
+	modified := status.Modified
+	if status.Class == serviceconfig.ClassCustom {
+		// Manager.Status marks an untracked existing file as "modified" because
+		// it has content. For an intentionally custom file that is not drift,
+		// and showing a conflict would be misleading.
+		modified = false
+	}
 	out := ConfigStatus{
 		Path:      rel,
 		Class:     status.Class,
 		Generated: status.Generated,
-		Modified:  status.Modified,
+		Modified:  modified,
 		Detached:  status.Detached,
 		Hash:      configHash(data),
 		Size:      size,

@@ -297,7 +297,7 @@
                   <Badge variant={classVariant(file.class)}>{file.class}</Badge>
                   {#if file.modified}<Badge variant="warning">Modified</Badge>{/if}
                   {#if file.detached}<Badge variant="danger">Detached</Badge>{/if}
-                  {#if file.conflict}<Badge variant="warning">Conflict</Badge>{/if}
+                  {#if file.conflict?.resolution_required}<Badge variant="warning">Conflict</Badge>{/if}
                 </span>
               </span>
             </button>
