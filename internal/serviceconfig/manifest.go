@@ -88,6 +88,10 @@ func saveManifest(path string, m *Manifest) error {
 		_ = tmp.Close()
 		return fmt.Errorf("chmod temp manifest: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp manifest: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp manifest: %w", err)
 	}

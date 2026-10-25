@@ -83,7 +83,8 @@ func splitLines(s string) []string {
 	if s == "" {
 		return nil
 	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
 	s = strings.TrimSuffix(s, "\n")
-	s = strings.TrimSuffix(s, "\r")
 	return strings.Split(s, "\n")
 }

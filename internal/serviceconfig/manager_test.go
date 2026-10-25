@@ -281,4 +281,158 @@ func TestAtomicWritesPreserveMode(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %o, want 0600", info.Mode().Perm())
 	}
+
+	// Manifest mode should be 0600
+	manifestInfo, err := os.Stat(filepath.Join(root, ".config-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifestInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("manifest mode = %o, want 0600", manifestInfo.Mode().Perm())
+	}
+}
+
+func TestSymlinkEscapeRejected(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+
+	m, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create symlink inside root pointing outside
+	linkDir := filepath.Join(root, "outsidelink")
+	if err := os.Symlink(external, linkDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempting to write through outsidelink must fail
+	_, err = m.WriteGenerated("outsidelink/escaped.txt", []byte("evil"), 0o644, "test")
+	if err == nil {
+		t.Fatal("expected symlink escape to be rejected")
+	}
+
+	// Reserved paths must fail
+	for _, res := range []string{".config-manifest.json", "backups/foo.conf", "backups"} {
+		if _, err := m.WriteGenerated(res, []byte("x"), 0o644, "test"); err == nil {
+			t.Fatalf("expected reserved path %q to be rejected", res)
+		}
+	}
+}
+
+func TestUntrackedPreExistingFileCausesConflict(t *testing.T) {
+	root := t.TempDir()
+	m, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rel := "services/nginx/custom.conf"
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userContent := []byte("custom user config\n")
+	if err := os.WriteFile(full, userContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Untracked file status
+	st, err := m.Status(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Class != ClassCustom || !st.Modified {
+		t.Fatalf("expected untracked file to be ClassCustom and Modified, got %+v", st)
+	}
+
+	// WriteGenerated with different content must return a conflict and not overwrite
+	gen := []byte("generated content\n")
+	res, err := m.WriteGenerated(rel, gen, 0o644, "sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Conflict == nil {
+		t.Fatal("expected conflict for untracked pre-existing file, got nil")
+	}
+
+	// Verify file was NOT overwritten
+	content, err := os.ReadFile(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != string(userContent) {
+		t.Fatalf("untracked file was overwritten: got %q, want %q", string(content), string(userContent))
+	}
+}
+
+func TestBaseConfigProtectedFromWriteGenerated(t *testing.T) {
+	root := t.TempDir()
+	m, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rel := "services/nginx/nginx.conf"
+	base := []byte("# base nginx\n")
+	if _, err := m.SeedBase(rel, base, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Calling WriteGenerated on a seeded base config must return a conflict
+	res, err := m.WriteGenerated(rel, []byte("# new generated\n"), 0o644, "overwrite attempt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Conflict == nil {
+		t.Fatal("expected conflict when attempting to overwrite base config")
+	}
+}
+
+func TestMergeSetsDetachedAndPreservesOnRetry(t *testing.T) {
+	root := t.TempDir()
+	m, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rel := "conf/app.conf"
+	gen1 := []byte("setting=1\n")
+	if _, err := m.WriteGenerated(rel, gen1, 0o644, "init"); err != nil {
+		t.Fatal(err)
+	}
+
+	// User resolves with Merge
+	merged := []byte("setting=1\ncustom=true\n")
+	if err := m.Merge(rel, merged); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := m.Status(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Detached {
+		t.Fatal("expected status to be detached after Merge")
+	}
+
+	// Retrying WriteGenerated with proposed new content does NOT overwrite merged content
+	gen2 := []byte("setting=2\n")
+	res, err := m.WriteGenerated(rel, gen2, 0o644, "retry mutation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || res.Conflict != nil {
+		t.Fatalf("expected merged/detached file to be preserved, got %+v", res)
+	}
+
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	diskBytes, err := os.ReadFile(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(diskBytes) != string(merged) {
+		t.Fatalf("disk content = %q, want %q", string(diskBytes), string(merged))
+	}
 }

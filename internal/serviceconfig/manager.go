@@ -60,7 +60,8 @@ func New(root string) (*Manager, error) {
 	}, nil
 }
 
-// cleanRel validates and cleans rel, ensuring it is a relative path that stays inside root.
+// cleanRel validates and cleans rel, ensuring it is a relative path that stays inside root
+// and does not traverse symlinks pointing outside root.
 func (m *Manager) cleanRel(rel string) (string, string, error) {
 	if rel == "" {
 		return "", "", fmt.Errorf("config path cannot be empty")
@@ -75,9 +76,41 @@ func (m *Manager) cleanRel(rel string) (string, string, error) {
 		return "", "", fmt.Errorf("config path escapes root: %q", rel)
 	}
 
+	if cleaned == ".config-manifest.json" || cleaned == "backups" || strings.HasPrefix(cleaned, "backups/") {
+		return "", "", fmt.Errorf("config path %q is reserved", rel)
+	}
+
 	full := filepath.Join(m.root, filepath.FromSlash(cleaned))
 	if !strings.HasPrefix(full, m.root+string(filepath.Separator)) && full != m.root {
 		return "", "", fmt.Errorf("config path escapes root boundary: %q", rel)
+	}
+
+	realRoot, err := filepath.EvalSymlinks(m.root)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve root symlinks %q: %w", m.root, err)
+	}
+
+	// Walk from m.root down to full checking any existing symlinks
+	curr := m.root
+	parts := strings.Split(filepath.FromSlash(cleaned), string(filepath.Separator))
+	for _, part := range parts {
+		curr = filepath.Join(curr, part)
+		fi, err := os.Lstat(curr)
+		if err != nil {
+			if os.IsNotExist(err) {
+				break
+			}
+			return "", "", fmt.Errorf("lstat %q: %w", curr, err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(curr)
+			if err != nil {
+				return "", "", fmt.Errorf("eval symlink %q: %w", curr, err)
+			}
+			if resolved != realRoot && !strings.HasPrefix(resolved, realRoot+string(filepath.Separator)) {
+				return "", "", fmt.Errorf("symlink %q escapes root to %q", curr, resolved)
+			}
+		}
 	}
 
 	return cleaned, full, nil
@@ -144,6 +177,11 @@ func (m *Manager) SeedBase(rel string, data []byte, mode os.FileMode) (bool, err
 		return false, err
 	}
 
+	manifest, err := loadManifest(m.manifestPath)
+	if err != nil {
+		return false, err
+	}
+
 	if _, err := os.Stat(full); err == nil {
 		// File already exists; do not overwrite
 		return false, nil
@@ -152,11 +190,6 @@ func (m *Manager) SeedBase(rel string, data []byte, mode os.FileMode) (bool, err
 	}
 
 	if err := atomicWrite(full, data, mode); err != nil {
-		return false, err
-	}
-
-	manifest, err := loadManifest(m.manifestPath)
-	if err != nil {
 		return false, err
 	}
 
@@ -199,7 +232,7 @@ func (m *Manager) WriteGenerated(rel string, data []byte, mode os.FileMode, reas
 	newHash := sha256Hex(data)
 
 	if exists {
-		// If user explicitly chose to keep their local edits
+		// If user explicitly chose to keep their local edits or merged them
 		if tracked && entry.Detached {
 			return WriteResult{Changed: false, Conflict: nil}, nil
 		}
@@ -210,8 +243,25 @@ func (m *Manager) WriteGenerated(rel string, data []byte, mode os.FileMode, reas
 			return WriteResult{Changed: false, Conflict: nil}, nil
 		}
 
-		// Conflict check: if the file was tracked and the disk contents don't match the last tracked hash
-		if tracked && entry.Hash != "" && currentHash != entry.Hash {
+		// Base configs are user-owned after seeding and cannot be overwritten by generated config
+		if tracked && entry.Class == ClassBase {
+			diff := UnifiedDiff(cleaned, content, data)
+			return WriteResult{
+				Changed: false,
+				Conflict: &Conflict{
+					Path:     cleaned,
+					Current:  content,
+					Proposed: data,
+					Diff:     diff,
+					Reason:   "base config cannot be overwritten by generated config",
+				},
+			}, nil
+		}
+
+		// Conflict check:
+		// 1) Untracked pre-existing file on disk (custom user file)
+		// 2) Tracked file where current disk content differs from tracked hash
+		if !tracked || (entry.Hash != "" && currentHash != entry.Hash) {
 			diff := UnifiedDiff(cleaned, content, data)
 			return WriteResult{
 				Changed: false,
@@ -286,6 +336,11 @@ func (m *Manager) UseGenerated(rel string, proposed []byte) (string, error) {
 		return "", err
 	}
 
+	manifest, err := loadManifest(m.manifestPath)
+	if err != nil {
+		return "", err
+	}
+
 	backupPath, err := m.backupLocked(cleaned, full)
 	if err != nil {
 		return "", fmt.Errorf("backup before use-generated: %w", err)
@@ -297,11 +352,6 @@ func (m *Manager) UseGenerated(rel string, proposed []byte) (string, error) {
 	}
 
 	if err := atomicWrite(full, proposed, mode); err != nil {
-		return "", err
-	}
-
-	manifest, err := loadManifest(m.manifestPath)
-	if err != nil {
 		return "", err
 	}
 
@@ -322,11 +372,17 @@ func (m *Manager) UseGenerated(rel string, proposed []byte) (string, error) {
 }
 
 // Merge creates a backup and writes merged content.
+// It marks the entry detached so subsequent site mutation retries do not clobber it.
 func (m *Manager) Merge(rel string, data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	cleaned, full, err := m.cleanRel(rel)
+	if err != nil {
+		return err
+	}
+
+	manifest, err := loadManifest(m.manifestPath)
 	if err != nil {
 		return err
 	}
@@ -344,16 +400,11 @@ func (m *Manager) Merge(rel string, data []byte) error {
 		return err
 	}
 
-	manifest, err := loadManifest(m.manifestPath)
-	if err != nil {
-		return err
-	}
-
 	manifest.Entries[cleaned] = ManifestEntry{
 		Path:      cleaned,
 		Class:     ClassGenerated,
 		Hash:      sha256Hex(data),
-		Detached:  false,
+		Detached:  true,
 		Reason:    "user merged conflict",
 		UpdatedAt: m.now().UTC(),
 	}
@@ -386,8 +437,12 @@ func (m *Manager) backupLocked(rel, full string) (string, error) {
 	dest := baseDest
 	counter := 1
 	for {
-		if _, err := os.Stat(dest); os.IsNotExist(err) {
+		_, err := os.Stat(dest)
+		if os.IsNotExist(err) {
 			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("stat backup destination %s: %w", dest, err)
 		}
 		dest = fmt.Sprintf("%s.%d", baseDest, counter)
 		counter++
@@ -431,6 +486,10 @@ func atomicWrite(dest string, data []byte, mode os.FileMode) error {
 	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
