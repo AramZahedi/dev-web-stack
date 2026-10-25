@@ -393,85 +393,134 @@ export interface PerformanceValues {
   [key: string]: unknown;
 }
 
+export interface PerformanceStep {
+  name: string;
+  status: 'ok' | 'skipped' | 'failed' | 'rolled_back' | string;
+  detail?: string;
+  backup?: string;
+}
+
+export interface PerformanceAppliedState {
+  profile: PerformanceProfile;
+  values?: PerformanceValues;
+  applied_at?: string;
+  host_tuning?: boolean;
+  backup_dir?: string;
+  servers?: string[];
+  steps?: PerformanceStep[];
+}
+
 export interface PerformanceHostTuning {
-  enabled?: boolean;
+  available?: boolean;
+  managed?: boolean;
   applied?: boolean;
   sysctl_path?: string;
   limits_path?: string;
   backup_dir?: string;
-  last_error?: string;
-  [key: string]: unknown;
+  applied_at?: string;
+  profile?: string;
+  error?: string;
 }
 
 export interface PerformanceState {
   profile: PerformanceProfile;
   custom?: PerformanceValues;
-  values?: PerformanceValues;
-  resources?: PerformanceResources;
-  host_tuning?: PerformanceHostTuning;
+  values: PerformanceValues;
+  resources: PerformanceResources;
+  applied?: PerformanceAppliedState;
+  host_tuning: PerformanceHostTuning;
   active_server?: string;
-  applied_at?: string;
-  last_applied?: string;
   warnings?: string[];
-  [key: string]: unknown;
 }
 
-export interface PerformanceFile {
+export interface PerformanceManagedFile {
   path: string;
-  content: string;
+  content?: string;
+  active: boolean;
+}
+
+export interface PerformanceHostFile {
+  path: string;
+  exists: boolean;
+  current?: string;
+  proposed?: string;
+  diff?: string;
+}
+
+export interface PerformanceHostPreview {
+  opt_in: boolean;
+  files: PerformanceHostFile[];
+  warnings?: string[];
 }
 
 export interface PerformancePreview {
   profile: PerformanceProfile;
-  values?: PerformanceValues;
-  files?: PerformanceFile[];
-  host_diff?: string;
+  values: PerformanceValues;
+  resources?: PerformanceResources;
+  active_server?: string;
+  nginx?: { main?: string; events?: string; http?: string };
+  apache?: { config?: string };
+  php?: { site_id: string; pool: string; ini: string }[];
+  managed_files: PerformanceManagedFile[];
+  host_tuning: PerformanceHostPreview;
   warnings?: string[];
-  [key: string]: unknown;
-}
-
-export interface PerformanceStep {
-  name: string;
-  ok: boolean;
-  detail?: string;
 }
 
 export interface PerformanceApplyResult {
-  applied?: boolean;
-  reset?: boolean;
-  backup_path?: string;
+  applied: boolean;
+  profile: PerformanceProfile;
+  applied_at?: string;
+  host_tuning: boolean;
+  active_server?: string;
+  files?: PerformanceManagedFile[];
+  steps: PerformanceStep[];
   backup_dir?: string;
-  steps?: PerformanceStep[];
+  rollback_error?: string;
   warnings?: string[];
-  validation_pending?: boolean;
-  host_tuning_applied?: boolean;
-  [key: string]: unknown;
 }
 
-export interface BenchmarkRun {
-  id: string;
-  site: string;
-  tool: string;
-  tool_version?: string;
-  target?: string;
-  profile?: string;
-  started_at: string;
-  duration_s: number;
-  connections: number;
-  requests_per_second: number;
-  p50_ms: number;
-  p95_ms: number;
-  p99_ms: number;
-  errors: number;
-  error_rate?: number;
-  result_path?: string;
-  [key: string]: unknown;
+export interface PerformanceResetResult {
+  reset: boolean;
+  steps: PerformanceStep[];
+  backup_dir?: string;
+  rollback_error?: string;
+  warnings?: string[];
 }
 
 export interface BenchmarkRequest {
   site: string;
   duration_s?: number;
   connections?: number;
+}
+
+export interface BenchmarkMeasurement {
+  requests: number;
+  errors: number;
+  requests_per_second: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  duration_seconds: number;
+}
+
+export interface BenchmarkRun {
+  id: string;
+  site: string;
+  target: string;
+  profile: string;
+  status: 'completed' | 'failed' | 'canceled' | string;
+  tool: string;
+  tool_version: string;
+  limitations?: string[];
+  duration_s: number;
+  connections: number;
+  started_at: string;
+  finished_at: string;
+  measured?: BenchmarkMeasurement | null;
+  error?: string;
+  directory: string;
+  raw_file: string;
+  profile_applied_at?: string;
 }
 
 export interface TerminalSession {

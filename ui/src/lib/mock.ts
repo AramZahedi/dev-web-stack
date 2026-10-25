@@ -21,6 +21,7 @@ import type {
   PerformanceApplyResult,
   PerformancePreview,
   PerformanceProfile,
+  PerformanceResetResult,
   PerformanceState,
   PerformanceValues,
   PHPInfo,
@@ -212,7 +213,8 @@ export function resetMockServiceStateForTests(): void {
     resources: mockPerformanceResources,
     active_server: 'nginx',
     host_tuning: {
-      enabled: false,
+      available: true,
+      managed: false,
       applied: false,
       sysctl_path: '/etc/sysctl.d/99-devstack-performance.conf',
       limits_path: '/etc/security/limits.d/99-devstack-performance.conf',
@@ -840,7 +842,8 @@ let mockPerformance: PerformanceState = {
   resources: mockPerformanceResources,
   active_server: 'nginx',
   host_tuning: {
-    enabled: false,
+    available: true,
+    managed: false,
     applied: false,
     sysctl_path: '/etc/sysctl.d/99-devstack-performance.conf',
     limits_path: '/etc/security/limits.d/99-devstack-performance.conf',
@@ -2340,7 +2343,7 @@ export const mockApi = {
       profile,
       custom: profile === 'custom' ? clone(custom) : undefined,
       values: profile === 'custom' ? clone(custom ?? {}) : mockPerformanceValues(profile),
-      applied_at: undefined,
+      applied: undefined,
     };
     return clone(mockPerformance);
   },
@@ -2355,73 +2358,107 @@ export const mockApi = {
         'Host tuning changes are global to this machine and require root through the helper.',
         'Apply reloads only nginx/Apache and PHP-FPM; no arbitrary service is restarted.',
       ],
-      host_diff:
-        '# /etc/sysctl.d/99-devstack-performance.conf\n' +
-        '+fs.file-max = 100000\n' +
-        '+net.core.somaxconn = 4096\n' +
-        '+net.ipv4.ip_local_port_range = 10240 60999\n' +
-        '# /etc/security/limits.d/99-devstack-performance.conf\n' +
-        '+dev soft nofile 20000\n' +
-        '+dev hard nofile 40000\n',
-      files: [
+      managed_files: [
         {
           path: '/home/dev/.devstack/services/nginx/config/conf.d/performance/main.conf',
           content: 'worker_processes 4;\nworker_rlimit_nofile 8192;\n',
+          active: true,
         },
         {
           path: '/home/dev/.devstack/services/nginx/config/conf.d/performance/events.conf',
           content: 'events {\n    worker_connections 4096;\n}\n',
+          active: true,
         },
         {
           path: '/home/dev/.devstack/services/apache/config/conf.d/performance.conf',
           content: 'ThreadsPerChild 25\nServerLimit 16\n',
+          active: false,
         },
       ],
+      host_tuning: {
+        opt_in: false,
+        files: [
+          {
+            path: '/etc/sysctl.d/99-devstack-performance.conf',
+            exists: false,
+            current: '',
+            proposed: 'fs.file-max = 100000\nnet.core.somaxconn = 4096\n',
+            diff: '+fs.file-max = 100000\n+net.core.somaxconn = 4096\n',
+          },
+          {
+            path: '/etc/security/limits.d/99-devstack-performance.conf',
+            exists: false,
+            current: '',
+            proposed: 'dev soft nofile 20000\ndev hard nofile 40000\n',
+            diff: '+dev soft nofile 20000\n+dev hard nofile 40000\n',
+          },
+        ],
+        warnings: [],
+      },
     };
   },
 
   async applyPerformance(hostTuning: boolean): Promise<PerformanceApplyResult> {
     await wait(420, 700);
+    const appliedAt = new Date().toISOString();
     mockPerformance = {
       ...mockPerformance,
-      applied_at: new Date().toISOString(),
+      applied: {
+        profile: mockPerformance.profile,
+        values: mockPerformance.values,
+        applied_at: appliedAt,
+        host_tuning: hostTuning,
+        backup_dir: '/home/dev/.devstack/backups/performance/20261026T120000Z',
+      },
       host_tuning: hostTuning
-        ? { ...mockPerformance.host_tuning, enabled: true, applied: true, last_error: undefined }
+        ? {
+            ...mockPerformance.host_tuning,
+            managed: true,
+            applied: true,
+            applied_at: appliedAt,
+            profile: mockPerformance.profile,
+            error: undefined,
+          }
         : mockPerformance.host_tuning,
     };
     return {
       applied: true,
+      profile: mockPerformance.profile,
+      applied_at: appliedAt,
+      host_tuning: hostTuning,
       backup_dir: '/home/dev/.devstack/backups/performance/20261026T120000Z',
-      host_tuning_applied: hostTuning,
       steps: [
-        { name: 'write nginx performance includes', ok: true },
-        { name: 'write Apache performance include', ok: true, detail: 'inactive server only' },
-        { name: 'write PHP-FPM pool budgets', ok: true },
+        { name: 'write nginx performance includes', status: 'ok' },
+        { name: 'write Apache performance include', status: 'skipped', detail: 'inactive server only' },
+        { name: 'write PHP-FPM pool budgets', status: 'ok' },
         ...(hostTuning
           ? [
-              { name: 'apply host sysctl/limits', ok: true, detail: 'helper verified values' },
-              { name: 'reload nginx', ok: true },
-              { name: 'reload PHP-FPM', ok: true },
+              { name: 'apply host sysctl/limits', status: 'ok', detail: 'helper verified values' },
+              { name: 'reload nginx', status: 'ok' },
+              { name: 'reload PHP-FPM', status: 'ok' },
             ]
-          : [{ name: 'reload nginx', ok: true }, { name: 'reload PHP-FPM', ok: true }]),
+          : [
+              { name: 'reload nginx', status: 'ok' },
+              { name: 'reload PHP-FPM', status: 'ok' },
+            ]),
       ],
     };
   },
 
-  async resetPerformance(): Promise<PerformanceApplyResult> {
+  async resetPerformance(): Promise<PerformanceResetResult> {
     await wait(320, 520);
     mockPerformance = {
       ...mockPerformance,
-      applied_at: undefined,
-      host_tuning: { ...mockPerformance.host_tuning, applied: false, enabled: false, last_error: undefined },
+      applied: undefined,
+      host_tuning: { ...mockPerformance.host_tuning, applied: false, managed: false, error: undefined },
     };
     return {
       reset: true,
       backup_dir: '/home/dev/.devstack/backups/performance/20261026T120500Z',
       steps: [
-        { name: 'restore host tuning', ok: true },
-        { name: 'write safe nginx includes', ok: true },
-        { name: 'reload nginx', ok: true },
+        { name: 'restore host tuning', status: 'ok' },
+        { name: 'write safe nginx includes', status: 'ok' },
+        { name: 'reload nginx', status: 'ok' },
       ],
     };
   },
@@ -2445,23 +2482,31 @@ export const mockApi = {
     const connections = request.connections ?? 32;
     const seed = 900 + connections * 7 + duration * 3;
     const started = new Date();
+    const directory = `/home/dev/.devstack/logs/performance/${started.toISOString().replaceAll(':', '-')}`;
     const run: BenchmarkRun = {
       id: `bench-${started.getTime().toString(36)}`,
       site: targetSite.name,
-      tool: 'devstack-go-http (mock)',
-      tool_version: 'built-in',
+      tool: 'devstack-go-http',
+      tool_version: 'built-in (mock)',
       target: `http://127.0.0.1:${targetSite.http_port || 41001}/`,
       profile: mockPerformance.profile,
+      status: 'completed',
       started_at: started.toISOString(),
+      finished_at: new Date(started.getTime() + duration * 1000).toISOString(),
       duration_s: duration,
       connections,
-      requests_per_second: seed,
-      p50_ms: 1000 / seed * 5,
-      p95_ms: 1000 / seed * 11,
-      p99_ms: 1000 / seed * 18,
-      errors: 0,
-      error_rate: 0,
-      result_path: `/home/dev/.devstack/logs/performance/${started.toISOString().replaceAll(':', '-')}/result.json`,
+      measured: {
+        requests: seed * duration,
+        errors: 0,
+        requests_per_second: seed,
+        p50_ms: (1000 / seed) * 5,
+        p95_ms: (1000 / seed) * 11,
+        p99_ms: (1000 / seed) * 18,
+        duration_seconds: duration,
+      },
+      limitations: ['Mock measurement for dashboard tests; not a host benchmark.'],
+      directory,
+      raw_file: `${directory}/raw.log`,
     };
     mockBenchmarks = [...mockBenchmarks, run];
     return clone(run);

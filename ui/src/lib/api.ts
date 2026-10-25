@@ -22,6 +22,7 @@ import type {
   PerformanceApplyResult,
   PerformancePreview,
   PerformanceProfile,
+  PerformanceResetResult,
   PerformanceState,
   PerformanceValues,
   PHPInfo,
@@ -605,9 +606,9 @@ export async function applyPerformance(
   });
 }
 
-export async function resetPerformance(): Promise<PerformanceApplyResult> {
+export async function resetPerformance(): Promise<PerformanceResetResult> {
   if (isMockMode) return mockApi.resetPerformance();
-  return request<PerformanceApplyResult>('/performance/reset', {
+  return request<PerformanceResetResult>('/performance/reset', {
     method: 'POST',
     body: { confirm: true },
   });

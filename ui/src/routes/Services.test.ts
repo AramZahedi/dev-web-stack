@@ -143,23 +143,51 @@ const PERFORMANCE: PerformanceState = {
 
 const PERFORMANCE_PREVIEW: PerformancePreview = {
   profile: 'balanced',
+  values: PERFORMANCE.values,
   warnings: ['Host tuning is optional and global.'],
-  host_diff: '+fs.file-max = 100000',
-  files: [{ path: '/data/devstack/services/nginx/config/conf.d/performance/main.conf', content: 'worker_processes 4;' }],
+  managed_files: [
+    {
+      path: '/data/devstack/services/nginx/config/conf.d/performance/main.conf',
+      content: 'worker_processes 4;',
+      active: true,
+    },
+  ],
+  host_tuning: {
+    opt_in: false,
+    files: [
+      {
+        path: '/etc/sysctl.d/99-devstack-performance.conf',
+        exists: false,
+        proposed: 'fs.file-max = 100000',
+        diff: '+fs.file-max = 100000',
+      },
+    ],
+  },
 };
 
 const BENCHMARK: BenchmarkRun = {
   id: 'bench-1',
   site: 'blog',
+  target: 'http://127.0.0.1:41001/',
+  profile: 'balanced',
+  status: 'completed',
   tool: 'devstack-go-http',
+  tool_version: 'built-in',
   started_at: '2026-10-26T12:00:00Z',
+  finished_at: '2026-10-26T12:00:10Z',
   duration_s: 10,
   connections: 32,
-  requests_per_second: 1234,
-  p50_ms: 4.2,
-  p95_ms: 9.8,
-  p99_ms: 14.1,
-  errors: 0,
+  measured: {
+    requests: 12_340,
+    errors: 0,
+    requests_per_second: 1234,
+    p50_ms: 4.2,
+    p95_ms: 9.8,
+    p99_ms: 14.1,
+    duration_seconds: 10,
+  },
+  directory: '/data/devstack/logs/performance/run-1',
+  raw_file: '/data/devstack/logs/performance/run-1/raw.log',
 };
 
 beforeEach(() => {
@@ -176,8 +204,13 @@ beforeEach(() => {
   mockApi.getPerformance.mockResolvedValue(PERFORMANCE);
   mockApi.setPerformanceProfile.mockResolvedValue(PERFORMANCE);
   mockApi.previewPerformance.mockResolvedValue(PERFORMANCE_PREVIEW);
-  mockApi.applyPerformance.mockResolvedValue({ applied: true, steps: [{ name: 'write', ok: true }] });
-  mockApi.resetPerformance.mockResolvedValue({ reset: true });
+  mockApi.applyPerformance.mockResolvedValue({
+    applied: true,
+    profile: 'balanced',
+    host_tuning: false,
+    steps: [{ name: 'write', status: 'ok' }],
+  });
+  mockApi.resetPerformance.mockResolvedValue({ reset: true, steps: [] });
   mockApi.listBenchmarks.mockResolvedValue([]);
   mockApi.runBenchmark.mockResolvedValue(BENCHMARK);
   mockApi.listServiceConfig.mockResolvedValue({

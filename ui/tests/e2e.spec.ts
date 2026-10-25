@@ -434,7 +434,7 @@ test('Performance previews, applies, resets, and records a measured benchmark', 
   await expect(page.getByRole('status').filter({ hasText: 'Benchmark complete' })).toBeVisible();
   const row = benchmark.locator('tbody tr').first();
   await expect(row).toContainText('blog');
-  await expect(row).toContainText('devstack-go-http (mock)');
+  await expect(row).toContainText('devstack-go-http');
 
   await performance.getByRole('button', { name: 'Reset', exact: true }).click();
   const resetDialog = page.getByRole('dialog', { name: 'Reset performance?' });

@@ -12,13 +12,14 @@
     TriangleAlert,
   } from 'lucide-svelte';
   import * as api from '../api';
-  import { describeError } from '../errors';
+  import { ApiError, describeError } from '../errors';
   import { addToast, toastError } from '../stores';
   import type {
     BenchmarkRun,
     PerformanceApplyResult,
     PerformancePreview,
     PerformanceProfile,
+    PerformanceResetResult,
     PerformanceState,
     PerformanceValues,
     Site,
@@ -54,7 +55,7 @@
   let actionBusy = $state(false);
   let actionError = $state<{ code: string; message: string } | null>(null);
   let hostTuning = $state(false);
-  let result = $state<PerformanceApplyResult | null>(null);
+  let result = $state<PerformanceApplyResult | PerformanceResetResult | null>(null);
 
   let sites = $state<Site[]>([]);
   let benchmarks = $state<BenchmarkRun[]>([]);
@@ -73,8 +74,9 @@
   const apache = $derived(section(values, 'apache'));
   const php = $derived(section(values, 'php'));
   const host = $derived(section(values, 'host'));
-  const hostTuningState = $derived(performance?.host_tuning ?? {});
-  const appliedAt = $derived(performance?.applied_at ?? performance?.last_applied ?? '');
+  const hostTuningState = $derived(performance?.host_tuning ?? { applied: false });
+  const hostTuningAvailable = $derived(performance?.host_tuning?.available !== false);
+  const appliedAt = $derived(performance?.applied?.applied_at ?? '');
   const benchSiteName = $derived(
     sites.find((site) => site.name === benchSite || site.id === benchSite)?.name ?? benchSite,
   );
@@ -233,17 +235,29 @@
       await load();
       addToast({
         kind: 'success',
-        title: result.host_tuning_applied ? 'Performance applied with host tuning' : 'Performance applied',
+        title: result.host_tuning ? 'Performance applied with host tuning' : 'Performance applied',
         message: result.backup_dir
           ? `Backups are under ${result.backup_dir}.`
           : 'Managed includes and PHP pools were validated and reloaded.',
       });
     } catch (caught) {
+      const partial = partialPerformanceResult(caught);
+      if (partial) result = partial as PerformanceApplyResult;
       actionError = describeError(caught);
       toastError('Could not apply performance', `${actionError.code}: ${actionError.message}`);
     } finally {
       actionBusy = false;
     }
+  }
+
+  function partialPerformanceResult(value: unknown): PerformanceApplyResult | PerformanceResetResult | null {
+    if (!(value instanceof ApiError) || !value.details || typeof value.details !== 'object') {
+      return null;
+    }
+    const result = (value.details as Record<string, unknown>).result;
+    return result && typeof result === 'object'
+      ? (result as PerformanceApplyResult | PerformanceResetResult)
+      : null;
   }
 
   async function reset(): Promise<void> {
@@ -261,6 +275,8 @@
         message: 'Host files and managed includes were restored.',
       });
     } catch (caught) {
+      const partial = partialPerformanceResult(caught);
+      if (partial) result = partial as PerformanceResetResult;
       actionError = describeError(caught);
       toastError('Could not reset performance', `${actionError.code}: ${actionError.message}`);
     } finally {
@@ -279,10 +295,13 @@
         connections: benchConnections,
       });
       benchmarks = [run, ...benchmarks];
+      const measured = run.measured;
       addToast({
-        kind: 'success',
-        title: 'Benchmark complete',
-        message: `${run.requests_per_second.toFixed(0)} req/s measured with ${run.tool}.`,
+        kind: run.status === 'completed' ? 'success' : 'error',
+        title: run.status === 'completed' ? 'Benchmark complete' : `Benchmark ${run.status}`,
+        message: measured
+          ? `${measured.requests_per_second.toFixed(0)} req/s measured with ${run.tool} ${run.tool_version}.`
+          : run.error ?? 'The run produced no measurement.',
       });
     } catch (caught) {
       benchmarkError = describeError(caught);
@@ -478,26 +497,33 @@
             </div>
             {#if preview.profile}<Badge>{preview.profile}</Badge>{/if}
           </div>
-          {#if preview.warnings && preview.warnings.length > 0}
+          {#if [...(preview.warnings ?? []), ...(preview.host_tuning?.warnings ?? [])].length > 0}
             <ul class="warnings" role="status">
-              {#each preview.warnings as warning (warning)}
+              {#each [...(preview.warnings ?? []), ...(preview.host_tuning?.warnings ?? [])] as warning (warning)}
                 <li><TriangleAlert size={12} strokeWidth={2} aria-hidden="true" />{warning}</li>
               {/each}
             </ul>
           {/if}
-          {#if preview.host_diff}
+          {#if preview.host_tuning?.files?.some((file) => file.diff)}
             <details class="preview-details" open>
               <summary>Host tuning diff</summary>
-              <pre>{preview.host_diff}</pre>
+              {#each preview.host_tuning.files as file (file.path)}
+                {#if file.diff}
+                  <div class="preview-file">
+                    <p class="mono">{file.path}</p>
+                    <pre>{file.diff}</pre>
+                  </div>
+                {/if}
+              {/each}
             </details>
           {/if}
-          {#if preview.files && preview.files.length > 0}
+          {#if preview.managed_files && preview.managed_files.length > 0}
             <details class="preview-details">
-              <summary>Managed include files ({preview.files.length})</summary>
-              {#each preview.files as file (file.path)}
+              <summary>Managed include files ({preview.managed_files.length})</summary>
+              {#each preview.managed_files as file (file.path)}
                 <div class="preview-file">
-                  <p class="mono">{file.path}</p>
-                  <pre>{file.content}</pre>
+                  <p class="mono">{file.path}{#if file.active} · active{/if}</p>
+                  <pre>{file.content ?? ''}</pre>
                 </div>
               {/each}
             </details>
@@ -519,15 +545,17 @@
       {#if result}
         <div class="result" role="status">
           <div class="result-head">
-            <h3>{result.reset ? 'Reset complete' : 'Apply complete'}</h3>
-            {#if result.host_tuning_applied}<Badge variant="accent">Host tuned</Badge>{/if}
+            <h3>{'reset' in result ? 'Reset complete' : 'Apply complete'}</h3>
+            {#if 'host_tuning' in result && result.host_tuning}
+              <Badge variant="accent">Host tuned</Badge>
+            {/if}
           </div>
           {#if result.steps && result.steps.length > 0}
             <ul>
               {#each result.steps as step (step.name)}
-                <li class:failed={!step.ok}>
+                <li class:failed={step.status === 'failed' || step.status === 'rolled_back'}>
                   <span>{step.name}</span>
-                  <span>{step.detail ?? (step.ok ? 'ok' : 'failed')}</span>
+                  <span>{step.detail ?? step.status}</span>
                 </li>
               {/each}
             </ul>
@@ -673,10 +701,17 @@
                 <td>{timestamp(run.started_at)}</td>
                 <td>{run.site}</td>
                 <td><Badge>{run.profile ?? '—'}</Badge></td>
-                <td class="mono">{Math.round(run.requests_per_second).toLocaleString()}</td>
-                <td class="mono">{ms(run.p95_ms)}</td>
-                <td class:bad={run.errors > 0}>{run.errors.toLocaleString()}</td>
-                <td class="tool-cell">{run.tool}</td>
+                <td>
+                  <Badge variant={run.status === 'completed' ? 'accent' : 'danger'}>
+                    {run.status}
+                  </Badge>
+                </td>
+                <td class="mono">{run.measured ? Math.round(run.measured.requests_per_second).toLocaleString() : '—'}</td>
+                <td class="mono">{run.measured ? ms(run.measured.p95_ms) : '—'}</td>
+                <td class:bad={(run.measured?.errors ?? 0) > 0}>
+                  {(run.measured?.errors ?? 0).toLocaleString()}
+                </td>
+                <td class="tool-cell">{run.tool} {run.tool_version}</td>
                 <td><Button size="sm" variant="ghost" onclick={() => (selectedRun = run)}>View</Button></td>
               </tr>
             {/each}
@@ -704,10 +739,16 @@
         changes. Validation or reload failure rolls the changed files back.
       </p>
       <label class="host-toggle">
-        <input type="checkbox" bind:checked={hostTuning} />
+        <input type="checkbox" bind:checked={hostTuning} disabled={!hostTuningAvailable} />
         <span>
-          Also apply host-wide sysctl and limits tuning through the privileged helper.
-          <small>This affects the whole machine and can be reset later.</small>
+          {hostTuningAvailable
+            ? 'Also apply host-wide sysctl and limits tuning through the privileged helper.'
+            : 'Host tuning is unavailable because the privileged helper is not available.'}
+          <small>
+            {hostTuningAvailable
+              ? 'This affects the whole machine and can be reset later.'
+              : 'Managed server and PHP includes can still be applied.'}
+          </small>
         </span>
       </label>
       {#if hostTuning}
@@ -745,10 +786,16 @@
       <div><dt>Target</dt><dd class="mono break">{selectedRun.target ?? '—'}</dd></div>
       <div><dt>Started</dt><dd>{timestamp(selectedRun.started_at)}</dd></div>
       <div><dt>Duration</dt><dd class="mono">{selectedRun.duration_s}s · {selectedRun.connections} connections</dd></div>
-      <div><dt>Requests/sec</dt><dd class="mono">{Math.round(selectedRun.requests_per_second).toLocaleString()}</dd></div>
-      <div><dt>Latency p50 / p95 / p99</dt><dd class="mono">{ms(selectedRun.p50_ms)} / {ms(selectedRun.p95_ms)} / {ms(selectedRun.p99_ms)}</dd></div>
-      <div><dt>Errors</dt><dd class:bad={selectedRun.errors > 0}>{selectedRun.errors}</dd></div>
-      <div><dt>Result file</dt><dd class="mono break">{selectedRun.result_path ?? '—'}</dd></div>
+      <div><dt>Status</dt><dd><Badge variant={selectedRun.status === 'completed' ? 'accent' : 'danger'}>{selectedRun.status}</Badge></dd></div>
+      <div><dt>Requests/sec</dt><dd class="mono">{selectedRun.measured ? Math.round(selectedRun.measured.requests_per_second).toLocaleString() : '—'}</dd></div>
+      <div><dt>Latency p50 / p95 / p99</dt><dd class="mono">{selectedRun.measured ? `${ms(selectedRun.measured.p50_ms)} / ${ms(selectedRun.measured.p95_ms)} / ${ms(selectedRun.measured.p99_ms)}` : '—'}</dd></div>
+      <div><dt>Errors</dt><dd class:bad={(selectedRun.measured?.errors ?? 0) > 0}>{selectedRun.measured?.errors ?? 0}</dd></div>
+      {#if selectedRun.error}<div><dt>Error</dt><dd class="bad break">{selectedRun.error}</dd></div>{/if}
+      <div><dt>Result directory</dt><dd class="mono break">{selectedRun.directory}</dd></div>
+      <div><dt>Raw output</dt><dd class="mono break">{selectedRun.raw_file}</dd></div>
+      {#if selectedRun.limitations && selectedRun.limitations.length > 0}
+        <div><dt>Limitations</dt><dd>{selectedRun.limitations.join(' · ')}</dd></div>
+      {/if}
     </dl>
     <p class="run-disclaimer">
       These values are the measured output of the named tool. devstack never fills a missing
