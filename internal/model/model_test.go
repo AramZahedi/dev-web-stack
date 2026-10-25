@@ -153,6 +153,63 @@ func TestSiteContractsJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestValidateSiteContracts(t *testing.T) {
+	// Valid defaults / empty
+	if err := ValidateSiteContracts("", "", "", "", nil); err != nil {
+		t.Fatalf("expected nil for empty contracts, got %v", err)
+	}
+
+	// Valid populated
+	bp := &BuildProfile{
+		Command:     "npm run build",
+		NodeVersion: "20",
+		Output:      "dist",
+	}
+	if err := ValidateSiteContracts("index.php", "auto", "all", "index.html", bp); err != nil {
+		t.Fatalf("expected nil for valid contracts, got %v", err)
+	}
+
+	// Invalid front controller extension
+	if err := ValidateSiteContracts("index.html", "", "", "", nil); err == nil {
+		t.Fatal("expected error for non-.php front controller")
+	}
+
+	// Invalid front controller traversal
+	if err := ValidateSiteContracts("../bad.php", "", "", "", nil); err == nil {
+		t.Fatal("expected error for traversing front controller")
+	}
+
+	// Invalid mode
+	if err := ValidateSiteContracts("", "unknown_mode", "", "", nil); err == nil {
+		t.Fatal("expected error for unknown mode")
+	}
+
+	// Invalid override
+	if err := ValidateSiteContracts("", "", "invalid_override", "", nil); err == nil {
+		t.Fatal("expected error for unknown override")
+	}
+
+	// Invalid SPA file extension
+	if err := ValidateSiteContracts("", "", "", "index.php", nil); err == nil {
+		t.Fatal("expected error for .php SPA file")
+	}
+
+	// Build profile missing command
+	if err := ValidateSiteContracts("", "", "", "", &BuildProfile{Output: "dist"}); err == nil {
+		t.Fatal("expected error for build profile missing command/node_version")
+	}
+
+	// Build profile missing node version
+	if err := ValidateSiteContracts("", "", "", "", &BuildProfile{Command: "npm run build"}); err == nil {
+		t.Fatal("expected error for build profile missing node_version")
+	}
+
+	// NUL byte check
+	if err := ValidateSiteContracts("index\x00.php", "", "", "", nil); err == nil {
+		t.Fatal("expected error for NUL byte in front controller")
+	}
+}
+
 func TestPHPConfigJSONRoundTrip(t *testing.T) {
 	defaults := PHPDefaults{
 		Version:    "8.4",

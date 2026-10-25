@@ -2,7 +2,13 @@
 // with the CLI and dashboard.
 package model
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+)
 
 // SiteKind identifies how a site is served.
 type SiteKind string
@@ -140,4 +146,92 @@ type Event struct {
 	Type      string    `json:"type"`
 	Message   string    `json:"message"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// ValidateSiteContracts validates the site contract fields:
+// front-controller file, mode, apache allow override, SPA fallback file, and build profile.
+func ValidateSiteContracts(fcFile, fcMode, override, spaFile string, build *BuildProfile) error {
+	if fcFile != "" {
+		if filepath.IsAbs(fcFile) || strings.HasPrefix(fcFile, "/") || strings.HasPrefix(fcFile, "\\") {
+			return errors.New("sites: front controller file must be a relative path")
+		}
+		if strings.ContainsRune(fcFile, '\x00') {
+			return errors.New("sites: invalid front controller file: contains NUL bytes")
+		}
+		if !strings.HasSuffix(strings.ToLower(fcFile), ".php") {
+			return errors.New("sites: front controller file must end with .php")
+		}
+		clean := filepath.Clean(fcFile)
+		if clean == "." || strings.HasPrefix(clean, "..") || strings.Contains(clean, "..") {
+			return errors.New("sites: front controller file cannot traverse outside root")
+		}
+		for _, seg := range strings.FieldsFunc(fcFile, func(r rune) bool { return r == '/' || r == '\\' }) {
+			if seg == "." || seg == ".." || strings.HasPrefix(seg, ".") {
+				return fmt.Errorf("sites: front controller file contains invalid dot segment %q", seg)
+			}
+		}
+	}
+
+	if fcMode != "" {
+		switch fcMode {
+		case "auto", "generated", "htaccess":
+		default:
+			return fmt.Errorf("sites: invalid front controller mode %q (must be auto, generated, or htaccess)", fcMode)
+		}
+	}
+
+	if override != "" {
+		switch override {
+		case "all", "fileinfo", "none":
+		default:
+			return fmt.Errorf("sites: invalid apache allow override %q (must be all, fileinfo, or none)", override)
+		}
+	}
+
+	if spaFile != "" {
+		if filepath.IsAbs(spaFile) || strings.HasPrefix(spaFile, "/") || strings.HasPrefix(spaFile, "\\") {
+			return errors.New("sites: spa fallback file must be a relative path")
+		}
+		if strings.ContainsRune(spaFile, '\x00') {
+			return errors.New("sites: invalid spa fallback file: contains NUL bytes")
+		}
+		if strings.HasSuffix(strings.ToLower(spaFile), ".php") {
+			return errors.New("sites: spa fallback file cannot be a .php file")
+		}
+		clean := filepath.Clean(spaFile)
+		if clean == "." || strings.HasPrefix(clean, "..") || strings.Contains(clean, "..") {
+			return errors.New("sites: spa fallback file cannot traverse outside root")
+		}
+		for _, seg := range strings.FieldsFunc(spaFile, func(r rune) bool { return r == '/' || r == '\\' }) {
+			if seg == "." || seg == ".." || strings.HasPrefix(seg, ".") {
+				return fmt.Errorf("sites: spa fallback file contains invalid dot segment %q", seg)
+			}
+		}
+	}
+
+	if build != nil {
+		cmd := strings.TrimSpace(build.Command)
+		nodeVer := strings.TrimSpace(build.NodeVersion)
+		out := strings.TrimSpace(build.Output)
+		// If build profile has any content, both command and node_version are required together
+		if cmd != "" || nodeVer != "" || out != "" || len(build.Env) > 0 {
+			if cmd == "" || nodeVer == "" {
+				return errors.New("sites: build command and node version are required together (invalid build profile)")
+			}
+		}
+		if out != "" {
+			if filepath.IsAbs(out) || strings.HasPrefix(out, "/") || strings.HasPrefix(out, "\\") {
+				return errors.New("sites: build output must be a relative path")
+			}
+			if strings.ContainsRune(out, '\x00') {
+				return errors.New("sites: invalid build output: contains NUL bytes")
+			}
+			clean := filepath.Clean(out)
+			if strings.HasPrefix(clean, "..") || strings.Contains(clean, "..") {
+				return errors.New("sites: build output cannot traverse outside project")
+			}
+		}
+	}
+
+	return nil
 }

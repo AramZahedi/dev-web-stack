@@ -1262,8 +1262,8 @@ func (f *fakeSiteService) Create(_ context.Context, req sites.CreateRequest) (mo
 		f.err = nil
 		return model.Site{}, err
 	}
-	if strings.Contains(req.FrontControllerFile, "..") {
-		return model.Site{}, errors.New("sites: front controller file cannot traverse outside root")
+	if err := model.ValidateSiteContracts(req.FrontControllerFile, req.FrontControllerMode, req.ApacheAllowOverride, req.SPAFallbackFile, req.Build); err != nil {
+		return model.Site{}, err
 	}
 	f.nextID++
 	fcFile := req.FrontControllerFile
@@ -1326,6 +1326,9 @@ func (f *fakeSiteService) Update(_ context.Context, ref string, req sites.Update
 	if !ok {
 		return model.Site{}, fmt.Errorf("sites: site %q: %w", ref, store.ErrNotFound)
 	}
+	if err := model.ValidateSiteContracts(req.FrontControllerFile, req.FrontControllerMode, req.ApacheAllowOverride, req.SPAFallbackFile, req.Build); err != nil {
+		return model.Site{}, err
+	}
 	if req.Domain != "" {
 		site.Domain = req.Domain
 	}
@@ -1345,9 +1348,6 @@ func (f *fakeSiteService) Update(_ context.Context, ref string, req sites.Update
 		site.FrontController = *req.FrontController
 	}
 	if req.FrontControllerFile != "" {
-		if strings.Contains(req.FrontControllerFile, "..") {
-			return model.Site{}, errors.New("sites: front controller file cannot traverse outside root")
-		}
 		site.FrontControllerFile = req.FrontControllerFile
 	}
 	if req.FrontControllerMode != "" {

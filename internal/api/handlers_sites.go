@@ -91,6 +91,11 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := model.ValidateSiteContracts(req.FrontControllerFile, req.FrontControllerMode, req.ApacheAllowOverride, req.SPAFallbackFile, req.Build); err != nil {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, err.Error(), nil)
+		return
+	}
+
 	site, err := s.sites.Create(r.Context(), sites.CreateRequest{
 		Name:            req.Name,
 		Path:            req.Path,
@@ -142,6 +147,10 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 	}
 	var req updateSiteRequest
 	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+	if err := model.ValidateSiteContracts(req.FrontControllerFile, req.FrontControllerMode, req.ApacheAllowOverride, req.SPAFallbackFile, req.Build); err != nil {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, err.Error(), nil)
 		return
 	}
 	update := sites.UpdateRequest{

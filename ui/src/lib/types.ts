@@ -74,11 +74,11 @@ export interface Site {
   env: Record<string, string>;
   document_root: string;
   front_controller: boolean;
-  front_controller_file?: string;
-  front_controller_mode?: FrontControllerMode;
-  apache_allow_override?: ApacheAllowOverride;
+  front_controller_file: string;
+  front_controller_mode: FrontControllerMode;
+  apache_allow_override: ApacheAllowOverride;
   spa_fallback: boolean;
-  spa_fallback_file?: string;
+  spa_fallback_file: string;
   build?: BuildProfile;
   tls: boolean;
   force_https: boolean;

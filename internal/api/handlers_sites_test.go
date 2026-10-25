@@ -98,22 +98,25 @@ func TestCreateSiteContractsValidationErrors(t *testing.T) {
 	}
 	cookies := rec.Result().Cookies()
 
-	body := `{
-		"name": "badcontract",
-		"path": "/tmp",
-		"kind": "php",
-		"php_version": "8.5",
-		"php_build": "php@8.5.1-r2",
-		"front_controller_file": "../bad.php"
-	}`
-	req := httptest.NewRequest("POST", "http://127.0.0.1/api/v1/sites", strings.NewReader(body))
-	req.AddCookie(cookies[0])
-	req.Header.Set("X-CSRF-Token", session.CSRFToken)
-	rec = httptest.NewRecorder()
-	fake.raw.ServeHTTP(rec, req)
+	invalidPayloads := []string{
+		`{"name": "bad1", "path": "/tmp", "kind": "php", "front_controller_file": "../bad.php"}`,
+		`{"name": "bad2", "path": "/tmp", "kind": "php", "front_controller_mode": "invalid_mode"}`,
+		`{"name": "bad3", "path": "/tmp", "kind": "php", "apache_allow_override": "invalid_override"}`,
+		`{"name": "bad4", "path": "/tmp", "kind": "php", "spa_fallback_file": "bad.php"}`,
+		`{"name": "bad5", "path": "/tmp", "kind": "php", "build": {"output": "dist"}}`,
+		`{"name": "bad6", "path": "/tmp", "kind": "php", "front_controller_file": "null\x00byte.php"}`,
+	}
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 Bad Request, got %d, body: %s", rec.Code, rec.Body.String())
+	for _, p := range invalidPayloads {
+		req := httptest.NewRequest("POST", "http://127.0.0.1/api/v1/sites", strings.NewReader(p))
+		req.AddCookie(cookies[0])
+		req.Header.Set("X-CSRF-Token", session.CSRFToken)
+		rec = httptest.NewRecorder()
+		fake.raw.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("for payload %s: expected 400 Bad Request, got %d, body: %s", p, rec.Code, rec.Body.String())
+		}
 	}
 }
 
