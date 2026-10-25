@@ -20,6 +20,9 @@
     if (path === '/sites' || path === '/' || path === '') {
       return { title: 'Sites', subtitle: 'Local projects, status and TLS' };
     }
+    if (path === '/services') {
+      return { title: 'Services', subtitle: 'Infrastructure services and containers' };
+    }
     if (path === '/runtimes') {
       return { title: 'Runtimes', subtitle: 'Verified Node builds on this machine' };
     }
