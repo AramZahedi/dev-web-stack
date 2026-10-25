@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { RotateCw, SquareTerminal, X } from 'lucide-svelte';
-  import { FitAddon } from '@xterm/addon-fit';
-  import { Terminal } from '@xterm/xterm';
+  import type { FitAddon as FitAddonType } from '@xterm/addon-fit';
+  import type { Terminal as XTerm } from '@xterm/xterm';
   import '@xterm/xterm/css/xterm.css';
   import * as api from '../api';
   import { describeError } from '../errors';
@@ -23,8 +23,8 @@
   let status = $state<PanelStatus>('idle');
   let error = $state<{ code: string; message: string } | null>(null);
 
-  let terminal: Terminal | null = null;
-  let fitAddon: FitAddon | null = null;
+  let terminal: XTerm | null = null;
+  let fitAddon: FitAddonType | null = null;
   let connection: TerminalConnection | null = null;
   let resizeObserver: ResizeObserver | null = null;
 
@@ -68,7 +68,7 @@
     fitAddon = null;
   }
 
-  function start(): void {
+  async function start(): Promise<void> {
     const surface =
       terminalEl ?? document.getElementById(`site-terminal-${site.id}`) as HTMLDivElement | null;
     if (!surface) return;
@@ -77,7 +77,24 @@
     error = null;
     status = 'connecting';
 
-    const term = new Terminal({
+    let TerminalCtor: typeof import('@xterm/xterm').Terminal;
+    let FitAddonCtor: typeof import('@xterm/addon-fit').FitAddon;
+    try {
+      [{ Terminal: TerminalCtor }, { FitAddon: FitAddonCtor }] = await Promise.all([
+        import('@xterm/xterm'),
+        import('@xterm/addon-fit'),
+      ]);
+    } catch (caught) {
+      error = {
+        code: 'TERMINAL_UNAVAILABLE',
+        message: caught instanceof Error ? caught.message : 'Could not load the terminal renderer.',
+      };
+      status = 'error';
+      return;
+    }
+    if (status !== 'connecting') return;
+
+    const term = new TerminalCtor({
       cursorBlink: true,
       fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace',
       fontSize: 12.5,
@@ -99,7 +116,7 @@
         white: '#e5e7eb',
       },
     });
-    const fitAddonInstance = new FitAddon();
+    const fitAddonInstance = new FitAddonCtor();
     term.loadAddon(fitAddonInstance);
     term.open(terminalEl);
     terminal = term;
@@ -152,12 +169,12 @@
   {#snippet actions()}
     <Badge variant={statusVariant()}>{statusLabel}</Badge>
     {#if status === 'idle' || status === 'error' || status === 'closed'}
-      <Button size="sm" variant="primary" onclick={start}>
+      <Button size="sm" variant="primary" onclick={() => void start()}>
         <SquareTerminal size={12} strokeWidth={2} aria-hidden="true" />
         {status === 'idle' ? 'Start terminal' : 'Reconnect'}
       </Button>
     {:else}
-      <Button size="sm" variant="secondary" onclick={start} loading={status === 'connecting'}>
+      <Button size="sm" variant="secondary" onclick={() => void start()} loading={status === 'connecting'}>
         {#if status !== 'connecting'}<RotateCw size={12} strokeWidth={2} aria-hidden="true" />{/if}
         Reconnect
       </Button>
@@ -174,7 +191,7 @@
         title="Terminal unavailable"
         code={error.code}
         message={error.message}
-        onretry={start}
+        onretry={() => void start()}
         ondismiss={() => (error = null)}
       />
     </div>
