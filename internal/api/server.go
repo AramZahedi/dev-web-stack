@@ -35,6 +35,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/phpfpm"
 	"github.com/AramZahedi/dev-web-stack/internal/phpini"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
@@ -133,6 +134,12 @@ type VhostService interface {
 	PreviewVhost(ctx context.Context, ref, server string) (string, error)
 }
 
+// ServiceService is the infrastructure service lifecycle surface used by the API.
+type ServiceService interface {
+	List(ctx context.Context) ([]services.View, error)
+	Get(ctx context.Context, id services.ID) (services.View, error)
+}
+
 // Config configures the API server. AllowedHosts is additive to the required
 // loopback hosts (127.0.0.1, localhost, devstack.test). A zero MaxBodyBytes
 // uses the API's 1024 MiB transport default (matching
@@ -145,6 +152,7 @@ type Config struct {
 	MaxBodyBytes int64
 	AllowedHosts []string
 	Vhosts       VhostService
+	Services     ServiceService
 	Logger       *slog.Logger
 }
 
@@ -157,6 +165,7 @@ type Server struct {
 	logs     *logs.Store
 	helper   HelperClient
 	vhosts   VhostService
+	services ServiceService
 	cfg      Config
 
 	secret       [sha256.Size]byte
@@ -197,6 +206,7 @@ func NewServer(
 		logs:              logStore,
 		helper:            helper,
 		vhosts:            cfg.Vhosts,
+		services:          cfg.Services,
 		cfg:               cfg,
 		allowedHosts:      normalizeAllowedHosts(cfg.AllowedHosts),
 		ui:                cfg.UI,
@@ -204,6 +214,9 @@ func NewServer(
 		logger:            cfg.Logger,
 		eventPollInterval: defaultEventPoll,
 		keepAliveInterval: defaultKeepAlive,
+	}
+	if s.services == nil && st != nil {
+		s.services = services.NewCoordinator(services.DefaultCatalog(), st, "")
 	}
 	if s.ui == nil {
 		s.ui = ui.Dist()
@@ -283,6 +296,9 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/vhosts/mode", s.handleVhostMode},
 		{http.MethodPost, "/api/v1/vhosts/sync", s.handleVhostSync},
 		{http.MethodGet, "/api/v1/vhosts/preview", s.handleVhostPreview},
+
+		{http.MethodGet, "/api/v1/services", s.handleListServices},
+		{http.MethodGet, "/api/v1/services/{id}", s.handleGetService},
 	}
 }
 
@@ -689,7 +705,7 @@ func classifyError(err error) (int, string, string, any) {
 	if err == nil {
 		return http.StatusInternalServerError, codeInternal, "internal error", nil
 	}
-	if errors.Is(err, store.ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, services.ErrNotFound) {
 		return http.StatusNotFound, codeNotFound, err.Error(), nil
 	}
 	if errors.Is(err, runtimemgr.ErrNoCatalogEntry) {

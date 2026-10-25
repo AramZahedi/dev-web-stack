@@ -5,7 +5,9 @@ import {
   createSite,
   getPHPDefaults,
   getPHPInfo,
+  getService,
   getVhostStatus,
+  listServices,
   listSites,
   migratePHP,
   phpExec,
@@ -214,6 +216,45 @@ describe('api client', () => {
     expect(init.method).toBe('POST');
     expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf-sync');
     expect(init.body).toBeUndefined();
+  });
+
+  it('lists services via GET /api/v1/services', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        services: [
+          { id: 'nginx', display_name: 'Nginx', group: 'web', state: 'active', active: true },
+        ],
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const list = await listServices();
+    expect(list).toHaveLength(1);
+    expect(list[0]?.id).toBe('nginx');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/services',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('fetches single service via GET /api/v1/services/{id}', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: 'mysql',
+        display_name: 'MySQL',
+        group: 'mysql-family',
+        state: 'installed',
+        active: false,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const svc = await getService('mysql');
+    expect(svc.id).toBe('mysql');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/services/mysql',
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   it('maps an error envelope to ApiError with code, message and details', async () => {

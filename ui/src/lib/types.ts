@@ -322,3 +322,37 @@ export interface DaemonEvent {
   message?: string;
   created_at?: string;
 }
+
+export type ServiceState =
+  | 'not_installed'
+  | 'installed'
+  | 'starting'
+  | 'active'
+  | 'stopping'
+  | 'error';
+
+export type ServiceGroup = 'web' | 'mysql-family' | 'standalone';
+
+export interface ServicePort {
+  host: number;
+  container: number;
+  protocol?: string;
+  loopback?: boolean;
+}
+
+export interface ServiceView {
+  id: string;
+  display_name: string;
+  group: ServiceGroup;
+  state: ServiceState;
+  active: boolean;
+  image: string;
+  ports?: ServicePort[];
+  last_error?: string;
+  config_path?: string;
+  data_path?: string;
+}
+
+export interface ListServicesResponse {
+  services: ServiceView[];
+}

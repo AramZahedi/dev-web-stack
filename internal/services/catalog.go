@@ -40,10 +40,10 @@ func (g Group) Exclusive() bool {
 
 // Port defines a port exposure rule.
 type Port struct {
-	Host      int
-	Container int
-	Protocol  string // "http", "https", "tcp"
-	Loopback  bool
+	Host      int    `json:"host"`
+	Container int    `json:"container"`
+	Protocol  string `json:"protocol,omitempty"`
+	Loopback  bool   `json:"loopback,omitempty"`
 }
 
 // Mount defines a host directory bind mount.

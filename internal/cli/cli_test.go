@@ -27,6 +27,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/version"
@@ -76,6 +77,10 @@ type fakeClient struct {
 	previewRef     string
 	previewServer  string
 	previewContent string
+
+	servicesList []services.View
+	service      services.View
+	serviceMap   map[string]services.View
 }
 
 func (f *fakeClient) maybeErr() error { return f.err }
@@ -235,6 +240,36 @@ func (f *fakeClient) RemoveRuntime(_ context.Context, buildID string) error {
 	}
 	f.removals = append(f.removals, buildID)
 	return nil
+}
+
+func (f *fakeClient) ListServices(_ context.Context) ([]services.View, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	if f.servicesList == nil {
+		return []services.View{}, nil
+	}
+	return f.servicesList, nil
+}
+
+func (f *fakeClient) GetService(_ context.Context, id string) (services.View, error) {
+	if err := f.maybeErr(); err != nil {
+		return services.View{}, err
+	}
+	if f.service.ID != "" {
+		return f.service, nil
+	}
+	if f.serviceMap != nil {
+		if s, ok := f.serviceMap[id]; ok {
+			return s, nil
+		}
+	}
+	for _, s := range f.servicesList {
+		if string(s.ID) == id {
+			return s, nil
+		}
+	}
+	return services.View{}, errors.New("service not found")
 }
 
 func (f *fakeClient) PHPInfo(_ context.Context, ref string) (sites.PHPInfo, error) {

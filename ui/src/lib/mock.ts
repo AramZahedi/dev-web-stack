@@ -18,6 +18,7 @@ import type {
   PHPMigrationResult,
   PHPResolvedExtension,
   RuntimeBuild,
+  ServiceView,
   Session,
   Settings,
   ServingMode,
@@ -145,6 +146,49 @@ function seedPHPDefaults(): Record<string, PHPDefaults> {
 }
 
 let phpDefaults = seedPHPDefaults();
+
+const mockServices: ServiceView[] = [
+  {
+    id: 'nginx',
+    display_name: 'Nginx Web Server',
+    group: 'web',
+    state: 'active',
+    active: true,
+    image: 'nginx:1.27-alpine',
+    ports: [
+      { host: 80, container: 80, protocol: 'http', loopback: true },
+      { host: 443, container: 443, protocol: 'https', loopback: true },
+    ],
+    config_path: '/data/devstack/services/nginx/config',
+    data_path: '/data/devstack/services/nginx/data',
+  },
+  {
+    id: 'mysql',
+    display_name: 'MySQL Database',
+    group: 'mysql-family',
+    state: 'installed',
+    active: false,
+    image: 'mysql:8.4',
+    ports: [
+      { host: 3306, container: 3306, protocol: 'tcp', loopback: true },
+    ],
+    config_path: '/data/devstack/services/mysql/config',
+    data_path: '/data/devstack/services/mysql/data',
+  },
+  {
+    id: 'redis',
+    display_name: 'Redis In-Memory Store',
+    group: 'standalone',
+    state: 'not_installed',
+    active: false,
+    image: 'redis:7.4-alpine',
+    ports: [
+      { host: 6379, container: 6379, protocol: 'tcp', loopback: true },
+    ],
+    config_path: '/data/devstack/services/redis/config',
+    data_path: '/data/devstack/services/redis/data',
+  },
+];
 
 function resolvePHPExtensions(
   version: string,
@@ -1517,6 +1561,20 @@ export const mockApi = {
   async settings(): Promise<Settings> {
     await wait();
     return clone(settings);
+  },
+
+  async listServices(): Promise<ServiceView[]> {
+    await wait();
+    return clone(mockServices);
+  },
+
+  async getService(id: string): Promise<ServiceView> {
+    await wait();
+    const svc = mockServices.find((s) => s.id === id);
+    if (!svc) {
+      throw new ApiError('NOT_FOUND', `Service ${id} not found`, 404);
+    }
+    return clone(svc);
   },
 
   openLogStream(

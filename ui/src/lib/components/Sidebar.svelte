@@ -5,6 +5,7 @@
     LayoutGrid,
     Monitor,
     Moon,
+    Server,
     SquareTerminal,
     Stethoscope,
     Sun,
@@ -23,6 +24,7 @@
 
   const nav = [
     { href: '#/sites', section: '/sites', label: 'Sites', icon: LayoutGrid },
+    { href: '#/services', section: '/services', label: 'Services', icon: Server },
     { href: '#/runtimes', section: '/runtimes', label: 'Runtimes', icon: Boxes },
     { href: '#/doctor', section: '/doctor', label: 'Doctor', icon: Stethoscope },
     { href: '#/settings', section: '/settings', label: 'Settings', icon: Settings },
