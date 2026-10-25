@@ -63,6 +63,8 @@ func TestResourcesValidate(t *testing.T) {
 			r.Sysctl.IPLocalPortRange = PortRange{Min: 1024, Max: 70000}
 		}, true},
 		{"control character in hostname", func(r *Resources) { r.Hostname = "bad\nhost" }, true},
+		{"invalid limits user", func(r *Resources) { r.User = "bad user" }, true},
+		{"invalid limits group", func(r *Resources) { r.Group = "bad/group" }, true},
 		{"available above total is capped", func(r *Resources) { r.MemoryAvailableBytes = r.MemoryTotalBytes + 1 }, false},
 	}
 	for _, tt := range tests {
@@ -91,10 +93,10 @@ func TestEffectiveCPUUnits(t *testing.T) {
 		want  int
 	}{
 		{"count", 16, 0, 16},
-		{"fraction rounds to one", 16, 0.5, 1},
-		{"one and a half", 16, 1.5, 2},
-		{"two point nine", 16, 2.9, 3},
-		{"eight point five", 32, 8.5, 9},
+		{"fraction floors to one", 16, 0.5, 1},
+		{"one and a half floors to one", 16, 1.5, 1},
+		{"two point nine floors to two", 16, 2.9, 2},
+		{"eight point five floors to eight", 32, 8.5, 8},
 		{"quota above count", 4, 32, 4},
 	}
 	for _, tt := range tests {

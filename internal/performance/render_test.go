@@ -2,6 +2,7 @@ package performance
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -23,7 +24,7 @@ func TestRenderNginxSeparateIncludesAreDeterministic(t *testing.T) {
 
 	mainText := string(first.Main)
 	for _, want := range []string{
-		"worker_processes 9;",
+		"worker_processes 8;",
 		"worker_rlimit_nofile 17408;",
 		"worker_cpu_affinity auto;",
 		"pcre_jit on;",
@@ -110,11 +111,11 @@ func TestRenderApacheDeterministicMPMEvent(t *testing.T) {
 	for _, want := range []string{
 		"<IfModule mpm_event_module>",
 		"ThreadsPerChild 32",
-		"ServerLimit 18",
-		"MaxRequestWorkers 576",
-		"StartServers 9",
+		"ServerLimit 16",
+		"MaxRequestWorkers 512",
+		"StartServers 8",
 		"MinSpareThreads 32",
-		"MaxSpareThreads 288",
+		"MaxSpareThreads 256",
 		"AsyncRequestWorkerFactor 2",
 		"MaxConnectionsPerChild 0",
 		"KeepAlive On",
@@ -145,19 +146,20 @@ func TestRenderPHPPoolOverrides(t *testing.T) {
 		"; profile = throughput",
 		"; site = a",
 		"pm = static",
-		"pm.max_children = 9",
+		"pm.max_children = 8",
 		"listen.backlog = 65535",
-		"php_admin_flag[opcache.enable] = on",
-		"php_admin_value[opcache.memory_consumption] = 72",
-		"php_admin_value[opcache.interned_strings_buffer] = 9",
-		"php_admin_value[opcache.max_accelerated_files] = 5000",
-		"php_admin_flag[opcache.validate_timestamps] = on",
-		"php_admin_value[realpath_cache_size] = 4096K",
-		"php_admin_value[realpath_cache_ttl] = 600",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("PHP pool override missing %q:\n%s", want, text)
 		}
+	}
+	for _, forbidden := range []string{"opcache.", "realpath_cache_"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("PHP pool overrides must not contain php.ini-only setting %q:\n%s", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, "RenderPHPINI") {
+		t.Fatalf("PHP pool override should point OPcache settings at RenderPHPINI:\n%s", text)
 	}
 	if strings.Contains(text, "pm.start_servers") || strings.Contains(text, "pm.min_spare_servers") {
 		t.Fatalf("static mode must not render dynamic spare settings:\n%s", text)
@@ -178,7 +180,6 @@ func TestRenderPHPPoolOverrides(t *testing.T) {
 		"pm.start_servers = 4",
 		"pm.min_spare_servers = 2",
 		"pm.max_spare_servers = 8",
-		"php_admin_flag[opcache.validate_timestamps] = on",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("balanced PHP pool override missing %q:\n%s", want, text)
@@ -190,7 +191,38 @@ func TestRenderPHPPoolOverrides(t *testing.T) {
 	}
 }
 
-func TestRenderPHPPoolDisableTimestampValidation(t *testing.T) {
+func TestRenderPHPINIOpcacheOverrides(t *testing.T) {
+	v := mustCompute(t, highResources(), Throughput, "a", "b", "c", "d")
+	ini, err := RenderPHPINI(v)
+	if err != nil {
+		t.Fatalf("RenderPHPINI: %v", err)
+	}
+	text := string(ini)
+	for _, want := range []string{
+		"; profile = throughput",
+		"opcache.enable = 1",
+		"opcache.memory_consumption = 64",
+		"opcache.interned_strings_buffer = 8",
+		"opcache.max_accelerated_files = 4000",
+		"opcache.validate_timestamps = 1",
+		"opcache.revalidate_freq = 0",
+		"realpath_cache_size = 4096K",
+		"realpath_cache_ttl = 600",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("PHP ini override missing %q:\n%s", want, text)
+		}
+	}
+	again, err := RenderPHPINI(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ini, again) {
+		t.Fatal("PHP ini render is not deterministic")
+	}
+}
+
+func TestRenderPHPINIDisableTimestampValidation(t *testing.T) {
 	v, err := Compute(testResources(), Options{
 		Profile:                           Balanced,
 		PHPSites:                          []string{"a"},
@@ -199,12 +231,12 @@ func TestRenderPHPPoolDisableTimestampValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool, err := RenderPHPPool(v, "a")
+	ini, err := RenderPHPINI(v)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(pool)
-	if !strings.Contains(text, "php_admin_flag[opcache.validate_timestamps] = off") {
+	text := string(ini)
+	if !strings.Contains(text, "opcache.validate_timestamps = 0") {
 		t.Fatalf("missing disabled validate_timestamps:\n%s", text)
 	}
 	if !strings.Contains(text, "cache reset") {
@@ -318,5 +350,62 @@ func TestHostTuningNeverLowersExistingValues(t *testing.T) {
 	}
 	if v.Host.NoFileSoft != 200000 || v.Host.NoFileHard != 1<<20 {
 		t.Fatalf("nofile = %d/%d, want existing 200000/1048576 preserved", v.Host.NoFileSoft, v.Host.NoFileHard)
+	}
+}
+
+func TestRenderApacheLowResourceSpareInvariant(t *testing.T) {
+	v := mustCompute(t, lowResources(), Balanced, "site")
+	out, err := RenderApache(v)
+	if err != nil {
+		t.Fatalf("RenderApache: %v", err)
+	}
+	text := string(out)
+	for _, want := range []string{
+		"ThreadsPerChild 25",
+		"ServerLimit 2",
+		"MaxRequestWorkers 50",
+		"MinSpareThreads 25",
+		"MaxSpareThreads 50",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("low-resource Apache include missing %q:\n%s", want, text)
+		}
+	}
+	if v.Apache.MaxSpareThreads < v.Apache.MinSpareThreads+v.Apache.ThreadsPerChild {
+		t.Fatalf("MaxSpareThreads %d must be at least MinSpareThreads %d + ThreadsPerChild %d",
+			v.Apache.MaxSpareThreads, v.Apache.MinSpareThreads, v.Apache.ThreadsPerChild)
+	}
+}
+
+func TestRenderLimitsScopedToUserAndGroup(t *testing.T) {
+	res := testResources()
+	res.User = "devstack"
+	res.Group = "devstack"
+	v := mustCompute(t, res, Balanced, "site")
+	limits, err := RenderLimits(v)
+	if err != nil {
+		t.Fatalf("RenderLimits: %v", err)
+	}
+	text := string(limits)
+	for _, want := range []string{
+		"devstack soft nofile 65536",
+		"devstack hard nofile 1048576",
+		"@devstack soft nofile 65536",
+		"@devstack hard nofile 1048576",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("scoped limits missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "* soft nofile") || strings.Contains(text, "* hard nofile") {
+		t.Fatalf("scoped limits must not fall back to a wildcard:\n%s", text)
+	}
+}
+
+func TestRenderLimitsRejectsUnsafeAccount(t *testing.T) {
+	res := testResources()
+	res.User = "bad user"
+	if _, err := Compute(res, Options{Profile: Balanced}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Compute(unsafe user) error = %v, want ErrInvalid", err)
 	}
 }

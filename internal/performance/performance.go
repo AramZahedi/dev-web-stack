@@ -92,5 +92,11 @@ const (
 	maxFileMax = 1 << 22
 	maxNoFile  = 1 << 20
 
+	maxOpcacheMemoryMB   = 256
+	maxOpcacheInternedMB = 64
+	maxOpcacheFiles      = 100000
+
 	minFileMax = 64 << 10
+
+	phpChildMemoryBytes = uint64(64 << 20)
 )

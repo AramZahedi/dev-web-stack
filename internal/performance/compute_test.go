@@ -2,6 +2,7 @@ package performance
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -30,8 +31,11 @@ func TestComputeBalancedLowResources(t *testing.T) {
 	if v.Apache.ThreadsPerChild != 25 {
 		t.Fatalf("ThreadsPerChild = %d, want 25", v.Apache.ThreadsPerChild)
 	}
-	if v.Apache.MaxRequestWorkers != 25 || v.Apache.ServerLimit != 1 {
-		t.Fatalf("MaxRequestWorkers/ServerLimit = %d/%d, want 25/1", v.Apache.MaxRequestWorkers, v.Apache.ServerLimit)
+	if v.Apache.MaxRequestWorkers != 50 || v.Apache.ServerLimit != 2 {
+		t.Fatalf("MaxRequestWorkers/ServerLimit = %d/%d, want 50/2", v.Apache.MaxRequestWorkers, v.Apache.ServerLimit)
+	}
+	if v.Apache.MinSpareThreads != 25 || v.Apache.MaxSpareThreads != 50 {
+		t.Fatalf("spare threads = %d/%d, want 25/50", v.Apache.MinSpareThreads, v.Apache.MaxSpareThreads)
 	}
 
 	if v.PHP.Mode != PHPModeDynamic {
@@ -64,8 +68,8 @@ func TestComputeBalancedLowResources(t *testing.T) {
 func TestComputeThroughputHighResources(t *testing.T) {
 	v := mustCompute(t, highResources(), Throughput, "d", "b", "a", "c")
 
-	if v.Nginx.Workers != 9 {
-		t.Fatalf("nginx workers = %d, want 9 (8.5 CPU quota rounded)", v.Nginx.Workers)
+	if v.Nginx.Workers != 8 {
+		t.Fatalf("nginx workers = %d, want 8 (8.5 CPU quota floored)", v.Nginx.Workers)
 	}
 	if v.Nginx.WorkerConnections != 8192 {
 		t.Fatalf("worker_connections = %d, want 8192", v.Nginx.WorkerConnections)
@@ -83,8 +87,8 @@ func TestComputeThroughputHighResources(t *testing.T) {
 	if v.Apache.ThreadsPerChild != 32 {
 		t.Fatalf("ThreadsPerChild = %d, want 32", v.Apache.ThreadsPerChild)
 	}
-	if v.Apache.MaxRequestWorkers != 576 || v.Apache.ServerLimit != 18 {
-		t.Fatalf("MaxRequestWorkers/ServerLimit = %d/%d, want 576/18", v.Apache.MaxRequestWorkers, v.Apache.ServerLimit)
+	if v.Apache.MaxRequestWorkers != 512 || v.Apache.ServerLimit != 16 {
+		t.Fatalf("MaxRequestWorkers/ServerLimit = %d/%d, want 512/16", v.Apache.MaxRequestWorkers, v.Apache.ServerLimit)
 	}
 	if v.Apache.MaxRequestWorkers%v.Apache.ThreadsPerChild != 0 {
 		t.Fatalf("MaxRequestWorkers %d is not a multiple of ThreadsPerChild %d", v.Apache.MaxRequestWorkers, v.Apache.ThreadsPerChild)
@@ -93,17 +97,17 @@ func TestComputeThroughputHighResources(t *testing.T) {
 	if v.PHP.Mode != PHPModeStatic {
 		t.Fatalf("PHP mode = %q, want static", v.PHP.Mode)
 	}
-	if v.PHP.GlobalChildren != 36 {
-		t.Fatalf("PHP global children = %d, want 36", v.PHP.GlobalChildren)
+	if v.PHP.GlobalChildren != 32 {
+		t.Fatalf("PHP global children = %d, want 32", v.PHP.GlobalChildren)
 	}
 	if got := phpSiteIDs(v); len(got) != 4 || got[0] != "a" || got[1] != "b" || got[2] != "c" || got[3] != "d" {
 		t.Fatalf("PHP sites = %v, want sorted a,b,c,d", got)
 	}
 	for _, site := range v.PHP.Sites {
-		if site.MaxChildren != 9 {
-			t.Fatalf("site %q max_children = %d, want 9", site.SiteID, site.MaxChildren)
+		if site.MaxChildren != 8 {
+			t.Fatalf("site %q max_children = %d, want 8", site.SiteID, site.MaxChildren)
 		}
-		if site.StartServers != 9 || site.MinSpareServers != 9 || site.MaxSpareServers != 9 {
+		if site.StartServers != 8 || site.MinSpareServers != 8 || site.MaxSpareServers != 8 {
 			t.Fatalf("static site %q spares = %+v, want max_children for all", site.SiteID, site)
 		}
 	}
@@ -111,8 +115,8 @@ func TestComputeThroughputHighResources(t *testing.T) {
 	if v.Host.Somaxconn != 65535 {
 		t.Fatalf("Somaxconn = %d, want 65535", v.Host.Somaxconn)
 	}
-	if v.Host.NetdevMaxBacklog != 37888 {
-		t.Fatalf("NetdevMaxBacklog = %d, want 37888", v.Host.NetdevMaxBacklog)
+	if v.Host.NetdevMaxBacklog != 33792 {
+		t.Fatalf("NetdevMaxBacklog = %d, want 33792", v.Host.NetdevMaxBacklog)
 	}
 	if v.Host.FileMax != 2<<20 {
 		t.Fatalf("FileMax = %d, want existing 2 MiB preserved", v.Host.FileMax)
@@ -120,8 +124,8 @@ func TestComputeThroughputHighResources(t *testing.T) {
 	if v.Host.IPLocalPortRange != (PortRange{Min: 10240, Max: 65535}) {
 		t.Fatalf("port range = %+v, want 10240-65535", v.Host.IPLocalPortRange)
 	}
-	if v.PHP.Opcache.MemoryMB != 72 || v.PHP.Opcache.InternedStringsMB != 9 || v.PHP.Opcache.MaxAcceleratedFiles != 5000 {
-		t.Fatalf("opcache = %+v, want 72/9/5000", v.PHP.Opcache)
+	if v.PHP.Opcache.MemoryMB != 64 || v.PHP.Opcache.InternedStringsMB != 8 || v.PHP.Opcache.MaxAcceleratedFiles != 4000 {
+		t.Fatalf("opcache = %+v, want 64/8/4000", v.PHP.Opcache)
 	}
 	if v.PHP.Opcache.ValidateTimestamps != true {
 		t.Fatal("opcache validate_timestamps must default to true")
@@ -142,9 +146,9 @@ func TestComputeCgroupQuotaBoundsWorkers(t *testing.T) {
 		{0, 16},
 		{0.5, 1},
 		{1.4, 1},
-		{1.5, 2},
-		{2.9, 3},
-		{8.5, 9},
+		{1.5, 1},
+		{2.9, 2},
+		{8.5, 8},
 		{40, 16},
 	}
 	for _, tt := range tests {
@@ -267,9 +271,10 @@ func TestPHPBudgetSumsAcrossSites(t *testing.T) {
 		{"no sites", testResources(), Throughput, nil, 0},
 		{"one site low", lowResources(), Balanced, []string{"a"}, 1},
 		{"three balanced", testResources(), Balanced, []string{"c", "a", "b"}, 16},
-		{"five throughput", highResources(), Throughput, []string{"e", "a", "d", "b", "c"}, 36},
+		{"five throughput", highResources(), Throughput, []string{"e", "a", "d", "b", "c"}, 32},
 		{"more sites than cpu budget", func() Resources {
 			r := lowResources()
+			r.MemoryTotalBytes = 2 << 30
 			r.MemoryAvailableBytes = 2 << 30
 			return r
 		}(), Balanced, []string{"a", "b", "c", "d", "e", "f"}, 6},
@@ -400,5 +405,104 @@ func TestDisabledOpcacheTimestampValidation(t *testing.T) {
 	}
 	if v.PHP.Opcache.RevalidateFreqSeconds != 0 {
 		t.Fatalf("RevalidateFreqSeconds = %d, want 0", v.PHP.Opcache.RevalidateFreqSeconds)
+	}
+}
+
+func TestComputeAllowsExistingSysctlAboveEngineCap(t *testing.T) {
+	res := testResources()
+	res.Sysctl.Somaxconn = 100000
+	res.Sysctl.NetdevMaxBacklog = 100000
+	v := mustCompute(t, res, Balanced, "site")
+
+	if v.Host.Somaxconn != 100000 {
+		t.Fatalf("host somaxconn = %d, want existing 100000 preserved", v.Host.Somaxconn)
+	}
+	if v.Host.NetdevMaxBacklog != 100000 {
+		t.Fatalf("host netdev backlog = %d, want existing 100000 preserved", v.Host.NetdevMaxBacklog)
+	}
+	if v.Apache.ListenBacklog != maxBacklog || v.PHP.ListenBacklog != maxBacklog {
+		t.Fatalf("listener backlogs = %d/%d, want engine cap %d", v.Apache.ListenBacklog, v.PHP.ListenBacklog, maxBacklog)
+	}
+
+	sysctl, err := RenderSysctl(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sysctl), "net.core.somaxconn = 100000") ||
+		!strings.Contains(string(sysctl), "net.core.netdev_max_backlog = 100000") {
+		t.Fatalf("existing high sysctl values were lowered:\n%s", sysctl)
+	}
+	apache, err := RenderApache(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(apache), "ListenBacklog 65535") {
+		t.Fatalf("Apache listener backlog was not clamped:\n%s", apache)
+	}
+}
+
+func TestComputeRejectsPHPBudgetBelowPerSiteMinimums(t *testing.T) {
+	res := lowResources()
+	res.MemoryTotalBytes = 128 << 20
+	res.MemoryAvailableBytes = 128 << 20
+	sites := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	_, err := Compute(res, Options{Profile: Balanced, PHPSites: sites})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Compute(128 MiB, 8 sites) error = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "php memory") {
+		t.Fatalf("error = %v, want a php memory budget explanation", err)
+	}
+
+	// Children fit in 600 MiB but the per-pool OPcache minimums do not.
+	res.MemoryTotalBytes = 600 << 20
+	res.MemoryAvailableBytes = 600 << 20
+	if _, err := Compute(res, Options{Profile: Balanced, PHPSites: sites}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Compute(600 MiB, 8 sites) error = %v, want ErrInvalid", err)
+	}
+
+	res.MemoryTotalBytes = 2 << 30
+	res.MemoryAvailableBytes = 2 << 30
+	if _, err := Compute(res, Options{Profile: Balanced, PHPSites: sites}); err != nil {
+		t.Fatalf("Compute(2 GiB, 8 sites): %v", err)
+	}
+}
+
+func TestComputeCustomProfileSafetyCaps(t *testing.T) {
+	base := mustCompute(t, testResources(), Balanced, "a", "b")
+	base.Profile = Custom
+
+	tests := []struct {
+		name   string
+		mutate func(*Values)
+	}{
+		{"file max", func(v *Values) { v.Host.FileMax = maxFileMax + 1 }},
+		{"nofile soft", func(v *Values) {
+			v.Host.NoFileSoft = maxNoFile + 1
+			v.Host.NoFileHard = maxNoFile + 1
+		}},
+		{"nofile hard", func(v *Values) {
+			v.Host.NoFileHard = maxNoFile + 1
+			if v.Host.NoFileSoft > v.Host.NoFileHard {
+				v.Host.NoFileSoft = v.Host.NoFileHard
+			}
+		}},
+		{"open file cache", func(v *Values) { v.Nginx.OpenFileCacheMax = maxOpenFileCache + 1 }},
+		{"opcache memory", func(v *Values) { v.PHP.Opcache.MemoryMB = 257 }},
+		{"opcache interned", func(v *Values) {
+			v.PHP.Opcache.MemoryMB = 256
+			v.PHP.Opcache.InternedStringsMB = 65
+		}},
+		{"opcache max files", func(v *Values) { v.PHP.Opcache.MaxAcceleratedFiles = 100001 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := base
+			v.PHP.Sites = append([]PHPSite(nil), base.PHP.Sites...)
+			tt.mutate(&v)
+			if _, err := Compute(testResources(), Options{Profile: Custom, Custom: &v}); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Compute(custom) error = %v, want ErrInvalid", err)
+			}
+		})
 	}
 }

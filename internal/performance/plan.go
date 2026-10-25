@@ -63,6 +63,9 @@ type ApplyPlan struct {
 	HostFiles []HostFile    `json:"host_files"`
 	Backups   []Backup      `json:"backups"`
 	BackupDir string        `json:"backup_dir"`
+	// Stale lists existing PHP fragments that are no longer active. The
+	// caller removes them only after the new files and host tuning succeed.
+	Stale []string `json:"stale"`
 }
 
 // ResetPlan restores host tuning and replaces managed includes with safe empty
@@ -73,24 +76,30 @@ type ResetPlan struct {
 	RemoveHost  []string      `json:"remove_host"`
 	RestoreHost []HostFile    `json:"restore_host"`
 	BackupDir   string        `json:"backup_dir"`
+	// Stale lists existing PHP fragments that are no longer active. Reset
+	// callers remove them after writing the reset fragments.
+	Stale []string `json:"stale"`
 }
 
 // BuildApplyPlan builds only the apply plan.
-func BuildApplyPlan(root string, v Values, at time.Time, prior PriorHost) (ApplyPlan, error) {
-	apply, _, err := BuildPlans(root, v, at, prior)
+func BuildApplyPlan(root string, v Values, at time.Time, prior PriorHost, existingPHPFragments ...string) (ApplyPlan, error) {
+	apply, _, err := BuildPlans(root, v, at, prior, existingPHPFragments...)
 	return apply, err
 }
 
 // BuildResetPlan builds only the reset plan.
-func BuildResetPlan(root string, v Values, at time.Time, prior PriorHost) (ResetPlan, error) {
-	_, reset, err := BuildPlans(root, v, at, prior)
+func BuildResetPlan(root string, v Values, at time.Time, prior PriorHost, existingPHPFragments ...string) (ResetPlan, error) {
+	_, reset, err := BuildPlans(root, v, at, prior, existingPHPFragments...)
 	return reset, err
 }
 
 // BuildPlans renders the complete apply/reset plan without touching the
 // filesystem. The caller supplies the existing host file state and a fixed
-// timestamp so tests and retries produce identical paths.
-func BuildPlans(root string, v Values, at time.Time, prior PriorHost) (ApplyPlan, ResetPlan, error) {
+// timestamp so tests and retries produce identical paths. Optional
+// existingPHPFragments are absolute paths under
+// <root>/services/php/performance; files not active in v are returned in
+// ApplyPlan.Stale/ResetPlan.Stale for removal after a successful write.
+func BuildPlans(root string, v Values, at time.Time, prior PriorHost, existingPHPFragments ...string) (ApplyPlan, ResetPlan, error) {
 	if err := validateRoot(root); err != nil {
 		return ApplyPlan{}, ResetPlan{}, err
 	}
@@ -109,6 +118,10 @@ func BuildPlans(root string, v Values, at time.Time, prior PriorHost) (ApplyPlan
 
 	backupDir := filepath.Join(root, "backups", "performance", at.UTC().Format("20060102T150405.000000000Z"))
 	applyFiles, resetFiles, err := buildManagedFiles(root, v)
+	if err != nil {
+		return ApplyPlan{}, ResetPlan{}, err
+	}
+	stale, err := stalePHPFragments(root, v, existingPHPFragments)
 	if err != nil {
 		return ApplyPlan{}, ResetPlan{}, err
 	}
@@ -144,6 +157,7 @@ func BuildPlans(root string, v Values, at time.Time, prior PriorHost) (ApplyPlan
 	reset := ResetPlan{
 		Files:     resetFiles,
 		BackupDir: backupDir,
+		Stale:     stale,
 	}
 	if prior.Sysctl.Existed {
 		reset.RestoreHost = append(reset.RestoreHost, restoreFile(SysctlTarget, prior.Sysctl))
@@ -163,7 +177,35 @@ func BuildPlans(root string, v Values, at time.Time, prior PriorHost) (ApplyPlan
 		HostFiles: hostFiles,
 		Backups:   backups,
 		BackupDir: backupDir,
+		Stale:     stale,
 	}, reset, nil
+}
+
+func stalePHPFragments(root string, v Values, existing []string) ([]string, error) {
+	dir := filepath.Join(root, "services", "php", "performance")
+	desired := make(map[string]bool, len(v.PHP.Sites))
+	for _, site := range v.PHP.Sites {
+		desired[filepath.Join(dir, site.SiteID+".conf")] = true
+	}
+	seen := make(map[string]bool, len(existing))
+	stale := make([]string, 0)
+	for _, path := range existing {
+		if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return nil, invalid("existing php fragment", "%q must be an absolute clean path", path)
+		}
+		if filepath.Dir(path) != dir || !strings.HasSuffix(filepath.Base(path), ".conf") {
+			return nil, invalid("existing php fragment", "%q is outside %s", path, dir)
+		}
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		if !desired[path] {
+			stale = append(stale, path)
+		}
+	}
+	sort.Strings(stale)
+	return stale, nil
 }
 
 func buildManagedFiles(root string, v Values) ([]ManagedFile, []ManagedFile, error) {
