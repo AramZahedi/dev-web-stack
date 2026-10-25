@@ -379,6 +379,9 @@ func TestSessionAuditDoesNotLogInput(t *testing.T) {
 	if strings.Contains(audit, secret) {
 		t.Fatalf("audit log contains terminal input: %s", audit)
 	}
+	if strings.Contains(audit, ticket.Token) {
+		t.Fatalf("audit log contains the terminal ticket: %s", audit)
+	}
 	if !strings.Contains(audit, "terminal.session") {
 		t.Fatalf("audit log has no terminal session entries: %s", audit)
 	}
@@ -427,4 +430,54 @@ func TestSessionRunsSiteNodeShim(t *testing.T) {
 	if !strings.Contains(output, "SITE_NODE") {
 		t.Fatalf("site Node shim was not used: %q", output)
 	}
+}
+
+func TestManagerCloseReapsLiveSession(t *testing.T) {
+	home := t.TempDir()
+	paths, site, build, info := testPHPFixture(t, home)
+	deps := testDeps(paths)
+	deps.Runtimes = staticRuntimes{build}
+	deps.PHP = staticPHP{info: info}
+	manager := NewManager(deps)
+
+	_, wsURL := newTerminalServer(t, manager, site)
+	ticket, err := manager.IssueTicket(context.Background(), site)
+	if err != nil {
+		t.Fatalf("IssueTicket: %v", err)
+	}
+	conn, _ := dialTerminal(t, wsURL, ticket.Token)
+	sendInput(t, conn, "echo PID=$$\r")
+	sendInput(t, conn, "exec sleep 60\r")
+
+	pid := 0
+	deadline := time.Now().Add(5 * time.Second)
+	pidPattern := regexp.MustCompile(`PID=([0-9]+)`)
+	for time.Now().Before(deadline) && pid == 0 {
+		message := readOne(t, conn, time.Until(deadline))
+		if message.Type != "output" {
+			continue
+		}
+		if match := pidPattern.FindStringSubmatch(message.Data); len(match) == 2 {
+			parsed, err := strconv.Atoi(match[1])
+			if err == nil {
+				pid = parsed
+			}
+		}
+	}
+	if pid == 0 {
+		t.Fatal("did not read the shell pid")
+	}
+
+	manager.Close()
+	if err := waitForSessions(manager, 0, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("process %d survived manager shutdown", pid)
 }
