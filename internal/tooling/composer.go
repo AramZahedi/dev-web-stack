@@ -149,12 +149,22 @@ func composerWrapperScript(paths config.Paths) string {
 		"set -eu\n" +
 		"phar=" + shellQuote(phar) + "\n" +
 		"if [ -n \"${DEVSTACK_SITE:-}\" ]; then\n" +
-		"    php=\"$(command -v php)\" || { echo 'devstack: site shell is missing its php shim' >&2; exit 127; }\n" +
-		"    site_dir=\"${DEVSTACK_HOME:-/nonexistent}/tools/sites/${DEVSTACK_SITE}/\"\n" +
-		"    case \"$php\" in\n" +
-		"        \"$site_dir\"*) ;;\n" +
-		"        *) echo 'devstack: Composer is unavailable in this site shell: no site PHP runtime is on PATH (Composer requires a PHP site)' >&2; exit 127 ;;\n" +
+		"    case \"$DEVSTACK_SITE\" in\n" +
+		"        ''|*[!a-z0-9-]*|-*|*-) echo 'devstack: invalid DEVSTACK_SITE name' >&2; exit 127 ;;\n" +
 		"    esac\n" +
+		"    php=\"$(command -v php)\" || { echo 'devstack: site shell is missing its php shim' >&2; exit 127; }\n" +
+		"    case \"$php\" in /*) ;; *) echo 'devstack: site PHP shim is not an absolute path' >&2; exit 127 ;; esac\n" +
+		"    sites_root=\"${DEVSTACK_HOME:-/nonexistent}/tools/sites\"\n" +
+		"    site_root=\"$sites_root/${DEVSTACK_SITE}\"\n" +
+		"    sites_real=\"$(CDPATH= cd -- \"$sites_root\" 2>/dev/null && pwd -P)\" || { echo 'devstack: Composer is unavailable in this site shell: no site PHP runtime is on PATH (Composer requires a PHP site)' >&2; exit 127; }\n" +
+		"    site_real=\"$(CDPATH= cd -- \"$site_root\" 2>/dev/null && pwd -P)\" || { echo 'devstack: Composer is unavailable in this site shell: no site PHP runtime is on PATH (Composer requires a PHP site)' >&2; exit 127; }\n" +
+		"    if [ \"$site_real\" != \"$sites_real/$DEVSTACK_SITE\" ] || [ -L \"$php\" ]; then\n" +
+		"        echo 'devstack: Composer is unavailable in this site shell: no site PHP runtime is on PATH (Composer requires a PHP site)' >&2; exit 127\n" +
+		"    fi\n" +
+		"    php_dir=\"$(CDPATH= cd -- \"${php%/*}\" 2>/dev/null && pwd -P)\" || { echo 'devstack: site PHP shim path is invalid' >&2; exit 127; }\n" +
+		"    if [ \"$php_dir/${php##*/}\" != \"$site_real/bin/php\" ]; then\n" +
+		"        echo 'devstack: Composer is unavailable in this site shell: no site PHP runtime is on PATH (Composer requires a PHP site)' >&2; exit 127\n" +
+		"    fi\n" +
 		"else\n" +
 		"    php=" + shellQuote(globalPHP) + "\n" +
 		"    if [ ! -x \"$php\" ]; then\n" +

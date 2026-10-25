@@ -425,19 +425,10 @@ resolve_release() {
 	BINARY_DIR="${EXTRACT_DIR}"
 }
 
-# resolve_units prefers the repository's unit files. A packaged install.sh has
-# no build/ tree, so it writes the same units from the definitions below.
+# resolve_units renders both units from the actual install context. The
+# checked-in build/systemd files remain references, but source and archive
+# installs must not silently use a unit with the wrong devstack home.
 resolve_units() {
-	local helper_source="${REPO_ROOT}/build/systemd/devstack-helper.service"
-	local daemon_source="${REPO_ROOT}/build/systemd/devstack-daemon.service"
-	if [ -f "${helper_source}" ] && [ -f "${daemon_source}" ]; then
-		UNIT_DIR="${REPO_ROOT}/build/systemd"
-		return
-	fi
-	if [ "${SOURCE_MODE}" = "source" ]; then
-		die "missing ${helper_source}; run from a complete source checkout"
-	fi
-
 	UNIT_DIR="${TMP_DIR}/systemd"
 	mkdir -p "${UNIT_DIR}"
 	# Keep these definitions in sync with build/systemd/devstack-*.service.
@@ -477,7 +468,7 @@ RuntimeDirectoryMode=0755
 # writable; the helper falls back to an in-place write if the parent /etc mount
 # is read-only. Distribution trust paths are optional and differ between
 # Fedora/RHEL and Debian/Ubuntu.
-ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper /usr/local/bin "${DEVSTACK_HOME_DIR}"
+ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper /usr/local/bin -"${DEVSTACK_HOME_DIR}"
 # External mode writes exactly one bridge file into the server's include
 # directory. These paths are optional because the selected server (or a
 # custom include layout) may not exist on this machine.
@@ -542,6 +533,11 @@ else
 	resolve_release
 fi
 resolve_units
+
+# The helper's ReadWritePaths names the devstack home as optional, and both the
+# helper and daemon need it. Create it as the installing user before any
+# privileged install or service restart.
+run install -d -m 0755 "${DEVSTACK_HOME_DIR}"
 
 log "installing for ${USER_NAME} (uid ${USER_UID}, home ${USER_HOME})"
 if [ "${DRY_RUN}" -eq 1 ]; then

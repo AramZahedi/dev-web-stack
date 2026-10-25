@@ -21,6 +21,8 @@ func TestResolveToolBinDirUsesHelperWrapperPath(t *testing.T) {
 	dir := resolveToolBinDir(context.Background(), fakeToolStatusProvider{
 		status: helperproto.ToolStatusResponse{Tools: []helperproto.ToolStatus{
 			{ID: helperproto.ToolComposer, WrapperPath: "/opt/bin/composer"},
+			// Installed/Managed remain false: the configured bin directory is
+			// still known before the wrapper exists.
 			{ID: helperproto.ToolPHPDefault, WrapperPath: "/opt/bin/php"},
 		}},
 	})

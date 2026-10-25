@@ -42,7 +42,8 @@ func TestComposerWrapperUsesSitePHPAndPreservesArgv(t *testing.T) {
 		"PATH=" + siteBin,
 	}
 	if err := command.Run(); err != nil {
-		t.Fatalf("run composer wrapper: %v", err)
+		script, _ := os.ReadFile(filepath.Join(ComposerBinDir(paths), "composer"))
+		t.Fatalf("run composer wrapper: %v\nscript:\n%s", err, script)
 	}
 	data, err := os.ReadFile(out)
 	if err != nil {
@@ -220,5 +221,75 @@ func TestComposerWrapperRefusesAnotherSitesShim(t *testing.T) {
 	}
 	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
 		t.Fatalf("another site's PHP was executed: %v", statErr)
+	}
+}
+
+func TestComposerWrapperRejectsInvalidSiteName(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	payload := []byte("phar")
+	sum := sha256.Sum256(payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+	if _, err := installComposer(context.Background(), srv.Client(), paths, composerSource{
+		URL: srv.URL, Version: "test", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(payload)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "args")
+	writeTestScript(t, filepath.Join(home, "tools", "sites", "evil", "bin", "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
+
+	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
+	command.Env = []string{
+		"DEVSTACK_SITE=../evil",
+		"DEVSTACK_HOME=" + home,
+		"PATH=" + filepath.Join(home, "tools", "sites", "evil", "bin"),
+	}
+	if err := command.Run(); err == nil {
+		t.Fatal("composer wrapper accepted an invalid site name")
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("PHP was executed for an invalid site name: %v", statErr)
+	}
+}
+
+func TestComposerWrapperRejectsSymlinkedSitePHPOutsideSite(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	payload := []byte("phar")
+	sum := sha256.Sum256(payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+	if _, err := installComposer(context.Background(), srv.Client(), paths, composerSource{
+		URL: srv.URL, Version: "test", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(payload)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "args")
+	outside := filepath.Join(t.TempDir(), "outside-php")
+	writeTestScript(t, outside, "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
+	siteBin := SiteShimDir(paths, "app")
+	if err := os.MkdirAll(siteBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(siteBin, "php")); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
+	command.Env = []string{
+		"DEVSTACK_SITE=app",
+		"DEVSTACK_HOME=" + home,
+		"PATH=" + siteBin,
+	}
+	if err := command.Run(); err == nil {
+		t.Fatal("composer wrapper accepted a symlink escaping the site shim")
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("escaping PHP was executed: %v", statErr)
 	}
 }
