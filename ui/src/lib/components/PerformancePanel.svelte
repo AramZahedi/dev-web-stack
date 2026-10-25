@@ -80,6 +80,12 @@
   const benchSiteName = $derived(
     sites.find((site) => site.name === benchSite || site.id === benchSite)?.name ?? benchSite,
   );
+  const previewWarnings = $derived([
+    ...new Set([
+      ...(preview?.warnings ?? []),
+      ...(preview?.host_tuning?.warnings ?? []),
+    ]),
+  ]);
 
   function section(source: PerformanceValues, key: string): Record<string, unknown> {
     const value = source[key];
@@ -497,9 +503,9 @@
             </div>
             {#if preview.profile}<Badge>{preview.profile}</Badge>{/if}
           </div>
-          {#if [...(preview.warnings ?? []), ...(preview.host_tuning?.warnings ?? [])].length > 0}
+          {#if previewWarnings.length > 0}
             <ul class="warnings" role="status">
-              {#each [...(preview.warnings ?? []), ...(preview.host_tuning?.warnings ?? [])] as warning (warning)}
+              {#each previewWarnings as warning, index (`${index}:${warning}`)}
                 <li><TriangleAlert size={12} strokeWidth={2} aria-hidden="true" />{warning}</li>
               {/each}
             </ul>

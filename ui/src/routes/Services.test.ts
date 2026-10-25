@@ -154,6 +154,7 @@ const PERFORMANCE_PREVIEW: PerformancePreview = {
   ],
   host_tuning: {
     opt_in: false,
+    warnings: ['Host tuning is optional and global.'],
     files: [
       {
         path: '/etc/sysctl.d/99-devstack-performance.conf',

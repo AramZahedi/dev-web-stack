@@ -154,7 +154,12 @@ Live smoke on the test runtime:
 
 - `GET /api/v1/performance` returned measured host resources and a balanced profile.
 - `GET /api/v1/performance/preview` returned managed nginx/Apache files and both fixed
-  host diffs without writing.
+  host diffs without writing. The dashboard preview also surfaced the no-active-web-server
+  warning and duplicate warning strings without a client error.
+- A real 1-second, 4-connection benchmark against a registered static site completed with
+  **23,696 measured req/s**, p50 0.14 ms, p95 0.33 ms, p99 0.43 ms, and 0 errors using
+  `devstack-go-http-load` v1. The result was stored under `logs/performance/`; the test
+  site and result were removed from the runtime afterward.
 - Site-scoped terminal connected through the real WebSocket/PTY, `pwd` returned the
   registered site project root, and Close exited the session.
 - Service configuration listed base files, diffed a proposed edit, applied it with

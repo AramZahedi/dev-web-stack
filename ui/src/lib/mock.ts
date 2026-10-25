@@ -2393,7 +2393,7 @@ export const mockApi = {
             diff: '+dev soft nofile 20000\n+dev hard nofile 40000\n',
           },
         ],
-        warnings: [],
+        warnings: ['Host tuning changes are global to this machine and require root through the helper.'],
       },
     };
   },
