@@ -378,10 +378,14 @@
               <div>
                 <p class="conflict-title">Conflict detected</p>
                 <p>{conflict.reason ?? 'This file has local edits that conflict with generated output.'}</p>
+                <p class="conflict-hint">
+                  Keep leaves the file unchanged and detaches it. The accept actions write the
+                  editor content; “generated” allows future regeneration, “detached” protects it.
+                </p>
                 <div class="conflict-actions">
-                  <Button size="sm" variant="ghost" onclick={keepMine}>Keep mine</Button>
-                  <Button size="sm" variant="secondary" onclick={useProposed}>Use proposed</Button>
-                  <Button size="sm" variant="primary" onclick={mergeManually}>Use merged editor content</Button>
+                  <Button size="sm" variant="ghost" onclick={keepMine}>Keep local &amp; detach</Button>
+                  <Button size="sm" variant="secondary" onclick={useProposed}>Accept editor as generated</Button>
+                  <Button size="sm" variant="primary" onclick={mergeManually}>Accept editor &amp; detach</Button>
                 </div>
               </div>
             </div>
@@ -638,6 +642,13 @@
     color: var(--warning-fg);
     font-size: 11px;
     font-weight: 600;
+  }
+
+  .conflict-hint {
+    margin-top: 4px;
+    color: var(--muted-2);
+    font-size: 9.5px;
+    line-height: 1.45;
   }
 
   .conflict-actions {
