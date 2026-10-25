@@ -1781,7 +1781,8 @@ paths:
         Path traversal, absolute paths, symlinks, non-regular files, sensitive
         names, and files over 1 MiB are rejected.
       operationId: getServiceConfigContent
-      security: []
+      security:
+        - sessionCookie: []
       parameters:
         - $ref: "#/components/parameters/ServiceID"
         - name: path

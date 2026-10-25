@@ -171,6 +171,14 @@ func TestServiceConfigListAndContent(t *testing.T) {
 	if fake.gotID != services.IDNginx || fake.gotPath != "conf.d/custom/app.conf" {
 		t.Fatalf("fake got id/path = %q/%q", fake.gotID, fake.gotPath)
 	}
+
+	coldContent := httptest.NewRequest(http.MethodGet,
+		"http://127.0.0.1/api/v1/services/nginx/config/content?path="+url.QueryEscape("conf.d/custom/app.conf"), nil)
+	coldRec := httptest.NewRecorder()
+	fx.raw.ServeHTTP(coldRec, coldContent)
+	if coldRec.Code != http.StatusForbidden {
+		t.Fatalf("cold content read = %d, want 403", coldRec.Code)
+	}
 }
 
 func TestServiceConfigMutationsRequireCSRF(t *testing.T) {

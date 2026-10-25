@@ -56,7 +56,9 @@ Security and behavior:
 - Absolute paths, traversal, backslashes, NUL/invalid UTF-8, symlinks, non-regular files,
   and files over 1 MiB are rejected.
 - File roots come from catalog config mounts plus safe existing regular files.
-- Listing never returns contents; responses never expose secrets.
+- Listing never returns contents; responses never expose secrets. The single-file
+  content endpoint requires the dashboard session, while list metadata remains a
+  read-only loopback API.
 - Tracked generated conflicts require explicit `keep`, `use`, or `merge`.
 - Apply backs up, writes atomically, validates through the catalog command when active,
   reloads only after validation, and restores the previous file/manifest entry on

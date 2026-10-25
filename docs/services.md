@@ -71,7 +71,8 @@ Scope and safety:
 - Data, logs, secrets, certificates, sockets, backups, dotfiles, absolute paths,
   traversal, symlinks, non-regular files, and files over 1 MiB are rejected.
 - The file list shows `base`, `generated`, and `custom` classes plus modified/detached
-  and conflict markers. Contents are fetched one file at a time.
+  and conflict markers. Contents are fetched one file at a time; the content endpoint
+  requires the dashboard session even though list metadata remains a read-only API.
 - Generated files with local edits are conflicts. Choose **Keep mine**, **Use proposed**,
   or **Use merged editor content**. The API requires an explicit
   `keep|use|merge` resolution.

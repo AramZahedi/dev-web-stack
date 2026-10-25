@@ -401,7 +401,8 @@ service lifecycle paths exist.
   to the project root and snapshotted/restored on failure.
 - Service config access is confined to `services/<id>/config`, rejects symlinks and
   sensitive/reserved names, caps files at 1 MiB, and validates/reloads through catalog
-  commands with file+manifest rollback.
+  commands with file+manifest rollback. File contents require the dashboard session;
+  list metadata remains a read-only API.
 - Performance host tuning uses a fixed-target helper RPC with typed values, fixed
   `/etc/sysctl.d` and `/etc/security/limits.d` paths, backups, verification, and rollback.
   No host path or shell fragment comes from the API.
