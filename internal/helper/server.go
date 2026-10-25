@@ -137,6 +137,9 @@ type Service struct {
 	ServiceDeactivate func(context.Context, string) error
 	ServiceUninstall  func(context.Context, string, bool) error
 	ServiceLogs       func(context.Context, string, int) (string, error)
+	ServiceRestart    func(context.Context, string) error
+	ServiceValidate   func(context.Context, string) error
+	ServiceReload     func(context.Context, string) error
 }
 
 // Server is a helper RPC server listening on a Unix-domain socket.
@@ -283,6 +286,21 @@ func (s *Server) wireService(service Service) Service {
 		if service.ServiceLogs == nil {
 			service.ServiceLogs = func(ctx context.Context, id string, tail int) (string, error) {
 				return s.dockerServices.Logs(ctx, services.ID(id), tail)
+			}
+		}
+		if service.ServiceRestart == nil {
+			service.ServiceRestart = func(ctx context.Context, id string) error {
+				return s.dockerServices.Restart(ctx, services.ID(id))
+			}
+		}
+		if service.ServiceValidate == nil {
+			service.ServiceValidate = func(ctx context.Context, id string) error {
+				return s.dockerServices.Validate(ctx, services.ID(id))
+			}
+		}
+		if service.ServiceReload == nil {
+			service.ServiceReload = func(ctx context.Context, id string) error {
+				return s.dockerServices.Reload(ctx, services.ID(id))
 			}
 		}
 	}
@@ -748,6 +766,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST "+helperproto.PathServicesUninstall, s.handleServicesUninstall)
 	mux.HandleFunc("GET "+helperproto.PathServicesLogs, s.handleServicesLogs)
 	mux.HandleFunc("POST "+helperproto.PathServicesLogs, s.handleServicesLogs)
+	mux.HandleFunc("POST "+helperproto.PathServicesRestart, s.handleServicesRestart)
+	mux.HandleFunc("POST "+helperproto.PathServicesValidate, s.handleServicesValidate)
+	mux.HandleFunc("POST "+helperproto.PathServicesReload, s.handleServicesReload)
 	return s.authenticate(mux)
 }
 
