@@ -1,13 +1,16 @@
 # Continuation State — 2026-10-26
 
 This is the current-state record for resuming the service-platform work. Read it with
-[handoff.md](../handoff.md), [architecture.md](../architecture.md), and the
+[handoff.md](../../handoff.md), [architecture.md](../../architecture.md), and the
 [Next Batch Plan](../plans/2026-10-26-service-platform-next-batch.md).
 
 ## 1. Repository state
 
-- **Code baseline:** `master` at `cbc1605` (Wave 2 merged plus action-color and installed-state fixes).
-- **Current runtime build:** `v0.1.0-89-g26069ac` (`26069ac`); docs-only commits after the code baseline do not change behavior.
+- **Code baseline:** the next-batch code head is `c72fb86`; the documentation/merge commit is the current `master` tip (`git rev-parse HEAD`).
+- **Current runtime build:** rebuilt from the merged next-batch branch after verification; run `./dist/devstack version` for the exact build string.
+- **Next batch:** **implemented, reviewed, and merged**; see
+  [Next Batch Completion](2026-10-26-next-batch-completion.md) for scope, evidence, and
+  remaining host limitations.
 - **Wave 1 merge:** `b4be089`.
 - **Wave 2 merge:** `ec2dca4`.
 - **Last green GitHub CI:** run `40222677123` at `cb443d8`. No automatic CI runs after the
@@ -15,14 +18,11 @@ This is the current-state record for resuming the service-platform work. Read it
 - **CI policy:** automatic GitHub Actions runs are now disabled. `ci.yml`, `php.yml`,
   and `release.yml` are manual `workflow_dispatch` only. Pushes, pull requests, and tags
   do not start workflows. Manual dispatch is still possible if explicitly invoked.
-- **Worktrees/branches:** all implementation worktrees and feature branches were removed
-  after the Wave 2 merge. Working tree is clean except for the documentation/CI-disable
-  commit containing this file.
-- **Tests at baseline:** Go unit/race/vet/build, UI check/unit/Playwright/build,
-  installer/release tests, and the Wave 1/2 live Docker smoke suites pass.
-
-> The code baseline is `cb443d8`. Documentation and CI-disable changes after that should
-> be docs-only; rebuild binaries only when code changes.
+- **Worktrees/branches:** service-config, performance, and terminal lane worktrees were
+  merged into the integration branch and removed after the final merge. The worktree is
+  clean.
+- **Tests at final gate:** Go unit/race/vet/build, UI check/106-unit/31-Playwright/build,
+  installer/workflow tests, and the earlier Wave 1/2 live Docker smoke suites pass.
 
 ## 2. What is implemented
 
@@ -53,21 +53,32 @@ service API/CLI/UI skeleton.
 - Dashboard service actions, credentials, phpMyAdmin, build profile/run/logs, site
   serving fields, PHP/Composer/tooling, degraded state.
 - Pure bounded performance engine (`internal/performance`) with nginx/Apache/PHP/host
-  formulas, includes, apply/reset plans, benchmark plan. **Not wired to helper/API/UI.**
+  formulas, includes, apply/reset plans, benchmark plan.
 
-## 3. Current placeholders and truthful status
+### Next batch (2026-10-26)
+- Editable `http_port`/`https_port`/`ui_port` with atomic persistence, bind checks,
+  durable `restart_required`, dynamic UI vhost port, and `devstack daemon restart`.
+- Service config manifest/read/content/diff/apply/reset API, CLI, and dashboard editor;
+  config-root manifest shared with Docker nginx/Apache and migrated from the legacy
+  service-root manifest.
+- Performance resources/profile/preview/apply/reset API, fixed-path helper host tuning
+  with backup/verify/rollback, measured benchmark storage/history, and dashboard.
+- Site-scoped PTY terminal with one-use ticket/WebSocket, site PHP/Node environment,
+  process-group teardown, limits, and xterm.js panel.
+- Settings cleanup: ImageMagick removed; Native tools spacing fixed.
+- See [Next Batch Completion](2026-10-26-next-batch-completion.md).
 
-The Services page still shows a “Wave 2 backend pending” section for:
+## 3. Current truthful status
 
-- service config manifest/read/diff/apply/reset;
-- performance profiles/apply/host tuning/benchmarks.
+The Services page shows live service lifecycle, configuration, performance, and benchmark
+surfaces. Site detail shows the site-scoped terminal. Settings exposes editable listener
+ports and no ImageMagick row. There are no “Wave 2 backend pending” placeholders.
 
-Settings still had an ImageMagick CLI placeholder. That tool is **descoped**; remove it.
-The rest of the service lifecycle and dashboard build/tooling panels are live.
-
-The dashboard is not stale. The binary was rebuilt from `cb443d8`, and the placeholder
-is literal UI copy. Do not replace it with fake controls; remove it only when the backend
-exists.
+Remaining limitations are listed in
+[Next Batch Completion](2026-10-26-next-batch-completion.md) and
+[Known issues](../../known-issues.md): PHP-FPM pool sizing not merged into live masters,
+real root host-tuning acceptance, benchmark evidence on a real host, external-site Docker
+mounts, and live Wave 3 acceptance.
 
 ## 4. Current local test runtime
 
@@ -75,7 +86,7 @@ This is ephemeral and not part of the repository state.
 
 - **Dashboard:** `http://127.0.0.1:7070`
 - **Daemon:** running with `--home /home/aram/.devstack`
-- **Binary version:** `v0.1.0-89-g26069ac`
+- **Binary version:** rebuild from the merged branch and run `./dist/devstack version`
 - **Helper:** running as root with temporary state:
   - socket: `/run/devstack-helper/helper.sock`
   - state: `/tmp/opencode/devstack-runtime/state`
@@ -93,13 +104,14 @@ This is ephemeral and not part of the repository state.
 - **Host port conflicts:** host nginx owns `80/443`, MySQL `3306`, PostgreSQL `5432`, and
   Redis `6379`. Docker service activation for those engines/ports will fail with
   `SERVICE_CONFLICT`; installs are still safe.
-- **All catalog services currently show `not_installed`.** `~/.devstack/services` is empty
-  (apart from possible generated files after an action). A cached Docker image alone is
-  not an installation.
+- **All catalog services currently show `not_installed`.** `~/.devstack/services` is
+  empty. The smoke install of nginx and the temporary site were removed; no
+  `compose.yaml` remains.
 - phpMyAdmin requires MySQL or MariaDB to be active before activation.
-- Apache was incorrectly shown installed after Wave 2 because its image was cached from
-  smoke tests. That status bug is fixed; loading Services no longer creates
+- Cached Docker images no longer count as installed. Loading Services no longer creates
   `services/compose.yaml` as a side effect.
+- Live smoke evidence for the next batch is recorded in
+  [Next Batch Completion](2026-10-26-next-batch-completion.md).
 
 Stop the test runtime:
 
@@ -142,18 +154,20 @@ Then `./dist/devstack --home "$HOME/.devstack" daemon run`.
    or image digest. PHP’s `imagick` extension remains.
 2. **Automatic GitHub CI is disabled.** All workflows are manual dispatch; no push, PR,
    or tag triggers.
-3. **Next batch scope** is service config editing, performance apply/reset/benchmark and
-   dashboard, site terminal, editable HTTP/HTTPS/dashboard ports, and two UI fixes:
-   remove ImageMagick and add Native tools spacing.
-4. **Ports in Settings mean daemon listener ports:** `http_port` (8080), `https_port`
+3. **Ports in Settings mean daemon listener ports:** `http_port` (8080), `https_port`
    (8443), `ui_port` (7070). Public 80/443 remain helper/Docker-owned. A port change is
    persisted and marked restart-required; `ui_port` is not hot-rebound inside the request.
-5. **Service config scope** is only `<root>/services/<id>/config`. No data/logs/secrets/
-   certs/backups/arbitrary host files.
-6. **Terminal scope** is one registered site, installing-user only, no sudo/root, no Docker
-   socket, site shell environment, PTY over authenticated WebSocket.
-7. **Performance host tuning** is explicit opt-in, helper-applied to fixed paths, with
-   backup/reset/verification. Benchmark results must be measured; no synthetic RPS.
+   `devstack daemon restart` applies it.
+4. **Service config scope** is only `<root>/services/<id>/config`. The manifest lives at
+   the config root and is shared/migrated with Docker nginx/Apache generated vhosts.
+5. **Terminal scope** is one registered site, installing-user only, no sudo/root, no Docker
+   socket, site shell environment, PTY over a one-use ticket/WebSocket. Origin/Host are
+   checked; limits and process-group teardown apply.
+6. **Performance host tuning** is explicit opt-in, helper-applied to fixed paths, with
+   backup/reset/verification. Benchmark results are measured by the labelled built-in Go
+   generator; no synthetic RPS.
+7. **PHP-FPM pool sizing remains a limitation.** OPcache/realpath ini values are applied;
+   per-site `pm.*` values are generated but not merged into live masters.
 
 Full implementation details, APIs, security rules, ordering, and acceptance gates are in
 [the Next Batch Plan](../plans/2026-10-26-service-platform-next-batch.md).
@@ -162,20 +176,17 @@ Full implementation details, APIs, security rules, ordering, and acceptance gate
 
 - External-site bind mounts for Docker web servers (sites outside `projects/` currently
   use builtin/native serving).
-- Full Wave 3 acceptance and benchmark evidence on a real host.
-- Any M4 release/signing/diagnostics work remains out of scope.
+- Real root host-tuning acceptance and benchmark evidence on a real host.
+- Merge PHP-FPM pool sizing into the persisted site/FPM contract.
+- Full Wave 3 acceptance; M4 release/signing/diagnostics remains out of scope.
 
 ## 7. Resume procedure
 
-1. Read the [Next Batch Plan](../plans/2026-10-26-service-platform-next-batch.md).
-2. Start with **Phase 0** (settings ports, UI cleanup, API contracts) on an integration
-   branch.
-3. Then run service-config, performance, and terminal backend lanes in isolated
-   worktrees; maximum three implementation worktrees.
-4. Integrate UI after backend contracts are stable.
-5. Run the full verification gate, independent review/fix rounds, merge to `master`.
-6. Record the merge SHA and local test evidence here; do not wait for GitHub CI because
-   automatic workflows are disabled.
+1. Read the [Next Batch Completion](2026-10-26-next-batch-completion.md) and
+   [Known issues](../../known-issues.md).
+2. Work the remaining host gates or external-site mounts; do not re-run completed waves.
+3. Preserve the merged behavior and run the full local gate before claiming completion.
+4. Do not wait for GitHub CI; automatic workflows are disabled.
 
 ## 8. Useful commands
 
@@ -196,14 +207,16 @@ sg docker -c 'DEVSTACK_DOCKER_TESTS=1 bash test/docker/wave2-phpmyadmin.sh'
 ## 9. Important repository pointers
 
 - `internal/serviceconfig/manager.go` — manifest/conflict/backup primitives.
-- `internal/performance/` — pure engine; not wired.
+- `internal/performance/` and `internal/performance/service/` — profile engine and
+  preview/apply/reset/benchmark orchestration.
+- `internal/terminal/` — site PTY ticket/session manager and WebSocket protocol.
 - `internal/servicecontrol/manager.go` — service lifecycle/preparers.
 - `internal/dockerweb/` — Docker vhost renderer/provider.
 - `internal/sites/` — site lifecycle, PHP/Node, vhost, shell/exec.
 - `internal/helper/` — privileged fixed-target operations.
 - `internal/api/server.go` — interfaces/routes/settings.
-- `ui/src/routes/Services.svelte` — lifecycle + pending placeholders.
-- `ui/src/routes/Settings.svelte` — ports/tooling/ImageMagick placeholder.
-- `ui/src/routes/SiteDetail.svelte` — build/serving fields; future terminal.
+- `ui/src/routes/Services.svelte` — lifecycle, configuration, performance, benchmarks.
+- `ui/src/routes/Settings.svelte` — editable ports, tooling, no ImageMagick.
+- `ui/src/routes/SiteDetail.svelte` — build/serving fields and terminal.
 - `docs/superpowers/specs/2026-10-25-service-containers-and-performance-design.md`
   — authoritative product design.

@@ -1,6 +1,6 @@
 # Known issues and parked work
 
-- **Last reviewed:** 2026-10-25
+- **Last reviewed:** 2026-10-26
 - **Scope:** current native implementation and the planned service platform.
 
 ## 1. Standalone Docker image removed
@@ -28,20 +28,19 @@ container bug is historical and no longer relevant to this repository.
 
 ## 2. Planned service-platform gaps
 
-### K1 — Remaining next-batch items
+### K1 — Remaining platform work
 
-Waves 0–1 and the Wave 2 phpMyAdmin/dashboard work are implemented. Still missing:
-service config editor/diff/apply, performance helper/apply/reset/benchmark wiring and
-dashboard, site-scoped terminal/command runner, editable listener ports, and external-site
-Docker mounts. The performance package is a pure engine today; it is not yet applied to
-the host or dashboard. See the [Next Batch Plan](superpowers/plans/2026-10-26-service-platform-next-batch.md).
+Waves 0–1, Wave 2, and the next batch are implemented. Still missing:
+external-site Docker bind mounts, real root host-tuning acceptance, live Wave 3
+benchmark/acceptance evidence, and merged PHP-FPM pool sizing. See the
+[Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md).
 
 ### K2 — Existing native provider vs Docker provider
 
 The existing native external nginx/Apache mode is retained for manually installed
 servers. Docker nginx/Apache are managed by the service layer; `vhost use builtin` performs
-the explicit Docker→builtin switch. The dashboard service page now exposes lifecycle
-actions; the provider/config/performance panels remain follow-ups.
+the explicit Docker→builtin switch. The dashboard exposes lifecycle, configuration,
+performance, benchmark, and terminal surfaces.
 
 ### K7 — Docker web servers require sites under the managed projects root
 
@@ -67,18 +66,42 @@ Browser trust, real root install/uninstall on 80/443, and live UI flows were not
 in the unprivileged M1 acceptance. M1 is not claimed as fully accepted despite the Linux
 release.
 
-### K5 — Remaining implementation decisions
+### K5 — Settled implementation decisions
 
-Waves 1–2 settled the initial image digests, official httpd image (no wrapper), Composer
-2.10.3 PHAR digest, phpMyAdmin config mechanism, Redis no-password default, and bounded
-performance formulas/caps. Remaining: live host-tuning policy/user scope, benchmark tool
-selection/result schema, exact listener-port restart behavior, and the amount of legacy
-native-provider UI to retain.
+The listener-port restart contract, host-tuning fixed paths/opt-in, benchmark result
+schema and built-in generator, service config scope, and terminal ticket/PTY limits are
+implemented. Remaining host-specific decisions are limited to optional public 80/443
+editing and live acceptance evidence.
 
 ### K6 — Host performance tuning changes are global
 
-The planned host tuning applies sysctl/limits changes to the entire machine. It must be
-applied with backup and reset, and only in the serialized performance phase.
+Host tuning is implemented behind an explicit `host_tuning:true` opt-in and a typed
+confirmation in the dashboard. The helper writes only two fixed paths, backs up, verifies,
+and rolls back. The real root apply/reset was not run on this host; unit/fake-runner and
+destination-root tests pass.
+
+### K12 — Performance limitations
+
+- PHP-FPM `pm.*` pool sizing is generated under `services/php/performance/` but is not
+  merged into live per-site FPM masters because the site model has no persisted
+  pool-sizing contract. OPcache/realpath ini values are applied through `sites.ApplyPHP`.
+- Managed performance includes are not registered in the service-config manifest; they
+  may appear as existing/custom files in the editor.
+- Existing pre-change nginx/Apache base configs do not gain the managed include lines
+  automatically; base files are user-owned. Fresh installs seed them, and apply reports a
+  profile conflict until an existing base config adds them.
+- Benchmarks use the labelled built-in Go HTTP generator, not wrk/hey. Results are
+  measured but not directly comparable to wrk/hey.
+- Host tuning was not applied to the real `/etc` during verification.
+
+### K13 — Terminal limitations
+
+- A stopped site still gets a shell if its project directory is valid.
+- Descendants that deliberately create a new session/process group can escape process
+  group teardown; normal shell jobs are killed.
+- There is no background ticket janitor; expired tickets are pruned on issuance/consumption.
+- Live host acceptance used a real PTY through the API/WebSocket test; it did not exercise
+  installed PHP/Node shims on a real site.
 
 ### K9 — ImageMagick CLI descoped
 
@@ -105,11 +128,13 @@ conflict until those ports are freed. See [Continuation State](superpowers/statu
 - Native external nginx/Apache mode requires the server to be installed and configured by
   the administrator; devstack does not install packages.
 - Browser trust, root install on 80/443, and live UI gates remain manual.
-- phpMyAdmin, credentials/rotation, service lifecycle, builds, and most dashboard actions
-  are implemented. Service config editing, performance apply/benchmark, site terminal, and
-  editable listener ports remain.
+- phpMyAdmin, credentials/rotation, service lifecycle, builds, service config editing,
+  performance preview/apply/reset/benchmarks, site terminal, and editable listener ports
+  are implemented.
 - ImageMagick CLI is descoped; PHP `imagick` remains available.
 - Docker web servers require sites under the managed projects root (K7).
+- PHP-FPM pool sizing, external-site Docker mounts, and real host-tuning acceptance
+  remain (K1/K12/K13).
 - `install.sh` adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
   existing helper config and restarts it. A manually managed config without
   `service_root` leaves the service API at helper NOT_IMPLEMENTED until fixed.

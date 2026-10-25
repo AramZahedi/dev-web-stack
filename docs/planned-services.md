@@ -1,16 +1,16 @@
 # Planned service platform
 
-> **Implementation status (2026-10-26):** Waves 0–2 are implemented: six pinned service
-> containers, phpMyAdmin, Docker nginx/Apache, database credentials/rotation/admin
-> bootstrap, global PHP/Composer, site shell/exec, static builds, and dashboard
-> action/build/tooling panels. The pure performance engine exists but is not wired. The
-> next batch covers service config editing, performance apply/reset/benchmark/UI, site
-> terminal, editable listener ports, and UI cleanup. ImageMagick CLI is descoped;
-> external-site Docker mounts remain. This document remains the product overview, not a
-> promise that every item is shipped.
+> **Implementation status (2026-10-26):** Waves 0–2 and the next service-platform batch
+> are implemented: six pinned service containers, phpMyAdmin, Docker nginx/Apache,
+> database credentials/rotation/admin bootstrap, global PHP/Composer, site shell/exec,
+> static builds, service configuration editing, performance preview/apply/reset and
+> measured benchmarks, site-scoped terminal, editable listener ports, and the dashboard
+> surfaces. ImageMagick CLI is descoped. Remaining: external-site Docker mounts, real
+> root host-tuning/benchmark acceptance, and merged PHP-FPM pool sizing. This document
+> remains the product overview, not a promise that every host gate is passed.
 
-- **Status:** Waves 0–2 implemented; next batch planned.
-- **Design status:** Approved for implementation.
+- **Status:** Waves 0–2 and the next batch implemented; remaining host gates tracked in known issues.
+- **Design status:** Implemented for Waves 0–2 and the next batch.
 - **Detailed specification:** [service containers, editable config, and throughput](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 - **Current implemented architecture:** [architecture](architecture.md)
 
