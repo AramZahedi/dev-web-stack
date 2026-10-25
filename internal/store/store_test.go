@@ -583,8 +583,8 @@ func TestMigration0003UpgradesExistingDatabase(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 {
-		t.Fatalf("schema version = %d, want 3", version)
+	if version < 3 {
+		t.Fatalf("schema version = %d, want >= 3", version)
 	}
 }
 
@@ -593,6 +593,7 @@ func TestSchemaAndPragmas(t *testing.T) {
 	for _, table := range []string{
 		"sites", "runtimes", "certs", "settings", "events",
 		"php_defaults", "site_php_config", "schema_migrations",
+		"services",
 	} {
 		var name string
 		err := s.db.QueryRowContext(ctx,
@@ -630,8 +631,8 @@ func TestSchemaAndPragmas(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 {
-		t.Fatalf("schema version = %d, want 3", version)
+	if version != 4 {
+		t.Fatalf("schema version = %d, want 4", version)
 	}
 }
 
