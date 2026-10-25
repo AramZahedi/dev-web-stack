@@ -119,9 +119,9 @@ See [known issues](known-issues.md). Important current points:
    API/CLI only until Wave 2.
 3. Manual Linux M1 gates remain open.
 4. No automatic `~/.devstack` → `/data/devstack` migration.
-5. Existing helper configs need `service_root`, `tool_root`, and `tool_bin_dir` (and a
-   restart) for service containers and global PHP/Composer; fresh installs get them from
-   `install.sh`.
+5. `install.sh` adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
+   existing helper config and restarts the helper; verify the keys if an older config is
+   manually managed.
 6. The official MySQL entrypoint retains its password values in the final container
    process environment; Compose files and logs do not contain them. This is documented.
 7. The old standalone Docker image is retired; do not recreate it.

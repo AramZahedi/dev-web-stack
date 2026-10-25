@@ -156,14 +156,14 @@ func (p *Provider) Prepare(ctx context.Context, serverName string) error {
 	}
 
 	if err := p.builtin.StopForDocker(ctx); err != nil {
-		restoreErr := p.builtin.StartAfterDocker(ctx)
+		restoreErr := p.restoreBuiltin(ctx)
 		if restoreErr != nil {
 			return errors.Join(fmt.Errorf("dockerweb: stop builtin serving: %w", err), fmt.Errorf("dockerweb: restore builtin serving: %w", restoreErr))
 		}
 		return fmt.Errorf("dockerweb: stop builtin serving: %w", err)
 	}
 	fail := func(cause error) error {
-		if restoreErr := p.builtin.StartAfterDocker(ctx); restoreErr != nil {
+		if restoreErr := p.restoreBuiltin(ctx); restoreErr != nil {
 			return errors.Join(cause, fmt.Errorf("dockerweb: restore builtin serving: %w", restoreErr))
 		}
 		return cause
@@ -187,6 +187,14 @@ func (p *Provider) Prepare(ctx context.Context, serverName string) error {
 	p.prevProvider = provider
 	p.mu.Unlock()
 	return nil
+}
+
+// restoreBuiltin uses a detached bounded context so a canceled activation
+// request cannot leave 80/443 down or a stale Docker owner marker behind.
+func (p *Provider) restoreBuiltin(ctx context.Context) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	return p.builtin.StartAfterDocker(cleanupCtx)
 }
 
 func (p *Provider) checkPorts(ctx context.Context, server Server) error {

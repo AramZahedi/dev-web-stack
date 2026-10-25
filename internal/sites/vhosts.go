@@ -241,6 +241,17 @@ func (s *Service) ReconcileServingMode(ctx context.Context) error {
 	}
 	if helperMode == mode {
 		if mode == config.ServingModeBuiltin {
+			// Repair a crashed/canceled Docker transition: the config says
+			// builtin, but a stale owner marker may have suppressed the helper
+			// forwarders. Re-enable them and rewrite the marker.
+			if s.deps.Forwarders != nil {
+				if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, true); err != nil {
+					return fmt.Errorf("sites: restore builtin forwarders: %w", err)
+				}
+			}
+			if err := s.writeServingProviderMarker("native"); err != nil {
+				return fmt.Errorf("sites: repair serving owner marker: %w", err)
+			}
 			return nil
 		}
 		return s.syncVhostsLocked(ctx, "")

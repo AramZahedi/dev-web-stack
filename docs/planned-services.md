@@ -7,7 +7,7 @@
 > mounts, and full dashboard action/config/build/terminal panels. This document remains
 > the product overview, not a promise that every item is shipped.
 
-- **Status:** Designed, **not implemented**.
+- **Status:** Waves 0–1 implemented; Wave 2 items remain planned.
 - **Design status:** Approved for implementation.
 - **Detailed specification:** [service containers, editable config, and throughput](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 - **Current implemented architecture:** [architecture](architecture.md)

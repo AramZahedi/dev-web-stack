@@ -387,3 +387,16 @@ func TestProviderCommitRequiresPrepare(t *testing.T) {
 		t.Fatal("expected commit-without-prepare error")
 	}
 }
+
+func TestPrepareCanceledRequestStillRestoresBuiltin(t *testing.T) {
+	provider, _, builtin, syncer, _ := newProviderFixture(t)
+	syncer.ensureErr = errors.New("sync failed")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := provider.Prepare(ctx, "nginx"); err == nil {
+		t.Fatal("Prepare succeeded, want failure")
+	}
+	if len(builtin.started) != 1 {
+		t.Fatalf("builtin restore calls = %v, want one detached cleanup", builtin.started)
+	}
+}

@@ -239,7 +239,10 @@ command-line flags override file values. The shipped example is
 | `forward_https_port` | `443` | Privileged HTTPS forwarder |
 | `proxy_http_port` | `8080` | Daemon loopback HTTP proxy |
 | `proxy_https_port` | `8443` | Daemon loopback HTTPS proxy |
-| `auto_forward` | `true` | Bind 80/443 at helper startup |
+| `auto_forward` | `true` | Bind 80/443 at helper startup unless a Docker web server marker disables it |
+| `service_root` | devstack home | Host root for the Compose/service config/data tree; empty disables Docker service RPCs |
+| `tool_root` | devstack home | Host root for managed PHP/Composer tools and shims |
+| `tool_bin_dir` | `/usr/local/bin` | System bin directory receiving php/composer links |
 | `log_level` | `info` | `debug`, `info`, `warn`, or `error` |
 
 After changing the helper config:

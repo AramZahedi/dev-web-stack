@@ -90,9 +90,9 @@ applied with backup and reset, and only in the serialized performance phase.
 - The dashboard service page is read-only; service/config/build/credential actions are
   API/CLI only until Wave 2.
 - Docker web servers require sites under the managed projects root (K7).
-- Existing helper configs require `service_root`, `tool_root`, and `tool_bin_dir` plus a
-  helper restart; fresh installs get them from `install.sh`. Without `service_root`, the
-  service API returns helper NOT_IMPLEMENTED.
+- `install.sh` now adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
+  existing helper config and restarts it. A manually managed config without
+  `service_root` leaves the service API at helper NOT_IMPLEMENTED until fixed.
 
 ## 4. Deferred/parked work
 
