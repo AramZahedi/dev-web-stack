@@ -3,6 +3,7 @@ package serviceconfig
 import (
 	"crypto/sha256"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -297,6 +298,153 @@ func (m *Manager) WriteGenerated(rel string, data []byte, mode os.FileMode, reas
 	return WriteResult{Changed: true, Conflict: nil}, nil
 }
 
+// WriteUser writes user-owned content and backs up the current file. It does
+// not change the manifest hash, so a later generated write detects the edit
+// exactly like a direct filesystem change. The returned backup path is empty
+// when the file did not exist before.
+func (m *Manager) WriteUser(rel string, data []byte, mode os.FileMode) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cleaned, full, err := m.cleanRel(rel)
+	if err != nil {
+		return "", err
+	}
+
+	backupPath := ""
+	if fi, statErr := os.Lstat(full); statErr == nil {
+		backupPath, err = m.backupLocked(cleaned, full)
+		if err != nil {
+			return "", err
+		}
+		if fi.Mode().Perm() != 0 {
+			mode = fi.Mode().Perm()
+		}
+	} else if !os.IsNotExist(statErr) {
+		return "", fmt.Errorf("inspect %s: %w", full, statErr)
+	}
+	if mode == 0 {
+		mode = 0o644
+	}
+	if err := atomicWrite(full, data, mode); err != nil {
+		return "", err
+	}
+	return backupPath, nil
+}
+
+// RestoreFile writes bytes without changing manifest metadata or creating a
+// backup. It is used to restore a previous version after a failed validation or
+// reload.
+func (m *Manager) RestoreFile(rel string, data []byte, mode os.FileMode) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	_, full, err := m.cleanRel(rel)
+	if err != nil {
+		return err
+	}
+	if mode == 0 {
+		mode = 0o644
+	}
+	return atomicWrite(full, data, mode)
+}
+
+// Entry returns the manifest entry for rel and whether it is tracked.
+func (m *Manager) Entry(rel string) (ManifestEntry, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cleaned, _, err := m.cleanRel(rel)
+	if err != nil {
+		return ManifestEntry{}, false, err
+	}
+	manifest, err := loadManifest(m.manifestPath)
+	if err != nil {
+		return ManifestEntry{}, false, err
+	}
+	entry, ok := manifest.Entries[cleaned]
+	return entry, ok, nil
+}
+
+// RestoreEntry restores or removes a manifest entry after a rolled-back write.
+// A tracked entry is written as-is; an untracked entry is deleted.
+func (m *Manager) RestoreEntry(rel string, entry ManifestEntry, tracked bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cleaned, _, err := m.cleanRel(rel)
+	if err != nil {
+		return err
+	}
+	manifest, err := loadManifest(m.manifestPath)
+	if err != nil {
+		return err
+	}
+	if tracked {
+		entry.Path = cleaned
+		manifest.Entries[cleaned] = entry
+	} else {
+		delete(manifest.Entries, cleaned)
+	}
+	return saveManifest(m.manifestPath, manifest)
+}
+
+// LatestBackup returns the newest backup file for rel, or an empty string when
+// no backup exists.
+func (m *Manager) LatestBackup(rel string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cleaned, _, err := m.cleanRel(rel)
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Join(m.root, "backups", "config")
+	info, err := os.Stat(base)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("inspect config backups: %w", err)
+	}
+	if !info.IsDir() {
+		return "", nil
+	}
+
+	newest := ""
+	err = filepath.WalkDir(base, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 || !d.Type().IsRegular() {
+			return nil
+		}
+		relative, err := filepath.Rel(base, path)
+		if err != nil {
+			return err
+		}
+		parts := strings.Split(filepath.ToSlash(relative), "/")
+		if len(parts) < 2 {
+			return nil
+		}
+		candidate := strings.Join(parts[1:], "/")
+		if candidate != cleaned && !strings.HasPrefix(candidate, cleaned+".") {
+			return nil
+		}
+		if newest == "" || path > newest {
+			newest = path
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("scan config backups: %w", err)
+	}
+	return newest, nil
+}
+
 // KeepMine marks a config file as detached so future generated writes will not overwrite it.
 func (m *Manager) KeepMine(rel string) error {
 	m.mu.Lock()
@@ -374,21 +522,29 @@ func (m *Manager) UseGenerated(rel string, proposed []byte) (string, error) {
 // Merge creates a backup and writes merged content.
 // It marks the entry detached so subsequent site mutation retries do not clobber it.
 func (m *Manager) Merge(rel string, data []byte) error {
+	_, err := m.MergeWithBackup(rel, data)
+	return err
+}
+
+// MergeWithBackup is Merge with the backup path returned for audit and
+// rollback reporting.
+func (m *Manager) MergeWithBackup(rel string, data []byte) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	cleaned, full, err := m.cleanRel(rel)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	manifest, err := loadManifest(m.manifestPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	if _, err := m.backupLocked(cleaned, full); err != nil {
-		return fmt.Errorf("backup before merge: %w", err)
+	backupPath, err := m.backupLocked(cleaned, full)
+	if err != nil {
+		return "", fmt.Errorf("backup before merge: %w", err)
 	}
 
 	mode := os.FileMode(0o644)
@@ -397,7 +553,7 @@ func (m *Manager) Merge(rel string, data []byte) error {
 	}
 
 	if err := atomicWrite(full, data, mode); err != nil {
-		return err
+		return "", err
 	}
 
 	manifest.Entries[cleaned] = ManifestEntry{
@@ -409,7 +565,10 @@ func (m *Manager) Merge(rel string, data []byte) error {
 		UpdatedAt: m.now().UTC(),
 	}
 
-	return saveManifest(m.manifestPath, manifest)
+	if err := saveManifest(m.manifestPath, manifest); err != nil {
+		return "", err
+	}
+	return backupPath, nil
 }
 
 // Backup creates a timestamped copy under <root>/backups/config/<timestamp>/...
