@@ -107,6 +107,12 @@ type Config struct {
 	// ServiceRoot is the devstack root directory owning service container state.
 	// When set, the helper service controller is wired automatically.
 	ServiceRoot string
+	// ToolRoot is the devstack home holding managed native CLI tools. When set,
+	// the helper tool manager is wired automatically.
+	ToolRoot string
+	// ToolBinDir is the system bin directory that receives php/composer links.
+	// Empty selects /usr/local/bin. Tests use a temporary directory.
+	ToolBinDir string
 	// Logger receives server diagnostics. A nil logger uses slog.Default.
 	Logger *slog.Logger
 	// Service contains the privileged operations exposed by the helper. When
@@ -140,6 +146,9 @@ type Service struct {
 	ServiceRestart    func(context.Context, string) error
 	ServiceValidate   func(context.Context, string) error
 	ServiceReload     func(context.Context, string) error
+	ToolStatus        func(context.Context) (helperproto.ToolStatusResponse, error)
+	ToolInstall       func(context.Context, helperproto.ToolInstallRequest) (helperproto.ToolStatus, error)
+	ToolRemove        func(context.Context, string) (helperproto.ToolStatus, error)
 }
 
 // Server is a helper RPC server listening on a Unix-domain socket.
@@ -150,6 +159,7 @@ type Server struct {
 	authority      *Authority
 	vhosts         *VhostManager
 	dockerServices *DockerServiceController
+	tools          *ToolManager
 
 	hostsMu sync.Mutex
 
@@ -213,6 +223,13 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if cfg.ServiceRoot != "" {
 		s.dockerServices = NewDockerServiceController(cfg.ServiceRoot, services.DefaultCatalog(), cfg.Runner)
+	}
+	if cfg.ToolRoot != "" {
+		tools, err := NewToolManager(cfg.ToolRoot, cfg.ToolBinDir, cfg.AllowUID, logger)
+		if err != nil {
+			return nil, err
+		}
+		s.tools = tools
 	}
 	s.cfg.Service = s.wireService(s.cfg.Service)
 	return s, nil
@@ -306,6 +323,17 @@ func (s *Server) wireService(service Service) Service {
 	}
 	if service.Uninstall == nil {
 		service.Uninstall = s.uninstall
+	}
+	if s.tools != nil {
+		if service.ToolStatus == nil {
+			service.ToolStatus = s.tools.Status
+		}
+		if service.ToolInstall == nil {
+			service.ToolInstall = s.tools.Install
+		}
+		if service.ToolRemove == nil {
+			service.ToolRemove = s.tools.Remove
+		}
 	}
 	return service
 }
@@ -769,6 +797,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST "+helperproto.PathServicesRestart, s.handleServicesRestart)
 	mux.HandleFunc("POST "+helperproto.PathServicesValidate, s.handleServicesValidate)
 	mux.HandleFunc("POST "+helperproto.PathServicesReload, s.handleServicesReload)
+	mux.HandleFunc("GET "+helperproto.PathToolsStatus, s.handleToolsStatus)
+	mux.HandleFunc("POST "+helperproto.PathToolsInstall, s.handleToolsInstall)
+	mux.HandleFunc("POST "+helperproto.PathToolsRemove, s.handleToolsRemove)
 	return s.authenticate(mux)
 }
 
@@ -1040,6 +1071,55 @@ func (s *Server) handleUninstall(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleToolsStatus(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.ToolStatus == nil {
+		s.notImplemented(w, "ToolStatus")
+		return
+	}
+	resp, err := s.cfg.Service.ToolStatus(r.Context())
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleToolsInstall(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.ToolInstall == nil {
+		s.notImplemented(w, "ToolInstall")
+		return
+	}
+	var req helperproto.ToolInstallRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	status, err := s.cfg.Service.ToolInstall(r.Context(), req)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, helperproto.ToolResponse{Tool: status})
+}
+
+func (s *Server) handleToolsRemove(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.ToolRemove == nil {
+		s.notImplemented(w, "ToolRemove")
+		return
+	}
+	var req helperproto.ToolRemoveRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	status, err := s.cfg.Service.ToolRemove(r.Context(), req.ID)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, helperproto.ToolResponse{Tool: status})
+}
+
 func (s *Server) notImplemented(w http.ResponseWriter, operation string) {
 	s.writeError(w, http.StatusNotImplemented, helperproto.CodeNotImplemented,
 		operation+" is not implemented")
@@ -1070,6 +1150,8 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusBadGateway, helperproto.CodeServerReloadFailed, err.Error())
 	case errors.Is(err, helperproto.ErrVhostSyncFailed):
 		s.writeError(w, http.StatusInternalServerError, helperproto.CodeVhostSyncFailed, err.Error())
+	case errors.Is(err, helperproto.ErrToolConflict):
+		s.writeError(w, http.StatusConflict, helperproto.CodeToolConflict, err.Error())
 	default:
 		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
 	}

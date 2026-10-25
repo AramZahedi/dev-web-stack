@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
@@ -221,8 +222,19 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		return model.Site{}, err
 	}
 
+	buildOutputMissing := false
+	if site.Kind == model.SiteStatic && site.Build != nil {
+		exists, err := build.OutputExists(site)
+		if err != nil {
+			return model.Site{}, fmt.Errorf("sites: build output for %q: %w", site.Name, err)
+		}
+		buildOutputMissing = !exists
+	}
+
 	var port int
 	switch {
+	case buildOutputMissing:
+		// The site is registered stopped until its first successful build.
 	case site.Kind == model.SitePHP:
 		// PHP sites use only a FastCGI port, allocated before any external
 		// side effects.
@@ -283,6 +295,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 
 	site.Status = model.StatusStarting
 	site.DesiredState = model.DesiredRunning
+	if buildOutputMissing {
+		site.Status = model.StatusStopped
+		site.DesiredState = model.DesiredStopped
+	}
 	site.CreatedAt = s.currentTime()
 	site.UpdatedAt = site.CreatedAt
 	if site.Kind == model.SitePHP {
@@ -298,6 +314,13 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		}
 	} else if err := s.deps.Store.CreateSite(ctx, site); err != nil {
 		return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
+	}
+
+	if buildOutputMissing {
+		s.emitEvent(ctx, site.ID, "site.created", fmt.Sprintf(
+			"site %s: build output %s is missing; site created stopped until the first successful build",
+			site.Name, site.Build.Output))
+		return site, nil
 	}
 
 	if site.Kind == model.SitePHP {

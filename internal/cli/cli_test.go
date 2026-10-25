@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -30,6 +31,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/version"
 )
@@ -70,6 +72,18 @@ type fakeClient struct {
 	phpMigrations []sites.PHPMigrationResult
 	migrationReq  sites.PHPMigrationRequest
 	migrationErr  error
+
+	phpDefaultStatus tooling.PHPDefaultStatus
+	phpDefaultSet    string
+	phpDefaultForce  bool
+	phpDefaultClear  int
+	tools            []helperproto.ToolStatus
+	toolInstallID    string
+	toolInstallForce bool
+	toolRemoveID     string
+
+	buildResult build.Result
+	buildRef    string
 
 	vhostStatus    helperproto.VhostStatusResponse
 	servingModeSet bool
@@ -2294,4 +2308,60 @@ func TestSiteURLUsesPublicPortEnvironment(t *testing.T) {
 	if got, want := siteURL(model.Site{Domain: "blog.test", TLS: false}), "http://blog.test:8080"; got != want {
 		t.Fatalf("siteURL(no TLS) = %q, want %q", got, want)
 	}
+}
+
+func (f *fakeClient) PHPDefault(_ context.Context) (tooling.PHPDefaultStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return tooling.PHPDefaultStatus{}, err
+	}
+	return f.phpDefaultStatus, nil
+}
+
+func (f *fakeClient) SetPHPDefault(_ context.Context, value string, force bool) (tooling.PHPDefaultStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return tooling.PHPDefaultStatus{}, err
+	}
+	f.phpDefaultSet = value
+	f.phpDefaultForce = force
+	return f.phpDefaultStatus, nil
+}
+
+func (f *fakeClient) ClearPHPDefault(_ context.Context) (tooling.PHPDefaultStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return tooling.PHPDefaultStatus{}, err
+	}
+	f.phpDefaultClear++
+	return tooling.PHPDefaultStatus{}, nil
+}
+
+func (f *fakeClient) Tools(_ context.Context) ([]helperproto.ToolStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	return f.tools, nil
+}
+
+func (f *fakeClient) InstallTool(_ context.Context, id string, force bool) (helperproto.ToolStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return helperproto.ToolStatus{}, err
+	}
+	f.toolInstallID = id
+	f.toolInstallForce = force
+	return helperproto.ToolStatus{ID: id, Installed: true, Managed: true}, nil
+}
+
+func (f *fakeClient) RemoveTool(_ context.Context, id string) (helperproto.ToolStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return helperproto.ToolStatus{}, err
+	}
+	f.toolRemoveID = id
+	return helperproto.ToolStatus{ID: id}, nil
+}
+
+func (f *fakeClient) BuildSite(_ context.Context, ref string) (build.Result, error) {
+	if err := f.maybeErr(); err != nil {
+		return build.Result{}, err
+	}
+	f.buildRef = ref
+	return f.buildResult, nil
 }

@@ -37,6 +37,9 @@ type fileConfig struct {
 	NginxIncludeDir  *string `yaml:"nginx_include_dir"`
 	ApacheIncludeDir *string `yaml:"apache_include_dir"`
 
+	ToolRoot   *string `yaml:"tool_root"`
+	ToolBinDir *string `yaml:"tool_bin_dir"`
+
 	LogLevel *string `yaml:"log_level"`
 }
 
@@ -158,6 +161,12 @@ func (cfg fileConfig) apply(opts *options) {
 	}
 	if cfg.ApacheIncludeDir != nil {
 		opts.apacheIncludeDir = *cfg.ApacheIncludeDir
+	}
+	if cfg.ToolRoot != nil {
+		opts.toolRoot = *cfg.ToolRoot
+	}
+	if cfg.ToolBinDir != nil {
+		opts.toolBinDir = *cfg.ToolBinDir
 	}
 	if cfg.LogLevel != nil {
 		opts.logLevel = *cfg.LogLevel

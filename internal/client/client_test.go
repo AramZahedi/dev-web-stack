@@ -14,12 +14,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
 // fakeAPI is a minimal Unix-socket API used by the client tests.
@@ -254,6 +256,48 @@ func (f *fakeAPI) mux() *http.ServeMux {
 		f.record(r)
 		f.writeErrorOr(w, func() {
 			writeTestJSON(w, http.StatusOK, []sites.PHPMigrationResult{{Site: "blog", OK: true}})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/php/default", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, tooling.PHPDefaultStatus{Configured: "8.4", GlobalIni: "/home/config/cli/php.ini"})
+		})
+	})
+	mux.HandleFunc("PUT /api/v1/php/default", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, tooling.PHPDefaultStatus{Configured: "8.4", GlobalIni: "/home/config/cli/php.ini"})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/tools", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]any{"tools": []helperproto.ToolStatus{{ID: helperproto.ToolComposer, Installed: true}}})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/tools/{id}/install", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, helperproto.ToolStatus{ID: r.PathValue("id"), Installed: true})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/tools/{id}/remove", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, helperproto.ToolStatus{ID: r.PathValue("id")})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/sites/{ref}/build", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, build.Result{Site: r.PathValue("ref"), Success: true, DurationMS: 7})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/sites/{ref}/build/logs", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, build.Logs{Site: r.PathValue("ref"), Content: "line\n"})
 		})
 	})
 	mux.HandleFunc("GET /api/v1/sites/{ref}/logs/stream", func(w http.ResponseWriter, r *http.Request) {
@@ -885,5 +929,67 @@ func TestClientNonStreamingRequestTimeout(t *testing.T) {
 		t.Fatal("ListSites did not time out")
 	} else if !strings.Contains(strings.ToLower(err.Error()), "deadline") {
 		t.Fatalf("timeout error = %v", err)
+	}
+}
+
+func TestClientToolingAndBuildMethods(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+
+	status, err := c.PHPDefault(ctx)
+	if err != nil || status.Configured != "8.4" {
+		t.Fatalf("PHPDefault = %+v err=%v", status, err)
+	}
+	if _, err := c.SetPHPDefault(ctx, "8.4", true); err != nil {
+		t.Fatal(err)
+	}
+	set := api.last(t, http.MethodPut, "/api/v1/php/default")
+	if !strings.Contains(set.body, `"value":"8.4"`) || !strings.Contains(set.body, `"force":true`) {
+		t.Fatalf("set body = %s", set.body)
+	}
+	if _, err := c.ClearPHPDefault(ctx); err != nil {
+		t.Fatal(err)
+	}
+	clear := api.last(t, http.MethodPut, "/api/v1/php/default")
+	if !strings.Contains(clear.body, `"clear":true`) {
+		t.Fatalf("clear body = %s", clear.body)
+	}
+
+	tools, err := c.Tools(ctx)
+	if err != nil || len(tools) != 1 || tools[0].ID != helperproto.ToolComposer {
+		t.Fatalf("Tools = %+v err=%v", tools, err)
+	}
+	if _, err := c.InstallTool(ctx, helperproto.ToolComposer, true); err != nil {
+		t.Fatal(err)
+	}
+	install := api.last(t, http.MethodPost, "/api/v1/tools/composer/install")
+	if !strings.Contains(install.body, `"force":true`) {
+		t.Fatalf("install body = %s", install.body)
+	}
+	if _, err := c.RemoveTool(ctx, helperproto.ToolComposer); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := c.BuildSite(ctx, "blog")
+	if err != nil || !result.Success || result.DurationMS != 7 {
+		t.Fatalf("BuildSite = %+v err=%v", result, err)
+	}
+	logs, err := c.BuildLogs(ctx, "blog", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logs.Content != "line\n" {
+		t.Fatalf("logs = %+v", logs)
+	}
+	logReq := api.last(t, http.MethodGet, "/api/v1/sites/blog/build/logs")
+	if logReq.query != "tail=3" {
+		t.Fatalf("logs query = %q", logReq.query)
 	}
 }

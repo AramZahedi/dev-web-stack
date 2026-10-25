@@ -618,6 +618,14 @@ func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {
 	return value, nil
 }
 
+// DeleteSetting removes a setting. Deleting an absent key is a no-op.
+func (s *Store) DeleteSetting(ctx context.Context, key string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("delete setting %q: %w", key, err)
+	}
+	return nil
+}
+
 // AddEvent appends a diagnostic event. A zero CreatedAt is replaced with the
 // current UTC time. The generated event id is not written back to e.
 func (s *Store) AddEvent(ctx context.Context, e model.Event) error {

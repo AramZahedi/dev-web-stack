@@ -33,6 +33,7 @@ tags:
   - name: session
   - name: sites
   - name: php
+  - name: tools
   - name: events
   - name: runtimes
   - name: trust
@@ -441,6 +442,240 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/build:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites]
+      summary: Run a static site's native build
+      operationId: buildSite
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: The build result, including success, duration, log, and output path.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A conflicting state prevents the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/build/logs:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+      - name: tail
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+    get:
+      tags: [sites]
+      summary: Read the newest build log
+      operationId: getBuildLogs
+      security: []
+      responses:
+        "200":
+          description: The newest build log and its bounded tail.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/php/default:
+    get:
+      tags: [php]
+      summary: Get the machine-wide PHP CLI default
+      operationId: getPHPDefault
+      security: []
+      responses:
+        "200":
+          description: The configured selection, resolved build, and shim state.
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [php]
+      summary: Set or clear the machine-wide PHP CLI default
+      operationId: setPHPDefault
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value:
+                  type: string
+                clear:
+                  type: boolean
+                force:
+                  type: boolean
+      responses:
+        "200":
+          description: The updated default and shim state.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: A conflicting state prevents the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/php/default/ini:
+    get:
+      tags: [php]
+      summary: Read the machine-wide CLI php.ini
+      operationId: getGlobalIni
+      security: []
+      responses:
+        "200":
+          description: The global ini path, content, and selected build.
+        "409":
+          description: A conflicting state prevents the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags: [php]
+      summary: Replace the machine-wide CLI php.ini
+      operationId: saveGlobalIni
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+      responses:
+        "200":
+          description: The saved global ini.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: A conflicting state prevents the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/tools:
+    get:
+      tags: [php]
+      summary: List managed native tools
+      operationId: listTools
+      security: []
+      responses:
+        "200":
+          description: The managed PHP and Composer shim state.
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/tools/{id}/install:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [php-default, composer]
+    post:
+      tags: [php]
+      summary: Install a managed native tool
+      operationId: installTool
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force:
+                  type: boolean
+      responses:
+        "200":
+          description: The installed tool status.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: A conflicting state prevents the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/tools/{id}/remove:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [php-default, composer]
+    post:
+      tags: [php]
+      summary: Remove a managed native tool
+      operationId: removeTool
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: The remaining tool status.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: A conflicting state prevents the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/php/extensions:
     get:

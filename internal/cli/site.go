@@ -42,6 +42,7 @@ func (a *App) newSiteCmd() *cobra.Command {
 		a.newSiteRemoveCmd(),
 		a.newSiteLogsCmd(),
 		a.newSiteOpenCmd(),
+		a.newSiteBuildCmd(),
 	)
 	return cmd
 }

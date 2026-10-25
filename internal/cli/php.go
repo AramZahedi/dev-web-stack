@@ -74,6 +74,7 @@ func (a *App) newPHPCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&site, "site", "", "site name")
+	cmd.AddCommand(a.newPHPDefaultCmd())
 	return cmd
 }
 
