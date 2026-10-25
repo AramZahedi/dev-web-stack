@@ -306,6 +306,40 @@ func TestProviderRollbackRestoresBuiltin(t *testing.T) {
 	}
 }
 
+func TestProviderPrepareSkipsPortProbeForDockerProvider(t *testing.T) {
+	state := &fakeServingState{mode: "nginx", provider: "docker"}
+	builtin := &fakeBuiltin{}
+	syncer := &fakeSyncer{}
+	services := &fakeWebServices{}
+	probe := &fakePortProbe{busy: map[int]bool{80: true, 443: true}}
+	provider, err := NewProvider(ProviderConfig{
+		State:    state,
+		Builtin:  builtin,
+		Syncer:   syncer,
+		Services: services,
+		Probe:    probe,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	ctx := context.Background()
+	if err := provider.Prepare(ctx, "apache"); err != nil {
+		t.Fatalf("Prepare(nginx->apache) must not probe 80/443: %v", err)
+	}
+	if err := provider.Commit(ctx, "apache"); err != nil {
+		t.Fatalf("Commit(apache): %v", err)
+	}
+	if err := provider.Prepare(ctx, "nginx"); err != nil {
+		t.Fatalf("re-Prepare(nginx) must not probe 80/443: %v", err)
+	}
+	if len(probe.calls) != 0 {
+		t.Fatalf("port probe calls = %v, want none for provider=docker", probe.calls)
+	}
+	if len(syncer.synced) != 2 || syncer.synced[0] != "apache" || syncer.synced[1] != "nginx" {
+		t.Fatalf("sync calls = %v, want apache then nginx", syncer.synced)
+	}
+}
+
 func TestProviderPrepareRejectsOccupiedPortBeforeSync(t *testing.T) {
 	state := &fakeServingState{mode: "builtin", provider: "native"}
 	builtin := &fakeBuiltin{}

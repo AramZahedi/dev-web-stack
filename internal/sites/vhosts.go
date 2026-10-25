@@ -113,6 +113,13 @@ func (s *Service) vhostStatusLocked(ctx context.Context) (helperproto.VhostStatu
 		} else {
 			status.ConfigOK = true
 		}
+		if s.servingStateErr != "" {
+			status.ConfigOK = false
+			if status.LastError != "" {
+				status.LastError += "; "
+			}
+			status.LastError += s.servingStateErr
+		}
 		return status, nil
 	}
 	if s.deps.Vhosts == nil {
@@ -554,6 +561,7 @@ func (s *Service) saveServingStateLocked(ctx context.Context, mode, provider str
 			)
 		}
 	}
+	s.servingStateErr = ""
 	return nil
 }
 
@@ -607,15 +615,15 @@ func (s *Service) startAfterDockerLocked(ctx context.Context) error {
 		restoreProxy()
 		return fmt.Errorf("sites: publish routes after docker: %w", err)
 	}
+	if err := s.startStaticBackendsLocked(ctx); err != nil {
+		restoreProxy()
+		return fmt.Errorf("sites: start static backends after docker: %w", err)
+	}
 	if s.deps.Forwarders != nil {
 		if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, true); err != nil {
 			restoreProxy()
 			return fmt.Errorf("sites: enable builtin forwarders after docker: %w", err)
 		}
-	}
-	if err := s.startStaticBackendsLocked(ctx); err != nil {
-		restoreProxy()
-		return fmt.Errorf("sites: start static backends after docker: %w", err)
 	}
 	return nil
 }
@@ -629,7 +637,17 @@ func (s *Service) startAfterDockerLocked(ctx context.Context) error {
 func (s *Service) switchDockerToBuiltinLocked(ctx context.Context) error {
 	current := s.servingMode()
 	if current == config.ServingModeBuiltin {
-		return s.saveServingStateLocked(ctx, config.ServingModeBuiltin, config.ServingProviderNative)
+		return errors.New("sites: serving_provider=docker with serving_mode=builtin is inconsistent; a container may still own 80/443, so refusing to save builtin/native silently")
+	}
+	// A previous switch already restored the builtin runtime but failed to
+	// persist state; retry only the save instead of stopping a container that
+	// is no longer running.
+	if s.servingStateErr != "" {
+		if err := s.saveServingStateLocked(ctx, config.ServingModeBuiltin, config.ServingProviderNative); err != nil {
+			s.servingStateErr = fmt.Sprintf("builtin is serving but saving builtin/native failed: %v; retry the builtin switch after fixing storage", err)
+			return fmt.Errorf("sites: %s", s.servingStateErr)
+		}
+		return nil
 	}
 	if s.deps.DockerSwitch == nil {
 		return errors.New("sites: docker provider switch is not configured")
@@ -648,8 +666,10 @@ func (s *Service) switchDockerToBuiltinLocked(ctx context.Context) error {
 		return fmt.Errorf("sites: restore builtin after stopping docker %s: %w", current, err)
 	}
 	if err := s.saveServingStateLocked(ctx, config.ServingModeBuiltin, config.ServingProviderNative); err != nil {
-		return fmt.Errorf("sites: builtin is serving but saving builtin/native state failed: %w", err)
+		s.servingStateErr = fmt.Sprintf("builtin is serving but saving builtin/native failed: %v; retry the builtin switch after fixing storage", err)
+		return fmt.Errorf("sites: %s", s.servingStateErr)
 	}
+	s.servingStateErr = ""
 	return nil
 }
 

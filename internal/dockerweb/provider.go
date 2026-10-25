@@ -168,8 +168,10 @@ func (p *Provider) Prepare(ctx context.Context, serverName string) error {
 		}
 		return cause
 	}
-	if err := p.checkPorts(ctx, server); err != nil {
-		return fail(err)
+	if provider != "docker" {
+		if err := p.checkPorts(ctx, server); err != nil {
+			return fail(err)
+		}
 	}
 	if err := p.syncer.EnsureBase(server); err != nil {
 		return fail(fmt.Errorf("dockerweb: ensure %s base configuration: %w", server, err))

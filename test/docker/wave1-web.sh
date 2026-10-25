@@ -316,6 +316,9 @@ exercise_laravel() {
   assert_contains "$BODY" '"route":"deep"' "$label laravel deep route"
   assert_contains "$BODY" '"x":"1"' "$label laravel query x"
   assert_contains "$BODY" '"y":"two"' "$label laravel query y"
+  if [[ "$label" == nginx* ]]; then
+    assert_contains "$BODY" '"path_info":"\/deep\/path"' "$label laravel PATH_INFO"
+  fi
 
   assert_status 201 "$(request "$(url_for laravel.test /items)" "${args[@]}" -X POST --data 'hello=world')" "$label laravel POST"
   assert_contains "$BODY" '"method":"POST"' "$label laravel POST method"
