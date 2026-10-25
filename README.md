@@ -26,6 +26,12 @@ trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 > **Support surface:** `devstack doctor --json` is the diagnostic snapshot to
 > attach to a bug report. M1 does not create a diagnostics zip/bundle, and it
 > never checks for or installs updates automatically.
+>
+> **Next milestone:** the managed Docker service platform (nginx/Apache,
+> MySQL/MariaDB, PostgreSQL, Redis, phpMyAdmin, global PHP/Composer, editable
+> configs, dashboard parity, and performance tuning) is **designed but not
+> implemented**. Start with the [documentation index](docs/README.md) and the
+> [handoff](docs/handoff.md).
 
 ## Quick start
 
@@ -202,8 +208,22 @@ Running `go run ./cmd/devstack version` prints the default `dev`.
 
 ## Documentation
 
+Start with the [documentation index](docs/README.md), the [handoff](docs/handoff.md),
+the [architecture](docs/architecture.md), and the
+[requirements/decision record](docs/requirements.md).
+
 | Guide | Contents |
 |---|---|
+| [Documentation index](docs/README.md) | map of all current, planned, and historical docs |
+| [Handoff](docs/handoff.md) | repo/release state, current machine, known issues, resume steps |
+| [Architecture](docs/architecture.md) | implemented process model, package map, state, API, limitations |
+| [Requirements](docs/requirements.md) | user requirements/concerns and traceability |
+| [Decisions](docs/decisions.md) | implemented and planned ADRs with rejected alternatives |
+| [Planned services](docs/planned-services.md) | overview of the unimplemented service platform |
+| [Known issues](docs/known-issues.md) | current bugs, parked work, and limitations |
+| [Glossary](docs/glossary.md) | project terminology and concepts |
+| [Developer guide](docs/development.md) | build/test/debug, package boundaries, migrations, release |
+| [Service-platform design](docs/superpowers/specs/2026-10-25-service-containers-and-performance-design.md) | detailed next-milestone spec (ready for approval) |
 | [Install](docs/install.md) | prerequisites, installer, release archives, systemd, config, logs, uninstall |
 | [Upgrade](docs/upgrade.md) | preflight, stop/install/start, database backup, protocol mismatch, verification, rollback limits |
 | [Release](docs/release.md) | tag/version, archive/checksums, GoReleaser workflow, release checklist, PHP catalog gate |

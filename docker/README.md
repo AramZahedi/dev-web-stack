@@ -8,6 +8,13 @@ The image uses **builtin serving only**. It does not include systemd, nginx, or
 Apache, so the external `nginx`/`apache` serving modes are not available in this
 container. The builtin Go proxy still serves every static, Node, and PHP site.
 
+The dashboard may still show external-mode controls. Switching there can return
+`dashboard backend port must be 7070, got 7071`: the container publishes the UI
+through 7070 while the daemon listens internally on 7071, and the native vhost
+manager requires 7070. Use builtin mode in Docker, or a native devstack install
+for native external nginx/Apache serving. See
+[known issues](../docs/known-issues.md#k1--docker-external-serving-switch-fails-with-70707071).
+
 ## Published ports
 
 | Purpose | Host default | Container |
