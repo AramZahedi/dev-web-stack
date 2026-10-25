@@ -687,8 +687,6 @@
       {#snippet actions()}
         {#if restartRequired}
           <Badge variant="warning">Restart required</Badge>
-        {:else}
-          <Badge variant="accent">Ports saved</Badge>
         {/if}
         <Button size="sm" variant="ghost" onclick={copyConfigPath}>
           <Copy size={12} strokeWidth={2} aria-hidden="true" />
