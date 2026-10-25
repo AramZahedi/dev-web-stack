@@ -114,6 +114,16 @@ type Config struct {
 	// ToolBinDir is the system bin directory that receives php/composer links.
 	// Empty selects /usr/local/bin. Tests use a temporary directory.
 	ToolBinDir string
+	// PerformanceRoot is the devstack root that owns backups/performance for
+	// host tuning. Empty uses ServiceRoot.
+	PerformanceRoot string
+	// PerformanceDestRoot overrides the host destination root. Empty uses the
+	// real fixed paths. Tests set a temporary directory so no real /etc file is
+	// written.
+	PerformanceDestRoot string
+	// PerformanceManager overrides the host tuning manager. Primarily a test
+	// seam; leaving it nil wires the fixed-path manager when a root is known.
+	PerformanceManager *PerformanceManager
 	// Logger receives server diagnostics. A nil logger uses slog.Default.
 	Logger *slog.Logger
 	// Service contains the privileged operations exposed by the helper. When
@@ -151,6 +161,9 @@ type Service struct {
 	ToolStatus               func(context.Context) (helperproto.ToolStatusResponse, error)
 	ToolInstall              func(context.Context, helperproto.ToolInstallRequest) (helperproto.ToolStatus, error)
 	ToolRemove               func(context.Context, string) (helperproto.ToolStatus, error)
+	PerformanceStatus        func(context.Context) (helperproto.PerformanceStatusResponse, error)
+	PerformanceApply         func(context.Context, helperproto.PerformanceApplyRequest) (helperproto.PerformanceApplyResponse, error)
+	PerformanceReset         func(context.Context, helperproto.PerformanceResetRequest) (helperproto.PerformanceResetResponse, error)
 }
 
 // Server is a helper RPC server listening on a Unix-domain socket.
@@ -162,6 +175,7 @@ type Server struct {
 	vhosts         *VhostManager
 	dockerServices *DockerServiceController
 	tools          *ToolManager
+	performance    *PerformanceManager
 
 	hostsMu sync.Mutex
 
@@ -240,6 +254,21 @@ func NewServer(cfg Config) (*Server, error) {
 			return nil, err
 		}
 		s.tools = tools
+	}
+	if cfg.PerformanceManager != nil {
+		s.performance = cfg.PerformanceManager
+	} else {
+		backupRoot := cfg.PerformanceRoot
+		if backupRoot == "" {
+			backupRoot = cfg.ServiceRoot
+		}
+		if backupRoot != "" {
+			s.performance = NewPerformanceManager(PerformanceManagerConfig{
+				BackupRoot:      backupRoot,
+				DestinationRoot: cfg.PerformanceDestRoot,
+				Runner:          cfg.Runner,
+			})
+		}
 	}
 	s.cfg.Service = s.wireService(s.cfg.Service)
 	return s, nil
@@ -359,6 +388,17 @@ func (s *Server) wireService(service Service) Service {
 		}
 		if service.ToolRemove == nil {
 			service.ToolRemove = s.tools.Remove
+		}
+	}
+	if s.performance != nil {
+		if service.PerformanceStatus == nil {
+			service.PerformanceStatus = s.performance.Status
+		}
+		if service.PerformanceApply == nil {
+			service.PerformanceApply = s.performance.Apply
+		}
+		if service.PerformanceReset == nil {
+			service.PerformanceReset = s.performance.Reset
 		}
 	}
 	return service
@@ -827,6 +867,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET "+helperproto.PathToolsStatus, s.handleToolsStatus)
 	mux.HandleFunc("POST "+helperproto.PathToolsInstall, s.handleToolsInstall)
 	mux.HandleFunc("POST "+helperproto.PathToolsRemove, s.handleToolsRemove)
+	mux.HandleFunc("GET "+helperproto.PathPerformanceStatus, s.handlePerformanceStatus)
+	mux.HandleFunc("POST "+helperproto.PathPerformanceApply, s.handlePerformanceApply)
+	mux.HandleFunc("POST "+helperproto.PathPerformanceReset, s.handlePerformanceReset)
 	return s.authenticate(mux)
 }
 

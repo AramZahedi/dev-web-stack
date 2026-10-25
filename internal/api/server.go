@@ -33,6 +33,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/performance"
 	"github.com/AramZahedi/dev-web-stack/internal/phpfpm"
 	"github.com/AramZahedi/dev-web-stack/internal/phpini"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
@@ -61,26 +62,28 @@ const (
 // Stable API error codes. They are part of the dashboard and CLI contract; do
 // not rename an existing value.
 const (
-	codeInvalidRequest     = "INVALID_REQUEST"
-	codeNotFound           = "NOT_FOUND"
-	codeForbidden          = "FORBIDDEN"
-	codeUnauthorized       = "UNAUTHORIZED"
-	codeDomainConflict     = "DOMAIN_CONFLICT"
-	codeHostsSyncFailed    = "HOSTS_SYNC_FAILED"
-	codeRuntimeMissing     = "RUNTIME_MISSING"
-	codePHPVersionInUse    = "PHP_VERSION_IN_USE"
-	codePHPConfigInvalid   = "PHP_CONFIG_INVALID"
-	codeTrustMissing       = "TRUST_MISSING"
-	codePortInUse          = "PORT_IN_USE"
-	codeInternal           = "INTERNAL"
-	codePayloadTooLarge    = "PAYLOAD_TOO_LARGE"
-	codeHelperUnavailable  = "HELPER_UNAVAILABLE"
-	codeHelperError        = "HELPER_ERROR"
-	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
-	codeServiceConflict    = "SERVICE_CONFLICT"
-	codeCredentialRotate   = "CREDENTIAL_ROTATION_UNAVAILABLE"
-	codeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
-	codeToolConflict       = "TOOL_CONFLICT"
+	codeInvalidRequest      = "INVALID_REQUEST"
+	codeNotFound            = "NOT_FOUND"
+	codeForbidden           = "FORBIDDEN"
+	codeUnauthorized        = "UNAUTHORIZED"
+	codeDomainConflict      = "DOMAIN_CONFLICT"
+	codeHostsSyncFailed     = "HOSTS_SYNC_FAILED"
+	codeRuntimeMissing      = "RUNTIME_MISSING"
+	codePHPVersionInUse     = "PHP_VERSION_IN_USE"
+	codePHPConfigInvalid    = "PHP_CONFIG_INVALID"
+	codeTrustMissing        = "TRUST_MISSING"
+	codePortInUse           = "PORT_IN_USE"
+	codeInternal            = "INTERNAL"
+	codePayloadTooLarge     = "PAYLOAD_TOO_LARGE"
+	codeHelperUnavailable   = "HELPER_UNAVAILABLE"
+	codeHelperError         = "HELPER_ERROR"
+	codeServiceUnavailable  = "SERVICE_UNAVAILABLE"
+	codeServiceConflict     = "SERVICE_CONFLICT"
+	codeCredentialRotate    = "CREDENTIAL_ROTATION_UNAVAILABLE"
+	codeMethodNotAllowed    = "METHOD_NOT_ALLOWED"
+	codeToolConflict        = "TOOL_CONFLICT"
+	codePerformanceConflict = "PERFORMANCE_CONFLICT"
+	codeBenchmarkBusy       = "BENCHMARK_IN_PROGRESS"
 
 	codeTerminalTicketInvalid  = "TERMINAL_TICKET_INVALID"
 	codeTerminalUnavailable    = "TERMINAL_UNAVAILABLE"
@@ -200,6 +203,19 @@ type TerminalService interface {
 	Serve(ctx context.Context, w http.ResponseWriter, r *http.Request, site model.Site, ticket string) error
 }
 
+// PerformanceService is the throughput profile, host tuning, and benchmark
+// surface used by the API.
+type PerformanceService interface {
+	Status(ctx context.Context) (performance.Status, error)
+	SetProfile(ctx context.Context, req performance.ProfileRequest) (performance.Status, error)
+	Preview(ctx context.Context) (performance.Preview, error)
+	Apply(ctx context.Context, req performance.ApplyRequest) (performance.ApplyResult, error)
+	Reset(ctx context.Context, req performance.ResetRequest) (performance.ResetResult, error)
+	RunBenchmark(ctx context.Context, req performance.BenchmarkRequest) (performance.BenchmarkResult, error)
+	ListBenchmarks(ctx context.Context) ([]performance.BenchmarkResult, error)
+	GetBenchmark(ctx context.Context, id string) (performance.BenchmarkResult, error)
+}
+
 // ListenerPorts is the set of loopback listener ports the daemon bound at
 // startup. Zero values mean the caller did not supply them.
 type ListenerPorts struct {
@@ -271,6 +287,7 @@ type Config struct {
 	Tooling       ToolService
 	Build         BuildService
 	Terminal      TerminalService
+	Performance   PerformanceService
 	Logger        *slog.Logger
 }
 
@@ -288,6 +305,7 @@ type Server struct {
 	tooling       ToolService
 	build         BuildService
 	terminal      TerminalService
+	performance   PerformanceService
 	cfg           Config
 
 	secret       [sha256.Size]byte
@@ -333,6 +351,7 @@ func NewServer(
 		tooling:           cfg.Tooling,
 		build:             cfg.Build,
 		terminal:          cfg.Terminal,
+		performance:       cfg.Performance,
 		cfg:               cfg,
 		allowedHosts:      normalizeAllowedHosts(cfg.AllowedHosts),
 		ui:                cfg.UI,
@@ -451,6 +470,15 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/services/{id}/config/reset", s.handleServiceConfigReset},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/reveal", s.handleRevealServiceCredentials},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/rotate", s.handleRotateServiceCredentials},
+
+		{http.MethodGet, "/api/v1/performance", s.handlePerformanceStatus},
+		{http.MethodPut, "/api/v1/performance/profile", s.handlePerformanceProfile},
+		{http.MethodGet, "/api/v1/performance/preview", s.handlePerformancePreview},
+		{http.MethodPost, "/api/v1/performance/apply", s.handlePerformanceApply},
+		{http.MethodPost, "/api/v1/performance/reset", s.handlePerformanceReset},
+		{http.MethodPost, "/api/v1/performance/benchmarks", s.handleRunBenchmark},
+		{http.MethodGet, "/api/v1/performance/benchmarks", s.handleListBenchmarks},
+		{http.MethodGet, "/api/v1/performance/benchmarks/{id}", s.handleGetBenchmark},
 	}
 }
 
@@ -961,6 +989,21 @@ func classifyError(err error) (int, string, string, any) {
 	}
 	if errors.Is(err, servicecontrol.ErrHelperUnavailable) {
 		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrProfileConflict) {
+		return http.StatusConflict, codePerformanceConflict, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrConfirmationRequired) {
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrBenchmarkSite) || errors.Is(err, performance.ErrBenchmarkNotFound) {
+		return http.StatusNotFound, codeNotFound, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrBenchmarkBusy) {
+		return http.StatusConflict, codeBenchmarkBusy, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrInvalid) {
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
 	}
 	if errors.Is(err, helperproto.ErrServiceConflict) {
 		return http.StatusConflict, codeServiceConflict, err.Error(), nil

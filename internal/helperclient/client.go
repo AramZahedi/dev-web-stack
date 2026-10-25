@@ -326,6 +326,28 @@ func (c *Client) ToolRemove(ctx context.Context, id string) (helperproto.ToolSta
 	return resp.Tool, err
 }
 
+// PerformanceStatus reports the helper-managed host tuning files.
+func (c *Client) PerformanceStatus(ctx context.Context) (helperproto.PerformanceStatusResponse, error) {
+	var resp helperproto.PerformanceStatusResponse
+	err := c.do(ctx, http.MethodGet, helperproto.PathPerformanceStatus, nil, &resp)
+	return resp, err
+}
+
+// PerformanceApply applies validated host tuning metadata to the helper's fixed
+// sysctl/limits paths.
+func (c *Client) PerformanceApply(ctx context.Context, req helperproto.PerformanceApplyRequest) (helperproto.PerformanceApplyResponse, error) {
+	var resp helperproto.PerformanceApplyResponse
+	err := c.do(ctx, http.MethodPost, helperproto.PathPerformanceApply, req, &resp)
+	return resp, err
+}
+
+// PerformanceReset restores the pre-devstack host tuning files.
+func (c *Client) PerformanceReset(ctx context.Context, req helperproto.PerformanceResetRequest) (helperproto.PerformanceResetResponse, error) {
+	var resp helperproto.PerformanceResetResponse
+	err := c.do(ctx, http.MethodPost, helperproto.PathPerformanceReset, req, &resp)
+	return resp, err
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {

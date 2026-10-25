@@ -62,11 +62,17 @@ worker_processes  auto;
 error_log  /var/log/nginx/error.log warn;
 pid        /var/run/nginx.pid;
 
+# Managed performance profile (main context). Seeded empty and rewritten only
+# by the performance apply/reset flow.
+include /etc/nginx/conf.d/performance/main.conf;
+
 events {
+    include /etc/nginx/conf.d/performance/events.conf;
     worker_connections  1024;
 }
 
 http {
+    include /etc/nginx/conf.d/performance/http.conf;
     include       /etc/nginx/mime.types;
     default_type  application/octet-stream;
 

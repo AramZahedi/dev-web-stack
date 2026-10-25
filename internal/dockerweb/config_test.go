@@ -103,6 +103,9 @@ func TestNginxBaseHasRuntimePaths(t *testing.T) {
 		"pid        /var/run/nginx.pid;",
 		"include       /etc/nginx/mime.types;",
 		"access_log  /var/log/nginx/access.log  main;",
+		"include /etc/nginx/conf.d/performance/main.conf;",
+		"include /etc/nginx/conf.d/performance/events.conf;",
+		"include /etc/nginx/conf.d/performance/http.conf;",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("nginx base config missing %q", want)

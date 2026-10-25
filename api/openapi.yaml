@@ -42,6 +42,7 @@ tags:
   - name: settings
   - name: vhosts
   - name: services
+  - name: performance
   - name: terminal
   - name: dashboard
 paths:
@@ -1984,6 +1985,226 @@ paths:
         "503":
           $ref: "#/components/responses/HelperUnavailable"
 
+
+  /api/v1/performance:
+    get:
+      tags: [performance]
+      summary: Read the throughput profile and measured resources
+      operationId: getPerformance
+      security: []
+      responses:
+        "200":
+          description: Persisted profile, measured resources, applied state, and host tuning status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceStatus"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/performance/profile:
+    put:
+      tags: [performance]
+      summary: Persist the throughput profile
+      operationId: setPerformanceProfile
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PerformanceProfileRequest"
+      responses:
+        "200":
+          description: The updated status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/performance/preview:
+    get:
+      tags: [performance]
+      summary: Preview generated includes and host tuning without writing
+      operationId: previewPerformance
+      security: []
+      responses:
+        "200":
+          description: Generated nginx/Apache/PHP values, include contents, host tuning diff, and warnings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformancePreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/performance/apply:
+    post:
+      tags: [performance]
+      summary: Apply the persisted performance profile
+      description: |
+        Requires `confirm:true`. Host-wide sysctl/limits tuning is a separate
+        explicit `host_tuning:true` opt-in. Database-only installs skip web
+        includes. Returns per-step results and a rollback path.
+      operationId: applyPerformance
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PerformanceApplyRequest"
+      responses:
+        "200":
+          description: The apply completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceApplyResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          description: Apply failed; details.result carries the per-step result and rollback path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+
+  /api/v1/performance/reset:
+    post:
+      tags: [performance]
+      summary: Reset performance tuning
+      description: |
+        Requires `confirm:true`. Restores prior host files and replaces managed
+        includes with safe built-in snippets, then validates/reloads.
+      operationId: resetPerformance
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PerformanceResetRequest"
+      responses:
+        "200":
+          description: The reset completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceResetResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          description: Reset failed; details.result carries the per-step result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+
+  /api/v1/performance/benchmarks:
+    post:
+      tags: [performance]
+      summary: Run and store a measured benchmark
+      description: |
+        Uses the built-in Go HTTP load generator. No RPS is synthesized; failed
+        runs store a result with status failed and no measured section.
+      operationId: runPerformanceBenchmark
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PerformanceBenchmarkRequest"
+      responses:
+        "200":
+          description: The measured benchmark result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceBenchmarkResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Another benchmark is already running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags: [performance]
+      summary: List stored benchmark results
+      operationId: listPerformanceBenchmarks
+      security: []
+      responses:
+        "200":
+          description: Benchmark results, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PerformanceBenchmarkResult"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+
+  /api/v1/performance/benchmarks/{id}:
+    get:
+      tags: [performance]
+      summary: Get one stored benchmark result
+      operationId: getPerformanceBenchmark
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The stored benchmark result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceBenchmarkResult"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+
   /:
     get:
       tags: [dashboard]
@@ -2947,6 +3168,327 @@ components:
         created_at:
           type: string
           format: date-time
+
+    PerformanceStep:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [ok, skipped, failed, rolled_back]
+        detail:
+          type: string
+        backup:
+          type: string
+
+    PerformanceManagedFile:
+      type: object
+      required: [path, active]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        active:
+          type: boolean
+
+    PerformanceHostFile:
+      type: object
+      required: [path, exists]
+      properties:
+        path:
+          type: string
+        exists:
+          type: boolean
+        current:
+          type: string
+        proposed:
+          type: string
+        diff:
+          type: string
+
+    PerformanceHostTuning:
+      type: object
+      required: [available, managed, applied]
+      properties:
+        available:
+          type: boolean
+        managed:
+          type: boolean
+        applied:
+          type: boolean
+        sysctl_path:
+          type: string
+        limits_path:
+          type: string
+        backup_dir:
+          type: string
+        applied_at:
+          type: string
+          format: date-time
+        profile:
+          type: string
+        error:
+          type: string
+
+    PerformanceStatus:
+      type: object
+      required: [profile, resources, values, host_tuning]
+      properties:
+        profile:
+          type: string
+          enum: [balanced, throughput, custom]
+        custom:
+          type: object
+          description: Stored custom values; present when configured.
+        resources:
+          type: object
+          description: Measured CPU, cgroup quota, memory, page size, RLIMIT_NOFILE, and allowlisted sysctl values.
+        values:
+          type: object
+          description: Effective computed values for the current profile.
+        applied:
+          type: object
+          nullable: true
+          description: Last successfully applied profile and rollback metadata.
+        host_tuning:
+          $ref: "#/components/schemas/PerformanceHostTuning"
+        active_server:
+          type: string
+          enum: [nginx, apache]
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PerformanceProfileRequest:
+      type: object
+      required: [profile]
+      properties:
+        profile:
+          type: string
+          enum: [balanced, throughput, custom]
+        custom:
+          type: object
+          description: Required with profile=custom; revalidated on every preview/apply.
+
+    PerformancePreview:
+      type: object
+      required: [profile, values, nginx, apache, managed_files, host_tuning]
+      properties:
+        profile:
+          type: string
+        values:
+          type: object
+        resources:
+          type: object
+        active_server:
+          type: string
+        nginx:
+          type: object
+          properties:
+            main:
+              type: string
+            events:
+              type: string
+            http:
+              type: string
+        apache:
+          type: object
+          properties:
+            config:
+              type: string
+        php:
+          type: array
+          items:
+            type: object
+            properties:
+              site_id:
+                type: string
+              pool:
+                type: string
+              ini:
+                type: string
+        managed_files:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerformanceManagedFile"
+        host_tuning:
+          type: object
+          properties:
+            opt_in:
+              type: boolean
+            files:
+              type: array
+              items:
+                $ref: "#/components/schemas/PerformanceHostFile"
+            warnings:
+              type: array
+              items:
+                type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PerformanceApplyRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm:
+          type: boolean
+          description: Must be true.
+        host_tuning:
+          type: boolean
+          description: Explicit opt-in for host-wide sysctl/limits changes.
+
+    PerformanceApplyResult:
+      type: object
+      required: [applied, profile, host_tuning, steps]
+      properties:
+        applied:
+          type: boolean
+        profile:
+          type: string
+        applied_at:
+          type: string
+          format: date-time
+        host_tuning:
+          type: boolean
+        active_server:
+          type: string
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerformanceManagedFile"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerformanceStep"
+        backup_dir:
+          type: string
+        rollback_error:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PerformanceResetRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm:
+          type: boolean
+          description: Must be true.
+
+    PerformanceResetResult:
+      type: object
+      required: [reset, steps]
+      properties:
+        reset:
+          type: boolean
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerformanceStep"
+        backup_dir:
+          type: string
+        rollback_error:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PerformanceBenchmarkRequest:
+      type: object
+      required: [site]
+      properties:
+        site:
+          type: string
+          description: Registered site id or exact name.
+        duration_s:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 30
+        connections:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          default: 100
+
+    PerformanceMeasurement:
+      type: object
+      required: [requests, errors, requests_per_second, p50_ms, p95_ms, p99_ms]
+      properties:
+        requests:
+          type: integer
+          format: int64
+        errors:
+          type: integer
+          format: int64
+        requests_per_second:
+          type: number
+        p50_ms:
+          type: number
+        p95_ms:
+          type: number
+        p99_ms:
+          type: number
+        duration_seconds:
+          type: number
+
+    PerformanceBenchmarkResult:
+      type: object
+      required: [id, site, target, profile, status, tool, tool_version, duration_s, connections, started_at, finished_at, directory, raw_file]
+      properties:
+        id:
+          type: string
+        site:
+          type: string
+        target:
+          type: string
+        profile:
+          type: string
+        status:
+          type: string
+          enum: [completed, failed, canceled]
+        tool:
+          type: string
+        tool_version:
+          type: string
+        limitations:
+          type: array
+          items:
+            type: string
+        duration_s:
+          type: integer
+        connections:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        measured:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PerformanceMeasurement"
+        error:
+          type: string
+        directory:
+          type: string
+        raw_file:
+          type: string
+        profile_applied_at:
+          type: string
+          format: date-time
+
 
     ServicePort:
       type: object

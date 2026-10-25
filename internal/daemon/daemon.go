@@ -35,6 +35,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	perfservice "github.com/AramZahedi/dev-web-stack/internal/performance/service"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
@@ -350,6 +351,18 @@ func Run(ctx context.Context, opts Options) error {
 	// WebSockets are not tracked by http.Server.Shutdown.
 	defer terminalManager.Close()
 
+	performanceService := perfservice.NewService(perfservice.ServiceConfig{
+		Root:        cfg.Home,
+		Store:       st,
+		Helper:      helper,
+		Services:    serviceManager,
+		Sites:       siteService,
+		HTTPPort:    cfg.HTTPPort,
+		HTTPSPort:   cfg.HTTPSPort,
+		ServingMode: cfg.ServingMode,
+		Logger:      logger,
+	})
+
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
@@ -364,6 +377,7 @@ func Run(ctx context.Context, opts Options) error {
 		Tooling:       toolingService,
 		Build:         buildService,
 		Terminal:      terminalManager,
+		Performance:   performanceService,
 		Logger:        logger,
 	})
 
