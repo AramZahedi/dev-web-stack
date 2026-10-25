@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 import AddSite from './AddSite.svelte';
 import * as api from '../lib/api';
+import { clearToasts, toasts } from '../lib/stores';
 import type { RuntimeBuild, Settings } from '../lib/types';
 
 vi.mock('../lib/api', () => ({
@@ -89,6 +91,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  clearToasts();
   window.location.hash = '';
 });
 
@@ -114,8 +117,9 @@ describe('AddSite Wave 2 fields', () => {
     await fireEvent.input(screen.getByLabelText(/Document root/), {
       target: { value: 'public' },
     });
+    expect(screen.getByText(/not public\/index.php when the document root is public/)).toBeTruthy();
     await fireEvent.input(screen.getByLabelText(/Front controller file/), {
-      target: { value: 'public/index.php' },
+      target: { value: 'index.php' },
     });
     await fireEvent.change(screen.getByLabelText('Front controller mode'), {
       target: { value: 'htaccess' },
@@ -132,7 +136,7 @@ describe('AddSite Wave 2 fields', () => {
         kind: 'php',
         document_root: 'public',
         front_controller: true,
-        front_controller_file: 'public/index.php',
+        front_controller_file: 'index.php',
         front_controller_mode: 'htaccess',
         apache_allow_override: 'fileinfo',
       }),
@@ -160,6 +164,55 @@ describe('AddSite Wave 2 fields', () => {
     expect(mockApi.createSite).not.toHaveBeenCalled();
   });
 
+  it('requires a build output instead of treating it as optional', async () => {
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+    await fillProject();
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    await fireEvent.input(await screen.findByLabelText(/Document root/), {
+      target: { value: 'public' },
+    });
+    await fireEvent.click(screen.getByRole('switch', { name: 'Build before serving' }));
+    const output = (await screen.findByLabelText(/Output directory/)) as HTMLInputElement;
+    expect(screen.getByText(/Required\. Relative to the project folder/)).toBeTruthy();
+    await fireEvent.input(output, { target: { value: '' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(
+      (await screen.findAllByText(/Enter the output directory produced by the build/)).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Create site' })).toBeNull();
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
+  it('tells the user to build and start when the build output is missing', async () => {
+    const implementation = mockApi.createSite.getMockImplementation();
+    mockApi.createSite.mockImplementationOnce(async (request) => {
+      const created = await implementation?.(request);
+      return { ...created!, status: 'stopped', desired_state: 'stopped' };
+    });
+
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+    await fillProject();
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await fireEvent.input(await screen.findByLabelText(/Document root/), {
+      target: { value: 'public' },
+    });
+    await fireEvent.click(screen.getByRole('switch', { name: 'Build before serving' }));
+    await fireEvent.input(await screen.findByLabelText(/Output directory/), {
+      target: { value: 'dist' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    const toast = get(toasts).find((entry) => entry.title === 'demo added');
+    expect(toast?.message).toContain('created stopped because dist does not exist yet');
+    expect(toast?.message).toContain('Run Build on the detail page, then Start the site.');
+  });
+
   it('submits SPA fallback file and a static build profile with environment', async () => {
     render(AddSite);
     await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
@@ -182,7 +235,7 @@ describe('AddSite Wave 2 fields', () => {
     await fireEvent.input(screen.getByLabelText(/Build command/), {
       target: { value: 'npm ci && npm run build' },
     });
-    await fireEvent.input(screen.getByLabelText('Output directory'), {
+    await fireEvent.input(screen.getByLabelText(/Output directory/), {
       target: { value: 'public' },
     });
     await fireEvent.input(screen.getByLabelText('Build variable 1 name'), {

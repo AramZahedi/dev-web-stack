@@ -37,7 +37,6 @@
   import { addToast, toastError } from '../lib/stores';
   import type {
     ApacheAllowOverride,
-    BuildProfile,
     BuildResult,
     FrontControllerMode,
     PHPChange,
@@ -123,6 +122,7 @@
   let buildResult = $state<BuildResult | null>(null);
   let buildError = $state<{ code: string; message: string } | null>(null);
   let buildLogsContent = $state('');
+  let buildLogsPath = $state('');
   let buildLogsLoading = $state(false);
   let buildLogsError = $state<{ code: string; message: string } | null>(null);
   let buildLogRef = '';
@@ -242,6 +242,7 @@
       buildResult = null;
       buildError = null;
       buildLogsContent = '';
+      buildLogsPath = '';
       buildLogsLoading = false;
       buildLogsError = null;
       buildLogRef = '';
@@ -506,7 +507,9 @@
     if (site?.kind === 'static' && editBuildEnabled) {
       if (!editBuildNodeVersion) next.build_node_version = 'Choose an installed Node build.';
       if (!editBuildCommand.trim()) next.build_command = 'Enter the build command.';
-      if (editBuildOutput.trim() && !isRelativeFile(editBuildOutput.trim())) {
+      if (!editBuildOutput.trim()) {
+        next.build_output = 'Enter the output directory produced by the build, for example dist.';
+      } else if (!isRelativeFile(editBuildOutput.trim())) {
         next.build_output = 'Use a relative path inside the project.';
       }
       const seen = new Set<string>();
@@ -555,7 +558,7 @@
         body.build = {
           node_version: editBuildNodeVersion,
           command: editBuildCommand.trim(),
-          output: editBuildOutput.trim() || undefined,
+          output: editBuildOutput.trim(),
           env,
         };
       }
@@ -596,6 +599,7 @@
       const logs = await api.getBuildLogs(siteRef, 200);
       if (site?.id !== siteRef) return;
       buildLogsContent = logs.content;
+      buildLogsPath = logs.path ?? '';
     } catch (caught) {
       if (site?.id !== siteRef) return;
       buildLogsError = describeError(caught);
@@ -1026,6 +1030,7 @@
                   id="edit-front-controller-file"
                   label="Front controller file"
                   required
+                  hint="Relative to the document root, for example index.php (not public/index.php when the document root is public)."
                   error={configValidation.front_controller_file}
                 >
                   <input
@@ -1101,14 +1106,21 @@
               </Field>
             {/if}
 
-            <div class="options-box">
-              <Toggle
-                label="Build profile"
-                description="Adds a Node build command used by the dashboard Build action and the CLI."
-                bind:checked={editBuildEnabled}
-              />
-            </div>
-            {#if editBuildEnabled}
+            {#if site.build}
+              <p class="profile-note">
+                This site has a build profile. The fields below update it; removing a build
+                profile is not supported by the daemon yet.
+              </p>
+            {:else}
+              <div class="options-box">
+                <Toggle
+                  label="Add build profile"
+                  description="Adds a Node build command used by the dashboard Build action and the CLI. A profile cannot be removed from the dashboard yet."
+                  bind:checked={editBuildEnabled}
+                />
+              </div>
+            {/if}
+            {#if site.build || editBuildEnabled}
               <div class="config-grid">
                 <Field
                   id="edit-build-node"
@@ -1136,6 +1148,8 @@
                 <Field
                   id="edit-build-output"
                   label="Output directory"
+                  required
+                  hint="Required. Relative to the project folder, for example dist."
                   error={configValidation.build_output}
                 >
                   <input
@@ -1373,9 +1387,11 @@
             <div class="build-log-head">
               <div>
                 <p class="build-log-title">Build log tail</p>
-                <p class="build-log-path mono">
-                  {buildResult?.log_path ?? `builds/${site.name}/build.log`}
-                </p>
+                {#if buildResult?.log_path || buildLogsPath}
+                  <p class="build-log-path mono">{buildResult?.log_path ?? buildLogsPath}</p>
+                {:else}
+                  <p class="build-log-path">No build log file yet.</p>
+                {/if}
               </div>
               <Button
                 size="sm"
@@ -2124,6 +2140,16 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     background: var(--input-bg);
+  }
+
+  .profile-note {
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
   }
 
   .build-env {

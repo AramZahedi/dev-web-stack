@@ -260,6 +260,52 @@ describe('mock service actions', () => {
     });
   });
 
+  it('requires build output and creates stopped when the output directory is missing', async () => {
+    await expect(
+      mockApi.createSite({
+        name: 'build-empty-output',
+        path: '/home/dev/projects/scratch',
+        kind: 'static',
+        build: {
+          node_version: '24.9.0',
+          command: 'npm run build',
+          output: '',
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_REQUEST',
+      status: 400,
+      message: 'sites: build output is required for a build profile',
+    });
+
+    const stopped = await mockApi.createSite({
+      name: 'build-missing-output',
+      path: '/home/dev/projects/scratch',
+      kind: 'static',
+      build: {
+        node_version: '24.9.0',
+        command: 'npm run build',
+        output: 'dist',
+      },
+    });
+    expect(stopped.status).toBe('stopped');
+    expect(stopped.desired_state).toBe('stopped');
+    await mockApi.deleteSite(stopped.id);
+
+    const ready = await mockApi.createSite({
+      name: 'build-ready-output',
+      path: '/home/dev/projects/scratch',
+      kind: 'static',
+      build: {
+        node_version: '24.9.0',
+        command: 'npm run build',
+        output: 'public',
+      },
+    });
+    expect(ready.status).toBe('starting');
+    await mockApi.deleteSite(ready.id);
+  });
+
   it('returns a build result and build log for a static profile', async () => {
     const result = await mockApi.buildSite('blog');
     expect(result.success).toBe(true);

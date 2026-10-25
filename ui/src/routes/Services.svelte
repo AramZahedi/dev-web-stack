@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    Check,
     Copy,
     Database,
     ExternalLink,
@@ -767,13 +766,21 @@
       <div class="rotate-error" role="alert">
         <p class="rotate-error-title">
           <span class="mono">{rotateError.code}</span>
-          Credential rotation is unavailable in this build
+          {rotateError.code === 'CREDENTIAL_ROTATION_UNAVAILABLE'
+            ? 'Credential rotation is not available yet'
+            : 'Credential rotation failed'}
         </p>
         <p>{rotateError.message}</p>
-        <p class="rotate-note">
-          The daemon returned this message verbatim. Rotation needs the Wave 2 database
-          credential flow; no credentials were changed.
-        </p>
+        {#if rotateError.code === 'CREDENTIAL_ROTATION_UNAVAILABLE'}
+          <p class="rotate-note">
+            The daemon returned this message verbatim. Rotation needs the Wave 2 database
+            credential flow; no credentials were changed.
+          </p>
+        {:else}
+          <p class="rotate-note">
+            The daemon returned this message verbatim. No credentials were changed.
+          </p>
+        {/if}
       </div>
     {:else if rotateArmed}
       <div class="rotate-confirm" role="alert">

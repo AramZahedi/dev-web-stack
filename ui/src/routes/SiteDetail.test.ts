@@ -165,10 +165,14 @@ describe('SiteDetail configuration and builds', () => {
       target: { value: 'app.html' },
     });
 
+    expect(screen.queryByRole('switch', { name: 'Build profile' })).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Add build profile' })).toBeNull();
+    expect(screen.getByText(/removing a build profile is not supported/)).toBeTruthy();
+
     const command = screen.getByLabelText(/Build command/) as HTMLInputElement;
     expect(command.value).toBe('npm run build');
     await fireEvent.input(command, { target: { value: 'npm ci && npm run build' } });
-    await fireEvent.input(screen.getByLabelText('Output directory'), {
+    await fireEvent.input(screen.getByLabelText(/Output directory/), {
       target: { value: 'dist' },
     });
     await fireEvent.input(screen.getByLabelText('Build variable 1 name'), {
@@ -243,7 +247,8 @@ describe('SiteDetail configuration and builds', () => {
 
     const file = (await screen.findByLabelText(/Front controller file/)) as HTMLInputElement;
     expect(file.value).toBe('index.php');
-    await fireEvent.input(file, { target: { value: 'public/index.php' } });
+    expect(screen.getByText(/not public\/index.php when the document root is public/)).toBeTruthy();
+    await fireEvent.input(file, { target: { value: 'app.php' } });
     await fireEvent.change(screen.getByLabelText('Front controller mode'), {
       target: { value: 'htaccess' },
     });
@@ -256,10 +261,37 @@ describe('SiteDetail configuration and builds', () => {
     expect(mockApi.updateSite).toHaveBeenCalledWith('s_app', {
       document_root: 'public',
       front_controller: true,
-      front_controller_file: 'public/index.php',
+      front_controller_file: 'app.php',
       front_controller_mode: 'htaccess',
       apache_allow_override: 'fileinfo',
     });
+  });
+
+  it('requires a build output before saving a static build profile', async () => {
+    await renderSite();
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
+    const output = (await screen.findByLabelText(/Output directory/)) as HTMLInputElement;
+    await fireEvent.input(output, { target: { value: '' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+
+    expect(
+      (await screen.findAllByText(/Enter the output directory produced by the build/)).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.updateSite).not.toHaveBeenCalled();
+  });
+
+  it('only offers an add-profile toggle when no build profile exists', async () => {
+    mockApi.getSite.mockResolvedValue({ ...STATIC_SITE, build: undefined });
+    await renderSite();
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
+
+    const add = (await screen.findByRole('switch', { name: 'Add build profile' })) as HTMLElement;
+    expect(add.getAttribute('aria-checked')).toBe('false');
+    expect(screen.queryByLabelText(/Build command/)).toBeNull();
+
+    await fireEvent.click(add);
+    expect(await screen.findByLabelText(/Build command/)).toBeTruthy();
+    expect(screen.getByLabelText(/Output directory/)).toBeTruthy();
   });
 
   it('renders the degraded status in text', async () => {
