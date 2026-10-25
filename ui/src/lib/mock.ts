@@ -1196,6 +1196,29 @@ export const mockApi = {
         );
       }
     }
+    if (request.build) {
+      if (!request.build.node_version?.trim() || !request.build.command?.trim()) {
+        throw new ApiError(
+          'INVALID_REQUEST',
+          'sites: build command and node version are required together (invalid build profile)',
+          400,
+        );
+      }
+      if (!request.build.output?.trim()) {
+        throw new ApiError(
+          'INVALID_REQUEST',
+          'sites: build output is required for a build profile',
+          400,
+        );
+      }
+    }
+    const buildOutput =
+      request.kind === 'static' && request.build?.output?.trim()
+        ? `${projectPath.replace(/\/+$/, '')}/${request.build.output.trim().replace(/^\/+/, '')}`
+        : '';
+    const buildOutputMissing = Boolean(
+      buildOutput && !directories[buildOutput],
+    );
     const phpVersion = phpBuild ? phpLineOf(phpBuild.version) : '';
     const id = `s_${name.replace(/[^a-z0-9]/g, '')}_${sites.length + 1}`;
     const site: Site = {
@@ -1228,8 +1251,8 @@ export const mockApi = {
       build: request.build,
       tls: request.tls ?? true,
       force_https: request.force_https ?? false,
-      desired_state: 'running',
-      status: 'starting',
+      desired_state: buildOutputMissing ? 'stopped' : 'running',
+      status: buildOutputMissing ? 'stopped' : 'starting',
       http_port: 0,
       fastcgi_port: 0,
       created_at: new Date().toISOString(),
@@ -1243,14 +1266,22 @@ export const mockApi = {
         : undefined,
     };
     sites.push(site);
-    emitEvent('site.created', site.id, `${site.name}.test was added`);
-    setTimeout(() => {
-      const current = sites.find((entry) => entry.id === id);
-      if (current) {
-        setStatus(current, 'running');
-        emitEvent('site.running', current.id, `${current.name} is running`);
-      }
-    }, 900);
+    emitEvent(
+      'site.created',
+      site.id,
+      buildOutputMissing
+        ? `${site.name}: build output ${request.build?.output} is missing; site created stopped`
+        : `${site.name}.test was added`,
+    );
+    if (!buildOutputMissing) {
+      setTimeout(() => {
+        const current = sites.find((entry) => entry.id === id);
+        if (current) {
+          setStatus(current, 'running');
+          emitEvent('site.running', current.id, `${current.name} is running`);
+        }
+      }, 900);
+    }
     return clone(site);
   },
 

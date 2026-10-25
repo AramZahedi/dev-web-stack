@@ -86,6 +86,7 @@
   let toolBusy = $state<string | null>(null);
   let toolActionError = $state<{ code: string; message: string } | null>(null);
   let removeToolTarget = $state<ToolStatus | null>(null);
+  let removeToolError = $state<{ code: string; message: string } | null>(null);
   let removingTool = $state(false);
 
   const servingModes: { value: ServingMode; label: string; hint: string }[] = [
@@ -529,6 +530,7 @@
     const target = removeToolTarget;
     removingTool = true;
     toolActionError = null;
+    removeToolError = null;
     try {
       await api.removeTool(target.id);
       removeToolTarget = null;
@@ -541,6 +543,7 @@
     } catch (caught) {
       const described = describeError(caught);
       toolActionError = described;
+      removeToolError = described;
       toastError('Could not remove tool', `${described.code}: ${described.message}`);
     } finally {
       removingTool = false;
@@ -907,7 +910,9 @@
               <dt>Managed shims</dt>
               <dd>
                 <span class="tool-state" class:ok={phpDefault.shim_installed}>
-                  {phpDefault.shim_installed ? 'Installed in /usr/local/bin' : 'Not installed'}
+                  {phpDefault.shim_installed
+                    ? `Installed${phpDefault.shim_dir ? ` in ${phpDefault.shim_dir}` : ''}`
+                    : 'Not installed'}
                 </span>
               </dd>
             </div>
@@ -1057,7 +1062,13 @@
       headerWrap
     >
       {#snippet actions()}
-        <Badge variant="warning">ImageMagick pending</Badge>
+        {#if imagemagickTool}
+          <Badge variant={imagemagickTool.installed ? 'accent' : 'info'}>
+            ImageMagick {imagemagickTool.installed ? 'managed' : 'available'}
+          </Badge>
+        {:else}
+          <Badge variant="warning">ImageMagick pending</Badge>
+        {/if}
       {/snippet}
 
       {#if toolsLoading && tools.length === 0}
@@ -1155,7 +1166,10 @@
                     size="sm"
                     variant="ghost"
                     disabled={Boolean(toolBusy)}
-                    onclick={() => (removeToolTarget = composerTool ?? null)}
+                    onclick={() => {
+                      removeToolError = null;
+                      removeToolTarget = composerTool ?? null;
+                    }}
                   >
                     <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
                     Remove
@@ -1221,7 +1235,10 @@
                     size="sm"
                     variant="ghost"
                     disabled={Boolean(toolBusy)}
-                    onclick={() => (removeToolTarget = imagemagickTool ?? null)}
+                    onclick={() => {
+                      removeToolError = null;
+                      removeToolTarget = imagemagickTool ?? null;
+                    }}
                   >
                     <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
                     Remove
@@ -1436,7 +1453,16 @@
   oncancel={() => {
     if (!removingTool) removeToolTarget = null;
   }}
-/>
+>
+  {#snippet details()}
+    {#if removeToolError}
+      <p class="dialog-error" role="alert">
+        <span class="mono">{removeToolError.code}</span>
+        {removeToolError.message}
+      </p>
+    {/if}
+  {/snippet}
+</ConfirmDialog>
 
 <ConfirmDialog
   open={uninstallOpen}
@@ -1900,6 +1926,7 @@
   .tool-state {
     color: var(--muted);
     font-size: 10.5px;
+    overflow-wrap: anywhere;
   }
 
   .tool-state.ok {

@@ -144,7 +144,10 @@ describe('Settings tooling', () => {
     expect(select.value).toBe(PHP_84.id);
     const phpCard = screen.getByRole('heading', { name: 'PHP CLI default' }).closest('section');
     expect(phpCard?.textContent).toContain('PHP 8.4.4');
-    expect(phpCard?.textContent).toContain('Installed in /usr/local/bin');
+    expect(phpCard?.textContent).toContain(
+      'Installed in /home/dev/.devstack/tools/php-default/bin',
+    );
+    expect(phpCard?.textContent).not.toContain('/usr/local/bin');
 
     const ini = screen.getByLabelText('Global php.ini content') as HTMLTextAreaElement;
     expect(ini.value).toContain('memory_limit = 512M');
@@ -202,6 +205,44 @@ describe('Settings tooling', () => {
 
     await waitFor(() => expect(mockApi.removeTool).toHaveBeenCalledWith('composer'));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove composer?' })).toBeNull());
+  });
+
+  it('surfaces tool removal errors inside the confirmation dialog', async () => {
+    mockApi.removeTool.mockRejectedValue(
+      new ApiError('HELPER_UNAVAILABLE', 'service helper is unavailable', 503),
+    );
+
+    render(Settings);
+    await screen.findByRole('heading', { name: 'Composer' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Remove composer?' });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Remove tool' }));
+
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert.textContent).toContain('HELPER_UNAVAILABLE');
+    expect(alert.textContent).toContain('service helper is unavailable');
+    expect(screen.getByRole('dialog', { name: 'Remove composer?' })).toBeTruthy();
+  });
+
+  it('uses the real ImageMagick row and label when the daemon reports it', async () => {
+    const imagemagick: ToolStatus = {
+      id: 'imagemagick',
+      installed: true,
+      managed: true,
+      wrapper_path: '/usr/local/bin/magick',
+      target: '/home/dev/.devstack/tools/imagemagick/bin/magick',
+      version: '7.1.1',
+    };
+    mockApi.listTools.mockResolvedValue([COMPOSER, imagemagick]);
+
+    render(Settings);
+    const heading = await screen.findByRole('heading', { name: 'ImageMagick CLI' });
+    const row = heading.closest('article') as HTMLElement;
+    expect(within(row).getByRole('button', { name: 'Update' })).toBeTruthy();
+    expect(within(row).getByRole('button', { name: 'Remove' })).toBeTruthy();
+    expect(screen.queryByText('ImageMagick pending')).toBeNull();
+    expect(screen.getByText('ImageMagick managed')).toBeTruthy();
+    expect(screen.queryByText(/does not expose an ImageMagick tool endpoint/)).toBeNull();
   });
 
   it('offers install for an unmanaged Composer and shows tool conflicts verbatim', async () => {

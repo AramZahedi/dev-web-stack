@@ -285,7 +285,29 @@ describe('Services', () => {
     expect(alert.textContent).toContain(
       'database credential rotation is not available until Wave 2',
     );
+    expect(alert.textContent).toContain('Credential rotation is not available yet');
     expect(within(dialog).getByText(/no credentials were changed/)).toBeTruthy();
+  });
+
+  it('shows generic rotation failures without claiming they are the Wave 2 boundary', async () => {
+    mockApi.rotateServiceCredentials.mockRejectedValue(
+      new ApiError('HELPER_UNAVAILABLE', 'service helper is unavailable', 503),
+    );
+
+    render(Services);
+    const mysql = await cardFor('MySQL 8.4');
+    await fireEvent.click(within(mysql).getByRole('button', { name: 'Credentials' }));
+    const dialog = await screen.findByRole('dialog', { name: 'MySQL 8.4 credentials' });
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Rotate credentials' }));
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Rotate credentials' }));
+
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert.textContent).toContain('HELPER_UNAVAILABLE');
+    expect(alert.textContent).toContain('service helper is unavailable');
+    expect(alert.textContent).toContain('Credential rotation failed');
+    expect(alert.textContent).not.toContain('Wave 2');
+    expect(alert.textContent).toContain('No credentials were changed.');
   });
 
   it('uninstalls with data kept by default', async () => {

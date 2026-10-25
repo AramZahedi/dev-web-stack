@@ -268,7 +268,9 @@
           next.build_command = 'Enter the build command, for example npm run build.';
         }
         const output = buildOutput.trim();
-        if (output && !isRelativeFile(output)) {
+        if (!output) {
+          next.build_output = 'Enter the output directory produced by the build, for example dist.';
+        } else if (!isRelativeFile(output)) {
           next.build_output = 'Use a relative path inside the project.';
         }
         const seen = new Set<string>();
@@ -523,7 +525,7 @@
           ? {
               node_version: buildNodeVersion,
               command: buildCommand.trim(),
-              output: buildOutput.trim() || undefined,
+              output: buildOutput.trim(),
               env: buildEnv,
             }
           : undefined;
@@ -550,10 +552,14 @@
         build,
         env,
       });
+      const buildOutputMissing =
+        site.kind === 'static' && Boolean(site.build) && site.status === 'stopped';
       addToast({
         kind: 'success',
         title: `${site.name} added`,
-        message: `${site.domain} is starting. Logs are live on the detail page.`,
+        message: buildOutputMissing
+          ? `${site.domain} was created stopped because ${site.build?.output || 'the build output'} does not exist yet. Run Build on the detail page, then Start the site.`
+          : `${site.domain} is starting. Logs are live on the detail page.`,
       });
       push(`/sites/${encodeURIComponent(site.id)}`);
     } catch (caught) {
@@ -864,7 +870,8 @@
                       <Field
                         id="build-output"
                         label="Output directory"
-                        hint="Relative to the project folder. Leave empty to build in place; the build fails if the output is missing."
+                        required
+                        hint="Required. Relative to the project folder, for example dist. The build fails if this directory is missing afterward."
                         error={errors.build_output}
                       >
                         <input
@@ -1036,7 +1043,7 @@
                         id="front-controller-file"
                         label="Front controller file"
                         required
-                        hint="Relative to the document root. For example index.php or public/index.php."
+                        hint="Relative to the document root, for example index.php (not public/index.php when the document root is public)."
                         error={errors.front_controller_file}
                       >
                         <input
@@ -1323,7 +1330,7 @@
                       <dd>
                         <span class="review-main mono">{buildCommand || 'No command'}</span>
                         <span class="review-sub">
-                          Node {buildNodeVersion || 'not selected'} · output {buildOutput || 'in place'} · {buildEnvRows.filter((row) => row.key.trim()).length} variables
+                          Node {buildNodeVersion || 'not selected'} · output {buildOutput || 'not set'} · {buildEnvRows.filter((row) => row.key.trim()).length} variables
                         </span>
                       </dd>
                       <button type="button" class="edit" onclick={() => goToStep(2)}>Edit</button>
