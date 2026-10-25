@@ -9,7 +9,8 @@
 - **Wave 0 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40200118349` (green)
 - **Wave 1 merge SHA:** `b4be089429b3f63cb7ec94d5c6bf484a4db34da2`
 - **Wave 1 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40214920181` (green)
-- **Wave 2 merge SHA / CI:** filled by the final merge/CI record in this file.
+- **Wave 2 merge SHA:** `ec2dca4523bf40d931d3e674001d6e832e5e1903`
+- **Wave 2 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40220968186` (green)
 - **Next step:** Wave 3/follow-ups: wire performance apply/reset + host tuning and benchmark storage, add ImageMagick CLI, service config diff/apply UI, site-scoped terminal, external-site Docker mounts, then full acceptance. See the
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and

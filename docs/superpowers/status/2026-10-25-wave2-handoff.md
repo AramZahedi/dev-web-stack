@@ -2,7 +2,8 @@
 
 - **Date:** 2026-10-25
 - **Integration branch:** `integration/services-wave-2`
-- **Merge to master / CI:** recorded in the final merge commit and handoff.
+- **Merge to master:** `ec2dca4523bf40d931d3e674001d6e832e5e1903`
+- **CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40220968186` (green)
 - **Wave 2 status:** phpMyAdmin, credential rotation, dashboard parity, and the pure
   performance engine are implemented and tested. The remaining Wave 2/3 items are listed
   below; they are not claimed as shipped.
