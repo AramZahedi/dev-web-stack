@@ -1,10 +1,14 @@
 # dev-web-stack — M1 Design: Foundation & Sites
 
-- **Status:** Draft for review
+- **Status:** Implemented in v0.1.0 (Linux scope; Windows/WSL deferred to Plan 3)
 - **Date:** 2026-10-22
 - **Scope:** Milestone 1 only
-- **Target platforms:** systemd-based Linux x86_64 (glibc 2.35+) and Windows 11 x86_64 with WSL2
+- **Target platforms:** systemd-based Linux x86_64 (glibc 2.35+); Windows 11 with WSL2 deferred to Plan 3
 - **Vhost extension:** `docs/superpowers/specs/2026-10-22-external-vhosts-design.md`
+
+> **Release scope note:** v0.1.0 implements the Linux path. The Windows/WSL
+> sections in this design describe deferred Plan 3 work and are not part of the
+> released Linux artifact.
 
 ## 1. Summary
 

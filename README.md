@@ -120,8 +120,9 @@ variable) is supplied.
 
 The PHP build is a real source build and runs in the dedicated
 [PHP workflow](.github/workflows/php.yml) on `ubuntu-22.04`; the local
-development environment does not have the PHP build dependencies. The PHP
-catalog remains gated as described in [docs/php.md](docs/php.md).
+development environment does not have the PHP build dependencies. The production
+catalog ships with PHP 8.2–8.5 builds; newly published versions follow the gated
+merge procedure described in [docs/php.md](docs/php.md).
 
 `go test -race ./...` is the race-enabled test command used by CI. `make e2e`
 runs `test/e2e/linux.sh`, which uses temporary HOME/state/hosts/trust paths and

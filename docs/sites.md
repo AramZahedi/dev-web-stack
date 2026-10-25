@@ -117,20 +117,44 @@ daemon restart.
 |---|---|
 | `--name` | Site name; the domain is `<name>.test` |
 | `--path` | Absolute project directory |
-| `--kind` | `static` (default) or `node` |
+| `--kind` | `static` (default), `php`, or `node` |
+| `--php` | PHP version line, for example `8.4` (PHP sites only) |
+| `--php-build` | Exact PHP build id, for example `php@8.4.27-r1` (PHP sites only) |
+| `--front-controller` | Route non-file requests to `index.php` (PHP sites only) |
 | `--node` | Node version or catalog prefix (Node sites only) |
 | `--command` | Start command (Node sites only) |
-| `--document-root` | Static document root relative to `--path`, or absolute |
+| `--document-root` | Document root relative to `--path`, or absolute within `--path` |
 | `--www` | Also serve `www.<name>.test` |
 | `--no-https` | Serve HTTP only |
 | `--force-https` | Redirect HTTP to HTTPS |
 | `--spa` | Serve `index.html` for non-file paths |
 | `--env KEY=VALUE` | Site environment variable; repeatable |
-| `--yes` | Install a missing Node runtime without prompting |
+| `--yes` | Install a missing PHP or Node runtime without prompting |
 
 Changing a site's flags is not exposed as a separate Plan 1 command; remove and
 re-add the site if you need different options. Removing never deletes project
 files.
+
+## Add a PHP site
+
+PHP sites run on per-site `php-fpm` masters. Specify the PHP line:
+
+```sh
+mkdir -p "$HOME/projects/mysite"
+echo '<?php phpinfo();' > "$HOME/projects/mysite/index.php"
+
+devstack site add \
+  --name mysite \
+  --kind php \
+  --path "$HOME/projects/mysite" \
+  --php 8.4 \
+  --front-controller
+```
+
+Use `--php-build` to pin an exact build such as `php@8.4.27-r1`, or `--php` to
+select the newest installed build on that line. A PHP document root must remain
+inside `--path`; absolute paths outside the project are rejected. See
+[PHP](php.md) for `php.ini` configuration and extension toggles.
 
 ## Domains and hosts
 
@@ -176,8 +200,10 @@ If a site says running but the URL fails:
 
 ## Limitations
 
-- PHP sites need an installed PHP build; the production catalog is gated until
-  release artifacts are published (see [PHP](php.md)).
+- PHP sites need an installed PHP build from the runtime catalog (see
+  [PHP](php.md)).
+- An absolute `--document-root` must resolve inside the site's `--path`;
+  symlink escapes and outside paths are rejected.
 - Builtin serving is the default; optional native nginx/Apache vhosts are
   available for static, Node, and PHP sites.
 - One backend process per site; multi-process Node clusters are not managed.

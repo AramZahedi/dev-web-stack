@@ -1,6 +1,6 @@
 # dev-web-stack — External nginx/Apache Vhosts: Design
 
-- **Status:** Approved for planning
+- **Status:** Implemented in v0.1.0
 - **Date:** 2026-10-22
 - **Scope:** M1 extension (Plan 1 tasks 21–26; PHP templates in Plan 2)
 - **Related:** `docs/superpowers/specs/2026-10-22-dev-web-stack-m1-design.md`,

@@ -238,7 +238,7 @@ devstack init
 devstack doctor [--repair] [--json]
 devstack trust install|repair|remove|status
 devstack daemon run|status|stop
-devstack site add|list|show|start|stop|restart|remove|logs|open
+devstack site add|list|show|start|stop|restart|remove|logs|open|php|ini|ext
 devstack php --site <name> -- <args...>
 devstack php <name> [version]
 devstack php ini <name> ...
@@ -316,6 +316,11 @@ code. These are planned.
 - Static serving uses `os.Root` containment.
 - PHP source/backup files and dotfiles are denied.
 - HSTS is stripped even if an upstream sends it.
+- `/api/v1/fs` directory browsing requires an active dashboard session, fails closed
+  when the user home cannot be resolved, and is confined to the user's home directory.
+- Client `Proxy` headers are stripped as hop-by-hop headers before FastCGI/CGI dispatch.
+- The helper's `validateBackendOwnership` requires vhost backend paths to be owned by
+  `allow_uid` (or located under the allowed home) before installing native vhosts.
 - Database services are not part of the current product; the planned service platform
   binds them to loopback.
 

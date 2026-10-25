@@ -82,7 +82,7 @@ func (a *App) newSiteAddCmd() *cobra.Command {
 	flags.StringVar(&opts.phpBuild, "php-build", "", "exact PHP build id (for example php@8.4.4-r1)")
 	flags.BoolVar(&opts.frontController, "front-controller", false, "route requests to the site's index.php")
 	flags.StringVar(&opts.command, "command", "", "Node start command")
-	flags.StringVar(&opts.documentRoot, "document-root", "", "document root relative to the project")
+	flags.StringVar(&opts.documentRoot, "document-root", "", "document root relative to the project or absolute within it")
 	flags.BoolVar(&opts.www, "www", false, "also serve www.<name>.test")
 	flags.BoolVar(&opts.noHTTPS, "no-https", false, "serve over HTTP only")
 	flags.BoolVar(&opts.forceHTTPS, "force-https", false, "redirect HTTP requests to HTTPS")

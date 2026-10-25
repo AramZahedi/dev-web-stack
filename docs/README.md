@@ -31,6 +31,8 @@ machine, and the design for the next service-platform milestone.
   — detailed Wave 0 implementation tasks.
 - [Wave 0 kickoff](superpowers/plans/2026-10-25-service-platform-wave0-kickoff.md)
   — external-agent starting instructions and stop conditions.
+- [Documentation audit findings](../DOCUMENTATION_AUDIT_FINDINGS.md)
+  — reviewed and resolved on 2026-10-25.
 - Implementation plans and acceptance reports live in
   [`superpowers/plans/`](superpowers/plans/).
 - Historical plan handoffs and the released M1 handoff live in

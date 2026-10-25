@@ -4,12 +4,13 @@ This directory builds the PHP linux-x64 artifacts that devstack installs from
 its runtime catalog, verifies them, and emits catalog metadata. It does not
 publish artifacts and it never edits `internal/catalog/catalog.json`.
 
-> **Artifact gate:** the production catalog contains no PHP entries. A PHP build
-> becomes installable only after CI publishes the four checksummed archives, a
-> release job uploads them, and a subsequent release embeds their entries in
-> `internal/catalog/catalog.json`. Until then `devstack runtime install` has no
-> PHP build to install. CI uploads `php-catalog.json` as an artifact; merging it
-> is a deliberate release step.
+> **Artifact gate: resolved for the initial release.** The production catalog
+> shipped in `devstack` contains PHP 8.2.35, 8.3.36, 8.4.27, and 8.5.12 builds
+> from the `php-runtimes-2026-10-25` release. A newly published PHP version
+> becomes installable only after CI publishes the checksummed archive, a release
+> job uploads it, and a subsequent release embeds its entry in
+> `internal/catalog/catalog.json`. CI uploads `php-catalog.json` as an artifact;
+> merging it via `cmd/catalogmerge` is a deliberate release step.
 
 ## Files
 

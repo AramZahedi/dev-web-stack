@@ -12,9 +12,9 @@ Exactly one mode is active. The dashboard, API, TLS, hosts entries, logs, and si
 lifecycle work the same way in every mode.
 
 External serving is Linux only. Static, Node, and PHP sites are supported. A PHP
-site additionally needs an installed PHP build; the production catalog is gated
-until release artifacts exist (see [PHP](php.md)). There is no per-site serving
-mode and nginx and Apache cannot run at the same time on ports 80 and 443.
+site additionally needs an installed PHP build from the runtime catalog (see
+[PHP](php.md)). There is no per-site serving mode and nginx and Apache cannot
+run at the same time on ports 80 and 443.
 
 ## Prerequisites
 
@@ -92,8 +92,8 @@ the built-in proxy uses:
   `DOCUMENT_ROOT`, and the standard CGI/HTTP parameters explicitly. Apache's
   `mod_proxy_fcgi` derives them from the mapped filesystem path. A request that
   does not map to a `.php` file is rejected instead of being passed to FPM.
-- A PHP site needs an installed PHP build before its vhost can be published.
-  The production artifact gate is documented in [PHP](php.md).
+- A PHP site needs an installed PHP build before its vhost can be published
+  (see [PHP](php.md)).
 
 Preview the generated vhost without writing anything:
 

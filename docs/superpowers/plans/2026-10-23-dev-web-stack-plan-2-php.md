@@ -12,7 +12,11 @@
 
 **Depends on:** `docs/superpowers/plans/2026-10-22-dev-web-stack-plan-1-foundation.md` (implemented). Plan 2 preserves every Plan 1 behavior: host allowlist, CSRF/session checks, peer-UID helper, vhost validation, supervisor semantics, and the dashboard design system.
 
-> **Implementation status (2026-10-24):** Tasks 1–12 are complete and task-reviewed; automated acceptance PASSes on system PHP 8.4.4. The final whole-branch review and both residual re-reviews are clean (one non-blocking Minor parked), so **Plan 2 is merge-ready** at `6add708`. The real 8.2/8.5 side-by-side and production catalog publication remain **BLOCKED** on published Task 11 CI artifacts. Plan 3 (Windows/WSL) is deferred by user request; the next implementation plan is Plan 4 (packaging/release). See `docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md` and `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`.
+> **Completion note (2026-10-25):** The real PHP 8.2/8.5 side-by-side gate and
+> production catalog publication were completed in Plan 4 following the
+> publication of the `php-runtimes-2026-10-25` release archives.
+
+> **Implementation status (2026-10-24):** Tasks 1–12 are complete and task-reviewed; automated acceptance PASSes on system PHP 8.4.4. The final whole-branch review and both residual re-reviews are clean (one non-blocking Minor parked), so **Plan 2 is merge-ready** at `6add708`. At that time, the real 8.2/8.5 side-by-side and production catalog publication were **BLOCKED** on published Task 11 CI artifacts; both were completed in Plan 4 (see the completion note above). Plan 3 (Windows/WSL) is deferred by user request; the next implementation plan was Plan 4 (packaging/release). See `docs/superpowers/plans/2026-10-23-dev-web-stack-plan-2-acceptance.md` and `docs/superpowers/status/2026-10-23-plan-2-php-handoff.md`.
 
 > **Implementation rulings made while executing Tasks 5–6:**
 > - Task 5 adds `proxy.KindPHP` and `Route.DocumentRoot`/`Route.FrontController` in `internal/proxy/router.go` so the Task 5 routes compile; FastCGI transport stays in Task 7.
