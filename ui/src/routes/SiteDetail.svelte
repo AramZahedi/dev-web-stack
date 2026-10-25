@@ -35,7 +35,18 @@
     siteUrl,
   } from '../lib/format';
   import { addToast, toastError } from '../lib/stores';
-  import type { PHPChange, PHPInfo, PHPRuntimeBuild, RuntimeBuild, Site } from '../lib/types';
+  import type {
+    ApacheAllowOverride,
+    BuildProfile,
+    BuildResult,
+    FrontControllerMode,
+    PHPChange,
+    PHPInfo,
+    PHPRuntimeBuild,
+    RuntimeBuild,
+    Site,
+    UpdateSiteRequest,
+  } from '../lib/types';
   import Badge from '../lib/components/Badge.svelte';
   import Button from '../lib/components/Button.svelte';
   import Card from '../lib/components/Card.svelte';
@@ -49,6 +60,7 @@
   import PHPIniEditor from '../lib/components/PHPIniEditor.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
   import StatusPill from '../lib/components/StatusPill.svelte';
+  import Toggle from '../lib/components/Toggle.svelte';
   import VhostPreviewDrawer from '../lib/components/VhostPreviewDrawer.svelte';
 
   interface Props {
@@ -83,6 +95,37 @@
   let phpRuntimes = $state<RuntimeBuild[]>([]);
   let switchOpen = $state(false);
   let switchBuild = $state('');
+
+  interface EnvRow {
+    key: string;
+    value: string;
+  }
+
+  let editOpen = $state(false);
+  let savingConfig = $state(false);
+  let configError = $state<{ code: string; message: string } | null>(null);
+  let configValidation = $state<Record<string, string>>({});
+  let editDocumentRoot = $state('');
+  let editCommand = $state('');
+  let editFrontController = $state(false);
+  let editFrontControllerFile = $state('index.php');
+  let editFrontControllerMode = $state<FrontControllerMode>('auto');
+  let editApacheAllowOverride = $state<ApacheAllowOverride>('all');
+  let editSpaFallback = $state(false);
+  let editSpaFallbackFile = $state('index.html');
+  let editBuildEnabled = $state(false);
+  let editBuildNodeVersion = $state('');
+  let editBuildCommand = $state('');
+  let editBuildOutput = $state('');
+  let editBuildEnvRows = $state<EnvRow[]>([{ key: '', value: '' }]);
+
+  let buildRunning = $state(false);
+  let buildResult = $state<BuildResult | null>(null);
+  let buildError = $state<{ code: string; message: string } | null>(null);
+  let buildLogsContent = $state('');
+  let buildLogsLoading = $state(false);
+  let buildLogsError = $state<{ code: string; message: string } | null>(null);
+  let buildLogRef = '';
 
   const ref = $derived(params?.ref ?? '');
 
@@ -129,6 +172,13 @@
       ),
   );
 
+  const nodeBuilds = $derived(
+    phpRuntimes
+      .filter((runtime) => runtime.kind === 'node')
+      .slice()
+      .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true })),
+  );
+
   const switchCandidates = $derived(
     phpBuilds.filter((runtime) => runtime.id !== (site?.php_build || phpInfo?.build.id)),
   );
@@ -145,13 +195,9 @@
     phpLoading = true;
     phpError = null;
     try {
-      const [info, builds] = await Promise.all([
-        api.getPHPInfo(siteRef),
-        api.listRuntimes().catch(() => [] as RuntimeBuild[]),
-      ]);
+      const info = await api.getPHPInfo(siteRef);
       if (generation !== loadGeneration || siteRef !== ref) return;
       phpInfo = info;
-      phpRuntimes = builds;
     } catch (caught) {
       if (generation !== loadGeneration || siteRef !== ref) return;
       phpError = describeError(caught);
@@ -188,6 +234,17 @@
       previewOpen = false;
       previewLoading = false;
       previewReturnFocus = null;
+      editOpen = false;
+      savingConfig = false;
+      configError = null;
+      configValidation = {};
+      buildRunning = false;
+      buildResult = null;
+      buildError = null;
+      buildLogsContent = '';
+      buildLogsLoading = false;
+      buildLogsError = null;
+      buildLogRef = '';
     }
     error = null;
     notFound = false;
@@ -197,9 +254,13 @@
       return;
     }
     try {
-      const next = await api.getSite(siteRef);
+      const [next, builds] = await Promise.all([
+        api.getSite(siteRef),
+        api.listRuntimes().catch(() => [] as RuntimeBuild[]),
+      ]);
       if (generation !== loadGeneration || siteRef !== ref) return;
       site = next;
+      phpRuntimes = builds;
       if (next.kind === 'php') await loadPHP(siteRef, generation);
     } catch (caught) {
       if (generation !== loadGeneration || siteRef !== ref) return;
@@ -373,6 +434,225 @@
   function toggleReveal(key: string): void {
     revealed = { ...revealed, [key]: !revealed[key] };
   }
+
+  function envRows(env: Record<string, string> | undefined): EnvRow[] {
+    const rows = Object.entries(env ?? {}).map(([key, value]) => ({ key, value }));
+    return rows.length > 0 ? rows : [{ key: '', value: '' }];
+  }
+
+  function beginEdit(): void {
+    if (!site) return;
+    editDocumentRoot = site.document_root || (site.kind === 'static' ? '.' : '');
+    editCommand = site.command;
+    editFrontController = site.front_controller;
+    editFrontControllerFile = site.front_controller_file || 'index.php';
+    editFrontControllerMode = site.front_controller_mode || 'auto';
+    editApacheAllowOverride = site.apache_allow_override || 'all';
+    editSpaFallback = site.spa_fallback;
+    editSpaFallbackFile = site.spa_fallback_file || 'index.html';
+    editBuildEnabled = Boolean(site.build);
+    editBuildNodeVersion = site.build?.node_version ?? nodeBuilds[0]?.version ?? '';
+    editBuildCommand = site.build?.command ?? 'npm run build';
+    editBuildOutput = site.build?.output ?? 'dist';
+    editBuildEnvRows = envRows(site.build?.env);
+    configError = null;
+    configValidation = {};
+    editOpen = true;
+  }
+
+  function cancelEdit(): void {
+    if (savingConfig) return;
+    editOpen = false;
+    configError = null;
+    configValidation = {};
+  }
+
+  function isRelativeFile(value: string): boolean {
+    if (value.startsWith('/') || value.startsWith('\\')) return false;
+    if (value.includes('\0')) return false;
+    const parts = value.split(/[\\/]+/);
+    return parts.every(
+      (part) => part !== '' && part !== '.' && part !== '..' && !part.startsWith('.'),
+    );
+  }
+
+  function validateConfig(): Record<string, string> {
+    const next: Record<string, string> = {};
+    if ((site?.kind === 'static' || site?.kind === 'php') && !editDocumentRoot.trim()) {
+      next.document_root = 'Enter a document root. Use . to serve the project root.';
+    }
+    if (site?.kind === 'node' && !editCommand.trim()) {
+      next.command = 'Enter the command that starts the dev server.';
+    }
+    if (site?.kind === 'php' && editFrontController) {
+      const file = editFrontControllerFile.trim();
+      if (!file) {
+        next.front_controller_file = 'Enter the front controller file.';
+      } else if (!isRelativeFile(file) || !file.toLowerCase().endsWith('.php')) {
+        next.front_controller_file = 'Use a relative .php path inside the document root.';
+      }
+    }
+    if (site?.kind === 'static' && editSpaFallback) {
+      const file = editSpaFallbackFile.trim();
+      if (!file) {
+        next.spa_fallback_file = 'Enter the fallback file.';
+      } else if (
+        !isRelativeFile(file) ||
+        file.toLowerCase().endsWith('.php')
+      ) {
+        next.spa_fallback_file = 'Use a relative non-PHP path inside the project.';
+      }
+    }
+    if (site?.kind === 'static' && editBuildEnabled) {
+      if (!editBuildNodeVersion) next.build_node_version = 'Choose an installed Node build.';
+      if (!editBuildCommand.trim()) next.build_command = 'Enter the build command.';
+      if (editBuildOutput.trim() && !isRelativeFile(editBuildOutput.trim())) {
+        next.build_output = 'Use a relative path inside the project.';
+      }
+      const seen = new Set<string>();
+      editBuildEnvRows.forEach((row, index) => {
+        const key = row.key.trim();
+        if (!key) {
+          if (row.value.trim()) next[`build_env_${index}`] = 'Add a name for this value.';
+          return;
+        }
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          next[`build_env_${index}`] = 'Use letters, numbers and underscores.';
+        } else if (seen.has(key)) {
+          next[`build_env_${index}`] = 'This variable is already defined.';
+        }
+        seen.add(key);
+      });
+    }
+    return next;
+  }
+
+  async function saveConfig(): Promise<void> {
+    if (!site || savingConfig) return;
+    const found = validateConfig();
+    configValidation = found;
+    if (Object.keys(found).length > 0) return;
+
+    const body: UpdateSiteRequest = {};
+    if (site.kind === 'static' || site.kind === 'php') {
+      body.document_root = editDocumentRoot.trim();
+    }
+    if (site.kind === 'node') body.command = editCommand.trim();
+    if (site.kind === 'php') {
+      body.front_controller = editFrontController;
+      body.front_controller_file = editFrontControllerFile.trim() || 'index.php';
+      body.front_controller_mode = editFrontControllerMode;
+      body.apache_allow_override = editApacheAllowOverride;
+    }
+    if (site.kind === 'static') {
+      body.spa_fallback = editSpaFallback;
+      body.spa_fallback_file = editSpaFallbackFile.trim() || 'index.html';
+      if (editBuildEnabled) {
+        const env: Record<string, string> = {};
+        for (const row of editBuildEnvRows) {
+          if (row.key.trim()) env[row.key.trim()] = row.value;
+        }
+        body.build = {
+          node_version: editBuildNodeVersion,
+          command: editBuildCommand.trim(),
+          output: editBuildOutput.trim() || undefined,
+          env,
+        };
+      }
+    }
+
+    savingConfig = true;
+    configError = null;
+    try {
+      const saved = await api.updateSite(site.id, body);
+      site = saved;
+      editOpen = false;
+      addToast({
+        kind: 'success',
+        title: 'Site configuration saved',
+        message: 'Routes and generated configuration were refreshed from the daemon.',
+      });
+      await load();
+    } catch (caught) {
+      configError = describeError(caught);
+    } finally {
+      savingConfig = false;
+    }
+  }
+
+  function addBuildEnvRow(): void {
+    editBuildEnvRows = [...editBuildEnvRows, { key: '', value: '' }];
+  }
+
+  function removeBuildEnvRow(index: number): void {
+    editBuildEnvRows = editBuildEnvRows.filter((_, position) => position !== index);
+  }
+
+  async function loadBuildLogs(siteRef = site?.id): Promise<void> {
+    if (!siteRef) return;
+    buildLogsLoading = true;
+    buildLogsError = null;
+    try {
+      const logs = await api.getBuildLogs(siteRef, 200);
+      if (site?.id !== siteRef) return;
+      buildLogsContent = logs.content;
+    } catch (caught) {
+      if (site?.id !== siteRef) return;
+      buildLogsError = describeError(caught);
+    } finally {
+      if (site?.id === siteRef) buildLogsLoading = false;
+    }
+  }
+
+  async function runBuild(): Promise<void> {
+    if (!site || buildRunning) return;
+    const target = site;
+    buildRunning = true;
+    buildError = null;
+    buildResult = null;
+    try {
+      const result = await api.buildSite(target.id);
+      if (site?.id !== target.id) return;
+      buildResult = result;
+      if (result.success) {
+        addToast({
+          kind: 'success',
+          title: `${target.name} build completed`,
+          message: `${formatDuration(result.duration_ms)}${result.output_path ? ` · ${result.output_path}` : ''}`,
+        });
+      } else {
+        toastError(
+          `${target.name} build failed`,
+          result.error ?? 'The build command returned a failure status.',
+        );
+      }
+      await loadBuildLogs(target.id);
+      await load();
+    } catch (caught) {
+      if (site?.id !== target.id) return;
+      buildError = describeError(caught);
+    } finally {
+      if (site?.id === target.id) buildRunning = false;
+      else buildRunning = false;
+    }
+  }
+
+  function formatDuration(ms: number): string {
+    if (!Number.isFinite(ms) || ms < 0) return '—';
+    if (ms < 1000) return `${ms} ms`;
+    return `${(ms / 1000).toFixed(1)} s`;
+  }
+
+  $effect(() => {
+    const target = site;
+    if (!target || target.kind !== 'static' || !target.build) {
+      buildLogRef = '';
+      return;
+    }
+    if (buildLogRef === target.id) return;
+    buildLogRef = target.id;
+    void loadBuildLogs(target.id);
+  });
 </script>
 
 <div class="page">
@@ -654,6 +934,480 @@
         </Card>
       </aside>
     </div>
+
+    <section class="config-section" aria-labelledby="config-heading">
+      <div class="section-head">
+        <div class="section-head-copy">
+          <p class="section-eyebrow">Site</p>
+          <h3 id="config-heading">Configuration</h3>
+          <p class="section-sub">
+            Document root, front controller, SPA fallback and build profile. Changes are
+            validated by the daemon before routes are republished.
+          </p>
+        </div>
+        {#if !editOpen}
+          <Button size="sm" variant="secondary" onclick={beginEdit}>
+            Edit configuration
+          </Button>
+        {:else}
+          <Button size="sm" variant="ghost" onclick={cancelEdit} disabled={savingConfig}>
+            Cancel
+          </Button>
+        {/if}
+      </div>
+
+      {#if configError}
+        <div class="section-error">
+          <ErrorBanner
+            title="Could not save the configuration"
+            code={configError.code}
+            message={configError.message}
+            ondismiss={() => (configError = null)}
+          />
+        </div>
+      {/if}
+
+      {#if editOpen}
+        <div class="config-form">
+          {#if Object.keys(configValidation).length > 0}
+            <p class="config-validation" role="alert">
+              Fix the highlighted fields before saving.
+            </p>
+          {/if}
+
+          {#if site.kind === 'static' || site.kind === 'php'}
+            <Field
+              id="edit-document-root"
+              label="Document root"
+              required
+              hint="Relative to the project folder. Use . to serve the project root."
+              error={configValidation.document_root}
+            >
+              <input
+                id="edit-document-root"
+                class="input mono"
+                type="text"
+                bind:value={editDocumentRoot}
+                autocomplete="off"
+                spellcheck="false"
+                aria-invalid={Boolean(configValidation.document_root)}
+              />
+            </Field>
+          {:else if site.kind === 'node'}
+            <Field
+              id="edit-command"
+              label="Start command"
+              required
+              error={configValidation.command}
+            >
+              <input
+                id="edit-command"
+                class="input mono"
+                type="text"
+                bind:value={editCommand}
+                autocomplete="off"
+                spellcheck="false"
+                aria-invalid={Boolean(configValidation.command)}
+              />
+            </Field>
+          {/if}
+
+          {#if site.kind === 'php'}
+            <div class="options-box">
+              <Toggle
+                label="Front controller"
+                description="Route requests that do not match a file to the PHP entry point."
+                bind:checked={editFrontController}
+              />
+            </div>
+            {#if editFrontController}
+              <div class="config-grid">
+                <Field
+                  id="edit-front-controller-file"
+                  label="Front controller file"
+                  required
+                  error={configValidation.front_controller_file}
+                >
+                  <input
+                    id="edit-front-controller-file"
+                    class="input mono"
+                    type="text"
+                    bind:value={editFrontControllerFile}
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-invalid={Boolean(configValidation.front_controller_file)}
+                  />
+                </Field>
+                <Field id="edit-front-controller-mode" label="Front controller mode">
+                  <div class="select-wrap">
+                    <select
+                      id="edit-front-controller-mode"
+                      class="input mono"
+                      bind:value={editFrontControllerMode}
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="generated">Generated config</option>
+                      <option value="htaccess">Project .htaccess</option>
+                    </select>
+                    <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+                  </div>
+                </Field>
+              </div>
+            {/if}
+            <Field
+              id="edit-apache-allow-override"
+              label="Apache AllowOverride"
+              hint="nginx and builtin serving ignore .htaccess; Apache honours this policy."
+            >
+              <div class="select-wrap">
+                <select
+                  id="edit-apache-allow-override"
+                  class="input mono"
+                  bind:value={editApacheAllowOverride}
+                >
+                  <option value="all">All</option>
+                  <option value="fileinfo">FileInfo</option>
+                  <option value="none">None</option>
+                </select>
+                <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+              </div>
+            </Field>
+          {/if}
+
+          {#if site.kind === 'static'}
+            <div class="options-box">
+              <Toggle
+                label="SPA fallback"
+                description="Route unknown paths to the fallback file for client-side routing."
+                bind:checked={editSpaFallback}
+              />
+            </div>
+            {#if editSpaFallback}
+              <Field
+                id="edit-spa-fallback-file"
+                label="SPA fallback file"
+                required
+                error={configValidation.spa_fallback_file}
+              >
+                <input
+                  id="edit-spa-fallback-file"
+                  class="input mono"
+                  type="text"
+                  bind:value={editSpaFallbackFile}
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-invalid={Boolean(configValidation.spa_fallback_file)}
+                />
+              </Field>
+            {/if}
+
+            <div class="options-box">
+              <Toggle
+                label="Build profile"
+                description="Adds a Node build command used by the dashboard Build action and the CLI."
+                bind:checked={editBuildEnabled}
+              />
+            </div>
+            {#if editBuildEnabled}
+              <div class="config-grid">
+                <Field
+                  id="edit-build-node"
+                  label="Build Node version"
+                  required
+                  error={configValidation.build_node_version}
+                >
+                  <div class="select-wrap">
+                    <select
+                      id="edit-build-node"
+                      class="input mono"
+                      bind:value={editBuildNodeVersion}
+                      aria-invalid={Boolean(configValidation.build_node_version)}
+                    >
+                      {#if nodeBuilds.length === 0}
+                        <option value="">No Node build installed</option>
+                      {/if}
+                      {#each nodeBuilds as runtime (runtime.id)}
+                        <option value={runtime.version}>Node {runtime.version} · {runtime.backend}</option>
+                      {/each}
+                    </select>
+                    <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+                  </div>
+                </Field>
+                <Field
+                  id="edit-build-output"
+                  label="Output directory"
+                  error={configValidation.build_output}
+                >
+                  <input
+                    id="edit-build-output"
+                    class="input mono"
+                    type="text"
+                    placeholder="dist"
+                    bind:value={editBuildOutput}
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-invalid={Boolean(configValidation.build_output)}
+                  />
+                </Field>
+              </div>
+              <Field
+                id="edit-build-command"
+                label="Build command"
+                required
+                error={configValidation.build_command}
+              >
+                <input
+                  id="edit-build-command"
+                  class="input mono"
+                  type="text"
+                  placeholder="npm run build"
+                  bind:value={editBuildCommand}
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-invalid={Boolean(configValidation.build_command)}
+                />
+              </Field>
+
+              <div class="build-env">
+                <p class="build-env-label">Build environment</p>
+                <div class="env-list">
+                  {#each editBuildEnvRows as row, index (index)}
+                    <div class="env-row">
+                      <div class="env-cell">
+                        <label class="sr-only" for={`edit-build-env-key-${index}`}>
+                          Build variable {index + 1} name
+                        </label>
+                        <input
+                          id={`edit-build-env-key-${index}`}
+                          class="input mono"
+                          type="text"
+                          placeholder="NODE_ENV"
+                          bind:value={row.key}
+                          autocomplete="off"
+                          spellcheck="false"
+                          aria-invalid={Boolean(configValidation[`build_env_${index}`])}
+                        />
+                        {#if configValidation[`build_env_${index}`]}
+                          <p class="env-error">{configValidation[`build_env_${index}`]}</p>
+                        {/if}
+                      </div>
+                      <div class="env-cell">
+                        <label class="sr-only" for={`edit-build-env-value-${index}`}>
+                          Build variable {index + 1} value
+                        </label>
+                        <input
+                          id={`edit-build-env-value-${index}`}
+                          class="input mono"
+                          type="text"
+                          placeholder="production"
+                          bind:value={row.value}
+                          autocomplete="off"
+                          spellcheck="false"
+                        />
+                      </div>
+                      <IconButton
+                        label={`Remove build environment variable ${index + 1}`}
+                        icon={Trash2}
+                        size="sm"
+                        onclick={() => removeBuildEnvRow(index)}
+                      />
+                    </div>
+                  {/each}
+                </div>
+                <div>
+                  <Button size="sm" variant="ghost" onclick={addBuildEnvRow}>
+                    Add build variable
+                  </Button>
+                </div>
+              </div>
+            {/if}
+          {/if}
+
+          <div class="config-actions">
+            <Button variant="ghost" onclick={cancelEdit} disabled={savingConfig}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={savingConfig}
+              disabled={savingConfig}
+              onclick={saveConfig}
+            >
+              Save configuration
+            </Button>
+          </div>
+        </div>
+      {:else}
+        <dl class="config-summary">
+          {#if site.kind === 'static' || site.kind === 'php'}
+            <div>
+              <dt>Document root</dt>
+              <dd class="mono">{site.document_root || '.'}</dd>
+            </div>
+          {:else}
+            <div>
+              <dt>Start command</dt>
+              <dd class="mono">{site.command || '—'}</dd>
+            </div>
+          {/if}
+          {#if site.kind === 'php'}
+            <div>
+              <dt>Front controller</dt>
+              <dd class="mono">
+                {site.front_controller
+                  ? `${site.front_controller_file || 'index.php'} · ${site.front_controller_mode || 'auto'}`
+                  : 'Off'}
+              </dd>
+            </div>
+            <div>
+              <dt>Apache AllowOverride</dt>
+              <dd class="mono">{site.apache_allow_override || 'all'}</dd>
+            </div>
+          {/if}
+          {#if site.kind === 'static'}
+            <div>
+              <dt>SPA fallback</dt>
+              <dd class="mono">
+                {site.spa_fallback ? site.spa_fallback_file || 'index.html' : 'Off'}
+              </dd>
+            </div>
+            <div>
+              <dt>Build profile</dt>
+              <dd class="mono">
+                {site.build
+                  ? `Node ${site.build.node_version || '—'} · ${site.build.command || 'no command'}`
+                  : 'Not configured'}
+              </dd>
+            </div>
+          {/if}
+        </dl>
+      {/if}
+    </section>
+
+    {#if site.kind === 'static'}
+      <section class="build-section" aria-labelledby="build-heading">
+        <div class="section-head">
+          <div class="section-head-copy">
+            <p class="section-eyebrow">Build</p>
+            <h3 id="build-heading">Static build</h3>
+            <p class="section-sub">
+              Runs the configured command natively as the installing user, then refreshes the
+              build log. A failed build can restore the previous output snapshot.
+            </p>
+          </div>
+          {#if site.build}
+            <Button
+              size="sm"
+              variant="primary"
+              loading={buildRunning}
+              disabled={buildRunning}
+              onclick={runBuild}
+            >
+              {#if !buildRunning}<Play size={13} strokeWidth={2} aria-hidden="true" />{/if}
+              {buildRunning ? 'Building…' : 'Run build'}
+            </Button>
+          {:else}
+            <Badge variant="warning">No build profile</Badge>
+          {/if}
+        </div>
+
+        {#if site.build}
+          <dl class="build-meta">
+            <div>
+              <dt>Node version</dt>
+              <dd class="mono">{site.build.node_version || '—'}</dd>
+            </div>
+            <div>
+              <dt>Command</dt>
+              <dd class="mono">{site.build.command || '—'}</dd>
+            </div>
+            <div>
+              <dt>Output</dt>
+              <dd class="mono">{site.build.output || 'in place'}</dd>
+            </div>
+            <div>
+              <dt>Environment</dt>
+              <dd class="mono">{Object.keys(site.build.env ?? {}).length} variables</dd>
+            </div>
+          </dl>
+
+          {#if buildError}
+            <div class="section-error">
+              <ErrorBanner
+                title="Could not run the build"
+                code={buildError.code}
+                message={buildError.message}
+                ondismiss={() => (buildError = null)}
+              />
+            </div>
+          {/if}
+
+          {#if buildResult}
+            <div class="build-result" class:failed={!buildResult.success} role="status">
+              <div class="build-result-head">
+                <Badge variant={buildResult.success ? 'accent' : 'danger'}>
+                  {buildResult.success ? 'Build succeeded' : 'Build failed'}
+                </Badge>
+                <span class="build-duration mono">{formatDuration(buildResult.duration_ms)}</span>
+                {#if buildResult.restored}
+                  <Badge variant="info">Previous output restored</Badge>
+                {/if}
+                {#if buildResult.snapshot_skipped}
+                  <Badge variant="warning">Snapshot skipped</Badge>
+                {/if}
+              </div>
+              <p class="build-command mono">{buildResult.command}</p>
+              {#if buildResult.output_path}
+                <p class="build-copy">
+                  Output <span class="mono">{buildResult.output_path}</span>
+                </p>
+              {/if}
+              {#if buildResult.error}
+                <p class="build-error-text" role="alert">{buildResult.error}</p>
+              {/if}
+              {#if buildResult.restore_note}
+                <p class="build-copy">{buildResult.restore_note}</p>
+              {/if}
+            </div>
+          {/if}
+
+          <div class="build-log">
+            <div class="build-log-head">
+              <div>
+                <p class="build-log-title">Build log tail</p>
+                <p class="build-log-path mono">
+                  {buildResult?.log_path ?? `builds/${site.name}/build.log`}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                loading={buildLogsLoading}
+                onclick={() => loadBuildLogs()}
+              >
+                {#if !buildLogsLoading}<RotateCw size={12} strokeWidth={2} aria-hidden="true" />{/if}
+                Refresh log
+              </Button>
+            </div>
+            {#if buildLogsError}
+              <ErrorBanner
+                title="Could not load the build log"
+                code={buildLogsError.code}
+                message={buildLogsError.message}
+                onretry={() => loadBuildLogs()}
+              />
+            {/if}
+            <pre class="build-log-content" aria-label="Build log tail">{#if buildLogsLoading && !buildLogsContent}Loading build log…{:else if buildLogsContent}{buildLogsContent}{:else}No build log has been written yet.{/if}</pre>
+          </div>
+        {:else}
+          <div class="build-empty">
+            <p>No build profile is configured for this site.</p>
+            <p class="build-copy">
+              Add a Node version, command and output directory from Configuration, then run the
+              build here or with <span class="mono">devstack site build {site.name}</span>.
+            </p>
+          </div>
+        {/if}
+      </section>
+    {/if}
 
     {#if site.kind === 'php'}
       <section class="php-section" aria-labelledby="php-heading">
@@ -1252,6 +2006,307 @@
     overflow-wrap: anywhere;
   }
 
+  .config-section,
+  .build-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .section-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    padding-bottom: 11px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-head-copy {
+    min-width: 0;
+  }
+
+  .section-eyebrow {
+    color: var(--muted-2);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+
+  .section-head h3 {
+    margin-top: 1px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .section-sub {
+    max-width: 760px;
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .section-error {
+    min-width: 0;
+  }
+
+  .config-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .config-validation {
+    padding: 7px 9px;
+    border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
+    border-radius: var(--radius);
+    background: var(--danger-soft);
+    color: var(--danger-fg);
+    font-size: 10.5px;
+  }
+
+  .config-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .config-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 7px;
+    padding-top: 11px;
+    border-top: 1px solid var(--border);
+  }
+
+  .config-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    margin: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  .config-summary > div {
+    min-width: 0;
+    padding: 9px 11px;
+    background: var(--surface-2);
+  }
+
+  .config-summary dt {
+    color: var(--muted-2);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .config-summary dd {
+    margin: 2px 0 0;
+    color: var(--fg);
+    font-size: 10px;
+    overflow-wrap: anywhere;
+  }
+
+  .options-box {
+    padding: 2px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--input-bg);
+  }
+
+  .build-env {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .build-env-label {
+    color: var(--fg);
+    font-size: 11.5px;
+    font-weight: 500;
+  }
+
+  .build-meta {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    margin: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  .build-meta > div {
+    min-width: 0;
+    padding: 8px 10px;
+    background: var(--surface-2);
+  }
+
+  .build-meta dt {
+    color: var(--muted-2);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .build-meta dd {
+    margin: 2px 0 0;
+    color: var(--fg);
+    font-size: 10px;
+    overflow-wrap: anywhere;
+  }
+
+  .build-result {
+    padding: 10px 11px;
+    border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+  }
+
+  .build-result.failed {
+    border-color: color-mix(in srgb, var(--danger) 38%, var(--border));
+    border-left-color: var(--danger);
+    background: var(--danger-soft);
+  }
+
+  .build-result-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+
+  .build-duration {
+    color: var(--muted);
+    font-size: 10.5px;
+  }
+
+  .build-command {
+    margin-top: 6px;
+    color: var(--fg);
+    font-size: 10.5px;
+    overflow-wrap: anywhere;
+  }
+
+  .build-copy {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .build-copy .mono {
+    color: var(--fg);
+  }
+
+  .build-error-text {
+    margin-top: 5px;
+    color: var(--danger-fg);
+    font-size: 10.5px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .build-log {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .build-log-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .build-log-title {
+    color: var(--fg);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+
+  .build-log-path {
+    margin-top: 1px;
+    color: var(--muted-2);
+    font-size: 9px;
+    overflow-wrap: anywhere;
+  }
+
+  .build-log-content {
+    min-height: 150px;
+    max-height: 320px;
+    margin: 0;
+    padding: 10px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--log-bg);
+    color: var(--log-fg);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+
+  .build-empty {
+    padding: 11px;
+    border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+    border-radius: var(--radius-lg);
+    background: var(--warning-soft);
+  }
+
+  .build-empty > p:first-child {
+    color: var(--warning-fg);
+    font-size: 11.5px;
+    font-weight: 500;
+  }
+
+  .build-empty .build-copy {
+    color: var(--muted);
+  }
+
+  .build-env .env-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .build-env .env-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px;
+    gap: 6px;
+    align-items: start;
+  }
+
+  .build-env .env-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .build-env .env-error {
+    color: var(--danger-fg);
+    font-size: 10px;
+  }
+
   .php-section {
     display: flex;
     flex-direction: column;
@@ -1503,6 +2558,12 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
+    .config-grid,
+    .config-summary,
+    .build-meta {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .side-col {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1541,6 +2602,20 @@
 
     .danger :global(.btn) {
       width: 100%;
+    }
+
+    .config-grid,
+    .config-summary,
+    .build-meta {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .section-head {
+      flex-direction: column;
+    }
+
+    .build-log-head {
+      flex-direction: column;
     }
 
     h2 {

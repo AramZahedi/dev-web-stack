@@ -319,6 +319,108 @@ test('Site detail clears revealed secrets on route change', async ({ page }) => 
   await expect(page.getByText('shop_dev_2f9c4a6e8b1d')).toHaveCount(0);
 });
 
+test('Services groups containers, reveals credentials and reports activation conflicts', async ({
+  page,
+}) => {
+  await open(page, '#/services');
+
+  await expect(page.getByRole('heading', { name: 'Infrastructure services' })).toBeVisible();
+  for (const group of ['Web servers', 'MySQL family', 'Standalone']) {
+    await expect(page.getByRole('heading', { name: group })).toBeVisible();
+  }
+
+  const nginx = page.locator('article').filter({ hasText: 'Nginx Web Server' });
+  const mysql = page.locator('article').filter({ hasText: 'MySQL 8.4' });
+  const apache = page.locator('article').filter({ hasText: 'Apache HTTP Server' });
+
+  await expect(nginx.getByText('Active', { exact: true })).toBeVisible();
+  await expect(nginx.getByText('Health: healthy')).toBeVisible();
+
+  await nginx.getByRole('button', { name: 'Logs' }).click();
+  const logs = page.getByRole('dialog', { name: 'Nginx Web Server logs' });
+  await expect(logs).toBeVisible();
+  await expect(logs.locator('pre')).toContainText('[nginx]');
+  await logs.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(logs).toBeHidden();
+
+  await mysql.getByRole('button', { name: 'Credentials' }).click();
+  const credentials = page.getByRole('dialog', { name: 'MySQL 8.4 credentials' });
+  await expect(credentials).toBeVisible();
+  await expect(credentials.getByText('••••••••••••')).toBeVisible();
+  await credentials.getByRole('button', { name: 'Reveal password' }).click();
+  await expect(credentials.getByText('mock_7f3c9a2e5b8d1a4c6e9f0b2d')).toBeVisible();
+  await credentials.getByRole('button', { name: 'Rotate credentials' }).click();
+  await credentials.getByRole('button', { name: 'Rotate credentials' }).click();
+  await expect(credentials.getByRole('alert')).toContainText('CREDENTIAL_ROTATION_UNAVAILABLE');
+  await expect(credentials.getByRole('alert')).toContainText(
+    'database credential rotation is not available until Wave 2',
+  );
+  await credentials.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(credentials).toBeHidden();
+
+  await apache.getByRole('button', { name: 'Activate' }).click();
+  await expect(apache.getByRole('alert')).toContainText('SERVICE_CONFLICT');
+  await expect(apache.getByRole('alert')).toContainText('Nginx Web Server is active');
+  await expect(apache.getByText('Inactive', { exact: true })).toBeVisible();
+
+  await expect(page.getByText('Configuration & performance')).toBeVisible();
+  await expect(page.getByText('Wave 2 backend pending')).toBeVisible();
+});
+
+test('Site detail edits configuration and runs a static build', async ({ page }) => {
+  await open(page, '#/sites/blog');
+  await expect(page.getByRole('heading', { name: 'blog' })).toBeVisible();
+
+  await expect(page.getByRole('heading', { name: 'Static build' })).toBeVisible();
+  await expect(page.getByLabel('Build log tail')).toContainText('built in');
+  await page.getByRole('button', { name: 'Run build' }).click();
+  await expect(page.getByText('Build succeeded')).toBeVisible();
+  await expect(page.locator('.build-duration')).toHaveText('4.3 s');
+  await expect(page.getByText('/home/dev/projects/blog/public').first()).toBeVisible();
+
+  await page.getByRole('button', { name: 'Edit configuration' }).click();
+  const command = page.getByLabel(/Build command/);
+  await command.fill('npm ci && npm run build');
+  await page.getByLabel('Output directory').fill('public');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Site configuration saved' }),
+  ).toBeVisible();
+
+  const saved = await page.evaluate(async () => {
+    const modulePath = '/src/lib/mock.ts';
+    const mock = (await import(modulePath)) as {
+      mockApi: { getSite(ref: string): Promise<{ build?: { command: string } }> };
+    };
+    return mock.mockApi.getSite('blog');
+  });
+  expect(saved.build?.command).toBe('npm ci && npm run build');
+});
+
+test('Settings manages the global PHP default, ini and Composer', async ({ page }) => {
+  await open(page, '#/settings');
+
+  const phpCard = page.locator('section').filter({ hasText: 'PHP CLI default' }).first();
+  await expect(phpCard.getByRole('heading', { name: 'PHP CLI default' })).toBeVisible();
+  await phpCard.getByLabel('Default PHP build').selectOption('php@8.3.14-r2');
+  await phpCard.getByRole('button', { name: 'Save default' }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'PHP CLI default saved' }),
+  ).toBeVisible();
+  await expect(phpCard.locator('.tooling-list')).toContainText('PHP 8.3.14');
+
+  const ini = page.getByLabel('Global php.ini content');
+  await ini.fill('[PHP]\nmemory_limit = 1G\n');
+  await page.getByRole('button', { name: 'Save php.ini' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Global php.ini saved' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Update', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'composer updated' })).toBeVisible();
+
+  await expect(page.getByRole('heading', { name: 'ImageMagick CLI' })).toBeVisible();
+  await expect(page.getByText('Wave 2 backend pending')).toBeVisible();
+});
+
 test('Runtimes asks for confirmation and installs a build', async ({ page }) => {
   await open(page, '#/runtimes');
 
@@ -478,6 +580,13 @@ test.describe('375px viewport', () => {
       hash: '#/doctor',
       ready: async (page: Page) => {
         await expect(page.getByRole('heading', { name: 'Checks', exact: true })).toBeVisible();
+      },
+    },
+    {
+      name: 'Services',
+      hash: '#/services',
+      ready: async (page: Page) => {
+        await expect(page.getByRole('heading', { name: 'Infrastructure services' })).toBeVisible();
       },
     },
     {
