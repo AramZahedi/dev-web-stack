@@ -295,6 +295,25 @@ export interface SettingsUpdateResult extends Settings {
   warnings?: string[];
 }
 
+export interface TerminalSession {
+  ticket: string;
+  expires_at: string;
+}
+
+export type TerminalStatus = 'connecting' | 'connected' | 'closed' | 'error';
+
+export interface TerminalHandlers {
+  onOutput: (text: string) => void;
+  onExit: (code: number) => void;
+  onStatus: (status: TerminalStatus) => void;
+}
+
+export interface TerminalConnection {
+  send: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  close: () => void;
+}
+
 export interface FsEntry {
   name: string;
   path: string;

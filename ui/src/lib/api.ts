@@ -29,6 +29,9 @@ import type {
   Session,
   Settings,
   SettingsUpdate,
+  TerminalConnection,
+  TerminalHandlers,
+  TerminalSession,
   SettingsUpdateResult,
   ServingMode,
   Site,
@@ -500,6 +503,73 @@ export async function browseFs(path: string): Promise<FsListing> {
     await fetchSession();
     return request<FsListing>(`/fs?path=${encodeURIComponent(path)}`);
   }
+}
+
+export async function createTerminalSession(ref: string): Promise<TerminalSession> {
+  if (isMockMode) return mockApi.createTerminalSession(ref);
+  return request<TerminalSession>(`${sitePath(ref)}/terminal/session`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export async function openTerminal(
+  ref: string,
+  handlers: TerminalHandlers,
+): Promise<TerminalConnection> {
+  if (isMockMode) return mockApi.openTerminal(ref, handlers);
+  handlers.onStatus('connecting');
+  const session = await createTerminalSession(ref);
+  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${scheme}//${window.location.host}${API_BASE}${sitePath(ref)}/terminal?ticket=${encodeURIComponent(session.ticket)}`;
+  const socket = new WebSocket(url);
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    socket.close();
+  };
+  socket.onopen = () => handlers.onStatus('connected');
+  socket.onmessage = (event) => {
+    try {
+      const message = JSON.parse(String(event.data)) as {
+        type?: string;
+        data?: string;
+        code?: number;
+        message?: string;
+      };
+      if (message.type === 'output' && typeof message.data === 'string') {
+        handlers.onOutput(message.data);
+      } else if (message.type === 'exit') {
+        handlers.onExit(message.code ?? 0);
+        closed = true;
+        socket.close();
+      } else if (message.type === 'error') {
+        handlers.onStatus('error');
+      }
+    } catch {
+      // Raw output is tolerated so older daemons still work.
+      if (typeof event.data === 'string') handlers.onOutput(event.data);
+    }
+  };
+  socket.onerror = () => handlers.onStatus('error');
+  socket.onclose = () => {
+    if (!closed) handlers.onStatus('closed');
+    closed = true;
+  };
+  return {
+    send(data) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'input', data }));
+      }
+    },
+    resize(cols, rows) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+      }
+    },
+    close,
+  };
 }
 
 export async function getSettings(): Promise<Settings> {

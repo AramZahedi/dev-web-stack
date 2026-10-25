@@ -30,6 +30,9 @@ import type {
   SettingsUpdate,
   SettingsUpdateResult,
   ServingMode,
+  TerminalConnection,
+  TerminalHandlers,
+  TerminalSession,
   Site,
   SiteStatus,
   ToolStatus,
@@ -1907,6 +1910,92 @@ export const mockApi = {
   async settings(): Promise<Settings> {
     await wait();
     return clone(settings);
+  },
+
+  async createTerminalSession(_ref: string): Promise<TerminalSession> {
+    await wait(40, 90);
+    return {
+      ticket: `mock-terminal-${Math.random().toString(36).slice(2)}`,
+      expires_at: new Date(Date.now() + 30_000).toISOString(),
+    };
+  },
+
+  async openTerminal(ref: string, handlers: TerminalHandlers): Promise<TerminalConnection> {
+    const site = findSite(ref);
+    let closed = false;
+    let line = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const write = (text: string) => {
+      if (!closed) handlers.onOutput(text);
+    };
+    const prompt = () => write('\r\n\x1b[36mdevstack\x1b[0m:\x1b[34m' + site.host_path + '\x1b[0m$ ');
+    handlers.onStatus('connecting');
+    timer = setTimeout(() => {
+      if (closed) return;
+      handlers.onStatus('connected');
+      write('\x1b[2mMock site shell — site PHP/Node shims and cwd are simulated.\x1b[0m');
+      prompt();
+    }, 80);
+    const connection: TerminalConnection = {
+      send(data: string) {
+        if (closed) return;
+        for (const char of data) {
+          if (char === '\r' || char === '\n') {
+            const command = line.trim();
+            line = '';
+            if (command === 'clear') {
+              write('\x1b[2J\x1b[H');
+              prompt();
+            } else if (command === 'exit') {
+              write('\r\nlogout\r\n');
+              closed = true;
+              if (timer) clearTimeout(timer);
+              handlers.onExit(0);
+              handlers.onStatus('closed');
+            } else if (command === 'pwd') {
+              write(`\r\n${site.host_path}`);
+              prompt();
+            } else if (command === 'ls') {
+              write('\r\nindex.html  package.json  src');
+              prompt();
+            } else if (command === 'php -v') {
+              write('\r\nPHP 8.4.4 (cli) (built: Oct 20 2026)');
+              prompt();
+            } else if (command === 'node -v') {
+              write('\r\nv22.20.0');
+              prompt();
+            } else if (command === '') {
+              prompt();
+            } else {
+              write(`\r\nbash: ${command}: command not found`);
+              prompt();
+            }
+          } else if (char === '\x7f') {
+            if (line.length > 0) {
+              line = line.slice(0, -1);
+              write('\b \b');
+            }
+          } else if (char === '\x03') {
+            line = '';
+            write('^C');
+            prompt();
+          } else if (char >= ' ') {
+            line += char;
+            write(char);
+          }
+        }
+      },
+      resize() {
+        // The mock terminal has no real PTY geometry.
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        if (timer) clearTimeout(timer);
+        handlers.onStatus('closed');
+      },
+    };
+    return connection;
   },
 
   async updateSettings(update: SettingsUpdate): Promise<SettingsUpdateResult> {

@@ -561,6 +561,23 @@ test('Settings Serving switches modes, syncs, and previews vhosts', async ({ pag
   await expect(previewButton).toBeFocused();
 });
 
+test('Site detail opens a site-scoped terminal and runs a command', async ({ page }) => {
+  await open(page, '#/sites/blog');
+  await expect(page.getByRole('heading', { name: 'blog', exact: true })).toBeVisible();
+
+  const terminalCard = page.locator('.terminal-card');
+  await expect(terminalCard.getByText('Open a shell in this site')).toBeVisible();
+  await terminalCard.getByRole('button', { name: 'Start terminal' }).click();
+  await expect(terminalCard.getByText('Connected', { exact: true })).toBeVisible();
+
+  await page.keyboard.type('pwd');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.xterm-rows')).toContainText('/home/dev/projects/blog');
+
+  await terminalCard.getByRole('button', { name: 'Close' }).click();
+  await expect(terminalCard.getByText('Closed', { exact: true })).toBeVisible();
+});
+
 test('Site detail previews its rendered vhost', async ({ page }) => {
   await open(page, '#/sites/blog');
   await expect(page.getByRole('heading', { name: 'blog' })).toBeVisible();
@@ -644,6 +661,20 @@ test.describe('375px viewport', () => {
       expect(width.body, `${route.name} body overflow`).toBeLessThanOrEqual(width.viewport);
     });
   }
+
+  test('site terminal stays within 375px after connecting', async ({ page }) => {
+    await open(page, '#/sites/blog');
+    await expect(page.getByRole('heading', { name: 'blog', exact: true })).toBeVisible();
+    await page.locator('.terminal-card').getByRole('button', { name: 'Start terminal' }).click();
+    await expect(page.locator('.terminal-card').getByText('Connected', { exact: true })).toBeVisible();
+    const width = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+    }));
+    expect(width.document).toBeLessThanOrEqual(width.viewport);
+    expect(width.body).toBeLessThanOrEqual(width.viewport);
+  });
 
   test('Settings native tools card keeps vertical spacing at 375px', async ({ page }) => {
     await open(page, '#/settings');
