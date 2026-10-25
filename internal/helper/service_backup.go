@@ -44,8 +44,18 @@ func (c *DockerServiceController) backupService(id services.ID) (string, error) 
 	if now == nil {
 		now = time.Now
 	}
-	timestamp := now().UTC().Format("20060102T150405Z")
+	timestamp := now().UTC().Format("20060102T150405.000000000Z")
 	dest := filepath.Join(backupDir, timestamp+".tar.gz")
+	for suffix := 2; ; suffix++ {
+		_, statErr := os.Lstat(dest)
+		if errors.Is(statErr, os.ErrNotExist) {
+			break
+		}
+		if statErr != nil {
+			return "", fmt.Errorf("check backup destination: %w", statErr)
+		}
+		dest = filepath.Join(backupDir, fmt.Sprintf("%s-%d.tar.gz", timestamp, suffix))
+	}
 
 	tmp, err := os.CreateTemp(backupDir, ".backup-*.tar.gz")
 	if err != nil {

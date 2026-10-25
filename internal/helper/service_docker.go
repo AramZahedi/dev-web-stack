@@ -190,28 +190,33 @@ type psContainer struct {
 	Health  string `json:"Health"`
 }
 
-func parsePSOutput(data []byte) []psContainer {
+func parsePSOutput(data []byte) ([]psContainer, error) {
 	var list []psContainer
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" {
-		return nil
+		return nil, nil
 	}
 	if strings.HasPrefix(trimmed, "[") {
-		_ = json.Unmarshal([]byte(trimmed), &list)
-		return list
+		if err := json.Unmarshal([]byte(trimmed), &list); err != nil {
+			return nil, fmt.Errorf("parse compose ps JSON array: %w", err)
+		}
+		return list, nil
 	}
 	lines := strings.Split(trimmed, "\n")
-	for _, line := range lines {
+	for i, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		var item psContainer
-		if err := json.Unmarshal([]byte(line), &item); err == nil && (item.Service != "" || item.Name != "") {
+		if err := json.Unmarshal([]byte(line), &item); err != nil {
+			return nil, fmt.Errorf("parse compose ps line %d: %w", i+1, err)
+		}
+		if item.Service != "" || item.Name != "" {
 			list = append(list, item)
 		}
 	}
-	return list
+	return list, nil
 }
 
 func containerName(cont psContainer) string {
@@ -221,9 +226,13 @@ func containerName(cont psContainer) string {
 	return strings.TrimPrefix(cont.Name, "devstack-")
 }
 
-func containersByService(data []byte) map[string]psContainer {
-	containers := make(map[string]psContainer)
-	for _, cont := range parsePSOutput(data) {
+func containersByService(data []byte) (map[string]psContainer, error) {
+	parsed, err := parsePSOutput(data)
+	if err != nil {
+		return nil, err
+	}
+	containers := make(map[string]psContainer, len(parsed))
+	for _, cont := range parsed {
 		name := containerName(cont)
 		if name == "" {
 			continue
@@ -233,7 +242,7 @@ func containersByService(data []byte) map[string]psContainer {
 		}
 		containers[name] = cont
 	}
-	return containers
+	return containers, nil
 }
 
 func (c *DockerServiceController) containers(ctx context.Context) (map[string]psContainer, error) {
@@ -241,7 +250,11 @@ func (c *DockerServiceController) containers(ctx context.Context) (map[string]ps
 	if err != nil {
 		return nil, fmt.Errorf("docker compose ps: %w", err)
 	}
-	return containersByService(out), nil
+	containers, err := containersByService(out)
+	if err != nil {
+		return nil, fmt.Errorf("docker compose ps: %w", err)
+	}
+	return containers, nil
 }
 
 func isMissingImageError(err error) bool {
@@ -260,6 +273,17 @@ func isMissingImageError(err error) bool {
 		strings.Contains(message, "manifest unknown") ||
 		strings.Contains(message, "image not found") ||
 		strings.Contains(message, "image does not exist")
+}
+
+func isAbsentContainerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such container") ||
+		strings.Contains(message, "no container found") ||
+		strings.Contains(message, "no container to stop") ||
+		strings.Contains(message, "container not found")
 }
 
 func (c *DockerServiceController) imageInstalled(ctx context.Context, image string) (bool, error) {
@@ -446,6 +470,9 @@ func (c *DockerServiceController) Activate(ctx context.Context, id services.ID) 
 			if !ok || !strings.EqualFold(cont.State, "running") {
 				continue
 			}
+			// Record the competitor before stopping it: Docker may have stopped
+			// the container even when the command reports a failure.
+			stopped = append(stopped, other.ID)
 			if _, err := c.runCompose(ctx, "stop", string(other.ID)); err != nil {
 				return &ServiceActivationError{
 					Service:     id,
@@ -454,7 +481,6 @@ func (c *DockerServiceController) Activate(ctx context.Context, id services.ID) 
 					RollbackErr: c.restoreServices(ctx, stopped),
 				}
 			}
-			stopped = append(stopped, other.ID)
 		}
 	}
 
@@ -532,7 +558,11 @@ func (c *DockerServiceController) waitReady(ctx context.Context, svc services.Se
 		if err != nil {
 			return fmt.Errorf("docker compose ps: %w", err)
 		}
-		cont, ok := containersByService(out)[string(svc.ID)]
+		byService, err := containersByService(out)
+		if err != nil {
+			return fmt.Errorf("docker compose ps: %w", err)
+		}
+		cont, ok := byService[string(svc.ID)]
 		if ok {
 			lastState = fmt.Sprintf("state=%s health=%s", cont.State, cont.Health)
 			switch strings.ToLower(cont.State) {
@@ -705,6 +735,10 @@ func (c *DockerServiceController) Uninstall(ctx context.Context, id services.ID,
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	composeExists := true
 	if _, err := os.Stat(c.composePath); errors.Is(err, os.ErrNotExist) {
 		composeExists = false
@@ -713,12 +747,23 @@ func (c *DockerServiceController) Uninstall(ctx context.Context, id services.ID,
 	}
 
 	if composeExists {
-		_, _ = c.runCompose(ctx, "stop", string(id))
+		if _, err := c.runCompose(ctx, "stop", string(id)); err != nil && !isAbsentContainerError(err) {
+			return fmt.Errorf("docker compose stop %s: %w", id, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	if deleteData {
 		if _, err := c.backupService(id); err != nil {
 			return fmt.Errorf("backup service %q: %w", id, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 	}
 
@@ -726,6 +771,10 @@ func (c *DockerServiceController) Uninstall(ctx context.Context, id services.ID,
 		if _, err := c.runCompose(ctx, "rm", "-f", string(id)); err != nil {
 			return fmt.Errorf("docker compose rm %s: %w", id, err)
 		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	if deleteData {

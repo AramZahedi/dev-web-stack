@@ -157,14 +157,18 @@ type dockerSim struct {
 	upHealth    map[services.ID]string
 	psCalls     int
 
-	psErr      error
-	inspectErr error
-	upErr      error
-	restartErr error
-	stopErr    error
-	rmErr      error
-	pullErr    error
-	execErr    error
+	psRaw  []byte
+	psErr  error
+	onStop func()
+
+	inspectErr       error
+	upErr            error
+	restartErr       error
+	stopErr          error
+	stopAppliedOnErr bool
+	rmErr            error
+	pullErr          error
+	execErr          error
 }
 
 func newDockerSim(cat services.Catalog) (*dockerSim, *fakeCommandRunner) {
@@ -323,6 +327,9 @@ func (s *dockerSim) run(name string, args []string) ([]byte, error) {
 		if s.psErr != nil {
 			return nil, s.psErr
 		}
+		if len(s.psRaw) > 0 {
+			return append([]byte(nil), s.psRaw...), nil
+		}
 		return s.psOutput(), nil
 	case "pull":
 		if s.pullErr != nil {
@@ -330,9 +337,15 @@ func (s *dockerSim) run(name string, args []string) ([]byte, error) {
 		}
 	case "stop":
 		if s.stopErr != nil {
+			if s.stopAppliedOnErr {
+				s.removeContainer(services.ID(last))
+			}
 			return nil, s.stopErr
 		}
 		s.removeContainer(services.ID(last))
+		if s.onStop != nil {
+			s.onStop()
+		}
 	case "up":
 		if s.upErr != nil {
 			return nil, s.upErr
@@ -566,6 +579,18 @@ func TestStatusReturnsRunnerErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("malformed ps output", func(t *testing.T) {
+		fx := newControllerFixture(t)
+		fx.sim.psRaw = []byte(`[{"Service":"nginx"`)
+		statuses, err := fx.ctrl.Status(context.Background())
+		if err == nil {
+			t.Fatalf("Status succeeded with malformed ps output: %+v", statuses)
+		}
+		if statuses != nil {
+			t.Fatalf("Status returned statuses with malformed ps output: %+v", statuses)
+		}
+	})
+
 	t.Run("missing image", func(t *testing.T) {
 		fx := newControllerFixture(t)
 		fx.sim.inspectErr = errors.New("image not found")
@@ -720,6 +745,138 @@ func TestActivateRollsBackCompetitorOnHealthFailure(t *testing.T) {
 	}
 	if fx.sim.running(services.IDNginx) {
 		t.Error("failed nginx container is still running")
+	}
+}
+
+func TestActivateRestartsCompetitorWhenStopReportsFailure(t *testing.T) {
+	fx := newControllerFixture(t)
+	fx.sim.setContainer(services.IDApache, "running", "healthy")
+	fx.sim.setPort(8080, services.IDApache)
+	fx.sim.stopErr = errors.New("stop reported failure")
+	fx.sim.stopAppliedOnErr = true
+
+	err := fx.ctrl.Activate(context.Background(), services.IDNginx)
+	if err == nil {
+		t.Fatal("Activate succeeded, want stop-competitor failure")
+	}
+	var activationErr *helper.ServiceActivationError
+	if !errors.As(err, &activationErr) {
+		t.Fatalf("error type = %T, want *helper.ServiceActivationError", err)
+	}
+	if activationErr.Phase != "stop-competitor" {
+		t.Errorf("activation phase = %q, want stop-competitor", activationErr.Phase)
+	}
+	if activationErr.RollbackErr != nil {
+		t.Errorf("rollback error = %v", activationErr.RollbackErr)
+	}
+	if !fx.sim.running(services.IDApache) {
+		t.Error("competitor stopped by Docker was not restarted during rollback")
+	}
+
+	want := [][]string{
+		fx.composeCall("ps", "-a", "--format", "json"),
+		fx.composeCall("stop", "apache"),
+		fx.composeCall("restart", "apache"),
+		fx.composeCall("ps", "-a", "--format", "json"),
+	}
+	if got := fx.runner.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("stop-failure rollback calls = %v, want %v", got, want)
+	}
+}
+
+func TestActivateReportsFailedCompetitorRestore(t *testing.T) {
+	fx := newControllerFixture(t)
+	fx.sim.setContainer(services.IDApache, "running", "healthy")
+	fx.sim.setPort(8080, services.IDApache)
+	fx.sim.upHealth[services.IDNginx] = "unhealthy"
+	fx.sim.restartErr = errors.New("restart refused")
+
+	err := fx.ctrl.Activate(context.Background(), services.IDNginx)
+	if err == nil {
+		t.Fatal("Activate succeeded, want health failure")
+	}
+	var activationErr *helper.ServiceActivationError
+	if !errors.As(err, &activationErr) {
+		t.Fatalf("error type = %T, want *helper.ServiceActivationError", err)
+	}
+	if activationErr.Phase != "health" {
+		t.Errorf("activation phase = %q, want health", activationErr.Phase)
+	}
+	if activationErr.RollbackErr == nil || !strings.Contains(activationErr.RollbackErr.Error(), "restart apache") {
+		t.Fatalf("rollback error = %v, want failed apache restart", activationErr.RollbackErr)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "rollback failed") {
+		t.Errorf("error = %q, want rollback failure detail", err)
+	}
+	if fx.sim.running(services.IDApache) {
+		t.Error("apache is running despite a failed restart")
+	}
+}
+
+func TestActivateSwitchesMySQLToMariaDB(t *testing.T) {
+	fx := newControllerFixture(t)
+	fx.sim.setContainer(services.IDMySQL, "running", "healthy")
+	fx.sim.setPort(3306, services.IDMySQL)
+
+	if err := fx.ctrl.Activate(context.Background(), services.IDMariaDB); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	want := [][]string{
+		fx.composeCall("ps", "-a", "--format", "json"),
+		fx.composeCall("stop", "mysql"),
+		fx.composeCall("up", "-d", "--no-deps", "mariadb"),
+		fx.composeCall("ps", "-a", "--format", "json"),
+	}
+	if got := fx.runner.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("mysql-to-mariadb calls = %v, want %v", got, want)
+	}
+	if !fx.sim.running(services.IDMariaDB) {
+		t.Error("mariadb is not running after switch")
+	}
+	if fx.sim.running(services.IDMySQL) {
+		t.Error("mysql is still running after switch")
+	}
+}
+
+func TestActivateMySQLToMariaDBRollsBackOnHealthFailure(t *testing.T) {
+	fx := newControllerFixture(t)
+	fx.sim.setContainer(services.IDMySQL, "running", "healthy")
+	fx.sim.setPort(3306, services.IDMySQL)
+	fx.sim.upHealth[services.IDMariaDB] = "unhealthy"
+
+	err := fx.ctrl.Activate(context.Background(), services.IDMariaDB)
+	if err == nil {
+		t.Fatal("Activate succeeded, want health failure")
+	}
+	var activationErr *helper.ServiceActivationError
+	if !errors.As(err, &activationErr) {
+		t.Fatalf("error type = %T, want *helper.ServiceActivationError", err)
+	}
+	if activationErr.Phase != "health" {
+		t.Errorf("activation phase = %q, want health", activationErr.Phase)
+	}
+	if activationErr.RollbackErr != nil {
+		t.Errorf("rollback error = %v", activationErr.RollbackErr)
+	}
+
+	want := [][]string{
+		fx.composeCall("ps", "-a", "--format", "json"),
+		fx.composeCall("stop", "mysql"),
+		fx.composeCall("up", "-d", "--no-deps", "mariadb"),
+		fx.composeCall("ps", "-a", "--format", "json"),
+		fx.composeCall("stop", "mariadb"),
+		fx.composeCall("restart", "mysql"),
+		fx.composeCall("ps", "-a", "--format", "json"),
+	}
+	if got := fx.runner.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("mysql/mariadb rollback calls = %v, want %v", got, want)
+	}
+	if !fx.sim.running(services.IDMySQL) {
+		t.Error("mysql was not restarted during rollback")
+	}
+	if fx.sim.running(services.IDMariaDB) {
+		t.Error("failed mariadb container is still running")
 	}
 }
 
@@ -906,7 +1063,7 @@ func TestUninstallDeleteDataBacksUpBeforeRemoving(t *testing.T) {
 		t.Fatalf("Uninstall: %v", err)
 	}
 
-	archivePath := filepath.Join(fx.root, "backups", "services", "nginx", "20261025T123456Z.tar.gz")
+	archivePath := filepath.Join(fx.root, "backups", "services", "nginx", "20261025T123456.000000000Z.tar.gz")
 	if info, err := os.Stat(archivePath); err != nil || info.Size() == 0 {
 		t.Fatalf("backup archive missing or empty: %v", err)
 	}
@@ -996,6 +1153,124 @@ func TestUninstallDeleteDataAbortsWhenBackupFails(t *testing.T) {
 		if len(call) > 6 && call[6] == "rm" {
 			t.Errorf("container was removed after backup failure: %v", call)
 		}
+	}
+}
+
+func TestUninstallPropagatesStopFailureAndKeepsData(t *testing.T) {
+	fx := newControllerFixture(t)
+	if err := fx.ctrl.Install(context.Background(), services.IDNginx); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	fx.runner.reset()
+
+	dataFile := filepath.Join(fx.root, "services", "nginx", "data", "db.bin")
+	if err := os.WriteFile(dataFile, []byte("database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fx.sim.stopErr = errors.New("permission denied")
+
+	err := fx.ctrl.Uninstall(context.Background(), services.IDNginx, true)
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Uninstall error = %v, want stop failure", err)
+	}
+	if _, err := os.Stat(dataFile); err != nil {
+		t.Errorf("data file was removed after stop failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fx.root, "backups")); !os.IsNotExist(err) {
+		t.Errorf("backup directory exists after stop failure: %v", err)
+	}
+	want := [][]string{fx.composeCall("stop", "nginx")}
+	if got := fx.runner.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("stop-failure calls = %v, want %v", got, want)
+	}
+}
+
+func TestUninstallToleratesAbsentContainerOnStop(t *testing.T) {
+	fx := newControllerFixture(t)
+	if err := fx.ctrl.Install(context.Background(), services.IDNginx); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	fx.runner.reset()
+	fx.sim.stopErr = errors.New("No such container: devstack-nginx")
+
+	if err := fx.ctrl.Uninstall(context.Background(), services.IDNginx, false); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	want := [][]string{
+		fx.composeCall("stop", "nginx"),
+		fx.composeCall("rm", "-f", "nginx"),
+	}
+	if got := fx.runner.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("absent-container calls = %v, want %v", got, want)
+	}
+}
+
+func TestUninstallAbortsBeforeMutationOnCanceledContext(t *testing.T) {
+	fx := newControllerFixture(t)
+	if err := fx.ctrl.Install(context.Background(), services.IDNginx); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	fx.runner.reset()
+
+	dataFile := filepath.Join(fx.root, "services", "nginx", "data", "db.bin")
+	if err := os.WriteFile(dataFile, []byte("database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secretFile := filepath.Join(fx.root, "secrets", "nginx", "password")
+	if err := os.MkdirAll(filepath.Dir(secretFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretFile, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := fx.ctrl.Uninstall(ctx, services.IDNginx, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Uninstall error = %v, want context.Canceled", err)
+	}
+	if calls := fx.runner.snapshot(); len(calls) != 0 {
+		t.Errorf("commands executed with canceled context: %v", calls)
+	}
+	if _, err := os.Stat(dataFile); err != nil {
+		t.Errorf("data file was removed with canceled context: %v", err)
+	}
+	if _, err := os.Stat(secretFile); err != nil {
+		t.Errorf("secret file was removed with canceled context: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fx.root, "backups")); !os.IsNotExist(err) {
+		t.Errorf("backup directory exists with canceled context: %v", err)
+	}
+}
+
+func TestUninstallStopsBeforeBackupWhenContextCanceledDuringStop(t *testing.T) {
+	fx := newControllerFixture(t)
+	if err := fx.ctrl.Install(context.Background(), services.IDNginx); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	fx.runner.reset()
+
+	dataFile := filepath.Join(fx.root, "services", "nginx", "data", "db.bin")
+	if err := os.WriteFile(dataFile, []byte("database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	fx.sim.onStop = cancel
+	err := fx.ctrl.Uninstall(ctx, services.IDNginx, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Uninstall error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(dataFile); err != nil {
+		t.Errorf("data file was removed after cancellation during stop: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fx.root, "backups")); !os.IsNotExist(err) {
+		t.Errorf("backup directory exists after cancellation during stop: %v", err)
+	}
+	want := [][]string{fx.composeCall("stop", "nginx")}
+	if got := fx.runner.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("canceled-stop calls = %v, want %v", got, want)
 	}
 }
 
