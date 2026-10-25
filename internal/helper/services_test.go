@@ -30,7 +30,7 @@ func TestServiceHelperEndpoints(t *testing.T) {
 			ID:          "nginx",
 			State:       "active",
 			Active:      true,
-			Image:       "fixture-nginx:latest",
+			Image:       "fixture-nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 			ContainerID: "cid-123456",
 			Health:      "healthy",
 			Ports: []helperproto.ServicePortStatus{
@@ -178,7 +178,7 @@ func TestServiceDockerController(t *testing.T) {
 				ID:          services.IDNginx,
 				DisplayName: "Nginx",
 				Group:       services.GroupWeb,
-				Image:       "fixture-nginx:latest",
+				Image:       "fixture-nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 				NetworkMode: "host",
 				Ports: []services.Port{
 					{Host: 8080, Container: 80, Protocol: "http", Loopback: true},
@@ -191,7 +191,7 @@ func TestServiceDockerController(t *testing.T) {
 				ID:          services.IDMySQL,
 				DisplayName: "MySQL",
 				Group:       services.GroupMySQLFamily,
-				Image:       "fixture-mysql:latest",
+				Image:       "fixture-mysql@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				Ports: []services.Port{
 					{Host: 3306, Container: 3306, Protocol: "tcp", Loopback: true},
 				},

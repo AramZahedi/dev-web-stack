@@ -2,7 +2,15 @@ package services
 
 import (
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
+)
+
+var (
+	validIDRegex    = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	validImageRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$`)
 )
 
 // ID identifies a managed infrastructure service.
@@ -46,11 +54,46 @@ type Port struct {
 	Loopback  bool   `json:"loopback,omitempty"`
 }
 
+// MountArea identifies the root that a bind mount host path is resolved against.
+type MountArea string
+
+const (
+	// MountService resolves HostSubdir under <root>/services/<id>.
+	MountService MountArea = "service"
+	// MountSecrets resolves HostSubdir under <root>/secrets.
+	MountSecrets MountArea = "secrets"
+	// MountCerts resolves HostSubdir under <root>/certs.
+	MountCerts MountArea = "certs"
+	// MountProjects resolves HostSubdir under <root>/projects.
+	MountProjects MountArea = "projects"
+	// MountAbsolute uses the validated absolute HostPath.
+	MountAbsolute MountArea = "absolute"
+)
+
 // Mount defines a host directory bind mount.
 type Mount struct {
 	HostSubdir    string
 	ContainerPath string
 	ReadOnly      bool
+	Area          MountArea
+	HostPath      string
+	SELinux       bool
+}
+
+// Healthcheck defines a container health probe.
+type Healthcheck struct {
+	Test        []string
+	Interval    time.Duration
+	Timeout     time.Duration
+	StartPeriod time.Duration
+	Retries     int
+}
+
+// Ulimit defines a container resource limit.
+type Ulimit struct {
+	Name string
+	Soft int
+	Hard int
 }
 
 // Service is the immutable catalog entry describing an infrastructure service.
@@ -64,6 +107,14 @@ type Service struct {
 	Config      []Mount
 	Data        []Mount
 	DependsOn   []ID
+
+	Environment     map[string]string
+	Healthcheck     *Healthcheck
+	ValidateCommand []string
+	ReloadCommand   []string
+	SecurityOpts    []string
+	CapAdd          []string
+	Ulimits         []Ulimit
 }
 
 // Catalog holds all known service definitions.
@@ -71,10 +122,18 @@ type Catalog struct {
 	Services []Service
 }
 
-// DefaultCatalog returns the default service catalog.
-// It is initially empty; Wave 1 populates digest-pinned entries.
+// DefaultCatalog returns the default service catalog composed from the lane-owned
+// catalog files. The lanes populate web, database, and standalone entries.
 func DefaultCatalog() Catalog {
-	return Catalog{Services: nil}
+	web := webServices()
+	databases := databaseServices()
+	standalone := standaloneServices()
+
+	out := make([]Service, 0, len(web)+len(databases)+len(standalone))
+	out = append(out, web...)
+	out = append(out, databases...)
+	out = append(out, standalone...)
+	return Catalog{Services: out}
 }
 
 // Get looks up a service by ID.
@@ -89,47 +148,223 @@ func (c Catalog) Get(id ID) (Service, bool) {
 
 // Validate checks the catalog for internal consistency.
 func (c Catalog) Validate() error {
-	seen := make(map[ID]bool, len(c.Services))
+	known := make(map[ID]bool, len(c.Services))
 	for _, s := range c.Services {
 		if s.ID == "" {
 			return fmt.Errorf("service ID cannot be empty")
 		}
-		if seen[s.ID] {
+		if known[s.ID] {
 			return fmt.Errorf("duplicate service ID %q", s.ID)
 		}
-		seen[s.ID] = true
+		known[s.ID] = true
 
 		if strings.TrimSpace(s.DisplayName) == "" {
 			return fmt.Errorf("service %q: display name cannot be empty", s.ID)
 		}
-
-		switch s.Group {
-		case GroupWeb, GroupMySQLFamily, GroupStandalone:
-		default:
-			return fmt.Errorf("service %q: unknown group %q", s.ID, s.Group)
+		if err := validateServiceFields(s); err != nil {
+			return err
 		}
-
-		if strings.TrimSpace(s.Image) == "" {
-			return fmt.Errorf("service %q: image cannot be empty", s.ID)
-		}
-
 		if s.Group == GroupWeb && len(s.Ports) == 0 && s.NetworkMode != "host" {
 			return fmt.Errorf("web service %q must specify ports or host networking", s.ID)
 		}
+	}
 
-		for _, p := range s.Ports {
-			if p.Container < 1 || p.Container > 65535 {
-				return fmt.Errorf("service %q: invalid container port %d", s.ID, p.Container)
-			}
-			if p.Host < 0 || p.Host > 65535 {
-				return fmt.Errorf("service %q: invalid host port %d", s.ID, p.Host)
-			}
-			switch p.Protocol {
-			case "http", "https", "tcp", "":
-			default:
-				return fmt.Errorf("service %q: invalid port protocol %q", s.ID, p.Protocol)
-			}
+	for _, s := range c.Services {
+		if err := validateDependencies(s, known); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// validateServiceFields applies the rules shared by catalog validation and compose
+// rendering. Callers remain responsible for duplicate IDs and dependency membership.
+func validateServiceFields(s Service) error {
+	if !validIDRegex.MatchString(string(s.ID)) {
+		return fmt.Errorf("service ID %q is invalid", s.ID)
+	}
+
+	if strings.TrimSpace(s.Image) == "" {
+		return fmt.Errorf("service %q: image cannot be empty", s.ID)
+	}
+	if !validImageRegex.MatchString(s.Image) {
+		return fmt.Errorf("service %q: image %q must be pinned by sha256 digest", s.ID, s.Image)
+	}
+
+	switch s.Group {
+	case GroupWeb, GroupMySQLFamily, GroupStandalone:
+	default:
+		return fmt.Errorf("service %q: unknown group %q", s.ID, s.Group)
+	}
+
+	if err := validateNetworkMode(s); err != nil {
+		return err
+	}
+	if err := validatePublishedPorts(s); err != nil {
+		return err
+	}
+	for _, m := range s.Config {
+		if err := validateMountFields(s, m); err != nil {
+			return err
+		}
+	}
+	for _, m := range s.Data {
+		if err := validateMountFields(s, m); err != nil {
+			return err
+		}
+	}
+	if err := validateHealthcheck(s); err != nil {
+		return err
+	}
+	return validateUlimits(s)
+}
+
+func validateNetworkMode(s Service) error {
+	switch s.NetworkMode {
+	case "host":
+		if s.Group != GroupWeb {
+			return fmt.Errorf("service %q: host networking is only allowed for web services", s.ID)
+		}
+	case "bridge", "":
+	default:
+		return fmt.Errorf("service %q: unsupported network mode %q", s.ID, s.NetworkMode)
+	}
+	return nil
+}
+
+func validatePublishedPorts(s Service) error {
+	if s.NetworkMode == "host" {
+		return nil
+	}
+	for _, p := range s.Ports {
+		if !p.Loopback {
+			return fmt.Errorf("service %q: non-loopback port %d is not allowed", s.ID, p.Host)
+		}
+		if p.Host < 1 || p.Host > 65535 {
+			return fmt.Errorf("service %q: invalid host port %d", s.ID, p.Host)
+		}
+		if p.Container < 1 || p.Container > 65535 {
+			return fmt.Errorf("service %q: invalid container port %d", s.ID, p.Container)
+		}
+		switch p.Protocol {
+		case "http", "https", "tcp", "":
+		default:
+			return fmt.Errorf("service %q: invalid port protocol %q", s.ID, p.Protocol)
+		}
+	}
+	return nil
+}
+
+func validateMountFields(s Service, m Mount) error {
+	if strings.TrimSpace(m.ContainerPath) == "" {
+		return fmt.Errorf("service %q: mount container path cannot be empty", s.ID)
+	}
+	if !filepath.IsAbs(m.ContainerPath) {
+		return fmt.Errorf("service %q: mount container path %q must be absolute", s.ID, m.ContainerPath)
+	}
+	cleanContainer := filepath.Clean(m.ContainerPath)
+	if isDockerSocket(cleanContainer) {
+		return fmt.Errorf("service %q: mounting docker socket is forbidden", s.ID)
+	}
+
+	area := m.Area
+	if area == "" {
+		area = MountService
+	}
+
+	switch area {
+	case MountService, MountSecrets, MountCerts, MountProjects:
+		if m.HostPath != "" {
+			return fmt.Errorf("service %q: host path must be empty for %s mounts", s.ID, area)
+		}
+		if filepath.IsAbs(m.HostSubdir) {
+			return fmt.Errorf("service %q: mount host subdir %q must be relative", s.ID, m.HostSubdir)
+		}
+		cleanSub := filepath.Clean(m.HostSubdir)
+		if cleanSub == ".." || strings.HasPrefix(cleanSub, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("service %q: mount host subdir %q escapes %s area", s.ID, m.HostSubdir, area)
+		}
+		if isDockerSocket(cleanSub) {
+			return fmt.Errorf("service %q: mounting docker socket is forbidden", s.ID)
+		}
+	case MountAbsolute:
+		if m.HostSubdir != "" {
+			return fmt.Errorf("service %q: host subdir must be empty for absolute mounts", s.ID)
+		}
+		if strings.TrimSpace(m.HostPath) == "" {
+			return fmt.Errorf("service %q: absolute mount host path cannot be empty", s.ID)
+		}
+		if !filepath.IsAbs(m.HostPath) {
+			return fmt.Errorf("service %q: absolute mount host path %q must be absolute", s.ID, m.HostPath)
+		}
+		cleanHost := filepath.Clean(m.HostPath)
+		if isDangerousAbsoluteMount(cleanHost) {
+			return fmt.Errorf("service %q: absolute mount host path %q is not allowed", s.ID, cleanHost)
+		}
+		if isDockerSocket(cleanHost) {
+			return fmt.Errorf("service %q: mounting docker socket is forbidden", s.ID)
+		}
+	default:
+		return fmt.Errorf("service %q: unknown mount area %q", s.ID, area)
+	}
+	return nil
+}
+
+func validateHealthcheck(s Service) error {
+	h := s.Healthcheck
+	if h == nil {
+		return nil
+	}
+	if len(h.Test) == 0 {
+		return fmt.Errorf("service %q: healthcheck test cannot be empty", s.ID)
+	}
+	switch h.Test[0] {
+	case "NONE", "CMD", "CMD-SHELL":
+	default:
+		return fmt.Errorf("service %q: invalid healthcheck test prefix %q", s.ID, h.Test[0])
+	}
+	if h.Interval < 0 || h.Timeout < 0 || h.StartPeriod < 0 {
+		return fmt.Errorf("service %q: healthcheck durations cannot be negative", s.ID)
+	}
+	if h.Retries < 0 {
+		return fmt.Errorf("service %q: healthcheck retries cannot be negative", s.ID)
+	}
+	return nil
+}
+
+func validateUlimits(s Service) error {
+	for _, limit := range s.Ulimits {
+		if strings.TrimSpace(limit.Name) == "" {
+			return fmt.Errorf("service %q: ulimit name cannot be empty", s.ID)
+		}
+		if limit.Soft < 0 || limit.Hard < 0 {
+			return fmt.Errorf("service %q: ulimit %q values cannot be negative", s.ID, limit.Name)
+		}
+	}
+	return nil
+}
+
+func validateDependencies(s Service, known map[ID]bool) error {
+	for _, dep := range s.DependsOn {
+		if dep == s.ID {
+			return fmt.Errorf("service %q cannot depend on itself", s.ID)
+		}
+		if !known[dep] {
+			return fmt.Errorf("service %q depends on unknown service %q", s.ID, dep)
+		}
+	}
+	return nil
+}
+
+func isDockerSocket(path string) bool {
+	return path == "/var/run/docker.sock" || strings.HasSuffix(path, "docker.sock")
+}
+
+func isDangerousAbsoluteMount(path string) bool {
+	switch path {
+	case "/", "/var", "/var/run", "/run", "/var/lib/docker":
+		return true
+	default:
+		return false
+	}
 }

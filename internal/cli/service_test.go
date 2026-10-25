@@ -93,7 +93,7 @@ func TestServiceStatus(t *testing.T) {
 				Group:       services.GroupWeb,
 				State:       services.StateActive,
 				Active:      true,
-				Image:       "fixture-nginx:latest",
+				Image:       "fixture-nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 				ConfigPath:  "/data/devstack/services/nginx/config",
 				DataPath:    "/data/devstack/services/nginx/data",
 			},
