@@ -14,9 +14,17 @@ const serviceColumns = `id, state, image, active, last_error, last_operation, up
 
 // SaveServiceState upserts a service's state record.
 func (s *Store) SaveServiceState(ctx context.Context, rec services.Record) error {
+	if rec.ID == "" {
+		return errors.New("service ID cannot be empty")
+	}
+
 	updatedAt := rec.UpdatedAt
 	if updatedAt.IsZero() {
-		updatedAt = s.now()
+		if s.now != nil {
+			updatedAt = s.now()
+		} else {
+			updatedAt = time.Now().UTC()
+		}
 	}
 
 	_, err := s.db.ExecContext(ctx, `
@@ -57,7 +65,7 @@ func (s *Store) ListServiceStates(ctx context.Context) ([]services.Record, error
 	}
 	defer rows.Close()
 
-	var records []services.Record
+	records := []services.Record{}
 	for rows.Next() {
 		rec, err := scanServiceRecord(rows)
 		if err != nil {

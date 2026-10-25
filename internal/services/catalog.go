@@ -116,6 +116,20 @@ func (c Catalog) Validate() error {
 		if s.Group == GroupWeb && len(s.Ports) == 0 && s.NetworkMode != "host" {
 			return fmt.Errorf("web service %q must specify ports or host networking", s.ID)
 		}
+
+		for _, p := range s.Ports {
+			if p.Container < 1 || p.Container > 65535 {
+				return fmt.Errorf("service %q: invalid container port %d", s.ID, p.Container)
+			}
+			if p.Host < 0 || p.Host > 65535 {
+				return fmt.Errorf("service %q: invalid host port %d", s.ID, p.Host)
+			}
+			switch p.Protocol {
+			case "http", "https", "tcp", "":
+			default:
+				return fmt.Errorf("service %q: invalid port protocol %q", s.ID, p.Protocol)
+			}
+		}
 	}
 	return nil
 }

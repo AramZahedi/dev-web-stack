@@ -67,6 +67,48 @@ func TestDefaultCatalog(t *testing.T) {
 	}
 }
 
+func TestCatalogValidatePortAndProtocol(t *testing.T) {
+	baseService := Service{
+		ID:          IDRedis,
+		DisplayName: "Redis",
+		Group:       GroupStandalone,
+		Image:       "docker.io/library/redis@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+
+	// Invalid container port
+	c1 := Catalog{Services: []Service{baseService}}
+	c1.Services[0].Ports = []Port{{Container: 0, Host: 6379, Protocol: "tcp"}}
+	if err := c1.Validate(); err == nil {
+		t.Fatal("expected error for container port 0")
+	}
+
+	// Invalid host port
+	c2 := Catalog{Services: []Service{baseService}}
+	c2.Services[0].Ports = []Port{{Container: 6379, Host: 70000, Protocol: "tcp"}}
+	if err := c2.Validate(); err == nil {
+		t.Fatal("expected error for host port 70000")
+	}
+
+	// Invalid protocol
+	c3 := Catalog{Services: []Service{baseService}}
+	c3.Services[0].Ports = []Port{{Container: 6379, Host: 6379, Protocol: "invalid"}}
+	if err := c3.Validate(); err == nil {
+		t.Fatal("expected error for invalid protocol")
+	}
+
+	// Valid ports and protocols
+	c4 := Catalog{Services: []Service{baseService}}
+	c4.Services[0].Ports = []Port{
+		{Container: 80, Host: 80, Protocol: "http"},
+		{Container: 443, Host: 443, Protocol: "https"},
+		{Container: 6379, Host: 6379, Protocol: "tcp"},
+		{Container: 3306, Host: 0, Protocol: ""},
+	}
+	if err := c4.Validate(); err != nil {
+		t.Fatalf("unexpected error for valid ports: %v", err)
+	}
+}
+
 func TestCatalogGet(t *testing.T) {
 	c := Catalog{
 		Services: []Service{

@@ -71,4 +71,34 @@ func TestGetServiceStateNotFound(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatalf("GetServiceState(absent) = %v, want ErrNotFound", err)
 	}
+
+	// Empty list should be non-nil slice
+	list, err := st.ListServiceStates(ctx)
+	if err != nil {
+		t.Fatalf("ListServiceStates failed: %v", err)
+	}
+	if list == nil || len(list) != 0 {
+		t.Fatalf("expected non-nil empty slice, got %+v", list)
+	}
+
+	// Empty ID rejection
+	if err := st.SaveServiceState(ctx, services.Record{}); err == nil {
+		t.Fatal("expected error saving record with empty ID")
+	}
+
+	// Zero UpdatedAt auto-population without s.now override
+	err = st.SaveServiceState(ctx, services.Record{
+		ID:    services.IDRedis,
+		State: services.StateActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveServiceState with zero UpdatedAt failed: %v", err)
+	}
+	redisRec, err := st.GetServiceState(ctx, services.IDRedis)
+	if err != nil {
+		t.Fatalf("GetServiceState failed: %v", err)
+	}
+	if redisRec.UpdatedAt.IsZero() {
+		t.Fatal("expected UpdatedAt to be populated automatically")
+	}
 }
