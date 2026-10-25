@@ -7,8 +7,8 @@
 #   - phpMyAdmin reaches the active MySQL-family container through the fixed
 #     "db" Compose network alias;
 #   - switching MySQL -> MariaDB on the same host port keeps phpMyAdmin healthy;
-#   - the fixed MySQL account-rotation statement updates the devstack password
-#     and the old password stops working.
+#   - the fixed MySQL, MariaDB, and PostgreSQL account-rotation statements
+#     update the devstack password and the old password stops working.
 #
 # The catalog also carries PMA_HOST=host.docker.internal and the host-gateway
 # extra_hosts entry. On native Linux the bridge gateway cannot reach a port
@@ -23,9 +23,11 @@ set -euo pipefail
 
 readonly MYSQL_IMAGE="mirror.gcr.io/library/mysql:8.4.13@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69"
 readonly MARIADB_IMAGE="mirror.gcr.io/library/mariadb:11.8.9@sha256:f16d7a344413e519dff518f27bdb221388f84b0d274c97c4fb5f2cb0dc1b34fa"
+readonly POSTGRES_IMAGE="mirror.gcr.io/library/postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6"
 readonly PMA_IMAGE="mirror.gcr.io/library/phpmyadmin:5.2.3@sha256:62a50b1419fe55b9b4c3cd6f5aed03a18f8f5b4a236f24735d76400bea75a5ff"
 
 readonly DB_PORT=33326
+readonly POSTGRES_PORT=35432
 readonly PMA_PORT=58082
 
 skip() {
@@ -60,7 +62,7 @@ if ! command -v curl >/dev/null 2>&1; then
 	skip "curl is required for the HTTP probe"
 fi
 
-for image in "$MYSQL_IMAGE" "$MARIADB_IMAGE" "$PMA_IMAGE"; do
+for image in "$MYSQL_IMAGE" "$MARIADB_IMAGE" "$POSTGRES_IMAGE" "$PMA_IMAGE"; do
 	if ! docker_cmd image inspect "$image" >/dev/null 2>&1; then
 		if ! docker_cmd pull "$image" >/dev/null 2>&1; then
 			skip "image $image is unavailable and could not be pulled (network or registry limit)"
@@ -97,9 +99,9 @@ new_secret() {
 
 umask 077
 mkdir -p "$ROOT"/mysql/{config,data,logs} "$ROOT"/mariadb/{config,data,logs} \
-	"$ROOT/phpmyadmin" \
-	"$ROOT/mysql/config/init" "$ROOT/mariadb/config/init" \
-	"$ROOT/secrets"/{mysql,mariadb}
+	"$ROOT"/postgresql/{config,data,logs} "$ROOT/phpmyadmin" \
+	"$ROOT/mysql/config/init" "$ROOT/mariadb/config/init" "$ROOT/postgresql/config/init" \
+	"$ROOT/secrets"/{mysql,mariadb,postgresql}
 chmod 700 "$ROOT/secrets" "$ROOT/secrets"/*
 chmod 755 "$ROOT/phpmyadmin"
 
@@ -109,12 +111,16 @@ write_secret() {
 	chmod 600 "$path"
 }
 for secret in mysql/root_password mysql/devstack_password \
-	mariadb/root_password mariadb/devstack_password; do
+	mariadb/root_password mariadb/devstack_password \
+	postgresql/postgres_password postgresql/devstack_password; do
 	write_secret "$ROOT/secrets/$secret"
 done
 MYSQL_DEVSTACK_PASSWORD="$(cat "$ROOT/secrets/mysql/devstack_password")"
+MARIADB_DEVSTACK_PASSWORD="$(cat "$ROOT/secrets/mariadb/devstack_password")"
+POSTGRES_DEVSTACK_PASSWORD="$(cat "$ROOT/secrets/postgresql/devstack_password")"
 chmod 755 "$ROOT"/mysql/{config,data,logs} "$ROOT"/mariadb/{config,data,logs} \
-	"$ROOT/mysql/config/init" "$ROOT/mariadb/config/init"
+	"$ROOT"/postgresql/{config,data,logs} \
+	"$ROOT/mysql/config/init" "$ROOT/mariadb/config/init" "$ROOT/postgresql/config/init"
 
 cat >"$ROOT/mysql/config/devstack.cnf" <<'EOF'
 [mysqld]
@@ -140,6 +146,47 @@ $cfg['Servers'][1]['port'] = '3306';
 $cfg['Servers'][1]['auth_type'] = 'cookie';
 EOF
 chmod 644 "$ROOT/phpmyadmin/config.user.inc.php"
+
+cat >"$ROOT/postgresql/config/postgresql.conf" <<'EOF'
+listen_addresses = '*'
+port = 5432
+data_directory = '/var/lib/postgresql/data'
+hba_file = '/etc/postgresql/pg_hba.conf'
+EOF
+
+cat >"$ROOT/postgresql/config/pg_hba.conf" <<'EOF'
+local   all             postgres                                trust
+local   all             all                                     trust
+host    all             all             127.0.0.1/32            scram-sha-256
+host    all             all             ::1/128                 scram-sha-256
+host    all             all             0.0.0.0/0               scram-sha-256
+EOF
+
+cat >"$ROOT/postgresql/config/init/10-devstack.sh" <<'EOF'
+#!/bin/sh
+set -eu
+if [ -z "${POSTGRES_USER:-}" ]; then
+	POSTGRES_USER=postgres
+fi
+if [ -z "${POSTGRES_DEVSTACK_PASSWORD:-}" ]; then
+	echo "devstack bootstrap: POSTGRES_DEVSTACK_PASSWORD is not set" >&2
+	exit 1
+fi
+password="$POSTGRES_DEVSTACK_PASSWORD"
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<EOSQL
+\set ds_password '$password'
+SELECT format('CREATE ROLE devstack LOGIN CREATEDB CREATEROLE PASSWORD %L', :'ds_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'devstack')
+\gexec
+SELECT format('ALTER ROLE devstack WITH LOGIN CREATEDB CREATEROLE PASSWORD %L', :'ds_password')
+\gexec
+SELECT format('CREATE DATABASE devstack OWNER devstack')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'devstack')
+\gexec
+EOSQL
+EOF
+chmod 755 "$ROOT/postgresql/config/init/10-devstack.sh"
+chmod 644 "$ROOT/postgresql/config/postgresql.conf" "$ROOT/postgresql/config/pg_hba.conf"
 
 cat >"$COMPOSE_FILE" <<EOF
 services:
@@ -196,6 +243,40 @@ services:
       - no-new-privileges:true
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 20
+
+  postgresql:
+    image: $POSTGRES_IMAGE
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgresql_postgres_password
+      POSTGRES_USER: postgres
+      PGDATA: /var/lib/postgresql/data
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        POSTGRES_PASSWORD="\$(cat /run/secrets/postgresql_postgres_password)"
+        POSTGRES_DEVSTACK_PASSWORD="\$(cat /run/secrets/postgresql_devstack_password)"
+        export POSTGRES_PASSWORD POSTGRES_DEVSTACK_PASSWORD
+        unset POSTGRES_PASSWORD_FILE POSTGRES_DEVSTACK_PASSWORD_FILE
+        exec /usr/local/bin/docker-entrypoint.sh postgres -c config_file=/etc/postgresql/postgresql.conf
+    ports:
+      - "127.0.0.1:$POSTGRES_PORT:5432"
+    volumes:
+      - $ROOT/postgresql/config/postgresql.conf:/etc/postgresql/postgresql.conf:ro,z
+      - $ROOT/postgresql/config/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro,z
+      - $ROOT/postgresql/config/init:/docker-entrypoint-initdb.d:ro,z
+      - $ROOT/postgresql/data:/var/lib/postgresql/data:z
+      - $ROOT/secrets/postgresql/postgres_password:/run/secrets/postgresql_postgres_password:ro,z
+      - $ROOT/secrets/postgresql/devstack_password:/run/secrets/postgresql_devstack_password:ro,z
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres -h 127.0.0.1"]
       interval: 5s
       timeout: 5s
       start_period: 30s
@@ -292,8 +373,28 @@ login_with_password() {
 	fi
 }
 
-compose up -d mysql
+login_postgres_password() {
+	# Reads an explicit PostgreSQL test password on stdin through a temporary
+	# .pgpass file. The password never appears in the Compose argv.
+	local password=$1
+	local expect_success=$2
+	local output status
+	set +e
+	output="$(printf '127.0.0.1:5432:devstack:devstack:%s\n' "$password" |
+		compose exec -T postgresql sh -c 'umask 077; cat > /tmp/devstack-pgpass; chmod 600 /tmp/devstack-pgpass; PGPASSFILE=/tmp/devstack-pgpass psql --host=127.0.0.1 --username=devstack --dbname=devstack --no-psqlrc --tuples-only --no-align --command="SELECT 1"; status=$?; rm -f /tmp/devstack-pgpass; exit $status' 2>&1)"
+	status=$?
+	set -e
+	if [[ "$expect_success" == "1" ]]; then
+		[[ $status -eq 0 ]] || fail "PostgreSQL devstack login with the new password failed: $output"
+		[[ "$(printf '%s' "$output" | tr -d '[:space:]')" == "1" ]] || fail "unexpected PostgreSQL SELECT output: $output"
+	else
+		[[ $status -ne 0 ]] || fail "the old PostgreSQL devstack password still works after rotation"
+	fi
+}
+
+compose up -d mysql postgresql
 wait_healthy mysql
+wait_healthy postgresql
 compose up -d phpmyadmin
 wait_healthy phpmyadmin
 probe_phpmyadmin_http
@@ -301,11 +402,20 @@ probe_phpmyadmin_to_database
 
 # Rotate the MySQL devstack account using the helper's fixed statement shape.
 MYSQL_ROTATED_PASSWORD="$(new_secret)"
-printf "ALTER USER 'devstack'@'%%' IDENTIFIED BY '%s';\nFLUSH PRIVILEGES;\n" "$MYSQL_ROTATED_PASSWORD" |
+printf "ALTER USER 'devstack'@'%%' IDENTIFIED BY '%s';\n" "$MYSQL_ROTATED_PASSWORD" |
 	compose exec -T mysql sh -c 'set -eu; MYSQL_PWD="$(cat /run/secrets/mysql_root_password)"; export MYSQL_PWD; exec mysql --user=root --batch --skip-column-names' ||
 	fail "rotating the MySQL devstack account failed"
 login_with_password mysql "$MYSQL_DEVSTACK_PASSWORD" 0
 login_with_password mysql "$MYSQL_ROTATED_PASSWORD" 1
+
+# Rotate the PostgreSQL devstack role using local-socket trust inside the
+# container and verify the old/new passwords over scram-sha-256 TCP.
+POSTGRES_ROTATED_PASSWORD="$(new_secret)"
+printf "ALTER ROLE devstack WITH PASSWORD '%s';\n" "$POSTGRES_ROTATED_PASSWORD" |
+	compose exec -T postgresql psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname=postgres ||
+	fail "rotating the PostgreSQL devstack role failed"
+login_postgres_password "$POSTGRES_DEVSTACK_PASSWORD" 0
+login_postgres_password "$POSTGRES_ROTATED_PASSWORD" 1
 
 # Switch engines on the same host port. The daemon restarts phpMyAdmin after a
 # MySQL-family switch; the smoke repeats that fixed operation explicitly.
@@ -320,10 +430,10 @@ probe_phpmyadmin_to_database
 # Rotate the devstack account using the same fixed statement shape as the
 # privileged helper. The new password reaches mysql on stdin only.
 NEW_PASSWORD="$(new_secret)"
-printf "ALTER USER 'devstack'@'%%' IDENTIFIED BY '%s';\nFLUSH PRIVILEGES;\n" "$NEW_PASSWORD" |
+printf "ALTER USER 'devstack'@'%%' IDENTIFIED BY '%s';\n" "$NEW_PASSWORD" |
 	compose exec -T mariadb sh -c 'set -eu; MYSQL_PWD="$(cat /run/secrets/mariadb_root_password)"; export MYSQL_PWD; exec mariadb --user=root --batch --skip-column-names' ||
 	fail "rotating the devstack account failed"
-login_with_password mariadb "$MYSQL_DEVSTACK_PASSWORD" 0
+login_with_password mariadb "$MARIADB_DEVSTACK_PASSWORD" 0
 login_with_password mariadb "$NEW_PASSWORD" 1
 
 # A subsequent phpMyAdmin restart follows the rotated account while preserving
@@ -333,4 +443,4 @@ wait_healthy phpmyadmin
 probe_phpmyadmin_http
 probe_phpmyadmin_to_database
 
-printf 'PASS: phpMyAdmin follows MySQL/MariaDB and database credential rotation works\n'
+printf 'PASS: phpMyAdmin follows MySQL/MariaDB and MySQL/MariaDB/PostgreSQL credential rotation works\n'

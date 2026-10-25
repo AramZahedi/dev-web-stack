@@ -31,6 +31,7 @@ type rotationRunner struct {
 
 	runInputErr error
 	onInput     func(string) error
+	inputErrAt  func(call int, input string) error
 }
 
 func (r *rotationRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -61,6 +62,11 @@ func (r *rotationRunner) RunInput(_ context.Context, input []byte, name string, 
 	}
 	if r.onInput != nil {
 		if err := r.onInput(string(input)); err != nil {
+			return nil, err
+		}
+	}
+	if r.inputErrAt != nil {
+		if err := r.inputErrAt(len(r.inputs)-1, string(input)); err != nil {
 			return nil, err
 		}
 	}
@@ -183,8 +189,8 @@ func TestRotateDatabaseCredentialsMySQL(t *testing.T) {
 	if !strings.Contains(sql, "ALTER USER 'devstack'@'%' IDENTIFIED BY '"+newSecret+"'") {
 		t.Fatalf("rotation SQL does not set the new password:\n%s", sql)
 	}
-	if !strings.Contains(sql, "FLUSH PRIVILEGES") {
-		t.Fatalf("rotation SQL does not flush privileges:\n%s", sql)
+	if strings.Contains(sql, "FLUSH PRIVILEGES") {
+		t.Fatalf("rotation SQL should not flush privileges for ALTER USER:\n%s", sql)
 	}
 	assertNoSecretInArgv(t, calls, old, newSecret)
 	foundMySQL := false
@@ -289,6 +295,68 @@ func TestRotateDatabaseCredentialsRejectsNonManagedSecret(t *testing.T) {
 	}
 	if _, inputs := runner.snapshot(); len(inputs) != 0 {
 		t.Fatalf("non-managed rotation ran %d commands", len(inputs))
+	}
+}
+
+func TestRotateDatabaseCredentialsRestoresAccountAfterCommandFailure(t *testing.T) {
+	_, store, runner, controller := rotationFixture(t, services.IDMySQL)
+	old := readRotationSecret(t, store, services.IDMySQL)
+	runner.inputErrAt = func(call int, _ string) error {
+		if call == 0 {
+			return errors.New("connection lost after the server applied the statement")
+		}
+		return nil
+	}
+
+	err := controller.RotateCredentials(context.Background(), services.IDMySQL)
+	if err == nil {
+		t.Fatal("RotateCredentials() = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "previous password restored") {
+		t.Fatalf("error = %v, want a restored-password explanation", err)
+	}
+	if got := readRotationSecret(t, store, services.IDMySQL); got != old {
+		t.Fatal("failed rotation changed the stored secret")
+	}
+	_, inputs := runner.snapshot()
+	if len(inputs) != 2 {
+		t.Fatalf("database statements = %d, want update and rollback: %q", len(inputs), inputs)
+	}
+	if !strings.Contains(string(inputs[1]), "IDENTIFIED BY '"+old+"'") {
+		t.Fatalf("rollback statement does not restore the old account password:\n%s", inputs[1])
+	}
+	if strings.Contains(err.Error(), old) {
+		t.Fatal("rotation error leaks the old secret")
+	}
+}
+
+func TestRotateDatabaseCredentialsSurfacesUpdateAndRollbackErrors(t *testing.T) {
+	_, store, runner, controller := rotationFixture(t, services.IDMySQL)
+	old := readRotationSecret(t, store, services.IDMySQL)
+	runner.inputErrAt = func(call int, _ string) error {
+		if call == 0 {
+			return errors.New("update failed")
+		}
+		return errors.New("rollback failed")
+	}
+
+	err := controller.RotateCredentials(context.Background(), services.IDMySQL)
+	if err == nil {
+		t.Fatal("RotateCredentials() = nil, want an error")
+	}
+	for _, want := range []string{"update failed", "rollback failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	}
+	if got := readRotationSecret(t, store, services.IDMySQL); got != old {
+		t.Fatal("failed rotation changed the stored secret")
+	}
+	if _, inputs := runner.snapshot(); len(inputs) != 2 {
+		t.Fatalf("database statements = %d, want update and rollback attempt", len(inputs))
+	}
+	if strings.Contains(err.Error(), old) {
+		t.Fatal("rotation error leaks the old secret")
 	}
 }
 
