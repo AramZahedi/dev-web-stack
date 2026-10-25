@@ -261,6 +261,33 @@ func (m *Manager) service(id services.ID) (services.Service, error) {
 	return svc, nil
 }
 
+// Deactivate stops the target container through the provider-switch path,
+// bypassing the active-server guard because sites.Service has already chosen
+// the explicit Docker -> builtin transition.
+func (m *Manager) StopForProviderSwitch(ctx context.Context, id services.ID) error {
+	svc, err := m.service(id)
+	if err != nil {
+		return err
+	}
+	if err := m.helper.Deactivate(ctx, string(id)); err != nil {
+		return m.recordFailure(ctx, svc, "provider-switch-stop", m.currentActive(ctx, id), helperFailure("deactivate service", err))
+	}
+	return m.persist(ctx, svc, services.StateInstalledButStopped, false, "provider-switch-stop", "")
+}
+
+// StartForProviderSwitch restarts a previously active container when a
+// Docker -> builtin transition fails after the container was stopped.
+func (m *Manager) StartForProviderSwitch(ctx context.Context, id services.ID) error {
+	svc, err := m.service(id)
+	if err != nil {
+		return err
+	}
+	if err := m.helper.Activate(ctx, string(id)); err != nil {
+		return m.recordFailure(ctx, svc, "provider-switch-start", m.currentActive(ctx, id), helperFailure("activate service", err))
+	}
+	return m.persist(ctx, svc, services.StateActive, true, "provider-switch-start", "")
+}
+
 // ServiceValidator is the optional helper capability used by web-server
 // config checks. The P2 helper client exposes Validate and Reload.
 type ServiceValidator interface {

@@ -21,6 +21,7 @@ func main() {
 	httpPort := flag.Int("http", 18080, "HTTP listen port")
 	httpsPort := flag.Int("https", 18443, "HTTPS listen port")
 	phpPort := flag.Int("php", 19000, "PHP-FPM port")
+	nodePort := flag.Int("node", 17073, "Node upstream port")
 	dashboardPort := flag.Int("dashboard", 17070, "dashboard upstream port")
 	mode := flag.String("mode", "htaccess", "htaccess or generated Apache front-controller mode")
 	out := flag.String("out", "", "output directory")
@@ -39,13 +40,24 @@ func main() {
 			ID:                  "laravel",
 			Name:                "laravel",
 			Domain:              "laravel.test",
+			WWW:                 true,
 			Kind:                model.SitePHP,
 			HostDocumentRoot:    filepath.Join(projects, "laravel-min", "public"),
 			BackendPort:         *phpPort,
 			TLS:                 true,
+			ForceHTTPS:          true,
 			FrontController:     true,
 			FrontControllerFile: "index.php",
 			DesiredState:        model.DesiredRunning,
+		},
+		{
+			ID:           "node",
+			Name:         "node",
+			Domain:       "node.test",
+			Kind:         model.SiteNode,
+			BackendPort:  *nodePort,
+			TLS:          true,
+			DesiredState: model.DesiredRunning,
 		},
 		{
 			ID:               "nuxt",

@@ -34,6 +34,11 @@ if (isset($routes[$uri]) && $method === 'GET') {
         'proto' => $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '',
         'host' => $_SERVER['HTTP_X_FORWARDED_HOST'] ?? '',
         'path_info' => $_SERVER['PATH_INFO'] ?? '',
+        'http_host' => $_SERVER['HTTP_HOST'] ?? '',
+        'cookie' => $_SERVER['HTTP_COOKIE'] ?? '',
+        'authorization' => $_SERVER['HTTP_AUTHORIZATION'] ?? '',
+        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+        'accept' => $_SERVER['HTTP_ACCEPT'] ?? '',
     ]);
     exit;
 }

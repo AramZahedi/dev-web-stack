@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/serviceconfig"
@@ -42,10 +44,18 @@ type ManagerConfig struct {
 	Controller   Controller
 	Dashboard    DashboardSpec
 	MaxBodyBytes int64
+	Now          func() time.Time
 	// HTTPListenPort and HTTPSListenPort exist for tests and the Docker smoke
 	// test. Production leaves them zero, which means 80/443.
 	HTTPListenPort  int
 	HTTPSListenPort int
+}
+
+// SyncStatus is the last Docker config sync result exposed to status APIs.
+type SyncStatus struct {
+	LastSync  time.Time
+	ConfigOK  bool
+	LastError string
 }
 
 // ConflictError reports generated vhosts that have local edits and were not
@@ -77,6 +87,12 @@ type Manager struct {
 	maxBody     int64
 	httpPort    int
 	httpsPort   int
+	now         func() time.Time
+
+	mu        sync.Mutex
+	lastSync  time.Time
+	configOK  bool
+	lastError string
 }
 
 // NewManager validates the root layout and returns a Manager.
@@ -116,6 +132,10 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		maxBody:     cfg.MaxBodyBytes,
 		httpPort:    cfg.HTTPListenPort,
 		httpsPort:   cfg.HTTPSListenPort,
+		now:         cfg.Now,
+	}
+	if m.now == nil {
+		m.now = time.Now
 	}
 	if m.maxBody == 0 {
 		m.maxBody = defaultMaxBodyBytes
@@ -187,7 +207,8 @@ func (m *Manager) EnsureBase(server Server) error {
 // Sync renders the dashboard and site vhosts, tracks them in the service
 // config manifest, and removes stale unmodified generated files. A modified
 // generated file is reported as a ConflictError and left in place.
-func (m *Manager) Sync(ctx context.Context, server Server) error {
+func (m *Manager) Sync(ctx context.Context, server Server) (err error) {
+	defer func() { m.recordStatus(err) }()
 	if err := server.Validate(); err != nil {
 		return err
 	}
@@ -382,6 +403,39 @@ func siteDomains(site model.Site) []string {
 		domains = append(domains, "www."+primary)
 	}
 	return domains
+}
+
+// Status returns the last config sync result.
+func (m *Manager) Status() SyncStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return SyncStatus{
+		LastSync:  m.lastSync,
+		ConfigOK:  m.configOK,
+		LastError: m.lastError,
+	}
+}
+
+// DockerStatus exposes the same result through the sites status boundary
+// without importing the sites package.
+func (m *Manager) DockerStatus() (time.Time, bool, string) {
+	status := m.Status()
+	return status.LastSync, status.ConfigOK, status.LastError
+}
+
+func (m *Manager) recordStatus(err error) {
+	status := SyncStatus{
+		LastSync: m.now().UTC(),
+		ConfigOK: err == nil,
+	}
+	if err != nil {
+		status.LastError = err.Error()
+	}
+	m.mu.Lock()
+	m.lastSync = status.LastSync
+	m.configOK = status.ConfigOK
+	m.lastError = status.LastError
+	m.mu.Unlock()
 }
 
 // Validate runs the catalog validation command inside the active container.

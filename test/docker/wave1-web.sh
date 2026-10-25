@@ -31,7 +31,7 @@ cd "$REPO_ROOT"
 
 NGINX_IMAGE="mirror.gcr.io/library/nginx:1.30.6@sha256:a7675fcee220f59b4a99f7098c06a0d5d999c2c0ee37c0211efb780536e5cb20"
 APACHE_IMAGE="mirror.gcr.io/library/httpd:2.4.69@sha256:a30cd4cd57f3f3c3be9b2d16384d2488839996bb14c67df2b51f1ecbb3e584a1"
-PHP_IMAGE="${PHP_IMAGE:-mirror.gcr.io/library/php:8.4-fpm}"
+PHP_IMAGE="${PHP_IMAGE:-mirror.gcr.io/library/php:8.4-fpm}"  # test-only dependency; catalog pins only web servers
 
 pick_port() {
   python3 - <<'PY'
@@ -46,6 +46,7 @@ PY
 HTTP_PORT="${WAVE1_HTTP_PORT:-$(pick_port)}"
 HTTPS_PORT="${WAVE1_HTTPS_PORT:-$(pick_port)}"
 PHP_PORT="${WAVE1_PHP_PORT:-$(pick_port)}"
+NODE_PORT="${WAVE1_NODE_PORT:-$(pick_port)}"
 DASH_PORT="${WAVE1_DASH_PORT:-$(pick_port)}"
 
 ROOT="$(mktemp -d /tmp/devstack-wave1-web.XXXXXX)"
@@ -54,29 +55,34 @@ NGINX_NAME="$PREFIX-nginx"
 APACHE_NAME="$PREFIX-apache"
 PHP_NAME="$PREFIX-php"
 DASH_PID=""
+NODE_PID=""
 
 cleanup() {
   docker rm -f "$NGINX_NAME" "$APACHE_NAME" "$PHP_NAME" >/dev/null 2>&1 || true
   if [[ -n "$DASH_PID" ]]; then
     kill "$DASH_PID" >/dev/null 2>&1 || true
   fi
+  if [[ -n "$NODE_PID" ]]; then
+    kill "$NODE_PID" >/dev/null 2>&1 || true
+  fi
   rm -rf "$ROOT"
 }
 trap cleanup EXIT
 
-mkdir -p "$ROOT/projects" "$ROOT/certs" "$ROOT/dashboard"
+mkdir -p "$ROOT/projects" "$ROOT/certs" "$ROOT/dashboard" "$ROOT/node"
 cp -a test/fixtures/laravel-min "$ROOT/projects/"
 cp -a test/fixtures/nuxt-static "$ROOT/projects/"
 mkdir -p "$ROOT/projects/stopped"
 printf 'stopped fixture\n' >"$ROOT/projects/stopped/index.html"
 printf 'dashboard-ok\n' >"$ROOT/dashboard/index.html"
+printf 'node-ok\n' >"$ROOT/node/index.html"
 chmod -R a+rX "$ROOT"
 
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
   -subj "/CN=devstack.test" \
-  -addext "subjectAltName=DNS:devstack.test,DNS:laravel.test,DNS:nuxt.test,DNS:stopped.test" \
+  -addext "subjectAltName=DNS:devstack.test,DNS:laravel.test,DNS:www.laravel.test,DNS:node.test,DNS:nuxt.test,DNS:stopped.test" \
   -keyout "$ROOT/certs/__dashboard__.key" -out "$ROOT/certs/__dashboard__.crt" >/dev/null 2>&1
-for name in laravel nuxt stopped; do
+for name in laravel node nuxt stopped; do
   cp "$ROOT/certs/__dashboard__.crt" "$ROOT/certs/$name.crt"
   cp "$ROOT/certs/__dashboard__.key" "$ROOT/certs/$name.key"
 done
@@ -175,6 +181,15 @@ assert_absent_header() {
   fi
 }
 
+assert_header_contains() {
+  local header="$1" want="$2" label="$3"
+  if ! grep -i "^$header:" "$HEADERS" | grep -qF -- "$want"; then
+    echo "--- headers ($label) ---" >&2
+    cat "$HEADERS" >&2 || true
+    fail "$label: missing $header containing $want"
+  fi
+}
+
 url_for() {
   local host="$1" path="$2"
   printf 'https://%s:%s%s' "$host" "$HTTPS_PORT" "$path"
@@ -190,12 +205,17 @@ resolve_args() {
   printf -- '--resolve %s:%s:127.0.0.1' "$host" "$HTTPS_PORT"
 }
 
+resolve_http_args() {
+  local host="$1"
+  printf -- '--resolve %s:%s:127.0.0.1' "$host" "$HTTP_PORT"
+}
+
 render_config() {
   local server="$1" mode="$2" out="$3"
   go run ./test/docker/render_fixture.go \
     -server "$server" -mode "$mode" -root "$ROOT" -out "$out" \
     -http "$HTTP_PORT" -https "$HTTPS_PORT" \
-    -php "$PHP_PORT" -dashboard "$DASH_PORT"
+    -php "$PHP_PORT" -node "$NODE_PORT" -dashboard "$DASH_PORT"
 }
 
 nginx_mounts() {
@@ -265,11 +285,32 @@ exercise_laravel() {
   local label="$1"
   local args
   IFS=' ' read -r -a args <<<"$(resolve_args laravel.test)"
+  local http_args
+  IFS=' ' read -r -a http_args <<<"$(resolve_http_args laravel.test)"
 
-  assert_status 200 "$(request "$(url_for laravel.test /)" "${args[@]}")" "$label laravel root"
+  local header_args=(-H 'Cookie: smoke=1' -H 'User-Agent: devstack-smoke' -H 'Accept: application/json')
+  if [[ "$label" == nginx* ]]; then
+    header_args+=(-H 'Authorization: Bearer smoke-token')
+  fi
+
+  assert_status 308 "$(request "$(http_url_for laravel.test /)" "${http_args[@]}")" "$label laravel force HTTPS"
+  assert_header_contains "Location" "https://laravel.test:$HTTPS_PORT/" "$label laravel force HTTPS"
+
+  assert_status 200 "$(request "$(url_for laravel.test /)" "${args[@]}" "${header_args[@]}")" "$label laravel root"
   assert_contains "$BODY" '"route":"root"' "$label laravel root"
   assert_contains "$BODY" '"proto":"https"' "$label laravel forwarded proto"
+  assert_contains "$BODY" '"cookie":"smoke=1"' "$label laravel cookie header"
+  assert_contains "$BODY" '"user_agent":"devstack-smoke"' "$label laravel user-agent header"
+  assert_contains "$BODY" '"accept":"application\/json"' "$label laravel accept header"
+  if [[ "$label" == nginx* ]]; then
+    assert_contains "$BODY" '"authorization":"Bearer smoke-token"' "$label laravel authorization header"
+  fi
   assert_absent_header "Strict-Transport-Security" "$label laravel HSTS"
+
+  local www_args
+  IFS=' ' read -r -a www_args <<<"$(resolve_args www.laravel.test)"
+  assert_status 200 "$(request "$(url_for www.laravel.test /)" "${www_args[@]}")" "$label laravel www alias"
+  assert_contains "$BODY" '"route":"root"' "$label laravel www route"
 
   assert_status 200 "$(request "$(url_for laravel.test '/deep/path?x=1&y=two')" "${args[@]}")" "$label laravel deep"
   assert_contains "$BODY" '"route":"deep"' "$label laravel deep route"
@@ -321,18 +362,34 @@ exercise_static_and_dashboard() {
   IFS=' ' read -r -a args <<<"$(resolve_args devstack.test)"
   assert_status 200 "$(request "$(url_for devstack.test /)" "${args[@]}")" "$label dashboard"
   assert_contains "$BODY" 'dashboard-ok' "$label dashboard upstream"
+
+  IFS=' ' read -r -a args <<<"$(resolve_args unknown.test)"
+  assert_status 404 "$(request "$(url_for unknown.test /)" "${args[@]}")" "$label default 404"
+  assert_contains "$BODY" 'Site not found' "$label default 404 body"
+}
+
+exercise_node() {
+  local label="$1"
+  local args
+  IFS=' ' read -r -a args <<<"$(resolve_args node.test)"
+  assert_status 200 "$(request "$(url_for node.test /)" "${args[@]}")" "$label node proxy"
+  assert_contains "$BODY" 'node-ok' "$label node upstream"
 }
 
 start_php
 python3 -m http.server "$DASH_PORT" --bind 127.0.0.1 --directory "$ROOT/dashboard" >/dev/null 2>&1 &
 DASH_PID=$!
+python3 -m http.server "$NODE_PORT" --bind 127.0.0.1 --directory "$ROOT/node" >/dev/null 2>&1 &
+NODE_PID=$!
 wait_port "$DASH_PORT" || fail "dashboard responder did not start"
+wait_port "$NODE_PORT" || fail "node upstream responder did not start"
 
 NGINX_CFG="$ROOT/nginx"
 render_config nginx auto "$NGINX_CFG"
 start_nginx "$NGINX_CFG"
 exercise_laravel "nginx"
 exercise_static_and_dashboard "nginx"
+exercise_node "nginx"
 stop_nginx
 echo "ok: nginx static/PHP/Node paths, TLS, dashboard, SPA, 503"
 
@@ -341,6 +398,7 @@ render_config apache htaccess "$APACHE_CFG"
 start_apache "$APACHE_CFG"
 exercise_laravel "apache-htaccess"
 exercise_static_and_dashboard "apache-htaccess"
+exercise_node "apache-htaccess"
 stop_apache
 echo "ok: apache .htaccess front controller"
 

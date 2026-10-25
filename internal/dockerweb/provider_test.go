@@ -59,6 +59,20 @@ func (f *fakeSyncer) Sync(_ context.Context, server Server) error {
 	return f.syncErr
 }
 
+type fakePortProbe struct {
+	busy  map[int]bool
+	err   error
+	calls []int
+}
+
+func (f *fakePortProbe) InUse(_ context.Context, port int) (bool, error) {
+	f.calls = append(f.calls, port)
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.busy[port], nil
+}
+
 type fakeWebServices struct {
 	activated     []string
 	deactivated   []string
@@ -114,7 +128,7 @@ func newProviderFixture(t *testing.T) (*Provider, *fakeServingState, *fakeBuilti
 
 func TestProviderPrepareStopsBuiltinAndSyncs(t *testing.T) {
 	provider, state, builtin, syncer, _ := newProviderFixture(t)
-	if err := provider.Prepare(context.Background(), ServerNginx); err != nil {
+	if err := provider.Prepare(context.Background(), string(ServerNginx)); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if len(builtin.stopped) != 1 {
@@ -135,7 +149,7 @@ func TestProviderPrepareRefusesActiveNativeExternalServer(t *testing.T) {
 	provider, state, builtin, _, _ := newProviderFixture(t)
 	state.mode = "nginx"
 	state.provider = "native"
-	err := provider.Prepare(context.Background(), ServerApache)
+	err := provider.Prepare(context.Background(), string(ServerApache))
 	if err == nil {
 		t.Fatal("expected a native server conflict")
 	}
@@ -150,24 +164,24 @@ func TestProviderPrepareRefusesActiveNativeExternalServer(t *testing.T) {
 func TestProviderPrepareSyncFailureRestoresBuiltin(t *testing.T) {
 	provider, _, builtin, syncer, _ := newProviderFixture(t)
 	syncer.syncErr = errors.New("render failed")
-	err := provider.Prepare(context.Background(), ServerNginx)
+	err := provider.Prepare(context.Background(), string(ServerNginx))
 	if err == nil {
 		t.Fatal("expected sync failure")
 	}
 	if len(builtin.stopped) != 1 || len(builtin.started) != 1 {
 		t.Fatalf("builtin calls stop=%v start=%v, want one each", builtin.stopped, builtin.started)
 	}
-	if err := provider.Commit(context.Background(), ServerNginx); err == nil {
+	if err := provider.Commit(context.Background(), string(ServerNginx)); err == nil {
 		t.Fatal("Commit after failed Prepare must fail")
 	}
 }
 
 func TestProviderCommitValidatesSavesAndReloads(t *testing.T) {
 	provider, state, _, _, services := newProviderFixture(t)
-	if err := provider.Prepare(context.Background(), ServerApache); err != nil {
+	if err := provider.Prepare(context.Background(), string(ServerApache)); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.Commit(context.Background(), ServerApache); err != nil {
+	if err := provider.Commit(context.Background(), string(ServerApache)); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	if len(services.validated) != 1 || services.validated[0] != "apache" {
@@ -184,10 +198,10 @@ func TestProviderCommitValidatesSavesAndReloads(t *testing.T) {
 func TestProviderCommitValidationFailureRollsBack(t *testing.T) {
 	provider, state, builtin, _, services := newProviderFixture(t)
 	services.validateErr = errors.New("apache config broken")
-	if err := provider.Prepare(context.Background(), ServerApache); err != nil {
+	if err := provider.Prepare(context.Background(), string(ServerApache)); err != nil {
 		t.Fatal(err)
 	}
-	err := provider.Commit(context.Background(), ServerApache)
+	err := provider.Commit(context.Background(), string(ServerApache))
 	if err == nil {
 		t.Fatal("expected validation failure")
 	}
@@ -205,10 +219,10 @@ func TestProviderCommitValidationFailureRollsBack(t *testing.T) {
 func TestProviderCommitStateSaveFailureRollsBack(t *testing.T) {
 	provider, state, _, _, services := newProviderFixture(t)
 	state.saveErr = errors.New("disk full")
-	if err := provider.Prepare(context.Background(), ServerNginx); err != nil {
+	if err := provider.Prepare(context.Background(), string(ServerNginx)); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.Commit(context.Background(), ServerNginx); err == nil {
+	if err := provider.Commit(context.Background(), string(ServerNginx)); err == nil {
 		t.Fatal("expected state save failure")
 	}
 	if len(services.deactivated) != 1 {
@@ -219,7 +233,7 @@ func TestProviderCommitStateSaveFailureRollsBack(t *testing.T) {
 func TestProviderPrepareStopFailureRestoresBuiltin(t *testing.T) {
 	provider, _, builtin, _, _ := newProviderFixture(t)
 	builtin.stopErr = errors.New("proxy still running")
-	if err := provider.Prepare(context.Background(), ServerNginx); err == nil {
+	if err := provider.Prepare(context.Background(), string(ServerNginx)); err == nil {
 		t.Fatal("expected stop failure")
 	}
 	if len(builtin.started) != 1 {
@@ -230,10 +244,10 @@ func TestProviderPrepareStopFailureRestoresBuiltin(t *testing.T) {
 func TestProviderCommitReloadFailureRollsBack(t *testing.T) {
 	provider, state, builtin, _, services := newProviderFixture(t)
 	services.reloadErr = errors.New("reload failed")
-	if err := provider.Prepare(context.Background(), ServerNginx); err != nil {
+	if err := provider.Prepare(context.Background(), string(ServerNginx)); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.Commit(context.Background(), ServerNginx); err == nil {
+	if err := provider.Commit(context.Background(), string(ServerNginx)); err == nil {
 		t.Fatal("expected reload failure")
 	}
 	if len(services.deactivated) != 1 || services.deactivated[0] != "nginx" {
@@ -251,7 +265,7 @@ func TestProviderRollbackRestoresPreviousDockerServer(t *testing.T) {
 	provider, state, builtin, syncer, services := newProviderFixture(t)
 	state.mode = "nginx"
 	state.provider = "docker"
-	if err := provider.Prepare(context.Background(), ServerApache); err != nil {
+	if err := provider.Prepare(context.Background(), string(ServerApache)); err != nil {
 		t.Fatal(err)
 	}
 	services.activated = nil
@@ -275,7 +289,7 @@ func TestProviderRollbackRestoresPreviousDockerServer(t *testing.T) {
 
 func TestProviderRollbackRestoresBuiltin(t *testing.T) {
 	provider, state, builtin, _, services := newProviderFixture(t)
-	if err := provider.Prepare(context.Background(), ServerNginx); err != nil {
+	if err := provider.Prepare(context.Background(), string(ServerNginx)); err != nil {
 		t.Fatal(err)
 	}
 	if err := provider.Rollback(context.Background()); err != nil {
@@ -292,16 +306,50 @@ func TestProviderRollbackRestoresBuiltin(t *testing.T) {
 	}
 }
 
-func TestProviderRejectsUnknownServer(t *testing.T) {
+func TestProviderPrepareRejectsOccupiedPortBeforeSync(t *testing.T) {
+	state := &fakeServingState{mode: "builtin", provider: "native"}
+	builtin := &fakeBuiltin{}
+	syncer := &fakeSyncer{}
+	services := &fakeWebServices{}
+	probe := &fakePortProbe{busy: map[int]bool{443: true}}
+	provider, err := NewProvider(ProviderConfig{
+		State:    state,
+		Builtin:  builtin,
+		Syncer:   syncer,
+		Services: services,
+		Probe:    probe,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	err = provider.Prepare(context.Background(), string(ServerNginx))
+	if err == nil {
+		t.Fatal("expected a native server conflict when 443 is occupied")
+	}
+	if !strings.Contains(err.Error(), "443") || !strings.Contains(strings.ToLower(err.Error()), "native") {
+		t.Fatalf("error = %v, want a clear native 443 conflict", err)
+	}
+	if len(builtin.started) != 1 {
+		t.Fatalf("builtin starts = %v, want restore after conflict", builtin.started)
+	}
+	if len(syncer.ensured) != 0 || len(syncer.synced) != 0 {
+		t.Fatal("config must not be rendered while 80/443 is owned by a native server")
+	}
+	if probe.calls[0] != 80 || probe.calls[1] != 443 {
+		t.Fatalf("probe calls = %v, want 80 then 443", probe.calls)
+	}
+}
+
+func TestProviderPrepareRejectsUnknownServer(t *testing.T) {
 	provider, _, _, _, _ := newProviderFixture(t)
-	if err := provider.Prepare(context.Background(), Server("caddy")); err == nil {
+	if err := provider.Prepare(context.Background(), "caddy"); err == nil {
 		t.Fatal("expected unsupported server error")
 	}
 }
 
 func TestProviderCommitRequiresPrepare(t *testing.T) {
 	provider, _, _, _, _ := newProviderFixture(t)
-	if err := provider.Commit(context.Background(), ServerNginx); err == nil {
+	if err := provider.Commit(context.Background(), string(ServerNginx)); err == nil {
 		t.Fatal("expected commit-without-prepare error")
 	}
 }

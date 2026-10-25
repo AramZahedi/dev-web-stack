@@ -6,8 +6,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
+	"github.com/AramZahedi/dev-web-stack/internal/sites"
 )
+
+// Compile-time integration contracts used by the daemon sequence.
+var _ WebLifecycle = (*dockerweb.Provider)(nil)
+var _ sites.DockerSwitch = (*WebSwitch)(nil)
 
 // ErrWebServerActive reports that the active Docker web server cannot be
 // deactivated or uninstalled until the serving provider changes.
@@ -252,4 +258,55 @@ func webServerName(id services.ID) (string, error) {
 	default:
 		return "", fmt.Errorf("%w: %q is not a web server", services.ErrNotFound, id)
 	}
+}
+
+// WebSwitchManager is the explicit provider-switch subset that bypasses the
+// active-server deactivation guard.
+type WebSwitchManager interface {
+	StopForProviderSwitch(ctx context.Context, id services.ID) error
+	StartForProviderSwitch(ctx context.Context, id services.ID) error
+}
+
+// WebSwitch adapts the P3 manager for the documented Docker -> builtin
+// transition. It is the only path allowed to stop the active Docker web
+// server without tripping WebGuard.
+type WebSwitch struct {
+	manager WebSwitchManager
+}
+
+// NewWebSwitch returns an unbound provider-switch adapter. Bind it after the
+// P3 manager is constructed.
+func NewWebSwitch(manager WebSwitchManager) *WebSwitch {
+	return &WebSwitch{manager: manager}
+}
+
+// Bind attaches the P3 manager after construction.
+func (w *WebSwitch) Bind(manager WebSwitchManager) {
+	w.manager = manager
+}
+
+// StopActiveServer stops the active web container through the explicit switch
+// path.
+func (w *WebSwitch) StopActiveServer(ctx context.Context, server string) error {
+	id, err := webServiceID(server)
+	if err != nil {
+		return err
+	}
+	if w.manager == nil {
+		return errors.New("servicecontrol: web service manager is not bound")
+	}
+	return w.manager.StopForProviderSwitch(ctx, id)
+}
+
+// StartActiveServer restarts a previously active web container when the
+// builtin restore fails.
+func (w *WebSwitch) StartActiveServer(ctx context.Context, server string) error {
+	id, err := webServiceID(server)
+	if err != nil {
+		return err
+	}
+	if w.manager == nil {
+		return errors.New("servicecontrol: web service manager is not bound")
+	}
+	return w.manager.StartForProviderSwitch(ctx, id)
 }

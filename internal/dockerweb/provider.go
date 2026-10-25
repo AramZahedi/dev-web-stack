@@ -4,9 +4,40 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
+	"time"
 )
+
+// PortProbe checks whether a loopback TCP port is already accepting
+// connections. The Docker provider uses it after stopping the builtin
+// forwarders to detect a native nginx/Apache server that still owns 80/443.
+type PortProbe interface {
+	InUse(ctx context.Context, port int) (bool, error)
+}
+
+// LoopbackPortProbe is the production port probe. A successful loopback
+// connection means another process owns the port; connection failures mean it
+// is free.
+type LoopbackPortProbe struct {
+	Timeout time.Duration
+}
+
+// InUse implements PortProbe.
+func (p LoopbackPortProbe) InUse(ctx context.Context, port int) (bool, error) {
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 250 * time.Millisecond
+	}
+	dialer := net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return false, nil
+	}
+	_ = conn.Close()
+	return true, nil
+}
 
 // BuiltinControl stops and restores the native builtin proxy and privileged
 // 80/443 forwarders. sites.Service implements it.
@@ -44,6 +75,7 @@ type ProviderConfig struct {
 	Builtin  BuiltinControl
 	Syncer   Syncer
 	Services ServiceControl
+	Probe    PortProbe
 }
 
 // Provider performs the transactional serving-provider switch:
@@ -54,10 +86,11 @@ type Provider struct {
 	builtin  BuiltinControl
 	syncer   Syncer
 	services ServiceControl
+	probe    PortProbe
 
 	mu           sync.Mutex
 	prepared     bool
-	server       Server
+	server       string
 	prevMode     string
 	prevProvider string
 }
@@ -81,6 +114,7 @@ func NewProvider(cfg ProviderConfig) (*Provider, error) {
 		builtin:  cfg.Builtin,
 		syncer:   cfg.Syncer,
 		services: cfg.Services,
+		probe:    cfg.Probe,
 	}, nil
 }
 
@@ -97,8 +131,9 @@ func (p *Provider) EnsureBase(server string) error {
 // Prepare stops the builtin proxy/forwarders and renders the complete Docker
 // config set. It refuses to displace a native external server and restores the
 // builtin runtime if any step fails.
-func (p *Provider) Prepare(ctx context.Context, server Server) error {
-	if err := server.Validate(); err != nil {
+func (p *Provider) Prepare(ctx context.Context, serverName string) error {
+	server, err := parseServer(serverName)
+	if err != nil {
 		return err
 	}
 	p.mu.Lock()
@@ -133,6 +168,9 @@ func (p *Provider) Prepare(ctx context.Context, server Server) error {
 		}
 		return cause
 	}
+	if err := p.checkPorts(ctx, server); err != nil {
+		return fail(err)
+	}
 	if err := p.syncer.EnsureBase(server); err != nil {
 		return fail(fmt.Errorf("dockerweb: ensure %s base configuration: %w", server, err))
 	}
@@ -142,24 +180,41 @@ func (p *Provider) Prepare(ctx context.Context, server Server) error {
 
 	p.mu.Lock()
 	p.prepared = true
-	p.server = server
+	p.server = string(server)
 	p.prevMode = mode
 	p.prevProvider = provider
 	p.mu.Unlock()
 	return nil
 }
 
+func (p *Provider) checkPorts(ctx context.Context, server Server) error {
+	if p.probe == nil {
+		return nil
+	}
+	for _, port := range []int{80, 443} {
+		busy, err := p.probe.InUse(ctx, port)
+		if err != nil {
+			return fmt.Errorf("dockerweb: probe port %d: %w", port, err)
+		}
+		if busy {
+			return fmt.Errorf("dockerweb: port %d is still in use after stopping the builtin forwarders; stop any native nginx/Apache server before activating the Docker %s container", port, server)
+		}
+	}
+	return nil
+}
+
 // Commit validates the started container, persists serving_mode/serving_provider,
 // and reloads. Any failure rolls the whole transition back.
-func (p *Provider) Commit(ctx context.Context, server Server) error {
-	if err := server.Validate(); err != nil {
+func (p *Provider) Commit(ctx context.Context, serverName string) error {
+	server, err := parseServer(serverName)
+	if err != nil {
 		return err
 	}
 	p.mu.Lock()
 	prepared := p.prepared
 	preparedServer := p.server
 	p.mu.Unlock()
-	if !prepared || preparedServer != server {
+	if !prepared || preparedServer != string(server) {
 		return fmt.Errorf("dockerweb: commit %s without a matching prepare", server)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
@@ -73,6 +74,7 @@ type managerFixture struct {
 	certs *fakeCertManager
 	ctrl  *fakeController
 	mgr   *Manager
+	now   time.Time
 }
 
 func newManagerFixture(t *testing.T) *managerFixture {
@@ -91,6 +93,7 @@ func newManagerFixture(t *testing.T) *managerFixture {
 		store: &fakeSiteStore{},
 		certs: &fakeCertManager{dir: certDir, err: map[string]error{}},
 		ctrl:  &fakeController{},
+		now:   time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC),
 	}
 	mgr, err := NewManager(ManagerConfig{
 		Root:         root,
@@ -99,6 +102,7 @@ func newManagerFixture(t *testing.T) *managerFixture {
 		Controller:   f.ctrl,
 		Dashboard:    DashboardSpec{Domain: "devstack.test", UIPort: 7070},
 		MaxBodyBytes: 64 << 20,
+		Now:          func() time.Time { return f.now },
 	})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -336,6 +340,41 @@ func TestManagerSyncSkipsCertFailureForNonTLSSite(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "/certs/__dashboard__.crt") {
 		t.Errorf("non-TLS site should fall back to the dashboard certificate\n%s", data)
+	}
+}
+
+func TestManagerStatusReportsSuccessAndConflict(t *testing.T) {
+	f := newManagerFixture(t)
+	site := f.addStaticSite(t, "app", "app", "app")
+	if err := f.mgr.Sync(context.Background(), ServerNginx); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	status := f.mgr.Status()
+	if !status.ConfigOK {
+		t.Fatalf("status after successful sync = %+v, want ConfigOK", status)
+	}
+	if !status.LastSync.Equal(f.now) {
+		t.Fatalf("LastSync = %v, want %v", status.LastSync, f.now)
+	}
+	if status.LastError != "" {
+		t.Fatalf("LastError = %q, want empty", status.LastError)
+	}
+
+	generated := filepath.Join(f.root, "services", "nginx", "config", "conf.d", "generated", "app.conf")
+	if err := os.WriteFile(generated, []byte("# local edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.store.sites[0] = site
+	f.store.sites[0].Domain = "changed.test"
+	if err := f.mgr.Sync(context.Background(), ServerNginx); err == nil {
+		t.Fatal("expected conflict")
+	}
+	status = f.mgr.Status()
+	if status.ConfigOK {
+		t.Fatalf("status after conflict = %+v, want ConfigOK=false", status)
+	}
+	if !strings.Contains(status.LastError, "app.conf") {
+		t.Fatalf("LastError = %q, want the conflicted path", status.LastError)
 	}
 }
 
