@@ -1617,6 +1617,253 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/services/{id}/config:
+    get:
+      tags: [services]
+      summary: List service config file metadata
+      description: |
+        Returns path, class, generated/modified/detached markers, hash, size,
+        and conflict summary for every allowed regular file under
+        `<home>/services/<id>/config`. Contents are never included.
+      operationId: listServiceConfig
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      responses:
+        "200":
+          description: Config file metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigListing"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The service is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/services/{id}/config/content:
+    get:
+      tags: [services]
+      summary: Read one service config file
+      description: |
+        Returns content only for a config file inside the service config root.
+        Path traversal, absolute paths, symlinks, non-regular files, sensitive
+        names, and files over 1 MiB are rejected.
+      operationId: getServiceConfigContent
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+        - name: path
+          in: query
+          required: true
+          description: Slash-relative path below the service config root.
+          schema:
+            type: string
+            examples: ["nginx.conf", "conf.d/custom/extra.conf"]
+      responses:
+        "200":
+          description: The allowed file and its content.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigContent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The service is not installed or the path is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The file exceeds the 1 MiB config limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/services/{id}/config/diff:
+    post:
+      tags: [services]
+      summary: Diff a proposed service config change
+      description: |
+        Returns a unified diff plus conflict metadata. A tracked generated file
+        whose current hash differs from the manifest reports
+        `conflict.resolution_required: true`.
+      operationId: diffServiceConfig
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceConfigDiffRequest"
+      responses:
+        "200":
+          description: The unified diff and conflict metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigDiff"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The service is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The proposed content exceeds the 1 MiB config limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/services/{id}/config/apply:
+    post:
+      tags: [services]
+      summary: Apply a service config change
+      description: |
+        Backs up the current file, writes atomically, and tracks conflicts.
+        A tracked generated conflict requires `resolution` keep, use, or merge.
+        An active service with a catalog validation command is validated first
+        and reloaded only after validation; validation or reload failure
+        restores the previous file. Inactive services are marked
+        `validation_pending` and never reported live.
+      operationId: applyServiceConfig
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceConfigApplyRequest"
+      responses:
+        "200":
+          description: The write outcome, backup, and live/validation state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigApplyResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            A tracked config conflict requires keep/use/merge, or the service
+            is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The content exceeds the 1 MiB config limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The catalog validation command rejected the new config; the previous file was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The service reload failed; the previous file was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperUnavailable"
+
+  /api/v1/services/{id}/config/reset:
+    post:
+      tags: [services]
+      summary: Reset a service config file from its newest backup
+      description: |
+        Backs up the current file and restores the newest previous backup. An
+        untracked custom file is never deleted without a backup.
+      operationId: resetServiceConfig
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceConfigResetRequest"
+      responses:
+        "200":
+          description: The reset outcome, backup, and live/validation state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigApplyResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: No previous backup exists, or the service is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed; the current file was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Reload failed; the current file was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperUnavailable"
+
   /:
     get:
       tags: [dashboard]
@@ -2633,6 +2880,171 @@ components:
           type: string
         port:
           type: integer
+
+    ServiceConfigConflict:
+      type: object
+      required: [active, resolution_required]
+      properties:
+        active:
+          type: boolean
+        resolution_required:
+          type: boolean
+        reason:
+          type: string
+        allowed_resolutions:
+          type: array
+          items:
+            type: string
+            enum: [keep, use, merge]
+
+    ServiceConfigFile:
+      type: object
+      required: [path, class, generated, modified, detached, hash, size, conflict]
+      properties:
+        path:
+          type: string
+        class:
+          type: string
+          enum: [base, generated, custom]
+        generated:
+          type: boolean
+        modified:
+          type: boolean
+        detached:
+          type: boolean
+        hash:
+          type: string
+        size:
+          type: integer
+          format: int64
+        conflict:
+          $ref: "#/components/schemas/ServiceConfigConflict"
+
+    ServiceConfigListing:
+      type: object
+      required: [service, files]
+      properties:
+        service:
+          type: string
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceConfigFile"
+
+    ServiceConfigContent:
+      allOf:
+        - $ref: "#/components/schemas/ServiceConfigFile"
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: string
+
+    ServiceConfigDiffRequest:
+      type: object
+      required: [path, content]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+
+    ServiceConfigDiff:
+      type: object
+      required: [path, diff, current_hash, proposed_hash, current_size, proposed_size, status, conflict]
+      properties:
+        path:
+          type: string
+        diff:
+          type: string
+        current_hash:
+          type: string
+        proposed_hash:
+          type: string
+        current_size:
+          type: integer
+          format: int64
+        proposed_size:
+          type: integer
+          format: int64
+        status:
+          $ref: "#/components/schemas/ServiceConfigFile"
+        conflict:
+          $ref: "#/components/schemas/ServiceConfigConflict"
+
+    ServiceConfigApplyRequest:
+      type: object
+      required: [path, content]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        resolution:
+          type: string
+          enum: [keep, use, merge]
+
+    ServiceConfigResetRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+
+    ServiceConfigApplyResult:
+      type: object
+      required:
+        - service
+        - path
+        - action
+        - changed
+        - detached
+        - hash
+        - size
+        - active
+        - live
+        - reloaded
+        - validation_pending
+        - restart_required
+        - rolled_back
+      properties:
+        service:
+          type: string
+        path:
+          type: string
+        action:
+          type: string
+          enum: [apply, reset]
+        changed:
+          type: boolean
+        resolution:
+          type: string
+        backup_path:
+          type: string
+        restored_from:
+          type: string
+        detached:
+          type: boolean
+        hash:
+          type: string
+        size:
+          type: integer
+          format: int64
+        active:
+          type: boolean
+        live:
+          type: boolean
+          description: True only after a successful validation and reload of an active service.
+        reloaded:
+          type: boolean
+        validation_pending:
+          type: boolean
+        restart_required:
+          type: boolean
+        rolled_back:
+          type: boolean
+        message:
+          type: string
 
     ServiceView:
       type: object
