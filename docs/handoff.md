@@ -4,9 +4,10 @@
 - **Repository:** `https://github.com/AramZahedi/dev-web-stack`
 - **Handoff commit:** the commit containing this file; run `git rev-parse HEAD` for the exact SHA.
 - **Branch:** `master`
-- **Product status:** Linux M1 released as `v0.1.0`; the managed Docker service platform is
-  designed and approved for implementation, but **not implemented**.
-- **Next step:** execute Wave 0 using the kickoff and foundation plan links below.
+- **Product status:** Linux M1 released as `v0.1.0`; Wave 0 (Service Platform Foundation, tasks F1–F6) is fully implemented, verified, and merged.
+- **Wave 0 Merge SHA:** `04d1a2d5f111b33995961a90b19cf8df6abaa489`
+- **Wave 0 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40200118349` (green)
+- **Next step:** User review and Wave 1 planning.
 
 This is the continue-on-another-machine document. Read it first, then
 [architecture](architecture.md), [requirements](requirements.md), [decisions](decisions.md),
@@ -25,6 +26,7 @@ and the [service-platform design](superpowers/specs/2026-10-25-service-container
 - SQLite state, migrations, backups before migration.
 - Checksummed unsigned Linux release, installer, upgrade path.
 - Existing tests and CI pass for M1.
+- Wave 0 Foundation (tasks F1–F6): root layout/permissions (`/data/devstack`), service catalog & state store with SQLite migration `0004_services.sql`, config manifest/diff/backup/conflict engine, Compose rendering & fixed privileged helper control plane, site config contracts & build profiles with SQLite migration `0005_site_contracts.sql`, and read-only service API/CLI/UI skeleton.
 
 The old standalone devstack-in-Docker image is **retired**. It was removed from the repo
 and reference machine on 2026-10-25. Docker is reserved for the planned separate service
@@ -238,7 +240,8 @@ make release-test
 
 ## 10. Open items for the next agent
 
-- Execute Wave 0.
+- Wave 0 foundation (F1–F6) is complete and verified green on CI.
+- Review Wave 0 implementation and proceed with Wave 1 planning.
 - Choose the open implementation details listed in the design §20 and decisions §4.
 - Run the manual Linux M1 gates if claiming full M1.
 - Do not start Windows/WSL, arm64, signed packages, auto-update, or M4 work.
