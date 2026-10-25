@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
@@ -30,6 +31,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 )
 
@@ -297,6 +299,78 @@ func (c *Client) SiteAction(ctx context.Context, ref, action string) error {
 		return fmt.Errorf("client: unsupported site action %q", action)
 	}
 	return c.doJSON(ctx, http.MethodPost, "/api/v1/sites/"+url.PathEscape(ref)+"/"+action, nil, nil)
+}
+
+// BuildSite runs a static site's native build.
+func (c *Client) BuildSite(ctx context.Context, ref string) (build.Result, error) {
+	var result build.Result
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/sites/"+url.PathEscape(ref)+"/build", nil, &result)
+	return result, err
+}
+
+// BuildLogs returns a bounded tail of the newest site build log.
+func (c *Client) BuildLogs(ctx context.Context, ref string, tail int) (build.Logs, error) {
+	path := "/api/v1/sites/" + url.PathEscape(ref) + "/build/logs"
+	if tail > 0 {
+		path += "?tail=" + strconv.Itoa(tail)
+	}
+	var logs build.Logs
+	err := c.doJSON(ctx, http.MethodGet, path, nil, &logs)
+	return logs, err
+}
+
+// PHPDefault returns the machine-wide PHP CLI default.
+func (c *Client) PHPDefault(ctx context.Context) (tooling.PHPDefaultStatus, error) {
+	var status tooling.PHPDefaultStatus
+	err := c.doJSON(ctx, http.MethodGet, "/api/v1/php/default", nil, &status)
+	return status, err
+}
+
+// SetPHPDefault sets the machine-wide PHP CLI default.
+func (c *Client) SetPHPDefault(ctx context.Context, value string, force bool) (tooling.PHPDefaultStatus, error) {
+	var status tooling.PHPDefaultStatus
+	err := c.doJSON(ctx, http.MethodPut, "/api/v1/php/default", map[string]any{
+		"value": value,
+		"force": force,
+	}, &status)
+	return status, err
+}
+
+// ClearPHPDefault removes the machine-wide PHP CLI default.
+func (c *Client) ClearPHPDefault(ctx context.Context) (tooling.PHPDefaultStatus, error) {
+	var status tooling.PHPDefaultStatus
+	err := c.doJSON(ctx, http.MethodPut, "/api/v1/php/default", map[string]any{"clear": true}, &status)
+	return status, err
+}
+
+// Tools lists managed native tools.
+func (c *Client) Tools(ctx context.Context) ([]helperproto.ToolStatus, error) {
+	var response struct {
+		Tools []helperproto.ToolStatus `json:"tools"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/tools", nil, &response); err != nil {
+		return nil, err
+	}
+	if response.Tools == nil {
+		response.Tools = []helperproto.ToolStatus{}
+	}
+	return response.Tools, nil
+}
+
+// InstallTool installs one managed native tool.
+func (c *Client) InstallTool(ctx context.Context, id string, force bool) (helperproto.ToolStatus, error) {
+	var status helperproto.ToolStatus
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/tools/"+url.PathEscape(id)+"/install", map[string]bool{
+		"force": force,
+	}, &status)
+	return status, err
+}
+
+// RemoveTool removes one managed native tool.
+func (c *Client) RemoveTool(ctx context.Context, id string) (helperproto.ToolStatus, error) {
+	var status helperproto.ToolStatus
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/tools/"+url.PathEscape(id)+"/remove", nil, &status)
+	return status, err
 }
 
 // DeleteSite removes a site.

@@ -24,6 +24,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/api"
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -40,6 +41,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/supervisor"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
 const (
@@ -270,11 +272,24 @@ func Run(ctx context.Context, opts Options) error {
 		nil,
 	)
 
+	toolingService := tooling.NewService(tooling.Deps{
+		Store:  st,
+		Paths:  paths,
+		Helper: helper,
+	})
+	buildService := build.NewService(build.Deps{
+		Store:    st,
+		Runtimes: runtimes,
+		Paths:    paths,
+	})
+
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
 		Vhosts:       siteService,
 		Services:     serviceManager,
+		Tooling:      toolingService,
+		Build:        buildService,
 		Logger:       logger,
 	})
 

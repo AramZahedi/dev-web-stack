@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
@@ -39,6 +40,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/version"
 	"github.com/AramZahedi/dev-web-stack/ui"
@@ -76,6 +78,7 @@ const (
 	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
 	codeServiceConflict    = "SERVICE_CONFLICT"
 	codeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
+	codeToolConflict       = "TOOL_CONFLICT"
 
 	codeServingModeUnavailable = "SERVING_MODE_UNAVAILABLE"
 	codeVhostConfigInvalid     = "VHOST_CONFIG_INVALID"
@@ -151,6 +154,25 @@ type ServiceService interface {
 	RotateCredentials(ctx context.Context, id services.ID) (servicecontrol.Credentials, error)
 }
 
+// ToolService is the machine-wide PHP default and managed tool surface used by
+// the API.
+type ToolService interface {
+	PHPDefault(ctx context.Context) (tooling.PHPDefaultStatus, error)
+	SetPHPDefault(ctx context.Context, value string, force bool) (tooling.PHPDefaultStatus, error)
+	ClearPHPDefault(ctx context.Context) (tooling.PHPDefaultStatus, error)
+	GlobalIni(ctx context.Context) (tooling.GlobalIni, error)
+	SaveGlobalIni(ctx context.Context, content string) (tooling.GlobalIni, error)
+	Tools(ctx context.Context) ([]helperproto.ToolStatus, error)
+	InstallTool(ctx context.Context, id string, force bool) (helperproto.ToolStatus, error)
+	RemoveTool(ctx context.Context, id string) (helperproto.ToolStatus, error)
+}
+
+// BuildService is the native static build surface used by the API.
+type BuildService interface {
+	Build(ctx context.Context, site model.Site) (build.Result, error)
+	Logs(ctx context.Context, site model.Site, tail int) (build.Logs, error)
+}
+
 // errServiceManagerUnavailable reports that only the read-only service
 // coordinator is configured. Lifecycle actions need the daemon's manager.
 var errServiceManagerUnavailable = errors.New("service manager is not configured")
@@ -206,6 +228,8 @@ type Config struct {
 	AllowedHosts []string
 	Vhosts       VhostService
 	Services     ServiceService
+	Tooling      ToolService
+	Build        BuildService
 	Logger       *slog.Logger
 }
 
@@ -219,6 +243,8 @@ type Server struct {
 	helper   HelperClient
 	vhosts   VhostService
 	services ServiceService
+	tooling  ToolService
+	build    BuildService
 	cfg      Config
 
 	secret       [sha256.Size]byte
@@ -260,6 +286,8 @@ func NewServer(
 		helper:            helper,
 		vhosts:            cfg.Vhosts,
 		services:          cfg.Services,
+		tooling:           cfg.Tooling,
+		build:             cfg.Build,
 		cfg:               cfg,
 		allowedHosts:      normalizeAllowedHosts(cfg.AllowedHosts),
 		ui:                cfg.UI,
@@ -317,6 +345,8 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/sites/{ref}/start", s.handleStartSite},
 		{http.MethodPost, "/api/v1/sites/{ref}/stop", s.handleStopSite},
 		{http.MethodPost, "/api/v1/sites/{ref}/restart", s.handleRestartSite},
+		{http.MethodPost, "/api/v1/sites/{ref}/build", s.handleBuildSite},
+		{http.MethodGet, "/api/v1/sites/{ref}/build/logs", s.handleBuildLogs},
 		{http.MethodGet, "/api/v1/sites/{ref}/php", s.handlePHPInfo},
 		{http.MethodPut, "/api/v1/sites/{ref}/php", s.handleApplyPHP},
 		{http.MethodPost, "/api/v1/sites/{ref}/php/exec", s.handlePHPExec},
@@ -326,6 +356,14 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodGet, "/api/v1/php/defaults/{version}", s.handlePHPDefaults},
 		{http.MethodPut, "/api/v1/php/defaults/{version}", s.handleSavePHPDefaults},
 		{http.MethodPost, "/api/v1/php/migrate", s.handleMigratePHP},
+		{http.MethodGet, "/api/v1/php/default", s.handlePHPDefault},
+		{http.MethodPut, "/api/v1/php/default", s.handleSetPHPDefault},
+		{http.MethodGet, "/api/v1/php/default/ini", s.handleGlobalIni},
+		{http.MethodPut, "/api/v1/php/default/ini", s.handleSaveGlobalIni},
+
+		{http.MethodGet, "/api/v1/tools", s.handleListTools},
+		{http.MethodPost, "/api/v1/tools/{id}/install", s.handleInstallTool},
+		{http.MethodPost, "/api/v1/tools/{id}/remove", s.handleRemoveTool},
 
 		{http.MethodGet, "/api/v1/events", s.handleEvents},
 
@@ -810,6 +848,24 @@ func classifyError(err error) (int, string, string, any) {
 	if errors.Is(err, helperproto.ErrServiceConflict) {
 		return http.StatusConflict, codeServiceConflict, err.Error(), nil
 	}
+	if errors.Is(err, helperproto.ErrToolConflict) || errors.Is(err, tooling.ErrUnsupportedPHPDefault) {
+		if errors.Is(err, helperproto.ErrToolConflict) {
+			return http.StatusConflict, codeToolConflict, err.Error(), nil
+		}
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
+	}
+	if errors.Is(err, tooling.ErrUnsupportedTool) {
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
+	}
+	if errors.Is(err, tooling.ErrHelperUnavailable) {
+		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil
+	}
+	if errors.Is(err, tooling.ErrNoPHPInstalled) ||
+		errors.Is(err, tooling.ErrPHPDefaultNotInstalled) ||
+		errors.Is(err, tooling.ErrRuntimeMissing) ||
+		errors.Is(err, build.ErrRuntimeMissing) {
+		return http.StatusConflict, codeRuntimeMissing, err.Error(), nil
+	}
 	if errors.Is(err, helperproto.ErrInternal) {
 		return http.StatusInternalServerError, codeHelperError, err.Error(), nil
 	}
@@ -907,6 +963,8 @@ func looksLikeValidationError(message string) bool {
 		"not supported",
 		"escape",
 		"not a directory",
+		"is a symlink",
+		"build output",
 		"not readable",
 		"is empty",
 		"cannot ",

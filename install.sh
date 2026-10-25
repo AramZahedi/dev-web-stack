@@ -443,7 +443,7 @@ resolve_units() {
 	UNIT_DIR="${TMP_DIR}/systemd"
 	mkdir -p "${UNIT_DIR}"
 	# Keep these definitions in sync with build/systemd/devstack-*.service.
-	cat >"${UNIT_DIR}/devstack-helper.service" <<'EOF'
+	cat >"${UNIT_DIR}/devstack-helper.service" <<EOF
 [Unit]
 Description=devstack privileged helper
 Documentation=https://github.com/AramZahedi/dev-web-stack/blob/master/docs/install.md
@@ -479,7 +479,7 @@ RuntimeDirectoryMode=0755
 # writable; the helper falls back to an in-place write if the parent /etc mount
 # is read-only. Distribution trust paths are optional and differ between
 # Fedora/RHEL and Debian/Ubuntu.
-ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper
+ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper /usr/local/bin "${DEVSTACK_HOME_DIR}"
 # External mode writes exactly one bridge file into the server's include
 # directory. These paths are optional because the selected server (or a
 # custom include layout) may not exist on this machine.
@@ -631,6 +631,8 @@ forward_https_port: 443
 proxy_http_port: 8080
 proxy_https_port: 8443
 auto_forward: true
+tool_root: "${DEVSTACK_HOME_DIR}"
+tool_bin_dir: /usr/local/bin
 log_level: info
 EOF
 	run sudo install -m 0644 "${config_tmp}" "${HELPER_CONFIG}"

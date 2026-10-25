@@ -1,0 +1,87 @@
+package doctor
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
+)
+
+// checkTools warns when bare php/composer resolve to something other than the
+// devstack-managed shims.
+func (s *Service) checkTools() Check {
+	check := Check{ID: "tools", Title: "PHP and Composer shims"}
+	home := strings.TrimSpace(s.deps.Config.Home)
+	if home == "" {
+		check.Status = StatusSkipped
+		check.Detail = "the devstack home is unknown, so managed tool shims cannot be checked"
+		check.Remediation = "No action is required."
+		return check
+	}
+	paths := config.NewPaths(home)
+	binDir := strings.TrimSpace(s.deps.ToolBinDir)
+	if binDir == "" {
+		binDir = "/usr/local/bin"
+	}
+	lookPath := s.deps.LookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+
+	targets := map[string]string{
+		"php":      filepath.Join(tooling.ShimDir(paths), "php"),
+		"composer": filepath.Join(home, "tools", "composer", "bin", "composer"),
+	}
+	var problems []string
+	checked := 0
+	for _, name := range []string{"php", "composer"} {
+		managed := targets[name]
+		managedExists := regularExecutable(managed)
+		wrapper := filepath.Join(binDir, name)
+		resolved, err := lookPath(name)
+		if err != nil || strings.TrimSpace(resolved) == "" {
+			problems = append(problems, fmt.Sprintf("`%s` does not resolve on PATH; managed shim is %s", name, wrapper))
+			continue
+		}
+		if !managedExists {
+			problems = append(problems, fmt.Sprintf("`%s` resolves to %s but no devstack-managed shim exists at %s", name, resolved, wrapper))
+			continue
+		}
+		if sameFile(resolved, wrapper) || sameFile(resolved, managed) {
+			checked++
+			continue
+		}
+		problems = append(problems, fmt.Sprintf("`%s` resolves to %s, not the devstack shim %s", name, resolved, wrapper))
+	}
+
+	if len(problems) != 0 {
+		check.Status = StatusWarn
+		check.Detail = strings.Join(problems, "; ")
+		check.Remediation = "Run `devstack php default <line>` and `devstack tool install composer`, or move the devstack bin directory earlier on PATH."
+		return check
+	}
+	check.Status = StatusOK
+	check.Detail = fmt.Sprintf("php and composer resolve to the managed shims in %s", binDir)
+	return check
+}
+
+func regularExecutable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+func sameFile(a, b string) bool {
+	infoA, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	infoB, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(infoA, infoB)
+}

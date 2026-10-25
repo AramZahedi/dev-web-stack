@@ -40,6 +40,8 @@ var (
 	ErrVhostIncludeMissing    = helperproto.ErrVhostIncludeMissing
 	ErrServerReloadFailed     = helperproto.ErrServerReloadFailed
 	ErrVhostSyncBusy          = helperproto.ErrVhostSyncBusy
+
+	ErrToolConflict = helperproto.ErrToolConflict
 )
 
 // Error is a structured helper error response.
@@ -80,6 +82,8 @@ func (e *Error) Unwrap() error {
 		return helperproto.ErrServerReloadFailed
 	case helperproto.CodeVhostSyncBusy:
 		return helperproto.ErrVhostSyncBusy
+	case helperproto.CodeToolConflict:
+		return helperproto.ErrToolConflict
 	default:
 		return nil
 	}
@@ -291,6 +295,29 @@ func (c *Client) ServiceLogs(ctx context.Context, id string, tail int) (string, 
 	var resp helperproto.ServiceLogsResponse
 	err := c.do(ctx, http.MethodGet, path, nil, &resp)
 	return resp.Logs, err
+}
+
+// ToolStatus reports the managed PHP and Composer shims.
+func (c *Client) ToolStatus(ctx context.Context) (helperproto.ToolStatusResponse, error) {
+	var resp helperproto.ToolStatusResponse
+	err := c.do(ctx, http.MethodGet, helperproto.PathToolsStatus, nil, &resp)
+	return resp, err
+}
+
+// ToolInstall links one managed tool into the system bin directory.
+func (c *Client) ToolInstall(ctx context.Context, id string, force bool) (helperproto.ToolStatus, error) {
+	req := helperproto.ToolInstallRequest{ID: id, Force: force}
+	var resp helperproto.ToolResponse
+	err := c.do(ctx, http.MethodPost, helperproto.PathToolsInstall, req, &resp)
+	return resp.Tool, err
+}
+
+// ToolRemove removes one managed tool's system link and managed files.
+func (c *Client) ToolRemove(ctx context.Context, id string) (helperproto.ToolStatus, error) {
+	req := helperproto.ToolRemoveRequest{ID: id}
+	var resp helperproto.ToolResponse
+	err := c.do(ctx, http.MethodPost, helperproto.PathToolsRemove, req, &resp)
+	return resp.Tool, err
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
