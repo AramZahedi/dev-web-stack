@@ -103,6 +103,20 @@ func TestPrepareInstallMySQLCreatesSecureScaffold(t *testing.T) {
 	}
 	requireTestMode(t, configPath, 0o644)
 
+	initDir := filepath.Join(serviceDir, "config", "init")
+	requireTestMode(t, initDir, 0o755)
+	initPath := filepath.Join(initDir, "10-devstack-admin.sql")
+	initSQL := readTestFile(t, initPath)
+	for _, want := range []string{
+		"GRANT ALL PRIVILEGES ON *.* TO 'devstack'@'%' WITH GRANT OPTION",
+		"FLUSH PRIVILEGES",
+	} {
+		if !strings.Contains(initSQL, want) {
+			t.Errorf("admin init SQL missing %q:\n%s", want, initSQL)
+		}
+	}
+	requireTestMode(t, initPath, 0o644)
+
 	for _, name := range []string{"root_password", "devstack_password"} {
 		path := filepath.Join(root, "secrets", "mysql", name)
 		requireTestMode(t, path, 0o600)
@@ -136,6 +150,57 @@ func TestPrepareActivateDoesNotOverwriteEditedConfig(t *testing.T) {
 	}
 	if got := readTestFile(t, filepath.Join(root, "secrets", "mariadb", "root_password")); got != secretBefore {
 		t.Fatal("PrepareActivate replaced an existing secret")
+	}
+}
+
+func TestPrepareMySQLFamilySeedsAdminGrant(t *testing.T) {
+	for _, id := range []services.ID{services.IDMySQL, services.IDMariaDB} {
+		t.Run(string(id), func(t *testing.T) {
+			prep, root := testDatabasePreparer(t)
+			if err := prep.PrepareInstall(context.Background(), testDatabaseService(t, id)); err != nil {
+				t.Fatalf("PrepareInstall() = %v", err)
+			}
+			path := filepath.Join(root, "services", string(id), "config", "init", "10-devstack-admin.sql")
+			requireTestMode(t, filepath.Dir(path), 0o755)
+			requireTestMode(t, path, 0o644)
+			sql := readTestFile(t, path)
+			if !strings.Contains(sql, "GRANT ALL PRIVILEGES ON *.* TO 'devstack'@'%' WITH GRANT OPTION") {
+				t.Errorf("admin grant SQL = %s", sql)
+			}
+			if strings.Contains(sql, "IDENTIFIED BY") {
+				t.Errorf("admin grant SQL must not embed a password: %s", sql)
+			}
+		})
+	}
+}
+
+func TestPrepareCreatesDataBeforeSecretsAndRetries(t *testing.T) {
+	prep, root := testDatabasePreparer(t)
+	// Block credential creation with a regular file where the secrets root
+	// belongs. Data scaffolding must already have happened, so a retry after
+	// removing the block works.
+	if err := os.WriteFile(filepath.Join(root, "secrets"), []byte("block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prep.PrepareInstall(context.Background(), testDatabaseService(t, services.IDMySQL)); err == nil {
+		t.Fatal("PrepareInstall() with blocked secrets root = nil, want an error")
+	}
+	dataDir := filepath.Join(root, "services", "mysql", "data")
+	info, err := os.Stat(dataDir)
+	if err != nil {
+		t.Fatalf("data directory was not created before secret generation: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory", dataDir)
+	}
+	if err := os.Remove(filepath.Join(root, "secrets")); err != nil {
+		t.Fatal(err)
+	}
+	if err := prep.PrepareInstall(context.Background(), testDatabaseService(t, services.IDMySQL)); err != nil {
+		t.Fatalf("retry after data scaffold = %v", err)
+	}
+	for _, name := range []string{"root_password", "devstack_password"} {
+		requireTestMode(t, filepath.Join(root, "secrets", "mysql", name), 0o600)
 	}
 }
 
@@ -189,6 +254,8 @@ func TestPreparePostgreSQLSeedsConfig(t *testing.T) {
 		"POSTGRES_DEVSTACK_PASSWORD",
 		"pg_roles",
 		"CREATE ROLE",
+		"CREATEDB",
+		"CREATEROLE",
 		"pg_database",
 		"CREATE DATABASE",
 	} {

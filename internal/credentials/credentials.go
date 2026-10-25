@@ -99,6 +99,9 @@ func (s *Store) Ensure(engine, dataDir string, names ...string) (map[string]stri
 		}
 		return map[string]string{}, nil
 	}
+	if _, err := s.secretPath(engine, unique[0]); err != nil {
+		return nil, err
+	}
 
 	dataExists, dataInitialized, err := inspectDataDir(dataDir)
 	if err != nil {
@@ -137,7 +140,12 @@ func (s *Store) Ensure(engine, dataDir string, names ...string) (map[string]stri
 		}
 	}
 	for _, name := range missing {
-		value, err := s.writeNew(engine, name)
+		target, pathErr := s.secretPath(engine, name)
+		if pathErr != nil {
+			cleanup()
+			return nil, pathErr
+		}
+		value, err := s.writeNew(engine, name, target)
 		if errors.Is(err, ErrSecretExists) {
 			// A concurrent caller won the O_EXCL race. Reuse its value
 			// instead of replacing it.
@@ -164,6 +172,7 @@ func (s *Store) Ensure(engine, dataDir string, names ...string) (map[string]stri
 }
 
 // Read returns one existing secret. It never generates or repairs a secret.
+// The store root, engine, and name are validated before any filesystem access.
 func (s *Store) Read(engine, name string) (string, error) {
 	value, exists, err := s.readIfExists(engine, name)
 	if err != nil {
@@ -187,10 +196,14 @@ func (s *Store) Write(engine, name string) (string, error) {
 	if err := validateName(name); err != nil {
 		return "", fmt.Errorf("%w: secret %q", ErrInvalidName, name)
 	}
+	target, err := s.secretPath(engine, name)
+	if err != nil {
+		return "", err
+	}
 	if err := ensureDir(s.Dir(engine)); err != nil {
 		return "", err
 	}
-	return s.writeNew(engine, name)
+	return s.writeNew(engine, name, target)
 }
 
 // Rotate generates a new secret and atomically replaces the existing file. The
@@ -204,6 +217,10 @@ func (s *Store) Rotate(engine, name string) (string, error) {
 	}
 	if err := validateName(name); err != nil {
 		return "", fmt.Errorf("%w: secret %q", ErrInvalidName, name)
+	}
+	target, err := s.secretPath(engine, name)
+	if err != nil {
+		return "", err
 	}
 	if err := ensureDir(s.Dir(engine)); err != nil {
 		return "", err
@@ -240,7 +257,7 @@ func (s *Store) Rotate(engine, name string) (string, error) {
 		_ = os.Remove(tmpName)
 		return "", fmt.Errorf("close temporary secret: %w", err)
 	}
-	if err := os.Rename(tmpName, s.Path(engine, name)); err != nil {
+	if err := os.Rename(tmpName, target); err != nil {
 		_ = os.Remove(tmpName)
 		return "", fmt.Errorf("replace credential secret: %w", err)
 	}
@@ -254,8 +271,36 @@ func (s *Store) validateStore() error {
 	return nil
 }
 
+// secretPath validates the engine and secret name and returns a path that is
+// lexically contained under <root>/secrets/<engine>. Symlinked engine
+// directories are rejected so a secret cannot escape the store.
+func (s *Store) secretPath(engine, name string) (string, error) {
+	if err := s.validateStore(); err != nil {
+		return "", err
+	}
+	if err := validateName(engine); err != nil {
+		return "", fmt.Errorf("%w: engine %q", ErrInvalidName, engine)
+	}
+	if err := validateName(name); err != nil {
+		return "", fmt.Errorf("%w: secret %q", ErrInvalidName, name)
+	}
+	dir := s.Dir(engine)
+	path := filepath.Join(dir, name)
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: secret %q", ErrInvalidName, name)
+	}
+	if info, statErr := os.Lstat(dir); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: engine %q directory is a symlink", ErrInvalidSecret, engine)
+	}
+	return path, nil
+}
+
 func (s *Store) readIfExists(engine, name string) (string, bool, error) {
-	path := s.Path(engine, name)
+	path, err := s.secretPath(engine, name)
+	if err != nil {
+		return "", false, err
+	}
 	info, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -277,12 +322,11 @@ func (s *Store) readIfExists(engine, name string) (string, bool, error) {
 	return value, true, nil
 }
 
-func (s *Store) writeNew(engine, name string) (string, error) {
+func (s *Store) writeNew(engine, name, path string) (string, error) {
 	value, err := newSecret()
 	if err != nil {
 		return "", err
 	}
-	path := s.Path(engine, name)
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, SecretFileMode)
 	if errors.Is(err, os.ErrExist) {
 		return "", fmt.Errorf("%w: engine %q secret %q", ErrSecretExists, engine, name)

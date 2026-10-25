@@ -12,7 +12,7 @@ var (
 	validIDRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 	// validImageRegex accepts an optional tag followed by a mandatory sha256
 	// digest. A floating tag without a digest is still rejected.
-	validImageRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?@sha256:[0-9a-f]{64}$`)
+	validImageRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$`)
 )
 
 // ID identifies a managed infrastructure service.

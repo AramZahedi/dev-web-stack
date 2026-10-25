@@ -2,14 +2,13 @@ package services
 
 import "time"
 
-// Pinned database images. The tag is omitted from the reference because a
-// repository@sha256 digest is the only accepted image form in the catalog; the
-// digest is the exact one pinned by the Wave 1 plan.
+// Pinned database images. The tag is kept alongside the exact digest from the
+// Wave 1 plan; the digest is authoritative.
 const (
-	mysqlImage      = "docker.io/library/mysql@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69"
-	mariadbImage    = "docker.io/library/mariadb@sha256:f16d7a344413e519dff518f27bdb221388f84b0d274c97c4fb5f2cb0dc1b34fa"
-	postgresqlImage = "docker.io/library/postgres@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6"
-	redisImage      = "docker.io/library/redis@sha256:418e397fd48d66e450af13baab123397f2d2580b07ef310c3a5dbe96c3d731f1"
+	mysqlImage      = "mysql:8.4.13@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69"
+	mariadbImage    = "mariadb:11.8.9@sha256:f16d7a344413e519dff518f27bdb221388f84b0d274c97c4fb5f2cb0dc1b34fa"
+	postgresqlImage = "postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6"
+	redisImage      = "redis:8.8.3@sha256:418e397fd48d66e450af13baab123397f2d2580b07ef310c3a5dbe96c3d731f1"
 
 	noNewPrivileges = "no-new-privileges:true"
 )
@@ -139,6 +138,7 @@ func mysqlFamilyService(
 ) Service {
 	config := []Mount{
 		serviceMount("config", "/etc/mysql/conf.d", true),
+		serviceMount("config/init", "/docker-entrypoint-initdb.d", true),
 		serviceMount("logs", "/var/log/mysql", false),
 	}
 	config = append(config, secrets...)

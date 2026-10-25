@@ -10,10 +10,10 @@
 # 1 failure.
 set -euo pipefail
 
-readonly MYSQL_IMAGE="mirror.gcr.io/library/mysql@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69"
-readonly MARIADB_IMAGE="mirror.gcr.io/library/mariadb@sha256:f16d7a344413e519dff518f27bdb221388f84b0d274c97c4fb5f2cb0dc1b34fa"
-readonly POSTGRES_IMAGE="mirror.gcr.io/library/postgres@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6"
-readonly REDIS_IMAGE="mirror.gcr.io/library/redis@sha256:418e397fd48d66e450af13baab123397f2d2580b07ef310c3a5dbe96c3d731f1"
+readonly MYSQL_IMAGE="mirror.gcr.io/library/mysql:8.4.13@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69"
+readonly MARIADB_IMAGE="mirror.gcr.io/library/mariadb:11.8.9@sha256:f16d7a344413e519dff518f27bdb221388f84b0d274c97c4fb5f2cb0dc1b34fa"
+readonly POSTGRES_IMAGE="mirror.gcr.io/library/postgres:18.6@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6"
+readonly REDIS_IMAGE="mirror.gcr.io/library/redis:8.8.3@sha256:418e397fd48d66e450af13baab123397f2d2580b07ef310c3a5dbe96c3d731f1"
 
 readonly MYSQL_PORT=33306
 readonly MARIADB_PORT=33307
@@ -115,6 +115,13 @@ character-set-server=utf8mb4
 collation-server=utf8mb4_unicode_ci
 EOF
 cp "$ROOT/mysql/config/devstack.cnf" "$ROOT/mariadb/config/devstack.cnf"
+mkdir -p "$ROOT/mysql/config/init" "$ROOT/mariadb/config/init"
+chmod 755 "$ROOT/mysql/config/init" "$ROOT/mariadb/config/init"
+cat >"$ROOT/mysql/config/init/10-devstack-admin.sql" <<'EOF'
+GRANT ALL PRIVILEGES ON *.* TO 'devstack'@'%' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+EOF
+cp "$ROOT/mysql/config/init/10-devstack-admin.sql" "$ROOT/mariadb/config/init/10-devstack-admin.sql"
 
 cat >"$ROOT/postgresql/config/postgresql.conf" <<'EOF'
 listen_addresses = '*'
@@ -144,10 +151,10 @@ fi
 password="$POSTGRES_DEVSTACK_PASSWORD"
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<EOSQL
 \set ds_password '$password'
-SELECT format('CREATE ROLE devstack LOGIN PASSWORD %L', :'ds_password')
+SELECT format('CREATE ROLE devstack LOGIN CREATEDB CREATEROLE PASSWORD %L', :'ds_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'devstack')
 \gexec
-SELECT format('ALTER ROLE devstack WITH LOGIN PASSWORD %L', :'ds_password')
+SELECT format('ALTER ROLE devstack WITH LOGIN CREATEDB CREATEROLE PASSWORD %L', :'ds_password')
 \gexec
 SELECT format('CREATE DATABASE devstack OWNER devstack')
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'devstack')
@@ -156,6 +163,7 @@ EOSQL
 EOF
 chmod 755 "$ROOT/postgresql/config/init/10-devstack.sh"
 chmod 644 "$ROOT/mysql/config/devstack.cnf" "$ROOT/mariadb/config/devstack.cnf" \
+	"$ROOT/mysql/config/init/10-devstack-admin.sql" "$ROOT/mariadb/config/init/10-devstack-admin.sql" \
 	"$ROOT/postgresql/config/postgresql.conf" "$ROOT/postgresql/config/pg_hba.conf"
 
 cat >"$ROOT/redis/config/redis.conf" <<'EOF'
@@ -179,6 +187,7 @@ services:
       - "127.0.0.1:$MYSQL_PORT:3306"
     volumes:
       - $ROOT/mysql/config:/etc/mysql/conf.d:ro,z
+      - $ROOT/mysql/config/init:/docker-entrypoint-initdb.d:ro,z
       - $ROOT/mysql/data:/var/lib/mysql:z
       - $ROOT/mysql/logs:/var/log/mysql:z
       - $ROOT/secrets/mysql/root_password:/run/secrets/mysql_root_password:ro,z
@@ -203,6 +212,7 @@ services:
       - "127.0.0.1:$MARIADB_PORT:3306"
     volumes:
       - $ROOT/mariadb/config:/etc/mysql/conf.d:ro,z
+      - $ROOT/mariadb/config/init:/docker-entrypoint-initdb.d:ro,z
       - $ROOT/mariadb/data:/var/lib/mysql:z
       - $ROOT/mariadb/logs:/var/log/mysql:z
       - $ROOT/secrets/mariadb/root_password:/run/secrets/mariadb_root_password:ro,z
@@ -341,6 +351,38 @@ assert_equals "$(mysql_query 'SELECT 1' | tr -d '[:space:]')" "1" "mysql secret 
 assert_equals "$(mariadb_query 'SELECT 1' | tr -d '[:space:]')" "1" "mariadb secret login"
 assert_equals "$(postgres_query 'SELECT 1' | tr -d '[:space:]')" "1" "postgresql secret login"
 assert_equals "$(redis_query ping)" "PONG" "redis ping"
+
+# The exposed devstack account must be a real administrator, not a single-
+# database user. Exercise administrative DDL rather than only SELECT 1.
+mysql_query "CREATE DATABASE wave1_admin_check; DROP DATABASE wave1_admin_check;" >/dev/null
+mysql_query "CREATE USER 'wave1_admin_probe'@'%' IDENTIFIED BY 'Wave1Probe!'; DROP USER 'wave1_admin_probe'@'%';" >/dev/null
+mariadb_query "CREATE DATABASE wave1_admin_check; DROP DATABASE wave1_admin_check;" >/dev/null
+mariadb_query "CREATE USER 'wave1_admin_probe'@'%' IDENTIFIED BY 'Wave1Probe!'; DROP USER 'wave1_admin_probe'@'%';" >/dev/null
+for engine in mysql mariadb; do
+	if [[ "$engine" == "mysql" ]]; then
+		grants="$(mysql_query 'SHOW GRANTS FOR CURRENT_USER()' | tr -s '[:space:]' ' ')"
+	else
+		grants="$(mariadb_query 'SHOW GRANTS FOR CURRENT_USER()' | tr -s '[:space:]' ' ')"
+	fi
+	if [[ "$grants" != *"ON *.* TO"* || "$grants" != *"WITH GRANT OPTION"* ]]; then
+		fail "$engine devstack account lacks global privileges with grant option: $grants"
+	fi
+done
+postgres_query "CREATE DATABASE wave1_admin_check" >/dev/null
+postgres_query "DROP DATABASE wave1_admin_check" >/dev/null
+postgres_query "CREATE ROLE wave1_admin_probe" >/dev/null
+postgres_query "DROP ROLE wave1_admin_probe" >/dev/null
+assert_equals "$(postgres_query "SELECT rolcreatedb AND rolcreaterole FROM pg_roles WHERE rolname = 'devstack'" | tr -d '[:space:]')" "t" "postgres devstack CREATEDB/CREATEROLE"
+
+# The bootstrap secrets are read as root; verify the final server process does
+# not retain them. Run as the postgres user because /proc/1/environ is
+# owner-only and the container does not carry CAP_SYS_PTRACE.
+if ! postgres_env="$(compose exec -T --user postgres postgresql sh -c 'tr "\0" "\n" < /proc/1/environ')"; then
+	fail "cannot inspect the postgresql server environment: $postgres_env"
+fi
+if printf '%s\n' "$postgres_env" | grep -qE '^POSTGRES_(PASSWORD|DEVSTACK_PASSWORD)='; then
+	fail "postgresql server process retains a password in its environment"
+fi
 
 # Host-side secret files are never world-readable.
 for secret in \

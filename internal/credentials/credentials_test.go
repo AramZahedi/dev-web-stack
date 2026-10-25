@@ -271,6 +271,54 @@ func TestInvalidNamesAreRejected(t *testing.T) {
 		if _, err := store.Write(tc.engine, tc.name); !errors.Is(err, ErrInvalidName) {
 			t.Errorf("Write(%q, %q) error = %v, want ErrInvalidName", tc.engine, tc.name, err)
 		}
+		if _, err := store.Read(tc.engine, tc.name); !errors.Is(err, ErrInvalidName) {
+			t.Errorf("Read(%q, %q) error = %v, want ErrInvalidName", tc.engine, tc.name, err)
+		}
+	}
+}
+
+func TestReadValidatesStoreRoot(t *testing.T) {
+	store := &Store{}
+	if _, err := store.Read("mysql", "root_password"); !errors.Is(err, ErrInvalidStore) {
+		t.Fatalf("Read() with empty root = %v, want ErrInvalidStore", err)
+	}
+}
+
+func TestReadRejectsSymlinkedSecret(t *testing.T) {
+	store, root := testStore(t)
+	engineDir := filepath.Join(root, "secrets", "mysql")
+	if err := os.MkdirAll(engineDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("not-a-devstack-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(engineDir, "root_password")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Read("mysql", "root_password"); !errors.Is(err, ErrInvalidSecret) {
+		t.Fatalf("Read() symlink error = %v, want ErrInvalidSecret", err)
+	}
+}
+
+func TestSecretPathRejectsSymlinkedEngineDirectory(t *testing.T) {
+	store, root := testStore(t)
+	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "root_password"), []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "secrets", "mysql")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Read("mysql", "root_password"); !errors.Is(err, ErrInvalidSecret) {
+		t.Fatalf("Read() engine symlink error = %v, want ErrInvalidSecret", err)
+	}
+	if _, err := store.Write("mysql", "devstack_password"); !errors.Is(err, ErrInvalidSecret) {
+		t.Fatalf("Write() engine symlink error = %v, want ErrInvalidSecret", err)
 	}
 }
 
