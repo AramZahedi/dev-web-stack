@@ -216,6 +216,27 @@ func TestManagerValidateReloadDelegatesToHelper(t *testing.T) {
 	}
 }
 
+func TestWebSwitchBypassesActiveServerGuard(t *testing.T) {
+	helper := &fakeHelper{}
+	preparers := NewWebPreparers(&fakeWebLifecycle{}, WebGuard{State: fakeServingState{mode: "nginx", provider: "docker"}})
+	manager := NewManager(t.TempDir(), newFakeStore(), helper, testCatalog(), preparers)
+	switcher := NewWebSwitch(manager)
+	ctx := context.Background()
+
+	if err := switcher.StopActiveServer(ctx, "nginx"); err != nil {
+		t.Fatalf("StopActiveServer: %v", err)
+	}
+	if len(helper.calls) != 1 || helper.calls[0] != "helper_deactivate:nginx" {
+		t.Fatalf("helper calls = %v, want explicit provider-switch deactivate", helper.calls)
+	}
+	if err := switcher.StartActiveServer(ctx, "nginx"); err != nil {
+		t.Fatalf("StartActiveServer: %v", err)
+	}
+	if len(helper.calls) != 2 || helper.calls[1] != "helper_activate:nginx" {
+		t.Fatalf("helper calls = %v, want provider-switch activate", helper.calls)
+	}
+}
+
 func TestWebServiceControlMapsServerNamesToIDs(t *testing.T) {
 	manager := &fakeWebManager{}
 	control := NewWebServiceControl(manager)

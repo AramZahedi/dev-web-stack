@@ -95,11 +95,25 @@ func (s *Service) VhostStatus(ctx context.Context) (helperproto.VhostStatusRespo
 
 func (s *Service) vhostStatusLocked(ctx context.Context) (helperproto.VhostStatusResponse, error) {
 	if s.dockerServing() {
-		return helperproto.VhostStatusResponse{
-			Mode:     s.servingMode(),
-			Server:   s.servingMode(),
-			ConfigOK: true,
-		}, nil
+		mode := s.servingMode()
+		status := helperproto.VhostStatusResponse{
+			Mode:     mode,
+			Server:   mode,
+			ConfigOK: false,
+		}
+		if s.deps.DockerSyncer == nil {
+			status.LastError = "docker web config syncer is not configured"
+			return status, nil
+		}
+		if provider, ok := s.deps.DockerSyncer.(DockerStatusProvider); ok {
+			lastSync, configOK, lastError := provider.DockerStatus()
+			status.LastSync = lastSync
+			status.ConfigOK = configOK
+			status.LastError = lastError
+		} else {
+			status.ConfigOK = true
+		}
+		return status, nil
 	}
 	if s.deps.Vhosts == nil {
 		return builtinVhostStatus(), nil
@@ -244,7 +258,10 @@ func (s *Service) SetServingMode(ctx context.Context, mode string) error {
 	defer s.mu.Unlock()
 
 	if s.dockerServing() {
-		return errors.New("sites: serving_provider is docker; activate or roll back the web-server service instead of changing serving_mode directly")
+		if mode != config.ServingModeBuiltin {
+			return fmt.Errorf("sites: serving_provider is docker; only a switch to builtin is supported (requested %q)", mode)
+		}
+		return s.switchDockerToBuiltinLocked(ctx)
 	}
 
 	current := s.servingMode()
@@ -539,7 +556,10 @@ func (s *Service) StopForDocker(ctx context.Context) error {
 	ctx = nonNilContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.stopForDockerLocked(ctx)
+}
 
+func (s *Service) stopForDockerLocked(ctx context.Context) error {
 	var errs []error
 	if err := s.stopStaticBackendsLocked(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("sites: stop static backends for docker: %w", err))
@@ -563,7 +583,10 @@ func (s *Service) StartAfterDocker(ctx context.Context) error {
 	ctx = nonNilContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.startAfterDockerLocked(ctx)
+}
 
+func (s *Service) startAfterDockerLocked(ctx context.Context) error {
 	restoreProxy := func() {
 		if s.deps.Proxy != nil {
 			_ = s.deps.Proxy.Stop(ctx)
@@ -585,6 +608,39 @@ func (s *Service) StartAfterDocker(ctx context.Context) error {
 	if err := s.startStaticBackendsLocked(ctx); err != nil {
 		restoreProxy()
 		return fmt.Errorf("sites: start static backends after docker: %w", err)
+	}
+	return nil
+}
+
+// switchDockerToBuiltinLocked is the explicit provider transition. It stops
+// the active web-server container through the caller-supplied switch (which
+// bypasses WebGuard), restores the complete builtin runtime, then persists
+// builtin/native. A stop failure changes nothing; a restore failure restarts
+// the previous container; a save failure leaves the builtin runtime serving so
+// 80/443 is never stranded.
+func (s *Service) switchDockerToBuiltinLocked(ctx context.Context) error {
+	current := s.servingMode()
+	if current == config.ServingModeBuiltin {
+		return s.saveServingStateLocked(ctx, config.ServingModeBuiltin, config.ServingProviderNative)
+	}
+	if s.deps.DockerSwitch == nil {
+		return errors.New("sites: docker provider switch is not configured")
+	}
+	if err := s.deps.DockerSwitch.StopActiveServer(ctx, current); err != nil {
+		return fmt.Errorf("sites: stop docker %s container for builtin switch: %w", current, err)
+	}
+	if err := s.startAfterDockerLocked(ctx); err != nil {
+		restoreErr := s.deps.DockerSwitch.StartActiveServer(ctx, current)
+		if restoreErr != nil {
+			return errors.Join(
+				fmt.Errorf("sites: restore builtin after stopping docker %s: %w", current, err),
+				fmt.Errorf("sites: restart docker %s container: %w", current, restoreErr),
+			)
+		}
+		return fmt.Errorf("sites: restore builtin after stopping docker %s: %w", current, err)
+	}
+	if err := s.saveServingStateLocked(ctx, config.ServingModeBuiltin, config.ServingProviderNative); err != nil {
+		return fmt.Errorf("sites: builtin is serving but saving builtin/native state failed: %w", err)
 	}
 	return nil
 }

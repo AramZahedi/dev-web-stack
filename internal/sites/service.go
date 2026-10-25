@@ -110,6 +110,19 @@ type Forwarders interface {
 	SetForwarders(ctx context.Context, httpPort, httpsPort int, enable bool) error
 }
 
+// DockerSwitch is the explicit provider-switch boundary used for Docker ->
+// builtin. It bypasses the active-server deactivation guard because the user
+// has chosen to leave the Docker provider.
+type DockerSwitch interface {
+	StopActiveServer(ctx context.Context, server string) error
+	StartActiveServer(ctx context.Context, server string) error
+}
+
+// DockerStatusProvider exposes the last Docker config sync result.
+type DockerStatusProvider interface {
+	DockerStatus() (lastSync time.Time, configOK bool, lastError string)
+}
+
 // Deps is the complete set of service dependencies. Now and NewID are optional
 // and default to the wall clock and a random 128-bit hex id.
 type Deps struct {
@@ -121,6 +134,7 @@ type Deps struct {
 	Proxy        ProxyControl
 	Forwarders   Forwarders
 	DockerSyncer DockerSyncer
+	DockerSwitch DockerSwitch
 	Router       *proxy.Router
 	Ports        *domain.PortAllocator
 	Config       config.Config

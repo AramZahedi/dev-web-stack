@@ -6,15 +6,19 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 type fakeDockerSyncer struct {
-	mu    sync.Mutex
-	calls []string
-	err   error
+	mu       sync.Mutex
+	calls    []string
+	err      error
+	lastSync time.Time
+	configOK bool
+	lastErr  string
 }
 
 func (f *fakeDockerSyncer) Sync(_ context.Context, server string) error {
@@ -22,6 +26,12 @@ func (f *fakeDockerSyncer) Sync(_ context.Context, server string) error {
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, server)
 	return f.err
+}
+
+func (f *fakeDockerSyncer) DockerStatus() (time.Time, bool, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastSync, f.configOK, f.lastErr
 }
 
 func (f *fakeDockerSyncer) count() int {
@@ -56,6 +66,34 @@ func (f *fakeForwarders) last() (forwarderCall, bool) {
 		return forwarderCall{}, false
 	}
 	return f.calls[len(f.calls)-1], true
+}
+
+type fakeDockerSwitch struct {
+	mu       sync.Mutex
+	stopped  []string
+	started  []string
+	stopErr  error
+	startErr error
+}
+
+func (f *fakeDockerSwitch) StopActiveServer(_ context.Context, server string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, server)
+	return f.stopErr
+}
+
+func (f *fakeDockerSwitch) StartActiveServer(_ context.Context, server string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started = append(f.started, server)
+	return f.startErr
+}
+
+func (f *fakeDockerSwitch) counts() (int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.stopped), len(f.started)
 }
 
 func TestDockerProviderSyncVhostsUsesDockerSyncer(t *testing.T) {
@@ -124,6 +162,149 @@ func TestDockerProviderSyncFailureIsReturned(t *testing.T) {
 	}
 	if fakes.vhosts.syncCount() != 0 {
 		t.Fatal("native helper must not be called")
+	}
+}
+
+func TestDockerToBuiltinTransitionStopsContainerAndRestoresBuiltin(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	switcher := &fakeDockerSwitch{}
+	forwarders := &fakeForwarders{}
+	svc.deps.DockerSwitch = switcher
+	svc.deps.Forwarders = forwarders
+
+	if err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin); err != nil {
+		t.Fatalf("SetServingMode: %v", err)
+	}
+	stopped, started := switcher.counts()
+	if stopped != 1 || switcher.stopped[0] != "nginx" {
+		t.Fatalf("docker stops = %v, want nginx", switcher.stopped)
+	}
+	if started != 0 {
+		t.Fatalf("docker starts = %v, want none", switcher.started)
+	}
+	if !fakes.proxy.isStarted() {
+		t.Fatal("builtin proxy was not restored")
+	}
+	call, ok := forwarders.last()
+	if !ok || !call.enable {
+		t.Fatalf("forwarders = %+v, want enabled", forwarders.calls)
+	}
+	if svc.deps.Config.ServingMode != config.ServingModeBuiltin || svc.deps.Config.ServingProvider != config.ServingProviderNative {
+		t.Fatalf("config = %s/%s, want builtin/native", svc.deps.Config.ServingMode, svc.deps.Config.ServingProvider)
+	}
+}
+
+func TestDockerToBuiltinStopFailureLeavesDockerServing(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeApache
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	switcher := &fakeDockerSwitch{stopErr: errors.New("container busy")}
+	forwarders := &fakeForwarders{}
+	svc.deps.DockerSwitch = switcher
+	svc.deps.Forwarders = forwarders
+
+	err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin)
+	if err == nil {
+		t.Fatal("expected stop failure")
+	}
+	if fakes.proxy.isStarted() {
+		t.Fatal("builtin proxy must not start when the container stop failed")
+	}
+	if _, ok := forwarders.last(); ok {
+		t.Fatal("builtin forwarders must not be enabled when the container stop failed")
+	}
+	if svc.deps.Config.ServingMode != config.ServingModeApache || svc.deps.Config.ServingProvider != config.ServingProviderDocker {
+		t.Fatalf("config = %s/%s, want apache/docker", svc.deps.Config.ServingMode, svc.deps.Config.ServingProvider)
+	}
+}
+
+func TestDockerToBuiltinSaveFailureStillRestoresBuiltin(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	switcher := &fakeDockerSwitch{}
+	forwarders := &fakeForwarders{}
+	svc.deps.DockerSwitch = switcher
+	svc.deps.Forwarders = forwarders
+	// Force saveServingStateLocked to fail after the container is stopped and
+	// the builtin runtime is back up.
+	svc.deps.Config.Home = ""
+
+	err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin)
+	if err == nil {
+		t.Fatal("expected save failure")
+	}
+	stopped, _ := switcher.counts()
+	if stopped != 1 {
+		t.Fatalf("docker stops = %v, want one", switcher.stopped)
+	}
+	if !fakes.proxy.isStarted() {
+		t.Fatal("80/443 must remain served by the builtin proxy after a save failure")
+	}
+	call, ok := forwarders.last()
+	if !ok || !call.enable {
+		t.Fatalf("forwarders = %+v, want enabled", forwarders.calls)
+	}
+}
+
+func TestDockerToBuiltinStartFailureRestartsContainer(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	switcher := &fakeDockerSwitch{}
+	svc.deps.DockerSwitch = switcher
+	svc.deps.Forwarders = &fakeForwarders{}
+	svc.deps.Proxy = &fakeProxy{startErr: errors.New("proxy bind failed")}
+
+	err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin)
+	if err == nil {
+		t.Fatal("expected builtin start failure")
+	}
+	stopped, started := switcher.counts()
+	if stopped != 1 || started != 1 || switcher.started[0] != "nginx" {
+		t.Fatalf("switcher stop=%v start=%v, want rollback start nginx", switcher.stopped, switcher.started)
+	}
+	_ = fakes
+}
+
+func TestDockerToNativeTransitionStillRefused(t *testing.T) {
+	svc, _ := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	svc.deps.DockerSwitch = &fakeDockerSwitch{}
+	if err := svc.SetServingMode(context.Background(), config.ServingModeApache); err == nil {
+		t.Fatal("expected docker->other external mode to be refused")
+	}
+}
+
+func TestVhostStatusExposesDockerSyncState(t *testing.T) {
+	svc, _ := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	last := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	svc.deps.DockerSyncer = &fakeDockerSyncer{
+		lastSync: last,
+		configOK: false,
+		lastErr:  "config/conf.d/generated/app.conf",
+	}
+
+	status, err := svc.VhostStatus(context.Background())
+	if err != nil {
+		t.Fatalf("VhostStatus: %v", err)
+	}
+	if status.ConfigOK {
+		t.Fatal("docker status must not report ConfigOK when the last sync failed")
+	}
+	if status.LastError != "config/conf.d/generated/app.conf" {
+		t.Fatalf("LastError = %q", status.LastError)
+	}
+	if !status.LastSync.Equal(last) {
+		t.Fatalf("LastSync = %v, want %v", status.LastSync, last)
+	}
+	if status.Mode != "nginx" || status.Server != "nginx" {
+		t.Fatalf("mode/server = %s/%s", status.Mode, status.Server)
 	}
 }
 

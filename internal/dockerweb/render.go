@@ -435,7 +435,15 @@ func containerRoot(projects string, s SiteSpec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rel, err := filepath.Rel(projects, root)
+	resolvedProjects := projects
+	if resolved, err := filepath.EvalSymlinks(projects); err == nil {
+		resolvedProjects = resolved
+	}
+	resolvedRoot := root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		resolvedRoot = resolved
+	}
+	rel, err := filepath.Rel(resolvedProjects, resolvedRoot)
 	if err != nil {
 		return "", fmt.Errorf("dockerweb: site %q: %w", s.ID, err)
 	}
@@ -443,7 +451,7 @@ func containerRoot(projects string, s SiteSpec) (string, error) {
 		return "/sites", nil
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("dockerweb: site %q: document root %q is outside the managed projects root %q; sites outside projects require explicit bind mounts and are a Wave 2 limitation", s.ID, root, projects)
+		return "", fmt.Errorf("dockerweb: site %q: document root %q is outside the managed projects root %q; sites outside projects require explicit bind mounts and are a Wave 2 limitation", s.ID, resolvedRoot, resolvedProjects)
 	}
 	return "/sites/" + filepath.ToSlash(rel), nil
 }
@@ -637,6 +645,7 @@ func writeNginxPHPBody(b *strings.Builder, s SiteSpec, containerRoot string) {
 	b.WriteString("        fastcgi_index index.php;\n")
 	b.WriteString("        fastcgi_read_timeout 120s;\n")
 	b.WriteString("        fastcgi_buffering off;\n")
+	b.WriteString("        fastcgi_pass_request_headers on;\n")
 	b.WriteString("        fastcgi_hide_header Strict-Transport-Security;\n")
 	writeNginxFastCGIParams(b,
 		nginxQuotedValue(hostRoot+"$fastcgi_script_name"),
@@ -652,6 +661,7 @@ func writeNginxPHPBody(b *strings.Builder, s SiteSpec, containerRoot string) {
 		b.WriteString("        fastcgi_index index.php;\n")
 		b.WriteString("        fastcgi_read_timeout 120s;\n")
 		b.WriteString("        fastcgi_buffering off;\n")
+		b.WriteString("        fastcgi_pass_request_headers on;\n")
 		b.WriteString("        fastcgi_hide_header Strict-Transport-Security;\n")
 		writeNginxFastCGIParams(b,
 			nginxQuotedValue(filepath.Join(hostRoot, filepath.FromSlash(frontFile))),
@@ -683,6 +693,11 @@ func writeNginxFastCGIParams(b *strings.Builder, scriptFilename, scriptName, pat
 	b.WriteString("        fastcgi_param HTTP_X_FORWARDED_FOR $remote_addr;\n")
 	b.WriteString("        fastcgi_param HTTP_X_FORWARDED_PROTO $scheme;\n")
 	b.WriteString("        fastcgi_param HTTP_X_FORWARDED_HOST $host;\n")
+	b.WriteString("        fastcgi_param HTTP_COOKIE $http_cookie;\n")
+	b.WriteString("        fastcgi_param HTTP_AUTHORIZATION $http_authorization;\n")
+	b.WriteString("        fastcgi_param HTTP_HOST $http_host;\n")
+	b.WriteString("        fastcgi_param HTTP_USER_AGENT $http_user_agent;\n")
+	b.WriteString("        fastcgi_param HTTP_ACCEPT $http_accept;\n")
 	b.WriteString("        fastcgi_param CONTENT_TYPE $content_type;\n")
 	b.WriteString("        fastcgi_param CONTENT_LENGTH $content_length;\n")
 	b.WriteString("        fastcgi_param REDIRECT_STATUS 200;\n")
@@ -840,27 +855,27 @@ func writeApacheServingVHost(b *strings.Builder, s SiteSpec, containerRoot, cert
 		}
 		writeApachePHPBody(b, s, containerRoot, scheme, override, generatedFallback)
 	default:
-		writeApacheStaticBody(b, s, containerRoot)
+		writeApacheStaticBody(b, s, containerRoot, override)
 	}
 	b.WriteString("</VirtualHost>\n")
 }
 
-func writeApacheStaticBody(b *strings.Builder, s SiteSpec, containerRoot string) {
+func writeApacheStaticBody(b *strings.Builder, s SiteSpec, containerRoot, override string) {
 	fmt.Fprintf(b, "    DocumentRoot %s\n", apacheQuote(containerRoot))
 	fmt.Fprintf(b, "    <Directory %s>\n", apacheQuote(containerRoot))
 	b.WriteString("        Options -Indexes\n")
-	b.WriteString("        AllowOverride None\n")
+	fmt.Fprintf(b, "        AllowOverride %s\n", override)
 	b.WriteString("        Require all granted\n")
-	b.WriteString("    </Directory>\n\n")
-	writeApacheFileDenies(b)
 	if s.SPAFallback {
 		fallback, _ := s.spaFallbackFile()
-		b.WriteString("\n    RewriteEngine On\n")
-		b.WriteString("    RewriteCond %{REQUEST_FILENAME} !-f\n")
-		b.WriteString("    RewriteCond %{REQUEST_FILENAME} !-d\n")
-		b.WriteString("    RewriteCond %{REQUEST_URI} !\\.[A-Za-z0-9]{1,10}$\n")
-		fmt.Fprintf(b, "    RewriteRule ^ /%s [L]\n", filepath.ToSlash(fallback))
+		b.WriteString("\n        RewriteEngine On\n")
+		b.WriteString("        RewriteCond %{REQUEST_FILENAME} !-f\n")
+		b.WriteString("        RewriteCond %{REQUEST_FILENAME} !-d\n")
+		b.WriteString("        RewriteCond %{REQUEST_URI} !\\.[A-Za-z0-9]{1,10}$\n")
+		fmt.Fprintf(b, "        RewriteRule ^ /%s [L]\n", filepath.ToSlash(fallback))
 	}
+	b.WriteString("    </Directory>\n\n")
+	writeApacheFileDenies(b)
 	b.WriteString("\n    Header always set Cache-Control \"no-store\"\n")
 }
 
@@ -874,10 +889,7 @@ func writeApachePHPBody(b *strings.Builder, s SiteSpec, containerRoot, scheme, o
 	b.WriteString("        Require all granted\n")
 	b.WriteString("        AcceptPathInfo On\n")
 	if generatedFallback {
-		b.WriteString("\n        RewriteEngine On\n")
-		b.WriteString("        RewriteCond %{REQUEST_FILENAME} !-f\n")
-		b.WriteString("        RewriteCond %{REQUEST_FILENAME} !-d\n")
-		fmt.Fprintf(b, "        RewriteRule ^ /%s/$1 [L,QSA]\n", filepath.ToSlash(frontFile))
+		fmt.Fprintf(b, "        FallbackResource /%s\n", filepath.ToSlash(frontFile))
 	}
 	b.WriteString("    </Directory>\n\n")
 	b.WriteString("    DirectoryIndex index.php index.html\n")
@@ -893,10 +905,13 @@ func writeApachePHPBody(b *strings.Builder, s SiteSpec, containerRoot, scheme, o
 	writeApacheFileDenies(b)
 	b.WriteString("\n")
 	quotedRoot := regexp.QuoteMeta(containerRoot)
-	fmt.Fprintf(b, "    ProxyFCGISetEnvIf \"reqenv('SCRIPT_FILENAME') =~ m#^proxy:fcgi://[^/]+%s(/.*)?$#\" SCRIPT_FILENAME %s\n",
-		quotedRoot, apacheQuote(hostRoot+"$1"))
-	fmt.Fprintf(b, "    ProxyFCGISetEnvIf \"reqenv('SCRIPT_FILENAME') =~ m#^%s(/.*)?$#\" SCRIPT_FILENAME %s\n",
-		quotedRoot, apacheQuote(hostRoot+"$1"))
+	hostValue := apacheQuote(hostRoot + "$1")
+	// PATH_INFO must be captured before SCRIPT_FILENAME is rewritten. Apache
+	// 2.4.69 prefixes SCRIPT_FILENAME with proxy:fcgi://host:port/.
+	fmt.Fprintf(b, "    ProxyFCGISetEnvIf \"reqenv('SCRIPT_FILENAME') =~ m#^proxy:fcgi://[^/]+%s(/.*?\\.php)(/.*)$#\" PATH_INFO \"$2\"\n", quotedRoot)
+	fmt.Fprintf(b, "    ProxyFCGISetEnvIf \"reqenv('SCRIPT_FILENAME') =~ m#^proxy:fcgi://[^/]+%s(/.*?\\.php)(?:/.*)?$#\" SCRIPT_FILENAME %s\n", quotedRoot, hostValue)
+	fmt.Fprintf(b, "    ProxyFCGISetEnvIf \"reqenv('SCRIPT_FILENAME') =~ m#^%s(/.*?\\.php)(/.*)$#\" PATH_INFO \"$2\"\n", quotedRoot)
+	fmt.Fprintf(b, "    ProxyFCGISetEnvIf \"reqenv('SCRIPT_FILENAME') =~ m#^%s(/.*?\\.php)(?:/.*)?$#\" SCRIPT_FILENAME %s\n", quotedRoot, hostValue)
 }
 
 func writeApacheForwardedHeaders(b *strings.Builder, scheme string) {

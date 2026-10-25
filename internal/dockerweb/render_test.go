@@ -157,6 +157,12 @@ func TestRenderNginxPHPFrontControllerUsesHostPaths(t *testing.T) {
 		`fastcgi_param SCRIPT_NAME "/index.php";`,
 		`fastcgi_param PATH_INFO $uri;`,
 		"fastcgi_pass 127.0.0.1:43000;",
+		"fastcgi_pass_request_headers on;",
+		"fastcgi_param HTTP_COOKIE $http_cookie;",
+		"fastcgi_param HTTP_AUTHORIZATION $http_authorization;",
+		"fastcgi_param HTTP_HOST $http_host;",
+		"fastcgi_param HTTP_USER_AGENT $http_user_agent;",
+		"fastcgi_param HTTP_ACCEPT $http_accept;",
 		"try_files $uri $uri/ @devstack_front_controller;",
 		`location ~* \.php(?:~|\.(?:bak|orig|save|old|swp|swo|tmp))$ {`,
 	} {
@@ -290,8 +296,10 @@ func TestRenderApachePHPHtaccessAuto(t *testing.T) {
 		"Options -Indexes",
 		"AcceptPathInfo On",
 		"DirectoryIndex index.php index.html",
-		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^proxy:fcgi://[^/]+/sites/app/public(/.*)?$#" SCRIPT_FILENAME "` + filepath.Join(f.projects, "app/public") + `$1"`,
-		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^/sites/app/public(/.*)?$#" SCRIPT_FILENAME "` + filepath.Join(f.projects, "app/public") + `$1"`,
+		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^proxy:fcgi://[^/]+/sites/app/public(/.*?\.php)(/.*)$#" PATH_INFO "$2"`,
+		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^proxy:fcgi://[^/]+/sites/app/public(/.*?\.php)(?:/.*)?$#" SCRIPT_FILENAME "` + filepath.Join(f.projects, "app/public") + `$1"`,
+		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^/sites/app/public(/.*?\.php)(/.*)$#" PATH_INFO "$2"`,
+		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^/sites/app/public(/.*?\.php)(?:/.*)?$#" SCRIPT_FILENAME "` + filepath.Join(f.projects, "app/public") + `$1"`,
 		`SetHandler "proxy:fcgi://127.0.0.1:43000"`,
 	} {
 		if !strings.Contains(out, want) {
@@ -323,8 +331,8 @@ func TestRenderApacheGeneratedFallbackWhenNoHtaccess(t *testing.T) {
 	if !strings.Contains(out, "AllowOverride None") {
 		t.Errorf("apache override none missing\n%s", out)
 	}
-	if !strings.Contains(out, "RewriteRule ^ /app.php/$1 [L,QSA]") {
-		t.Errorf("apache auto+none should generate front-controller fallback\n%s", out)
+	if !strings.Contains(out, "FallbackResource /app.php") {
+		t.Errorf("apache auto+none should generate a front-controller fallback preserving the original URI\n%s", out)
 	}
 }
 
@@ -382,12 +390,73 @@ func TestRenderApacheStaticSPAFallbackKeepsAssets404(t *testing.T) {
 		`RewriteCond %{REQUEST_FILENAME} !-d`,
 		`RewriteCond %{REQUEST_URI} !\.[A-Za-z0-9]{1,10}$`,
 		`RewriteRule ^ /index.html [L]`,
-		"AllowOverride None",
+		"AllowOverride All",
 		`<FilesMatch "(?i)\.php(?:~|\.(?:bak|orig|save|old|swp|swo|tmp))$">`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("apache SPA vhost missing %q\n%s", want, out)
 		}
+	}
+}
+
+func TestRenderRejectsSymlinkedDocumentRootOutsideProjects(t *testing.T) {
+	f := newRenderFixture(t)
+	outside := filepath.Join(f.root, "outside-site")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "index.html"), []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(f.projects, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	f.writeFile(t, "placeholder/index.html", "ok")
+	site := SiteSpec{
+		ID:               "linked",
+		Name:             "linked",
+		Domain:           "linked.test",
+		Kind:             model.SiteStatic,
+		HostDocumentRoot: link,
+		DesiredState:     model.DesiredRunning,
+	}
+	if _, err := Render(ServerNginx, baseSet(f, site)); err == nil {
+		t.Fatal("expected a symlinked document root outside projects to be rejected")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "outside") {
+		t.Fatalf("error = %v, want an outside-projects explanation", err)
+	}
+}
+
+func TestRenderResolvesSymlinkedDocumentRootInsideProjects(t *testing.T) {
+	f := newRenderFixture(t)
+	f.writeFile(t, "real-site/index.html", "real")
+	link := filepath.Join(f.projects, "alias")
+	if err := os.Symlink(filepath.Join(f.projects, "real-site"), link); err != nil {
+		t.Fatal(err)
+	}
+	site := SiteSpec{
+		ID:               "alias",
+		Name:             "alias",
+		Domain:           "alias.test",
+		Kind:             model.SiteStatic,
+		HostDocumentRoot: link,
+		DesiredState:     model.DesiredRunning,
+	}
+	out := renderOne(t, ServerNginx, baseSet(f, site), "alias.conf")
+	if !strings.Contains(out, "root /sites/real-site;") {
+		t.Fatalf("symlink inside projects should resolve to /sites/real-site\n%s", out)
+	}
+}
+
+func TestRenderApacheStaticHonorsAllowOverride(t *testing.T) {
+	f := newRenderFixture(t)
+	f.writeFile(t, "static/index.html", "ok")
+	site := f.site("static", "static", "static.test", "static")
+	site.ApacheAllowOverride = "all"
+	out := renderOne(t, ServerApache, baseSet(f, site), "static.conf")
+	if !strings.Contains(out, "AllowOverride All") {
+		t.Fatalf("static Apache vhost did not honor apache_allow_override=all\n%s", out)
 	}
 }
 
