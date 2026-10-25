@@ -1,11 +1,12 @@
 # Planned service platform
 
-> **Implementation status (2026-10-25):** Waves 0–1 are implemented: six pinned service
-> containers, Docker nginx/Apache, database credentials/admin bootstrap, global
-> PHP/Composer, site shell/exec, and static builds. Remaining Wave 2 items are phpMyAdmin,
-> ImageMagick CLI, credential rotation, performance/host tuning, external-site Docker
-> mounts, and full dashboard action/config/build/terminal panels. This document remains
-> the product overview, not a promise that every item is shipped.
+> **Implementation status (2026-10-25):** Waves 0–1 and the Wave 2 phpMyAdmin/dashboard
+> work are implemented: six pinned service containers, phpMyAdmin, Docker nginx/Apache,
+> database credentials/rotation/admin bootstrap, global PHP/Composer, site shell/exec,
+> static builds, and dashboard action/build/tooling panels. The pure performance engine
+> exists; host-tuning/apply wiring, ImageMagick CLI, service config diff/apply, the site
+> terminal, and external-site Docker mounts remain. This document remains the product
+> overview, not a promise that every item is shipped.
 
 - **Status:** Waves 0–1 implemented; Wave 2 items remain planned.
 - **Design status:** Approved for implementation.

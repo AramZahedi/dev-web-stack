@@ -4,12 +4,13 @@
 - **Repository:** `https://github.com/AramZahedi/dev-web-stack`
 - **Handoff commit:** the commit containing this file; run `git rev-parse HEAD` for the exact SHA.
 - **Branch:** `master`
-- **Product status:** Linux M1 released as `v0.1.0`; Wave 0 foundation and Wave 1 service/database/web/tooling work are implemented, reviewed, and merged into the integration branch.
+- **Product status:** Linux M1 released as `v0.1.0`; Waves 0–1 and the Wave 2 phpMyAdmin/dashboard implementation are merged. The performance engine is implemented; host-tuning/apply wiring, ImageMagick CLI, config/terminal panels, and external-site Docker mounts remain.
 - **Wave 0 Merge SHA:** `04d1a2d5f111b33995961a90b19cf8df6abaa489`
 - **Wave 0 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40200118349` (green)
 - **Wave 1 merge SHA:** `b4be089429b3f63cb7ec94d5c6bf484a4db34da2`
 - **Wave 1 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40214920181` (green)
-- **Next step:** Wave 2 — phpMyAdmin, performance/host tuning, and the dashboard action/config/build/terminal panels. See the
+- **Wave 2 merge SHA / CI:** filled by the final merge/CI record in this file.
+- **Next step:** Wave 3/follow-ups: wire performance apply/reset + host tuning and benchmark storage, add ImageMagick CLI, service config diff/apply UI, site-scoped terminal, external-site Docker mounts, then full acceptance. See the
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
   [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
@@ -48,9 +49,19 @@ and the [service-platform design](superpowers/specs/2026-10-25-service-container
   - global PHP CLI default/ini/shims and managed Composer 2.10.3 PHAR;
   - native static build profiles/executor with output validation, snapshot restore, build
     logs, and degraded status;
-  - service lifecycle API/CLI, credential reveal (rotation deferred), and read-only
-    dashboard service listing.
+  - service lifecycle API/CLI and credential reveal.
   - Live Docker smoke suites for databases and nginx/Apache pass.
+- Wave 2 service-platform work:
+  - phpMyAdmin 5.2.3 container on loopback 8082, cookie auth, MySQL-family dependency,
+    active-engine follow/restart, and live Docker smoke;
+  - database credential rotation for MySQL/MariaDB/PostgreSQL through the helper, with
+    admin-account SQL on stdin, rollback, owner-preserving 0600 secrets, and active
+    phpMyAdmin restart;
+  - dashboard parity for service actions/credentials/phpMyAdmin, build profiles/run/logs,
+    front-controller/`.htaccess` policy/SPA fields, global PHP/Composer/tool management,
+    grouped service cards, and degraded status;
+  - pure bounded performance profile engine (nginx/Apache/PHP/host formulas, includes,
+    apply/reset plans, benchmark plan) — not yet wired to host tuning/UI.
 
 The old standalone devstack-in-Docker image is **retired**. It was removed from the repo
 and reference machine on 2026-10-25. Docker is reserved for the separate service
@@ -72,19 +83,17 @@ The next milestone is fully described in:
 docs/superpowers/specs/2026-10-25-service-containers-and-performance-design.md
 ```
 
-Wave 1 implements the core service containers, web serving, database credentials, native
-shells, Composer, and static builds. Wave 2 still adds:
+Waves 0–1 and the Wave 2 phpMyAdmin/dashboard work are implemented. Remaining follow-ups:
 
-- the phpMyAdmin container and credential rotation/UI;
+- wire the performance engine to helper/apply/reset/benchmark and the dashboard, including
+  host tuning with backup/reset;
 - ImageMagick CLI tool management;
-- resource-aware nginx/Apache/PHP performance profiles, reversible host tuning, and
-  benchmark storage;
-- full dashboard actions for services, config diff/apply, credentials, builds, and
-  scoped command/terminal execution;
+- service config editor/diff/apply and site-scoped terminal/command runner;
 - external-site bind mounts for Docker web servers (sites outside the managed
-  `projects/` root currently require builtin or native serving).
+  `projects/` root currently require builtin or native serving);
+- full acceptance/benchmark evidence.
 
-**Do not tell users the Wave 2 items are shipped.**
+**Do not tell users these remaining items are shipped.**
 
 ## 3. Current reference workstation
 

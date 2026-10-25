@@ -28,26 +28,26 @@ container bug is historical and no longer relevant to this repository.
 
 ## 2. Planned service-platform gaps
 
-### K1 — Wave 2 items are not implemented
+### K1 — Remaining Wave 2/3 items
 
-Wave 1 supplies the Docker service catalog, transactional lifecycle API/CLI, database
-credentials/admin bootstrap, Docker nginx/Apache serving, site shells, global
-PHP/Composer, and static builds. Still missing: phpMyAdmin, ImageMagick CLI, credential
-rotation, performance profiles/host tuning/benchmarks, external-site Docker mounts, and
-the full dashboard action/config/build/terminal panels. The Services page is read-only.
+Waves 0–1 and the Wave 2 phpMyAdmin/dashboard work are implemented. Still missing:
+performance helper/apply/reset/benchmark wiring, ImageMagick CLI, service config
+editor/diff/apply, site-scoped terminal/command runner, and external-site Docker mounts.
+The performance package is a pure engine today; it is not yet applied to the host or
+dashboard.
 
 ### K2 — Existing native provider vs Docker provider
 
 The existing native external nginx/Apache mode is retained for manually installed
 servers. Docker nginx/Apache are managed by the service layer; `vhost use builtin` performs
-the explicit Docker→builtin switch. The dashboard does not yet expose service action/
-provider controls.
+the explicit Docker→builtin switch. The dashboard service page now exposes lifecycle
+actions; the provider/config/performance panels remain follow-ups.
 
 ### K7 — Docker web servers require sites under the managed projects root
 
 Docker nginx/Apache vhosts currently reject sites outside `<devstack-home>/projects`;
 those sites remain available through builtin/native serving. External-site bind mounts
-are a Wave 2 item.
+and per-site Docker mounts remain a follow-up.
 
 ### K8 — Official MySQL process environment retains passwords
 
@@ -69,10 +69,10 @@ release.
 
 ### K5 — Remaining implementation decisions
 
-Wave 1 settled the initial image digests, official httpd image (no wrapper), Composer
-2.10.3 PHAR digest, and Redis no-password default. Wave 2 still needs performance
-formulas/caps, benchmark workloads, phpMyAdmin config mechanism, and the amount of legacy
-native-provider UI to retain.
+Waves 1–2 settled the initial image digests, official httpd image (no wrapper), Composer
+2.10.3 PHAR digest, phpMyAdmin config mechanism, Redis no-password default, and bounded
+performance formulas/caps. Remaining: live host-tuning policy/user scope, benchmark
+workloads/result schema, and the amount of legacy native-provider UI to retain.
 
 ### K6 — Host performance tuning changes are global
 

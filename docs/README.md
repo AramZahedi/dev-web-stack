@@ -33,8 +33,9 @@ machine, and the design for the next service-platform milestone.
   — foundation execution record.
 - [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md)
   — service lifecycle, database/web-server/tooling implementation.
-- [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md) and
-  [Wave 1 handoff](superpowers/status/2026-10-25-wave1-handoff.md)
+- [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md),
+  [Wave 1 handoff](superpowers/status/2026-10-25-wave1-handoff.md), and
+  [Wave 2 handoff](superpowers/status/2026-10-25-wave2-handoff.md)
   — verification and remaining work.
 - [Documentation audit findings](../DOCUMENTATION_AUDIT_FINDINGS.md)
   — reviewed and resolved on 2026-10-25.
@@ -61,8 +62,8 @@ The M1 user documentation remains authoritative for the released native product:
 ## Implementation status in one sentence
 
 The Linux M1 native application is implemented and released as `v0.1.0`. The old
-standalone devstack-in-Docker image was retired on 2026-10-25. Wave 1 of the managed
-service platform is implemented: Docker nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis,
-credentials, global PHP/Composer, site shell/exec, and static builds. Wave 2
-(phpMyAdmin, ImageMagick CLI, performance/host tuning, credential rotation, external-site
-Docker mounts, and full dashboard action/config/build/terminal panels) is still planned.
+standalone devstack-in-Docker image was retired on 2026-10-25. Waves 0–1 and the Wave 2 phpMyAdmin/dashboard work are implemented: Docker
+nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis, phpMyAdmin, credentials/rotation, global
+PHP/Composer, site shell/exec, static builds, and the dashboard action/build/tooling
+panels. The performance engine is implemented; host-tuning/apply wiring, ImageMagick CLI,
+service config diff/apply, the site terminal, and external-site Docker mounts remain.
