@@ -7,7 +7,9 @@
 - **Product status:** Linux M1 released as `v0.1.0`; Wave 0 (Service Platform Foundation, tasks F1–F6) is fully implemented, verified, and merged.
 - **Wave 0 Merge SHA:** `04d1a2d5f111b33995961a90b19cf8df6abaa489`
 - **Wave 0 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40200118349` (green)
-- **Next step:** User review and Wave 1 planning.
+- **Next step:** Wave 1 implementation; see the
+  [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md) and
+  [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md).
 
 This is the continue-on-another-machine document. Read it first, then
 [architecture](architecture.md), [requirements](requirements.md), [decisions](decisions.md),
@@ -167,14 +169,17 @@ Docker Engine remains installed for the new service containers.
 
 ### 5.5 Next implementation work
 
-1. Read the [Wave 0 kickoff](superpowers/plans/2026-10-25-service-platform-wave0-kickoff.md).
-2. Execute the [foundation plan](superpowers/plans/2026-10-25-service-platform-foundation.md)
-   using its phases: 0A = F1/F2/F4 in parallel, 0B = F3/F5 in parallel, 0C = F6.
-3. Use the [program plan](superpowers/plans/2026-10-25-service-platform-program.md) for the
-   worktree/merge mechanism and Wave 1–3 parallelism.
-4. Preserve existing M1 behavior and tests.
-5. Keep the existing native external provider compatible.
-6. Do not start Windows/WSL Plan 3 without explicit user instruction.
+Wave 0 is complete. Do not re-run its kickoff.
+
+1. Read the [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md).
+2. Complete the serial P1/P2/P3 service-control prerequisites.
+3. Run the database, web-server, and developer-tooling lanes in parallel in isolated
+   worktrees, then merge through `integration/services-wave-1`.
+4. Use the [program plan](superpowers/plans/2026-10-25-service-platform-program.md) for the
+   worktree/merge mechanism and Wave 2–3 parallelism.
+5. Preserve existing M1 behavior and tests.
+6. Keep the existing native external provider compatible.
+7. Do not start Windows/WSL Plan 3 without explicit user instruction.
 
 ## 6. Current requirements/constraints to preserve
 

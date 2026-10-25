@@ -28,11 +28,13 @@ container bug is historical and no longer relevant to this repository.
 
 ## 2. Planned service-platform gaps
 
-### K1 — Service platform not implemented
+### K1 — Service platform is only at the Wave 0 foundation
 
-The design is approved, but no service catalog, Compose controller, credential manager,
-build profiles, global PHP shim, dashboard terminal, or `.htaccess` support exists in the
-current code.
+Wave 0 supplies the service catalog types, SQLite state, Compose renderer, fixed helper
+RPC skeleton, config conflict engine, site contracts, and a read-only service UI/CLI.
+The catalog is empty and no service container can be installed or activated from the
+product yet. Wave 1 adds database/web-server containers, credentials, global PHP/Composer,
+site shells, and static builds; Wave 2 adds phpMyAdmin, performance, and dashboard parity.
 
 ### K2 — Existing native provider vs Docker provider
 

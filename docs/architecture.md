@@ -1,7 +1,7 @@
 # Current architecture
 
-- **Status:** describes the implemented Linux M1 system, not the planned service
-  platform.
+- **Status:** describes the implemented Linux M1 system plus the Wave 0 service-platform
+  foundation. Service containers and dashboard parity are planned for Waves 1–2.
 - **Last reviewed:** 2026-10-25
 - **Planned extension:** [service containers design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 
@@ -121,6 +121,12 @@ repository now.
   pki/                 native CA material
   runtimes/            installed PHP/Node builds
   sites/               generated per-site PHP/FPM configuration
+  projects/            default managed project root
+  services/            service Compose/config/data (Wave 0 layout; no containers yet)
+  certs/               leaf certificates and keys
+  secrets/             service credentials, mode 0700
+  tools/               managed CLI tool roots
+  config/cli/          global CLI configuration
   logs/                site and daemon logs
   run/                 daemon socket, pid files, runtime state
   cache/               downloads/cache
@@ -139,8 +145,10 @@ paths; the generated per-site configuration is under `sites/`.
 - `events`
 - `php_defaults`
 - `site_php_config`
+- `services` (Wave 0 state; catalog is currently empty)
 
-Migrations live in `internal/store/migrations/`. The store is pure-Go
+Site rows also carry the Wave 0 front-controller, `.htaccess`, SPA-fallback, and build
+profile columns. Migrations live in `internal/store/migrations/`. The store is pure-Go
 `modernc.org/sqlite`; no CGO is required.
 
 ### Managed hosts block
@@ -224,6 +232,7 @@ The daemon exposes the following route groups under `/api/v1`:
 - filesystem browser: directory listing only
 - settings
 - vhosts: status/mode/sync/preview
+- services: read-only list/get (Wave 0; lifecycle routes arrive with Wave 1)
 
 The dashboard is embedded from `ui/dist` and served by the daemon. API mutations use a
 session cookie and CSRF token.
@@ -245,14 +254,15 @@ devstack php ini <name> ...
 devstack php ext <name> ...
 devstack runtime list|install|remove|migrate
 devstack vhost status|use|sync|preview|path
+devstack service list|status <id>
 devstack ui
 devstack version
 devstack uninstall --yes
 ```
 
-There is no `devstack site update`, `devstack shell`, `devstack exec`, `devstack service`,
-global PHP shim, Composer manager, build profile, or dashboard terminal in the current
-code. These are planned.
+The service CLI is read-only in Wave 0. There is no service install/activate, site update,
+`devstack shell`, `devstack exec`, global PHP shim, Composer manager, build executor, or
+dashboard terminal yet. These are Wave 1–2 work.
 
 ## 9. Package map
 
@@ -282,6 +292,8 @@ code. These are planned.
 | `internal/phpini` | generated php.ini rendering/validation |
 | `internal/proxy` | host router, reverse proxy, PHP FastCGI proxy |
 | `internal/runtime` | download, verify, extract, install/remove runtimes |
+| `internal/serviceconfig` | config manifest, conflict detection, diff, backups |
+| `internal/services` | service catalog, Compose rendering, state views |
 | `internal/sites` | site lifecycle, PHP/FPM generations, routes, vhosts |
 | `internal/staticserve` | safe static file serving and SPA fallback |
 | `internal/store` | SQLite persistence and migrations |
@@ -331,8 +343,10 @@ code. These are planned.
   administrator; devstack does not install packages.
 - M1 manual Linux gates (real root 80/443 install, browser trust, live UI) were not fully
   run.
-- The planned service platform, global PHP/Composer, build profiles, dashboard terminal,
-  and `.htaccess` support are only in the design spec.
+- The service platform is at the Wave 0 foundation: the catalog is empty, no service
+  container can be activated, and lifecycle/config/credentials APIs are not wired.
+- Global PHP/Composer, site shell/exec, build execution, Docker web servers, phpMyAdmin,
+  performance tuning, and the dashboard terminal are not implemented.
 
 ## 13. Where to go next
 
