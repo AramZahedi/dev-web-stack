@@ -3,6 +3,8 @@ module github.com/AramZahedi/dev-web-stack
 go 1.26.0
 
 require (
+	github.com/coder/websocket v1.8.15
+	github.com/creack/pty v1.1.24
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.4
 	modernc.org/sqlite v1.61.0
