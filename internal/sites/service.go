@@ -98,24 +98,38 @@ type ProxyControl interface {
 	Stop(ctx context.Context) error
 }
 
+// DockerSyncer renders and installs the Docker web-server config tree. It is
+// used instead of Vhosts when serving_provider=docker.
+type DockerSyncer interface {
+	Sync(ctx context.Context, server string) error
+}
+
+// Forwarders enables or disables the helper's privileged 80/443 forwarders
+// that point at the built-in loopback proxy.
+type Forwarders interface {
+	SetForwarders(ctx context.Context, httpPort, httpsPort int, enable bool) error
+}
+
 // Deps is the complete set of service dependencies. Now and NewID are optional
 // and default to the wall clock and a random 128-bit hex id.
 type Deps struct {
-	Store       *store.Store
-	Backend     backend.Backend
-	Helper      Hosts
-	Certs       Certs
-	Vhosts      Vhosts
-	Proxy       ProxyControl
-	Router      *proxy.Router
-	Ports       *domain.PortAllocator
-	Config      config.Config
-	Logs        *logs.Store
-	PHP         PHPCommands
-	PHPBackend  backend.PHPStager
-	PHPManifest *catalog.PHPManifest
-	Now         func() time.Time
-	NewID       func() string
+	Store        *store.Store
+	Backend      backend.Backend
+	Helper       Hosts
+	Certs        Certs
+	Vhosts       Vhosts
+	Proxy        ProxyControl
+	Forwarders   Forwarders
+	DockerSyncer DockerSyncer
+	Router       *proxy.Router
+	Ports        *domain.PortAllocator
+	Config       config.Config
+	Logs         *logs.Store
+	PHP          PHPCommands
+	PHPBackend   backend.PHPStager
+	PHPManifest  *catalog.PHPManifest
+	Now          func() time.Time
+	NewID        func() string
 }
 
 // Service owns site lifecycle operations. Mutating operations and status

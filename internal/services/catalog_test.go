@@ -60,7 +60,7 @@ func TestCatalogValidateRejectsWebServiceWithoutPort(t *testing.T) {
 
 func TestDefaultCatalog(t *testing.T) {
 	c := DefaultCatalog()
-	for _, id := range []ID{IDMySQL, IDMariaDB, IDPostgreSQL, IDRedis} {
+	for _, id := range []ID{IDNginx, IDApache, IDMySQL, IDMariaDB, IDPostgreSQL, IDRedis} {
 		if _, ok := c.Get(id); !ok {
 			t.Errorf("DefaultCatalog() missing %q", id)
 		}
