@@ -126,30 +126,31 @@ type Config struct {
 // protocol. Each function is wired by the command that owns the corresponding
 // subsystem; leaving one nil keeps its route visible but unimplemented.
 type Service struct {
-	CAFingerprint     func() string
-	EnsureCA          func(context.Context) (helperproto.EnsureCAResponse, error)
-	SignCertificate   func(context.Context, helperproto.SignRequest) (helperproto.SignResponse, error)
-	InstallTrust      func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
-	RemoveTrust       func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
-	TrustStatus       func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
-	SetForwarders     func(context.Context, helperproto.ForwardersRequest) error
-	VhostStatus       func(context.Context) (helperproto.VhostStatusResponse, error)
-	VhostSync         func(context.Context, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
-	VhostSetMode      func(context.Context, string, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
-	VhostRemove       func(context.Context) error
-	Uninstall         func(context.Context, helperproto.UninstallRequest) error
-	ServiceStatus     func(context.Context) ([]helperproto.ServiceStatus, error)
-	ServiceInstall    func(context.Context, string) error
-	ServiceActivate   func(context.Context, string) error
-	ServiceDeactivate func(context.Context, string) error
-	ServiceUninstall  func(context.Context, string, bool) error
-	ServiceLogs       func(context.Context, string, int) (string, error)
-	ServiceRestart    func(context.Context, string) error
-	ServiceValidate   func(context.Context, string) error
-	ServiceReload     func(context.Context, string) error
-	ToolStatus        func(context.Context) (helperproto.ToolStatusResponse, error)
-	ToolInstall       func(context.Context, helperproto.ToolInstallRequest) (helperproto.ToolStatus, error)
-	ToolRemove        func(context.Context, string) (helperproto.ToolStatus, error)
+	CAFingerprint            func() string
+	EnsureCA                 func(context.Context) (helperproto.EnsureCAResponse, error)
+	SignCertificate          func(context.Context, helperproto.SignRequest) (helperproto.SignResponse, error)
+	InstallTrust             func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
+	RemoveTrust              func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
+	TrustStatus              func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
+	SetForwarders            func(context.Context, helperproto.ForwardersRequest) error
+	VhostStatus              func(context.Context) (helperproto.VhostStatusResponse, error)
+	VhostSync                func(context.Context, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+	VhostSetMode             func(context.Context, string, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+	VhostRemove              func(context.Context) error
+	Uninstall                func(context.Context, helperproto.UninstallRequest) error
+	ServiceStatus            func(context.Context) ([]helperproto.ServiceStatus, error)
+	ServiceInstall           func(context.Context, string) error
+	ServiceActivate          func(context.Context, string) error
+	ServiceDeactivate        func(context.Context, string) error
+	ServiceUninstall         func(context.Context, string, bool) error
+	ServiceLogs              func(context.Context, string, int) (string, error)
+	ServiceRestart           func(context.Context, string) error
+	ServiceRotateCredentials func(context.Context, string) error
+	ServiceValidate          func(context.Context, string) error
+	ServiceReload            func(context.Context, string) error
+	ToolStatus               func(context.Context) (helperproto.ToolStatusResponse, error)
+	ToolInstall              func(context.Context, helperproto.ToolInstallRequest) (helperproto.ToolStatus, error)
+	ToolRemove               func(context.Context, string) (helperproto.ToolStatus, error)
 }
 
 // Server is a helper RPC server listening on a Unix-domain socket.
@@ -328,6 +329,11 @@ func (s *Server) wireService(service Service) Service {
 		if service.ServiceRestart == nil {
 			service.ServiceRestart = func(ctx context.Context, id string) error {
 				return s.dockerServices.Restart(ctx, services.ID(id))
+			}
+		}
+		if service.ServiceRotateCredentials == nil {
+			service.ServiceRotateCredentials = func(ctx context.Context, id string) error {
+				return s.dockerServices.RotateCredentials(ctx, services.ID(id))
 			}
 		}
 		if service.ServiceValidate == nil {
@@ -815,6 +821,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET "+helperproto.PathServicesLogs, s.handleServicesLogs)
 	mux.HandleFunc("POST "+helperproto.PathServicesLogs, s.handleServicesLogs)
 	mux.HandleFunc("POST "+helperproto.PathServicesRestart, s.handleServicesRestart)
+	mux.HandleFunc("POST "+helperproto.PathServicesRotate, s.handleServicesRotate)
 	mux.HandleFunc("POST "+helperproto.PathServicesValidate, s.handleServicesValidate)
 	mux.HandleFunc("POST "+helperproto.PathServicesReload, s.handleServicesReload)
 	mux.HandleFunc("GET "+helperproto.PathToolsStatus, s.handleToolsStatus)

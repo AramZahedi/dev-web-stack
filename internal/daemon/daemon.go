@@ -288,7 +288,10 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("daemon: docker web provider: %w", err)
 	}
-	preparers := servicecontrol.NewDatabasePreparers(cfg.Home)
+	preparers := servicecontrol.NewDatabasePreparers(cfg.Home, serviceHelper{client: helper})
+	for id, prep := range servicecontrol.NewPhpMyAdminPreparers(cfg.Home) {
+		preparers[id] = prep
+	}
 	for id, prep := range servicecontrol.NewWebPreparers(
 		webProvider,
 		servicecontrol.WebGuard{State: siteService},
@@ -1241,6 +1244,10 @@ func (h serviceHelper) Deactivate(ctx context.Context, id string) error {
 
 func (h serviceHelper) Restart(ctx context.Context, id string) error {
 	return h.client.ServiceRestart(ctx, id)
+}
+
+func (h serviceHelper) RotateServiceCredentials(ctx context.Context, id string) error {
+	return h.client.ServiceRotateCredentials(ctx, id)
 }
 
 func (h serviceHelper) Uninstall(ctx context.Context, id string, deleteData bool) error {

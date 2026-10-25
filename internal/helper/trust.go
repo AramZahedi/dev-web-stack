@@ -285,6 +285,12 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	return runCombined(exec.CommandContext(ctx, name, args...))
 }
 
+func (execRunner) RunInput(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = bytes.NewReader(input)
+	return runCombined(cmd)
+}
+
 func runCombined(cmd *exec.Cmd) ([]byte, error) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {

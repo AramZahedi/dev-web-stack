@@ -274,6 +274,12 @@ func (c *Client) ServiceRestart(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, helperproto.PathServicesRestart, req, nil)
 }
 
+// ServiceRotateCredentials updates a database account and its stored secret.
+func (c *Client) ServiceRotateCredentials(ctx context.Context, id string) error {
+	req := helperproto.ServiceActionRequest{ID: id}
+	return c.do(ctx, http.MethodPost, helperproto.PathServicesRotate, req, nil)
+}
+
 // ServiceValidate runs the catalog validation command inside the service container.
 func (c *Client) ServiceValidate(ctx context.Context, id string) error {
 	req := helperproto.ServiceActionRequest{ID: id}

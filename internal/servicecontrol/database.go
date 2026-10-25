@@ -12,16 +12,23 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
 
-// ErrCredentialsRotationUnavailable reports that the Wave 1 credential flow
-// cannot rotate a live database account yet.
-var ErrCredentialsRotationUnavailable = errors.New("database credential rotation is not available until Wave 2")
+// ErrCredentialsRotationUnavailable reports that credential rotation cannot
+// run because the privileged helper is not wired into this process.
+var ErrCredentialsRotationUnavailable = errors.New("database credential rotation requires the privileged helper")
+
+// CredentialRotator is the privileged helper surface that updates a live
+// database account from host secrets. Passwords never cross this interface.
+type CredentialRotator interface {
+	RotateServiceCredentials(ctx context.Context, id string) error
+}
 
 // DatabasePreparer implements Preparer for the MySQL-family, PostgreSQL, and
 // Redis catalog services. It owns their base config seeds and credentials, and
 // it never overwrites a config file after the first seed.
 type DatabasePreparer struct {
-	Root  string
-	Store *credentials.Store
+	Root    string
+	Store   *credentials.Store
+	Rotator CredentialRotator
 }
 
 type databaseEngine struct {
@@ -38,8 +45,9 @@ var databaseEngines = []databaseEngine{
 	{id: services.IDRedis, port: 6379},
 }
 
-// NewDatabasePreparer returns a preparer rooted at the devstack home.
-func NewDatabasePreparer(root string) *DatabasePreparer {
+// NewDatabasePreparer returns a preparer rooted at the devstack home. An
+// optional rotator wires the privileged helper credential rotation RPC.
+func NewDatabasePreparer(root string, rotators ...CredentialRotator) *DatabasePreparer {
 	clean := strings.TrimSpace(root)
 	if clean != "" {
 		clean = filepath.Clean(clean)
@@ -47,12 +55,16 @@ func NewDatabasePreparer(root string) *DatabasePreparer {
 			clean = abs
 		}
 	}
-	return &DatabasePreparer{Root: clean}
+	preparer := &DatabasePreparer{Root: clean}
+	if len(rotators) > 0 {
+		preparer.Rotator = rotators[0]
+	}
+	return preparer
 }
 
 // NewDatabasePreparers returns the preparer registry for every database service.
-func NewDatabasePreparers(root string) map[services.ID]Preparer {
-	prep := NewDatabasePreparer(root)
+func NewDatabasePreparers(root string, rotators ...CredentialRotator) map[services.ID]Preparer {
+	prep := NewDatabasePreparer(root, rotators...)
 	out := make(map[services.ID]Preparer, len(databaseEngines))
 	for _, engine := range databaseEngines {
 		out[engine.id] = prep
@@ -128,17 +140,26 @@ func (p *DatabasePreparer) Credentials(ctx context.Context, id services.ID) (Cre
 	}, nil
 }
 
-// RotateCredentials reports the explicit Wave 2 boundary rather than updating a
-// live database account without a safe in-container flow. It never prints or
-// generates a password in the error path.
+// RotateCredentials asks the privileged helper to update the live database
+// account and its host secret, then returns the new explicit credential bundle.
+// A failure leaves both the account and the stored secret on the old value.
 func (p *DatabasePreparer) RotateCredentials(ctx context.Context, id services.ID) (Credentials, error) {
 	if err := ctx.Err(); err != nil {
 		return Credentials{}, err
 	}
-	if !IsDatabaseService(id) {
+	if !IsDatabaseService(id) || id == services.IDRedis {
 		return Credentials{}, fmt.Errorf("%w: service %q", ErrCredentialsUnsupported, id)
 	}
-	return Credentials{}, fmt.Errorf("%w: service %q", ErrCredentialsRotationUnavailable, id)
+	if err := p.validateRoot(); err != nil {
+		return Credentials{}, err
+	}
+	if p.Rotator == nil {
+		return Credentials{}, fmt.Errorf("%w: service %q", ErrCredentialsRotationUnavailable, id)
+	}
+	if err := p.Rotator.RotateServiceCredentials(ctx, string(id)); err != nil {
+		return Credentials{}, fmt.Errorf("rotate service %q credentials: %w", id, err)
+	}
+	return p.Credentials(ctx, id)
 }
 
 func (p *DatabasePreparer) prepare(ctx context.Context, svc services.Service) error {
