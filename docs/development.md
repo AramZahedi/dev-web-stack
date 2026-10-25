@@ -11,7 +11,7 @@
 - Node.js 22 and npm 10+ for the dashboard.
 - `make`, `bash`, `curl`, `tar`, `sha256sum`.
 - `shellcheck` for shell changes.
-- Docker Engine + Compose plugin only for the Docker path or future service work.
+- Docker Engine + Compose plugin for the future service-container work.
 - PHP build dependencies only if building PHP artifacts; see `build/php/README.md`.
 - Do not run the build/tests as root.
 
@@ -39,8 +39,6 @@ before changing behavior.
 | `make acceptance` | Full unprivileged M1 acceptance table |
 | `make release VERSION=0.2.0` | Local unsigned archive + checksums |
 | `make release-test` | Release archive contract test |
-| `make docker-build` | Build Fedora 44 image |
-| `make docker-up` / `docker-down` | Compose lifecycle |
 | `make php-test` | PHP catalog/smoke/shell checks |
 
 The Go binaries embed `ui/dist`; always build the UI before a Go build that should
@@ -161,18 +159,12 @@ make release-test
 
 ## 11. Docker development
 
-```sh
-docker compose up -d --build
-docker compose ps
-docker compose logs -f devstack
-```
+The old standalone devstack image was removed in October 2026. Docker Engine is kept for
+the planned service-container milestone. Until those Compose service definitions exist,
+there is no devstack Docker build/run target; use the native build and install paths.
 
-- Docker state is `.docker-data/` (ignored by git).
-- Site files are `projects/`.
-- The image is builtin-only; do not test native external mode there.
-- Host ports bind to `127.0.0.1` by default.
-- `DEVSTACK_BIND_ADDRESS=0.0.0.0` is the explicit LAN opt-in.
-- Docker CA export and trust caveats are in `docker/README.md`.
+Do not recreate a devstack application container. The approved architecture is native
+devstack plus separate nginx/Apache/database/Redis/phpMyAdmin containers.
 
 ## 12. Debugging
 
@@ -194,8 +186,7 @@ real `/etc/hosts`, trust stores, or 80/443 in automated tests.
 - Keep work committed and pushed; the user moves between machines.
 - Separate docs/design changes from implementation where practical.
 - Run `git diff --check` before committing.
-- Do not commit secrets, `.docker-data/`, `projects/`, generated certificates, or runtime
-  archives.
+- Do not commit secrets, service data, generated certificates, or runtime archives.
 - Keep CI green; docs-only commits still run CI.
 
 ## 14. Current constraints to remember

@@ -541,7 +541,8 @@ func listingURL(site model.Site) string {
 }
 
 // publicSitePort is the non-default host port published for a site URL. It is
-// empty on a normal port-80/443 install and set by the container image.
+// empty on a normal port-80/443 install and can be set for a non-default
+// reverse-proxy or published-port layout.
 func publicSitePort(tls bool) string {
 	key := "DEVSTACK_PUBLIC_HTTP_PORT"
 	defaultPort := "80"

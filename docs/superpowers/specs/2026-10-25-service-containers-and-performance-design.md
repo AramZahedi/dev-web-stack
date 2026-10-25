@@ -1,6 +1,6 @@
 # dev-web-stack — Managed Service Containers, Editable Configuration, and Throughput: Design
 
-- **Status:** Ready for approval
+- **Status:** Approved for implementation (2026-10-25)
 - **Date:** 2026-10-25
 - **Scope:** Native Linux devstack plus optional Docker-backed services
 - **Related:** `docs/superpowers/specs/2026-10-22-dev-web-stack-m1-design.md`,
@@ -84,8 +84,9 @@ configurable global PHP CLI default; `devstack shell` overrides that default per
 - Production database operations: replication, major-version migration, automatic
   backups, point-in-time recovery, or remote access.
 - Arbitrary user-provided Docker Compose files, images, commands, ports, or bind mounts.
-- Running the devstack application itself in Docker as part of this design. The existing
-  Docker image is a separate packaging concern.
+- Running the devstack application itself in Docker as part of this design. The old
+  standalone devstack-in-Docker image is retired; Docker is reserved for service
+  containers.
 - Replacing the existing PHP/Node runtime catalogs or native PHP-FPM supervision.
 - Guaranteeing a particular requests/sec number across different hardware.
 
@@ -97,7 +98,7 @@ configurable global PHP CLI default; `devstack shell` overrides that default per
 - Using unbounded `worker_connections`, `MaxRequestWorkers`, or PHP-FPM child counts.
 - Applying host kernel tuning without a backup and a reset path.
 - Exposing databases, Redis, or phpMyAdmin beyond loopback.
-- Treating the Docker image as the source of truth for host configuration.
+- Treating service containers as the source of truth for host configuration.
 
 ## 3. Constraints
 
@@ -1268,8 +1269,8 @@ mount the Docker socket into the UI/daemon.
   forwarders through the existing helper flow.
 - Existing sites outside `projects/` remain usable in builtin/native modes. Docker web
   servers mount them individually read-only as described in §6.1.
-- The existing Docker image is not changed by this design; it remains a separate
-  packaging path.
+- The old standalone devstack-in-Docker image is retired. Docker is used only for the
+  separate service containers described here.
 
 ## 17. Testing and Acceptance
 

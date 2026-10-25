@@ -101,19 +101,12 @@ configure an already-installed native nginx or Apache.
 - Only one native server can own 80/443. nginx and Apache cannot be active together.
 - The native server must already be installed; devstack does not install it.
 
-### Current Docker image
+### Standalone Docker image (retired)
 
-- The repository `Dockerfile` builds a Fedora 44 multi-stage image.
-- The runtime container has no systemd, nginx, Apache, MySQL, PostgreSQL, or phpMyAdmin.
-- The helper and daemon run in the container; loopback listeners are bridged to the
-  container's public ports by `socat`.
-- It is a **builtin-only** image. Native external nginx/Apache mode cannot work in the
-  container layout.
-- Current published host mappings:
-  - `127.0.0.1:8080` → container 80
-  - `127.0.0.1:8443` → container 443
-  - `127.0.0.1:7070` → container 7070
-- The Docker image is separate from the planned native service-container milestone.
+The old devstack-in-Docker image was removed on 2026-10-25. It is not part of the
+current implementation. Docker remains a requirement only for the planned separate
+service containers. There is no supported devstack application container in this
+repository now.
 
 ## 4. State and storage
 
@@ -161,8 +154,7 @@ The helper writes one block to `/etc/hosts`:
 # END devstack
 ```
 
-Unrelated hosts lines are preserved. Docker mounts the host file at `/host-hosts` and the
-helper writes an in-place fallback for single-file bind mounts.
+Unrelated hosts lines are preserved.
 
 ## 5. TLS and trust
 
@@ -312,7 +304,6 @@ code. These are planned.
 - Helper/system units and a per-user daemon unit are installed by the installer.
 - The app release `v0.1.0` and PHP runtime release `php-runtimes-2026-10-25` are
   published.
-- The Docker image is built locally and is not published to a registry.
 
 ## 11. Security model (current)
 
@@ -333,10 +324,6 @@ code. These are planned.
 - Linux x86_64 only; Windows/WSL/macOS/arm64 are out of scope.
 - External nginx/Apache mode requires the server to be installed and configured by the
   administrator; devstack does not install packages.
-- Docker image is builtin-only and cannot run external nginx/Apache mode.
-- The Docker image has no database/Redis/phpMyAdmin services.
-- The Docker UI offers mode controls that can return a 7071/7070 validation error.
-- Browser trust in the Docker path is manual.
 - M1 manual Linux gates (real root 80/443 install, browser trust, live UI) were not fully
   run.
 - The planned service platform, global PHP/Composer, build profiles, dashboard terminal,

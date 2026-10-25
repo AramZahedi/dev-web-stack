@@ -86,7 +86,7 @@ containers, not the required runtime for devstack itself.
 - Prefer one root directory, recommended `/data/devstack`, for all project/tool state.
 - Configs and data should be host files, not hidden inside container images.
 - `/data/wwwroot`-style paths are acceptable but should be configurable.
-- The current Docker image remains a separate packaging concern.
+- The old standalone devstack Docker image was retired; Docker is reserved for optional service containers.
 
 ### 4.2 Sites and serving
 

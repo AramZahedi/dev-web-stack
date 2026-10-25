@@ -1,7 +1,7 @@
 # Planned service platform
 
 - **Status:** Designed, **not implemented**.
-- **Design status:** Ready for approval.
+- **Design status:** Approved for implementation.
 - **Detailed specification:** [service containers, editable config, and throughput](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 - **Current implemented architecture:** [architecture](architecture.md)
 
@@ -221,7 +221,7 @@ CLI remains an alternative interface to the same API.
 - New Docker service activation uses `serving_provider=docker`.
 - Existing `~/.devstack` continues.
 - No automatic root migration.
-- Current Docker image remains separate and builtin-only.
+- The old standalone devstack Docker image is retired; Docker is reserved for service containers.
 
 ## 12. Suggested delivery order
 

@@ -40,7 +40,7 @@ Engine + Compose, systemd, native PHP/Node runtimes, shell scripts.
 - Linux x86_64 only; Windows/WSL Plan 3 remains deferred.
 - No invented image digests, runtime checksums, or URLs. Pinned values must come from real
   published artifacts/manifests.
-- No secret, `.docker-data/`, `projects/`, certificate, or runtime archive in git.
+- No secret, service data, site data, certificate, or runtime archive in git.
 
 ## Review Focus
 

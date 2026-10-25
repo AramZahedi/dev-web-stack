@@ -71,19 +71,10 @@ Full instructions: [docs/install.md](docs/install.md). To upgrade an existing
 install, keep the helper config and run `./install.sh --upgrade`, then
 `devstack init`; see the [upgrade guide](docs/upgrade.md).
 
-### Docker
-
-A Fedora 44 image is included for an isolated install:
-
-```sh
-docker compose up -d --build
-```
-
-The dashboard is exposed at <http://localhost:7070>; sites use
-`http://<name>.test:8080` and `https://<name>.test:8443`. The helper maintains
-the host hosts block, state lives in `.docker-data`, and site files belong in
-`projects/`. See the
-[Docker guide](docker/README.md) for mappings, CA trust, and customization.
+> **Docker support is being replaced.** The standalone devstack-in-Docker image
+> was retired on 2026-10-25. Docker remains supported for the planned optional
+> service containers (nginx/Apache, databases, Redis, phpMyAdmin); the devstack
+> application itself is native.
 
 ## Serving modes
 
@@ -223,13 +214,13 @@ the [architecture](docs/architecture.md), and the
 | [Known issues](docs/known-issues.md) | current bugs, parked work, and limitations |
 | [Glossary](docs/glossary.md) | project terminology and concepts |
 | [Developer guide](docs/development.md) | build/test/debug, package boundaries, migrations, release |
-| [Service-platform design](docs/superpowers/specs/2026-10-25-service-containers-and-performance-design.md) | detailed next-milestone spec (ready for approval) |
+| [Service-platform design](docs/superpowers/specs/2026-10-25-service-containers-and-performance-design.md) | detailed next-milestone spec (approved for implementation) |
 | [Parallel implementation program](docs/superpowers/plans/2026-10-25-service-platform-program.md) | worktree/merge mechanism, waves, dependency graph |
 | [Foundation plan](docs/superpowers/plans/2026-10-25-service-platform-foundation.md) | detailed Wave 0 tasks |
+| [Wave 0 kickoff](docs/superpowers/plans/2026-10-25-service-platform-wave0-kickoff.md) | starting instructions for the external implementation agent |
 | [Install](docs/install.md) | prerequisites, installer, release archives, systemd, config, logs, uninstall |
 | [Upgrade](docs/upgrade.md) | preflight, stop/install/start, database backup, protocol mismatch, verification, rollback limits |
 | [Release](docs/release.md) | tag/version, archive/checksums, GoReleaser workflow, release checklist, PHP catalog gate |
-| [Docker](docker/README.md) | Fedora 44 image, host port mappings (8080/8443/7070), persistent data, CA export |
 | [Sites](docs/sites.md) | first static site, Node sites, lifecycle commands, limitations |
 | [PHP](docs/php.md) | PHP builds, sites, ini and extensions, migration, FPM ports, troubleshooting, artifact gate |
 | [Vhosts](docs/vhosts.md) | external nginx/Apache serving, PHP FastCGI prerequisites, mode switching, preview, TLS custody, troubleshooting |

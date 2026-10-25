@@ -192,8 +192,8 @@ func redirectHost(route Route, requestHost, scheme string) string {
 }
 
 // publicURLPort returns the non-default host port a browser must use for the
-// given scheme. The container image sets these so redirects keep the published
-// 8080/8443 mappings instead of falling back to 80/443.
+// given scheme. Deployments behind a reverse proxy can set these so redirects
+// preserve the published ports instead of falling back to 80/443.
 func publicURLPort(scheme string) string {
 	key := "DEVSTACK_PUBLIC_HTTP_PORT"
 	defaultPort := "80"

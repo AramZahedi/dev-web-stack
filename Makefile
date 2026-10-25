@@ -20,7 +20,7 @@ CATALOG           ?=
 PHP_ARTIFACTS_DIR ?= artifacts
 PHP_CATALOG_CHECK ?= 0
 
-.PHONY: build test lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test acceptance docker-build docker-up docker-down
+.PHONY: build test lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test acceptance
 
 build: ui
 	mkdir -p dist
@@ -118,14 +118,3 @@ php-test:
 	else \
 		echo "php-test: shellcheck not installed, skipped"; \
 	fi
-
-# Build and run the Fedora 44 container image. Host ports default to
-# 8080:80, 8443:443, and 7070:7070; override the DEVSTACK_HOST_* variables.
-docker-build:
-	docker build -t devstack:0.1.0-docker .
-
-docker-up:
-	docker compose up -d --build
-
-docker-down:
-	docker compose down

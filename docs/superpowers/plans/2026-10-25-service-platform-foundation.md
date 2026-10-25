@@ -790,7 +790,7 @@ After F1–F6 are merged into `integration/services-foundation`:
 - [ ] `make build`
 - [ ] `bash -n test/acceptance/m1.sh test/release/*.sh install.sh`
 - [ ] `shellcheck --severity=error test/acceptance/m1.sh test/release/*.sh install.sh`
-- [ ] verify no `.docker-data`, `projects`, `.worktrees`, certificates, or runtime archives
+- [ ] verify no service/site data, `.worktrees`, certificates, or runtime archives
   are staged
 - [ ] merge the foundation branch to `master`, push, and record the SHA in
   `docs/handoff.md`

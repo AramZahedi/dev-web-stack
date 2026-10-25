@@ -4,8 +4,9 @@
 - **Repository:** `https://github.com/AramZahedi/dev-web-stack`
 - **Handoff commit:** the commit containing this file; run `git rev-parse HEAD` for the exact SHA.
 - **Branch:** `master`
-- **Product status:** Linux M1 released as `v0.1.0`; the managed Docker service platform is designed and **not implemented**.
-- **Next step:** approve the service-platform design, then write and execute the implementation plan.
+- **Product status:** Linux M1 released as `v0.1.0`; the managed Docker service platform is
+  designed and approved for implementation, but **not implemented**.
+- **Next step:** execute Wave 0 using the kickoff and foundation plan links below.
 
 This is the continue-on-another-machine document. Read it first, then
 [architecture](architecture.md), [requirements](requirements.md), [decisions](decisions.md),
@@ -23,9 +24,11 @@ and the [service-platform design](superpowers/specs/2026-10-25-service-container
 - Embedded Svelte dashboard.
 - SQLite state, migrations, backups before migration.
 - Checksummed unsigned Linux release, installer, upgrade path.
-- Fedora 44 Docker image, builtin-only, tested locally with host ports 8080/8443/7070.
-- Existing tests and CI pass for M1. The latest docs-only spec commit may be checked with
-  `gh run list`.
+- Existing tests and CI pass for M1.
+
+The old standalone devstack-in-Docker image is **retired**. It was removed from the repo
+and reference machine on 2026-10-25. Docker is reserved for the planned separate service
+containers.
 
 ### Released artifacts
 
@@ -34,8 +37,6 @@ and the [service-platform design](superpowers/specs/2026-10-25-service-container
 - PHP runtime `php-runtimes-2026-10-25`:
   `https://github.com/AramZahedi/dev-web-stack/releases/tag/php-runtimes-2026-10-25`
   — PHP 8.2.35, 8.3.36, 8.4.27, 8.5.12 with checksums/SBOMs.
-- Docker image: local `devstack:0.1.0-docker` and `devstack:latest`; not pushed to a
-  registry.
 
 ## 2. What is designed but not implemented
 
@@ -70,76 +71,30 @@ This is the machine state at handoff. It is not required on the next machine.
 - Fedora Linux 44 x86_64, user `aram`, uid/gid 1000.
 - Repo: `/data/wwwroot/development/python/dev-web-stack`.
 - Go 1.27.3, Node 22.23.1/npm 10.9.8 (observed), Docker Engine 29.8.2.
-- Docker installed/enabled; user `aram` in `docker` group (existing shell may need
-  `sudo docker` until re-login).
-- Host nginx owns 80/443; it is unrelated to the container.
+- Docker installed/enabled and the user is in the `docker` group. Docker is retained for
+  the future service-container milestone; no devstack container runs now.
+- Host nginx owns 80/443; it is unrelated to devstack.
 - No native `~/.devstack`; `devstack-helper` is inactive.
-- Running Docker container:
-
-  ```text
-  devstack  devstack:0.1.0-docker  Up (healthy)
-  127.0.0.1:8080 -> 80
-  127.0.0.1:8443 -> 443
-  127.0.0.1:7070 -> 7070
-  ```
-
-- Docker image sizes: 342 MB.
-- Host `/etc/hosts` devstack block (test artifacts):
-
-  ```text
-  # BEGIN devstack
-  127.0.0.1 blog.test
-  127.0.0.1 devstack.test
-  127.0.0.1 nodeapp.test
-  127.0.0.1 phpapp.test
-  127.0.0.1 secure.test
-  # END devstack
-  ```
-
-- Hosts backup from before the Docker test:
-  `/tmp/opencode/hosts.before-devstack-container` (temporary; may disappear).
-- Persistent Docker data: `.docker-data/` (~1.5 GB), ignored by git:
-  - daemon state, CA, logs, SQLite;
-  - PHP 8.4.27, PHP 8.5.12, Node 22.23.4.
-- Test projects in `projects/`: `blog`, `php`, `nodeapp`, `secure` (ignored by git).
-- Reference container CA fingerprint:
-  `67:CB:B2:8C:F0:89:37:5E:0F:82:C5:DA:15:59:FD:69:D4:5A:FD:A9:F8:92:5D:5F:3F:30:03:11:DC:CF:DC:66`.
+- The old `devstack` container, `devstack:0.1.0-docker`/`latest` images, `.docker-data`,
+  test `projects/`, and the devstack `/etc/hosts` block were removed on 2026-10-25.
+- Removed runtime state was backed up at:
+  `/tmp/opencode/devstack-old-docker-20261025T111246Z/`
+  including hosts, projects, CA/helper state, daemon state, and the old CA fingerprint.
 - Existing host commands:
   - `/usr/local/bin/composer` (user-owned) already exists;
   - `/usr/local/php/bin/php` is on `PATH`; `/usr/local/bin/php` is absent.
   The planned global PHP/Composer shims must detect and handle these conflicts.
 - No database services, Redis, or phpMyAdmin are installed for devstack.
-
-### Docker image test evidence
-
-The local image was verified with:
-
-- Fedora 44;
-- dashboard health on 7070;
-- static site on host 8080/8443;
-- PHP 8.4.27 and Node 22.23.4 sites;
-- HTTPS certificate verification with the exported CA;
-- force-HTTPS redirect preserving port 8443;
-- container restart/persistence;
-- graceful stop/start;
-- an alternate build on host ports 18080/18443/17070;
-- custom public-port build args.
-
-The Docker image is builtin-only and does not include the planned service containers.
+- No test sites are registered on the host.
 
 ## 4. Known issues
 
-See [known issues](known-issues.md) for details. The important ones:
+See [known issues](known-issues.md). Important current points:
 
-1. Docker external nginx switch fails:
-   `dashboard backend port must be 7070, got 7071`. This is a Docker internal-port
-   mismatch; Docker docs already say builtin-only. Use native devstack for external mode.
-2. Docker CA is not trusted in host browsers.
-3. Docker dashboard link ports are baked at build time.
-4. Host ports are localhost-only by default.
-5. Manual Linux M1 gates remain open.
-6. The service platform is not implemented.
-7. No automatic `~/.devstack` → `/data/devstack` migration.
+1. The service platform is not implemented.
+2. Manual Linux M1 gates remain open.
+3. No automatic `~/.devstack` → `/data/devstack` migration.
+4. The old standalone Docker image is retired; do not recreate it.
 
 ## 5. Resume on another machine
 
@@ -196,27 +151,25 @@ This installs devstack, the helper, units, CA, hosts block, and starts the daemo
 does not install nginx/Apache or packages. Use `--release 0.1.0` to install the published
 archive instead.
 
-### 5.4 Docker image
+### 5.4 Old Docker image
+
+The old image is retired and removed. Do not recreate or test it. If another machine still
+has it:
 
 ```sh
-docker compose up -d --build
-docker compose ps
-docker compose logs -f devstack
+docker rm -f devstack
+docker rmi devstack:0.1.0-docker devstack:latest
 ```
 
-UI: `http://localhost:7070`; sites: `http://<name>.test:8080`,
-`https://<name>.test:8443`. Do not copy `.docker-data` to a new machine unless you intend
-to preserve its CA/state; a fresh root is usually safer. The Docker image is not the
-service-platform implementation.
+Docker Engine remains installed for the new service containers.
 
 ### 5.5 Next implementation work
 
-1. Approve the service-platform design.
-2. Review the [program plan](superpowers/plans/2026-10-25-service-platform-program.md) and
-   [foundation plan](superpowers/plans/2026-10-25-service-platform-foundation.md).
-3. Implement in the order in §11 of the design: root/service state/helper Compose;
-   databases/credentials; web servers/vhost parity; config conflicts; CA; performance;
-   PHP/Composer/builds; dashboard/CLI; acceptance.
+1. Read the [Wave 0 kickoff](superpowers/plans/2026-10-25-service-platform-wave0-kickoff.md).
+2. Execute the [foundation plan](superpowers/plans/2026-10-25-service-platform-foundation.md)
+   in one serial worktree.
+3. Use the [program plan](superpowers/plans/2026-10-25-service-platform-program.md) for the
+   parallel worktree/merge mechanism in Waves 1–3.
 4. Preserve existing M1 behavior and tests.
 5. Keep the existing native external provider compatible.
 6. Do not start Windows/WSL Plan 3 without explicit user instruction.
@@ -241,27 +194,23 @@ service-platform implementation.
 
 ## 7. Data and secrets policy
 
-- Do not commit `.docker-data/`, `projects/`, runtime archives, certificates, passwords,
-  or generated configs.
-- Current Docker test CA private key lives in `.docker-data/helper/pki/`; do not copy it
-  into the repo or share it.
+- Do not commit service data, site projects, runtime archives, certificates, passwords, or
+  generated configs.
+- The retired Docker CA/state backup is under `/tmp/opencode/`; treat it as sensitive and
+  do not copy it into the repo. The old CA was not imported into the host trust stores.
 - The planned database credentials will live under `/data/devstack/secrets` with `0600`;
   they are not present in the current release.
 - The reference host has no devstack database credentials.
-- If you preserve a CA/state volume on a new machine, treat it as sensitive and update
-  trust stores deliberately.
 
 ## 8. Useful commands
 
 ```sh
 # status
 git status
-docker compose ps
 devstack daemon status
 devstack doctor
 
 # logs
-docker compose logs -f devstack
 journalctl --user -u devstack-daemon -f
 sudo journalctl -u devstack-helper -f
 
@@ -276,10 +225,6 @@ go test ./... -race -count=1
 # release
 make release VERSION=0.2.0
 make release-test
-
-# Docker cleanup (reference machine only)
-docker compose down
-# optionally remove .docker-data and the devstack hosts block manually
 ```
 
 ## 9. Release/CI notes
@@ -293,9 +238,8 @@ docker compose down
 
 ## 10. Open items for the next agent
 
-- Approve/execute the service-platform plan.
+- Execute Wave 0.
 - Choose the open implementation details listed in the design §20 and decisions §4.
-- Resolve Docker 7071/7070 mode UX separately; do not conflate it with the native
-  service-platform design.
 - Run the manual Linux M1 gates if claiming full M1.
 - Do not start Windows/WSL, arm64, signed packages, auto-update, or M4 work.
+- Do not recreate the old standalone Docker image.

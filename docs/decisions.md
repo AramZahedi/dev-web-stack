@@ -28,12 +28,7 @@ items are implementation choices that do not change the product architecture.
 | C14 | Embedded Svelte dashboard | Ships in the daemon binary; no separate web server for UI. |
 | C15 | Unsigned checksummed releases | Integrity in transit; signing deferred to M4. |
 | C16 | Static/Node/PHP site kinds | Clear runtime model; PHP front controller and Node process supervision are separate. |
-| C17 | Current Docker image: Fedora 44, builtin only | Isolated packaging experiment; no systemd or external vhost support. Not the service-platform target. |
-| C18 | Current Docker ports bind to localhost | Avoid LAN exposure by default; `DEVSTACK_BIND_ADDRESS=0.0.0.0` opt-in. |
-| C19 | Current Docker helper runs root, daemon as UID 1000 | Matches native privilege split; `socat` bridges loopback listeners to public container ports. |
-| C20 | Current Docker project files at `/home/devstack/projects` | Dashboard filesystem browser and `/workspace` compatibility symlink. |
-| C21 | Docker does not import CA into host trust | Explicit trust is a host decision; CA is exported for manual import. |
-| C22 | No native service packages in Docker image | Earlier image scope; superseded for native service platform by C30. |
+| C17 | Standalone devstack Docker image retired | Removed on 2026-10-25. Docker is reserved for the planned separate service containers. Generic public-port URL/redirect support and the mounted-hosts fallback were retained because they are useful outside the old image. |
 
 ## 2. Planned service-platform decisions
 
@@ -82,7 +77,6 @@ items are implementation choices that do not change the product architecture.
 | S41 | Native server conflict is reported, never auto-stopped | No systemd management for tools; user must switch manually. |
 | S42 | ImageMagick CLI container; PHP `imagick` bundled | PHP extension already ships MagickWand libs; CLI is separate tool. |
 | S43 | Existing `/usr/local/bin/php`/`composer` requires `--force` backup | Avoid destroying unrelated tools. |
-| S44 | Docker image remains builtin-only | Service platform is native devstack + tool containers; devstack-in-Docker is separate. |
 
 ## 3. Rejected alternatives
 
@@ -90,7 +84,7 @@ items are implementation choices that do not change the product architecture.
 |---|---|
 | Native packages/systemd for all tools | Cross-distro drift, package conflicts, large privileged package-install surface; user chose containers. |
 | One all-in-one tools container | Shared failure domain, complex DB supervision, no systemd, larger attack surface. |
-| Run tools inside devstack Docker image | No systemd, awkward DB lifecycle, image bloat; user wants separate service containers. |
+| Run tools inside a devstack application container | No systemd, awkward DB lifecycle, image bloat; the old image was retired and the user wants separate service containers. |
 | Daemon uses user Docker socket/group | Gives unprivileged daemon root-equivalent Docker access. Helper-controlled fixed Compose is narrower. |
 | Native Composer-only with system PHP | Breaks per-site PHP/extensions; native PHAR + site-aware shim needed. |
 | Global `php` shim that always overrides site PHP | Breaks per-project PHP versions; site shell must win. |

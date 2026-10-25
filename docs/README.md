@@ -20,7 +20,7 @@ machine, and the design for the next service-platform milestone.
 ## Current design and plans
 
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
-  — status: **Ready for approval**, not implemented.
+  — status: **Approved for implementation**, not implemented.
 - [M1 design](superpowers/specs/2026-10-22-dev-web-stack-m1-design.md)
   — released Linux foundation.
 - [External vhosts design](superpowers/specs/2026-10-22-external-vhosts-design.md)
@@ -29,6 +29,8 @@ machine, and the design for the next service-platform milestone.
   — parallel worktree/merge mechanism and wave dependency graph.
 - [Service platform foundation plan](superpowers/plans/2026-10-25-service-platform-foundation.md)
   — detailed Wave 0 implementation tasks.
+- [Wave 0 kickoff](superpowers/plans/2026-10-25-service-platform-wave0-kickoff.md)
+  — external-agent starting instructions and stop conditions.
 - Implementation plans and acceptance reports live in
   [`superpowers/plans/`](superpowers/plans/).
 - Historical plan handoffs and the released M1 handoff live in
@@ -44,7 +46,6 @@ The M1 user documentation remains authoritative for the released native product:
 | [Install](install.md) | prerequisites, installer, release archives, systemd, config, logs, uninstall |
 | [Upgrade](upgrade.md) | preflight, stop/install/start, database backup, protocol mismatch, verification, rollback limits |
 | [Release](release.md) | tags, archive/checksums, GoReleaser workflow, release checklist, PHP catalog gate |
-| [Docker](../docker/README.md) | Fedora 44 image, host port mappings, persistent data, CA export |
 | [Sites](sites.md) | first static site, Node sites, lifecycle commands, limitations |
 | [PHP](php.md) | PHP builds, sites, ini and extensions, migration, FPM ports, troubleshooting |
 | [Vhosts](vhosts.md) | native nginx/Apache serving, PHP FastCGI prerequisites, mode switching, TLS custody |
@@ -52,7 +53,7 @@ The M1 user documentation remains authoritative for the released native product:
 
 ## Implementation status in one sentence
 
-The Linux M1 native application is implemented and released as `v0.1.0`; the Docker
-Fedora 44 image was built and tested locally; the managed Docker service platform
-(nginx/Apache/MySQL/MariaDB/PostgreSQL/Redis/phpMyAdmin plus global PHP/Composer and
-dashboard parity) is designed but **not implemented**.
+The Linux M1 native application is implemented and released as `v0.1.0`. The old
+standalone devstack-in-Docker image was retired on 2026-10-25. The managed Docker
+service platform (nginx/Apache/MySQL/MariaDB/PostgreSQL/Redis/phpMyAdmin plus global
+PHP/Composer and dashboard parity) is designed but **not implemented**.

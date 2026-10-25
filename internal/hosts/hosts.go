@@ -169,7 +169,7 @@ func WriteAtomic(path string, data []byte, mode fs.FileMode) error {
 		_ = os.Remove(tmp)
 		// A single-file bind mount cannot be replaced by rename: the kernel
 		// reports EBUSY because the mount point is busy. Fall back to an
-		// in-place rewrite so a container can manage a mounted hosts file.
+		// in-place rewrite so a service can manage a mounted hosts file.
 		if errors.Is(err, syscall.EBUSY) {
 			return writeInPlace(path, data, mode)
 		}
