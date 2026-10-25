@@ -866,6 +866,9 @@ func TestEnsureRunningStartsDaemonAndReturnsWhenRunning(t *testing.T) {
 	if settings["home"] != home {
 		t.Fatalf("settings home = %v, want %s", settings["home"], home)
 	}
+	if settings["restart_required"] != false {
+		t.Fatalf("settings restart_required = %v, want false after startup", settings["restart_required"])
+	}
 
 	started := time.Now()
 	if err := EnsureRunning(ctx, opts); err != nil {

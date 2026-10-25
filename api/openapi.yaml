@@ -1249,6 +1249,51 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+    patch:
+      tags: [settings]
+      summary: Update listener ports
+      description: |
+        Updates one or more daemon listener ports in config.yaml. Omitted
+        fields are unchanged. A changed listener is persisted but is not
+        rebound inside this request; the response sets restart_required and
+        the caller uses `devstack daemon restart`. Ports must be distinct,
+        outside the reserved backend range, and bindable on loopback.
+      operationId: updateSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsUpdateRequest"
+      responses:
+        "200":
+          description: Persisted settings, including restart guidance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsUpdateResponse"
+        "400":
+          description: Invalid port value, duplicate ports, or reserved range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: A requested port is already in use.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The settings could not be loaded or persisted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/services:
     get:
@@ -2372,6 +2417,43 @@ components:
           type: integer
         log_keep:
           type: integer
+        restart_required:
+          type: boolean
+          description: |
+            True when config.yaml contains listener ports that the running
+            daemon has not bound yet. Cleared on daemon startup.
+
+    SettingsUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        http_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        https_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        ui_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+
+    SettingsUpdateResponse:
+      allOf:
+        - $ref: "#/components/schemas/Settings"
+        - type: object
+          required: [restart_required]
+          properties:
+            restart_required:
+              type: boolean
+              description: True when any listener port changed and a daemon restart is required.
+            warnings:
+              type: array
+              items:
+                type: string
 
     VhostStatus:
       type: object

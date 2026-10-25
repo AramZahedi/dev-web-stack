@@ -255,7 +255,7 @@ describe('mock service actions', () => {
     const installed = await mockApi.installTool('composer');
     expect(installed.installed).toBe(true);
     expect(installed.version).toBe('2.8.4');
-    await expect(mockApi.installTool('imagemagick')).rejects.toMatchObject({
+    await expect(mockApi.installTool('unknown-tool')).rejects.toMatchObject({
       code: 'INVALID_REQUEST',
     });
   });

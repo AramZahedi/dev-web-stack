@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 )
 
@@ -42,7 +43,7 @@ func (a *App) newDaemonCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Manage the devstack background daemon",
 	}
-	cmd.AddCommand(a.newDaemonRunCmd(), a.newDaemonStatusCmd(), a.newDaemonStopCmd())
+	cmd.AddCommand(a.newDaemonRunCmd(), a.newDaemonStatusCmd(), a.newDaemonStopCmd(), a.newDaemonRestartCmd())
 	return cmd
 }
 
@@ -107,6 +108,44 @@ func (a *App) newDaemonStatusCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "running")
 			default:
 				fmt.Fprintln(cmd.OutOrStdout(), "stopped")
+			}
+			return nil
+		},
+	}
+}
+
+func (a *App) newDaemonRestartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart",
+		Short: "Stop and start the devstack daemon using config.yaml",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			home, err := resolveHome(a.home)
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			// Do not carry one-off run flags across a restart: config.yaml is
+			// the durable source for listener ports.
+			if _, err := stopDaemon(ctx, home); err != nil {
+				return err
+			}
+			if err := ensureRunning(ctx, daemon.Options{Home: home, HelperSocket: a.helperSocketPath()}); err != nil {
+				return wrapError(err, "DAEMON_UNAVAILABLE", "Run `devstack daemon restart` again, or inspect the daemon log.")
+			}
+			dashboard := ""
+			if cfg, err := config.Load(home); err == nil {
+				dashboard = fmt.Sprintf("http://127.0.0.1:%d", cfg.UIPort)
+			}
+			if a.jsonOutput {
+				return a.writeJSON(cmd, struct {
+					Restarted    bool   `json:"restarted"`
+					DashboardURL string `json:"dashboard_url,omitempty"`
+				}{Restarted: true, DashboardURL: dashboard})
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "restarted")
+			if dashboard != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Dashboard: %s\n", dashboard)
 			}
 			return nil
 		},

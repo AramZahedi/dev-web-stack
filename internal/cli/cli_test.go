@@ -1041,6 +1041,63 @@ func TestCLIInitDaemonErrorUsesResolvedHome(t *testing.T) {
 	}
 }
 
+func TestCLIDaemonRestartStopsThenStartsWithPersistedConfig(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+
+	var events []string
+	oldStop := stopDaemon
+	stopDaemon = func(_ context.Context, gotHome string) (bool, error) {
+		if gotHome != home {
+			t.Errorf("stop home = %q, want %q", gotHome, home)
+		}
+		events = append(events, "stop")
+		return true, nil
+	}
+	t.Cleanup(func() { stopDaemon = oldStop })
+	oldEnsure := ensureRunning
+	ensureRunning = func(_ context.Context, opts daemon.Options) error {
+		if opts.Home != home {
+			t.Errorf("ensure home = %q, want %q", opts.Home, home)
+		}
+		if opts.HTTPPort != 0 || opts.HTTPSPort != 0 || opts.UIPort != 0 {
+			t.Errorf("restart passed port overrides: %+v", opts)
+		}
+		events = append(events, "start")
+		return nil
+	}
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{}
+	out := runCLI(t, fake, "daemon", "restart", "--home", home)
+	if !reflect.DeepEqual(events, []string{"stop", "start"}) {
+		t.Fatalf("events = %v, want stop then start", events)
+	}
+	if !strings.Contains(out, "restarted") {
+		t.Fatalf("output = %q, want restart confirmation", out)
+	}
+}
+
+func TestCLIDaemonRestartDoesNotStartAfterStopFailure(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	oldStop := stopDaemon
+	stopDaemon = func(context.Context, string) (bool, error) { return false, errors.New("daemon is wedged") }
+	t.Cleanup(func() { stopDaemon = oldStop })
+	oldEnsure := ensureRunning
+	ensureRunning = func(context.Context, daemon.Options) error {
+		t.Fatal("daemon restart started after a stop failure")
+		return nil
+	}
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "daemon", "restart", "--home", home)
+	if code == 0 || !strings.Contains(stderr, "daemon is wedged") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
 func TestCLIUninstall(t *testing.T) {
 	useTestSeams(t)
 	helper, socket := startFakeHelper(t)

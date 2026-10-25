@@ -277,11 +277,22 @@ export interface Settings {
   max_request_body_mb: number;
   log_max_mb: number;
   log_keep: number;
+  restart_required?: boolean;
   version?: string;
   socket_path?: string;
   pid_path?: string;
   /** Optional convenience field; real daemons may omit it. */
   user_home?: string;
+}
+
+export interface SettingsUpdate {
+  http_port?: number;
+  https_port?: number;
+  ui_port?: number;
+}
+
+export interface SettingsUpdateResult extends Settings {
+  warnings?: string[];
 }
 
 export interface FsEntry {

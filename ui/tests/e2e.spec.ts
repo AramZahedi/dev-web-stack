@@ -417,8 +417,32 @@ test('Settings manages the global PHP default, ini and Composer', async ({ page 
   await page.getByRole('button', { name: 'Update', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'composer updated' })).toBeVisible();
 
-  await expect(page.getByRole('heading', { name: 'ImageMagick CLI' })).toBeVisible();
-  await expect(page.getByText('Wave 2 backend pending')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'ImageMagick CLI' })).toHaveCount(0);
+});
+
+test('Settings edits listener ports and shows restart guidance', async ({ page }) => {
+  await open(page, '#/settings');
+
+  await page.getByLabel('HTTP proxy port').fill('18080');
+  await page.getByLabel('HTTPS proxy port').fill('18443');
+  await page.getByLabel('Dashboard/API port').fill('17070');
+  await page.getByRole('button', { name: 'Save ports' }).click();
+
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Ports saved — restart required' }),
+  ).toBeVisible();
+  const banner = page.locator('.restart-banner');
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText('devstack daemon restart');
+  await expect(page.getByLabel('HTTP proxy port')).toHaveValue('18080');
+  await expect(page.getByLabel('HTTPS proxy port')).toHaveValue('18443');
+  await expect(page.getByLabel('Dashboard/API port')).toHaveValue('17070');
+
+  const spacing = await page.locator('.native-tools-card').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return Number.parseFloat(style.marginTop);
+  });
+  expect(spacing).toBeGreaterThanOrEqual(12);
 });
 
 test('Runtimes asks for confirmation and installs a build', async ({ page }) => {
@@ -620,6 +644,15 @@ test.describe('375px viewport', () => {
       expect(width.body, `${route.name} body overflow`).toBeLessThanOrEqual(width.viewport);
     });
   }
+
+  test('Settings native tools card keeps vertical spacing at 375px', async ({ page }) => {
+    await open(page, '#/settings');
+    await expect(page.getByRole('heading', { name: 'Native tools' })).toBeVisible();
+    const spacing = await page.locator('.native-tools-card').evaluate((element) => {
+      return Number.parseFloat(getComputedStyle(element).marginTop);
+    });
+    expect(spacing).toBeGreaterThanOrEqual(12);
+  });
 
   test('vhost preview drawer has no horizontal overflow', async ({ page }) => {
     await open(page, '#/settings');

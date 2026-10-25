@@ -28,6 +28,8 @@ import type {
   ServiceView,
   Session,
   Settings,
+  SettingsUpdate,
+  SettingsUpdateResult,
   ServingMode,
   Site,
   ToolsResponse,
@@ -504,6 +506,15 @@ export async function getSettings(): Promise<Settings> {
   if (isMockMode) return mockApi.settings();
   const settings = await request<Settings>('/settings');
   // Older daemons predate serving_provider; native is the compatible default.
+  return { ...settings, serving_provider: settings.serving_provider ?? 'native' };
+}
+
+export async function updateSettings(update: SettingsUpdate): Promise<SettingsUpdateResult> {
+  if (isMockMode) return mockApi.updateSettings(update);
+  const settings = await request<SettingsUpdateResult>('/settings', {
+    method: 'PATCH',
+    body: update,
+  });
   return { ...settings, serving_provider: settings.serving_provider ?? 'native' };
 }
 

@@ -218,8 +218,8 @@ func TestValidatePorts(t *testing.T) {
 		{"serving empty", func(c *Config) { c.ServingMode = "" }, false},
 		{"serving unknown", func(c *Config) { c.ServingMode = "caddy" }, false},
 		{"serving builtin custom ui", func(c *Config) { c.ServingMode = ServingModeBuiltin; c.UIPort = 7071 }, true},
-		{"serving nginx custom ui", func(c *Config) { c.ServingMode = ServingModeNginx; c.UIPort = 7071 }, false},
-		{"serving apache custom ui", func(c *Config) { c.ServingMode = ServingModeApache; c.UIPort = 7071 }, false},
+		{"serving nginx custom ui", func(c *Config) { c.ServingMode = ServingModeNginx; c.UIPort = 7071 }, true},
+		{"serving apache custom ui", func(c *Config) { c.ServingMode = ServingModeApache; c.UIPort = 7071 }, true},
 		{"provider native", func(c *Config) { c.ServingProvider = ServingProviderNative }, true},
 		{"provider docker native mode", func(c *Config) { c.ServingProvider = ServingProviderDocker }, false},
 		{"provider docker nginx", func(c *Config) {
@@ -260,16 +260,14 @@ func TestValidateErrorNamesTheField(t *testing.T) {
 	}
 }
 
-func TestValidateExternalModeRequiresDashboardPort(t *testing.T) {
-	cfg := Default()
-	cfg.ServingMode = ServingModeNginx
-	cfg.UIPort = 8081
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("want error")
-	}
-	if !strings.Contains(err.Error(), "serving_mode") || !strings.Contains(err.Error(), "ui_port") || !strings.Contains(err.Error(), "7070") {
-		t.Fatalf("error %q is not actionable", err)
+func TestValidateExternalModeAllowsCustomDashboardPort(t *testing.T) {
+	for _, mode := range []string{ServingModeNginx, ServingModeApache} {
+		cfg := Default()
+		cfg.ServingMode = mode
+		cfg.UIPort = 8081
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("%s with custom ui_port: %v", mode, err)
+		}
 	}
 }
 

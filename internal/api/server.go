@@ -174,6 +174,14 @@ type BuildService interface {
 	Logs(ctx context.Context, site model.Site, tail int) (build.Logs, error)
 }
 
+// ListenerPorts is the set of loopback listener ports the daemon bound at
+// startup. Zero values mean the caller did not supply them.
+type ListenerPorts struct {
+	HTTPPort  int
+	HTTPSPort int
+	UIPort    int
+}
+
 // errServiceManagerUnavailable reports that only the read-only service
 // coordinator is configured. Lifecycle actions need the daemon's manager.
 var errServiceManagerUnavailable = errors.New("service manager is not configured")
@@ -227,11 +235,15 @@ type Config struct {
 	UserHome     string
 	MaxBodyBytes int64
 	AllowedHosts []string
-	Vhosts       VhostService
-	Services     ServiceService
-	Tooling      ToolService
-	Build        BuildService
-	Logger       *slog.Logger
+	// Listeners records the ports the running daemon actually bound. Settings
+	// patches compare against these, not against config.yaml, so a saved but
+	// not-yet-applied port change keeps restart_required set.
+	Listeners ListenerPorts
+	Vhosts    VhostService
+	Services  ServiceService
+	Tooling   ToolService
+	Build     BuildService
+	Logger    *slog.Logger
 }
 
 // Server owns the HTTP API and dashboard handler.
@@ -383,6 +395,7 @@ func (s *Server) apiRoutes() []route {
 
 		{http.MethodGet, "/api/v1/fs", s.handleFS},
 		{http.MethodGet, "/api/v1/settings", s.handleSettings},
+		{http.MethodPatch, "/api/v1/settings", s.handleUpdateSettings},
 
 		{http.MethodGet, "/api/v1/vhosts/status", s.handleVhostStatus},
 		{http.MethodPost, "/api/v1/vhosts/mode", s.handleVhostMode},
@@ -473,6 +486,7 @@ type settingsResponse struct {
 	MaxRequestBodyMB    int    `json:"max_request_body_mb"`
 	LogMaxMB            int    `json:"log_max_mb"`
 	LogKeep             int    `json:"log_keep"`
+	RestartRequired     bool   `json:"restart_required"`
 }
 
 // handleSettings reports the machine configuration. Defaults come from
@@ -545,6 +559,7 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 	readInt("max_request_body_mb", &out.MaxRequestBodyMB)
 	readInt("log_max_mb", &out.LogMaxMB)
 	readInt("log_keep", &out.LogKeep)
+	readBool("restart_required", &out.RestartRequired)
 	return out
 }
 

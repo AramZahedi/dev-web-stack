@@ -27,6 +27,8 @@ import type {
   ServiceView,
   Session,
   Settings,
+  SettingsUpdate,
+  SettingsUpdateResult,
   ServingMode,
   Site,
   SiteStatus,
@@ -187,6 +189,7 @@ let toolStatuses: ToolStatus[] = clone(seedToolStatuses);
 export function resetMockServiceStateForTests(): void {
   mockServices = clone(seedMockServices);
   toolStatuses = clone(seedToolStatuses);
+  settings = clone(seedSettings);
   phpDefaultConfigured = DEFAULT_PHP_BUILD;
   globalIniContent = DEFAULT_GLOBAL_INI;
 }
@@ -691,7 +694,7 @@ let trustTargets: TrustTarget[] = [
   },
 ];
 
-const settings: Settings = {
+const seedSettings: Settings = {
   home: '/home/dev/.devstack',
   user_home: '/home/dev',
   http_port: 8080,
@@ -708,7 +711,9 @@ const settings: Settings = {
   version: '0.1.0',
   socket_path: '/home/dev/.devstack/devstack.sock',
   pid_path: '/home/dev/.devstack/devstack.pid',
+  restart_required: false,
 };
+let settings: Settings = clone(seedSettings);
 
 let vhostStatus: VhostStatus = {
   mode: 'builtin',
@@ -1902,6 +1907,37 @@ export const mockApi = {
   async settings(): Promise<Settings> {
     await wait();
     return clone(settings);
+  },
+
+  async updateSettings(update: SettingsUpdate): Promise<SettingsUpdateResult> {
+    await wait(120, 220);
+    const next = {
+      http_port: update.http_port ?? settings.http_port,
+      https_port: update.https_port ?? settings.https_port,
+      ui_port: update.ui_port ?? settings.ui_port,
+    };
+    for (const [field, port] of Object.entries(next)) {
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new ApiError('INVALID_REQUEST', `${field} must be between 1 and 65535.`, 400);
+      }
+      if (port >= 41_000 && port <= 43_999) {
+        throw new ApiError('INVALID_REQUEST', `${field} is inside the reserved backend range.`, 400);
+      }
+    }
+    if (new Set(Object.values(next)).size !== 3) {
+      throw new ApiError('INVALID_REQUEST', 'HTTP, HTTPS, and UI ports must differ.', 400);
+    }
+    const changed =
+      next.http_port !== settings.http_port ||
+      next.https_port !== settings.https_port ||
+      next.ui_port !== settings.ui_port;
+    settings = { ...settings, ...next, restart_required: changed };
+    return {
+      ...clone(settings),
+      warnings: changed
+        ? ['Run `devstack daemon restart` to move the listeners.']
+        : undefined,
+    };
   },
 
   async listServices(): Promise<ServiceView[]> {

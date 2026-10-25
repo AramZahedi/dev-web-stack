@@ -19,3 +19,6 @@ ui/dist/*
 
 # Isolated planning/implementation worktrees
 /.worktrees/
+
+# Superpowers execution scratch
+/.superpowers/

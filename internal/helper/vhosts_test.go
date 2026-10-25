@@ -1364,6 +1364,22 @@ func TestSyncAllowsContainedSymlinkAndNodeWithoutRoot(t *testing.T) {
 	}
 }
 
+func TestSyncAcceptsCustomDashboardBackendPort(t *testing.T) {
+	env := newVhostTestEnv(t)
+	req := env.request("nginx")
+	req.Dashboard.BackendPort = 7000
+	if _, err := env.manager.Sync(context.Background(), req); err != nil {
+		t.Fatalf("Sync with custom dashboard port: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "_devstack.test.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("127.0.0.1:7000")) {
+		t.Fatalf("rendered dashboard vhost does not use port 7000:\n%s", data)
+	}
+}
+
 func TestSyncValidatesPortsKindsAndDuplicates(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1411,9 +1427,15 @@ func TestSyncValidatesPortsKindsAndDuplicates(t *testing.T) {
 			},
 		},
 		{
-			name: "dashboard port",
+			name: "dashboard port zero",
 			mutate: func(_ *vhostTestEnv, req *helperproto.VHostSyncRequest) {
-				req.Dashboard.BackendPort = 7000
+				req.Dashboard.BackendPort = 0
+			},
+		},
+		{
+			name: "dashboard port too high",
+			mutate: func(_ *vhostTestEnv, req *helperproto.VHostSyncRequest) {
+				req.Dashboard.BackendPort = 65536
 			},
 		},
 		{

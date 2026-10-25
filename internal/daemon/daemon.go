@@ -330,11 +330,16 @@ func Run(ctx context.Context, opts Options) error {
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
-		Vhosts:       siteService,
-		Services:     serviceManager,
-		Tooling:      toolingService,
-		Build:        buildService,
-		Logger:       logger,
+		Listeners: api.ListenerPorts{
+			HTTPPort:  cfg.HTTPPort,
+			HTTPSPort: cfg.HTTPSPort,
+			UIPort:    cfg.UIPort,
+		},
+		Vhosts:   siteService,
+		Services: serviceManager,
+		Tooling:  toolingService,
+		Build:    buildService,
+		Logger:   logger,
 	})
 
 	// The built-in proxy owns the loopback HTTP/HTTPS listeners only in
@@ -550,6 +555,7 @@ func (d *daemon) persistSettings(ctx context.Context) {
 		"max_request_body_mb":   strconv.Itoa(d.cfg.MaxRequestBodyMB),
 		"log_max_mb":            strconv.Itoa(d.cfg.LogMaxMB),
 		"log_keep":              strconv.Itoa(d.cfg.LogKeep),
+		"restart_required":      "false",
 	}
 	for key, value := range values {
 		if err := d.store.SetSetting(ctx, key, value); err != nil {
