@@ -87,8 +87,12 @@
     }
   }
 
-  async function selectFile(path: string, generation = loadGeneration): Promise<void> {
-    if (path === selectedPath && original) return;
+  async function selectFile(
+    path: string,
+    generation = loadGeneration,
+    force = false,
+  ): Promise<void> {
+    if (!force && path === selectedPath && original) return;
     selectedPath = path;
     contentLoading = true;
     contentError = null;
@@ -157,7 +161,8 @@
               : 'Saved. The running service was not reloaded.'),
       });
       await loadFiles();
-      if (selectedPath) await selectFile(selectedPath);
+      if (selectedPath) await selectFile(selectedPath, loadGeneration, true);
+      result = applied;
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === 'CONFIG_CONFLICT') {
         conflict = conflictFromError(caught);
@@ -217,8 +222,10 @@
         title: 'Configuration reset',
         message: result.message ?? 'Restored the last known backup for this file.',
       });
+      const resetResult = result;
       await loadFiles();
-      await selectFile(selectedPath);
+      await selectFile(selectedPath, loadGeneration, true);
+      result = resetResult;
     } catch (caught) {
       actionError = describeError(caught);
     } finally {
