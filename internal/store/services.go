@@ -50,7 +50,7 @@ func (s *Store) GetServiceState(ctx context.Context, id services.ID) (services.R
 	rec, err := scanServiceRecord(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return services.Record{}, ErrNotFound
+			return services.Record{}, services.ErrNotFound
 		}
 		return services.Record{}, fmt.Errorf("get service state %q: %w", id, err)
 	}

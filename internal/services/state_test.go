@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -9,6 +10,7 @@ func TestStateConstants(t *testing.T) {
 	states := []State{
 		StateNotInstalled,
 		StateInstalled,
+		StateInstalledButStopped,
 		StateStarting,
 		StateActive,
 		StateStopping,
@@ -18,6 +20,9 @@ func TestStateConstants(t *testing.T) {
 		if s == "" {
 			t.Errorf("empty State constant")
 		}
+	}
+	if StateInstalledButStopped != "installed_but_stopped" {
+		t.Errorf("StateInstalledButStopped = %q, want installed_but_stopped", StateInstalledButStopped)
 	}
 }
 
@@ -34,5 +39,39 @@ func TestRecordFields(t *testing.T) {
 	}
 	if r.ID != IDMySQL || r.State != StateActive || !r.Active || r.UpdatedAt != now {
 		t.Fatalf("unexpected record values: %+v", r)
+	}
+}
+
+func TestViewNewFieldsJSON(t *testing.T) {
+	data, err := json.Marshal(View{
+		Health:      "healthy",
+		ContainerID: "cid-123",
+		Installed:   true,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	for _, key := range []string{"health", "container_id", "installed"} {
+		if _, ok := fields[key]; !ok {
+			t.Errorf("View JSON missing %q key, got: %s", key, data)
+		}
+	}
+
+	zero, err := json.Marshal(View{})
+	if err != nil {
+		t.Fatalf("json.Marshal zero View: %v", err)
+	}
+	if err := json.Unmarshal(zero, &fields); err != nil {
+		t.Fatalf("json.Unmarshal zero View: %v", err)
+	}
+	for _, key := range []string{"health", "container_id", "installed"} {
+		if _, ok := fields[key]; !ok {
+			t.Errorf("zero View JSON missing %q key, got: %s", key, zero)
+		}
 	}
 }

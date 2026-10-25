@@ -130,3 +130,83 @@ func TestCatalogGet(t *testing.T) {
 		t.Fatalf("c.Get(unknown) = true, want false")
 	}
 }
+
+func TestCatalogValidateRejectsFloatingImages(t *testing.T) {
+	images := []string{
+		"docker.io/library/nginx:latest",
+		"docker.io/library/nginx:1.27",
+		"nginx",
+		"nginx@sha256:abc",
+		"docker.io/library/nginx@sha256:0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
+		"docker.io/library/nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+	}
+	for _, image := range images {
+		t.Run(image, func(t *testing.T) {
+			c := Catalog{Services: []Service{{
+				ID:          IDRedis,
+				DisplayName: "Redis",
+				Group:       GroupStandalone,
+				Image:       image,
+			}}}
+			if err := c.Validate(); err == nil {
+				t.Fatalf("expected error for floating image %q, got nil", image)
+			}
+		})
+	}
+}
+
+func TestCatalogValidateAcceptsPinnedImages(t *testing.T) {
+	images := []string{
+		"docker.io/library/nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"ghcr.io/devstack/imagemagick@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	}
+	for _, image := range images {
+		c := Catalog{Services: []Service{{
+			ID:          IDRedis,
+			DisplayName: "Redis",
+			Group:       GroupStandalone,
+			Image:       image,
+		}}}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("unexpected error for pinned image %q: %v", image, err)
+		}
+	}
+}
+
+func TestCatalogValidateRejectsUnknownDependency(t *testing.T) {
+	c := Catalog{Services: []Service{{
+		ID:          IDRedis,
+		DisplayName: "Redis",
+		Group:       GroupStandalone,
+		Image:       "docker.io/library/redis@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		DependsOn:   []ID{"missing"},
+	}}}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for unknown dependency, got nil")
+	}
+}
+
+func TestCatalogValidateRejectsSelfDependency(t *testing.T) {
+	c := Catalog{Services: []Service{{
+		ID:          IDRedis,
+		DisplayName: "Redis",
+		Group:       GroupStandalone,
+		Image:       "docker.io/library/redis@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		DependsOn:   []ID{IDRedis},
+	}}}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for self dependency, got nil")
+	}
+}
+
+func TestCatalogValidateRejectsInvalidGroup(t *testing.T) {
+	c := Catalog{Services: []Service{{
+		ID:          IDRedis,
+		DisplayName: "Redis",
+		Group:       Group("cache"),
+		Image:       "docker.io/library/redis@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}}}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for unknown group, got nil")
+	}
+}
