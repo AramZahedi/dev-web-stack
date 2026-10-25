@@ -87,8 +87,14 @@ func TestInstallScriptGeneratedUnitWritesManagedTools(t *testing.T) {
 	if line == "" {
 		t.Fatal("install.sh has no ReadWritePaths line for /usr/local/bin")
 	}
-	if !strings.Contains(line, "${DEVSTACK_HOME_DIR}") {
-		t.Fatalf("generated unit does not include the devstack home: %s", line)
+	if !strings.Contains(line, `-"${DEVSTACK_HOME_DIR}"`) {
+		t.Fatalf("generated unit does not mark the devstack home optional: %s", line)
+	}
+	if strings.Contains(script, `UNIT_DIR="${REPO_ROOT}/build/systemd"`) {
+		t.Fatal("install.sh can reuse the static units instead of templating the actual home")
+	}
+	if !strings.Contains(script, `run install -d -m 0755 "${DEVSTACK_HOME_DIR}"`) {
+		t.Fatal("install.sh does not create the devstack home as the installing user")
 	}
 	if !strings.Contains(script, `tool_root: "${DEVSTACK_HOME_DIR}"`) {
 		t.Fatal("install.sh does not configure tool_root for the helper")

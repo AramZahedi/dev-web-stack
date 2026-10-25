@@ -143,8 +143,12 @@ func TestServiceSetPHPDefaultMissingBuild(t *testing.T) {
 }
 
 func TestServiceClearPHPDefaultFallsBackToNewestInstalled(t *testing.T) {
-	svc, st, paths, build, helper := newToolService(t)
+	svc, st, paths, _, helper := newToolService(t)
 	ctx := context.Background()
+	newest := fakePHPBuild(t, paths.Home, "8.5.0")
+	if err := st.UpsertRuntime(ctx, newest); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := svc.SetPHPDefault(ctx, "8.4", false); err != nil {
 		t.Fatal(err)
 	}
@@ -154,8 +158,8 @@ func TestServiceClearPHPDefaultFallsBackToNewestInstalled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Configured != "" || status.Build == nil || status.Build.ID != build.ID {
-		t.Fatalf("status = %+v, want fallback build %s", status, build.ID)
+	if status.Configured != "" || status.Build == nil || status.Build.ID != newest.ID {
+		t.Fatalf("status = %+v, want fallback build %s", status, newest.ID)
 	}
 	if !status.ShimInstalled {
 		t.Fatal("fallback shim is not installed")

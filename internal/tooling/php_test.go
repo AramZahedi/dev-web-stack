@@ -314,7 +314,7 @@ func TestComposerInstallVerifiesChecksumSizeAndWrapper(t *testing.T) {
 	if !strings.Contains(text, "DEVSTACK_SITE") || !strings.Contains(text, "command -v php") {
 		t.Fatalf("wrapper does not select the site PHP:\n%s", text)
 	}
-	if !strings.Contains(text, `${DEVSTACK_HOME:-/nonexistent}/tools/sites/${DEVSTACK_SITE}/`) || !strings.Contains(text, "Composer requires a PHP site") {
+	if !strings.Contains(text, "tools/sites") || !strings.Contains(text, "invalid DEVSTACK_SITE name") || !strings.Contains(text, "Composer requires a PHP site") || !strings.Contains(text, "$site_real/bin/php") {
 		t.Fatalf("wrapper can silently fall back to a non-site PHP:\n%s", text)
 	}
 	if !strings.Contains(text, filepath.Join(ShimDir(paths), "php")) {
