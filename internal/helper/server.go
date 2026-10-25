@@ -25,6 +25,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/forwarder"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/hosts"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
 
@@ -103,6 +104,9 @@ type Config struct {
 	// without root.
 	VhostHTTPPort  int
 	VhostHTTPSPort int
+	// ServiceRoot is the devstack root directory owning service container state.
+	// When set, the helper service controller is wired automatically.
+	ServiceRoot string
 	// Logger receives server diagnostics. A nil logger uses slog.Default.
 	Logger *slog.Logger
 	// Service contains the privileged operations exposed by the helper. When
@@ -115,18 +119,24 @@ type Config struct {
 // protocol. Each function is wired by the command that owns the corresponding
 // subsystem; leaving one nil keeps its route visible but unimplemented.
 type Service struct {
-	CAFingerprint   func() string
-	EnsureCA        func(context.Context) (helperproto.EnsureCAResponse, error)
-	SignCertificate func(context.Context, helperproto.SignRequest) (helperproto.SignResponse, error)
-	InstallTrust    func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
-	RemoveTrust     func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
-	TrustStatus     func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
-	SetForwarders   func(context.Context, helperproto.ForwardersRequest) error
-	VhostStatus     func(context.Context) (helperproto.VhostStatusResponse, error)
-	VhostSync       func(context.Context, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
-	VhostSetMode    func(context.Context, string, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
-	VhostRemove     func(context.Context) error
-	Uninstall       func(context.Context, helperproto.UninstallRequest) error
+	CAFingerprint     func() string
+	EnsureCA          func(context.Context) (helperproto.EnsureCAResponse, error)
+	SignCertificate   func(context.Context, helperproto.SignRequest) (helperproto.SignResponse, error)
+	InstallTrust      func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
+	RemoveTrust       func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
+	TrustStatus       func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
+	SetForwarders     func(context.Context, helperproto.ForwardersRequest) error
+	VhostStatus       func(context.Context) (helperproto.VhostStatusResponse, error)
+	VhostSync         func(context.Context, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+	VhostSetMode      func(context.Context, string, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
+	VhostRemove       func(context.Context) error
+	Uninstall         func(context.Context, helperproto.UninstallRequest) error
+	ServiceStatus     func(context.Context) ([]helperproto.ServiceStatus, error)
+	ServiceInstall    func(context.Context, string) error
+	ServiceActivate   func(context.Context, string) error
+	ServiceDeactivate func(context.Context, string) error
+	ServiceUninstall  func(context.Context, string, bool) error
+	ServiceLogs       func(context.Context, string, int) (string, error)
 }
 
 // Server is a helper RPC server listening on a Unix-domain socket.
@@ -134,8 +144,9 @@ type Server struct {
 	cfg    Config
 	logger *slog.Logger
 
-	authority *Authority
-	vhosts    *VhostManager
+	authority      *Authority
+	vhosts         *VhostManager
+	dockerServices *DockerServiceController
 
 	hostsMu sync.Mutex
 
@@ -197,6 +208,9 @@ func NewServer(cfg Config) (*Server, error) {
 		}
 		s.vhosts = manager
 	}
+	if cfg.ServiceRoot != "" {
+		s.dockerServices = NewDockerServiceController(cfg.ServiceRoot, services.DefaultCatalog(), cfg.Runner)
+	}
 	s.cfg.Service = s.wireService(s.cfg.Service)
 	return s, nil
 }
@@ -240,6 +254,36 @@ func (s *Server) wireService(service Service) Service {
 		}
 		if service.VhostRemove == nil {
 			service.VhostRemove = s.vhosts.Remove
+		}
+	}
+	if s.dockerServices != nil {
+		if service.ServiceStatus == nil {
+			service.ServiceStatus = s.dockerServices.Status
+		}
+		if service.ServiceInstall == nil {
+			service.ServiceInstall = func(ctx context.Context, id string) error {
+				return s.dockerServices.Install(ctx, services.ID(id))
+			}
+		}
+		if service.ServiceActivate == nil {
+			service.ServiceActivate = func(ctx context.Context, id string) error {
+				return s.dockerServices.Activate(ctx, services.ID(id))
+			}
+		}
+		if service.ServiceDeactivate == nil {
+			service.ServiceDeactivate = func(ctx context.Context, id string) error {
+				return s.dockerServices.Deactivate(ctx, services.ID(id))
+			}
+		}
+		if service.ServiceUninstall == nil {
+			service.ServiceUninstall = func(ctx context.Context, id string, deleteData bool) error {
+				return s.dockerServices.Uninstall(ctx, services.ID(id), deleteData)
+			}
+		}
+		if service.ServiceLogs == nil {
+			service.ServiceLogs = func(ctx context.Context, id string, tail int) (string, error) {
+				return s.dockerServices.Logs(ctx, services.ID(id), tail)
+			}
 		}
 	}
 	if service.Uninstall == nil {
@@ -697,6 +741,13 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST "+helperproto.PathVhostsMode, s.handleVhostsMode)
 	mux.HandleFunc("DELETE "+helperproto.PathVhosts, s.handleVhostsRemove)
 	mux.HandleFunc("POST "+helperproto.PathUninstall, s.handleUninstall)
+	mux.HandleFunc("GET "+helperproto.PathServicesStatus, s.handleServicesStatus)
+	mux.HandleFunc("POST "+helperproto.PathServicesInstall, s.handleServicesInstall)
+	mux.HandleFunc("POST "+helperproto.PathServicesActivate, s.handleServicesActivate)
+	mux.HandleFunc("POST "+helperproto.PathServicesDeactivate, s.handleServicesDeactivate)
+	mux.HandleFunc("POST "+helperproto.PathServicesUninstall, s.handleServicesUninstall)
+	mux.HandleFunc("GET "+helperproto.PathServicesLogs, s.handleServicesLogs)
+	mux.HandleFunc("POST "+helperproto.PathServicesLogs, s.handleServicesLogs)
 	return s.authenticate(mux)
 }
 

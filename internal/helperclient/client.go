@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -227,6 +228,48 @@ func (c *Client) SetServingMode(ctx context.Context, mode string, req helperprot
 // RemoveVhosts deletes helper-managed vhosts, bridge files, and TLS material.
 func (c *Client) RemoveVhosts(ctx context.Context) error {
 	return c.do(ctx, http.MethodDelete, helperproto.PathVhosts, nil, nil)
+}
+
+// ServiceStatus retrieves the current operational status of all services.
+func (c *Client) ServiceStatus(ctx context.Context) ([]helperproto.ServiceStatus, error) {
+	var resp []helperproto.ServiceStatus
+	err := c.do(ctx, http.MethodGet, helperproto.PathServicesStatus, nil, &resp)
+	return resp, err
+}
+
+// ServiceInstall instructs the helper to pull the image and scaffold a service.
+func (c *Client) ServiceInstall(ctx context.Context, id string) error {
+	req := helperproto.ServiceActionRequest{ID: id}
+	return c.do(ctx, http.MethodPost, helperproto.PathServicesInstall, req, nil)
+}
+
+// ServiceActivate starts the specified service container.
+func (c *Client) ServiceActivate(ctx context.Context, id string) error {
+	req := helperproto.ServiceActionRequest{ID: id}
+	return c.do(ctx, http.MethodPost, helperproto.PathServicesActivate, req, nil)
+}
+
+// ServiceDeactivate stops the specified service container.
+func (c *Client) ServiceDeactivate(ctx context.Context, id string) error {
+	req := helperproto.ServiceActionRequest{ID: id}
+	return c.do(ctx, http.MethodPost, helperproto.PathServicesDeactivate, req, nil)
+}
+
+// ServiceUninstall stops and removes the specified service container, optionally deleting its data.
+func (c *Client) ServiceUninstall(ctx context.Context, id string, deleteData bool) error {
+	req := helperproto.ServiceActionRequest{ID: id, DeleteData: deleteData}
+	return c.do(ctx, http.MethodPost, helperproto.PathServicesUninstall, req, nil)
+}
+
+// ServiceLogs retrieves bounded container logs for the specified service.
+func (c *Client) ServiceLogs(ctx context.Context, id string, tail int) (string, error) {
+	path := fmt.Sprintf("%s?id=%s", helperproto.PathServicesLogs, url.QueryEscape(id))
+	if tail > 0 {
+		path += fmt.Sprintf("&tail=%d", tail)
+	}
+	var resp helperproto.ServiceLogsResponse
+	err := c.do(ctx, http.MethodGet, path, nil, &resp)
+	return resp.Logs, err
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
