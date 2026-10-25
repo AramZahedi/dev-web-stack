@@ -176,6 +176,17 @@ describe('Services', () => {
     expect(install.className).not.toContain('primary');
   });
 
+  it('does not duplicate installed/active state badges', async () => {
+    render(Services);
+
+    const nginx = await cardFor('Nginx Web Server');
+    expect(within(nginx).getAllByText(/installed/i)).toHaveLength(1);
+    expect(within(nginx).getAllByText(/active/i)).toHaveLength(1);
+
+    const apache = await cardFor('Apache HTTP Server');
+    expect(within(apache).getAllByText(/installed/i)).toHaveLength(1);
+  });
+
   it('opens phpMyAdmin only for an active phpMyAdmin service', async () => {
     render(Services);
 

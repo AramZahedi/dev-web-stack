@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -262,24 +261,6 @@ func (c *DockerServiceController) containers(ctx context.Context) (map[string]ps
 	return containers, nil
 }
 
-func isMissingImageError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, exec.ErrNotFound) {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "executable file not found") {
-		return false
-	}
-	return strings.Contains(message, "no such image") ||
-		strings.Contains(message, "no such object") ||
-		strings.Contains(message, "manifest unknown") ||
-		strings.Contains(message, "image not found") ||
-		strings.Contains(message, "image does not exist")
-}
-
 func isAbsentContainerError(err error) bool {
 	if err == nil {
 		return false
@@ -291,29 +272,34 @@ func isAbsentContainerError(err error) bool {
 		strings.Contains(message, "container not found")
 }
 
-func (c *DockerServiceController) imageInstalled(ctx context.Context, image string) (bool, error) {
-	if _, err := c.runner.Run(ctx, "docker", "image", "inspect", image); err != nil {
-		if isMissingImageError(err) {
-			return false, nil
+func (c *DockerServiceController) serviceDirsPresent(id services.ID) bool {
+	for _, sub := range []string{"config", "data", "logs"} {
+		info, err := os.Stat(filepath.Join(c.root, "services", string(id), sub))
+		if err != nil || !info.IsDir() {
+			return false
 		}
-		return false, fmt.Errorf("docker image inspect %s: %w", image, err)
 	}
-	return true, nil
+	return true
+}
+
+// serviceInstalled means this product actually installed the service: its
+// scaffold directories exist. A cached Docker image alone is not an
+// installation; Install pulls first and only then scaffolds.
+func (c *DockerServiceController) serviceInstalled(svc services.Service) bool {
+	return c.serviceDirsPresent(svc.ID)
 }
 
 // Status inspects the docker compose project and returns status for all catalog services.
 func (c *DockerServiceController) Status(ctx context.Context) ([]helperproto.ServiceStatus, error) {
-	if _, err := os.Stat(c.composePath); errors.Is(err, os.ErrNotExist) {
-		if err := c.ensureComposeFile(); err != nil {
+	containers := map[string]psContainer{}
+	if _, err := os.Stat(c.composePath); err == nil {
+		var err error
+		containers, err = c.containers(ctx)
+		if err != nil {
 			return nil, err
 		}
-	} else if err != nil {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("stat compose file: %w", err)
-	}
-
-	containers, err := c.containers(ctx)
-	if err != nil {
-		return nil, err
 	}
 
 	statuses := make([]helperproto.ServiceStatus, 0, len(c.catalog.Services))
@@ -364,11 +350,7 @@ func (c *DockerServiceController) Status(ctx context.Context) ([]helperproto.Ser
 				st.State = string(services.StateInstalledButStopped)
 			}
 		} else {
-			installed, err := c.imageInstalled(ctx, svc.Image)
-			if err != nil {
-				return nil, err
-			}
-			if installed {
+			if c.serviceInstalled(svc) {
 				st.Installed = true
 				st.State = string(services.StateInstalled)
 			}
@@ -411,11 +393,11 @@ func (c *DockerServiceController) Install(ctx context.Context, id services.ID) e
 	if err := c.ensureComposeFile(); err != nil {
 		return err
 	}
-	if err := c.scaffoldService(id); err != nil {
-		return err
-	}
 	if _, err := c.runCompose(ctx, "pull", string(id)); err != nil {
 		return fmt.Errorf("docker compose pull %s: %w", id, err)
+	}
+	if err := c.scaffoldService(id); err != nil {
+		return err
 	}
 	return nil
 }
@@ -455,6 +437,10 @@ func (c *DockerServiceController) Activate(ctx context.Context, id services.ID) 
 
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
+
+	if !c.serviceInstalled(svc) {
+		return fmt.Errorf("%w: service %s is not installed; run install first", helperproto.ErrInvalidRequest, id)
+	}
 
 	if err := c.ensureComposeFile(); err != nil {
 		return err

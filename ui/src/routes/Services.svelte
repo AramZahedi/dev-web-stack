@@ -119,6 +119,10 @@
       .join(', ');
   }
 
+  function showStateBadge(state: string): boolean {
+    return state !== 'active' && state !== 'installed' && state !== 'not_installed';
+  }
+
   function stateVariant(
     state: string,
   ): 'accent' | 'neutral' | 'danger' | 'warning' | 'info' {
@@ -432,7 +436,9 @@
                         <Badge variant={active ? 'accent' : 'neutral'}>
                           {active ? 'Active' : 'Inactive'}
                         </Badge>
-                        <Badge variant={stateVariant(service.state)}>{service.state}</Badge>
+                        {#if showStateBadge(service.state)}
+                          <Badge variant={stateVariant(service.state)}>{service.state}</Badge>
+                        {/if}
                         {#if service.health}
                           <Badge variant={healthVariant(service.health)}>
                             Health: {service.health}

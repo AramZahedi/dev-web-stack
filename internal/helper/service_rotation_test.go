@@ -415,7 +415,9 @@ func TestActivatePhpMyAdminWithActiveDatabase(t *testing.T) {
 		psOutput:  runningPS(services.IDMySQL),
 		psAfterUp: runningPS(services.IDMySQL, services.IDPHPMyAdmin),
 	}
-	controller := helper.NewDockerServiceController(t.TempDir(), rotationCatalog(), runner)
+	root := t.TempDir()
+	scaffoldServiceDirs(t, root, services.IDPHPMyAdmin)
+	controller := helper.NewDockerServiceController(root, rotationCatalog(), runner)
 	controller.Probe = runner.probe
 	controller.WaitTimeout = time.Second
 
@@ -436,7 +438,9 @@ func TestActivatePhpMyAdminWithActiveDatabase(t *testing.T) {
 
 func TestActivatePhpMyAdminRequiresActiveDatabase(t *testing.T) {
 	runner := &rotationRunner{psOutput: "[]"}
-	controller := helper.NewDockerServiceController(t.TempDir(), rotationCatalog(), runner)
+	root := t.TempDir()
+	scaffoldServiceDirs(t, root, services.IDPHPMyAdmin)
+	controller := helper.NewDockerServiceController(root, rotationCatalog(), runner)
 	controller.Probe = func(context.Context, int) error { return nil }
 
 	err := controller.Activate(context.Background(), services.IDPHPMyAdmin)

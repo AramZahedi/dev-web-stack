@@ -435,6 +435,35 @@ func (f *controllerFixture) composeCall(rest ...string) []string {
 	return append([]string{"docker", "compose", "-p", f.project(), "-f", f.composePath()}, rest...)
 }
 
+func (f *controllerFixture) writeCompose() {
+	f.t.Helper()
+	if err := os.MkdirAll(filepath.Dir(f.composePath()), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(f.composePath(), []byte("services: {}\n"), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *controllerFixture) scaffold(id services.ID) {
+	f.t.Helper()
+	scaffoldServiceDirs(f.t, f.root, id)
+}
+
+func (f *controllerFixture) markInstalled(id services.ID) {
+	f.t.Helper()
+	f.scaffold(id)
+}
+
+func scaffoldServiceDirs(t *testing.T, root string, id services.ID) {
+	t.Helper()
+	for _, sub := range []string{"config", "data", "logs"} {
+		if err := os.MkdirAll(filepath.Join(root, "services", string(id), sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func (f *controllerFixture) image(id services.ID) string {
 	svc, _ := f.catalog.Get(id)
 	return svc.Image
@@ -442,6 +471,8 @@ func (f *controllerFixture) image(id services.ID) string {
 
 func TestStatusMapsContainerAndImageStates(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.writeCompose()
+	fx.scaffold(services.IDPostgreSQL)
 	fx.sim.setContainer(services.IDNginx, "running", "healthy")
 	fx.sim.setContainer(services.IDApache, "running", "unhealthy")
 	fx.sim.setContainer(services.IDMySQL, "exited", "")
@@ -523,19 +554,11 @@ func TestStatusMapsContainerAndImageStates(t *testing.T) {
 		t.Errorf("ps argv = %v, want %v", psCalls[0], want)
 	}
 
-	inspected := make(map[string]bool)
-	for _, call := range fx.runner.snapshot() {
-		if len(call) >= 4 && call[0] == "docker" && call[1] == "image" && call[2] == "inspect" {
-			inspected[call[3]] = true
-		}
-	}
-	if len(inspected) != 2 || !inspected[fx.image(services.IDPostgreSQL)] || !inspected[fx.image(services.IDImageMagick)] {
-		t.Errorf("image inspect calls = %v, want postgres and imagemagick only", inspected)
-	}
 }
 
 func TestStatusReportsHealthcheckPendingAsStarting(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.writeCompose()
 	fx.sim.setContainer(services.IDNginx, "running", "")
 
 	statuses, err := fx.ctrl.Status(context.Background())
@@ -557,6 +580,7 @@ func TestStatusReportsHealthcheckPendingAsStarting(t *testing.T) {
 func TestStatusReturnsRunnerErrors(t *testing.T) {
 	t.Run("ps", func(t *testing.T) {
 		fx := newControllerFixture(t)
+		fx.writeCompose()
 		fx.sim.psErr = errors.New("docker daemon unavailable")
 		statuses, err := fx.ctrl.Status(context.Background())
 		if err == nil || !strings.Contains(err.Error(), "docker daemon unavailable") {
@@ -567,20 +591,9 @@ func TestStatusReturnsRunnerErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("image inspect", func(t *testing.T) {
-		fx := newControllerFixture(t)
-		fx.sim.inspectErr = errors.New("permission denied")
-		statuses, err := fx.ctrl.Status(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "permission denied") {
-			t.Fatalf("Status error = %v, want inspect error", err)
-		}
-		if statuses != nil {
-			t.Fatalf("Status returned statuses with error: %+v", statuses)
-		}
-	})
-
 	t.Run("malformed ps output", func(t *testing.T) {
 		fx := newControllerFixture(t)
+		fx.writeCompose()
 		fx.sim.psRaw = []byte(`[{"Service":"nginx"`)
 		statuses, err := fx.ctrl.Status(context.Background())
 		if err == nil {
@@ -591,19 +604,63 @@ func TestStatusReturnsRunnerErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("missing image", func(t *testing.T) {
-		fx := newControllerFixture(t)
-		fx.sim.inspectErr = errors.New("image not found")
-		statuses, err := fx.ctrl.Status(context.Background())
-		if err != nil {
-			t.Fatalf("Status: %v", err)
+}
+
+func TestStatusIgnoresCachedImageWithoutServiceScaffold(t *testing.T) {
+	fx := newControllerFixture(t)
+	fx.sim.images[fx.image(services.IDNginx)] = true
+
+	statuses, err := fx.ctrl.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	for _, st := range statuses {
+		if st.ID != string(services.IDNginx) {
+			continue
 		}
-		for _, st := range statuses {
-			if st.State != string(services.StateNotInstalled) || st.Installed {
-				t.Errorf("status for %s = %+v, want not_installed", st.ID, st)
-			}
+		if st.Installed || st.State != string(services.StateNotInstalled) {
+			t.Fatalf("nginx status = %+v, want not_installed despite cached image", st)
 		}
-	})
+		return
+	}
+	t.Fatal("nginx status not found")
+}
+
+func TestStatusDoesNotCreateComposeFileAsASideEffect(t *testing.T) {
+	fx := newControllerFixture(t)
+	if _, err := fx.ctrl.Status(context.Background()); err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if _, err := os.Stat(fx.composePath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Status created %s: %v", fx.composePath(), err)
+	}
+}
+
+func TestActivateRejectsCachedImageWithoutServiceScaffold(t *testing.T) {
+	fx := newControllerFixture(t)
+	fx.sim.images[fx.image(services.IDNginx)] = true
+
+	err := fx.ctrl.Activate(context.Background(), services.IDNginx)
+	if !errors.Is(err, helperproto.ErrInvalidRequest) {
+		t.Fatalf("Activate error = %v, want invalid-request not-installed error", err)
+	}
+	if calls := fx.runner.callsWithArg("up"); len(calls) != 0 {
+		t.Fatalf("compose up calls = %v, want none", calls)
+	}
+}
+
+func TestInstallPullFailureDoesNotMarkServiceInstalled(t *testing.T) {
+	fx := newControllerFixture(t)
+	fx.sim.pullErr = errors.New("registry unavailable")
+
+	if err := fx.ctrl.Install(context.Background(), services.IDNginx); err == nil {
+		t.Fatal("Install succeeded, want pull failure")
+	}
+	for _, sub := range []string{"config", "data", "logs"} {
+		if _, err := os.Stat(filepath.Join(fx.root, "services", "nginx", sub)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("failed install created %s: %v", sub, err)
+		}
+	}
 }
 
 func TestInstallCreatesDirectoriesPullsImageAndBacksUpCompose(t *testing.T) {
@@ -683,6 +740,7 @@ func TestInstallCreatesDirectoriesPullsImageAndBacksUpCompose(t *testing.T) {
 
 func TestActivateStopsCompetitorAndStartsTarget(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.markInstalled(services.IDNginx)
 	fx.sim.setContainer(services.IDApache, "running", "healthy")
 	fx.sim.setPort(8080, services.IDApache)
 
@@ -709,6 +767,7 @@ func TestActivateStopsCompetitorAndStartsTarget(t *testing.T) {
 
 func TestActivateRollsBackCompetitorOnHealthFailure(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.markInstalled(services.IDNginx)
 	fx.sim.setContainer(services.IDApache, "running", "healthy")
 	fx.sim.setPort(8080, services.IDApache)
 	fx.sim.upHealth[services.IDNginx] = "unhealthy"
@@ -750,6 +809,7 @@ func TestActivateRollsBackCompetitorOnHealthFailure(t *testing.T) {
 
 func TestActivateRestartsCompetitorWhenStopReportsFailure(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.markInstalled(services.IDNginx)
 	fx.sim.setContainer(services.IDApache, "running", "healthy")
 	fx.sim.setPort(8080, services.IDApache)
 	fx.sim.stopErr = errors.New("stop reported failure")
@@ -786,6 +846,7 @@ func TestActivateRestartsCompetitorWhenStopReportsFailure(t *testing.T) {
 
 func TestActivateReportsFailedCompetitorRestore(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.markInstalled(services.IDNginx)
 	fx.sim.setContainer(services.IDApache, "running", "healthy")
 	fx.sim.setPort(8080, services.IDApache)
 	fx.sim.upHealth[services.IDNginx] = "unhealthy"
@@ -815,6 +876,7 @@ func TestActivateReportsFailedCompetitorRestore(t *testing.T) {
 
 func TestActivateSwitchesMySQLToMariaDB(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.markInstalled(services.IDMariaDB)
 	fx.sim.setContainer(services.IDMySQL, "running", "healthy")
 	fx.sim.setPort(3306, services.IDMySQL)
 
@@ -841,6 +903,7 @@ func TestActivateSwitchesMySQLToMariaDB(t *testing.T) {
 
 func TestActivateMySQLToMariaDBRollsBackOnHealthFailure(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.markInstalled(services.IDMariaDB)
 	fx.sim.setContainer(services.IDMySQL, "running", "healthy")
 	fx.sim.setPort(3306, services.IDMySQL)
 	fx.sim.upHealth[services.IDMariaDB] = "unhealthy"
@@ -882,6 +945,7 @@ func TestActivateMySQLToMariaDBRollsBackOnHealthFailure(t *testing.T) {
 
 func TestActivatePortConflictDoesNotStopNativeProcess(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.markInstalled(services.IDNginx)
 	fx.ctrl.WaitTimeout = time.Nanosecond
 	fx.sim.setContainer(services.IDApache, "running", "healthy")
 	fx.sim.setPort(8080, services.IDApache)
@@ -927,6 +991,7 @@ func TestActivatePortConflictDoesNotStopNativeProcess(t *testing.T) {
 
 func TestActivateRollsBackWhenStartFails(t *testing.T) {
 	fx := newControllerFixture(t)
+	fx.markInstalled(services.IDNginx)
 	fx.sim.setContainer(services.IDApache, "running", "healthy")
 	fx.sim.setPort(8080, services.IDApache)
 	fx.sim.upErr = errors.New("image pull failed")
