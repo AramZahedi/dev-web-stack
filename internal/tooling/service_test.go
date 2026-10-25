@@ -142,22 +142,57 @@ func TestServiceSetPHPDefaultMissingBuild(t *testing.T) {
 	}
 }
 
-func TestServiceClearPHPDefault(t *testing.T) {
-	svc, st, _, _, helper := newToolService(t)
+func TestServiceClearPHPDefaultFallsBackToNewestInstalled(t *testing.T) {
+	svc, st, paths, build, helper := newToolService(t)
 	ctx := context.Background()
 	if _, err := svc.SetPHPDefault(ctx, "8.4", false); err != nil {
 		t.Fatal(err)
 	}
 	helper.calls = nil
+	helper.installs = nil
 	status, err := svc.ClearPHPDefault(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Build != nil || status.Configured != "" {
-		t.Fatalf("status = %+v", status)
+	if status.Configured != "" || status.Build == nil || status.Build.ID != build.ID {
+		t.Fatalf("status = %+v, want fallback build %s", status, build.ID)
+	}
+	if !status.ShimInstalled {
+		t.Fatal("fallback shim is not installed")
 	}
 	if _, err := st.GetSetting(ctx, DefaultPHPSettingKey); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("setting remains: %v", err)
+	}
+	if len(helper.removes) != 0 {
+		t.Fatalf("clear removed the fallback shim: %v", helper.removes)
+	}
+	if len(helper.installs) != 1 || helper.installs[0].ID != helperproto.ToolPHPDefault {
+		t.Fatalf("helper installs = %+v, want php-default fallback", helper.installs)
+	}
+	if _, err := os.Stat(GlobalIniPath(paths)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(ShimDir(paths), "php")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServiceClearPHPDefaultWithoutInstalledBuildRemovesShim(t *testing.T) {
+	home := t.TempDir()
+	st := testStore(t)
+	paths := config.NewPaths(home)
+	if err := paths.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	helper := &fakeToolHelper{statuses: map[string]helperproto.ToolStatus{}}
+	svc := NewService(Deps{Store: st, Paths: paths, Helper: helper})
+
+	status, err := svc.ClearPHPDefault(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Build != nil || status.Configured != "" || status.ShimInstalled {
+		t.Fatalf("status = %+v", status)
 	}
 	if len(helper.removes) != 1 || helper.removes[0] != helperproto.ToolPHPDefault {
 		t.Fatalf("helper removes = %v", helper.removes)

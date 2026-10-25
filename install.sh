@@ -199,11 +199,9 @@ for command in id getent install sudo systemctl; do
 	fi
 done
 if [ "${SOURCE_MODE}" != "source" ]; then
-	for command in tar; do
-		if ! command -v "${command}" >/dev/null 2>&1; then
-			die "required command not found: ${command}"
-		fi
-	done
+	if ! command -v tar >/dev/null 2>&1; then
+		die "required command not found: tar"
+	fi
 	if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
 		die "required command not found: sha256sum or shasum"
 	fi
@@ -664,6 +662,7 @@ if [ "${DRY_RUN}" -eq 0 ]; then
 		exit 1
 	fi
 	if [ ! -S /run/devstack-helper/helper.sock ]; then
+		# shellcheck disable=SC2016 # backticks are intentional user-facing text
 		printf 'install: warning: helper socket is not ready yet; run `devstack init` after checking the service\n' >&2
 	fi
 fi

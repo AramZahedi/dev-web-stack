@@ -320,22 +320,8 @@ func (m *ToolManager) Remove(ctx context.Context, id string) (helperproto.ToolSt
 	if status.Conflict != "" {
 		return helperproto.ToolStatus{}, fmt.Errorf("%w: %s: %s", helperproto.ErrToolConflict, status.WrapperPath, status.Conflict)
 	}
-	for _, wrapper := range m.wrapperPaths(id) {
-		target := m.targetForWrapper(id, wrapper)
-		link, err := os.Readlink(wrapper)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return helperproto.ToolStatus{}, fmt.Errorf("helper: inspect tool link: %w", err)
-		}
-		if link != target {
-			return helperproto.ToolStatus{}, fmt.Errorf("%w: %s points to %s", helperproto.ErrToolConflict, wrapper, link)
-		}
-		if err := os.Remove(wrapper); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return helperproto.ToolStatus{}, fmt.Errorf("helper: remove tool link: %w", err)
-		}
-	}
+	// Remove the home artifacts first. If this fails, leave the system links in
+	// place so the tool is still usable (and the failure is recoverable).
 	paths := config.NewPaths(m.home)
 	switch id {
 	case helperproto.ToolPHPDefault:
@@ -351,6 +337,22 @@ func (m *ToolManager) Remove(ctx context.Context, id string) (helperproto.ToolSt
 			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return helperproto.ToolStatus{}, fmt.Errorf("helper: remove composer artifact: %w", err)
 			}
+		}
+	}
+	for _, wrapper := range m.wrapperPaths(id) {
+		target := m.targetForWrapper(id, wrapper)
+		link, err := os.Readlink(wrapper)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return helperproto.ToolStatus{}, fmt.Errorf("helper: inspect tool link: %w", err)
+		}
+		if link != target {
+			return helperproto.ToolStatus{}, fmt.Errorf("%w: %s points to %s", helperproto.ErrToolConflict, wrapper, link)
+		}
+		if err := os.Remove(wrapper); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return helperproto.ToolStatus{}, fmt.Errorf("helper: remove tool link: %w", err)
 		}
 	}
 	m.logger.Info("helper: removed managed tool", "id", id)

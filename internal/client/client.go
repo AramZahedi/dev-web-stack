@@ -301,10 +301,12 @@ func (c *Client) SiteAction(ctx context.Context, ref, action string) error {
 	return c.doJSON(ctx, http.MethodPost, "/api/v1/sites/"+url.PathEscape(ref)+"/"+action, nil, nil)
 }
 
-// BuildSite runs a static site's native build.
+// BuildSite runs a static site's native build. Builds are long-running, so
+// this call deliberately bypasses the generic request timeout and relies on
+// the caller's context (the CLI uses the command context).
 func (c *Client) BuildSite(ctx context.Context, ref string) (build.Result, error) {
 	var result build.Result
-	err := c.doJSON(ctx, http.MethodPost, "/api/v1/sites/"+url.PathEscape(ref)+"/build", nil, &result)
+	err := c.doJSONNoTimeout(ctx, http.MethodPost, "/api/v1/sites/"+url.PathEscape(ref)+"/build", nil, &result)
 	return result, err
 }
 
@@ -606,8 +608,20 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in, out any) e
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	return c.doJSONContext(requestCtx, method, path, in, out)
+}
 
-	resp, err := c.do(requestCtx, method, path, in)
+// doJSONNoTimeout is the long-running request path. It still honors caller
+// cancellation but does not impose the generic 30-second timeout.
+func (c *Client) doJSONNoTimeout(ctx context.Context, method, path string, in, out any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.doJSONContext(ctx, method, path, in, out)
+}
+
+func (c *Client) doJSONContext(ctx context.Context, method, path string, in, out any) error {
+	resp, err := c.do(ctx, method, path, in)
 	if err != nil {
 		return err
 	}

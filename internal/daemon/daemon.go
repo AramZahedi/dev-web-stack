@@ -190,6 +190,7 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 	d.helper = helper
+	toolBinDir := resolveToolBinDir(ctx, helper)
 
 	ca, err := helper.EnsureCA(ctx)
 	if err != nil {
@@ -298,17 +299,18 @@ func Run(ctx context.Context, opts Options) error {
 
 	userHome, _ := os.UserHomeDir()
 	doctorService := doctor.NewService(doctor.Deps{
-		Config:    cfg,
-		Home:      userHome,
-		Store:     st,
-		Helper:    helper,
-		Trust:     helper,
-		Ports:     portProbe{},
-		Runtimes:  runtimeChecker{manager: runtimes},
-		Disk:      diskChecker{},
-		Vhosts:    siteService,
-		PHP:       siteService,
-		HostsPath: opts.HostsPath,
+		Config:     cfg,
+		Home:       userHome,
+		Store:      st,
+		Helper:     helper,
+		Trust:      helper,
+		Ports:      portProbe{},
+		Runtimes:   runtimeChecker{manager: runtimes},
+		Disk:       diskChecker{},
+		Vhosts:     siteService,
+		PHP:        siteService,
+		HostsPath:  opts.HostsPath,
+		ToolBinDir: toolBinDir,
 	})
 
 	toolingService := tooling.NewService(tooling.Deps{

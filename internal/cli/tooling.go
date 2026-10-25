@@ -100,6 +100,9 @@ func (a *App) newPHPDefaultCmd() *cobra.Command {
 }
 
 func writePHPDefaultTable(cmd *cobra.Command, status tooling.PHPDefaultStatus) error {
+	if status.Build == nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "No PHP build is installed; the managed shim is not available.")
+	}
 	buildID, version := "-", "-"
 	if status.Build != nil {
 		buildID = defaultString(status.Build.ID, "-")

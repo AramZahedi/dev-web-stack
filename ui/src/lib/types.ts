@@ -7,6 +7,7 @@ export type SiteStatus =
   | 'running'
   | 'stopping'
   | 'crashed'
+  | 'degraded'
   | 'error';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'skipped';

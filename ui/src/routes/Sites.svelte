@@ -51,7 +51,7 @@
 
   const isActive = (site: Site) =>
     site.status === 'running' || site.status === 'starting' || site.status === 'stopping';
-  const isCrashed = (site: Site) => site.status === 'crashed' || site.status === 'error';
+  const isCrashed = (site: Site) => site.status === 'crashed' || site.status === 'degraded' || site.status === 'error';
 
   const counts = $derived.by(() => ({
     all: sites.length,

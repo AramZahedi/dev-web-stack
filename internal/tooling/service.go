@@ -138,20 +138,47 @@ func (s *Service) SetPHPDefault(ctx context.Context, value string, force bool) (
 	return s.PHPDefault(ctx)
 }
 
-// ClearPHPDefault removes the persisted default and the managed system link.
+// ClearPHPDefault removes the persisted default while preserving the
+// documented fallback: when any PHP build remains installed, the global shim
+// is repointed at the newest installed build rather than system PHP. Only when
+// no PHP build is installed is the managed shim removed.
 func (s *Service) ClearPHPDefault(ctx context.Context) (PHPDefaultStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.deps.Store == nil {
 		return PHPDefaultStatus{}, errors.New("tooling: no store configured")
 	}
+	builds, err := installedPHPBuilds(ctx, s.deps.Store)
+	if err != nil {
+		return PHPDefaultStatus{}, err
+	}
+	if len(builds) == 0 {
+		if err := s.deps.Store.DeleteSetting(ctx, DefaultPHPSettingKey); err != nil {
+			return PHPDefaultStatus{}, fmt.Errorf("tooling: clear %s: %w", DefaultPHPSettingKey, err)
+		}
+		if _, err := s.helperRemove(ctx, helperproto.ToolPHPDefault); err != nil && !errors.Is(err, helperproto.ErrNotImplemented) {
+			return PHPDefaultStatus{}, err
+		}
+		return s.PHPDefault(ctx)
+	}
+
+	build := builds[0]
+	if err := s.preflight(ctx, helperproto.ToolPHPDefault, false); err != nil {
+		return PHPDefaultStatus{}, err
+	}
+	if err := EnsureGlobalIni(build, GlobalIniPath(s.deps.Paths)); err != nil {
+		return PHPDefaultStatus{}, err
+	}
+	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
+		return PHPDefaultStatus{}, err
+	}
+	if err := s.helperInstall(ctx, helperproto.ToolPHPDefault, false); err != nil {
+		return PHPDefaultStatus{}, err
+	}
 	if err := s.deps.Store.DeleteSetting(ctx, DefaultPHPSettingKey); err != nil {
 		return PHPDefaultStatus{}, fmt.Errorf("tooling: clear %s: %w", DefaultPHPSettingKey, err)
 	}
-	if _, err := s.helperRemove(ctx, helperproto.ToolPHPDefault); err != nil && !errors.Is(err, helperproto.ErrNotImplemented) {
-		return PHPDefaultStatus{}, err
-	}
-	return PHPDefaultStatus{GlobalIni: GlobalIniPath(s.deps.Paths), ShimDir: ShimDir(s.deps.Paths)}, nil
+	return s.PHPDefault(ctx)
 }
 
 // GlobalIni returns the current global ini.

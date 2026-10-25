@@ -74,6 +74,7 @@ type fakeClient struct {
 	migrationErr  error
 
 	phpDefaultStatus tooling.PHPDefaultStatus
+	phpClearStatus   tooling.PHPDefaultStatus
 	phpDefaultSet    string
 	phpDefaultForce  bool
 	phpDefaultClear  int
@@ -2331,7 +2332,7 @@ func (f *fakeClient) ClearPHPDefault(_ context.Context) (tooling.PHPDefaultStatu
 		return tooling.PHPDefaultStatus{}, err
 	}
 	f.phpDefaultClear++
-	return tooling.PHPDefaultStatus{}, nil
+	return f.phpClearStatus, nil
 }
 
 func (f *fakeClient) Tools(_ context.Context) ([]helperproto.ToolStatus, error) {

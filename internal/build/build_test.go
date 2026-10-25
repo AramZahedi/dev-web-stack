@@ -143,13 +143,13 @@ func TestBuildSuccessStreamsLogAndValidatesOutput(t *testing.T) {
 
 func TestBuildRejectsMissingBuildProfileAndKind(t *testing.T) {
 	svc, _, project, _ := newBuildFixture(t)
-	if _, err := svc.Build(context.Background(), model.Site{ID: "s", Name: "app", Kind: model.SiteStatic, HostPath: project}); err == nil {
-		t.Fatal("site without build profile accepted")
+	if _, err := svc.Build(context.Background(), model.Site{ID: "s", Name: "app", Kind: model.SiteStatic, HostPath: project}); !errors.Is(err, ErrInvalidSetup) {
+		t.Fatalf("site without build profile error = %v", err)
 	}
 	site := buildSite(project, "dist")
 	site.Kind = model.SitePHP
-	if _, err := svc.Build(context.Background(), site); err == nil {
-		t.Fatal("PHP site accepted")
+	if _, err := svc.Build(context.Background(), site); !errors.Is(err, ErrInvalidSetup) {
+		t.Fatalf("PHP site error = %v", err)
 	}
 }
 
@@ -166,8 +166,8 @@ func TestBuildRejectsOutputOutsideProject(t *testing.T) {
 	svc, _, project, _ := newBuildFixture(t)
 	for _, output := range []string{"../outside", "/tmp/outside", ""} {
 		t.Run(output, func(t *testing.T) {
-			if _, err := svc.Build(context.Background(), buildSite(project, output)); err == nil {
-				t.Fatalf("output %q accepted", output)
+			if _, err := svc.Build(context.Background(), buildSite(project, output)); !errors.Is(err, ErrInvalidSetup) {
+				t.Fatalf("output %q error = %v", output, err)
 			}
 		})
 	}
@@ -324,5 +324,83 @@ func TestBuildRefusesRoot(t *testing.T) {
 	svc.deps.EUID = func() int { return 0 }
 	if _, err := svc.Build(context.Background(), buildSite(project, "dist")); err == nil || !strings.Contains(err.Error(), "root") {
 		t.Fatalf("root error = %v", err)
+	}
+}
+
+func TestBuildSkippedSnapshotMarksSiteDegraded(t *testing.T) {
+	svc, st, project, _ := newBuildFixture(t)
+	dist := filepath.Join(project, "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sparse := filepath.Join(dist, "huge.bin")
+	file, err := os.Create(sparse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(SnapshotSizeCap + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	buildPath := filepath.Join(svc.deps.Paths.Runtimes, "node", "22.11.0-linux-x64", "bin", "node")
+	if err := os.WriteFile(buildPath, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	site := buildSite(project, "dist")
+	site.Status = model.StatusRunning
+	site.DesiredState = model.DesiredRunning
+	if err := st.CreateSite(context.Background(), site); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.Build(context.Background(), site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Success || !result.SnapshotSkipped {
+		t.Fatalf("result = %+v", result)
+	}
+	stored, err := st.GetSite(context.Background(), site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != model.StatusDegraded {
+		t.Fatalf("persisted status = %q, want degraded", stored.Status)
+	}
+}
+
+func TestBuildEnvCannotReplaceNodePath(t *testing.T) {
+	svc, _, project, _ := newBuildFixture(t)
+	site := buildSite(project, "dist")
+	site.Build.Env["PATH"] = "/untrusted/bin:/usr/bin:/bin"
+
+	result, err := svc.Build(context.Background(), site)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("result = %+v", result)
+	}
+	data, err := os.ReadFile(result.LogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(data)
+	nodeBin := filepath.Join(svc.deps.Paths.Runtimes, "node", "22.11.0-linux-x64", "bin")
+	line := ""
+	for _, candidate := range strings.Split(logText, "\n") {
+		if strings.HasPrefix(candidate, "node-path-") {
+			line = strings.TrimPrefix(candidate, "node-path-")
+		}
+	}
+	if !strings.HasPrefix(line, nodeBin) {
+		t.Fatalf("PATH = %q, want selected Node bin first", line)
+	}
+	if !strings.Contains(line, "/untrusted/bin") {
+		t.Fatalf("PATH = %q, build env PATH was dropped", line)
 	}
 }

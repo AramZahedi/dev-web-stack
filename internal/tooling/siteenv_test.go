@@ -141,16 +141,19 @@ func TestBuildSiteEnvPHP(t *testing.T) {
 	if env.Values["DEVSTACK_SITE"] != "app" || env.Values["DEVSTACK_HOME"] != home || env.Values["DEVSTACK_PROJECT"] != project {
 		t.Fatalf("devstack env = %+v", env.Values)
 	}
+	if env.ShimDir != filepath.Join(paths.Tools, "sites", "app", "bin") {
+		t.Fatalf("site shim dir = %q, want the DEVSTACK_SITE name", env.ShimDir)
+	}
 	if env.Values["APP_ENV"] != "local" {
 		t.Fatalf("site env missing: %+v", env.Values)
 	}
-	if !strings.HasPrefix(env.PATH, SiteShimDir(paths, site.ID)+string(os.PathListSeparator)) {
+	if !strings.HasPrefix(env.PATH, SiteShimDir(paths, site.Name)+string(os.PathListSeparator)) {
 		t.Fatalf("PATH = %q", env.PATH)
 	}
 	if strings.Contains(env.PATH, "/evil") {
 		t.Fatalf("site env overwrote PATH: %q", env.PATH)
 	}
-	phpShim := filepath.Join(SiteShimDir(paths, site.ID), "php")
+	phpShim := filepath.Join(SiteShimDir(paths, site.Name), "php")
 	if _, err := os.Stat(phpShim); err != nil {
 		t.Fatalf("site php shim missing: %v", err)
 	}
@@ -198,11 +201,11 @@ func TestBuildSiteEnvNodeAndStaticBuild(t *testing.T) {
 			if env.NodeBuild == nil || env.NodeBuild.ID != nodeBuild.ID {
 				t.Fatalf("node build = %+v", env.NodeBuild)
 			}
-			if !strings.HasPrefix(env.PATH, SiteShimDir(paths, tc.site.ID)+string(os.PathListSeparator)) {
+			if !strings.HasPrefix(env.PATH, SiteShimDir(paths, tc.site.Name)+string(os.PathListSeparator)) {
 				t.Fatalf("PATH = %q", env.PATH)
 			}
 			for _, name := range []string{"node", "npm", "npx"} {
-				shim := filepath.Join(SiteShimDir(paths, tc.site.ID), name)
+				shim := filepath.Join(SiteShimDir(paths, tc.site.Name), name)
 				data, err := os.ReadFile(shim)
 				if err != nil {
 					t.Fatalf("%s shim: %v", name, err)
@@ -314,7 +317,7 @@ func TestSiteShimCleansStaleTools(t *testing.T) {
 	}
 	// A PHP-only site must not leave stale node shims from a removed build
 	// profile.
-	stale := filepath.Join(SiteShimDir(paths, site.ID), "node")
+	stale := filepath.Join(SiteShimDir(paths, site.Name), "node")
 	writeTestScript(t, stale, "#!/bin/sh\nexit 0\n", 0o755)
 	if _, err := BuildSiteEnv(site, EnvDeps{Paths: paths, Builds: []model.RuntimeBuild{builder}, PHPInfo: &info, BasePATH: "/bin"}); err != nil {
 		t.Fatal(err)

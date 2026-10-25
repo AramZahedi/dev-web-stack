@@ -31,13 +31,13 @@ func TestComposerWrapperUsesSitePHPAndPreservesArgv(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "args")
-	siteBin := filepath.Join(home, "tools", "sites", "site-1", "bin")
+	siteBin := SiteShimDir(paths, "app")
 	fakePHP := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellQuote(out) + "\n"
 	writeTestScript(t, filepath.Join(siteBin, "php"), fakePHP, 0o755)
 
 	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "arg one", "--flag", "x y")
 	command.Env = []string{
-		"DEVSTACK_SITE=site-1",
+		"DEVSTACK_SITE=app",
 		"DEVSTACK_HOME=" + home,
 		"PATH=" + siteBin,
 	}
@@ -122,5 +122,103 @@ func TestComposerWrapperRefusesNonSitePHPWhenSiteSet(t *testing.T) {
 	}
 	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
 		t.Fatalf("non-site PHP was executed: %v", statErr)
+	}
+}
+
+func TestComposerWrapperRefusesGlobalPHPForSiteShell(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	payload := []byte("phar")
+	sum := sha256.Sum256(payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+	if _, err := installComposer(context.Background(), srv.Client(), paths, composerSource{
+		URL: srv.URL, Version: "test", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(payload)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "args")
+	writeTestScript(t, filepath.Join(ShimDir(paths), "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
+
+	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
+	command.Env = []string{
+		"DEVSTACK_SITE=site-1",
+		"DEVSTACK_HOME=" + home,
+		"PATH=" + ShimDir(paths),
+	}
+	err := command.Run()
+	if err == nil {
+		t.Fatal("composer wrapper fell back to the global devstack PHP inside a site")
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("global PHP was executed for a site shell: %v", statErr)
+	}
+}
+
+func TestComposerWrapperRefusesWhenNodeSiteHasNoSitePHP(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	payload := []byte("phar")
+	sum := sha256.Sum256(payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+	if _, err := installComposer(context.Background(), srv.Client(), paths, composerSource{
+		URL: srv.URL, Version: "test", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(payload)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	nodeBin := filepath.Join(home, "tools", "sites", "node-1", "bin")
+	writeTestScript(t, filepath.Join(nodeBin, "node"), "#!/bin/sh\nexit 0\n", 0o755)
+	out := filepath.Join(t.TempDir(), "args")
+	writeTestScript(t, filepath.Join(ShimDir(paths), "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
+
+	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
+	command.Env = []string{
+		"DEVSTACK_SITE=node-1",
+		"DEVSTACK_HOME=" + home,
+		"PATH=" + nodeBin + ":" + ShimDir(paths),
+	}
+	err := command.Run()
+	if err == nil {
+		t.Fatal("composer wrapper used global PHP for a Node site shell")
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("global PHP was executed for a Node site shell: %v", statErr)
+	}
+}
+
+func TestComposerWrapperRefusesAnotherSitesShim(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	payload := []byte("phar")
+	sum := sha256.Sum256(payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+	if _, err := installComposer(context.Background(), srv.Client(), paths, composerSource{
+		URL: srv.URL, Version: "test", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(payload)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	otherSite := filepath.Join(home, "tools", "sites", "other", "bin")
+	out := filepath.Join(t.TempDir(), "args")
+	writeTestScript(t, filepath.Join(otherSite, "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
+
+	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
+	command.Env = []string{
+		"DEVSTACK_SITE=site-1",
+		"DEVSTACK_HOME=" + home,
+		"PATH=" + otherSite,
+	}
+	if err := command.Run(); err == nil {
+		t.Fatal("composer wrapper accepted another site's PHP shim")
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("another site's PHP was executed: %v", statErr)
 	}
 }

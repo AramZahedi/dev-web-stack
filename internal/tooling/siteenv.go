@@ -146,7 +146,7 @@ func BuildSiteEnv(site model.Site, deps EnvDeps) (SiteEnvironment, error) {
 		return SiteEnvironment{}, fmt.Errorf("tooling: site %q: %w", site.Name, err)
 	}
 
-	env := SiteEnvironment{Site: site, ShimDir: SiteShimDir(deps.Paths, site.ID)}
+	env := SiteEnvironment{Site: site, ShimDir: SiteShimDir(deps.Paths, site.Name)}
 	values := make(map[string]string, len(site.Env)+8)
 	for key, value := range site.Env {
 		values[key] = value
