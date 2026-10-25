@@ -489,7 +489,7 @@
                     {#if !installed}
                       <Button
                         size="sm"
-                        variant="primary"
+                        variant="info"
                         loading={busy === `${service.id}:install`}
                         disabled={Boolean(busy)}
                         onclick={() => act(service, 'install')}

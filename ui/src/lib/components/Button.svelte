@@ -3,7 +3,7 @@
   import type { Snippet } from 'svelte';
 
   interface Props {
-    variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-ghost';
+    variant?: 'primary' | 'secondary' | 'info' | 'ghost' | 'danger' | 'danger-ghost';
     size?: 'sm' | 'md' | 'lg';
     type?: 'button' | 'submit' | 'reset';
     disabled?: boolean;
@@ -98,6 +98,17 @@
   .btn.primary:hover:not(:disabled) {
     background: var(--accent-hover);
     border-color: var(--accent-hover);
+  }
+
+  .btn.info {
+    background: var(--info);
+    border-color: var(--info);
+    color: #ffffff;
+    font-weight: 600;
+  }
+
+  .btn.info:hover:not(:disabled) {
+    filter: brightness(0.92);
   }
 
   .btn.secondary {

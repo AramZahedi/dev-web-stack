@@ -163,6 +163,19 @@ describe('Services', () => {
     expect(within(redis).queryByRole('button', { name: 'Logs' })).toBeNull();
   });
 
+  it('uses distinct action colors for Install and Activate', async () => {
+    render(Services);
+
+    const apache = await cardFor('Apache HTTP Server');
+    const activate = within(apache).getByRole('button', { name: 'Activate' });
+    const redis = await cardFor('Redis 8.8');
+    const install = within(redis).getByRole('button', { name: 'Install' });
+
+    expect(activate.className).toContain('primary');
+    expect(install.className).toContain('info');
+    expect(install.className).not.toContain('primary');
+  });
+
   it('opens phpMyAdmin only for an active phpMyAdmin service', async () => {
     render(Services);
 
