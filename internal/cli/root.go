@@ -85,6 +85,11 @@ type Client interface {
 	RestartService(ctx context.Context, id string) error
 	UninstallService(ctx context.Context, id string, deleteData bool) (servicecontrol.UninstallResult, error)
 	ServiceLogs(ctx context.Context, id string, tail int) (string, error)
+	ListServiceConfig(ctx context.Context, id string) (servicecontrol.ConfigListing, error)
+	ServiceConfigContent(ctx context.Context, id, path string) (servicecontrol.ConfigContent, error)
+	DiffServiceConfig(ctx context.Context, id, path, content string) (servicecontrol.ConfigDiff, error)
+	ApplyServiceConfig(ctx context.Context, id string, req servicecontrol.ConfigApplyRequest) (servicecontrol.ConfigApplyResult, error)
+	ResetServiceConfig(ctx context.Context, id, path string) (servicecontrol.ConfigApplyResult, error)
 	ServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error)
 	RotateServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error)
 }

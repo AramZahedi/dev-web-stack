@@ -106,6 +106,17 @@ type fakeClient struct {
 	serviceLogsTail        int
 	serviceCredentials     servicecontrol.Credentials
 	serviceCredentialCalls []string
+
+	configListing    servicecontrol.ConfigListing
+	configContent    servicecontrol.ConfigContent
+	configDiff       servicecontrol.ConfigDiff
+	configApply      servicecontrol.ConfigApplyResult
+	configReset      servicecontrol.ConfigApplyResult
+	configCalls      []string
+	configActionID   string
+	configActionPath string
+	configActionBody string
+	configResolution string
 }
 
 func (f *fakeClient) maybeErr() error { return f.err }
@@ -339,6 +350,58 @@ func (f *fakeClient) ServiceLogs(_ context.Context, id string, tail int) (string
 	f.serviceActionID = id
 	f.serviceLogsTail = tail
 	return f.serviceLogs, nil
+}
+
+func (f *fakeClient) ListServiceConfig(_ context.Context, id string) (servicecontrol.ConfigListing, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigListing{}, err
+	}
+	f.configCalls = append(f.configCalls, "list")
+	f.configActionID = id
+	return f.configListing, nil
+}
+
+func (f *fakeClient) ServiceConfigContent(_ context.Context, id, path string) (servicecontrol.ConfigContent, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigContent{}, err
+	}
+	f.configCalls = append(f.configCalls, "show")
+	f.configActionID = id
+	f.configActionPath = path
+	return f.configContent, nil
+}
+
+func (f *fakeClient) DiffServiceConfig(_ context.Context, id, path, content string) (servicecontrol.ConfigDiff, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigDiff{}, err
+	}
+	f.configCalls = append(f.configCalls, "diff")
+	f.configActionID = id
+	f.configActionPath = path
+	f.configActionBody = content
+	return f.configDiff, nil
+}
+
+func (f *fakeClient) ApplyServiceConfig(_ context.Context, id string, req servicecontrol.ConfigApplyRequest) (servicecontrol.ConfigApplyResult, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigApplyResult{}, err
+	}
+	f.configCalls = append(f.configCalls, "apply")
+	f.configActionID = id
+	f.configActionPath = req.Path
+	f.configActionBody = req.Content
+	f.configResolution = req.Resolution
+	return f.configApply, nil
+}
+
+func (f *fakeClient) ResetServiceConfig(_ context.Context, id, path string) (servicecontrol.ConfigApplyResult, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigApplyResult{}, err
+	}
+	f.configCalls = append(f.configCalls, "reset")
+	f.configActionID = id
+	f.configActionPath = path
+	return f.configReset, nil
 }
 
 func (f *fakeClient) ServiceCredentials(_ context.Context, id string) (servicecontrol.Credentials, error) {

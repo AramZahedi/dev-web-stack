@@ -87,6 +87,11 @@ const (
 	codeVhostIncludeMissing    = "VHOST_INCLUDE_MISSING"
 	codeServerReloadFailed     = "SERVER_RELOAD_FAILED"
 	codeVhostSyncBusy          = "VHOST_SYNC_BUSY"
+
+	codeConfigConflict         = "CONFIG_CONFLICT"
+	codeConfigResetUnavailable = "CONFIG_RESET_UNAVAILABLE"
+	codeConfigValidationFailed = "CONFIG_VALIDATION_FAILED"
+	codeConfigReloadFailed     = "CONFIG_RELOAD_FAILED"
 )
 
 // SiteService is the site lifecycle surface used by the API.
@@ -153,6 +158,16 @@ type ServiceService interface {
 	Logs(ctx context.Context, id services.ID, tail int) (string, error)
 	Credentials(ctx context.Context, id services.ID) (servicecontrol.Credentials, error)
 	RotateCredentials(ctx context.Context, id services.ID) (servicecontrol.Credentials, error)
+}
+
+// ServiceConfigService is the service config manifest/read/diff/apply/reset
+// surface used by the API.
+type ServiceConfigService interface {
+	List(ctx context.Context, id services.ID) (servicecontrol.ConfigListing, error)
+	Content(ctx context.Context, id services.ID, path string) (servicecontrol.ConfigContent, error)
+	Diff(ctx context.Context, id services.ID, path, content string) (servicecontrol.ConfigDiff, error)
+	Apply(ctx context.Context, id services.ID, req servicecontrol.ConfigApplyRequest) (servicecontrol.ConfigApplyResult, error)
+	Reset(ctx context.Context, id services.ID, path string) (servicecontrol.ConfigApplyResult, error)
 }
 
 // ToolService is the machine-wide PHP default and managed tool surface used by
@@ -238,27 +253,29 @@ type Config struct {
 	// Listeners records the ports the running daemon actually bound. Settings
 	// patches compare against these, not against config.yaml, so a saved but
 	// not-yet-applied port change keeps restart_required set.
-	Listeners ListenerPorts
-	Vhosts    VhostService
-	Services  ServiceService
-	Tooling   ToolService
-	Build     BuildService
-	Logger    *slog.Logger
+	Listeners     ListenerPorts
+	Vhosts        VhostService
+	Services      ServiceService
+	ServiceConfig ServiceConfigService
+	Tooling       ToolService
+	Build         BuildService
+	Logger        *slog.Logger
 }
 
 // Server owns the HTTP API and dashboard handler.
 type Server struct {
-	store    *store.Store
-	sites    SiteService
-	runtimes RuntimeService
-	doctor   DoctorService
-	logs     *logs.Store
-	helper   HelperClient
-	vhosts   VhostService
-	services ServiceService
-	tooling  ToolService
-	build    BuildService
-	cfg      Config
+	store         *store.Store
+	sites         SiteService
+	runtimes      RuntimeService
+	doctor        DoctorService
+	logs          *logs.Store
+	helper        HelperClient
+	vhosts        VhostService
+	services      ServiceService
+	serviceConfig ServiceConfigService
+	tooling       ToolService
+	build         BuildService
+	cfg           Config
 
 	secret       [sha256.Size]byte
 	allowedHosts map[string]struct{}
@@ -299,6 +316,7 @@ func NewServer(
 		helper:            helper,
 		vhosts:            cfg.Vhosts,
 		services:          cfg.Services,
+		serviceConfig:     cfg.ServiceConfig,
 		tooling:           cfg.Tooling,
 		build:             cfg.Build,
 		cfg:               cfg,
@@ -410,6 +428,11 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/services/{id}/deactivate", s.handleDeactivateService},
 		{http.MethodPost, "/api/v1/services/{id}/restart", s.handleRestartService},
 		{http.MethodGet, "/api/v1/services/{id}/logs", s.handleServiceLogs},
+		{http.MethodGet, "/api/v1/services/{id}/config", s.handleServiceConfigList},
+		{http.MethodGet, "/api/v1/services/{id}/config/content", s.handleServiceConfigContent},
+		{http.MethodPost, "/api/v1/services/{id}/config/diff", s.handleServiceConfigDiff},
+		{http.MethodPost, "/api/v1/services/{id}/config/apply", s.handleServiceConfigApply},
+		{http.MethodPost, "/api/v1/services/{id}/config/reset", s.handleServiceConfigReset},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/reveal", s.handleRevealServiceCredentials},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/rotate", s.handleRotateServiceCredentials},
 	}
@@ -863,6 +886,62 @@ func classifyError(err error) (int, string, string, any) {
 	}
 	if errors.Is(err, servicecontrol.ErrActiveDatabaseRequired) {
 		return http.StatusConflict, codeServiceConflict, err.Error(), nil
+	}
+	var configConflict *servicecontrol.ConfigConflictError
+	if errors.As(err, &configConflict) {
+		return http.StatusConflict, codeConfigConflict, err.Error(), map[string]any{
+			"path":          configConflict.Path,
+			"reason":        configConflict.Reason,
+			"current_hash":  configConflict.CurrentHash,
+			"proposed_hash": configConflict.ProposedHash,
+			"diff":          configConflict.Diff,
+			"conflict":      configConflict.Conflict,
+		}
+	}
+	if errors.Is(err, servicecontrol.ErrConfigConflict) {
+		return http.StatusConflict, codeConfigConflict, err.Error(), nil
+	}
+	var configFailure *servicecontrol.ConfigApplyFailure
+	if errors.As(err, &configFailure) {
+		status := http.StatusUnprocessableEntity
+		code := codeConfigValidationFailed
+		if configFailure.Kind == servicecontrol.ConfigFailureReload {
+			status = http.StatusBadGateway
+			code = codeConfigReloadFailed
+		}
+		details := map[string]any{
+			"operation":   configFailure.Kind,
+			"path":        configFailure.Path,
+			"rolled_back": configFailure.RolledBack,
+		}
+		if configFailure.BackupPath != "" {
+			details["backup_path"] = configFailure.BackupPath
+		}
+		if configFailure.RollbackError != nil {
+			details["rollback_error"] = servicecontrol.RedactSecrets(configFailure.RollbackError.Error())
+		}
+		return status, code, servicecontrol.RedactSecrets(err.Error()), details
+	}
+	if errors.Is(err, servicecontrol.ErrConfigNotInstalled) {
+		return http.StatusConflict, codeServiceConflict, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigPathInvalid) ||
+		errors.Is(err, servicecontrol.ErrConfigPathDenied) ||
+		errors.Is(err, servicecontrol.ErrConfigBinary) ||
+		errors.Is(err, servicecontrol.ErrConfigResolutionInvalid) {
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigTooLarge) {
+		return http.StatusRequestEntityTooLarge, codePayloadTooLarge, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigNotFound) {
+		return http.StatusNotFound, codeNotFound, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigResetUnavailable) {
+		return http.StatusConflict, codeConfigResetUnavailable, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigServiceUnavailable) {
+		return http.StatusServiceUnavailable, codeServiceUnavailable, err.Error(), nil
 	}
 	if errors.Is(err, servicecontrol.ErrHelperUnavailable) {
 		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil

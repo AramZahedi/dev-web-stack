@@ -236,11 +236,12 @@ func Run(ctx context.Context, opts Options) error {
 	// web switch and Docker config manager use it, the site service consumes
 	// the Docker syncer/switch, and the web provider registers its preparer
 	// once the site service exists.
+	serviceCatalog := services.DefaultCatalog()
 	serviceManager := servicecontrol.NewManager(
 		cfg.Home,
 		st,
 		serviceHelper{client: helper},
-		services.DefaultCatalog(),
+		serviceCatalog,
 		nil,
 	)
 	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
@@ -326,6 +327,17 @@ func Run(ctx context.Context, opts Options) error {
 		Runtimes: runtimes,
 		Paths:    paths,
 	})
+	serviceConfigService, err := servicecontrol.NewConfigService(servicecontrol.ConfigDeps{
+		Root:      cfg.Home,
+		Catalog:   serviceCatalog,
+		Services:  serviceManager,
+		Validator: serviceHelper{client: helper},
+		Events:    st,
+		Logger:    logger,
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: service config manager: %w", err)
+	}
 
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
@@ -335,11 +347,12 @@ func Run(ctx context.Context, opts Options) error {
 			HTTPSPort: cfg.HTTPSPort,
 			UIPort:    cfg.UIPort,
 		},
-		Vhosts:   siteService,
-		Services: serviceManager,
-		Tooling:  toolingService,
-		Build:    buildService,
-		Logger:   logger,
+		Vhosts:        siteService,
+		Services:      serviceManager,
+		ServiceConfig: serviceConfigService,
+		Tooling:       toolingService,
+		Build:         buildService,
+		Logger:        logger,
 	})
 
 	// The built-in proxy owns the loopback HTTP/HTTPS listeners only in
