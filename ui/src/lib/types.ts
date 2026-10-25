@@ -295,6 +295,108 @@ export interface SettingsUpdateResult extends Settings {
   warnings?: string[];
 }
 
+export type PerformanceProfile = 'balanced' | 'throughput' | 'custom';
+
+export interface PerformanceResources {
+  hostname?: string;
+  arch?: string;
+  cpu_count?: number;
+  cpu_quota_cpus?: number;
+  memory_total_bytes?: number;
+  memory_available_bytes?: number;
+  page_size_bytes?: number;
+  nofile_soft?: number;
+  nofile_hard?: number;
+  user?: string;
+  group?: string;
+  [key: string]: unknown;
+}
+
+export interface PerformanceValues {
+  [key: string]: unknown;
+}
+
+export interface PerformanceHostTuning {
+  enabled?: boolean;
+  applied?: boolean;
+  sysctl_path?: string;
+  limits_path?: string;
+  backup_dir?: string;
+  last_error?: string;
+  [key: string]: unknown;
+}
+
+export interface PerformanceState {
+  profile: PerformanceProfile;
+  custom?: PerformanceValues;
+  values?: PerformanceValues;
+  resources?: PerformanceResources;
+  host_tuning?: PerformanceHostTuning;
+  active_server?: string;
+  applied_at?: string;
+  last_applied?: string;
+  warnings?: string[];
+  [key: string]: unknown;
+}
+
+export interface PerformanceFile {
+  path: string;
+  content: string;
+}
+
+export interface PerformancePreview {
+  profile: PerformanceProfile;
+  values?: PerformanceValues;
+  files?: PerformanceFile[];
+  host_diff?: string;
+  warnings?: string[];
+  [key: string]: unknown;
+}
+
+export interface PerformanceStep {
+  name: string;
+  ok: boolean;
+  detail?: string;
+}
+
+export interface PerformanceApplyResult {
+  applied?: boolean;
+  reset?: boolean;
+  backup_path?: string;
+  backup_dir?: string;
+  steps?: PerformanceStep[];
+  warnings?: string[];
+  validation_pending?: boolean;
+  host_tuning_applied?: boolean;
+  [key: string]: unknown;
+}
+
+export interface BenchmarkRun {
+  id: string;
+  site: string;
+  tool: string;
+  tool_version?: string;
+  target?: string;
+  profile?: string;
+  started_at: string;
+  duration_s: number;
+  connections: number;
+  requests_per_second: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  errors: number;
+  error_rate?: number;
+  result_path?: string;
+  [key: string]: unknown;
+}
+
+export interface BenchmarkRequest {
+  site: string;
+  duration_s?: number;
+  connections?: number;
+}
+
 export interface TerminalSession {
   ticket: string;
   expires_at: string;

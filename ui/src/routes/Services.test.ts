@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import Services from './Services.svelte';
 import * as api from '../lib/api';
 import { ApiError } from '../lib/errors';
-import type { ServiceView } from '../lib/types';
+import type { BenchmarkRun, PerformancePreview, PerformanceState, ServiceView } from '../lib/types';
 
 vi.mock('../lib/api', () => ({
   isMockMode: false,
@@ -16,6 +16,15 @@ vi.mock('../lib/api', () => ({
   serviceLogs: vi.fn(),
   revealServiceCredentials: vi.fn(),
   rotateServiceCredentials: vi.fn(),
+  listSites: vi.fn(),
+  getPerformance: vi.fn(),
+  setPerformanceProfile: vi.fn(),
+  previewPerformance: vi.fn(),
+  applyPerformance: vi.fn(),
+  resetPerformance: vi.fn(),
+  listBenchmarks: vi.fn(),
+  getBenchmark: vi.fn(),
+  runBenchmark: vi.fn(),
 }));
 
 const NGINX: ServiceView = {
@@ -109,8 +118,63 @@ async function cardFor(name: string): Promise<HTMLElement> {
   return card;
 }
 
+const PERFORMANCE: PerformanceState = {
+  profile: 'balanced',
+  resources: {
+    cpu_count: 8,
+    memory_total_bytes: 17_179_869_184,
+    memory_available_bytes: 9_126_805_504,
+    nofile_hard: 524_288,
+    nofile_soft: 1024,
+  },
+  values: {
+    nginx: { workers: 4, worker_connections: 1024 },
+    apache: { max_request_workers: 400, server_limit: 16 },
+    php: { global_children: 32, opcache: { memory_mb: 128 } },
+    host: { file_max: 100000, somaxconn: 4096 },
+  },
+  host_tuning: { applied: false },
+};
+
+const PERFORMANCE_PREVIEW: PerformancePreview = {
+  profile: 'balanced',
+  warnings: ['Host tuning is optional and global.'],
+  host_diff: '+fs.file-max = 100000',
+  files: [{ path: '/data/devstack/services/nginx/config/conf.d/performance/main.conf', content: 'worker_processes 4;' }],
+};
+
+const BENCHMARK: BenchmarkRun = {
+  id: 'bench-1',
+  site: 'blog',
+  tool: 'devstack-go-http',
+  started_at: '2026-10-26T12:00:00Z',
+  duration_s: 10,
+  connections: 32,
+  requests_per_second: 1234,
+  p50_ms: 4.2,
+  p95_ms: 9.8,
+  p99_ms: 14.1,
+  errors: 0,
+};
+
 beforeEach(() => {
   mockApi.listServices.mockResolvedValue(BASE.map((service) => ({ ...service })));
+  mockApi.listSites.mockResolvedValue([
+    {
+      id: 'site-blog',
+      name: 'blog',
+      domain: 'blog.test',
+      kind: 'static',
+      status: 'running',
+    },
+  ] as never);
+  mockApi.getPerformance.mockResolvedValue(PERFORMANCE);
+  mockApi.setPerformanceProfile.mockResolvedValue(PERFORMANCE);
+  mockApi.previewPerformance.mockResolvedValue(PERFORMANCE_PREVIEW);
+  mockApi.applyPerformance.mockResolvedValue({ applied: true, steps: [{ name: 'write', ok: true }] });
+  mockApi.resetPerformance.mockResolvedValue({ reset: true });
+  mockApi.listBenchmarks.mockResolvedValue([]);
+  mockApi.runBenchmark.mockResolvedValue(BENCHMARK);
   mockApi.installService.mockResolvedValue(undefined);
   mockApi.activateService.mockResolvedValue(undefined);
   mockApi.deactivateService.mockResolvedValue(undefined);
@@ -375,13 +439,14 @@ describe('Services', () => {
     await waitFor(() => expect(mockApi.uninstallService).toHaveBeenCalledWith('mysql', true));
   });
 
-  it('labels missing config and performance APIs as Wave 2 backend pending', async () => {
+  it('renders the measured performance panel without fake benchmark results', async () => {
     render(Services);
-    expect(await screen.findByText('Configuration & performance')).toBeTruthy();
-    expect(screen.getByText('Service config editing')).toBeTruthy();
-    expect(screen.getByText('Performance profiles')).toBeTruthy();
-    expect(screen.getAllByText('Wave 2 backend pending').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Nothing is editable yet/)).toBeTruthy();
-    expect(screen.getByText(/No profile is applied/)).toBeTruthy();
+
+    expect(await screen.findByRole('heading', { name: 'Performance' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /Balanced/ })).toBeTruthy();
+    expect(await screen.findByText('8 cores')).toBeTruthy();
+    expect(await screen.findByText('No benchmark runs yet')).toBeTruthy();
+    expect(screen.queryByText('Wave 2 backend pending')).toBeNull();
+    expect(screen.queryByText('Configuration & performance')).toBeNull();
   });
 });

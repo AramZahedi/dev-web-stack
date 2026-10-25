@@ -16,6 +16,13 @@ import type {
   PHPDefaultsResult,
   PHPExecResult,
   PHPExtension,
+  BenchmarkRequest,
+  BenchmarkRun,
+  PerformanceApplyResult,
+  PerformancePreview,
+  PerformanceProfile,
+  PerformanceState,
+  PerformanceValues,
   PHPInfo,
   PHPMigrationRequest,
   PHPMigrationResult,
@@ -193,6 +200,20 @@ export function resetMockServiceStateForTests(): void {
   mockServices = clone(seedMockServices);
   toolStatuses = clone(seedToolStatuses);
   settings = clone(seedSettings);
+  mockPerformance = {
+    profile: 'balanced',
+    values: mockPerformanceValues('balanced'),
+    resources: mockPerformanceResources,
+    active_server: 'nginx',
+    host_tuning: {
+      enabled: false,
+      applied: false,
+      sysctl_path: '/etc/sysctl.d/99-devstack-performance.conf',
+      limits_path: '/etc/security/limits.d/99-devstack-performance.conf',
+      backup_dir: '/home/dev/.devstack/backups/performance',
+    },
+  };
+  mockBenchmarks = [];
   phpDefaultConfigured = DEFAULT_PHP_BUILD;
   globalIniContent = DEFAULT_GLOBAL_INI;
 }
@@ -728,6 +749,98 @@ let vhostStatus: VhostStatus = {
   config_ok: true,
   last_sync: '',
 };
+
+function mockPerformanceValues(profile: PerformanceProfile): PerformanceValues {
+  const throughput = profile === 'throughput';
+  return {
+    profile,
+    nginx: {
+      workers: 4,
+      worker_connections: throughput ? 4096 : 1024,
+      worker_rlimit_nofile: throughput ? 8192 : 4096,
+      open_file_cache_max: 4096,
+      keepalive_timeout_seconds: 65,
+      keepalive_requests: 1000,
+      gzip: true,
+      gzip_comp_level: 5,
+    },
+    apache: {
+      threads_per_child: 25,
+      server_limit: 16,
+      max_request_workers: 400,
+      start_servers: 4,
+      min_spare_threads: 25,
+      max_spare_threads: 100,
+      async_request_worker_factor: 2,
+      max_connections_per_child: 10000,
+      keep_alive: true,
+      max_keepalive_requests: 1000,
+      keepalive_timeout_seconds: 5,
+      listen_backlog: 511,
+    },
+    php: {
+      mode: 'dynamic',
+      global_children: 32,
+      sites: [],
+      listen_backlog: 511,
+      opcache: {
+        enabled: true,
+        memory_mb: 128,
+        interned_strings_mb: 32,
+        max_accelerated_files: 20000,
+        validate_timestamps: true,
+        revalidate_freq_seconds: 2,
+      },
+      realpath_cache_size_kb: 4096,
+      realpath_cache_ttl_seconds: 120,
+    },
+    host: {
+      file_max: 100000,
+      somaxconn: 4096,
+      netdev_max_backlog: 4096,
+      ip_local_port_range: { min: 10240, max: 60999 },
+      nofile_soft: 20000,
+      nofile_hard: 40000,
+      user: 'dev',
+      group: 'dev',
+    },
+  };
+}
+
+const mockPerformanceResources = {
+  hostname: 'dev-workstation',
+  arch: 'x86_64',
+  cpu_count: 8,
+  cpu_quota_cpus: 0,
+  memory_total_bytes: 17_179_869_184,
+  memory_available_bytes: 9_126_805_504,
+  page_size_bytes: 4096,
+  nofile_soft: 1024,
+  nofile_hard: 524288,
+  user: 'dev',
+  group: 'dev',
+  sysctl: {
+    file_max: 9223372036854775807,
+    somaxconn: 4096,
+    netdev_max_backlog: 16384,
+    ip_local_port_range: { min: 32768, max: 60999 },
+  },
+};
+
+let mockPerformance: PerformanceState = {
+  profile: 'balanced',
+  values: mockPerformanceValues('balanced'),
+  resources: mockPerformanceResources,
+  active_server: 'nginx',
+  host_tuning: {
+    enabled: false,
+    applied: false,
+    sysctl_path: '/etc/sysctl.d/99-devstack-performance.conf',
+    limits_path: '/etc/security/limits.d/99-devstack-performance.conf',
+    backup_dir: '/home/dev/.devstack/backups/performance',
+  },
+};
+let mockBenchmarks: BenchmarkRun[] = [];
 
 const mockMaintenanceHTML =
   '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Site unavailable - devstack</title><body><h1>Site unavailable</h1><p>This site is stopped. Start it from the devstack dashboard or CLI, then reload the page.</p></body></html>';
@@ -1996,6 +2109,154 @@ export const mockApi = {
       },
     };
     return connection;
+  },
+
+  async getPerformance(): Promise<PerformanceState> {
+    await wait(100, 200);
+    return clone(mockPerformance);
+  },
+
+  async setPerformanceProfile(
+    profile: PerformanceProfile,
+    custom?: PerformanceValues,
+  ): Promise<PerformanceState> {
+    await wait(120, 220);
+    if (profile === 'custom' && !custom) {
+      throw new ApiError('INVALID_REQUEST', 'Custom profile values are required.', 400);
+    }
+    if (profile !== 'balanced' && profile !== 'throughput' && profile !== 'custom') {
+      throw new ApiError('INVALID_REQUEST', 'Profile must be balanced, throughput, or custom.', 400);
+    }
+    mockPerformance = {
+      ...mockPerformance,
+      profile,
+      custom: profile === 'custom' ? clone(custom) : undefined,
+      values: profile === 'custom' ? clone(custom ?? {}) : mockPerformanceValues(profile),
+      applied_at: undefined,
+    };
+    return clone(mockPerformance);
+  },
+
+  async previewPerformance(): Promise<PerformancePreview> {
+    await wait(160, 280);
+    const values = clone(mockPerformance.values ?? mockPerformanceValues(mockPerformance.profile));
+    return {
+      profile: mockPerformance.profile,
+      values,
+      warnings: [
+        'Host tuning changes are global to this machine and require root through the helper.',
+        'Apply reloads only nginx/Apache and PHP-FPM; no arbitrary service is restarted.',
+      ],
+      host_diff:
+        '# /etc/sysctl.d/99-devstack-performance.conf\n' +
+        '+fs.file-max = 100000\n' +
+        '+net.core.somaxconn = 4096\n' +
+        '+net.ipv4.ip_local_port_range = 10240 60999\n' +
+        '# /etc/security/limits.d/99-devstack-performance.conf\n' +
+        '+dev soft nofile 20000\n' +
+        '+dev hard nofile 40000\n',
+      files: [
+        {
+          path: '/home/dev/.devstack/services/nginx/config/conf.d/performance/main.conf',
+          content: 'worker_processes 4;\nworker_rlimit_nofile 8192;\n',
+        },
+        {
+          path: '/home/dev/.devstack/services/nginx/config/conf.d/performance/events.conf',
+          content: 'events {\n    worker_connections 4096;\n}\n',
+        },
+        {
+          path: '/home/dev/.devstack/services/apache/config/conf.d/performance.conf',
+          content: 'ThreadsPerChild 25\nServerLimit 16\n',
+        },
+      ],
+    };
+  },
+
+  async applyPerformance(hostTuning: boolean): Promise<PerformanceApplyResult> {
+    await wait(420, 700);
+    mockPerformance = {
+      ...mockPerformance,
+      applied_at: new Date().toISOString(),
+      host_tuning: hostTuning
+        ? { ...mockPerformance.host_tuning, enabled: true, applied: true, last_error: undefined }
+        : mockPerformance.host_tuning,
+    };
+    return {
+      applied: true,
+      backup_dir: '/home/dev/.devstack/backups/performance/20261026T120000Z',
+      host_tuning_applied: hostTuning,
+      steps: [
+        { name: 'write nginx performance includes', ok: true },
+        { name: 'write Apache performance include', ok: true, detail: 'inactive server only' },
+        { name: 'write PHP-FPM pool budgets', ok: true },
+        ...(hostTuning
+          ? [
+              { name: 'apply host sysctl/limits', ok: true, detail: 'helper verified values' },
+              { name: 'reload nginx', ok: true },
+              { name: 'reload PHP-FPM', ok: true },
+            ]
+          : [{ name: 'reload nginx', ok: true }, { name: 'reload PHP-FPM', ok: true }]),
+      ],
+    };
+  },
+
+  async resetPerformance(): Promise<PerformanceApplyResult> {
+    await wait(320, 520);
+    mockPerformance = {
+      ...mockPerformance,
+      applied_at: undefined,
+      host_tuning: { ...mockPerformance.host_tuning, applied: false, enabled: false, last_error: undefined },
+    };
+    return {
+      reset: true,
+      backup_dir: '/home/dev/.devstack/backups/performance/20261026T120500Z',
+      steps: [
+        { name: 'restore host tuning', ok: true },
+        { name: 'write safe nginx includes', ok: true },
+        { name: 'reload nginx', ok: true },
+      ],
+    };
+  },
+
+  async listBenchmarks(): Promise<BenchmarkRun[]> {
+    await wait(80, 160);
+    return clone(mockBenchmarks).sort((a, b) => b.started_at.localeCompare(a.started_at));
+  },
+
+  async getBenchmark(id: string): Promise<BenchmarkRun> {
+    await wait(60, 120);
+    const run = mockBenchmarks.find((entry) => entry.id === id);
+    if (!run) throw new ApiError('NOT_FOUND', `Benchmark ${id} was not found.`, 404);
+    return clone(run);
+  },
+
+  async runBenchmark(request: BenchmarkRequest): Promise<BenchmarkRun> {
+    await wait(650, 950);
+    const targetSite = findSite(request.site);
+    const duration = request.duration_s ?? 10;
+    const connections = request.connections ?? 32;
+    const seed = 900 + connections * 7 + duration * 3;
+    const started = new Date();
+    const run: BenchmarkRun = {
+      id: `bench-${started.getTime().toString(36)}`,
+      site: targetSite.name,
+      tool: 'devstack-go-http (mock)',
+      tool_version: 'built-in',
+      target: `http://127.0.0.1:${targetSite.http_port || 41001}/`,
+      profile: mockPerformance.profile,
+      started_at: started.toISOString(),
+      duration_s: duration,
+      connections,
+      requests_per_second: seed,
+      p50_ms: 1000 / seed * 5,
+      p95_ms: 1000 / seed * 11,
+      p99_ms: 1000 / seed * 18,
+      errors: 0,
+      error_rate: 0,
+      result_path: `/home/dev/.devstack/logs/performance/${started.toISOString().replaceAll(':', '-')}/result.json`,
+    };
+    mockBenchmarks = [...mockBenchmarks, run];
+    return clone(run);
   },
 
   async updateSettings(update: SettingsUpdate): Promise<SettingsUpdateResult> {

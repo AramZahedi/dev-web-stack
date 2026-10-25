@@ -363,8 +363,51 @@ test('Services groups containers, reveals credentials and reports activation con
   await expect(apache.getByRole('alert')).toContainText('Nginx Web Server is active');
   await expect(apache.getByText('Inactive', { exact: true })).toBeVisible();
 
-  await expect(page.getByText('Configuration & performance')).toBeVisible();
-  await expect(page.getByText('Wave 2 backend pending')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Performance' })).toBeVisible();
+  await expect(page.getByText('No benchmark runs yet')).toBeVisible();
+});
+
+test('Performance previews, applies, resets, and records a measured benchmark', async ({ page }) => {
+  test.setTimeout(45_000);
+  await open(page, '#/services');
+  const performance = page.locator('.performance-card');
+  await expect(performance.getByRole('heading', { name: 'Performance' })).toBeVisible();
+  await expect(page.getByText('No benchmark runs yet')).toBeVisible();
+
+  await performance.getByRole('button', { name: 'Preview' }).click();
+  await expect(performance.getByText('Host tuning diff')).toBeVisible();
+  await expect(performance.getByText(/Host tuning changes are global/)).toBeVisible();
+  await performance.getByText(/Managed include files/).click();
+  await expect(performance.getByText(/worker_processes 4/)).toBeVisible();
+
+  await performance.getByRole('button', { name: 'Apply profile' }).click();
+  const applyDialog = page.getByRole('dialog', { name: 'Apply performance profile?' });
+  await expect(applyDialog).toBeVisible();
+  await applyDialog.getByRole('checkbox').check();
+  await expect(applyDialog.getByText(/Host tuning changes kernel/)).toBeVisible();
+  await applyDialog.getByRole('textbox').fill('APPLY');
+  await applyDialog.getByRole('button', { name: 'Apply profile' }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Performance applied with host tuning' }),
+  ).toBeVisible();
+  await expect(performance.getByText('Apply complete')).toBeVisible();
+  await expect(performance.getByText('Host tuned')).toBeVisible();
+
+  const benchmark = page.locator('.benchmark-card');
+  await benchmark.getByLabel('Duration (s)').fill('2');
+  await benchmark.getByLabel('Connections').fill('8');
+  await benchmark.getByRole('button', { name: 'Run benchmark' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Benchmark complete' })).toBeVisible();
+  const row = benchmark.locator('tbody tr').first();
+  await expect(row).toContainText('blog');
+  await expect(row).toContainText('devstack-go-http (mock)');
+
+  await performance.getByRole('button', { name: 'Reset', exact: true }).click();
+  const resetDialog = page.getByRole('dialog', { name: 'Reset performance?' });
+  await resetDialog.getByRole('textbox').fill('RESET');
+  await resetDialog.getByRole('button', { name: 'Reset performance' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Performance reset' })).toBeVisible();
+  await expect(performance.getByText('Reset complete')).toBeVisible();
 });
 
 test('Site detail edits configuration and runs a static build', async ({ page }) => {

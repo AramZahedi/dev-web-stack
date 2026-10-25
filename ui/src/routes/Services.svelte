@@ -4,7 +4,6 @@
     Copy,
     Database,
     ExternalLink,
-    Gauge,
     Globe,
     KeyRound,
     PackagePlus,
@@ -14,7 +13,6 @@
     RotateCw,
     ScrollText,
     Server,
-    Settings2,
     Trash2,
   } from 'lucide-svelte';
   import * as api from '../lib/api';
@@ -28,6 +26,7 @@
   import EmptyState from '../lib/components/EmptyState.svelte';
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
   import Modal from '../lib/components/Modal.svelte';
+  import PerformancePanel from '../lib/components/PerformancePanel.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
 
   type ServiceAction = 'install' | 'activate' | 'deactivate' | 'restart' | 'uninstall';
@@ -606,42 +605,7 @@
     </div>
   {/if}
 
-  <section class="pending" aria-labelledby="pending-heading">
-    <div class="pending-head">
-      <div>
-        <p class="eyebrow">Wave 2</p>
-        <h2 id="pending-heading">Configuration &amp; performance</h2>
-        <p>
-          Service config manifests, diff/apply/reset, throughput profiles and benchmark runs
-          need daemon endpoints that are not part of this build.
-        </p>
-      </div>
-      <Badge variant="warning">Wave 2 backend pending</Badge>
-    </div>
-    <div class="pending-grid">
-      <article class="pending-card">
-        <span class="pending-icon" aria-hidden="true"><Settings2 size={17} strokeWidth={1.8} /></span>
-        <div>
-          <h3>Service config editing</h3>
-          <p>
-            Managed/modified/conflict markers, generated diffs and apply/reset actions will
-            appear here once <span class="mono">/services/&#123;id&#125;/config</span> ships.
-            Nothing is editable yet.
-          </p>
-        </div>
-      </article>
-      <article class="pending-card">
-        <span class="pending-icon" aria-hidden="true"><Gauge size={17} strokeWidth={1.8} /></span>
-        <div>
-          <h3>Performance profiles</h3>
-          <p>
-            Throughput profiles, host tuning and benchmark results will appear here once the
-            performance API ships. No profile is applied from the dashboard today.
-          </p>
-        </div>
-      </article>
-    </div>
-  </section>
+  <PerformancePanel />
 </div>
 
 <Modal
@@ -1154,87 +1118,6 @@
     border-color: var(--control-border);
   }
 
-  .pending {
-    margin-top: 4px;
-    padding: 16px;
-    border: 1px dashed var(--border-strong);
-    border-radius: var(--radius-xl);
-    background: var(--surface-2);
-  }
-
-  .pending-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 14px;
-    margin-bottom: 12px;
-  }
-
-  .eyebrow {
-    color: var(--muted-2);
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .pending h2 {
-    margin-top: 1px;
-    font-size: 15px;
-    font-weight: 600;
-  }
-
-  .pending-head p:not(.eyebrow) {
-    max-width: 720px;
-    margin-top: 3px;
-    color: var(--muted);
-    font-size: 11.5px;
-    line-height: 1.5;
-  }
-
-  .pending-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-  }
-
-  .pending-card {
-    display: flex;
-    align-items: flex-start;
-    gap: 9px;
-    padding: 11px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    background: var(--surface);
-  }
-
-  .pending-icon {
-    display: grid;
-    place-items: center;
-    flex: none;
-    width: 30px;
-    height: 30px;
-    border-radius: 7px;
-    background: var(--warning-soft);
-    color: var(--warning-fg);
-  }
-
-  .pending-card h3 {
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .pending-card p {
-    margin-top: 2px;
-    color: var(--muted);
-    font-size: 10.5px;
-    line-height: 1.5;
-  }
-
-  .pending-card .mono {
-    color: var(--fg);
-  }
-
   .state-card {
     background: var(--surface-1);
     border: 1px solid var(--border);
@@ -1463,8 +1346,7 @@
   }
 
   @media (max-width: 900px) {
-    .cards,
-    .pending-grid {
+    .cards {
       grid-template-columns: 1fr;
     }
 
@@ -1488,9 +1370,6 @@
       flex: 1 1 auto;
     }
 
-    .pending-head {
-      flex-direction: column;
-    }
 
     .intro-chips {
       padding-left: 0;

@@ -17,6 +17,13 @@ import type {
   PHPDefaultsResult,
   PHPExecResult,
   PHPExtension,
+  BenchmarkRequest,
+  BenchmarkRun,
+  PerformanceApplyResult,
+  PerformancePreview,
+  PerformanceProfile,
+  PerformanceState,
+  PerformanceValues,
   PHPInfo,
   PHPMigrationRequest,
   PHPMigrationResult,
@@ -503,6 +510,64 @@ export async function browseFs(path: string): Promise<FsListing> {
     await fetchSession();
     return request<FsListing>(`/fs?path=${encodeURIComponent(path)}`);
   }
+}
+
+export async function getPerformance(): Promise<PerformanceState> {
+  if (isMockMode) return mockApi.getPerformance();
+  return request<PerformanceState>('/performance');
+}
+
+export async function setPerformanceProfile(
+  profile: PerformanceProfile,
+  custom?: PerformanceValues,
+): Promise<PerformanceState> {
+  if (isMockMode) return mockApi.setPerformanceProfile(profile, custom);
+  return request<PerformanceState>('/performance/profile', {
+    method: 'PUT',
+    body: custom === undefined ? { profile } : { profile, custom },
+  });
+}
+
+export async function previewPerformance(): Promise<PerformancePreview> {
+  if (isMockMode) return mockApi.previewPerformance();
+  return request<PerformancePreview>('/performance/preview');
+}
+
+export async function applyPerformance(
+  hostTuning: boolean,
+): Promise<PerformanceApplyResult> {
+  if (isMockMode) return mockApi.applyPerformance(hostTuning);
+  return request<PerformanceApplyResult>('/performance/apply', {
+    method: 'POST',
+    body: { confirm: true, host_tuning: hostTuning },
+  });
+}
+
+export async function resetPerformance(): Promise<PerformanceApplyResult> {
+  if (isMockMode) return mockApi.resetPerformance();
+  return request<PerformanceApplyResult>('/performance/reset', {
+    method: 'POST',
+    body: { confirm: true },
+  });
+}
+
+export async function listBenchmarks(): Promise<BenchmarkRun[]> {
+  if (isMockMode) return mockApi.listBenchmarks();
+  const response = await request<BenchmarkRun[] | { benchmarks?: BenchmarkRun[] }>('/performance/benchmarks');
+  return Array.isArray(response) ? response : response.benchmarks ?? [];
+}
+
+export async function getBenchmark(id: string): Promise<BenchmarkRun> {
+  if (isMockMode) return mockApi.getBenchmark(id);
+  return request<BenchmarkRun>(`/performance/benchmarks/${encodeURIComponent(id)}`);
+}
+
+export async function runBenchmark(requestBody: BenchmarkRequest): Promise<BenchmarkRun> {
+  if (isMockMode) return mockApi.runBenchmark(requestBody);
+  return request<BenchmarkRun>('/performance/benchmarks', {
+    method: 'POST',
+    body: requestBody,
+  });
 }
 
 export async function createTerminalSession(ref: string): Promise<TerminalSession> {
