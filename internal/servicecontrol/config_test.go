@@ -524,6 +524,24 @@ func TestConfigApplyConflictResolutions(t *testing.T) {
 	})
 }
 
+func TestConfigManifestStaysInsideConfigRoot(t *testing.T) {
+	f := newConfigFixture(t)
+	f.install(services.IDNginx)
+	f.conflictFile(services.IDNginx)
+
+	if _, err := f.service.Apply(context.Background(), services.IDNginx, ConfigApplyRequest{
+		Path: "conf.d/generated/app.conf", Content: "x\n", Resolution: "keep",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(f.configRoot(services.IDNginx), ".config-manifest.json")); err != nil {
+		t.Fatalf("manifest missing from config root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, "services", "nginx", ".config-manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("manifest was written outside the config root: %v", err)
+	}
+}
+
 func TestConfigApplyValidationFailureRollsBack(t *testing.T) {
 	f := newConfigFixture(t)
 	f.install(services.IDNginx)
