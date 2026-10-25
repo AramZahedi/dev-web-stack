@@ -551,7 +551,15 @@
       {#if result}
         <div class="result" role="status">
           <div class="result-head">
-            <h3>{'reset' in result ? 'Reset complete' : 'Apply complete'}</h3>
+            <h3>
+              {'reset' in result
+                ? result.reset
+                  ? 'Reset complete'
+                  : 'Reset failed'
+                : result.applied
+                  ? 'Apply complete'
+                  : 'Apply failed'}
+            </h3>
             {#if 'host_tuning' in result && result.host_tuning}
               <Badge variant="accent">Host tuned</Badge>
             {/if}
