@@ -220,6 +220,10 @@ func (c *DockerServiceController) Deactivate(ctx context.Context, id services.ID
 		return fmt.Errorf("%w: unknown service %q", helperproto.ErrInvalidRequest, id)
 	}
 
+	if _, err := os.Stat(c.composePath); os.IsNotExist(err) {
+		return nil
+	}
+
 	_, err := c.runner.Run(ctx, "docker", "compose", "-p", c.projectName, "-f", c.composePath, "stop", string(id))
 	return err
 }
@@ -229,6 +233,17 @@ func (c *DockerServiceController) Uninstall(ctx context.Context, id services.ID,
 	if _, ok := c.catalog.Get(id); !ok {
 		return fmt.Errorf("%w: unknown service %q", helperproto.ErrInvalidRequest, id)
 	}
+
+	if _, err := os.Stat(c.composePath); os.IsNotExist(err) {
+		if deleteData {
+			dataDir := filepath.Join(c.root, "services", string(id), "data")
+			_ = os.RemoveAll(dataDir)
+		}
+		return nil
+	}
+
+	// Stop container first if running, so compose rm -f succeeds
+	_, _ = c.runner.Run(ctx, "docker", "compose", "-p", c.projectName, "-f", c.composePath, "stop", string(id))
 
 	if _, err := c.runner.Run(ctx, "docker", "compose", "-p", c.projectName, "-f", c.composePath, "rm", "-f", string(id)); err != nil {
 		return err
@@ -246,6 +261,10 @@ func (c *DockerServiceController) Uninstall(ctx context.Context, id services.ID,
 func (c *DockerServiceController) Logs(ctx context.Context, id services.ID, tail int) (string, error) {
 	if _, ok := c.catalog.Get(id); !ok {
 		return "", fmt.Errorf("%w: unknown service %q", helperproto.ErrInvalidRequest, id)
+	}
+
+	if _, err := os.Stat(c.composePath); os.IsNotExist(err) {
+		return "", nil
 	}
 
 	if tail <= 0 {
