@@ -160,6 +160,9 @@ func TestCatalogValidateRejectsFloatingImages(t *testing.T) {
 func TestCatalogValidateAcceptsPinnedImages(t *testing.T) {
 	images := []string{
 		"docker.io/library/nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"nginx:1.30.6@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"mysql:8.4.13@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"ghcr.io/devstack/imagemagick:1.0.0@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		"ghcr.io/devstack/imagemagick@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 	}
 	for _, image := range images {
@@ -171,6 +174,26 @@ func TestCatalogValidateAcceptsPinnedImages(t *testing.T) {
 		}}}
 		if err := c.Validate(); err != nil {
 			t.Fatalf("unexpected error for pinned image %q: %v", image, err)
+		}
+	}
+}
+
+func TestCatalogValidateRejectsInvalidImageTags(t *testing.T) {
+	images := []string{
+		"nginx:@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"nginx:bad tag@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"nginx:-bad@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"nginx:latest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+	}
+	for _, image := range images {
+		c := Catalog{Services: []Service{{
+			ID:          IDRedis,
+			DisplayName: "Redis",
+			Group:       GroupStandalone,
+			Image:       image,
+		}}}
+		if err := c.Validate(); err == nil {
+			t.Fatalf("expected error for invalid tag/digest image %q", image)
 		}
 	}
 }

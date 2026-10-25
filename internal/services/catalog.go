@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-var validImageRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$`)
+var validImageRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$`)
 
 // ID identifies a managed infrastructure service.
 type ID string

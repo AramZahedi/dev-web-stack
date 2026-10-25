@@ -56,10 +56,10 @@ func TestDatabaseCatalogPinnedImages(t *testing.T) {
 		port   int
 		health string
 	}{
-		{IDMySQL, "docker.io/library/mysql@sha256:" + mysqlDigest, GroupMySQLFamily, 3306, "mysqladmin"},
-		{IDMariaDB, "docker.io/library/mariadb@sha256:" + mariadbDigest, GroupMySQLFamily, 3306, "healthcheck.sh"},
-		{IDPostgreSQL, "docker.io/library/postgres@sha256:" + postgresqlDigest, GroupStandalone, 5432, "pg_isready"},
-		{IDRedis, "docker.io/library/redis@sha256:" + redisDigest, GroupStandalone, 6379, "redis-cli"},
+		{IDMySQL, "mysql:8.4.13@sha256:" + mysqlDigest, GroupMySQLFamily, 3306, "mysqladmin"},
+		{IDMariaDB, "mariadb:11.8.9@sha256:" + mariadbDigest, GroupMySQLFamily, 3306, "healthcheck.sh"},
+		{IDPostgreSQL, "postgres:18.6@sha256:" + postgresqlDigest, GroupStandalone, 5432, "pg_isready"},
+		{IDRedis, "redis:8.8.3@sha256:" + redisDigest, GroupStandalone, 6379, "redis-cli"},
 	}
 
 	for _, tc := range cases {
@@ -107,11 +107,13 @@ func TestDatabaseCatalogSELinuxMounts(t *testing.T) {
 		{
 			IDMySQL,
 			[]string{"/etc/mysql/conf.d", "/var/lib/mysql", "/var/log/mysql",
+				"/docker-entrypoint-initdb.d",
 				"/run/secrets/mysql_root_password", "/run/secrets/mysql_devstack_password"},
 		},
 		{
 			IDMariaDB,
 			[]string{"/etc/mysql/conf.d", "/var/lib/mysql", "/var/log/mysql",
+				"/docker-entrypoint-initdb.d",
 				"/run/secrets/mariadb_root_password", "/run/secrets/mariadb_devstack_password"},
 		},
 		{
@@ -158,6 +160,10 @@ func TestDatabaseCatalogMySQLFamilyLayout(t *testing.T) {
 			data := requireMount(t, svc, "/var/lib/mysql")
 			if data.Area != MountService || data.HostSubdir != "data" || data.ReadOnly {
 				t.Errorf("data mount = %+v, want service data writable", data)
+			}
+			initMount := requireMount(t, svc, "/docker-entrypoint-initdb.d")
+			if initMount.Area != MountService || initMount.HostSubdir != "config/init" || !initMount.ReadOnly {
+				t.Errorf("init mount = %+v, want read-only service config/init", initMount)
 			}
 
 			var secretMounts []Mount
@@ -335,10 +341,13 @@ func TestRenderComposeDatabaseServices(t *testing.T) {
 		t.Fatal("mysql compose healthcheck is nil")
 	}
 
-	var foundConfig, foundSecret bool
+	var foundConfig, foundSecret, foundInit bool
 	for _, volume := range mysql.Volumes {
 		if strings.HasSuffix(volume, ":/etc/mysql/conf.d:ro,z") {
 			foundConfig = true
+		}
+		if strings.HasSuffix(volume, ":/docker-entrypoint-initdb.d:ro,z") {
+			foundInit = true
 		}
 		if strings.HasSuffix(volume, ":/run/secrets/mysql_root_password:ro,z") {
 			foundSecret = true
@@ -346,6 +355,9 @@ func TestRenderComposeDatabaseServices(t *testing.T) {
 	}
 	if !foundConfig {
 		t.Errorf("mysql volumes = %v, want config mount with :ro,z", mysql.Volumes)
+	}
+	if !foundInit {
+		t.Errorf("mysql volumes = %v, want admin init mount with :ro,z", mysql.Volumes)
 	}
 	if !foundSecret {
 		t.Errorf("mysql volumes = %v, want secret mount with :ro,z", mysql.Volumes)
