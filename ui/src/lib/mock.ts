@@ -1,11 +1,14 @@
 import { ApiError } from './errors';
 import type {
+  BuildLogs,
+  BuildResult,
   CatalogEntry,
   CreateSiteRequest,
   DaemonEvent,
   DoctorCheck,
   DoctorReport,
   FsListing,
+  GlobalIni,
   Health,
   LogLine,
   PHPChange,
@@ -16,14 +19,18 @@ import type {
   PHPInfo,
   PHPMigrationRequest,
   PHPMigrationResult,
+  PHPDefaultStatus,
   PHPResolvedExtension,
   RuntimeBuild,
+  ServiceCredentials,
+  ServiceUninstallResult,
   ServiceView,
   Session,
   Settings,
   ServingMode,
   Site,
   SiteStatus,
+  ToolStatus,
   TrustTarget,
   UpdateSiteRequest,
   VhostPreview,
@@ -147,7 +154,44 @@ function seedPHPDefaults(): Record<string, PHPDefaults> {
 
 let phpDefaults = seedPHPDefaults();
 
-const mockServices: ServiceView[] = [
+const DEFAULT_PHP_BUILD = 'php@8.4.4-r1';
+const DEFAULT_GLOBAL_INI = `; devstack global CLI php.ini
+[PHP]
+memory_limit = 512M
+display_errors = On
+date.timezone = UTC
+`;
+let phpDefaultConfigured = DEFAULT_PHP_BUILD;
+let globalIniContent = DEFAULT_GLOBAL_INI;
+const seedToolStatuses: ToolStatus[] = [
+  {
+    id: 'php-default',
+    installed: true,
+    managed: true,
+    wrapper_path: '/usr/local/bin/php',
+    target: '/home/dev/.devstack/tools/php-default/bin/php',
+    version: '8.4.4',
+  },
+  {
+    id: 'composer',
+    installed: true,
+    managed: true,
+    wrapper_path: '/usr/local/bin/composer',
+    target: '/home/dev/.devstack/tools/composer/composer.phar',
+    version: '2.8.4',
+  },
+];
+let toolStatuses: ToolStatus[] = clone(seedToolStatuses);
+
+/** Restore service and tooling fixtures between unit tests. */
+export function resetMockServiceStateForTests(): void {
+  mockServices = clone(seedMockServices);
+  toolStatuses = clone(seedToolStatuses);
+  phpDefaultConfigured = DEFAULT_PHP_BUILD;
+  globalIniContent = DEFAULT_GLOBAL_INI;
+}
+
+const seedMockServices: ServiceView[] = [
   {
     id: 'nginx',
     display_name: 'Nginx Web Server',
@@ -157,24 +201,41 @@ const mockServices: ServiceView[] = [
     installed: true,
     health: 'healthy',
     container_id: 'd4e5f6a7b8c9',
-    image: 'nginx:1.27-alpine',
+    image: 'nginx:1.30.6',
     ports: [
-      { host: 80, container: 80, protocol: 'http', loopback: true },
-      { host: 443, container: 443, protocol: 'https', loopback: true },
+      { host: 80, container: 80, protocol: 'http' },
+      { host: 443, container: 443, protocol: 'https' },
     ],
     config_path: '/data/devstack/services/nginx/config',
     data_path: '/data/devstack/services/nginx/data',
   },
   {
-    id: 'mysql',
-    display_name: 'MySQL Database',
-    group: 'mysql-family',
+    id: 'apache',
+    display_name: 'Apache HTTP Server',
+    group: 'web',
     state: 'installed',
     active: false,
     installed: true,
     health: '',
+    container_id: 'b7c8d9e0f1a2',
+    image: 'httpd:2.4.69',
+    ports: [
+      { host: 80, container: 80, protocol: 'http' },
+      { host: 443, container: 443, protocol: 'https' },
+    ],
+    config_path: '/data/devstack/services/apache/config',
+    data_path: '/data/devstack/services/apache/data',
+  },
+  {
+    id: 'mysql',
+    display_name: 'MySQL 8.4',
+    group: 'mysql-family',
+    state: 'active',
+    active: true,
+    installed: true,
+    health: 'healthy',
     container_id: 'a1b2c3d4e5f6',
-    image: 'mysql:8.4',
+    image: 'mysql:8.4.13',
     ports: [
       { host: 3306, container: 3306, protocol: 'tcp', loopback: true },
     ],
@@ -182,15 +243,47 @@ const mockServices: ServiceView[] = [
     data_path: '/data/devstack/services/mysql/data',
   },
   {
+    id: 'mariadb',
+    display_name: 'MariaDB 11.8',
+    group: 'mysql-family',
+    state: 'not_installed',
+    active: false,
+    installed: false,
+    health: '',
+    container_id: '',
+    image: 'mariadb:11.8.9',
+    ports: [
+      { host: 3306, container: 3306, protocol: 'tcp', loopback: true },
+    ],
+    config_path: '/data/devstack/services/mariadb/config',
+    data_path: '/data/devstack/services/mariadb/data',
+  },
+  {
+    id: 'postgresql',
+    display_name: 'PostgreSQL 18',
+    group: 'standalone',
+    state: 'installed',
+    active: false,
+    installed: true,
+    health: '',
+    container_id: 'c3d4e5f6a7b8',
+    image: 'postgres:18.6',
+    ports: [
+      { host: 5432, container: 5432, protocol: 'tcp', loopback: true },
+    ],
+    config_path: '/data/devstack/services/postgresql/config',
+    data_path: '/data/devstack/services/postgresql/data',
+  },
+  {
     id: 'redis',
-    display_name: 'Redis In-Memory Store',
+    display_name: 'Redis 8.8',
     group: 'standalone',
     state: 'not_installed',
     active: false,
     installed: false,
     health: '',
     container_id: '',
-    image: 'redis:7.4-alpine',
+    image: 'redis:8.8.3',
     ports: [
       { host: 6379, container: 6379, protocol: 'tcp', loopback: true },
     ],
@@ -198,6 +291,8 @@ const mockServices: ServiceView[] = [
     data_path: '/data/devstack/services/redis/data',
   },
 ];
+
+let mockServices: ServiceView[] = clone(seedMockServices);
 
 function resolvePHPExtensions(
   version: string,
@@ -303,6 +398,12 @@ const sites: Site[] = [
     apache_allow_override: 'all',
     spa_fallback: false,
     spa_fallback_file: 'index.html',
+    build: {
+      node_version: '24.9.0',
+      command: 'npm run build',
+      output: 'public',
+      env: { NODE_ENV: 'production' },
+    },
     tls: true,
     force_https: true,
     desired_state: 'running',
@@ -935,6 +1036,46 @@ function findSite(ref: string): Site {
   return site;
 }
 
+function findService(id: string): ServiceView {
+  const service = mockServices.find((entry) => entry.id === id);
+  if (!service) throw new ApiError('NOT_FOUND', `service “${id}” not found`, 404);
+  return service;
+}
+
+function serviceDisplayName(service: ServiceView): string {
+  return service.display_name || service.id;
+}
+
+function newestPHPBuild(): RuntimeBuild | undefined {
+  return runtimes
+    .filter((entry) => entry.kind === 'php')
+    .slice()
+    .sort(
+      (a, b) =>
+        b.version.localeCompare(a.version, undefined, { numeric: true }) ||
+        phpRevisionOf(b.id) - phpRevisionOf(a.id),
+    )[0];
+}
+
+function phpDefaultBuild(): RuntimeBuild | undefined {
+  if (!phpDefaultConfigured) return newestPHPBuild();
+  return (
+    runtimes.find((entry) => entry.kind === 'php' && entry.id === phpDefaultConfigured) ??
+    newestPHPBuild()
+  );
+}
+
+function phpDefaultStatus(): PHPDefaultStatus {
+  const build = phpDefaultBuild();
+  return {
+    configured: phpDefaultConfigured || undefined,
+    build: build ? clone(build) : undefined,
+    global_ini: '/home/dev/.devstack/tools/php-default/php.ini',
+    shim_dir: '/home/dev/.devstack/tools/php-default/bin',
+    shim_installed: toolStatuses.find((entry) => entry.id === 'php-default')?.installed ?? false,
+  };
+}
+
 function portsFor(site: Site, index: number): { http: number; fastcgi: number } {
   if (site.kind === 'php') return { http: 0, fastcgi: 43_000 + index };
   return { http: 41_000 + index + 1, fastcgi: 0 };
@@ -1055,6 +1196,29 @@ export const mockApi = {
         );
       }
     }
+    if (request.build) {
+      if (!request.build.node_version?.trim() || !request.build.command?.trim()) {
+        throw new ApiError(
+          'INVALID_REQUEST',
+          'sites: build command and node version are required together (invalid build profile)',
+          400,
+        );
+      }
+      if (!request.build.output?.trim()) {
+        throw new ApiError(
+          'INVALID_REQUEST',
+          'sites: build output is required for a build profile',
+          400,
+        );
+      }
+    }
+    const buildOutput =
+      request.kind === 'static' && request.build?.output?.trim()
+        ? `${projectPath.replace(/\/+$/, '')}/${request.build.output.trim().replace(/^\/+/, '')}`
+        : '';
+    const buildOutputMissing = Boolean(
+      buildOutput && !directories[buildOutput],
+    );
     const phpVersion = phpBuild ? phpLineOf(phpBuild.version) : '';
     const id = `s_${name.replace(/[^a-z0-9]/g, '')}_${sites.length + 1}`;
     const site: Site = {
@@ -1087,8 +1251,8 @@ export const mockApi = {
       build: request.build,
       tls: request.tls ?? true,
       force_https: request.force_https ?? false,
-      desired_state: 'running',
-      status: 'starting',
+      desired_state: buildOutputMissing ? 'stopped' : 'running',
+      status: buildOutputMissing ? 'stopped' : 'starting',
       http_port: 0,
       fastcgi_port: 0,
       created_at: new Date().toISOString(),
@@ -1102,14 +1266,22 @@ export const mockApi = {
         : undefined,
     };
     sites.push(site);
-    emitEvent('site.created', site.id, `${site.name}.test was added`);
-    setTimeout(() => {
-      const current = sites.find((entry) => entry.id === id);
-      if (current) {
-        setStatus(current, 'running');
-        emitEvent('site.running', current.id, `${current.name} is running`);
-      }
-    }, 900);
+    emitEvent(
+      'site.created',
+      site.id,
+      buildOutputMissing
+        ? `${site.name}: build output ${request.build?.output} is missing; site created stopped`
+        : `${site.name}.test was added`,
+    );
+    if (!buildOutputMissing) {
+      setTimeout(() => {
+        const current = sites.find((entry) => entry.id === id);
+        if (current) {
+          setStatus(current, 'running');
+          emitEvent('site.running', current.id, `${current.name} is running`);
+        }
+      }, 900);
+    }
     return clone(site);
   },
 
@@ -1418,6 +1590,165 @@ export const mockApi = {
     };
   },
 
+  async buildSite(ref: string): Promise<BuildResult> {
+    await wait(500, 800);
+    const site = findSite(ref);
+    if (site.kind !== 'static') {
+      throw new ApiError(
+        'INVALID_REQUEST',
+        `build: invalid build setup: site “${site.name}” is not a static site`,
+        400,
+      );
+    }
+    if (!site.build?.command) {
+      throw new ApiError(
+        'INVALID_REQUEST',
+        `build: invalid build setup: site “${site.name}” has no build profile`,
+        400,
+      );
+    }
+    const outputPath = site.build.output
+      ? `${site.host_path.replace(/\/+$/, '')}/${site.build.output.replace(/^\/+/, '')}`
+      : site.host_path;
+    emitEvent('site.built', site.id, `${site.name} build completed`);
+    return {
+      site: site.name,
+      success: true,
+      command: site.build.command,
+      duration_ms: 4280,
+      log_path: `/home/dev/.devstack/logs/builds/${site.name}/build.log`,
+      output_path: outputPath,
+      restored: false,
+      snapshot_skipped: false,
+    };
+  },
+
+  async getBuildLogs(ref: string, tail = 200): Promise<BuildLogs> {
+    await wait(120, 220);
+    const site = findSite(ref);
+    const lines = [
+      `> ${site.name}@1.0.0 build`,
+      `> ${site.build?.command ?? 'npm run build'}`,
+      '',
+      'vite v6.1.0 building for production...',
+      '✓ 42 modules transformed.',
+      'dist/index.html                  0.48 kB',
+      'dist/assets/index-7c1a2f.css      9.14 kB',
+      'dist/assets/index-3b5e8d.js      48.22 kB',
+      '✓ built in 4.28s',
+    ];
+    const content = lines.slice(Math.max(0, lines.length - Math.max(tail, 1))).join('\n');
+    return {
+      site: site.name,
+      path: `/home/dev/.devstack/logs/builds/${site.name}/build.log`,
+      content,
+    };
+  },
+
+  async listTools(): Promise<ToolStatus[]> {
+    await wait(80, 160);
+    return clone(toolStatuses);
+  },
+
+  async installTool(id: string, _force = false): Promise<ToolStatus> {
+    await wait(300, 500);
+    if (id !== 'php-default' && id !== 'composer') {
+      throw new ApiError('INVALID_REQUEST', `tooling: unsupported tool: “${id}”`, 400);
+    }
+    let status = toolStatuses.find((entry) => entry.id === id);
+    if (!status) {
+      status = { id, installed: false, managed: true };
+      toolStatuses.push(status);
+    }
+    status.installed = true;
+    status.managed = true;
+    status.conflict = undefined;
+    status.backup = undefined;
+    status.wrapper_path =
+      id === 'composer' ? '/usr/local/bin/composer' : '/usr/local/bin/php';
+    if (id === 'composer') {
+      status.target = '/home/dev/.devstack/tools/composer/composer.phar';
+      status.version = '2.8.4';
+    } else {
+      const build = phpDefaultBuild();
+      status.target = `${build?.path ?? '/home/dev/.devstack/runtimes/php/8.4.4-r1'}/bin/php`;
+      status.version = build?.version ?? '8.4.4';
+    }
+    emitEvent('tool.installed', undefined, `${id} was installed`);
+    return clone(status);
+  },
+
+  async removeTool(id: string): Promise<ToolStatus> {
+    await wait(240, 420);
+    const status = toolStatuses.find((entry) => entry.id === id);
+    if (!status) throw new ApiError('NOT_FOUND', `tool “${id}” is not managed`, 404);
+    status.installed = false;
+    status.managed = false;
+    status.wrapper_path = undefined;
+    status.target = undefined;
+    status.version = undefined;
+    emitEvent('tool.removed', undefined, `${id} was removed`);
+    return clone(status);
+  },
+
+  async getPHPDefault(): Promise<PHPDefaultStatus> {
+    await wait(80, 160);
+    return clone(phpDefaultStatus());
+  },
+
+  async setPHPDefault(value: string, _force = false): Promise<PHPDefaultStatus> {
+    await wait(300, 500);
+    const match = runtimes.find(
+      (entry) =>
+        entry.kind === 'php' &&
+        (entry.id === value || phpLineOf(entry.version) === value),
+    );
+    if (!match) {
+      throw new ApiError(
+        'RUNTIME_MISSING',
+        `tooling: PHP default “${value}” is not installed`,
+        409,
+      );
+    }
+    phpDefaultConfigured = match.id;
+    const status = toolStatuses.find((entry) => entry.id === 'php-default');
+    if (status) {
+      status.installed = true;
+      status.managed = true;
+      status.target = `${match.path}/bin/php`;
+      status.version = match.version;
+    }
+    emitEvent('php.default', undefined, `PHP ${match.version} is the CLI default`);
+    return clone(phpDefaultStatus());
+  },
+
+  async clearPHPDefault(): Promise<PHPDefaultStatus> {
+    await wait(260, 440);
+    phpDefaultConfigured = '';
+    emitEvent('php.default', undefined, 'The PHP CLI default was cleared');
+    return clone(phpDefaultStatus());
+  },
+
+  async getGlobalIni(): Promise<GlobalIni> {
+    await wait(80, 160);
+    return {
+      path: '/home/dev/.devstack/tools/php-default/php.ini',
+      content: globalIniContent,
+      build_id: phpDefaultBuild()?.id,
+    };
+  },
+
+  async saveGlobalIni(content: string): Promise<GlobalIni> {
+    await wait(220, 380);
+    globalIniContent = content;
+    emitEvent('php.default.ini', undefined, 'The global CLI php.ini was saved');
+    return {
+      path: '/home/dev/.devstack/tools/php-default/php.ini',
+      content,
+      build_id: phpDefaultBuild()?.id,
+    };
+  },
+
   async doctor(): Promise<DoctorReport> {
     await wait();
     return {
@@ -1580,11 +1911,160 @@ export const mockApi = {
 
   async getService(id: string): Promise<ServiceView> {
     await wait();
-    const svc = mockServices.find((s) => s.id === id);
-    if (!svc) {
-      throw new ApiError('NOT_FOUND', `Service ${id} not found`, 404);
+    return clone(findService(id));
+  },
+
+  async installService(id: string): Promise<void> {
+    await wait(350, 600);
+    const service = findService(id);
+    if (service.installed) {
+      throw new ApiError(
+        'SERVICE_CONFLICT',
+        `${serviceDisplayName(service)} is already installed.`,
+        409,
+      );
     }
-    return clone(svc);
+    service.installed = true;
+    service.state = 'installed';
+    service.active = false;
+    service.health = '';
+    service.last_error = undefined;
+    service.container_id = `mock${id}`.slice(0, 12).padEnd(12, '0');
+    emitEvent('service.installed', undefined, `${serviceDisplayName(service)} was installed`);
+  },
+
+  async activateService(id: string): Promise<void> {
+    await wait(400, 650);
+    const service = findService(id);
+    if (!service.installed) {
+      throw new ApiError(
+        'SERVICE_CONFLICT',
+        `${serviceDisplayName(service)} must be installed before it can be activated.`,
+        409,
+      );
+    }
+    if (service.active) return;
+    if (service.group === 'web' || service.group === 'mysql-family') {
+      const active = mockServices.find(
+        (entry) => entry.id !== id && entry.group === service.group && entry.active,
+      );
+      if (active) {
+        throw new ApiError(
+          'SERVICE_CONFLICT',
+          `cannot activate ${serviceDisplayName(service)}: ${serviceDisplayName(active)} is active in the ${service.group} group. Deactivate it first.`,
+          409,
+        );
+      }
+    }
+    service.active = true;
+    service.state = 'active';
+    service.health = 'healthy';
+    service.last_error = undefined;
+    emitEvent('service.activated', undefined, `${serviceDisplayName(service)} was activated`);
+  },
+
+  async deactivateService(id: string): Promise<void> {
+    await wait(300, 550);
+    const service = findService(id);
+    if (!service.installed) {
+      throw new ApiError(
+        'SERVICE_CONFLICT',
+        `${serviceDisplayName(service)} is not installed.`,
+        409,
+      );
+    }
+    service.active = false;
+    service.state = service.installed ? 'installed' : 'not_installed';
+    service.health = '';
+    service.last_error = undefined;
+    emitEvent('service.deactivated', undefined, `${serviceDisplayName(service)} was deactivated`);
+  },
+
+  async restartService(id: string): Promise<void> {
+    await wait(350, 600);
+    const service = findService(id);
+    if (!service.installed) {
+      throw new ApiError(
+        'SERVICE_CONFLICT',
+        `${serviceDisplayName(service)} is not installed.`,
+        409,
+      );
+    }
+    if (!service.active) {
+      throw new ApiError(
+        'SERVICE_CONFLICT',
+        `${serviceDisplayName(service)} is not active. Activate it before restarting.`,
+        409,
+      );
+    }
+    service.health = 'healthy';
+    service.last_error = undefined;
+    emitEvent('service.restarted', undefined, `${serviceDisplayName(service)} was restarted`);
+  },
+
+  async uninstallService(id: string, deleteData: boolean): Promise<ServiceUninstallResult> {
+    await wait(400, 700);
+    const service = findService(id);
+    if (service.active) {
+      throw new ApiError(
+        'SERVICE_CONFLICT',
+        `${serviceDisplayName(service)} is active. Deactivate it before uninstalling.`,
+        409,
+      );
+    }
+    const index = mockServices.findIndex((entry) => entry.id === id);
+    if (index >= 0) mockServices.splice(index, 1);
+    emitEvent('service.uninstalled', undefined, `${serviceDisplayName(service)} was uninstalled`);
+    return deleteData
+      ? { backup_path: `/data/devstack/backups/services/${id}.tar.gz` }
+      : {};
+  },
+
+  async serviceLogs(id: string, tail = 200): Promise<string> {
+    await wait(120, 240);
+    const service = findService(id);
+    const lines = [
+      `[${service.id}] container ${service.container_id || 'not created'}`,
+      `[${service.id}] state=${service.state} active=${service.active} health=${service.health || 'unknown'}`,
+      `[${service.id}] published ports: ${
+        service.ports?.map((port) => `${port.host}:${port.container}`).join(', ') || 'none'
+      }`,
+      `[${service.id}] config=${service.config_path ?? '—'}`,
+      `[${service.id}] data=${service.data_path ?? '—'}`,
+      service.last_error ? `[${service.id}] last error: ${service.last_error}` : '',
+    ].filter(Boolean);
+    return lines.slice(Math.max(0, lines.length - Math.max(tail, 1))).join('\n');
+  },
+
+  async revealServiceCredentials(id: string): Promise<ServiceCredentials> {
+    await wait(250, 450);
+    const service = findService(id);
+    if (service.group !== 'mysql-family' && id !== 'postgresql') {
+      throw new ApiError(
+        'INVALID_REQUEST',
+        'service credentials are not supported: service has no database account',
+        400,
+      );
+    }
+    const engine = id === 'postgresql' ? 'postgres' : id === 'mariadb' ? 'mariadb' : 'mysql';
+    return {
+      engine,
+      username: 'devstack',
+      password: 'mock_7f3c9a2e5b8d1a4c6e9f0b2d',
+      database: 'devstack',
+      host: '127.0.0.1',
+      port: engine === 'postgres' ? 5432 : 3306,
+    };
+  },
+
+  async rotateServiceCredentials(id: string): Promise<ServiceCredentials> {
+    await wait(250, 450);
+    findService(id);
+    throw new ApiError(
+      'CREDENTIAL_ROTATION_UNAVAILABLE',
+      'database credential rotation is not available until Wave 2',
+      501,
+    );
   },
 
   openLogStream(

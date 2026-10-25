@@ -10,6 +10,8 @@ import (
 
 var (
 	validIDRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	// validNetworkAliasRegex accepts Docker DNS labels used as Compose network aliases.
+	validNetworkAliasRegex = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 	// validImageRegex accepts an optional tag followed by a mandatory sha256
 	// digest. A floating tag without a digest is still rejected.
 	validImageRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$`)
@@ -100,17 +102,19 @@ type Ulimit struct {
 
 // Service is the immutable catalog entry describing an infrastructure service.
 type Service struct {
-	ID          ID
-	DisplayName string
-	Group       Group
-	Image       string
-	NetworkMode string // "host", "bridge", ""
-	Ports       []Port
-	Config      []Mount
-	Data        []Mount
-	DependsOn   []ID
+	ID             ID
+	DisplayName    string
+	Group          Group
+	Image          string
+	NetworkMode    string // "host", "bridge", ""
+	NetworkAliases []string
+	Ports          []Port
+	Config         []Mount
+	Data           []Mount
+	DependsOn      []ID
 
 	Environment     map[string]string
+	ExtraHosts      []string
 	Healthcheck     *Healthcheck
 	Entrypoint      []string
 	Command         []string
@@ -217,6 +221,12 @@ func validateServiceFields(s Service) error {
 	if err := validatePublishedPorts(s); err != nil {
 		return err
 	}
+	if err := validateExtraHosts(s); err != nil {
+		return err
+	}
+	if err := validateNetworkAliases(s); err != nil {
+		return err
+	}
 	for _, m := range s.Config {
 		if err := validateMountFields(s, m); err != nil {
 			return err
@@ -264,6 +274,31 @@ func validatePublishedPorts(s Service) error {
 		case "http", "https", "tcp", "":
 		default:
 			return fmt.Errorf("service %q: invalid port protocol %q", s.ID, p.Protocol)
+		}
+	}
+	return nil
+}
+
+func validateExtraHosts(s Service) error {
+	for _, entry := range s.ExtraHosts {
+		if strings.ContainsAny(entry, " \t\r\n") {
+			return fmt.Errorf("service %q: extra host %q cannot contain whitespace", s.ID, entry)
+		}
+		host, target, ok := strings.Cut(entry, ":")
+		if !ok || strings.TrimSpace(host) == "" || strings.TrimSpace(target) == "" {
+			return fmt.Errorf("service %q: extra host %q must be host:target", s.ID, entry)
+		}
+	}
+	return nil
+}
+
+func validateNetworkAliases(s Service) error {
+	if s.NetworkMode == "host" && len(s.NetworkAliases) > 0 {
+		return fmt.Errorf("service %q: network aliases are not supported with host networking", s.ID)
+	}
+	for _, alias := range s.NetworkAliases {
+		if !validNetworkAliasRegex.MatchString(alias) {
+			return fmt.Errorf("service %q: invalid network alias %q", s.ID, alias)
 		}
 	}
 	return nil

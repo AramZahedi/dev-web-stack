@@ -5,6 +5,17 @@ afterEach(() => {
   cleanup();
 });
 
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView(): void {};
+}
+
+if (!window.scrollTo) {
+  window.scrollTo = function scrollTo(): void {};
+} else {
+  // jsdom defines scrollTo but logs "Not implemented"; keep tests quiet.
+  window.scrollTo = function scrollTo(): void {};
+}
+
 if (!window.matchMedia) {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,

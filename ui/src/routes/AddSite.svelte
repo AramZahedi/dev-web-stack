@@ -20,7 +20,13 @@
   import { describeError } from '../lib/errors';
   import { isAbsolutePath } from '../lib/format';
   import { addToast } from '../lib/stores';
-  import type { RuntimeBuild, Settings } from '../lib/types';
+  import type {
+    ApacheAllowOverride,
+    BuildProfile,
+    FrontControllerMode,
+    RuntimeBuild,
+    Settings,
+  } from '../lib/types';
   import Button from '../lib/components/Button.svelte';
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
   import Field from '../lib/components/Field.svelte';
@@ -50,7 +56,16 @@
   let command = $state('npm run dev');
   let documentRoot = $state('.');
   let frontController = $state(true);
+  let frontControllerFile = $state('index.php');
+  let frontControllerMode = $state<FrontControllerMode>('auto');
+  let apacheAllowOverride = $state<ApacheAllowOverride>('all');
   let spaFallback = $state(false);
+  let spaFallbackFile = $state('index.html');
+  let buildEnabled = $state(false);
+  let buildNodeVersion = $state('');
+  let buildCommand = $state('npm run build');
+  let buildOutput = $state('dist');
+  let buildEnvRows = $state<EnvRow[]>([{ key: '', value: '' }]);
   let tls = $state(true);
   let forceHttps = $state(false);
   let www = $state(false);
@@ -139,6 +154,7 @@
       runtimes = builds;
       settings = config;
       if (!nodeVersion && nodeRuntimes.length > 0) nodeVersion = nodeRuntimes[0].version;
+      if (!buildNodeVersion && nodeRuntimes.length > 0) buildNodeVersion = nodeRuntimes[0].version;
       if (!phpBuild && phpRuntimes.length > 0) phpBuild = phpRuntimes[0].id;
     } catch (caught) {
       runtimesError = describeError(caught);
@@ -158,6 +174,16 @@
     if (key === 'php_build') return 'PHP build';
     if (key === 'command') return 'Start command';
     if (key === 'document_root') return 'Document root';
+    if (key === 'front_controller_file') return 'Front controller file';
+    if (key === 'front_controller_mode') return 'Front controller mode';
+    if (key === 'apache_allow_override') return 'Apache AllowOverride';
+    if (key === 'spa_fallback_file') return 'SPA fallback file';
+    if (key === 'build_node_version') return 'Build Node version';
+    if (key === 'build_command') return 'Build command';
+    if (key === 'build_output') return 'Build output';
+    if (key.startsWith('build-env-')) {
+      return `Build environment variable ${Number(key.slice(10)) + 1}`;
+    }
     if (key.startsWith('env-')) return `Environment variable ${Number(key.slice(4)) + 1}`;
     return key;
   }
@@ -169,6 +195,14 @@
       key === 'php_build' ||
       key === 'command' ||
       key === 'document_root' ||
+      key === 'front_controller_file' ||
+      key === 'front_controller_mode' ||
+      key === 'apache_allow_override' ||
+      key === 'spa_fallback_file' ||
+      key === 'build_node_version' ||
+      key === 'build_command' ||
+      key === 'build_output' ||
+      key.startsWith('build-env-') ||
       key.startsWith('env-')
     ) {
       return 2;
@@ -198,10 +232,63 @@
     }
     if (kind === 'php') {
       if (!phpBuild) next.php_build = 'Install a PHP build before adding a PHP site.';
+      const fcFile = frontControllerFile.trim();
+      if (frontController) {
+        if (!fcFile) {
+          next.front_controller_file = 'Enter the front controller file, for example index.php.';
+        } else if (!isRelativeFile(fcFile)) {
+          next.front_controller_file = 'Use a relative path inside the project.';
+        } else if (!fcFile.toLowerCase().endsWith('.php')) {
+          next.front_controller_file = 'The front controller file must end with .php.';
+        }
+      }
     }
     if (kind === 'node') {
       if (!nodeVersion) next.node_version = 'Install a Node build before adding a Node site.';
       if (!command.trim()) next.command = 'Enter the command that starts the dev server.';
+    }
+
+    if (kind === 'static') {
+      const spaFile = spaFallbackFile.trim();
+      if (spaFallback) {
+        if (!spaFile) {
+          next.spa_fallback_file = 'Enter the file to serve for unknown paths, for example index.html.';
+        } else if (!isRelativeFile(spaFile)) {
+          next.spa_fallback_file = 'Use a relative path inside the project.';
+        } else if (spaFile.toLowerCase().endsWith('.php')) {
+          next.spa_fallback_file = 'The SPA fallback file cannot be a .php file.';
+        }
+      }
+
+      if (buildEnabled) {
+        if (!buildNodeVersion) {
+          next.build_node_version = 'Install a Node build before enabling a static build.';
+        }
+        if (!buildCommand.trim()) {
+          next.build_command = 'Enter the build command, for example npm run build.';
+        }
+        const output = buildOutput.trim();
+        if (!output) {
+          next.build_output = 'Enter the output directory produced by the build, for example dist.';
+        } else if (!isRelativeFile(output)) {
+          next.build_output = 'Use a relative path inside the project.';
+        }
+        const seen = new Set<string>();
+        buildEnvRows.forEach((row, index) => {
+          const key = row.key.trim();
+          if (!key) {
+            if (row.value.trim()) next[`build-env-${index}`] = 'Add a name for this value.';
+            return;
+          }
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+            next[`build-env-${index}`] =
+              'Use letters, numbers and underscores; do not start with a number.';
+          } else if (seen.has(key)) {
+            next[`build-env-${index}`] = 'This variable is already defined.';
+          }
+          seen.add(key);
+        });
+      }
     }
 
     if (kind === 'node') {
@@ -224,9 +311,34 @@
     return next;
   }
 
+  function isRelativeFile(value: string): boolean {
+    if (value.startsWith('/') || value.startsWith('\\')) return false;
+    if (value.includes('\0')) return false;
+    const parts = value.split(/[\\/]+/);
+    return parts.every((part) => part !== '' && part !== '.' && part !== '..' && !part.startsWith('.'));
+  }
+
   function stepFields(target: number): string[] {
-    const fields = ['name', 'path', 'kind', 'node_version', 'php_build', 'command', 'document_root'];
+    const fields = [
+      'name',
+      'path',
+      'kind',
+      'node_version',
+      'php_build',
+      'command',
+      'document_root',
+      'front_controller_file',
+      'front_controller_mode',
+      'apache_allow_override',
+      'spa_fallback_file',
+      'build_node_version',
+      'build_command',
+      'build_output',
+    ];
     if (target === 2 && kind === 'node') fields.push(...envRows.map((_, index) => `env-${index}`));
+    if (target === 2 && kind === 'static' && buildEnabled) {
+      fields.push(...buildEnvRows.map((_, index) => `build-env-${index}`));
+    }
     return fields.filter((key) => fieldStep(key) === target);
   }
 
@@ -276,11 +388,27 @@
             ? 'site-path'
             : key === 'php_build'
               ? 'php-build'
-              : key === 'document_root' && kind === 'php'
-                ? 'php-document-root'
-                : key.startsWith('env-')
-                  ? `env-key-${key.slice(4)}`
-                  : key.replace(/_/g, '-');
+              : key === 'front_controller_file'
+                ? 'front-controller-file'
+                : key === 'front_controller_mode'
+                  ? 'front-controller-mode'
+                  : key === 'apache_allow_override'
+                    ? 'apache-allow-override'
+                    : key === 'spa_fallback_file'
+                      ? 'spa-fallback-file'
+                      : key === 'build_node_version'
+                        ? 'build-node-version'
+                        : key === 'build_command'
+                          ? 'build-command'
+                          : key === 'build_output'
+                            ? 'build-output'
+                            : key.startsWith('build-env-')
+                              ? `build-env-key-${key.slice(10)}`
+                              : key === 'document_root' && kind === 'php'
+                                ? 'php-document-root'
+                                : key.startsWith('env-')
+                                  ? `env-key-${key.slice(4)}`
+                                  : key.replace(/_/g, '-');
     const element = document.getElementById(id);
     element?.focus();
     element?.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
@@ -330,6 +458,22 @@
     errors = next;
   }
 
+  function addBuildEnv(): void {
+    buildEnvRows = [...buildEnvRows, { key: '', value: '' }];
+    void tick().then(() =>
+      document.getElementById(`build-env-key-${buildEnvRows.length - 1}`)?.focus(),
+    );
+  }
+
+  function removeBuildEnv(index: number): void {
+    buildEnvRows = buildEnvRows.filter((_, position) => position !== index);
+    const next: Record<string, string> = {};
+    for (const [key, value] of Object.entries(errors)) {
+      if (!key.startsWith('build-env-')) next[key] = value;
+    }
+    errors = next;
+  }
+
   function setKind(value: Kind): void {
     kind = value;
     const next = { ...errors };
@@ -338,8 +482,15 @@
     delete next.php_build;
     delete next.command;
     delete next.document_root;
+    delete next.front_controller_file;
+    delete next.front_controller_mode;
+    delete next.apache_allow_override;
+    delete next.spa_fallback_file;
+    delete next.build_node_version;
+    delete next.build_command;
+    delete next.build_output;
     for (const key of Object.keys(next)) {
-      if (key.startsWith('env-')) delete next[key];
+      if (key.startsWith('env-') || key.startsWith('build-env-')) delete next[key];
     }
     errors = next;
   }
@@ -363,6 +514,21 @@
           if (row.key.trim()) env[row.key.trim()] = row.value;
         }
       }
+      const buildEnv: Record<string, string> = {};
+      if (kind === 'static' && buildEnabled) {
+        for (const row of buildEnvRows) {
+          if (row.key.trim()) buildEnv[row.key.trim()] = row.value;
+        }
+      }
+      const build: BuildProfile | undefined =
+        kind === 'static' && buildEnabled
+          ? {
+              node_version: buildNodeVersion,
+              command: buildCommand.trim(),
+              output: buildOutput.trim(),
+              env: buildEnv,
+            }
+          : undefined;
       const site = await api.createSite({
         name: name.trim(),
         path: path.trim(),
@@ -374,16 +540,26 @@
           kind === 'php' && selectedPHPBuild ? phpLine(selectedPHPBuild.version) : undefined,
         php_build: kind === 'php' ? phpBuild : undefined,
         front_controller: kind === 'php' ? frontController : false,
+        front_controller_file:
+          kind === 'php' && frontController ? frontControllerFile.trim() : undefined,
+        front_controller_mode: kind === 'php' ? frontControllerMode : undefined,
+        apache_allow_override: kind === 'php' ? apacheAllowOverride : undefined,
         www,
         tls,
         force_https: tls ? forceHttps : false,
         spa_fallback: kind === 'static' ? spaFallback : false,
+        spa_fallback_file: kind === 'static' && spaFallback ? spaFallbackFile.trim() : undefined,
+        build,
         env,
       });
+      const buildOutputMissing =
+        site.kind === 'static' && Boolean(site.build) && site.status === 'stopped';
       addToast({
         kind: 'success',
         title: `${site.name} added`,
-        message: `${site.domain} is starting. Logs are live on the detail page.`,
+        message: buildOutputMissing
+          ? `${site.domain} was created stopped because ${site.build?.output || 'the build output'} does not exist yet. Run Build on the detail page, then Start the site.`
+          : `${site.domain} is starting. Logs are live on the detail page.`,
       });
       push(`/sites/${encodeURIComponent(site.id)}`);
     } catch (caught) {
@@ -592,10 +768,192 @@
                 <div class="options-box">
                   <Toggle
                     label="SPA fallback"
-                    description="Route unknown paths to index.html so client-side routers work on refresh."
+                    description="Route unknown paths to a single HTML file so client-side routers work on refresh."
                     bind:checked={spaFallback}
                   />
+                  {#if spaFallback}
+                    <div class="toggle-detail">
+                      <Field
+                        id="spa-fallback-file"
+                        label="SPA fallback file"
+                        required
+                        hint="Relative to the document root. For example index.html."
+                        error={errors.spa_fallback_file}
+                      >
+                        <input
+                          id="spa-fallback-file"
+                          class="input mono"
+                          type="text"
+                          placeholder="index.html"
+                          autocomplete="off"
+                          spellcheck="false"
+                          bind:value={spaFallbackFile}
+                          aria-invalid={Boolean(errors.spa_fallback_file)}
+                          oninput={() => clearError('spa_fallback_file')}
+                          onblur={() => validateField('spa_fallback_file')}
+                        />
+                      </Field>
+                    </div>
+                  {/if}
                 </div>
+
+                <fieldset class="build-group">
+                  <legend>Static build <span class="optional">Optional</span></legend>
+                  <p class="build-hint">
+                    Builds run natively with the selected Node version before the files are
+                    served. devstack snapshots the previous output when practical and restores it
+                    if the build fails.
+                  </p>
+                  <div class="options-box">
+                    <Toggle
+                      label="Build before serving"
+                      description="Adds a build profile the dashboard and CLI can run on demand."
+                      bind:checked={buildEnabled}
+                    />
+                  </div>
+
+                  {#if buildEnabled}
+                    <div class="build-fields">
+                      {#if runtimesLoading}
+                        <div class="loading-field">
+                          <Skeleton width="110px" height="10px" />
+                          <Skeleton width="100%" height="36px" />
+                        </div>
+                      {:else if nodeRuntimes.length === 0}
+                        <div class="notice">
+                          <p>No Node builds are installed yet.</p>
+                          <p class="notice-copy">
+                            Install a Node runtime from <a class="link" href="#/runtimes">Runtimes</a>
+                            before enabling a static build.
+                          </p>
+                        </div>
+                      {:else}
+                        <Field id="build-node-version" label="Build Node version" required error={errors.build_node_version}>
+                          <div class="select-wrap">
+                            <select
+                              id="build-node-version"
+                              class="input mono"
+                              bind:value={buildNodeVersion}
+                              aria-invalid={Boolean(errors.build_node_version)}
+                              onchange={() => clearError('build_node_version')}
+                            >
+                              {#each nodeRuntimes as runtime (runtime.id)}
+                                <option value={runtime.version}>Node {runtime.version} · {runtime.backend}</option>
+                              {/each}
+                            </select>
+                            <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+                          </div>
+                        </Field>
+                      {/if}
+
+                      <Field
+                        id="build-command"
+                        label="Build command"
+                        required
+                        hint="Runs in the project folder with node, npm and npx from the selected build."
+                        error={errors.build_command}
+                      >
+                        <input
+                          id="build-command"
+                          class="input mono"
+                          type="text"
+                          placeholder="npm ci && npm run build"
+                          autocomplete="off"
+                          spellcheck="false"
+                          bind:value={buildCommand}
+                          aria-invalid={Boolean(errors.build_command)}
+                          oninput={() => clearError('build_command')}
+                          onblur={() => validateField('build_command')}
+                        />
+                      </Field>
+
+                      <Field
+                        id="build-output"
+                        label="Output directory"
+                        required
+                        hint="Required. Relative to the project folder, for example dist. The build fails if this directory is missing afterward."
+                        error={errors.build_output}
+                      >
+                        <input
+                          id="build-output"
+                          class="input mono"
+                          type="text"
+                          placeholder="dist"
+                          autocomplete="off"
+                          spellcheck="false"
+                          bind:value={buildOutput}
+                          aria-invalid={Boolean(errors.build_output)}
+                          oninput={() => clearError('build_output')}
+                          onblur={() => validateField('build_output')}
+                        />
+                      </Field>
+
+                      <div class="build-env">
+                        <p class="build-env-label">Build environment <span class="optional">Optional</span></p>
+                        <p class="env-hint">
+                          Applied only to the build process. Values are redacted in the dashboard.
+                        </p>
+                        <div class="env-list">
+                          {#each buildEnvRows as row, index (index)}
+                            <div class="env-row">
+                              <div class="env-cell">
+                                <label class="sr-only" for={`build-env-key-${index}`}>
+                                  Build variable {index + 1} name
+                                </label>
+                                <input
+                                  id={`build-env-key-${index}`}
+                                  class="input mono"
+                                  type="text"
+                                  placeholder="NODE_ENV"
+                                  autocomplete="off"
+                                  spellcheck="false"
+                                  bind:value={row.key}
+                                  aria-invalid={Boolean(errors[`build-env-${index}`])}
+                                  aria-describedby={errors[`build-env-${index}`]
+                                    ? `build-env-error-${index}`
+                                    : undefined}
+                                  oninput={() => clearError(`build-env-${index}`)}
+                                  onblur={() => validateField(`build-env-${index}`)}
+                                />
+                                {#if errors[`build-env-${index}`]}
+                                  <p class="env-error" id={`build-env-error-${index}`}>
+                                    {errors[`build-env-${index}`]}
+                                  </p>
+                                {/if}
+                              </div>
+                              <div class="env-cell">
+                                <label class="sr-only" for={`build-env-value-${index}`}>
+                                  Build variable {index + 1} value
+                                </label>
+                                <input
+                                  id={`build-env-value-${index}`}
+                                  class="input mono"
+                                  type="text"
+                                  placeholder="production"
+                                  autocomplete="off"
+                                  spellcheck="false"
+                                  bind:value={row.value}
+                                />
+                              </div>
+                              <IconButton
+                                label={`Remove build environment variable ${index + 1}`}
+                                icon={Trash2}
+                                size="sm"
+                                onclick={() => removeBuildEnv(index)}
+                              />
+                            </div>
+                          {/each}
+                        </div>
+                        <div class="env-add">
+                          <Button size="sm" variant="ghost" onclick={addBuildEnv}>
+                            <Plus size={13} strokeWidth={2.2} aria-hidden="true" />
+                            Add build variable
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  {/if}
+                </fieldset>
               </div>
             {:else if kind === 'php'}
               <div class="form-stack">
@@ -676,10 +1034,73 @@
                 <div class="options-box">
                   <Toggle
                     label="Front controller"
-                    description="Route requests that do not match a file to index.php, as most PHP frameworks expect."
+                    description="Route requests that do not match a file to one PHP entry point, as most frameworks expect."
                     bind:checked={frontController}
                   />
+                  {#if frontController}
+                    <div class="toggle-detail form-stack">
+                      <Field
+                        id="front-controller-file"
+                        label="Front controller file"
+                        required
+                        hint="Relative to the document root, for example index.php (not public/index.php when the document root is public)."
+                        error={errors.front_controller_file}
+                      >
+                        <input
+                          id="front-controller-file"
+                          class="input mono"
+                          type="text"
+                          placeholder="index.php"
+                          autocomplete="off"
+                          spellcheck="false"
+                          bind:value={frontControllerFile}
+                          aria-invalid={Boolean(errors.front_controller_file)}
+                          oninput={() => clearError('front_controller_file')}
+                          onblur={() => validateField('front_controller_file')}
+                        />
+                      </Field>
+                      <Field
+                        id="front-controller-mode"
+                        label="Front controller mode"
+                        hint="Auto lets devstack choose generated routing or the project's .htaccess."
+                      >
+                        <div class="select-wrap">
+                          <select
+                            id="front-controller-mode"
+                            class="input mono"
+                            bind:value={frontControllerMode}
+                            onchange={() => clearError('front_controller_mode')}
+                          >
+                            <option value="auto">Auto</option>
+                            <option value="generated">Generated config</option>
+                            <option value="htaccess">Project .htaccess</option>
+                          </select>
+                          <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+                        </div>
+                      </Field>
+                    </div>
+                  {/if}
                 </div>
+
+                <Field
+                  id="apache-allow-override"
+                  label="Apache AllowOverride"
+                  hint="Controls whether Apache reads a project .htaccess file. nginx and builtin ignore it."
+                >
+                  <div class="select-wrap">
+                    <select
+                      id="apache-allow-override"
+                      class="input mono"
+                      bind:value={apacheAllowOverride}
+                      onchange={() => clearError('apache_allow_override')}
+                    >
+                      <option value="all">All</option>
+                      <option value="fileinfo">FileInfo</option>
+                      <option value="none">None</option>
+                    </select>
+                    <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
+                  </div>
+                </Field>
 
                 <div class="notice">
                   <p>ini and extensions are editable after creation.</p>
@@ -887,6 +1308,30 @@
                           {envRows.filter((row) => row.key.trim()).length} variables
                         </span>
                         <span class="review-sub">Stored locally with the site</span>
+                      </dd>
+                      <button type="button" class="edit" onclick={() => goToStep(2)}>Edit</button>
+                    </div>
+                  {/if}
+                  {#if kind === 'php'}
+                    <div class="review-row">
+                      <dt>PHP routing</dt>
+                      <dd>
+                        <span class="review-main">
+                          {frontController ? `${frontControllerFile || 'index.php'} · ${frontControllerMode}` : 'Front controller off'}
+                        </span>
+                        <span class="review-sub">Apache AllowOverride {apacheAllowOverride}</span>
+                      </dd>
+                      <button type="button" class="edit" onclick={() => goToStep(2)}>Edit</button>
+                    </div>
+                  {/if}
+                  {#if kind === 'static' && buildEnabled}
+                    <div class="review-row">
+                      <dt>Build</dt>
+                      <dd>
+                        <span class="review-main mono">{buildCommand || 'No command'}</span>
+                        <span class="review-sub">
+                          Node {buildNodeVersion || 'not selected'} · output {buildOutput || 'not set'} · {buildEnvRows.filter((row) => row.key.trim()).length} variables
+                        </span>
                       </dd>
                       <button type="button" class="edit" onclick={() => goToStep(2)}>Edit</button>
                     </div>
@@ -1275,6 +1720,54 @@
     border-radius: var(--radius-lg);
     background: var(--input-bg);
     padding: 2px 12px;
+  }
+
+  .toggle-detail {
+    padding: 10px 0 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .build-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .build-group legend {
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .build-hint {
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
+  .build-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+  }
+
+  .build-env {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .build-env-label {
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 500;
   }
 
   .options-list {

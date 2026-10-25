@@ -7,7 +7,9 @@
     Copy,
     Eye,
     FileCode,
+    Image,
     Lock,
+    Package,
     RefreshCw,
     Server,
     ShieldCheck,
@@ -15,6 +17,7 @@
     Trash2,
     TriangleAlert,
     Unplug,
+    WandSparkles,
     Wrench,
   } from 'lucide-svelte';
   import * as api from '../lib/api';
@@ -22,7 +25,16 @@
   import { describeError } from '../lib/errors';
   import { formatDateTime, formatRelative } from '../lib/format';
   import { addToast, daemon, session, toastError } from '../lib/stores';
-  import type { Settings, ServingMode, TrustTarget, VhostStatus } from '../lib/types';
+  import type {
+    GlobalIni,
+    PHPDefaultStatus,
+    RuntimeBuild,
+    Settings,
+    ServingMode,
+    ToolStatus,
+    TrustTarget,
+    VhostStatus,
+  } from '../lib/types';
   import Badge from '../lib/components/Badge.svelte';
   import Button from '../lib/components/Button.svelte';
   import Card from '../lib/components/Card.svelte';
@@ -54,6 +66,28 @@
   let uninstallArmed = $state(false);
   let commandCopied = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
+
+  let phpDefault = $state<PHPDefaultStatus | null>(null);
+  let phpDefaultError = $state<{ code: string; message: string } | null>(null);
+  let phpDefaultLoading = $state(true);
+  let phpDefaultChoice = $state('');
+  let phpDefaultBusy = $state<'save' | 'clear' | null>(null);
+  let phpDefaultActionError = $state<{ code: string; message: string } | null>(null);
+  let globalIni = $state<GlobalIni | null>(null);
+  let globalIniContent = $state('');
+  let globalIniError = $state<{ code: string; message: string } | null>(null);
+  let globalIniLoading = $state(true);
+  let globalIniSaving = $state(false);
+  let globalIniSaved = $state(false);
+  let toolingRuntimes = $state<RuntimeBuild[]>([]);
+  let tools = $state<ToolStatus[]>([]);
+  let toolsError = $state<{ code: string; message: string } | null>(null);
+  let toolsLoading = $state(true);
+  let toolBusy = $state<string | null>(null);
+  let toolActionError = $state<{ code: string; message: string } | null>(null);
+  let removeToolTarget = $state<ToolStatus | null>(null);
+  let removeToolError = $state<{ code: string; message: string } | null>(null);
+  let removingTool = $state(false);
 
   const servingModes: { value: ServingMode; label: string; hint: string }[] = [
     { value: 'builtin', label: 'Built-in', hint: 'Go proxy + forwarders' },
@@ -107,9 +141,36 @@
   const pendingModeLabel = $derived(
     pendingMode ? (pendingMode === 'builtin' ? 'Built-in' : modeLabel(pendingMode)) : '',
   );
+  const phpBuilds = $derived(
+    toolingRuntimes
+      .filter((runtime) => runtime.kind === 'php')
+      .slice()
+      .sort(
+        (a, b) =>
+          b.version.localeCompare(a.version, undefined, { numeric: true }) ||
+          phpRevision(b.id) - phpRevision(a.id),
+      ),
+  );
+  const composerTool = $derived(tools.find((tool) => tool.id === 'composer'));
+  const imagemagickTool = $derived(tools.find((tool) => tool.id === 'imagemagick'));
+  const phpDefaultLabel = $derived(
+    phpDefault?.configured
+      ? phpDefault.configured
+      : phpDefault?.build
+        ? `Newest installed (${phpDefault.build.version})`
+        : 'Not configured',
+  );
+  const globalIniPath = $derived(
+    globalIni?.path ?? phpDefault?.global_ini ?? '—',
+  );
 
   function usableTimestamp(value: string | undefined): boolean {
     return Boolean(value) && !value?.startsWith('0001-01-01');
+  }
+
+  function phpRevision(id: string): number {
+    const match = /-r([1-9][0-9]*)$/.exec(id);
+    return match ? Number.parseInt(match[1], 10) : 0;
   }
 
   function modeLabel(mode: ServingMode): string {
@@ -180,12 +241,63 @@
     }
   }
 
+  async function loadPHPDefault(initial = false): Promise<void> {
+    if (initial) phpDefaultLoading = true;
+    phpDefaultError = null;
+    try {
+      const [status, builds] = await Promise.all([api.getPHPDefault(), api.listRuntimes()]);
+      phpDefault = status;
+      toolingRuntimes = builds;
+      const available = builds
+        .filter((runtime) => runtime.kind === 'php')
+        .map((runtime) => runtime.id);
+      if (!phpDefaultChoice || !available.includes(phpDefaultChoice)) {
+        phpDefaultChoice = status.configured ?? status.build?.id ?? available[0] ?? '';
+      }
+    } catch (caught) {
+      phpDefaultError = describeError(caught);
+    } finally {
+      phpDefaultLoading = false;
+    }
+  }
+
+  async function loadGlobalIni(initial = false): Promise<void> {
+    if (initial) globalIniLoading = true;
+    globalIniError = null;
+    try {
+      globalIni = await api.getGlobalIni();
+      globalIniContent = globalIni.content;
+    } catch (caught) {
+      globalIniError = describeError(caught);
+    } finally {
+      globalIniLoading = false;
+    }
+  }
+
+  async function loadTools(initial = false): Promise<void> {
+    if (initial) toolsLoading = true;
+    toolsError = null;
+    try {
+      tools = await api.listTools();
+    } catch (caught) {
+      toolsError = describeError(caught);
+    } finally {
+      toolsLoading = false;
+    }
+  }
+
   onMount(() => {
     void load(true);
     void loadVhosts(true);
+    void loadPHPDefault(true);
+    void loadGlobalIni(true);
+    void loadTools(true);
     const refresh = () => {
       void load();
       void loadVhosts();
+      void loadPHPDefault();
+      void loadGlobalIni();
+      void loadTools();
     };
     window.addEventListener('devstack:refresh', refresh);
     return () => {
@@ -315,6 +427,126 @@
       toastError('Could not remove trust', `${described.code}: ${described.message}`);
     } finally {
       trustAction = null;
+    }
+  }
+
+  async function savePHPDefault(): Promise<void> {
+    if (!phpDefaultChoice || phpDefaultBusy) return;
+    phpDefaultBusy = 'save';
+    phpDefaultActionError = null;
+    try {
+      phpDefault = await api.setPHPDefault(phpDefaultChoice);
+      phpDefaultChoice = phpDefault.configured ?? phpDefault.build?.id ?? phpDefaultChoice;
+      addToast({
+        kind: 'success',
+        title: 'PHP CLI default saved',
+        message: phpDefault.build
+          ? `php and composer now use PHP ${phpDefault.build.version} (${phpDefault.build.id}).`
+          : 'The default was saved. Install a PHP build to activate the shims.',
+      });
+      await loadTools();
+    } catch (caught) {
+      const described = describeError(caught);
+      phpDefaultActionError = described;
+      toastError('Could not set the PHP CLI default', `${described.code}: ${described.message}`);
+    } finally {
+      phpDefaultBusy = null;
+    }
+  }
+
+  async function clearPHPDefault(): Promise<void> {
+    if (phpDefaultBusy) return;
+    phpDefaultBusy = 'clear';
+    phpDefaultActionError = null;
+    try {
+      phpDefault = await api.clearPHPDefault();
+      phpDefaultChoice = phpDefault.build?.id ?? '';
+      addToast({
+        kind: 'success',
+        title: 'PHP CLI default cleared',
+        message: phpDefault.build
+          ? `The shims fall back to the newest installed build, PHP ${phpDefault.build.version}.`
+          : 'No PHP build is installed, so the managed shims were removed.',
+      });
+      await loadTools();
+    } catch (caught) {
+      const described = describeError(caught);
+      phpDefaultActionError = described;
+      toastError('Could not clear the PHP CLI default', `${described.code}: ${described.message}`);
+    } finally {
+      phpDefaultBusy = null;
+    }
+  }
+
+  async function saveGlobalIni(): Promise<void> {
+    if (globalIniSaving) return;
+    globalIniSaving = true;
+    globalIniError = null;
+    globalIniSaved = false;
+    try {
+      globalIni = await api.saveGlobalIni(globalIniContent);
+      globalIniContent = globalIni.content;
+      globalIniSaved = true;
+      addToast({
+        kind: 'success',
+        title: 'Global php.ini saved',
+        message: `${globalIni.path} was written for the CLI default build.`,
+      });
+    } catch (caught) {
+      const described = describeError(caught);
+      globalIniError = described;
+      toastError('Could not save the global php.ini', `${described.code}: ${described.message}`);
+    } finally {
+      globalIniSaving = false;
+    }
+  }
+
+  async function runToolAction(tool: ToolStatus, action: 'install' | 'update'): Promise<void> {
+    if (toolBusy) return;
+    toolBusy = `${tool.id}:${action}`;
+    toolActionError = null;
+    try {
+      await api.installTool(tool.id, false);
+      addToast({
+        kind: 'success',
+        title: action === 'install' ? `${tool.id} installed` : `${tool.id} updated`,
+        message: 'The helper refreshed the managed system link.',
+      });
+      await loadTools();
+    } catch (caught) {
+      const described = describeError(caught);
+      toolActionError = described;
+      toastError(
+        `Could not ${action} ${tool.id}`,
+        `${described.code}: ${described.message}`,
+      );
+    } finally {
+      toolBusy = null;
+    }
+  }
+
+  async function removeTool(): Promise<void> {
+    if (!removeToolTarget || removingTool) return;
+    const target = removeToolTarget;
+    removingTool = true;
+    toolActionError = null;
+    removeToolError = null;
+    try {
+      await api.removeTool(target.id);
+      removeToolTarget = null;
+      addToast({
+        kind: 'success',
+        title: `${target.id} removed`,
+        message: 'The managed wrapper and downloaded files were removed. System tools are untouched.',
+      });
+      await loadTools();
+    } catch (caught) {
+      const described = describeError(caught);
+      toolActionError = described;
+      removeToolError = described;
+      toastError('Could not remove tool', `${described.code}: ${described.message}`);
+    } finally {
+      removingTool = false;
     }
   }
 
@@ -616,6 +848,432 @@
       {/if}
     </Card>
 
+    <div class="tooling-grid">
+      <Card
+        title="PHP CLI default"
+        subtitle="Machine-wide php and composer shims outside a site shell"
+      >
+        {#snippet actions()}
+          <Badge variant={phpDefault?.configured ? 'accent' : phpDefault?.build ? 'info' : 'neutral'}>
+            {phpDefault?.configured ? 'Explicit' : phpDefault?.build ? 'Fallback' : 'Not set'}
+          </Badge>
+        {/snippet}
+
+        {#if phpDefaultLoading && !phpDefault}
+          <div class="tooling-loading" aria-busy="true" aria-label="Loading PHP CLI default">
+            <Skeleton width="64%" height="13px" />
+            <Skeleton width="100%" height="36px" />
+            <Skeleton width="46%" height="11px" />
+          </div>
+        {:else if phpDefaultError && !phpDefault}
+          <ErrorBanner
+            title="Could not load the PHP CLI default"
+            code={phpDefaultError.code}
+            message={phpDefaultError.message}
+            onretry={() => loadPHPDefault(true)}
+          />
+        {:else if phpDefault}
+          {#if phpDefaultError}
+            <div class="tooling-inline-error">
+              <ErrorBanner
+                title="PHP CLI state is out of date"
+                code={phpDefaultError.code}
+                message={phpDefaultError.message}
+                onretry={() => loadPHPDefault()}
+                ondismiss={() => (phpDefaultError = null)}
+              />
+            </div>
+          {/if}
+
+          <dl class="tooling-list">
+            <div>
+              <dt>Status</dt>
+              <dd>
+                <span class="tool-state" class:ok={Boolean(phpDefault.build)}>
+                  {phpDefaultLabel}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Resolved build</dt>
+              <dd class="mono break">
+                {phpDefault.build
+                  ? `PHP ${phpDefault.build.version} · ${phpDefault.build.id}`
+                  : 'No PHP build is installed'}
+              </dd>
+            </div>
+            <div>
+              <dt>Shim directory</dt>
+              <dd class="mono break">{phpDefault.shim_dir || '—'}</dd>
+            </div>
+            <div>
+              <dt>Managed shims</dt>
+              <dd>
+                <span class="tool-state" class:ok={phpDefault.shim_installed}>
+                  {phpDefault.shim_installed
+                    ? `Installed${phpDefault.shim_dir ? ` in ${phpDefault.shim_dir}` : ''}`
+                    : 'Not installed'}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Global ini</dt>
+              <dd class="mono break">{phpDefault.global_ini || '—'}</dd>
+            </div>
+          </dl>
+
+          {#if phpDefaultActionError}
+            <div class="tooling-inline-error">
+              <ErrorBanner
+                title="Could not update the PHP CLI default"
+                code={phpDefaultActionError.code}
+                message={phpDefaultActionError.message}
+                ondismiss={() => (phpDefaultActionError = null)}
+              />
+            </div>
+          {/if}
+
+          <div class="php-default-form">
+            <label class="tooling-label" for="php-default-build">Default PHP build</label>
+            <select
+              id="php-default-build"
+              class="input mono"
+              bind:value={phpDefaultChoice}
+              disabled={phpDefaultBusy !== null || phpBuilds.length === 0}
+            >
+              {#if phpBuilds.length === 0}
+                <option value="">No PHP build installed</option>
+              {/if}
+              {#each phpBuilds as build (build.id)}
+                <option value={build.id}>
+                  PHP {build.version} (r{phpRevision(build.id)}) · {build.backend}
+                </option>
+              {/each}
+            </select>
+            <p class="tooling-hint">
+              Choosing a build points <span class="mono">php</span> and
+              <span class="mono">composer</span> at it for new shells. Clearing keeps the
+              newest installed build as the documented fallback.
+            </p>
+            <div class="tooling-actions">
+              <Button
+                size="sm"
+                variant="primary"
+                loading={phpDefaultBusy === 'save'}
+                disabled={phpDefaultBusy !== null || !phpDefaultChoice}
+                onclick={savePHPDefault}
+              >
+                Save default
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                loading={phpDefaultBusy === 'clear'}
+                disabled={phpDefaultBusy !== null || !phpDefault.configured}
+                onclick={clearPHPDefault}
+              >
+                Clear default
+              </Button>
+            </div>
+          </div>
+        {/if}
+      </Card>
+
+      <Card
+        title="Global CLI php.ini"
+        subtitle="Editable machine-wide configuration for the default PHP build"
+      >
+        {#snippet actions()}
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={globalIniLoading}
+            disabled={globalIniLoading || globalIniSaving}
+            onclick={() => loadGlobalIni()}
+          >
+            {#if !globalIniLoading}<RefreshCw size={12} strokeWidth={2} aria-hidden="true" />{/if}
+            Reload
+          </Button>
+        {/snippet}
+
+        {#if globalIniLoading && !globalIni}
+          <div class="tooling-loading" aria-busy="true" aria-label="Loading global php.ini">
+            <Skeleton width="54%" height="12px" />
+            <Skeleton width="100%" height="150px" radius="8px" />
+          </div>
+        {:else if globalIniError && !globalIni}
+          <ErrorBanner
+            title="Could not load the global php.ini"
+            code={globalIniError.code}
+            message={globalIniError.message}
+            onretry={() => loadGlobalIni(true)}
+          />
+        {:else}
+          <div class="ini-path">
+            <FileCode size={14} strokeWidth={1.8} aria-hidden="true" />
+            <span class="mono break">{globalIniPath}</span>
+            {#if globalIni?.build_id}<Badge>{globalIni.build_id}</Badge>{/if}
+            {#if globalIniSaved}<Badge variant="accent">Saved</Badge>{/if}
+          </div>
+
+          {#if globalIniError}
+            <div class="tooling-inline-error">
+              <ErrorBanner
+                title="Could not reload the global php.ini"
+                code={globalIniError.code}
+                message={globalIniError.message}
+                onretry={() => loadGlobalIni()}
+                ondismiss={() => (globalIniError = null)}
+              />
+            </div>
+          {/if}
+
+          <label class="tooling-label" for="global-ini">Global php.ini content</label>
+          <textarea
+            id="global-ini"
+            class="input mono global-ini"
+            rows="10"
+            spellcheck="false"
+            bind:value={globalIniContent}
+            oninput={() => (globalIniSaved = false)}
+          ></textarea>
+          <p class="tooling-hint">
+            This file is used by the machine-wide CLI shims. Site shells keep their own PHP
+            build and site ini, so editing here never changes a running site.
+          </p>
+          <div class="tooling-actions">
+            <Button
+              size="sm"
+              variant="primary"
+              loading={globalIniSaving}
+              disabled={globalIniSaving || !globalIni}
+              onclick={saveGlobalIni}
+            >
+              Save php.ini
+            </Button>
+          </div>
+        {/if}
+      </Card>
+    </div>
+
+    <Card
+      title="Native tools"
+      subtitle="Managed Composer and ImageMagick wrappers installed by the privileged helper"
+      headerWrap
+    >
+      {#snippet actions()}
+        {#if imagemagickTool}
+          <Badge variant={imagemagickTool.installed ? 'accent' : 'info'}>
+            ImageMagick {imagemagickTool.installed ? 'managed' : 'available'}
+          </Badge>
+        {:else}
+          <Badge variant="warning">ImageMagick pending</Badge>
+        {/if}
+      {/snippet}
+
+      {#if toolsLoading && tools.length === 0}
+        <div class="tooling-loading" aria-busy="true" aria-label="Loading native tools">
+          <Skeleton width="36%" height="14px" />
+          <Skeleton width="100%" height="82px" radius="8px" />
+        </div>
+      {:else}
+        {#if toolsError}
+          <div class="tooling-inline-error">
+            <ErrorBanner
+              title="Could not load native tools"
+              code={toolsError.code}
+              message={toolsError.message}
+              onretry={() => loadTools(true)}
+            />
+          </div>
+        {/if}
+
+        {#if toolActionError}
+          <div class="tooling-inline-error">
+            <ErrorBanner
+              title="Tool action failed"
+              code={toolActionError.code}
+              message={toolActionError.message}
+              ondismiss={() => (toolActionError = null)}
+            />
+          </div>
+        {/if}
+
+        <div class="tool-list">
+          <article class="tool-row">
+            <span class="tool-icon" aria-hidden="true"><Package size={18} strokeWidth={1.8} /></span>
+            <div class="tool-copy">
+              <div class="tool-title">
+                <h3>Composer</h3>
+                {#if composerTool?.installed}
+                  <Badge variant="accent">Installed</Badge>
+                {:else}
+                  <Badge>Not installed</Badge>
+                {/if}
+                {#if composerTool?.managed}<Badge>Managed</Badge>{/if}
+                {#if composerTool?.conflict}<Badge variant="danger">Conflict</Badge>{/if}
+                {#if composerTool?.version}
+                  <span class="tool-version mono">{composerTool.version}</span>
+                {/if}
+              </div>
+              {#if composerTool}
+                <p class="tool-path mono" title={composerTool.wrapper_path}>
+                  {composerTool.wrapper_path || 'No system wrapper reported'}
+                </p>
+                {#if composerTool.target}
+                  <p class="tool-path mono" title={composerTool.target}>
+                    → {composerTool.target}
+                  </p>
+                {/if}
+                {#if composerTool.conflict}
+                  <p class="tool-conflict" role="status">{composerTool.conflict}</p>
+                {/if}
+                {#if composerTool.backup}
+                  <p class="tool-note">Previous wrapper backed up to <span class="mono">{composerTool.backup}</span>.</p>
+                {/if}
+              {:else}
+                <p class="tool-note">
+                  The helper did not report a Composer tool. Check the helper status in Doctor
+                  before installing.
+                </p>
+              {/if}
+            </div>
+            <div class="tool-actions">
+              {#if composerTool}
+                {#if composerTool.installed}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={toolBusy === 'composer:update'}
+                    disabled={Boolean(toolBusy)}
+                    onclick={() => runToolAction(composerTool, 'update')}
+                  >
+                    Update
+                  </Button>
+                {:else}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={toolBusy === 'composer:install'}
+                    disabled={Boolean(toolBusy)}
+                    onclick={() => runToolAction(composerTool, 'install')}
+                  >
+                    Install
+                  </Button>
+                {/if}
+                {#if composerTool.installed || composerTool.managed}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={Boolean(toolBusy)}
+                    onclick={() => {
+                      removeToolError = null;
+                      removeToolTarget = composerTool ?? null;
+                    }}
+                  >
+                    <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
+                    Remove
+                  </Button>
+                {/if}
+              {/if}
+            </div>
+          </article>
+
+          {#if imagemagickTool}
+            <article class="tool-row">
+              <span class="tool-icon" aria-hidden="true"><Image size={18} strokeWidth={1.8} /></span>
+              <div class="tool-copy">
+                <div class="tool-title">
+                  <h3>ImageMagick CLI</h3>
+                  {#if imagemagickTool.installed}
+                    <Badge variant="accent">Installed</Badge>
+                  {:else}
+                    <Badge>Not installed</Badge>
+                  {/if}
+                  {#if imagemagickTool.managed}<Badge>Managed</Badge>{/if}
+                  {#if imagemagickTool.conflict}<Badge variant="danger">Conflict</Badge>{/if}
+                  {#if imagemagickTool.version}
+                    <span class="tool-version mono">{imagemagickTool.version}</span>
+                  {/if}
+                </div>
+                <p class="tool-path mono" title={imagemagickTool.wrapper_path}>
+                  {imagemagickTool.wrapper_path || 'No system wrapper reported'}
+                </p>
+                {#if imagemagickTool.target}
+                  <p class="tool-path mono" title={imagemagickTool.target}>
+                    → {imagemagickTool.target}
+                  </p>
+                {/if}
+                {#if imagemagickTool.conflict}
+                  <p class="tool-conflict" role="status">{imagemagickTool.conflict}</p>
+                {/if}
+              </div>
+              <div class="tool-actions">
+                {#if imagemagickTool.installed}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={toolBusy === 'imagemagick:update'}
+                    disabled={Boolean(toolBusy)}
+                    onclick={() => runToolAction(imagemagickTool, 'update')}
+                  >
+                    Update
+                  </Button>
+                {:else}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={toolBusy === 'imagemagick:install'}
+                    disabled={Boolean(toolBusy)}
+                    onclick={() => runToolAction(imagemagickTool, 'install')}
+                  >
+                    Install
+                  </Button>
+                {/if}
+                {#if imagemagickTool.installed || imagemagickTool.managed}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={Boolean(toolBusy)}
+                    onclick={() => {
+                      removeToolError = null;
+                      removeToolTarget = imagemagickTool ?? null;
+                    }}
+                  >
+                    <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
+                    Remove
+                  </Button>
+                {/if}
+              </div>
+            </article>
+          {:else}
+            <article class="tool-row pending">
+              <span class="tool-icon pending" aria-hidden="true"><Image size={18} strokeWidth={1.8} /></span>
+              <div class="tool-copy">
+                <div class="tool-title">
+                  <h3>ImageMagick CLI</h3>
+                  <Badge variant="warning">Wave 2 backend pending</Badge>
+                </div>
+                <p class="tool-note">
+                  This daemon does not expose an ImageMagick tool endpoint yet. The
+                  <span class="mono">/tools</span> API only manages PHP default and Composer, so
+                  install, update and remove stay disabled here rather than calling an invented
+                  route.
+                </p>
+                <p class="tool-note">
+                  PHP's bundled <span class="mono">imagick</span> extension remains available per
+                  site from the PHP extensions panel.
+                </p>
+              </div>
+              <div class="tool-actions">
+                <span class="tool-pending-label"><WandSparkles size={12} strokeWidth={2} aria-hidden="true" /> Unavailable</span>
+              </div>
+            </article>
+          {/if}
+        </div>
+      {/if}
+    </Card>
+
     <div class="two-col">
       <Card
         title="Trust"
@@ -783,6 +1441,28 @@
     if (trustAction !== 'remove') removeTrustOpen = false;
   }}
 />
+
+<ConfirmDialog
+  open={removeToolTarget !== null}
+  title={removeToolTarget ? `Remove ${removeToolTarget.id}?` : 'Remove tool?'}
+  description="Removes the managed wrapper and downloaded tool files. A foreign system command is never deleted. You can install the managed tool again at any time."
+  confirmLabel="Remove tool"
+  danger
+  busy={removingTool}
+  onconfirm={removeTool}
+  oncancel={() => {
+    if (!removingTool) removeToolTarget = null;
+  }}
+>
+  {#snippet details()}
+    {#if removeToolError}
+      <p class="dialog-error" role="alert">
+        <span class="mono">{removeToolError.code}</span>
+        {removeToolError.message}
+      </p>
+    {/if}
+  {/snippet}
+</ConfirmDialog>
 
 <ConfirmDialog
   open={uninstallOpen}
@@ -1194,6 +1874,230 @@
     font-size: 10px;
   }
 
+  .tooling-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 14px;
+    margin-top: 14px;
+  }
+
+  .tooling-loading {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .tooling-inline-error {
+    margin-bottom: 10px;
+  }
+
+  .tooling-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .tooling-list > div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tooling-list dt {
+    flex: none;
+    color: var(--muted);
+    font-size: 10px;
+  }
+
+  .tooling-list dd {
+    margin: 0;
+    min-width: 0;
+    color: var(--fg);
+    font-size: 10.5px;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .tool-state {
+    color: var(--muted);
+    font-size: 10.5px;
+    overflow-wrap: anywhere;
+  }
+
+  .tool-state.ok {
+    color: var(--success-fg);
+  }
+
+  .php-default-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 12px;
+  }
+
+  .tooling-label {
+    color: var(--fg);
+    font-size: 11.5px;
+    font-weight: 500;
+  }
+
+  .tooling-hint {
+    color: var(--muted-2);
+    font-size: 10px;
+    line-height: 1.5;
+  }
+
+  .tooling-hint .mono {
+    color: var(--muted);
+  }
+
+  .tooling-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .ini-path {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 10px;
+  }
+
+  .ini-path :global(svg) {
+    flex: none;
+    color: var(--muted-2);
+  }
+
+  .global-ini {
+    width: 100%;
+    min-height: 150px;
+    margin-top: 3px;
+    padding: 10px;
+    resize: vertical;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    line-height: 1.55;
+  }
+
+  .tool-list {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .tool-row {
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 11px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+  }
+
+  .tool-row.pending {
+    border-style: dashed;
+    background: var(--surface);
+  }
+
+  .tool-icon {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    border: 1px solid var(--info);
+    border-radius: 8px;
+    background: var(--info-soft);
+    color: var(--info-fg);
+  }
+
+  .tool-icon.pending {
+    border-color: var(--border);
+    background: var(--surface-2);
+    color: var(--muted-2);
+  }
+
+  .tool-copy {
+    min-width: 0;
+  }
+
+  .tool-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .tool-title h3 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .tool-version {
+    color: var(--muted-2);
+    font-size: 9.5px;
+  }
+
+  .tool-path {
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 9.5px;
+    overflow-wrap: anywhere;
+  }
+
+  .tool-note {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .tool-note .mono {
+    color: var(--fg);
+  }
+
+  .tool-conflict {
+    margin-top: 5px;
+    padding: 5px 7px;
+    border-radius: var(--radius-sm);
+    background: var(--danger-soft);
+    color: var(--danger-fg);
+    font-size: 10px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .tool-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .tool-pending-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--muted-2);
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
   .two-col {
     display: grid;
     grid-template-columns: minmax(0, 1.5fr) minmax(270px, 1fr);
@@ -1494,7 +2398,8 @@
   }
 
   @media (max-width: 1000px) {
-    .two-col {
+    .two-col,
+    .tooling-grid {
       grid-template-columns: minmax(0, 1fr);
     }
 
@@ -1544,6 +2449,20 @@
       width: 100%;
       justify-content: flex-end;
       padding-left: 30px;
+    }
+
+    .tool-row {
+      grid-template-columns: 32px minmax(0, 1fr);
+    }
+
+    .tool-icon {
+      width: 32px;
+      height: 32px;
+    }
+
+    .tool-actions {
+      grid-column: 1 / -1;
+      justify-content: flex-end;
     }
   }
 </style>

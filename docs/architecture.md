@@ -1,8 +1,8 @@
 # Current architecture
 
-- **Status:** describes the implemented Linux M1 system plus Waves 0–1 of the service
-  platform. Wave 2 (phpMyAdmin, performance/host tuning, full dashboard panels) is
-  planned.
+- **Status:** describes the implemented Linux M1 system plus Waves 0–1 and the Wave 2
+  phpMyAdmin/dashboard work. Performance host-tuning/apply, ImageMagick CLI, config
+  diff/apply UI, terminal, and external-site Docker mounts remain follow-ups.
 - **Last reviewed:** 2026-10-25
 - **Planned extension:** [service containers design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 
@@ -167,8 +167,16 @@ Unrelated hosts lines are preserved.
 
 ### Service containers (Wave 1)
 
-- The embedded catalog pins nginx, Apache httpd, MySQL, MariaDB, PostgreSQL, and Redis by
-  digest. phpMyAdmin/ImageMagick are Wave 2.
+- The embedded catalog pins nginx, Apache httpd, MySQL, MariaDB, PostgreSQL, Redis, and
+  phpMyAdmin 5.2.3 by digest. ImageMagick CLI remains a follow-up.
+- phpMyAdmin is a standalone loopback:8082 cookie-auth container that follows the active
+  MySQL/MariaDB engine through the fixed `db` Compose alias; activating it without an
+  active MySQL family is rejected.
+- Credentials can be rotated for MySQL/MariaDB/PostgreSQL through the helper; the account
+  update runs on stdin, the host secret is owner-preserving 0600, and active phpMyAdmin is
+  restarted after rotation.
+- A pure `internal/performance` engine computes bounded nginx/Apache/PHP/host values and
+  apply/reset/benchmark plans; host application and dashboard wiring are pending.
 - The unprivileged daemon owns the service manager/API/CLI and writes database
   config/credentials under the root. The root helper owns the fixed Compose project:
   install/pull, exclusive activation, health/port checks, rollback, restart,
@@ -261,8 +269,10 @@ The daemon exposes the following route groups under `/api/v1`:
 The dashboard is embedded from `ui/dist` and served by the daemon. API mutations use a
 session cookie and CSRF token.
 
-Wave 2 still adds dashboard service action/config/credential/build/terminal panels and
-performance routes; the API/CLI paths above exist now.
+The dashboard now exposes service lifecycle/credential/phpMyAdmin actions, build
+profile/run/log panels, grouped service cards, and global PHP/Composer/tool management.
+Service config diff/apply, performance apply/benchmark, and the site terminal remain
+follow-ups. The pure performance engine has no API/CLI wiring yet.
 
 ## 8. CLI surface (current)
 
@@ -291,8 +301,9 @@ devstack version
 devstack uninstall --yes
 ```
 
-The dashboard service page is still read-only and the project terminal/performance UI is
-Wave 2. CLI/API build, shell, credentials, and service lifecycle paths exist now.
+The dashboard service page now supports lifecycle/credential actions, build profiles,
+tooling, and grouped status; service config/performance panels and the project terminal
+remain follow-ups. CLI/API build, shell, credentials, and service lifecycle paths exist.
 
 ## 9. Package map
 
@@ -321,6 +332,7 @@ Wave 2. CLI/API build, shell, credentials, and service lifecycle paths exist now
 | `internal/hosts` | managed hosts block |
 | `internal/logs` | log stores/streams/redaction |
 | `internal/model` | domain models |
+| `internal/performance` | bounded nginx/Apache/PHP/host profile engine and plans |
 | `internal/phpfpm` | PHP-FPM process control |
 | `internal/phpini` | generated php.ini rendering/validation |
 | `internal/proxy` | host router, reverse proxy, PHP FastCGI proxy |
@@ -386,11 +398,11 @@ Wave 2. CLI/API build, shell, credentials, and service lifecycle paths exist now
   administrator; devstack does not install packages.
 - M1 manual Linux gates (real root 80/443 install, browser trust, live UI) were not fully
   run.
-- Wave 1 implements six service containers, Docker nginx/Apache, credentials, global
-  PHP/Composer, site shell/exec, and static build execution.
-- Wave 2 still needs phpMyAdmin/ImageMagick CLI, credential rotation, performance
-  profiles/host tuning/benchmarks, external-site Docker mounts, and the dashboard
-  action/config/build/terminal panels.
+- Waves 0–1 plus phpMyAdmin/rotation and the dashboard action/build/tooling panels are
+  implemented.
+- Still pending: performance helper/apply/reset/benchmark + dashboard wiring, ImageMagick
+  CLI, service config diff/apply UI, site terminal/command runner, and external-site
+  Docker mounts.
 - Docker web servers currently serve only sites under the managed `projects/` root.
 - The official MySQL entrypoint can retain password values in the container process
   environment; Compose files/logs do not contain them.

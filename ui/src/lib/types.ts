@@ -363,3 +363,74 @@ export interface ServiceView {
 export interface ListServicesResponse {
   services: ServiceView[];
 }
+
+/** One database/service credential payload from reveal or rotate. */
+export interface ServiceCredentials {
+  engine: string;
+  username: string;
+  password: string;
+  database: string;
+  host: string;
+  port: number;
+}
+
+export interface ServiceLogsResponse {
+  logs: string;
+}
+
+export interface ServiceUninstallResult {
+  backup_path?: string;
+}
+
+/** One managed native tool reported by the privileged helper. */
+export interface ToolStatus {
+  id: string;
+  installed: boolean;
+  managed: boolean;
+  wrapper_path?: string;
+  target?: string;
+  version?: string;
+  conflict?: string;
+  backup?: string;
+}
+
+export interface ToolsResponse {
+  tools: ToolStatus[];
+}
+
+/** Machine-wide CLI PHP default state. */
+export interface PHPDefaultStatus {
+  configured?: string;
+  build?: RuntimeBuild;
+  global_ini: string;
+  shim_dir: string;
+  shim_installed: boolean;
+}
+
+/** The editable machine-wide CLI php.ini. */
+export interface GlobalIni {
+  path: string;
+  content: string;
+  build_id?: string;
+}
+
+/** Result of one static site build attempt. */
+export interface BuildResult {
+  site: string;
+  success: boolean;
+  command: string;
+  duration_ms: number;
+  log_path?: string;
+  output_path?: string;
+  restored: boolean;
+  snapshot_skipped: boolean;
+  error?: string;
+  restore_note?: string;
+}
+
+/** Bounded tail of the newest site build log. */
+export interface BuildLogs {
+  site: string;
+  path?: string;
+  content: string;
+}

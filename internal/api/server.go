@@ -846,6 +846,9 @@ func classifyError(err error) (int, string, string, any) {
 	if errors.Is(err, servicecontrol.ErrCredentialsUnsupported) {
 		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
 	}
+	if errors.Is(err, servicecontrol.ErrActiveDatabaseRequired) {
+		return http.StatusConflict, codeServiceConflict, err.Error(), nil
+	}
 	if errors.Is(err, servicecontrol.ErrHelperUnavailable) {
 		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil
 	}

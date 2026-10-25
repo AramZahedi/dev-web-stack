@@ -28,6 +28,7 @@ type ServiceController interface {
 	Activate(ctx context.Context, id services.ID) error
 	Deactivate(ctx context.Context, id services.ID) error
 	Restart(ctx context.Context, id services.ID) error
+	RotateCredentials(ctx context.Context, id services.ID) error
 	Validate(ctx context.Context, id services.ID) error
 	Reload(ctx context.Context, id services.ID) error
 	Uninstall(ctx context.Context, id services.ID, deleteData bool) error
@@ -47,6 +48,10 @@ type DockerServiceController struct {
 
 	// OwnerUID, when nonzero, owns the config and log directories created by Install.
 	OwnerUID int
+
+	// Secrets overrides the host credential store. Tests inject a failing store
+	// to exercise rollback; production uses <root>/secrets.
+	Secrets ServiceSecretStore
 
 	// Now, Sleep, and Probe are seams used by health and port waits. Tests replace
 	// them so they never touch Docker or sleep. Probe returns nil when the loopback
@@ -459,6 +464,9 @@ func (c *DockerServiceController) Activate(ctx context.Context, id services.ID) 
 	if err != nil {
 		return &ServiceActivationError{Service: id, Phase: "prepare", Err: err}
 	}
+	if err := c.checkActivationDependency(id, containers); err != nil {
+		return err
+	}
 
 	var stopped []services.ID
 	if svc.Group.Exclusive() {
@@ -547,6 +555,25 @@ func (c *DockerServiceController) Activate(ctx context.Context, id services.ID) 
 		}, true)
 	}
 	return nil
+}
+
+// checkActivationDependency enforces the dynamic phpMyAdmin dependency on an
+// active MySQL-family container. The dependency is not a Compose depends_on
+// edge because only one of MySQL and MariaDB may be active at a time.
+func (c *DockerServiceController) checkActivationDependency(id services.ID, containers map[string]psContainer) error {
+	if id != services.IDPHPMyAdmin {
+		return nil
+	}
+	for _, candidate := range []services.ID{services.IDMySQL, services.IDMariaDB} {
+		if cont, ok := containers[string(candidate)]; ok && strings.EqualFold(cont.State, "running") {
+			return nil
+		}
+	}
+	return &ServiceActivationError{
+		Service: id,
+		Phase:   "dependency",
+		Err:     fmt.Errorf("%w: phpMyAdmin requires an active MySQL or MariaDB service", helperproto.ErrServiceConflict),
+	}
 }
 
 func (c *DockerServiceController) waitReady(ctx context.Context, svc services.Service) error {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mockApi } from './mock';
+import { mockApi, resetMockServiceStateForTests } from './mock';
 
 const BLOG = 's_blog';
 
@@ -154,5 +154,170 @@ describe('mock services', () => {
   it('reports the serving provider in mock settings', async () => {
     const settings = await mockApi.settings();
     expect(settings.serving_provider).toBe('native');
+  });
+});
+
+describe('mock service actions', () => {
+  afterEach(() => {
+    resetMockServiceStateForTests();
+  });
+
+  it('refuses two active services in an exclusive group without changing state', async () => {
+    await expect(mockApi.activateService('apache')).rejects.toMatchObject({
+      code: 'SERVICE_CONFLICT',
+      status: 409,
+    });
+    const list = await mockApi.listServices();
+    expect(list.find((service) => service.id === 'nginx')?.active).toBe(true);
+    expect(list.find((service) => service.id === 'apache')?.active).toBe(false);
+  });
+
+  it('installs, activates, restarts and reads service logs', async () => {
+    await mockApi.installService('mariadb');
+    expect((await mockApi.getService('mariadb')).state).toBe('installed');
+
+    await expect(mockApi.activateService('mariadb')).rejects.toMatchObject({
+      code: 'SERVICE_CONFLICT',
+    });
+
+    await mockApi.deactivateService('mysql');
+    await mockApi.activateService('mariadb');
+    const active = await mockApi.getService('mariadb');
+    expect(active.active).toBe(true);
+    expect(active.health).toBe('healthy');
+
+    await mockApi.restartService('mariadb');
+    const logs = await mockApi.serviceLogs('mariadb', 50);
+    expect(logs).toContain('state=active');
+    expect(logs).toContain('3306:3306');
+  });
+
+  it('keeps data by default and returns a backup path only when deleting data', async () => {
+    await mockApi.deactivateService('nginx');
+    await expect(mockApi.uninstallService('nginx', false)).resolves.toEqual({});
+    expect((await mockApi.listServices()).some((service) => service.id === 'nginx')).toBe(false);
+
+    resetMockServiceStateForTests();
+    await mockApi.deactivateService('nginx');
+    const result = await mockApi.uninstallService('nginx', true);
+    expect(result.backup_path).toContain('/backups/services/nginx');
+  });
+
+  it('reveals database credentials and reports the rotation boundary', async () => {
+    const credentials = await mockApi.revealServiceCredentials('mysql');
+    expect(credentials).toMatchObject({
+      engine: 'mysql',
+      username: 'devstack',
+      host: '127.0.0.1',
+      port: 3306,
+    });
+    expect(credentials.password.length).toBeGreaterThan(16);
+
+    await expect(mockApi.rotateServiceCredentials('mysql')).rejects.toMatchObject({
+      code: 'CREDENTIAL_ROTATION_UNAVAILABLE',
+      status: 501,
+      message: 'database credential rotation is not available until Wave 2',
+    });
+    await expect(mockApi.revealServiceCredentials('redis')).rejects.toMatchObject({
+      code: 'INVALID_REQUEST',
+    });
+  });
+
+  it('manages the global PHP default, ini and Composer status', async () => {
+    const initial = await mockApi.getPHPDefault();
+    expect(initial.configured).toBe('php@8.4.4-r1');
+    expect(initial.build?.version).toBe('8.4.4');
+    expect(initial.shim_installed).toBe(true);
+
+    const switched = await mockApi.setPHPDefault('8.3');
+    expect(switched.configured).toBe('php@8.3.14-r2');
+    expect(switched.build?.version).toBe('8.3.14');
+
+    await expect(mockApi.setPHPDefault('9.9')).rejects.toMatchObject({
+      code: 'RUNTIME_MISSING',
+      status: 409,
+    });
+
+    const cleared = await mockApi.clearPHPDefault();
+    expect(cleared.configured).toBeUndefined();
+    expect(cleared.build?.version).toBe('8.5.0');
+
+    const ini = await mockApi.getGlobalIni();
+    expect(ini.content).toContain('memory_limit');
+    const saved = await mockApi.saveGlobalIni('[PHP]\nmemory_limit = 1G\n');
+    expect(saved.content).toContain('1G');
+    expect((await mockApi.getGlobalIni()).content).toContain('1G');
+
+    const tools = await mockApi.listTools();
+    expect(tools.map((tool) => tool.id)).toEqual(['php-default', 'composer']);
+    const removed = await mockApi.removeTool('composer');
+    expect(removed.installed).toBe(false);
+    const installed = await mockApi.installTool('composer');
+    expect(installed.installed).toBe(true);
+    expect(installed.version).toBe('2.8.4');
+    await expect(mockApi.installTool('imagemagick')).rejects.toMatchObject({
+      code: 'INVALID_REQUEST',
+    });
+  });
+
+  it('requires build output and creates stopped when the output directory is missing', async () => {
+    await expect(
+      mockApi.createSite({
+        name: 'build-empty-output',
+        path: '/home/dev/projects/scratch',
+        kind: 'static',
+        build: {
+          node_version: '24.9.0',
+          command: 'npm run build',
+          output: '',
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_REQUEST',
+      status: 400,
+      message: 'sites: build output is required for a build profile',
+    });
+
+    const stopped = await mockApi.createSite({
+      name: 'build-missing-output',
+      path: '/home/dev/projects/scratch',
+      kind: 'static',
+      build: {
+        node_version: '24.9.0',
+        command: 'npm run build',
+        output: 'dist',
+      },
+    });
+    expect(stopped.status).toBe('stopped');
+    expect(stopped.desired_state).toBe('stopped');
+    await mockApi.deleteSite(stopped.id);
+
+    const ready = await mockApi.createSite({
+      name: 'build-ready-output',
+      path: '/home/dev/projects/scratch',
+      kind: 'static',
+      build: {
+        node_version: '24.9.0',
+        command: 'npm run build',
+        output: 'public',
+      },
+    });
+    expect(ready.status).toBe('starting');
+    await mockApi.deleteSite(ready.id);
+  });
+
+  it('returns a build result and build log for a static profile', async () => {
+    const result = await mockApi.buildSite('blog');
+    expect(result.success).toBe(true);
+    expect(result.duration_ms).toBeGreaterThan(0);
+    expect(result.output_path).toBe('/home/dev/projects/blog/public');
+
+    const logs = await mockApi.getBuildLogs('blog', 5);
+    expect(logs.content).toContain('built in');
+    expect(logs.path).toContain('/logs/builds/blog/build.log');
+
+    await expect(mockApi.buildSite('api')).rejects.toMatchObject({
+      code: 'INVALID_REQUEST',
+    });
   });
 });

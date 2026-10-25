@@ -148,6 +148,10 @@ func mysqlFamilyService(
 		Group:       GroupMySQLFamily,
 		Image:       image,
 		NetworkMode: "bridge",
+		// Both engines carry the fixed Compose network alias. Only one member
+		// of the exclusive MySQL-family group runs at a time, so phpMyAdmin's
+		// "db" target always resolves to the active engine.
+		NetworkAliases: []string{"db"},
 		Ports: []Port{
 			{Host: 3306, Container: 3306, Protocol: "tcp", Loopback: true},
 		},

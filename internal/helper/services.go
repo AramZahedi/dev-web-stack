@@ -136,6 +136,27 @@ func (s *Server) handleServicesRestart(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (s *Server) handleServicesRotate(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.ServiceRotateCredentials == nil {
+		s.notImplemented(w, "ServiceRotateCredentials")
+		return
+	}
+	var req helperproto.ServiceActionRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if err := validateServiceID(req.ID); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if err := s.cfg.Service.ServiceRotateCredentials(r.Context(), req.ID); err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (s *Server) handleServicesValidate(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Service.ServiceValidate == nil {
 		s.notImplemented(w, "ServiceValidate")

@@ -9,6 +9,7 @@ const (
 	PathServicesUninstall  = "/v1/services/uninstall"
 	PathServicesLogs       = "/v1/services/logs"
 	PathServicesRestart    = "/v1/services/restart"
+	PathServicesRotate     = "/v1/services/credentials/rotate"
 	PathServicesValidate   = "/v1/services/validate"
 	PathServicesReload     = "/v1/services/reload"
 )

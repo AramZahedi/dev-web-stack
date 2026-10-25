@@ -1,11 +1,14 @@
 import { ApiError } from './errors';
 import { mockApi } from './mock';
 import type {
+  BuildLogs,
+  BuildResult,
   CatalogEntry,
   CreateSiteRequest,
   DaemonEvent,
   DoctorReport,
   FsListing,
+  GlobalIni,
   Health,
   ListServicesResponse,
   LogLine,
@@ -17,12 +20,18 @@ import type {
   PHPInfo,
   PHPMigrationRequest,
   PHPMigrationResult,
+  PHPDefaultStatus,
   RuntimeBuild,
+  ServiceCredentials,
+  ServiceLogsResponse,
+  ServiceUninstallResult,
   ServiceView,
   Session,
   Settings,
   ServingMode,
   Site,
+  ToolsResponse,
+  ToolStatus,
   TrustTarget,
   UpdateSiteRequest,
   VhostPreview,
@@ -276,6 +285,129 @@ export async function listServices(): Promise<ServiceView[]> {
 export async function getService(id: string): Promise<ServiceView> {
   if (isMockMode) return mockApi.getService(id);
   return normalizeService(await request<ServiceView>(`/services/${encodeURIComponent(id)}`));
+}
+
+function servicePath(id: string): string {
+  return `/services/${encodeURIComponent(id)}`;
+}
+
+async function serviceAction(id: string, action: string): Promise<void> {
+  await request<void>(`${servicePath(id)}/${action}`, { method: 'POST', voidResponse: true });
+}
+
+export async function installService(id: string): Promise<void> {
+  if (isMockMode) return mockApi.installService(id);
+  await serviceAction(id, 'install');
+}
+
+export async function activateService(id: string): Promise<void> {
+  if (isMockMode) return mockApi.activateService(id);
+  await serviceAction(id, 'activate');
+}
+
+export async function deactivateService(id: string): Promise<void> {
+  if (isMockMode) return mockApi.deactivateService(id);
+  await serviceAction(id, 'deactivate');
+}
+
+export async function restartService(id: string): Promise<void> {
+  if (isMockMode) return mockApi.restartService(id);
+  await serviceAction(id, 'restart');
+}
+
+export async function uninstallService(
+  id: string,
+  deleteData = false,
+): Promise<ServiceUninstallResult> {
+  if (isMockMode) return mockApi.uninstallService(id, deleteData);
+  return request<ServiceUninstallResult>(servicePath(id), {
+    method: 'DELETE',
+    body: { delete_data: deleteData },
+  });
+}
+
+export async function serviceLogs(id: string, tail = 200): Promise<string> {
+  if (isMockMode) return mockApi.serviceLogs(id, tail);
+  const response = await request<ServiceLogsResponse>(
+    `${servicePath(id)}/logs?tail=${encodeURIComponent(String(tail))}`,
+  );
+  return response.logs ?? '';
+}
+
+export async function revealServiceCredentials(id: string): Promise<ServiceCredentials> {
+  if (isMockMode) return mockApi.revealServiceCredentials(id);
+  return request<ServiceCredentials>(`${servicePath(id)}/credentials/reveal`, {
+    method: 'POST',
+  });
+}
+
+export async function rotateServiceCredentials(id: string): Promise<ServiceCredentials> {
+  if (isMockMode) return mockApi.rotateServiceCredentials(id);
+  return request<ServiceCredentials>(`${servicePath(id)}/credentials/rotate`, {
+    method: 'POST',
+  });
+}
+
+export async function listTools(): Promise<ToolStatus[]> {
+  if (isMockMode) return mockApi.listTools();
+  const response = await request<ToolsResponse>('/tools');
+  return response.tools ?? [];
+}
+
+export async function installTool(id: string, force = false): Promise<ToolStatus> {
+  if (isMockMode) return mockApi.installTool(id, force);
+  return request<ToolStatus>(`/tools/${encodeURIComponent(id)}/install`, {
+    method: 'POST',
+    body: { force },
+  });
+}
+
+export async function removeTool(id: string): Promise<ToolStatus> {
+  if (isMockMode) return mockApi.removeTool(id);
+  return request<ToolStatus>(`/tools/${encodeURIComponent(id)}/remove`, { method: 'POST' });
+}
+
+export async function getPHPDefault(): Promise<PHPDefaultStatus> {
+  if (isMockMode) return mockApi.getPHPDefault();
+  return request<PHPDefaultStatus>('/php/default');
+}
+
+export async function setPHPDefault(value: string, force = false): Promise<PHPDefaultStatus> {
+  if (isMockMode) return mockApi.setPHPDefault(value, force);
+  return request<PHPDefaultStatus>('/php/default', {
+    method: 'PUT',
+    body: { value, force },
+  });
+}
+
+export async function clearPHPDefault(): Promise<PHPDefaultStatus> {
+  if (isMockMode) return mockApi.clearPHPDefault();
+  return request<PHPDefaultStatus>('/php/default', {
+    method: 'PUT',
+    body: { clear: true },
+  });
+}
+
+export async function getGlobalIni(): Promise<GlobalIni> {
+  if (isMockMode) return mockApi.getGlobalIni();
+  return request<GlobalIni>('/php/default/ini');
+}
+
+export async function saveGlobalIni(content: string): Promise<GlobalIni> {
+  if (isMockMode) return mockApi.saveGlobalIni(content);
+  return request<GlobalIni>('/php/default/ini', { method: 'PUT', body: { content } });
+}
+
+export async function buildSite(ref: string): Promise<BuildResult> {
+  if (isMockMode) return mockApi.buildSite(ref);
+  return request<BuildResult>(`${sitePath(ref)}/build`, { method: 'POST' });
+}
+
+export async function getBuildLogs(ref: string, tail = 200): Promise<BuildLogs> {
+  if (isMockMode) return mockApi.getBuildLogs(ref, tail);
+  return request<BuildLogs>(
+    `${sitePath(ref)}/build/logs?tail=${encodeURIComponent(String(tail))}`,
+  );
 }
 
 export async function getPHPInfo(ref: string): Promise<PHPInfo> {
