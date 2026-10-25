@@ -10,9 +10,9 @@ conflicts, host-owned config/data/certs, editable configs, Laravel/Nuxt support,
 PHP/Composer, dashboard parity, and measured performance tuning.
 
 **Architecture:** Native devstack; optional infrastructure services run as separate Docker
-containers controlled by the privileged helper through a fixed Compose project. A serial
-foundation freezes cross-lane contracts, then independent workstreams run in isolated
-worktrees and merge through a per-wave integration branch.
+containers controlled by the privileged helper through a fixed Compose project. A
+parallel-safe foundation freezes cross-lane contracts in two waves, then independent
+workstreams run in isolated worktrees and merge through per-wave integration branches.
 
 **Tech Stack:** Go 1.26, SQLite (`modernc.org/sqlite`), Svelte 5/Vite/TypeScript, Docker
 Engine + Compose, systemd, native PHP/Node runtimes, shell scripts.
@@ -79,13 +79,19 @@ This program keeps every TDD/review/fix/re-review gate but changes scheduling:
 ## 2. Wave and dependency graph
 
 ```text
-Wave 0  Foundation (serial)
-  F1 root layout
-  F2 service registry/store
-  F3 Compose/helper control plane
-  F4 config manifest/conflict engine
-  F5 site/global contract freeze
-  F6 service API/CLI/UI skeleton
+Wave 0A  Foundation contracts (parallel, 3 worktrees)
+  F1 root layout                 ─┐
+  F2 service registry/store      ─┼─ branch from master
+  F4 config manifest/conflict    ─┘
+            │ merge queue
+            ▼
+Wave 0B  Foundation integration (parallel, 2 worktrees)
+  F3 Compose/helper (depends F2)  ─┐
+  F5 site contracts (depends F2)  ─┼─ branch from foundation integration
+            │ merge queue         ─┘
+            ▼
+Wave 0C  Foundation UI/API (serial)
+  F6 service API/CLI/UI skeleton (depends F1/F2/F5)
             │
             ▼
 Wave 1  Parallel lanes (branch from integration/services-wave-1)
@@ -241,16 +247,32 @@ the most capable available model and includes cross-lane integration risks.
 Detailed task plans are per wave. The catalog is intentionally specific about boundaries
 but not implementation signatures until the prior wave freezes them.
 
-### Wave 0 — Foundation (serial)
+### Wave 0 — Foundation, parallel-safe phases
 
-| Task | Deliverable |
-|---|---|
-| F1 | Root layout, new paths, permissions |
-| F2 | Service catalog/state types and SQLite state |
-| F3 | Compose rendering, fixed command runner, helper service RPC |
-| F4 | Config manifest, hash/conflict/backup/atomic-write engine |
-| F5 | Site contract fields, migrations, API types for front controller/.htaccess/build |
-| F6 | Service API/CLI/UI skeleton and read-only service listing |
+Wave 0A (maximum three worktrees):
+
+| Task | Depends on | Deliverable |
+|---|---|---|
+| F1 | none | Root layout, new paths, permissions |
+| F2 | none | Service catalog/state types and SQLite state |
+| F4 | none | Config manifest, hash/conflict/backup/atomic-write engine |
+
+Wave 0B (maximum two worktrees, after 0A merge):
+
+| Task | Depends on | Deliverable |
+|---|---|---|
+| F3 | F2 | Compose rendering, fixed command runner, helper service RPC |
+| F5 | F2 | Site contract fields, migrations, API types for front controller/.htaccess/build |
+
+Wave 0C (after 0B merge):
+
+| Task | Depends on | Deliverable |
+|---|---|---|
+| F6 | F1, F2, F5 | Service API/CLI/UI skeleton and read-only service listing |
+
+The merge order is F1 → F2 → F4 (any safe order within 0A), then F3 → F5, then
+F6. F3 and F5 must not touch each other's files. F6 is serial because it edits shared
+API/UI hot files after F5.
 
 ### Wave 1 — Parallel lanes
 
@@ -338,9 +360,10 @@ A wave is mergeable only when:
 
 ## 11. Execution handoff
 
-Wave 0 starts only after the design is approved. The foundation plan is the first
-execution plan; wave plans 1+ are written after foundation merge and before their work
-begins. Do not implement service features before their wave plan exists.
+Wave 0 starts only after the design is approved. It uses the parallel-safe phases above;
+the foundation plan is the first execution plan. Wave plans 1+ are written after
+foundation merge and before their work begins. Do not implement service features before
+their wave plan exists.
 
 The controller must keep a wave ledger in the plan workspace with:
 

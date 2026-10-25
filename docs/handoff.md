@@ -167,9 +167,9 @@ Docker Engine remains installed for the new service containers.
 
 1. Read the [Wave 0 kickoff](superpowers/plans/2026-10-25-service-platform-wave0-kickoff.md).
 2. Execute the [foundation plan](superpowers/plans/2026-10-25-service-platform-foundation.md)
-   in one serial worktree.
+   using its phases: 0A = F1/F2/F4 in parallel, 0B = F3/F5 in parallel, 0C = F6.
 3. Use the [program plan](superpowers/plans/2026-10-25-service-platform-program.md) for the
-   parallel worktree/merge mechanism in Waves 1–3.
+   worktree/merge mechanism and Wave 1–3 parallelism.
 4. Preserve existing M1 behavior and tests.
 5. Keep the existing native external provider compatible.
 6. Do not start Windows/WSL Plan 3 without explicit user instruction.

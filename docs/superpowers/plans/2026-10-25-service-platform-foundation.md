@@ -9,8 +9,9 @@ engine, site contract fields, and service API/CLI/UI extension points so the ind
 service lanes can run in parallel.
 
 **Architecture:** This is Wave 0 of the
-[program plan](2026-10-25-service-platform-program.md). It is serial. It does not install
-real services; it builds the contracts and control plane that later waves use.
+[program plan](2026-10-25-service-platform-program.md). It uses safe parallel phases
+(0A: F1/F2/F4, 0B: F3/F5, 0C: F6). It does not install real services; it builds the
+contracts and control plane that later waves use.
 
 **Tech Stack:** Go 1.26, SQLite (`modernc.org/sqlite`), Svelte 5/Vite/TypeScript, Docker
 Compose command runner, systemd helper.
@@ -41,26 +42,37 @@ Compose command runner, systemd helper.
 
 ---
 
-## Wave 0 ownership and order
+## Wave 0 ownership and parallel order
 
-Tasks below are serial. Do not start Wave 1 until all are merged and the Wave 0 integration
-checkpoint is green.
+Wave 0 is split into safe phases. The maximum is three implementation worktrees.
 
-| Task | Owns |
-|---|---|
-| F1 | `internal/config` layout and permissions |
-| F2 | `internal/services` catalog/state + SQLite service state |
-| F3 | Compose rendering, helper service RPC/client, fixed Docker runner |
-| F4 | `internal/serviceconfig` manifest/conflict engine |
-| F5 | `internal/model`/store/site API contact fields |
-| F6 | service API/CLI/UI read-only skeleton |
+| Phase | Task | Depends on | Branch | Owns |
+|---|---|---|---|---|
+| 0A | F1 | none | `feat/services-foundation-f1` | `internal/config` layout/permissions |
+| 0A | F2 | none | `feat/services-foundation-f2` | `internal/services` catalog/state + SQLite service state |
+| 0A | F4 | none | `feat/services-foundation-f4` | `internal/serviceconfig` manifest/conflict engine |
+| 0B | F3 | F2 | `feat/services-foundation-f3` | Compose rendering, helper RPC/client, fixed Docker runner |
+| 0B | F5 | F2 | `feat/services-foundation-f5` | `internal/model`/store/site API contract fields |
+| 0C | F6 | F1, F2, F5 | `feat/services-foundation-f6` | service API/CLI/UI read-only skeleton |
 
-Hot files F1/F2/F5/F6 are foundation-owned. Wave 1 tasks must not edit them except through
-pre-frozen extension points.
+Integration branches:
+
+- `integration/services-foundation` is created from `master`.
+- 0A tasks branch from `master`, merge in order F1 → F2 → F4 (safe order).
+- 0B tasks branch from the merged 0A tip, merge F3 → F5.
+- F6 branches from the merged 0B tip.
+- After F6, run the Wave 0 checkpoint and merge the integration branch to `master`.
+
+Do not start Wave 1 until all tasks are merged and the checkpoint is green.
+
+Hot files F1/F2/F5/F6 are foundation-owned. F3 and F5 must not edit each other's files.
+F6 is serial because it edits API/UI hot files after F5.
 
 ---
 
 ### Task F1: Root layout and service paths
+
+**Parallel group:** 0A · **Depends on:** none · **Branch:** `feat/services-foundation-f1`
 
 **Files:**
 - Modify: `internal/config/paths.go`
@@ -141,6 +153,8 @@ git commit -m "feat: add service root layout paths"
 ---
 
 ### Task F2: Service catalog and state store
+
+**Parallel group:** 0A · **Depends on:** none · **Branch:** `feat/services-foundation-f2`
 
 **Files:**
 - Create: `internal/services/catalog.go`
@@ -330,6 +344,8 @@ git commit -m "feat: add service catalog and state registry"
 
 ### Task F3: Compose rendering and fixed helper control plane
 
+**Parallel group:** 0B · **Depends on:** F2 · **Branch:** `feat/services-foundation-f3`
+
 **Files:**
 - Create: `internal/services/compose.go`
 - Test: `internal/services/compose_test.go`
@@ -489,6 +505,8 @@ git commit -m "feat: add fixed compose service control plane"
 
 ### Task F4: Config manifest and conflict engine
 
+**Parallel group:** 0A · **Depends on:** none · **Branch:** `feat/services-foundation-f4`
+
 **Files:**
 - Create: `internal/serviceconfig/manifest.go`
 - Create: `internal/serviceconfig/manager.go`
@@ -591,6 +609,8 @@ git commit -m "feat: add editable config conflict engine"
 
 ### Task F5: Freeze site config contracts
 
+**Parallel group:** 0B · **Depends on:** F2 · **Branch:** `feat/services-foundation-f5`
+
 **Files:**
 - Modify: `internal/model/model.go`
 - Modify: `internal/model/model_test.go`
@@ -684,6 +704,8 @@ git commit -m "feat: freeze site front-controller and build contracts"
 ---
 
 ### Task F6: Read-only service API/CLI/UI skeleton
+
+**Parallel group:** 0C · **Depends on:** F1, F2, F5 · **Branch:** `feat/services-foundation-f6`
 
 **Files:**
 - Modify: `internal/api/server.go`
