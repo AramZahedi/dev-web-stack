@@ -33,6 +33,8 @@ type composeService struct {
 	NetworkMode   string                   `yaml:"network_mode,omitempty"`
 	Labels        map[string]string        `yaml:"labels"`
 	Environment   map[string]string        `yaml:"environment,omitempty"`
+	Entrypoint    []string                 `yaml:"entrypoint,omitempty"`
+	Command       []string                 `yaml:"command,omitempty"`
 	Ports         []string                 `yaml:"ports,omitempty"`
 	Volumes       []composeVolume          `yaml:"volumes,omitempty"`
 	DependsOn     []string                 `yaml:"depends_on,omitempty"`
@@ -199,6 +201,8 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 				"devstack.service": idStr,
 			},
 			Environment: s.Environment,
+			Entrypoint:  append([]string(nil), s.Entrypoint...),
+			Command:     append([]string(nil), s.Command...),
 			Ports:       ports,
 			Volumes:     volumes,
 			DependsOn:   deps,
