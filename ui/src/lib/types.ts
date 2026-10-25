@@ -295,6 +295,83 @@ export interface SettingsUpdateResult extends Settings {
   warnings?: string[];
 }
 
+export interface ServiceConfigConflict {
+  active?: boolean;
+  resolution_required?: boolean;
+  reason?: string;
+  allowed_resolutions?: string[];
+}
+
+export interface ServiceConfigFile {
+  path: string;
+  class: string;
+  generated: boolean;
+  modified: boolean;
+  detached: boolean;
+  hash?: string;
+  size?: number;
+  conflict?: ServiceConfigConflict;
+}
+
+export interface ServiceConfigList {
+  service?: string;
+  installed: boolean;
+  files: ServiceConfigFile[];
+  validation_pending?: boolean;
+}
+
+export interface ServiceConfigContent {
+  path: string;
+  content: string;
+  class?: string;
+  generated?: boolean;
+  modified?: boolean;
+  detached?: boolean;
+  hash?: string;
+  size?: number;
+  conflict?: ServiceConfigConflict;
+}
+
+export interface ServiceConfigDiff {
+  path: string;
+  diff: string;
+  current_hash?: string;
+  proposed_hash?: string;
+  current_size?: number;
+  proposed_size?: number;
+  status?: ServiceConfigFile;
+  conflict?: ServiceConfigConflict;
+}
+
+export type ServiceConfigResolution = 'keep' | 'use' | 'merge';
+
+export interface ServiceConfigApplyRequest {
+  path: string;
+  content: string;
+  resolution?: ServiceConfigResolution;
+}
+
+export interface ServiceConfigResult {
+  service?: string;
+  path?: string;
+  action?: 'apply' | 'reset';
+  changed?: boolean;
+  resolution?: string;
+  backup_path?: string;
+  restored_from?: string;
+  detached?: boolean;
+  hash?: string;
+  size?: number;
+  active?: boolean;
+  live?: boolean;
+  reloaded?: boolean;
+  validation_pending?: boolean;
+  restart_required?: boolean;
+  rolled_back?: boolean;
+  message?: string;
+  conflict?: ServiceConfigConflict;
+}
+
 export type PerformanceProfile = 'balanced' | 'throughput' | 'custom';
 
 export interface PerformanceResources {

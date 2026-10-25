@@ -29,6 +29,11 @@ import type {
   PHPMigrationResult,
   PHPDefaultStatus,
   RuntimeBuild,
+  ServiceConfigApplyRequest,
+  ServiceConfigContent,
+  ServiceConfigDiff,
+  ServiceConfigList,
+  ServiceConfigResult,
   ServiceCredentials,
   ServiceLogsResponse,
   ServiceUninstallResult,
@@ -510,6 +515,63 @@ export async function browseFs(path: string): Promise<FsListing> {
     await fetchSession();
     return request<FsListing>(`/fs?path=${encodeURIComponent(path)}`);
   }
+}
+
+export async function listServiceConfig(id: string): Promise<ServiceConfigList> {
+  if (isMockMode) return mockApi.listServiceConfig(id);
+  const response = await request<ServiceConfigList | ServiceConfigList['files']>(
+    `/services/${encodeURIComponent(id)}/config`,
+  );
+  if (Array.isArray(response)) {
+    return { installed: true, files: response };
+  }
+  return { installed: response.installed ?? true, files: response.files ?? [] };
+}
+
+export async function getServiceConfigContent(
+  id: string,
+  path: string,
+): Promise<ServiceConfigContent> {
+  if (isMockMode) return mockApi.getServiceConfigContent(id, path);
+  const response = await request<ServiceConfigContent | string>(
+    `/services/${encodeURIComponent(id)}/config/content?path=${encodeURIComponent(path)}`,
+  );
+  if (typeof response === 'string') return { path, content: response };
+  return response;
+}
+
+export async function diffServiceConfig(
+  id: string,
+  path: string,
+  content: string,
+): Promise<ServiceConfigDiff> {
+  if (isMockMode) return mockApi.diffServiceConfig(id, path, content);
+  return request<ServiceConfigDiff>(`/services/${encodeURIComponent(id)}/config/diff`, {
+    method: 'POST',
+    body: { path, content },
+  });
+}
+
+export async function applyServiceConfig(
+  id: string,
+  body: ServiceConfigApplyRequest,
+): Promise<ServiceConfigResult> {
+  if (isMockMode) return mockApi.applyServiceConfig(id, body);
+  return request<ServiceConfigResult>(`/services/${encodeURIComponent(id)}/config/apply`, {
+    method: 'POST',
+    body,
+  });
+}
+
+export async function resetServiceConfig(
+  id: string,
+  path: string,
+): Promise<ServiceConfigResult> {
+  if (isMockMode) return mockApi.resetServiceConfig(id, path);
+  return request<ServiceConfigResult>(`/services/${encodeURIComponent(id)}/config/reset`, {
+    method: 'POST',
+    body: { path },
+  });
 }
 
 export async function getPerformance(): Promise<PerformanceState> {

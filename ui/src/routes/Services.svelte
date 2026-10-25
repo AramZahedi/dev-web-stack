@@ -13,6 +13,7 @@
     RotateCw,
     ScrollText,
     Server,
+    Settings2,
     Trash2,
   } from 'lucide-svelte';
   import * as api from '../lib/api';
@@ -27,6 +28,7 @@
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
   import Modal from '../lib/components/Modal.svelte';
   import PerformancePanel from '../lib/components/PerformancePanel.svelte';
+  import ServiceConfigModal from '../lib/components/ServiceConfigModal.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
 
   type ServiceAction = 'install' | 'activate' | 'deactivate' | 'restart' | 'uninstall';
@@ -55,6 +57,7 @@
   let busy = $state<string | null>(null);
   let actionErrors = $state<Record<string, DescribedError>>({});
   let logsTarget = $state<ServiceView | null>(null);
+  let configTarget = $state<ServiceView | null>(null);
   let logs = $state('');
   let logsLoading = $state(false);
   let logsError = $state<DescribedError | null>(null);
@@ -552,6 +555,18 @@
                         size="sm"
                         variant="ghost"
                         disabled={inFlight}
+                        onclick={() => (configTarget = service)}
+                      >
+                        <Settings2 size={13} strokeWidth={2} aria-hidden="true" />
+                        Configuration
+                      </Button>
+                    {/if}
+
+                    {#if installed}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={inFlight}
                         onclick={() => openLogs(service)}
                       >
                         <ScrollText size={13} strokeWidth={2} aria-hidden="true" />
@@ -607,6 +622,14 @@
 
   <PerformancePanel />
 </div>
+
+{#if configTarget}
+  <ServiceConfigModal
+    open={true}
+    service={configTarget}
+    onclose={() => (configTarget = null)}
+  />
+{/if}
 
 <Modal
   open={logsTarget !== null}

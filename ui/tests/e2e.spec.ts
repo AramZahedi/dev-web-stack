@@ -367,6 +367,40 @@ test('Services groups containers, reveals credentials and reports activation con
   await expect(page.getByText('No benchmark runs yet')).toBeVisible();
 });
 
+test('Service configuration lists files, diffs, applies, and resets', async ({ page }) => {
+  await open(page, '#/services');
+  const nginx = page.locator('article').filter({ hasText: 'Nginx Web Server' }).first();
+  await nginx.getByRole('button', { name: 'Configuration' }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Nginx Web Server configuration' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('nginx.conf', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: /conf\.d\/devstack\.conf/ }).click();
+
+  const editor = dialog.getByLabel('File content');
+  await expect(editor).toHaveValue(/listen 80/);
+  await editor.fill('# custom nginx\nserver {\n    listen 8080;\n}\n');
+  await dialog.getByRole('button', { name: 'Preview diff' }).click();
+  await expect(dialog.getByText('Unified diff')).toBeVisible();
+  await expect(dialog.locator('.diff-panel pre')).toContainText('+    listen 8080;');
+
+  await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Configuration applied' }),
+  ).toBeVisible();
+  await expect(dialog.getByText('Configuration validated and reloaded.')).toBeVisible();
+
+  await dialog.getByRole('button', { name: 'Reset', exact: true }).click();
+  const reset = page.getByRole('dialog', { name: /Reset conf\.d\/devstack\.conf/ });
+  await reset.getByRole('textbox').fill('RESET');
+  await reset.getByRole('button', { name: 'Reset file' }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Configuration reset' }),
+  ).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(dialog).toBeHidden();
+});
+
 test('Performance previews, applies, resets, and records a measured benchmark', async ({ page }) => {
   test.setTimeout(45_000);
   await open(page, '#/services');
