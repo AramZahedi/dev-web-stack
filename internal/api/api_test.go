@@ -1130,9 +1130,15 @@ func TestOpenAPIDocumentParsesAndDocumentsRoutes(t *testing.T) {
 		t.Fatalf("read openapi: %v", err)
 	}
 	var doc struct {
-		OpenAPI string                    `yaml:"openapi"`
-		Info    map[string]any            `yaml:"info"`
-		Paths   map[string]map[string]any `yaml:"paths"`
+		OpenAPI    string                    `yaml:"openapi"`
+		Info       map[string]any            `yaml:"info"`
+		Paths      map[string]map[string]any `yaml:"paths"`
+		Components struct {
+			Schemas map[string]struct {
+				Required   []string       `yaml:"required"`
+				Properties map[string]any `yaml:"properties"`
+			} `yaml:"schemas"`
+		} `yaml:"components"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("parse openapi: %v", err)
@@ -1156,6 +1162,25 @@ func TestOpenAPIDocumentParsesAndDocumentsRoutes(t *testing.T) {
 		if _, ok := doc.Paths[path]; !ok {
 			t.Fatalf("openapi missing UI path %q", path)
 		}
+	}
+
+	// The service view exposes operational fields added by the container wave.
+	serviceView, ok := doc.Components.Schemas["ServiceView"]
+	if !ok {
+		t.Fatal("openapi missing ServiceView schema")
+	}
+	for _, field := range []string{"health", "container_id", "installed"} {
+		if _, ok := serviceView.Properties[field]; !ok {
+			t.Fatalf("openapi ServiceView missing field %q", field)
+		}
+	}
+
+	settings, ok := doc.Components.Schemas["Settings"]
+	if !ok {
+		t.Fatal("openapi missing Settings schema")
+	}
+	if _, ok := settings.Properties["serving_provider"]; !ok {
+		t.Fatal("openapi Settings missing field serving_provider")
 	}
 }
 

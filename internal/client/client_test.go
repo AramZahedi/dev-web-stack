@@ -18,6 +18,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 )
 
@@ -335,6 +336,33 @@ func (f *fakeAPI) mux() *http.ServeMux {
 			})
 		})
 	})
+	mux.HandleFunc("POST /api/v1/services/{id}/{action}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		})
+	})
+	mux.HandleFunc("DELETE /api/v1/services/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]string{"backup_path": "/data/backups/mysql.tar.gz"})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/services/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]string{"logs": "line one\nline two\n"})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/credentials/{action}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, servicecontrol.Credentials{
+				Engine: "mysql", Username: "devstack", Password: "secret-password",
+				Database: "devstack", Host: "127.0.0.1", Port: 3306,
+			})
+		})
+	})
 	return mux
 }
 
@@ -598,6 +626,115 @@ func TestClientPHPRoutingAndCreatePayload(t *testing.T) {
 	update := api.last(t, http.MethodPatch, "/api/v1/sites/site-1")
 	if !strings.Contains(update.body, `"front_controller":false`) {
 		t.Fatalf("update payload = %s", update.body)
+	}
+}
+
+func TestClientServiceActionsAndCredentials(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	ctx := context.Background()
+
+	for _, action := range []string{"install", "activate", "deactivate", "restart"} {
+		var callErr error
+		switch action {
+		case "install":
+			callErr = c.InstallService(ctx, "nginx")
+		case "activate":
+			callErr = c.ActivateService(ctx, "nginx")
+		case "deactivate":
+			callErr = c.DeactivateService(ctx, "nginx")
+		case "restart":
+			callErr = c.RestartService(ctx, "nginx")
+		}
+		if callErr != nil {
+			t.Fatalf("%s: %v", action, callErr)
+		}
+		api.last(t, http.MethodPost, "/api/v1/services/nginx/"+action)
+	}
+
+	result, err := c.UninstallService(ctx, "mysql", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BackupPath != "/data/backups/mysql.tar.gz" {
+		t.Fatalf("backup path = %q", result.BackupPath)
+	}
+	uninstall := api.last(t, http.MethodDelete, "/api/v1/services/mysql")
+	if !strings.Contains(uninstall.body, `"delete_data":true`) {
+		t.Fatalf("uninstall payload = %s", uninstall.body)
+	}
+
+	logs, err := c.ServiceLogs(ctx, "mysql", 25)
+	if err != nil || !strings.Contains(logs, "line one") {
+		t.Fatalf("logs = %q err = %v", logs, err)
+	}
+	logRequest := api.last(t, http.MethodGet, "/api/v1/services/mysql/logs")
+	if logRequest.query != "tail=25" {
+		t.Fatalf("logs query = %q, want tail=25", logRequest.query)
+	}
+
+	creds, err := c.ServiceCredentials(ctx, "mysql")
+	if err != nil || creds.Password != "secret-password" || creds.Port != 3306 {
+		t.Fatalf("credentials = %+v err = %v", creds, err)
+	}
+	api.last(t, http.MethodPost, "/api/v1/services/mysql/credentials/reveal")
+
+	rotated, err := c.RotateServiceCredentials(ctx, "mysql")
+	if err != nil || rotated.Username != "devstack" {
+		t.Fatalf("rotated = %+v err = %v", rotated, err)
+	}
+	api.last(t, http.MethodPost, "/api/v1/services/mysql/credentials/rotate")
+}
+
+func TestClientAddSiteCarriesSiteContractFields(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	build := &model.BuildProfile{
+		NodeVersion: "22",
+		Command:     "npm run build",
+		Output:      "dist",
+		Env:         map[string]string{"NODE_ENV": "production"},
+	}
+	_, err = c.AddSite(context.Background(), sites.CreateRequest{
+		Name:                "app",
+		Path:                "/tmp/app",
+		Kind:                "php",
+		PHPVersion:          "8.4",
+		FrontController:     true,
+		FrontControllerFile: "public/index.php",
+		FrontControllerMode: "generated",
+		ApacheAllowOverride: "all",
+		SPAFallback:         true,
+		SPAFallbackFile:     "app.html",
+		Build:               build,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := api.last(t, http.MethodPost, "/api/v1/sites")
+	for _, want := range []string{
+		`"front_controller_file":"public/index.php"`,
+		`"front_controller_mode":"generated"`,
+		`"apache_allow_override":"all"`,
+		`"spa_fallback_file":"app.html"`,
+		`"build":{"node_version":"22","command":"npm run build","output":"dist","env":{"NODE_ENV":"production"}}`,
+	} {
+		if !strings.Contains(create.body, want) {
+			t.Fatalf("create payload missing %s: %s", want, create.body)
+		}
 	}
 }
 

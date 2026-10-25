@@ -28,6 +28,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
@@ -69,6 +70,14 @@ type Client interface {
 	PreviewVhost(ctx context.Context, ref, server string) (string, error)
 	ListServices(ctx context.Context) ([]services.View, error)
 	GetService(ctx context.Context, id string) (services.View, error)
+	InstallService(ctx context.Context, id string) error
+	ActivateService(ctx context.Context, id string) error
+	DeactivateService(ctx context.Context, id string) error
+	RestartService(ctx context.Context, id string) error
+	UninstallService(ctx context.Context, id string, deleteData bool) (servicecontrol.UninstallResult, error)
+	ServiceLogs(ctx context.Context, id string, tail int) (string, error)
+	ServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error)
+	RotateServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error)
 }
 
 // Package-level seams. Tests replace these so no command touches a real

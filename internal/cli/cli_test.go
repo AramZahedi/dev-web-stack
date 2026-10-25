@@ -27,6 +27,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
@@ -81,6 +82,15 @@ type fakeClient struct {
 	servicesList []services.View
 	service      services.View
 	serviceMap   map[string]services.View
+
+	serviceActions         []string
+	serviceActionID        string
+	serviceDeleteData      bool
+	serviceUninstallResult servicecontrol.UninstallResult
+	serviceLogs            string
+	serviceLogsTail        int
+	serviceCredentials     servicecontrol.Credentials
+	serviceCredentialCalls []string
 }
 
 func (f *fakeClient) maybeErr() error { return f.err }
@@ -270,6 +280,68 @@ func (f *fakeClient) GetService(_ context.Context, id string) (services.View, er
 		}
 	}
 	return services.View{}, errors.New("service not found")
+}
+
+func (f *fakeClient) serviceAction(action, id string) error {
+	if err := f.maybeErr(); err != nil {
+		return err
+	}
+	f.serviceActions = append(f.serviceActions, action)
+	f.serviceActionID = id
+	return nil
+}
+
+func (f *fakeClient) InstallService(_ context.Context, id string) error {
+	return f.serviceAction("install", id)
+}
+
+func (f *fakeClient) ActivateService(_ context.Context, id string) error {
+	return f.serviceAction("activate", id)
+}
+
+func (f *fakeClient) DeactivateService(_ context.Context, id string) error {
+	return f.serviceAction("deactivate", id)
+}
+
+func (f *fakeClient) RestartService(_ context.Context, id string) error {
+	return f.serviceAction("restart", id)
+}
+
+func (f *fakeClient) UninstallService(_ context.Context, id string, deleteData bool) (servicecontrol.UninstallResult, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.UninstallResult{}, err
+	}
+	f.serviceActions = append(f.serviceActions, "uninstall")
+	f.serviceActionID = id
+	f.serviceDeleteData = deleteData
+	return f.serviceUninstallResult, nil
+}
+
+func (f *fakeClient) ServiceLogs(_ context.Context, id string, tail int) (string, error) {
+	if err := f.maybeErr(); err != nil {
+		return "", err
+	}
+	f.serviceActionID = id
+	f.serviceLogsTail = tail
+	return f.serviceLogs, nil
+}
+
+func (f *fakeClient) ServiceCredentials(_ context.Context, id string) (servicecontrol.Credentials, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.Credentials{}, err
+	}
+	f.serviceActionID = id
+	f.serviceCredentialCalls = append(f.serviceCredentialCalls, "reveal")
+	return f.serviceCredentials, nil
+}
+
+func (f *fakeClient) RotateServiceCredentials(_ context.Context, id string) (servicecontrol.Credentials, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.Credentials{}, err
+	}
+	f.serviceActionID = id
+	f.serviceCredentialCalls = append(f.serviceCredentialCalls, "rotate")
+	return f.serviceCredentials, nil
 }
 
 func (f *fakeClient) PHPInfo(_ context.Context, ref string) (sites.PHPInfo, error) {

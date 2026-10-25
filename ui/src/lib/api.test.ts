@@ -231,6 +231,9 @@ describe('api client', () => {
     const list = await listServices();
     expect(list).toHaveLength(1);
     expect(list[0]?.id).toBe('nginx');
+    expect(list[0]?.installed).toBe(true);
+    expect(list[0]?.health).toBe('');
+    expect(list[0]?.container_id).toBe('');
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/services',
       expect.objectContaining({ method: 'GET' }),
@@ -251,6 +254,9 @@ describe('api client', () => {
 
     const svc = await getService('mysql');
     expect(svc.id).toBe('mysql');
+    expect(svc.installed).toBe(true);
+    expect(svc.health).toBe('');
+    expect(svc.container_id).toBe('');
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/services/mysql',
       expect.objectContaining({ method: 'GET' }),
