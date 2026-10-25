@@ -21,14 +21,13 @@ var (
 type ID string
 
 const (
-	IDNginx       ID = "nginx"
-	IDApache      ID = "apache"
-	IDMySQL       ID = "mysql"
-	IDMariaDB     ID = "mariadb"
-	IDPostgreSQL  ID = "postgresql"
-	IDRedis       ID = "redis"
-	IDPHPMyAdmin  ID = "phpmyadmin"
-	IDImageMagick ID = "imagemagick"
+	IDNginx      ID = "nginx"
+	IDApache     ID = "apache"
+	IDMySQL      ID = "mysql"
+	IDMariaDB    ID = "mariadb"
+	IDPostgreSQL ID = "postgresql"
+	IDRedis      ID = "redis"
+	IDPHPMyAdmin ID = "phpmyadmin"
 )
 
 // Group defines exclusive or standalone groupings.

@@ -14,12 +14,12 @@ import (
 )
 
 const (
-	nginxFixture       = "docker.io/library/nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	apacheFixture      = "docker.io/library/httpd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	mysqlFixture       = "docker.io/library/mysql@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	redisFixture       = "docker.io/library/redis@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-	imagemagickFixture = "ghcr.io/devstack/imagemagick@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-	phpmyadminFixture  = "docker.io/library/phpmyadmin@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	nginxFixture      = "docker.io/library/nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	apacheFixture     = "docker.io/library/httpd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	mysqlFixture      = "docker.io/library/mysql@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	redisFixture      = "docker.io/library/redis@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	cacheFixture      = "ghcr.io/devstack/cache@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	phpmyadminFixture = "docker.io/library/phpmyadmin@sha256:4444444444444444444444444444444444444444444444444444444444444444"
 )
 
 func TestRenderComposeValidFixture(t *testing.T) {
@@ -711,7 +711,7 @@ func TestRenderComposeDeterministicOrdering(t *testing.T) {
 			{ID: services.IDRedis, DisplayName: "Redis", Group: services.GroupStandalone, Image: redisFixture},
 			{ID: services.IDApache, DisplayName: "Apache", Group: services.GroupWeb, Image: apacheFixture, NetworkMode: "host"},
 			{ID: services.IDMySQL, DisplayName: "MySQL", Group: services.GroupMySQLFamily, Image: mysqlFixture},
-			{ID: services.IDImageMagick, DisplayName: "ImageMagick", Group: services.GroupStandalone, Image: imagemagickFixture},
+			{ID: services.ID("cache"), DisplayName: "Cache", Group: services.GroupStandalone, Image: cacheFixture},
 		},
 	}
 	data, err := services.RenderCompose(cat, "/data/devstack")
@@ -721,16 +721,16 @@ func TestRenderComposeDeterministicOrdering(t *testing.T) {
 
 	content := string(data)
 	apacheIdx := strings.Index(content, "devstack-apache")
-	imIdx := strings.Index(content, "devstack-imagemagick")
+	cacheIdx := strings.Index(content, "devstack-cache")
 	mysqlIdx := strings.Index(content, "devstack-mysql")
 	redisIdx := strings.Index(content, "devstack-redis")
 
-	if apacheIdx == -1 || imIdx == -1 || mysqlIdx == -1 || redisIdx == -1 {
+	if apacheIdx == -1 || cacheIdx == -1 || mysqlIdx == -1 || redisIdx == -1 {
 		t.Fatalf("missing service in content:\n%s", content)
 	}
-	if !(apacheIdx < imIdx && imIdx < mysqlIdx && mysqlIdx < redisIdx) {
-		t.Fatalf("services not ordered deterministically: apache=%d, imagemagick=%d, mysql=%d, redis=%d",
-			apacheIdx, imIdx, mysqlIdx, redisIdx)
+	if !(apacheIdx < cacheIdx && cacheIdx < mysqlIdx && mysqlIdx < redisIdx) {
+		t.Fatalf("services not ordered deterministically: apache=%d, cache=%d, mysql=%d, redis=%d",
+			apacheIdx, cacheIdx, mysqlIdx, redisIdx)
 	}
 }
 
