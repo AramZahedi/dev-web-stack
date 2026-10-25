@@ -1,6 +1,10 @@
 package services_test
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -52,8 +56,17 @@ func TestRenderComposeValidFixture(t *testing.T) {
 	if strings.Contains(content, "ports:") {
 		t.Errorf("host-network service must omit ports key, got:\n%s", content)
 	}
-	if !strings.Contains(content, "/data/devstack/services/nginx/config:/etc/nginx/conf.d:ro") {
-		t.Errorf("rendered yaml missing mount /data/devstack/services/nginx/config:/etc/nginx/conf.d:ro, got:\n%s", content)
+	volumes := parseServiceVolumes(t, data, "nginx")
+	if len(volumes) != 1 {
+		t.Fatalf("rendered volumes = %+v, want 1", volumes)
+	}
+	vol := volumes[0]
+	if vol.Type != "bind" || vol.Source != "/data/devstack/services/nginx/config" ||
+		vol.Target != "/etc/nginx/conf.d" || !vol.ReadOnly || vol.Bind != nil {
+		t.Errorf("rendered volume = %+v, want long-form bind with read_only", vol)
+	}
+	if strings.Contains(content, "/data/devstack/services/nginx/config:/etc/nginx/conf.d:ro") {
+		t.Errorf("rendered yaml uses short volume syntax, got:\n%s", content)
 	}
 	if strings.Contains(content, "/var/run/docker.sock") {
 		t.Errorf("rendered yaml should not contain docker socket, got:\n%s", content)
@@ -144,17 +157,33 @@ func TestRenderComposeMountAreas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderCompose unexpected error: %v", err)
 	}
-	content := string(data)
-	wantVolumes := []string{
-		"/data/devstack/services/phpmyadmin/config:/etc/phpmyadmin",
-		"/data/devstack/secrets/db:/run/secrets/db:ro",
-		"/data/devstack/certs/leaf:/certs:ro",
-		"/data/devstack/projects/app:/sites/app:ro",
-		"/srv/shared:/srv/shared:ro",
+	volumes := parseServiceVolumes(t, data, "phpmyadmin")
+	if len(volumes) != 5 {
+		t.Fatalf("rendered volumes = %+v, want 5", volumes)
+	}
+	wantVolumes := []struct {
+		source   string
+		target   string
+		readOnly bool
+	}{
+		{source: "/data/devstack/services/phpmyadmin/config", target: "/etc/phpmyadmin"},
+		{source: "/data/devstack/secrets/db", target: "/run/secrets/db", readOnly: true},
+		{source: "/data/devstack/certs/leaf", target: "/certs", readOnly: true},
+		{source: "/data/devstack/projects/app", target: "/sites/app", readOnly: true},
+		{source: "/srv/shared", target: "/srv/shared", readOnly: true},
+	}
+	bySource := make(map[string]renderedVolume, len(volumes))
+	for _, vol := range volumes {
+		bySource[vol.Source] = vol
 	}
 	for _, want := range wantVolumes {
-		if !strings.Contains(content, want) {
-			t.Errorf("rendered yaml missing volume %q, got:\n%s", want, content)
+		vol, ok := bySource[want.source]
+		if !ok {
+			t.Errorf("rendered yaml missing volume source %q, got: %+v", want.source, volumes)
+			continue
+		}
+		if vol.Type != "bind" || vol.Target != want.target || vol.ReadOnly != want.readOnly {
+			t.Errorf("volume %q = %+v, want target=%q read_only=%v", want.source, vol, want.target, want.readOnly)
 		}
 	}
 }
@@ -181,13 +210,61 @@ func TestRenderComposeSELinuxMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderCompose unexpected error: %v", err)
 	}
-	content := string(data)
-	if !strings.Contains(content, "/data/devstack/secrets/db:/run/secrets/db:ro,z") {
-		t.Errorf("rendered yaml missing SELinux read-only mount, got:\n%s", content)
+	volumes := parseServiceVolumes(t, data, "nginx")
+	bySource := make(map[string]renderedVolume, len(volumes))
+	for _, vol := range volumes {
+		bySource[vol.Source] = vol
 	}
-	if !strings.Contains(content, "/data/devstack/services/nginx/logs:/var/log/nginx:z") {
-		t.Errorf("rendered yaml missing SELinux writable mount, got:\n%s", content)
+	secret, ok := bySource["/data/devstack/secrets/db"]
+	if !ok {
+		t.Fatalf("missing secrets volume, got: %+v", volumes)
 	}
+	if !secret.ReadOnly || secret.Bind == nil || secret.Bind.SELinux != "z" {
+		t.Errorf("secrets volume = %+v, want read_only with bind.selinux=z", secret)
+	}
+	logs, ok := bySource["/data/devstack/services/nginx/logs"]
+	if !ok {
+		t.Fatalf("missing logs volume, got: %+v", volumes)
+	}
+	if logs.ReadOnly || logs.Bind == nil || logs.Bind.SELinux != "z" {
+		t.Errorf("logs volume = %+v, want writable bind.selinux=z", logs)
+	}
+}
+
+func TestRenderComposeLongFormBindWithColonPath(t *testing.T) {
+	const colonPath = "/srv/shared:with:colons"
+	cat := services.Catalog{
+		Services: []services.Service{
+			{
+				ID:          services.IDPHPMyAdmin,
+				DisplayName: "phpMyAdmin",
+				Group:       services.GroupStandalone,
+				Image:       phpmyadminFixture,
+				Config: []services.Mount{
+					{Area: services.MountAbsolute, HostPath: colonPath, ContainerPath: "/srv/shared", ReadOnly: true, SELinux: true},
+				},
+			},
+		},
+	}
+	data, err := services.RenderCompose(cat, "/data/devstack")
+	if err != nil {
+		t.Fatalf("RenderCompose unexpected error: %v", err)
+	}
+	volumes := parseServiceVolumes(t, data, "phpmyadmin")
+	if len(volumes) != 1 {
+		t.Fatalf("rendered volumes = %+v, want 1", volumes)
+	}
+	vol := volumes[0]
+	if vol.Type != "bind" || vol.Source != colonPath || vol.Target != "/srv/shared" {
+		t.Errorf("volume = %+v, want long-form bind source=%q target=/srv/shared", vol, colonPath)
+	}
+	if !vol.ReadOnly || vol.Bind == nil || vol.Bind.SELinux != "z" {
+		t.Errorf("volume = %+v, want read_only with bind.selinux=z", vol)
+	}
+	if strings.Contains(string(data), colonPath+":/srv/shared") {
+		t.Errorf("rendered yaml uses short volume syntax for colon path:\n%s", data)
+	}
+	requireComposeConfigValid(t, data)
 }
 
 func TestRenderComposeRejectsDockerSocket(t *testing.T) {
@@ -201,7 +278,7 @@ func TestRenderComposeRejectsDockerSocket(t *testing.T) {
 		},
 		{
 			name:  "host subdir is docker socket",
-			mount: services.Mount{HostSubdir: "/var/run/docker.sock", ContainerPath: "/tmp/sock"},
+			mount: services.Mount{HostSubdir: "config/docker.sock", ContainerPath: "/tmp/sock"},
 		},
 		{
 			name:  "absolute host path is docker socket",
@@ -302,6 +379,133 @@ func TestRenderComposeRejectsUnknownMountArea(t *testing.T) {
 	}
 	if _, err := services.RenderCompose(cat, "/data/devstack"); err == nil {
 		t.Fatal("expected error for unknown mount area, got nil")
+	}
+}
+
+func TestRenderComposeRejectsHostNetworkNonWeb(t *testing.T) {
+	for _, group := range []services.Group{services.GroupMySQLFamily, services.GroupStandalone} {
+		cat := services.Catalog{
+			Services: []services.Service{
+				{
+					ID:          services.IDMySQL,
+					DisplayName: "MySQL",
+					Group:       group,
+					Image:       mysqlFixture,
+					NetworkMode: "host",
+				},
+			},
+		}
+		if _, err := services.RenderCompose(cat, "/data/devstack"); err == nil {
+			t.Fatalf("expected error for host networking on group %q, got nil", group)
+		}
+	}
+}
+
+func TestRenderComposeRejectsDangerousAbsoluteMounts(t *testing.T) {
+	paths := []string{"/", "/var", "/var/run", "/run", "/var/lib/docker", "/srv/app/docker.sock"}
+	for _, hostPath := range paths {
+		cat := services.Catalog{
+			Services: []services.Service{
+				{
+					ID:          services.IDMySQL,
+					DisplayName: "MySQL",
+					Group:       services.GroupMySQLFamily,
+					Image:       mysqlFixture,
+					Data: []services.Mount{
+						{Area: services.MountAbsolute, HostPath: hostPath, ContainerPath: "/data"},
+					},
+				},
+			},
+		}
+		if _, err := services.RenderCompose(cat, "/data/devstack"); err == nil {
+			t.Fatalf("expected error for dangerous absolute mount %q, got nil", hostPath)
+		}
+	}
+}
+
+func TestRenderComposeRejectsConflictingMountFields(t *testing.T) {
+	mounts := []services.Mount{
+		{HostSubdir: "data", HostPath: "/srv/shared", ContainerPath: "/data"},
+		{Area: services.MountAbsolute, HostSubdir: "data", HostPath: "/srv/shared", ContainerPath: "/data"},
+	}
+	for _, mount := range mounts {
+		cat := services.Catalog{
+			Services: []services.Service{
+				{
+					ID:          services.IDMySQL,
+					DisplayName: "MySQL",
+					Group:       services.GroupMySQLFamily,
+					Image:       mysqlFixture,
+					Data:        []services.Mount{mount},
+				},
+			},
+		}
+		if _, err := services.RenderCompose(cat, "/data/devstack"); err == nil {
+			t.Fatalf("expected error for conflicting mount fields %+v, got nil", mount)
+		}
+	}
+}
+
+func TestRenderComposeRejectsRuntimeValidation(t *testing.T) {
+	validHealthcheck := func() *services.Healthcheck {
+		return &services.Healthcheck{Test: []string{"CMD", "true"}, Interval: time.Second}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*services.Service)
+	}{
+		{name: "empty healthcheck test", mutate: func(s *services.Service) {
+			s.Healthcheck = &services.Healthcheck{}
+		}},
+		{name: "invalid healthcheck prefix", mutate: func(s *services.Service) {
+			s.Healthcheck = &services.Healthcheck{Test: []string{"RUN", "true"}}
+		}},
+		{name: "negative healthcheck interval", mutate: func(s *services.Service) {
+			h := validHealthcheck()
+			h.Interval = -time.Second
+			s.Healthcheck = h
+		}},
+		{name: "negative healthcheck timeout", mutate: func(s *services.Service) {
+			h := validHealthcheck()
+			h.Timeout = -time.Second
+			s.Healthcheck = h
+		}},
+		{name: "negative healthcheck start period", mutate: func(s *services.Service) {
+			h := validHealthcheck()
+			h.StartPeriod = -time.Second
+			s.Healthcheck = h
+		}},
+		{name: "negative healthcheck retries", mutate: func(s *services.Service) {
+			h := validHealthcheck()
+			h.Retries = -1
+			s.Healthcheck = h
+		}},
+		{name: "empty ulimit name", mutate: func(s *services.Service) {
+			s.Ulimits = []services.Ulimit{{Name: " ", Soft: 1, Hard: 2}}
+		}},
+		{name: "negative ulimit soft", mutate: func(s *services.Service) {
+			s.Ulimits = []services.Ulimit{{Name: "nofile", Soft: -1, Hard: 2}}
+		}},
+		{name: "negative ulimit hard", mutate: func(s *services.Service) {
+			s.Ulimits = []services.Ulimit{{Name: "nofile", Soft: 1, Hard: -2}}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := services.Service{
+				ID:          services.IDMySQL,
+				DisplayName: "MySQL",
+				Group:       services.GroupMySQLFamily,
+				Image:       mysqlFixture,
+				Ports:       []services.Port{{Host: 3306, Container: 3306, Protocol: "tcp", Loopback: true}},
+			}
+			tt.mutate(&svc)
+			cat := services.Catalog{Services: []services.Service{svc}}
+			if _, err := services.RenderCompose(cat, "/data/devstack"); err == nil {
+				t.Fatalf("RenderCompose accepted invalid service: %+v", svc)
+			}
+		})
 	}
 }
 
@@ -538,5 +742,60 @@ func TestRenderComposeEmptyCatalog(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "services:") {
 		t.Errorf("expected services: in empty compose, got:\n%s", string(data))
+	}
+}
+
+type renderedBind struct {
+	SELinux string `yaml:"selinux"`
+}
+
+type renderedVolume struct {
+	Type     string        `yaml:"type"`
+	Source   string        `yaml:"source"`
+	Target   string        `yaml:"target"`
+	ReadOnly bool          `yaml:"read_only"`
+	Bind     *renderedBind `yaml:"bind"`
+}
+
+func parseServiceVolumes(t *testing.T, data []byte, id string) []renderedVolume {
+	t.Helper()
+	var doc struct {
+		Services map[string]struct {
+			Volumes []renderedVolume `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v\n%s", err, data)
+	}
+	svc, ok := doc.Services[id]
+	if !ok {
+		t.Fatalf("rendered yaml missing service %q:\n%s", id, data)
+	}
+	return svc.Volumes
+}
+
+// requireComposeConfigValid validates the rendered file with Docker Compose when the
+// binary and compose plugin are available. Environments without them fall back to the
+// structural YAML assertions in the calling test.
+func requireComposeConfigValid(t *testing.T, data []byte) {
+	t.Helper()
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		t.Log("docker not available; relying on YAML structure assertions")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, dockerPath, "compose", "version").CombinedOutput(); err != nil {
+		t.Logf("docker compose unavailable; relying on YAML structure assertions: %v\n%s", err, out)
+		return
+	}
+	path := filepath.Join(t.TempDir(), "compose.yaml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write compose fixture: %v", err)
+	}
+	out, err := exec.CommandContext(ctx, dockerPath, "compose", "-f", path, "config").CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker compose config rejected rendered compose: %v\n%s\nrendered:\n%s", err, out, data)
 	}
 }

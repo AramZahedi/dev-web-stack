@@ -42,3 +42,13 @@ type View struct {
 	ContainerID string `json:"container_id"`
 	Installed   bool   `json:"installed"`
 }
+
+// installedState reports whether a state implies an image and config scaffold exist.
+func installedState(state State) bool {
+	switch state {
+	case StateInstalled, StateInstalledButStopped, StateStarting, StateActive, StateStopping:
+		return true
+	default:
+		return false
+	}
+}

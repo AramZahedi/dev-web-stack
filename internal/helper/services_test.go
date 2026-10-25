@@ -30,7 +30,7 @@ func TestServiceHelperEndpoints(t *testing.T) {
 			ID:          "nginx",
 			State:       "active",
 			Active:      true,
-			Image:       "fixture-nginx:latest",
+			Image:       "fixture-nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 			ContainerID: "cid-123456",
 			Health:      "healthy",
 			Ports: []helperproto.ServicePortStatus{

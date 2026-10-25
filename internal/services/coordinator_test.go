@@ -193,6 +193,52 @@ func TestCoordinatorInstalledFlagForStoppedState(t *testing.T) {
 	}
 }
 
+func TestCoordinatorInstalledFlagForErrorState(t *testing.T) {
+	ctx := context.Background()
+	cat := services.Catalog{
+		Services: []services.Service{
+			{
+				ID:          services.IDNginx,
+				DisplayName: "Nginx Web Server",
+				Group:       services.GroupWeb,
+				Image:       "fixture-nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			},
+		},
+	}
+	const image = "fixture-nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+	tests := []struct {
+		name  string
+		state services.State
+		image string
+		want  bool
+	}{
+		{name: "error before install", state: services.StateError, image: "", want: false},
+		{name: "error after install", state: services.StateError, image: image, want: true},
+		{name: "not installed with stale image", state: services.StateNotInstalled, image: image, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := &fakeStore{records: map[services.ID]services.Record{
+				services.IDNginx: {
+					ID:    services.IDNginx,
+					State: tt.state,
+					Image: tt.image,
+				},
+			}}
+			coord := services.NewCoordinator(cat, st, "/data/devstack")
+
+			view, err := coord.Get(ctx, services.IDNginx)
+			if err != nil {
+				t.Fatalf("Get(nginx) err = %v", err)
+			}
+			if view.Installed != tt.want {
+				t.Errorf("view.Installed = %v, want %v for state=%q image=%q", view.Installed, tt.want, tt.state, tt.image)
+			}
+		})
+	}
+}
+
 func TestCoordinatorRetainsHostNetworkPorts(t *testing.T) {
 	ctx := context.Background()
 	cat := services.Catalog{

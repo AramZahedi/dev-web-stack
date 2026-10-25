@@ -79,13 +79,20 @@ func (s *Store) ListServiceStates(ctx context.Context) ([]services.Record, error
 	return records, nil
 }
 
-// DeleteServiceState removes a service record by ID. It returns ErrNotFound if no row was deleted.
+// DeleteServiceState removes a service record by ID. It returns services.ErrNotFound if no
+// row was deleted.
 func (s *Store) DeleteServiceState(ctx context.Context, id services.ID) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM services WHERE id = ?`, string(id))
 	if err != nil {
 		return fmt.Errorf("delete service state %q: %w", id, err)
 	}
-	return requireAffected(res, "service", string(id))
+	if err := requireAffected(res, "service", string(id)); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return services.ErrNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 func scanServiceRecord(scanner rowScanner) (services.Record, error) {

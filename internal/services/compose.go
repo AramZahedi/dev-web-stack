@@ -5,15 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
 )
-
-var validIDRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // RootHash returns the first 12 hex characters of the SHA-256 hash of the cleaned, absolute root path.
 func RootHash(root string) string {
@@ -37,12 +34,24 @@ type composeService struct {
 	Labels        map[string]string        `yaml:"labels"`
 	Environment   map[string]string        `yaml:"environment,omitempty"`
 	Ports         []string                 `yaml:"ports,omitempty"`
-	Volumes       []string                 `yaml:"volumes,omitempty"`
+	Volumes       []composeVolume          `yaml:"volumes,omitempty"`
 	DependsOn     []string                 `yaml:"depends_on,omitempty"`
 	Healthcheck   *composeHealthcheck      `yaml:"healthcheck,omitempty"`
 	SecurityOpt   []string                 `yaml:"security_opt,omitempty"`
 	CapAdd        []string                 `yaml:"cap_add,omitempty"`
 	Ulimits       map[string]composeUlimit `yaml:"ulimits,omitempty"`
+}
+
+type composeVolume struct {
+	Type     string       `yaml:"type"`
+	Source   string       `yaml:"source"`
+	Target   string       `yaml:"target"`
+	ReadOnly bool         `yaml:"read_only,omitempty"`
+	Bind     *composeBind `yaml:"bind,omitempty"`
+}
+
+type composeBind struct {
+	SELinux string `yaml:"selinux,omitempty"`
 }
 
 type composeHealthcheck struct {
@@ -95,17 +104,8 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 	for _, s := range sortedServices {
 		idStr := string(s.ID)
 
-		if strings.TrimSpace(s.Image) == "" {
-			return nil, fmt.Errorf("service %q: image cannot be empty", s.ID)
-		}
-		if !validImageRegex.MatchString(s.Image) {
-			return nil, fmt.Errorf("service %q: image %q must be pinned by sha256 digest", s.ID, s.Image)
-		}
-
-		switch s.NetworkMode {
-		case "host", "bridge", "":
-		default:
-			return nil, fmt.Errorf("service %q: unsupported network mode %q", s.ID, s.NetworkMode)
+		if err := validateServiceFields(s); err != nil {
+			return nil, err
 		}
 
 		// Process ports. Host-network services own their ports directly and never
@@ -113,128 +113,65 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 		var ports []string
 		if s.NetworkMode != "host" {
 			for _, p := range s.Ports {
-				if !p.Loopback {
-					return nil, fmt.Errorf("service %q: non-loopback port %d is not allowed", s.ID, p.Host)
-				}
-				if p.Host < 1 || p.Host > 65535 {
-					return nil, fmt.Errorf("service %q: invalid host port %d", s.ID, p.Host)
-				}
-				if p.Container < 1 || p.Container > 65535 {
-					return nil, fmt.Errorf("service %q: invalid container port %d", s.ID, p.Container)
-				}
 				ports = append(ports, fmt.Sprintf("127.0.0.1:%d:%d", p.Host, p.Container))
 			}
 		}
 
-		// Process mounts
-		var volumes []string
+		// Process mounts. Field validation is shared with Catalog.Validate; this
+		// layer only resolves the area root and renders the long bind syntax.
+		var volumes []composeVolume
 
-		validateMount := func(m Mount) error {
-			if strings.TrimSpace(m.ContainerPath) == "" {
-				return fmt.Errorf("service %q: mount container path cannot be empty", s.ID)
-			}
-			if !filepath.IsAbs(m.ContainerPath) {
-				return fmt.Errorf("service %q: mount container path %q must be absolute", s.ID, m.ContainerPath)
-			}
-			cleanContainer := filepath.Clean(m.ContainerPath)
-			if isDockerSocket(cleanContainer) {
-				return fmt.Errorf("service %q: mounting docker socket is forbidden", s.ID)
-			}
-
-			var hostPath string
+		renderMount := func(m Mount) error {
 			area := m.Area
 			if area == "" {
 				area = MountService
 			}
 
-			switch area {
-			case MountService, MountSecrets, MountCerts, MountProjects:
-				if filepath.IsAbs(m.HostSubdir) {
-					return fmt.Errorf("service %q: mount host subdir %q must be relative", s.ID, m.HostSubdir)
-				}
-				cleanSub := filepath.Clean(m.HostSubdir)
-				if cleanSub == ".." || strings.HasPrefix(cleanSub, ".."+string(filepath.Separator)) {
-					return fmt.Errorf("service %q: mount host subdir %q escapes %s area", s.ID, m.HostSubdir, area)
-				}
-				if isDockerSocket(cleanSub) {
-					return fmt.Errorf("service %q: mounting docker socket is forbidden", s.ID)
-				}
+			vol := composeVolume{
+				Type:     "bind",
+				Target:   filepath.Clean(m.ContainerPath),
+				ReadOnly: m.ReadOnly,
+			}
 
-				var areaRoot string
-				switch area {
-				case MountService:
-					areaRoot = filepath.Join(cleanRoot, "services", idStr)
-				case MountSecrets:
-					areaRoot = filepath.Join(cleanRoot, "secrets")
-				case MountCerts:
-					areaRoot = filepath.Join(cleanRoot, "certs")
-				case MountProjects:
-					areaRoot = filepath.Join(cleanRoot, "projects")
-				}
-
-				hostPath = filepath.Join(areaRoot, cleanSub)
-				rel, err := filepath.Rel(areaRoot, hostPath)
+			if area == MountAbsolute {
+				vol.Source = filepath.Clean(m.HostPath)
+			} else {
+				areaRoot := mountAreaRoot(cleanRoot, idStr, area)
+				vol.Source = filepath.Join(areaRoot, filepath.Clean(m.HostSubdir))
+				rel, err := filepath.Rel(areaRoot, vol.Source)
 				if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					return fmt.Errorf("service %q: mount path %q escapes %s area", s.ID, hostPath, area)
+					return fmt.Errorf("service %q: mount path %q escapes %s area", s.ID, vol.Source, area)
 				}
-			case MountAbsolute:
-				if strings.TrimSpace(m.HostPath) == "" {
-					return fmt.Errorf("service %q: absolute mount host path cannot be empty", s.ID)
-				}
-				if !filepath.IsAbs(m.HostPath) {
-					return fmt.Errorf("service %q: absolute mount host path %q must be absolute", s.ID, m.HostPath)
-				}
-				hostPath = filepath.Clean(m.HostPath)
-				if isDockerSocket(hostPath) {
-					return fmt.Errorf("service %q: mounting docker socket is forbidden", s.ID)
-				}
-			default:
-				return fmt.Errorf("service %q: unknown mount area %q", s.ID, area)
 			}
 
-			var options []string
-			if m.ReadOnly {
-				options = append(options, "ro")
-			}
 			if m.SELinux {
-				options = append(options, "z")
-			}
-
-			vol := hostPath + ":" + cleanContainer
-			if len(options) > 0 {
-				vol += ":" + strings.Join(options, ",")
+				vol.Bind = &composeBind{SELinux: "z"}
 			}
 			volumes = append(volumes, vol)
 			return nil
 		}
 
 		for _, m := range s.Config {
-			if err := validateMount(m); err != nil {
+			if err := renderMount(m); err != nil {
 				return nil, err
 			}
 		}
 		for _, m := range s.Data {
-			if err := validateMount(m); err != nil {
+			if err := renderMount(m); err != nil {
 				return nil, err
 			}
 		}
 
+		if err := validateDependencies(s, known); err != nil {
+			return nil, err
+		}
 		var deps []string
 		for _, dep := range s.DependsOn {
-			if dep == s.ID {
-				return nil, fmt.Errorf("service %q cannot depend on itself", s.ID)
-			}
-			if !known[dep] {
-				return nil, fmt.Errorf("service %q depends on unknown service %q", s.ID, dep)
-			}
 			deps = append(deps, string(dep))
 		}
 
 		var healthcheck *composeHealthcheck
 		if s.Healthcheck != nil {
-			if len(s.Healthcheck.Test) == 0 {
-				return nil, fmt.Errorf("service %q: healthcheck test cannot be empty", s.ID)
-			}
 			healthcheck = &composeHealthcheck{
 				Test:        append([]string(nil), s.Healthcheck.Test...),
 				Interval:    durationString(s.Healthcheck.Interval),
@@ -248,9 +185,6 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 		if len(s.Ulimits) > 0 {
 			ulimits = make(map[string]composeUlimit, len(s.Ulimits))
 			for _, limit := range s.Ulimits {
-				if strings.TrimSpace(limit.Name) == "" {
-					return nil, fmt.Errorf("service %q: ulimit name cannot be empty", s.ID)
-				}
 				ulimits[limit.Name] = composeUlimit{Soft: limit.Soft, Hard: limit.Hard}
 			}
 		}
@@ -289,6 +223,17 @@ func durationString(d time.Duration) string {
 	return d.String()
 }
 
-func isDockerSocket(path string) bool {
-	return path == "/var/run/docker.sock" || strings.HasSuffix(path, "docker.sock")
+func mountAreaRoot(root, id string, area MountArea) string {
+	switch area {
+	case MountService:
+		return filepath.Join(root, "services", id)
+	case MountSecrets:
+		return filepath.Join(root, "secrets")
+	case MountCerts:
+		return filepath.Join(root, "certs")
+	case MountProjects:
+		return filepath.Join(root, "projects")
+	default:
+		return root
+	}
 }

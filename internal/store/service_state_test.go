@@ -107,6 +107,17 @@ func TestGetServiceStateNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteServiceStateNotFound(t *testing.T) {
+	st := openTemp(t)
+	err := st.DeleteServiceState(ctx, services.IDApache)
+	if !errors.Is(err, services.ErrNotFound) {
+		t.Fatalf("DeleteServiceState(absent) = %v, want services.ErrNotFound", err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteServiceState(absent) returned store.ErrNotFound, want services.ErrNotFound")
+	}
+}
+
 func TestServiceStateRoundTripsAllStates(t *testing.T) {
 	st := openTemp(t)
 	states := []services.State{

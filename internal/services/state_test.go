@@ -62,10 +62,23 @@ func TestViewNewFieldsJSON(t *testing.T) {
 		}
 	}
 
+	var decoded struct {
+		Health      string `json:"health"`
+		ContainerID string `json:"container_id"`
+		Installed   bool   `json:"installed"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal values: %v", err)
+	}
+	if decoded.Health != "healthy" || decoded.ContainerID != "cid-123" || !decoded.Installed {
+		t.Errorf("View JSON values = %+v, want health=healthy container_id=cid-123 installed=true", decoded)
+	}
+
 	zero, err := json.Marshal(View{})
 	if err != nil {
 		t.Fatalf("json.Marshal zero View: %v", err)
 	}
+	fields = nil
 	if err := json.Unmarshal(zero, &fields); err != nil {
 		t.Fatalf("json.Unmarshal zero View: %v", err)
 	}
@@ -73,5 +86,11 @@ func TestViewNewFieldsJSON(t *testing.T) {
 		if _, ok := fields[key]; !ok {
 			t.Errorf("zero View JSON missing %q key, got: %s", key, zero)
 		}
+	}
+	if err := json.Unmarshal(zero, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal zero View values: %v", err)
+	}
+	if decoded.Health != "" || decoded.ContainerID != "" || decoded.Installed {
+		t.Errorf("zero View JSON values = %+v, want empty strings and false", decoded)
 	}
 }

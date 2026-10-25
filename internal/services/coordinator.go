@@ -98,7 +98,7 @@ func (c *Coordinator) buildView(s Service, rec Record, found bool) View {
 		if rec.State != "" {
 			state = rec.State
 		}
-		installed = state != StateNotInstalled
+		installed = installedState(state) || (state != StateNotInstalled && rec.Image != "")
 		active = rec.Active
 		if rec.Image != "" {
 			image = rec.Image
