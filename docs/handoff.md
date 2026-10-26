@@ -111,6 +111,8 @@ The approved architecture and five-lane execution plan are written but not imple
 
 - [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)
 - [Windows/WSL implementation plan](superpowers/plans/2026-10-26-windows-wsl.md)
+- [Windows/WSL knowledge handoff](superpowers/status/2026-10-26-windows-wsl-handoff.md)
+- [Next agent on Windows](superpowers/status/2026-10-26-windows-next-agent.md)
 
 Do not start Wave 0 or create lane worktrees until the human partner approves the plan.
 

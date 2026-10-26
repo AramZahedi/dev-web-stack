@@ -6,6 +6,8 @@
 - **Linux baseline:** `10db2e5` (clean, pushed)
 - **Design:** [Windows 11 + WSL2 design](../specs/2026-10-26-windows-wsl-design.md)
 - **Plan:** [Windows/WSL implementation plan](../plans/2026-10-26-windows-wsl.md)
+- **Knowledge handoff:** [Windows/WSL knowledge handoff](2026-10-26-windows-wsl-handoff.md)
+- **Windows start guide:** [Next agent on Windows](2026-10-26-windows-next-agent.md)
 
 ## Decisions locked
 

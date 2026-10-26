@@ -28,6 +28,10 @@ machine, and the design for the next service-platform milestone.
   — five-lane parallel TDD plan, merge protocol, and Windows acceptance matrix.
 - [Windows/WSL planning checkpoint](superpowers/status/2026-10-26-windows-planning.md)
   — locked decisions, execution shape, and the planning pause point.
+- [Windows/WSL knowledge handoff](superpowers/status/2026-10-26-windows-wsl-handoff.md)
+  — consolidated decisions, rejected alternatives, caveats, risks, and open questions.
+- [Next agent on Windows](superpowers/status/2026-10-26-windows-next-agent.md)
+  — environment checklist, first commands, Wave 0 start, five-lane rules.
 - [M1 design](superpowers/specs/2026-10-22-dev-web-stack-m1-design.md)
   — released Linux foundation.
 - [External vhosts design](superpowers/specs/2026-10-22-external-vhosts-design.md)
