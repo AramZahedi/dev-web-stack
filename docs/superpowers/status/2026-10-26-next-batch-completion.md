@@ -157,6 +157,10 @@ sg docker -c 'DEVSTACK_DOCKER_TESTS=1 bash test/docker/wave2-phpmyadmin.sh' # pa
 
 Live smoke on the test runtime:
 
+- Settings PATCH moved the dashboard listener from 7070 to a temporary free port,
+  returned `restart_required: true`, `devstack daemon restart` started the dashboard on
+  the new port, and a second PATCH/restart restored 7070 with
+  `restart_required: false`.
 - `GET /api/v1/performance` returned measured host resources and a balanced profile.
 - `GET /api/v1/performance/preview` returned managed nginx/Apache files and both fixed
   host diffs without writing. The dashboard preview also surfaced the no-active-web-server
