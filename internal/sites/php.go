@@ -136,7 +136,7 @@ func (s *Service) releaseRetainedPHPGenerationsLocked(siteID string, ownedPorts 
 	if s.deps.Ports != nil {
 		for _, port := range generations {
 			if port != 0 && !owned[port] {
-				s.deps.Ports.Release(port)
+				s.releasePort(context.Background(), siteID, port)
 			}
 		}
 	}
@@ -395,7 +395,7 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 
 	allocated := 0
 	if site.FastCGIPort == 0 {
-		port, err := s.deps.Ports.Allocate(domain.PortFastCGI)
+		port, err := s.allocatePort(ctx, site.ID, domain.PortFastCGI)
 		if err != nil {
 			return site, fmt.Errorf("sites: allocate FastCGI port for %q: %w", site.Name, err)
 		}
@@ -404,7 +404,7 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 	}
 	releaseAllocated := func() {
 		if allocated != 0 {
-			s.deps.Ports.Release(allocated)
+			s.releasePort(ctx, site.ID, allocated)
 		}
 	}
 
@@ -438,10 +438,12 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 		releaseAllocated()
 		return site, err
 	}
-	if _, err := s.deps.PHPBackend.PreparePHP(ctx, site.ID, phpDefaultGeneration, spec); err != nil {
+	prepared, err := s.deps.PHPBackend.PreparePHP(ctx, site.ID, phpDefaultGeneration, spec)
+	if err != nil {
 		releaseAllocated()
 		return site, fmt.Errorf("sites: prepare %q: %w", site.Name, err)
 	}
+	s.recordBackendHost(site.ID, prepared)
 	if _, err := s.deps.PHPBackend.StartPHP(ctx, site.ID, phpDefaultGeneration); err != nil {
 		cause := fmt.Errorf("sites: start %q: %w", site.Name, err)
 		if stopErr := s.stopPHPGenerationForCleanup(ctx, site.ID, phpDefaultGeneration); stopErr != nil {
@@ -641,7 +643,7 @@ func (s *Service) ensurePHPConfigLocked(ctx context.Context, site model.Site) (m
 			"sites: running PHP site %q has no FastCGI port", site.Name)
 	}
 	if site.FastCGIPort == 0 {
-		port, err := s.deps.Ports.Allocate(domain.PortFastCGI)
+		port, err := s.allocatePort(ctx, site.ID, domain.PortFastCGI)
 		if err != nil {
 			return site, model.RuntimeBuild{}, fmt.Errorf("sites: allocate FastCGI port for %q: %w", site.Name, err)
 		}
@@ -650,7 +652,7 @@ func (s *Service) ensurePHPConfigLocked(ctx context.Context, site model.Site) (m
 	}
 	releaseAllocated := func() {
 		if allocated != 0 {
-			s.deps.Ports.Release(allocated)
+			s.releasePort(ctx, site.ID, allocated)
 		}
 	}
 
@@ -796,7 +798,7 @@ func (s *Service) ValidatePHP(ctx context.Context, site model.Site) error {
 		if s.deps.Ports == nil {
 			return errors.New("sites: missing dependencies: port allocator")
 		}
-		port, err := s.deps.Ports.Allocate(domain.PortFastCGI)
+		port, err := s.allocatePort(ctx, site.ID, domain.PortFastCGI)
 		if err != nil {
 			return fmt.Errorf("sites: allocate FastCGI port for validation: %w", err)
 		}
@@ -804,7 +806,7 @@ func (s *Service) ValidatePHP(ctx context.Context, site model.Site) error {
 		allocated = port
 	}
 	if allocated != 0 {
-		defer s.deps.Ports.Release(allocated)
+		defer s.releasePort(ctx, site.ID, allocated)
 	}
 
 	siteDir, err := s.phpSiteDir(site.ID)

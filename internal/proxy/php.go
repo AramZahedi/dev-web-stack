@@ -155,7 +155,7 @@ func (r *Router) serveFastCGI(w http.ResponseWriter, req *http.Request, route Ro
 		bodyLength = -1
 	}
 	resp, err := client.Do(ctx, fcgi.Request{
-		Params:     phpCGIParams(req, target),
+		Params:     phpCGIParams(req, route, target),
 		Body:       req.Body,
 		BodyLength: bodyLength,
 	})
@@ -233,17 +233,17 @@ func writeFastCGIResponse(w http.ResponseWriter, req *http.Request, route Route,
 // phpCGIParams builds the CGI/1.1 environment for one request. Client-supplied
 // forwarding headers are ignored: HTTP_X_FORWARDED_* is synthesized from the
 // actual connection, TLS state, and Host.
-func phpCGIParams(req *http.Request, target phpTarget) map[string]string {
+func phpCGIParams(req *http.Request, route Route, target phpTarget) map[string]string {
 	serverName, serverPort := phpServerNamePort(req)
 	params := map[string]string{
 		"GATEWAY_INTERFACE":      "CGI/1.1",
 		"SERVER_PROTOCOL":        req.Proto,
 		"SERVER_SOFTWARE":        "devstack",
 		"REQUEST_METHOD":         req.Method,
-		"SCRIPT_FILENAME":        target.scriptPath,
+		"SCRIPT_FILENAME":        fastCGIScriptPath(route, target),
 		"SCRIPT_NAME":            target.scriptName,
 		"PATH_INFO":              target.pathInfo,
-		"DOCUMENT_ROOT":          target.documentRoot,
+		"DOCUMENT_ROOT":          fastCGIRoot(route, target),
 		"REQUEST_URI":            phpRequestURI(req),
 		"QUERY_STRING":           phpQueryString(req),
 		"SERVER_NAME":            serverName,
@@ -351,7 +351,10 @@ func hopByHopHeaderSet(header http.Header) map[string]bool {
 // resolvePHPTarget maps a decoded URL path onto a script or a static file.
 // Traversal, dotfiles, backup names, and symlink escapes are hard denials.
 func resolvePHPTarget(route Route, requestPath string) (phpTarget, bool) {
-	root := strings.TrimSpace(route.DocumentRoot)
+	root := strings.TrimSpace(route.ProxyDocumentRoot)
+	if root == "" {
+		root = strings.TrimSpace(route.DocumentRoot)
+	}
 	if root == "" {
 		return phpTarget{}, false
 	}
@@ -418,6 +421,31 @@ func resolvePHPTarget(route Route, requestPath string) (phpTarget, bool) {
 		}
 	}
 	return phpTarget{}, false
+}
+
+// fastCGIRoot is the backend document root FPM must see. When the proxy uses
+// a separate Windows-visible root for file checks, DocumentRoot is the backend
+// path.
+func fastCGIRoot(route Route, target phpTarget) string {
+	if root := strings.TrimSpace(route.DocumentRoot); root != "" {
+		return root
+	}
+	return target.documentRoot
+}
+
+// fastCGIScriptPath maps a script resolved under the proxy root back into the
+// backend namespace so FPM can open it.
+func fastCGIScriptPath(route Route, target phpTarget) string {
+	proxyRoot := strings.TrimSpace(route.ProxyDocumentRoot)
+	backendRoot := strings.TrimSpace(route.DocumentRoot)
+	if proxyRoot == "" || backendRoot == "" || proxyRoot == backendRoot {
+		return target.scriptPath
+	}
+	rel, err := filepath.Rel(proxyRoot, target.scriptPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return target.scriptPath
+	}
+	return filepath.Join(backendRoot, rel)
 }
 
 // resolvePHPCandidate tries the complete requested path, preferring index.php

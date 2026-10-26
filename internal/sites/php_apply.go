@@ -185,13 +185,13 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 		return current, errors.New("sites: missing dependencies: port allocator")
 	}
 	if running {
-		port, err := s.deps.Ports.Allocate(domain.PortFastCGI)
+		port, err := s.allocatePort(ctx, current.ID, domain.PortFastCGI)
 		if err != nil {
 			return current, fmt.Errorf("sites: allocate FastCGI port for %q: %w", current.Name, err)
 		}
 		newPort, allocated = port, port
 	} else if newPort == 0 {
-		port, err := s.deps.Ports.Allocate(domain.PortFastCGI)
+		port, err := s.allocatePort(ctx, current.ID, domain.PortFastCGI)
 		if err != nil {
 			return current, fmt.Errorf("sites: allocate FastCGI port for %q: %w", current.Name, err)
 		}
@@ -200,7 +200,7 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 	next.FastCGIPort = newPort
 	releaseNewPort := func() {
 		if allocated != 0 && allocated != oldPort {
-			s.deps.Ports.Release(allocated)
+			s.releasePort(ctx, current.ID, allocated)
 		}
 	}
 
@@ -289,9 +289,11 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 	if err != nil {
 		return current, discardNewGeneration(err)
 	}
-	if _, err := s.deps.PHPBackend.PreparePHP(ctx, next.ID, files.Hash, spec); err != nil {
+	prepared, err := s.deps.PHPBackend.PreparePHP(ctx, next.ID, files.Hash, spec)
+	if err != nil {
 		return current, discardNewGeneration(fmt.Errorf("sites: prepare %q: %w", next.Name, err))
 	}
+	s.recordBackendHost(next.ID, prepared)
 	if _, err := s.deps.PHPBackend.StartPHP(ctx, next.ID, files.Hash); err != nil {
 		return current, discardNewGeneration(fmt.Errorf("sites: start %q: %w", next.Name, err))
 	}
@@ -330,7 +332,7 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 		if port == 0 || s.deps.Ports == nil || released[port] {
 			return
 		}
-		s.deps.Ports.Release(port)
+		s.releasePort(ctx, next.ID, port)
 		released[port] = true
 	}
 	if oldPort != 0 && oldPort != newPort && !heldPorts[oldPort] {
@@ -689,7 +691,7 @@ func (s *Service) PHPInfo(ctx context.Context, ref string) (PHPInfo, error) {
 		if s.deps.Ports == nil {
 			return PHPInfo{}, errors.New("sites: missing dependencies: port allocator")
 		}
-		port, err := s.deps.Ports.Allocate(domain.PortFastCGI)
+		port, err := s.allocatePort(ctx, renderedSite.ID, domain.PortFastCGI)
 		if err != nil {
 			return PHPInfo{}, fmt.Errorf("sites: allocate FastCGI port for inspection: %w", err)
 		}
@@ -697,7 +699,7 @@ func (s *Service) PHPInfo(ctx context.Context, ref string) (PHPInfo, error) {
 		allocated = port
 	}
 	if allocated != 0 {
-		defer s.deps.Ports.Release(allocated)
+		defer s.releasePort(ctx, renderedSite.ID, allocated)
 	}
 	files, err := s.composePHPFilesLocked(ctx, renderedSite, build)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
@@ -1114,6 +1115,17 @@ func (s *Service) PreviewVhost(ctx context.Context, ref, server string) (string,
 // absoluteDocumentRoot resolves a site document root against its backend path.
 // Static and PHP sites with an empty or "." root serve the backend path itself;
 // an empty Node document root stays empty.
+// proxyDocumentRoot is the Windows-visible path the Go proxy uses for PHP
+// file checks. Windows and WSL sources differ from the backend path FPM sees.
+func proxyDocumentRoot(site model.Site) string {
+	if site.SourceMode != "" && site.SourceMode != model.SourceLocal {
+		if root, err := pathmode.ProxyDocumentRoot(site); err == nil {
+			return root
+		}
+	}
+	return absoluteDocumentRoot(site)
+}
+
 func absoluteDocumentRoot(site model.Site) string {
 	root := strings.TrimSpace(site.DocumentRoot)
 	if root == "" || root == "." {
@@ -1221,9 +1233,9 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 	if s.deps.Backend != nil {
 		s.releaseRetainedPHPGenerationsLocked(site.ID)
 	}
-	s.deps.Ports.Release(site.HTTPPort)
+	s.releasePort(ctx, site.ID, site.HTTPPort)
 	if site.FastCGIPort != 0 {
-		s.deps.Ports.Release(site.FastCGIPort)
+		s.releasePort(ctx, site.ID, site.FastCGIPort)
 	}
 	var removeErr error
 	if site.Kind == model.SitePHP {

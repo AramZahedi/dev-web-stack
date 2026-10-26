@@ -39,14 +39,17 @@ const (
 // FrontController are carried for PHP routes so the FastCGI transport can
 // resolve script paths; the static and Node transports ignore them.
 type Route struct {
-	SiteID          string
-	Host            string
-	Kind            Kind
-	Upstream        string
-	DocumentRoot    string
-	FrontController bool
-	ForceHTTPS      bool
-	TLS             bool
+	SiteID       string
+	Host         string
+	Kind         Kind
+	Upstream     string
+	DocumentRoot string
+	// ProxyDocumentRoot is the Windows-visible document root used for local
+	// file checks. DocumentRoot remains the backend path passed to FPM.
+	ProxyDocumentRoot string
+	FrontController   bool
+	ForceHTTPS        bool
+	TLS               bool
 	// State and DesiredState prevent a stopped or failed site from being
 	// proxied to a stale/dead upstream. Empty values are treated as running
 	// for compatibility with standalone routes.
