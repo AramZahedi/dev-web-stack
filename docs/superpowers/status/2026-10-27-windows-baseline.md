@@ -6,7 +6,8 @@
 Wave 1 lanes may start from this commit; Windows acceptance evidence does not
 exist.
 
-**Base commit:** `7e433fc` (`refactor: freeze backend, port, route, and PHP path contracts`)
+**Base commit:** the commit that contains this file. It is the foundation-freeze
+SHA recorded by the controller immediately before creating lane worktrees.
 
 ## Platform floor
 
