@@ -17,7 +17,14 @@ func main() {
 	configPath := flag.String("config", "/data/devstack/agent.yaml", "root-owned agent configuration file")
 	flag.Parse()
 
-	server, err := agent.NewServerFromFiles(*configPath, nil)
+	runtime, err := agent.NewRuntime(agent.DefaultAgentRoot)
+	if err != nil {
+		log.Fatalf("devstack-agent: %v", err)
+	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		log.Fatalf("devstack-agent: reconcile runtime: %v", err)
+	}
+	server, err := agent.NewServerFromFilesWithRuntime(*configPath, nil, runtime)
 	if err != nil {
 		log.Fatalf("devstack-agent: %v", err)
 	}

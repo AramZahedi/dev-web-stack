@@ -26,6 +26,12 @@ type Server struct {
 
 // NewServer creates the authenticated API handler and TLS configuration.
 func NewServer(config Config, token string, identity TLSIdentity, modules []agentapi.Module) (*Server, error) {
+	return NewServerWithRuntime(config, token, identity, modules, nil)
+}
+
+// NewServerWithRuntime mounts the static backend and port API when runtime is
+// non-nil. The module list is still mounted behind the same auth middleware.
+func NewServerWithRuntime(config Config, token string, identity TLSIdentity, modules []agentapi.Module, runtime *Runtime) (*Server, error) {
 	if err := config.applyDefaultsAndValidate(); err != nil {
 		return nil, err
 	}
@@ -41,6 +47,9 @@ func NewServer(config Config, token string, identity TLSIdentity, modules []agen
 	mux.HandleFunc(agentproto.PathHealth, server.handleHealth)
 	mux.HandleFunc(agentproto.PathVersion, server.handleVersion)
 	mux.HandleFunc(agentproto.PathCapabilities, server.handleCapabilities)
+	if runtime != nil {
+		server.mountRuntime(mux, runtime)
+	}
 	for _, module := range modules {
 		if module == nil || module.Handler() == nil || !strings.HasPrefix(module.MountPath(), "/v1/") {
 			return nil, errors.New("agent: invalid module: modules must be non-nil and mounted below /v1/")
@@ -53,6 +62,12 @@ func NewServer(config Config, token string, identity TLSIdentity, modules []agen
 
 // NewServerFromFiles loads the root-only config, bearer token, and TLS identity.
 func NewServerFromFiles(configPath string, modules []agentapi.Module) (*Server, error) {
+	return NewServerFromFilesWithRuntime(configPath, modules, nil)
+}
+
+// NewServerFromFilesWithRuntime loads protected agent files and mounts the
+// static site/port runtime when supplied.
+func NewServerFromFilesWithRuntime(configPath string, modules []agentapi.Module, runtime *Runtime) (*Server, error) {
 	config, err := LoadConfig(configPath)
 	if err != nil {
 		return nil, err
@@ -77,7 +92,7 @@ func NewServerFromFiles(configPath string, modules []agentapi.Module) (*Server, 
 	if err != nil {
 		return nil, err
 	}
-	return NewServer(config, strings.TrimSpace(string(token)), identity, modules)
+	return NewServerWithRuntime(config, strings.TrimSpace(string(token)), identity, modules, runtime)
 }
 
 // Handler returns the authenticated HTTP handler for tests and embedding.
