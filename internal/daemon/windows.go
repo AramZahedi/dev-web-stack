@@ -17,7 +17,9 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/api"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
+	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"go.yaml.in/yaml/v3"
 )
@@ -115,6 +117,22 @@ func Run(ctx context.Context, opts Options) error {
 	serveErr := make(chan error, len(servers))
 	go serveWindows(servers[0], tcpLn, "dashboard", serveErr)
 	go serveWindows(servers[1], pipeLn, "control pipe", serveErr)
+	router, publicProxy, err := newWindowsProxy(cfg, logger)
+	if err != nil {
+		shutdownWindowsServers(servers)
+		return err
+	}
+	_ = router
+	if err := startWindowsPublicEntry(ctx,
+		func() error { return publicProxy.Start(ctx) },
+		func(ctx context.Context) error { return updateWindowsProxyTargets(ctx, opts.HelperSocket, cfg.HTTPPort, cfg.HTTPSPort) },
+		func(context.Context) error { return nil },
+	); err != nil {
+		_ = publicProxy.Stop(context.Background())
+		shutdownWindowsServers(servers)
+		return err
+	}
+	defer func() { _ = publicProxy.Stop(context.Background()) }()
 	if err := writeWindowsReady(readyPath, os.Getpid()); err != nil {
 		shutdownWindowsServers(servers)
 		return err
@@ -285,6 +303,55 @@ func daemonEnvironment(home string) []string {
 		}
 	}
 	return append(env, "DEVSTACK_HOME="+home)
+}
+
+func newWindowsProxy(cfg config.Config, logger *slog.Logger) (*proxy.Router, *proxy.Server, error) {
+	httpAddr, err := proxy.WindowsPublicListenAddr(cfg.HTTPPort)
+	if err != nil {
+		return nil, nil, err
+	}
+	httpsAddr, err := proxy.WindowsPublicListenAddr(cfg.HTTPSPort)
+	if err != nil {
+		return nil, nil, err
+	}
+	router := proxy.NewRouter()
+	router.Replace(proxy.Snapshot{Routes: map[string]proxy.Route{
+		"devstack.test": {
+			SiteID: "__dashboard__", Host: "devstack.test", Kind: proxy.KindStatic,
+			Upstream: net.JoinHostPort("127.0.0.1", fmt.Sprint(cfg.UIPort)), TLS: true,
+		},
+	}})
+	return router, proxy.NewServer(proxy.ServerConfig{
+		HTTPAddr: httpAddr, HTTPSAddr: httpsAddr, Router: router,
+		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20, Logger: logger,
+	}), nil
+}
+
+func startWindowsPublicEntry(ctx context.Context, startProxy func() error,
+	updateTargets func(context.Context) error, reconcile func(context.Context) error) error {
+	if err := startProxy(); err != nil {
+		return fmt.Errorf("daemon: start Windows public proxy: %w", err)
+	}
+	if err := updateTargets(ctx); err != nil {
+		return fmt.Errorf("daemon: update helper proxy targets before reconcile: %w", err)
+	}
+	if err := reconcile(ctx); err != nil {
+		return fmt.Errorf("daemon: reconcile Windows serving mode: %w", err)
+	}
+	return nil
+}
+
+func updateWindowsProxyTargets(ctx context.Context, socket string, httpPort, httpsPort int) error {
+	if strings.TrimSpace(socket) == "" {
+		socket = DefaultHelperSocket
+	}
+	helper, err := helperclient.Dial(socket)
+	if err != nil {
+		return err
+	}
+	defer helper.Close()
+	_, err = helper.UpdateProxyTargets(ctx, httpPort, httpsPort)
+	return err
 }
 
 func waitWindowsReady(ctx context.Context, home string, timeout time.Duration) error {
