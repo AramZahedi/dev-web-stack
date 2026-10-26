@@ -1,6 +1,6 @@
 # Windows 11 + WSL2 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development and superpowers:test-driven-development. Parallel lanes use superpowers:dispatching-parallel-agents. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development and superpowers:test-driven-development. Parallel lanes use superpowers:dispatching-parallel-agents. If the environment has no subagent tool, use superpowers:executing-plans as the fallback. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a first-class Windows 11 development platform with a native Windows daemon/helper, a managed WSL2 Linux agent for PHP/Node/static, and Docker service containers, while preserving the existing Linux product.
 
@@ -119,7 +119,7 @@ Reviewers never edit code and never review while more than five total subagents 
 - Merge order is dependency order, not completion order. After each merge, run the lane's focused tests plus `go test ./...`.
 - Integration conflicts are resolved by the controller; shared foundation files are never edited by two lanes.
 - Final whole-branch review uses a fresh reviewer. A single fix pass follows for Critical/Important findings, each with a RED→GREEN test, then the full gate.
-- Use `superpowers:using-git-worktrees`, `superpowers:subagent-driven-development`, `superpowers:dispatching-parallel-agents`, `superpowers:test-driven-development`, and `superpowers:verification-before-completion`.
+- Use `superpowers:using-git-worktrees`, `superpowers:subagent-driven-development`, `superpowers:dispatching-parallel-agents`, `superpowers:test-driven-development`, `superpowers:executing-plans` (no-subagent fallback), and `superpowers:verification-before-completion`.
 
 ---
 
