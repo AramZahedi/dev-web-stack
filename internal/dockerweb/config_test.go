@@ -91,6 +91,26 @@ func TestApacheBaseHasRuntimePathsAndIncludes(t *testing.T) {
 	}
 }
 
+func TestNginxBaseLeavesManagedDirectivesToPerformanceSnippets(t *testing.T) {
+	base, err := RenderBase(ServerNginx, 80, 443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, managed := range []string{
+		"worker_processes",
+		"worker_connections",
+		"sendfile ",
+		"tcp_nopush",
+		"keepalive_timeout",
+		"gzip ",
+		"gzip_types",
+	} {
+		if strings.Contains(string(base), managed) {
+			t.Errorf("nginx base config must not duplicate performance directive %q", managed)
+		}
+	}
+}
+
 func TestNginxBaseHasRuntimePaths(t *testing.T) {
 	base, err := RenderBase(ServerNginx, 80, 443)
 	if err != nil {
