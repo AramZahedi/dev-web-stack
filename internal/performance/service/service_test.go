@@ -338,6 +338,32 @@ func TestServiceApplyDatabaseOnlySkipsWebIncludes(t *testing.T) {
 	}
 }
 
+func TestServiceApplyDatabaseOnlySkipsHostTuning(t *testing.T) {
+	ctx := context.Background()
+	svc, _, helper, servicesFake, _, _ := newPerformanceTestService(t)
+	servicesFake.views = nil
+
+	result, err := svc.Apply(ctx, ApplyRequest{Confirm: true, HostTuning: true})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if result.HostTuning {
+		t.Fatal("database-only apply claimed host tuning")
+	}
+	if len(helper.applyCalls) != 0 {
+		t.Fatalf("host apply calls = %d, want 0", len(helper.applyCalls))
+	}
+	found := false
+	for _, step := range result.Steps {
+		if step.Name == "host-tuning" && step.Status == "skipped" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("host tuning skip step missing: %+v", result.Steps)
+	}
+}
+
 func TestServiceApplyHostTuningIsExplicit(t *testing.T) {
 	ctx := context.Background()
 	svc, _, helper, _, _, _ := newPerformanceTestService(t)
@@ -508,6 +534,83 @@ func TestServiceBenchmarkFailureStoresNoMeasurement(t *testing.T) {
 	}
 	if stored.Measured != nil {
 		t.Fatalf("stored failed benchmark has measurement: %+v", stored.Measured)
+	}
+}
+
+func TestServiceBenchmarkTreatsAllFailedRequestsAsFailure(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, servicesFake, sitesFake, _ := newPerformanceTestService(t)
+	servicesFake.views = nil
+	sitesFake.sites = []model.Site{{ID: "site1", Name: "blog", Domain: "blog.test", Kind: model.SiteStatic, Status: model.StatusRunning}}
+	svc.cfg.LoadRun = func(context.Context, LoadOptions) (LoadResult, []byte, error) {
+		return LoadResult{
+			Tool: LoadToolName, Version: LoadToolVersion,
+			Requests: 100, Errors: 100, RPS: 1000,
+			Duration: time.Second,
+		}, []byte("all failed\n"), nil
+	}
+
+	result, err := svc.RunBenchmark(ctx, BenchmarkRequest{Site: "blog"})
+	if err == nil {
+		t.Fatalf("benchmark succeeded with all requests failed: %+v", result)
+	}
+	if result.Measured != nil || result.Status != BenchmarkFailed {
+		t.Fatalf("failed result = %+v", result)
+	}
+}
+
+func TestIncludeWarningIgnoresCommentedDirectives(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "nginx.conf")
+	if err := os.WriteFile(base, []byte("# include /etc/nginx/conf.d/performance/main.conf;\nevents {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if warning := includeWarning(base, []string{"/conf.d/performance/main.conf"}); warning == "" {
+		t.Fatal("commented include was accepted")
+	}
+	if err := os.WriteFile(base, []byte("include /etc/nginx/conf.d/performance/main.conf;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if warning := includeWarning(base, []string{"/conf.d/performance/main.conf"}); warning != "" {
+		t.Fatalf("real include produced warning: %s", warning)
+	}
+	if err := os.WriteFile(base, []byte("include /etc/nginx/conf.d/performance/*.conf;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if warning := includeWarning(base, []string{"/conf.d/performance/main.conf"}); warning != "" {
+		t.Fatalf("glob include produced warning: %s", warning)
+	}
+}
+
+func TestServiceBenchmarkUsesLastAppliedProfile(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, servicesFake, sitesFake, _ := newPerformanceTestService(t)
+	servicesFake.views = nil
+	sitesFake.sites = []model.Site{{ID: "site1", Name: "blog", Domain: "blog.test", Kind: model.SiteStatic, Status: model.StatusRunning}}
+	if err := svc.cfg.Store.SetSetting(ctx, settingProfile, string(Throughput)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(AppliedState{Profile: Balanced})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.cfg.Store.SetSetting(ctx, settingApplied, string(data)); err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg.LoadRun = func(context.Context, LoadOptions) (LoadResult, []byte, error) {
+		return LoadResult{Tool: LoadToolName, Version: LoadToolVersion, Requests: 10, RPS: 10, Duration: time.Second}, []byte("raw"), nil
+	}
+
+	result, err := svc.RunBenchmark(ctx, BenchmarkRequest{Site: "blog", DurationSeconds: 1, Connections: 1})
+	if err != nil {
+		t.Fatalf("benchmark: %v", err)
+	}
+	if result.Profile != Balanced {
+		t.Fatalf("benchmark profile = %q, want applied profile %q", result.Profile, Balanced)
+	}
+	joined := strings.Join(result.Limitations, " ")
+	if !strings.Contains(joined, "selected profile throughput") || !strings.Contains(joined, "last applied profile is balanced") {
+		t.Fatalf("profile attribution warning missing: %v", result.Limitations)
 	}
 }
 

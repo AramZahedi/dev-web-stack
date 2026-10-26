@@ -295,11 +295,14 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 	if len(values.PHP.Sites) > 0 {
 		warnings = append(warnings, "PHP-FPM pool sizing fragments are generated under services/php/performance; per-site masters keep their current pool sizing (OPcache/realpath settings are merged through the site validate/swap flow).")
 	}
+	hostRequested := req.HostTuning && active != ""
+	if req.HostTuning && active == "" {
+		warnings = append(warnings, "host tuning skipped: no active nginx/Apache web server")
+	}
 	if warning := s.baseIncludeWarningLocked(active); warning != "" {
 		result := ApplyResult{
 			Profile:      profile,
 			AppliedAt:    now,
-			HostTuning:   req.HostTuning,
 			ActiveServer: string(active),
 			Warnings:     dedupeStrings(append(warnings, warning)),
 			Steps:        []Step{{Name: "include-conflict", Status: "failed", Detail: warning}},
@@ -310,12 +313,14 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 	result := ApplyResult{
 		Profile:      profile,
 		AppliedAt:    now,
-		HostTuning:   req.HostTuning,
 		ActiveServer: string(active),
 		Warnings:     dedupeStrings(warnings),
 	}
 	step := func(name, status, detail string) {
 		result.Steps = append(result.Steps, Step{Name: name, Status: status, Detail: detail})
+	}
+	if req.HostTuning && !hostRequested {
+		step("host-tuning", "skipped", "no active web server; host limits were not changed")
 	}
 
 	plan, err := BuildApplyPlan(s.cfg.Root, values, now, PriorHost{}, s.existingPHPFragmentsLocked()...)
@@ -386,7 +391,7 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 	}
 
 	hostApplied := false
-	if req.HostTuning {
+	if hostRequested {
 		if s.cfg.Helper == nil {
 			err := errors.New("helper is not configured")
 			step("host-tuning", "failed", err.Error())
@@ -409,6 +414,7 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 			return result, &ApplyError{Err: err, Result: result}
 		}
 		hostApplied = true
+		result.HostTuning = true
 		if hostResp.BackupDir != "" {
 			result.BackupDir = hostResp.BackupDir
 		}
@@ -416,7 +422,7 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 			step("host:"+helperStep.Name, helperStep.Status, helperStep.Detail)
 		}
 		step("host-tuning", "ok", "fixed sysctl/limits paths verified by helper")
-	} else {
+	} else if !req.HostTuning {
 		step("host-tuning", "skipped", "host tuning is opt-in (host_tuning:true)")
 	}
 
@@ -612,6 +618,15 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 		}
 	}
 	applied, _ := s.loadAppliedLocked(ctx)
+	runProfile := profile
+	profileNote := "no performance profile has been applied; server defaults may be in use"
+	if applied != nil && applied.Profile != "" {
+		runProfile = applied.Profile
+		profileNote = ""
+		if runProfile != profile {
+			profileNote = fmt.Sprintf("selected profile %s; last applied profile is %s", profile, runProfile)
+		}
+	}
 	target, insecure, err := s.benchmarkTargetLocked(ctx, site)
 	if err != nil {
 		return BenchmarkResult{}, err
@@ -637,7 +652,7 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 		ID:              id,
 		Site:            site.Name,
 		Target:          target,
-		Profile:         profile,
+		Profile:         runProfile,
 		Status:          BenchmarkCompleted,
 		Tool:            LoadToolName,
 		ToolVersion:     LoadToolVersion,
@@ -670,8 +685,8 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 			result.Limitations = append([]string(nil), load.Limitations...)
 		}
 	}
-	if loadErr == nil && (load.Requests <= 0 || load.RPS <= 0) {
-		loadErr = errors.New("load generator produced no measured requests")
+	if loadErr == nil && (load.Requests <= 0 || load.RPS <= 0 || load.Errors >= load.Requests) {
+		loadErr = errors.New("load generator produced no successful measured requests")
 	}
 	if loadErr != nil {
 		result.Status = BenchmarkFailed
@@ -697,6 +712,9 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 		if !load.FinishedAt.IsZero() {
 			result.FinishedAt = load.FinishedAt
 		}
+	}
+	if profileNote != "" {
+		result.Limitations = append(result.Limitations, profileNote)
 	}
 	if len(raw) == 0 {
 		raw = []byte(fmt.Sprintf("tool=%s/%s\nurl=%s\nstatus=%s\n", result.Tool, result.ToolVersion, result.Target, result.Status))
@@ -1173,9 +1191,14 @@ func (s *Service) baseIncludeWarningLocked(active services.ID) string {
 		if err != nil {
 			return ""
 		}
-		text := string(data)
-		if strings.Contains(text, "conf.d/performance.conf") || strings.Contains(text, "conf.d/*.conf") {
-			return ""
+		for _, raw := range strings.Split(string(data), "\n") {
+			line := strings.TrimSpace(raw)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if strings.Contains(line, "conf.d/performance.conf") || strings.Contains(line, "conf.d/*.conf") {
+				return ""
+			}
 		}
 		return fmt.Sprintf("%s does not include conf.d/performance.conf or conf.d/*.conf; add the include or future applies will not take effect", base)
 	}
@@ -1187,16 +1210,33 @@ func includeWarning(base string, wants []string) string {
 	if err != nil {
 		return ""
 	}
-	text := string(data)
+	var directives []string
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		directives = append(directives, line)
+	}
 	for _, want := range wants {
-		if strings.Contains(text, want) {
-			continue
+		found := false
+		for _, line := range directives {
+			if !strings.HasPrefix(line, "include ") {
+				continue
+			}
+			value := strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(line, "include ")), ";")
+			if strings.HasSuffix(value, want) {
+				found = true
+				break
+			}
+			if strings.HasSuffix(value, "/conf.d/performance/*.conf") {
+				found = true
+				break
+			}
 		}
-		// Accept an equivalent glob for the same managed directory.
-		if strings.Contains(want, "/conf.d/performance/") && strings.Contains(text, "/conf.d/performance/*.conf") {
-			continue
+		if !found {
+			return fmt.Sprintf("%s does not include the performance snippet %q; add the include or future applies will not take effect", base, want)
 		}
-		return fmt.Sprintf("%s does not include the performance snippet %q; add the include or future applies will not take effect", base, want)
 	}
 	return ""
 }

@@ -171,7 +171,7 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 				if err == nil {
 					_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 					_ = resp.Body.Close()
-					if resp.StatusCode >= http.StatusBadRequest {
+					if resp.StatusCode >= http.StatusMultipleChoices {
 						failed = true
 					}
 				}
@@ -209,6 +209,9 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 	}
 	if result.Requests == 0 {
 		return result, []byte(renderLoadRaw(result, nil)), fmt.Errorf("%w: load run completed no requests", ErrInvalid)
+	}
+	if result.Errors == result.Requests {
+		return result, []byte(renderLoadRaw(result, nil)), fmt.Errorf("%w: load run completed with no successful responses", ErrInvalid)
 	}
 	if elapsed > 0 {
 		result.RPS = float64(result.Requests) / elapsed.Seconds()

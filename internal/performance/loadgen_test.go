@@ -50,6 +50,44 @@ func TestRunLoadMeasuresLocalHTTPServer(t *testing.T) {
 	}
 }
 
+func TestRunLoadCountsRedirectsAsErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	defer server.Close()
+
+	result, _, err := RunLoad(context.Background(), LoadOptions{
+		URL:         server.URL + "/",
+		Duration:    200 * time.Millisecond,
+		Connections: 2,
+	})
+	if err == nil {
+		t.Fatalf("redirect-only run succeeded with rps=%f errors=%d", result.RPS, result.Errors)
+	}
+	if result.Requests == 0 || result.Errors != result.Requests {
+		t.Fatalf("redirect result = requests=%d errors=%d, want all failures", result.Requests, result.Errors)
+	}
+}
+
+func TestRunLoadRejectsAllFailedResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	result, _, err := RunLoad(context.Background(), LoadOptions{
+		URL:         server.URL + "/",
+		Duration:    200 * time.Millisecond,
+		Connections: 2,
+	})
+	if err == nil {
+		t.Fatalf("all-error run succeeded with rps=%f", result.RPS)
+	}
+	if result.Requests == 0 || result.Errors != result.Requests || result.RPS != 0 {
+		t.Fatalf("all-error result = %+v", result)
+	}
+}
+
 func TestRunLoadHandlesLoopbackTLS(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))

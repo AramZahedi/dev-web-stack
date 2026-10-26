@@ -29,6 +29,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
@@ -930,6 +931,18 @@ func classifyError(err error) (int, string, string, any) {
 	}
 	if errors.Is(err, servicecontrol.ErrActiveDatabaseRequired) {
 		return http.StatusConflict, codeServiceConflict, err.Error(), nil
+	}
+	var webConflict *dockerweb.ConflictError
+	if errors.As(err, &webConflict) {
+		conflicts := make([]map[string]string, 0, len(webConflict.Conflicts))
+		for _, conflict := range webConflict.Conflicts {
+			conflicts = append(conflicts, map[string]string{
+				"path":   conflict.Path,
+				"reason": conflict.Reason,
+				"diff":   conflict.Diff,
+			})
+		}
+		return http.StatusConflict, codeConfigConflict, err.Error(), map[string]any{"conflicts": conflicts}
 	}
 	var configConflict *servicecontrol.ConfigConflictError
 	if errors.As(err, &configConflict) {
