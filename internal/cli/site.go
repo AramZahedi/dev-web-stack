@@ -31,6 +31,7 @@ func (a *App) newSiteCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		a.newSiteAddCmd(),
+		a.newSiteSourceCmd(),
 		a.newSiteListCmd(),
 		a.newSiteShowCmd(),
 		a.newSitePHPShowCmd(),
@@ -44,6 +45,50 @@ func (a *App) newSiteCmd() *cobra.Command {
 		a.newSiteOpenCmd(),
 		a.newSiteBuildCmd(),
 	)
+	return cmd
+}
+
+type sourceModeClient interface {
+	ChangeSourceMode(context.Context, string, model.SourceMode, string, bool) (model.Site, error)
+}
+
+func (a *App) newSiteSourceCmd() *cobra.Command {
+	var mode, path string
+	var removeSource bool
+	cmd := &cobra.Command{
+		Use:   "source <name>",
+		Short: "Copy a stopped site's source into another source mode",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mode = strings.ToLower(strings.TrimSpace(mode))
+			if mode != string(model.SourceLocal) && mode != string(model.SourceWindows) && mode != string(model.SourceWSL) {
+				return &Error{Code: "INVALID_SOURCE_MODE", Message: "--mode must be local, windows, or wsl", Remediation: "Choose a supported source mode and pass the destination with --path."}
+			}
+			if strings.TrimSpace(path) == "" {
+				return &Error{Code: "INVALID_ARGUMENT", Message: "--path is required", Remediation: "Pass the copy destination path with --path."}
+			}
+			c, _, err := a.clientReady(cmd.Context())
+			if err != nil {
+				return err
+			}
+			copyClient, ok := c.(sourceModeClient)
+			if !ok {
+				return &Error{Code: "SOURCE_COPY_UNAVAILABLE", Message: "the daemon client does not support verified source copies", Remediation: "Update the daemon client before changing a site's source mode."}
+			}
+			site, err := copyClient.ChangeSourceMode(cmd.Context(), args[0], model.SourceMode(mode), strings.TrimSpace(path), removeSource)
+			if err != nil {
+				return err
+			}
+			if a.jsonOutput {
+				return a.writeJSON(cmd, site)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Changed %s source mode to %s. The original source was kept.\n", site.Name, site.SourceMode)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&mode, "mode", "", "destination source mode: local, windows, or wsl")
+	cmd.Flags().StringVar(&path, "path", "", "destination project path")
+	cmd.Flags().BoolVar(&removeSource, "remove-source", false, "request source removal after verified copy (requires staged agent support)")
 	return cmd
 }
 

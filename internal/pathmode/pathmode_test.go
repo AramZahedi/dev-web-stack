@@ -2,6 +2,8 @@ package pathmode
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -33,6 +35,72 @@ func TestValidateSourceMode(t *testing.T) {
 	}
 }
 
+func TestTranslateSourceEnforcesConfiguredDistroAndCDrive(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mode   model.SourceMode
+		path   string
+		distro string
+		ok     bool
+	}{
+		{"configured localhost distro", model.SourceWSL, `\\wsl.localhost\Ubuntu\home\aram\site`, "Ubuntu", true},
+		{"configured legacy alias", model.SourceWSL, `\\wsl$\Ubuntu\home\aram\site`, "Ubuntu", true},
+		{"other distro", model.SourceWSL, `\\wsl.localhost\Other\home\aram\site`, "Ubuntu", false},
+		{"C drive", model.SourceWindows, `C:\devstack\projects\site`, "", true},
+		{"other drive", model.SourceWindows, `D:\projects\site`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, backend, err := TranslateSourceForDistro(tc.mode, tc.path, tc.distro)
+			if tc.ok && err != nil {
+				t.Fatalf("TranslateSourceForDistro: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatalf("TranslateSourceForDistro = %q, %q, want error", host, backend)
+			}
+		})
+	}
+}
+
+func TestValidateCreatedPathRejectsDotBasenameOnly(t *testing.T) {
+	if err := ValidateCreatedPath(`C:\devstack\projects\.draft`); err == nil {
+		t.Fatal("dot-prefixed created project directory was accepted")
+	}
+	if err := ValidateCreatedPath(`C:\devstack\projects\site`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := TranslateSource(model.SourceWindows, `C:\devstack\projects\site\.git`); err != nil {
+		t.Fatalf("project-owned dot directory was rejected: %v", err)
+	}
+}
+
+func TestContainedPathUsesWindowsCaseInsensitiveBoundaries(t *testing.T) {
+	if !ContainsPath(`C:\Projects\Site`, `c:\projects\site\public`, true) {
+		t.Fatal("Windows containment should ignore case")
+	}
+	if ContainsPath(`C:\Projects\Site`, `C:\Projects\Site-old\public`, true) {
+		t.Fatal("sibling path was treated as contained")
+	}
+	if ContainsPath("/projects/Site", "/projects/site/public", false) {
+		t.Fatal("Linux containment should remain case-sensitive")
+	}
+}
+
+func TestValidateContainedPathRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "project")
+	outside := t.TempDir()
+	if err := os.Mkdir(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(inside, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks are unavailable on this host: %v", err)
+	}
+	if err := ValidateContainedPath(inside, filepath.Join(link, "secret"), false); err == nil {
+		t.Fatal("symlink escape was accepted")
+	}
+}
+
 func TestTranslateSource(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -44,7 +112,7 @@ func TestTranslateSource(t *testing.T) {
 	}{
 		{"windows drive", model.SourceWindows, `C:\Users\Aram\app`, `C:\Users\Aram\app`, "/mnt/c/Users/Aram/app", false},
 		{"windows slashes", model.SourceWindows, `C:/Users/Aram/app/`, `C:\Users\Aram\app`, "/mnt/c/Users/Aram/app", false},
-		{"windows lowercase drive", model.SourceWindows, `d:\code\app`, `D:\code\app`, "/mnt/d/code/app", false},
+		{"windows lowercase C drive", model.SourceWindows, `c:\code\app`, `C:\code\app`, "/mnt/c/code/app", false},
 		{"wsl localhost", model.SourceWSL, `\\wsl.localhost\Ubuntu\home\aram\app`, `\\wsl.localhost\Ubuntu\home\aram\app`, "/home/aram/app", false},
 		{"wsl dollar", model.SourceWSL, `\\wsl$\Ubuntu\home\aram\app`, `\\wsl.localhost\Ubuntu\home\aram\app`, "/home/aram/app", false},
 		{"local", model.SourceLocal, "/home/aram/app", "/home/aram/app", "/home/aram/app", false},

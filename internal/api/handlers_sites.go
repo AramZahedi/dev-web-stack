@@ -16,6 +16,7 @@ type createSiteRequest struct {
 	Path                string              `json:"path"`
 	HostPath            string              `json:"host_path"`
 	Kind                string              `json:"kind"`
+	SourceMode          string              `json:"source_mode"`
 	NodeVersion         string              `json:"node_version"`
 	Command             string              `json:"command"`
 	DocumentRoot        string              `json:"document_root"`
@@ -35,6 +36,33 @@ type createSiteRequest struct {
 	FrontControllerMode string              `json:"front_controller_mode"`
 	ApacheAllowOverride string              `json:"apache_allow_override"`
 	Build               *model.BuildProfile `json:"build"`
+}
+
+type changeSiteSourceRequest struct {
+	Mode         string `json:"mode"`
+	Path         string `json:"path"`
+	RemoveSource bool   `json:"remove_source"`
+}
+
+func (s *Server) handleChangeSiteSourceMode(w http.ResponseWriter, r *http.Request) {
+	if s.sites == nil {
+		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "site service is not available", nil)
+		return
+	}
+	var req changeSiteSourceRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Mode) == "" || strings.TrimSpace(req.Path) == "" {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "mode and path are required", nil)
+		return
+	}
+	site, err := s.sites.ChangeSourceMode(r.Context(), r.PathValue("ref"), model.SourceMode(strings.TrimSpace(req.Mode)), strings.TrimSpace(req.Path), req.RemoveSource)
+	if err != nil {
+		s.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, site)
 }
 
 // updateSiteRequest is a partial update. Pointer fields distinguish an omitted
@@ -100,6 +128,7 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		Name:                req.Name,
 		Path:                req.Path,
 		Kind:                req.Kind,
+		SourceMode:          req.SourceMode,
 		NodeVersion:         req.NodeVersion,
 		Command:             req.Command,
 		DocumentRoot:        req.DocumentRoot,
