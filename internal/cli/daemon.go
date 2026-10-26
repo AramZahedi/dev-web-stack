@@ -115,7 +115,7 @@ func (a *App) newDaemonStatusCmd() *cobra.Command {
 }
 
 func restoreConfigFile(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-restore-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "config-restore-*.tmp")
 	if err != nil {
 		return err
 	}

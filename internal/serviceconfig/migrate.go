@@ -9,6 +9,20 @@ import (
 	"sync"
 )
 
+// existingManifestPath returns the new manifest path when present, otherwise
+// the legacy dot name for a one-time migration read.
+func existingManifestPath(root string) string {
+	current := filepath.Join(root, manifestName)
+	if _, err := os.Stat(current); err == nil {
+		return current
+	}
+	legacy := filepath.Join(root, legacyManifestName)
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return ""
+}
+
 // MigrateManifest copies a legacy manifest from oldRoot into newRoot, keeping
 // only entries whose paths start with prefix and stripping that prefix. It is
 // used when a manager moves from a service root to its config root. The
@@ -26,12 +40,15 @@ func MigrateManifest(oldRoot, newRoot, prefix string) error {
 	lock.(*sync.Mutex).Lock()
 	defer lock.(*sync.Mutex).Unlock()
 
-	oldPath := filepath.Join(oldRoot, ".config-manifest.json")
-	newPath := filepath.Join(newRoot, ".config-manifest.json")
+	oldPath := existingManifestPath(oldRoot)
+	newPath := filepath.Join(newRoot, manifestName)
 	if _, err := os.Stat(newPath); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat destination manifest %s: %w", newPath, err)
+	}
+	if oldPath == "" {
+		return nil
 	}
 	if _, err := os.Stat(oldPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

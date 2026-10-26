@@ -353,7 +353,7 @@ func writeAtomic(filename string, data []byte) error {
 		return fmt.Errorf("create output directory %s: %w", dir, err)
 	}
 
-	file, err := os.CreateTemp(dir, ".catalogmerge-*")
+	file, err := os.CreateTemp(dir, "catalogmerge-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create output file in %s: %w", dir, err)
 	}

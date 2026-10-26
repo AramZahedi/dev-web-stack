@@ -866,7 +866,7 @@ func installFiles(keyPath string, keyPEM []byte, certPath string, certPEM []byte
 }
 
 func stageFile(path string, data []byte, perm fs.FileMode) (string, error) {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return "", err
 	}

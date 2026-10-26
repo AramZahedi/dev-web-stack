@@ -574,7 +574,7 @@ func (s *Service) snapshot(output string) (outputSnapshot, error) {
 	if size > SnapshotSizeCap {
 		return outputSnapshot{skipped: true, note: "previous output exceeds the 2 GiB snapshot cap"}, nil
 	}
-	dir, err := os.MkdirTemp(s.logsRoot(), ".snapshot-")
+	dir, err := os.MkdirTemp(s.logsRoot(), "snapshot-")
 	if err != nil {
 		return outputSnapshot{skipped: true, note: "could not create a snapshot directory: " + err.Error()}, nil
 	}

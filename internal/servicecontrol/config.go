@@ -326,6 +326,12 @@ func (s *ConfigService) List(ctx context.Context, id services.ID) (ConfigListing
 		if _, err := cleanConfigRel(rel); err != nil {
 			return nil
 		}
+		// The manifest and backup tree are internal state, not user-editable
+		// service configuration. The manifest is no longer dot-prefixed, so
+		// exclude it explicitly.
+		if rel == "config-manifest.json" || rel == ".config-manifest.json" || rel == "backups" || strings.HasPrefix(rel, "backups/") {
+			return nil
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return err

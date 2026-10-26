@@ -294,7 +294,7 @@ func (s *Service) writePHPFilesLocked(siteID string, files phpFiles) (string, er
 	if err := os.RemoveAll(generationDir); err != nil {
 		return "", fmt.Errorf("sites: remove incomplete PHP generation: %w", err)
 	}
-	temporary, err := os.MkdirTemp(siteDir, ".gen-")
+	temporary, err := os.MkdirTemp(siteDir, "gen-")
 	if err != nil {
 		return "", fmt.Errorf("sites: create temporary PHP generation: %w", err)
 	}
@@ -380,7 +380,7 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("sites: create %s: %w", filepath.Dir(path), err)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".tmp-")
+	temporary, err := os.CreateTemp(filepath.Dir(path), "tmp-*.tmp")
 	if err != nil {
 		return fmt.Errorf("sites: create temporary file for %s: %w", path, err)
 	}

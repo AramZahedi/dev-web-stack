@@ -545,7 +545,7 @@ func (l *Local) Health(ctx context.Context) error {
 		if !info.IsDir() {
 			return fmt.Errorf("backend: health check %s is not a directory", dir)
 		}
-		probe, err := os.CreateTemp(dir, ".health-*")
+		probe, err := os.CreateTemp(dir, "health-*.tmp")
 		if err != nil {
 			return fmt.Errorf("backend: health check %s is not writable: %w", dir, err)
 		}
@@ -941,7 +941,7 @@ func combineCA(system, extra []byte) []byte {
 // directory, then renames it into place.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary file in %s: %w", dir, err)
 	}

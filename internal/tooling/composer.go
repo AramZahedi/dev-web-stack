@@ -108,7 +108,7 @@ func downloadComposer(ctx context.Context, client *http.Client, target string, s
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("tooling: create composer directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".composer.phar-*")
+	tmp, err := os.CreateTemp(filepath.Dir(target), "composer.phar-*.tmp")
 	if err != nil {
 		return fmt.Errorf("tooling: create temporary composer phar: %w", err)
 	}

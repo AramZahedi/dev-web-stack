@@ -291,7 +291,14 @@ func NewServer(cfg Config) (*Server, error) {
 // provider as the owner of 80/443. The marker is written before forwarders are
 // stopped and cleared after builtin serving is restored.
 func dockerWebServing(root string) bool {
-	data, err := os.ReadFile(filepath.Join(root, "services", ".serving-provider"))
+	dir := filepath.Join(root, "services")
+	path := filepath.Join(dir, "serving-provider")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// Read the pre-2026-10 legacy name once. New writes always use the
+		// non-dot name.
+		data, err = os.ReadFile(filepath.Join(dir, ".serving-provider"))
+	}
 	if err != nil {
 		return false
 	}

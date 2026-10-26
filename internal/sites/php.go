@@ -814,7 +814,7 @@ func (s *Service) ValidatePHP(ctx context.Context, site model.Site) error {
 	if err := os.MkdirAll(siteDir, 0o700); err != nil {
 		return fmt.Errorf("sites: create PHP config directory: %w", err)
 	}
-	temporary, err := os.MkdirTemp(siteDir, ".validate-")
+	temporary, err := os.MkdirTemp(siteDir, "validate-")
 	if err != nil {
 		return fmt.Errorf("sites: create validation directory: %w", err)
 	}

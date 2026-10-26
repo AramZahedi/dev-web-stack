@@ -214,6 +214,7 @@ fi
 
 USER_NAME="$(id -un)"
 USER_UID="$(id -u)"
+USER_GID="$(id -g)"
 USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
 if [ -z "${USER_HOME}" ] || [ ! -d "${USER_HOME}" ]; then
 	die "cannot determine the home directory for UID ${USER_UID}"
@@ -225,7 +226,16 @@ case "${CONFIG_HOME}" in
 *) die "XDG_CONFIG_HOME must be an absolute path, got ${CONFIG_HOME}" ;;
 esac
 
-DEVSTACK_HOME_DIR="${DEVSTACK_HOME:-${USER_HOME}/.devstack}"
+# New installs use the machine-wide /data/devstack root. An explicit
+# DEVSTACK_HOME wins, and an existing legacy ~/.devstack is preserved in place
+# so an upgrade never moves data.
+if [ -n "${DEVSTACK_HOME:-}" ]; then
+	DEVSTACK_HOME_DIR="${DEVSTACK_HOME}"
+elif [ -d "${USER_HOME}/.devstack" ]; then
+	DEVSTACK_HOME_DIR="${USER_HOME}/.devstack"
+else
+	DEVSTACK_HOME_DIR="/data/devstack"
+fi
 case "${DEVSTACK_HOME_DIR}" in
 /*) ;;
 *) die "DEVSTACK_HOME must be an absolute path, got ${DEVSTACK_HOME_DIR}" ;;
@@ -485,7 +495,7 @@ ReadWritePaths=-/var/lib/ca-certificates
 [Install]
 WantedBy=multi-user.target
 EOF
-	cat >"${UNIT_DIR}/devstack-daemon.service" <<'EOF'
+	cat >"${UNIT_DIR}/devstack-daemon.service" <<EOF
 [Unit]
 Description=devstack user daemon
 Documentation=https://github.com/AramZahedi/dev-web-stack/blob/master/docs/install.md
@@ -494,7 +504,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=HOME=%h
-Environment=DEVSTACK_HOME=%h/.devstack
+Environment=DEVSTACK_HOME=${DEVSTACK_HOME_DIR}
 ExecStart=%h/.local/bin/devstack daemon run
 Restart=on-failure
 RestartSec=2s
@@ -537,7 +547,7 @@ resolve_units
 # The helper's ReadWritePaths names the devstack home as optional, and both the
 # helper and daemon need it. Create it as the installing user before any
 # privileged install or service restart.
-run install -d -m 0755 "${DEVSTACK_HOME_DIR}"
+run install -d -m 0755 -o "${USER_UID}" -g "${USER_GID}" "${DEVSTACK_HOME_DIR}"
 
 log "installing for ${USER_NAME} (uid ${USER_UID}, home ${USER_HOME})"
 if [ "${DRY_RUN}" -eq 1 ]; then

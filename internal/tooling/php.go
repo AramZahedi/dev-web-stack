@@ -308,7 +308,7 @@ func WriteGlobalIni(_ model.RuntimeBuild, path string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("tooling: create global ini directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".php.ini-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "php.ini-*.tmp")
 	if err != nil {
 		return fmt.Errorf("tooling: create temporary global ini: %w", err)
 	}
@@ -448,7 +448,7 @@ func writeAtomicFile(path string, content []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("tooling: create directory %s: %w", filepath.Dir(path), err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return fmt.Errorf("tooling: create temporary %s: %w", path, err)
 	}

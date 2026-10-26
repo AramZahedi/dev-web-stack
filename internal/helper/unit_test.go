@@ -9,6 +9,20 @@ import (
 	"testing"
 )
 
+func TestDockerWebServingReadsLegacyMarker(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "services")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".serving-provider"), []byte("docker\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !dockerWebServing(root) {
+		t.Fatal("legacy serving-provider marker was not read")
+	}
+}
+
 // TestHelperUnitWritableVhostBridges guards the systemd sandbox. Under
 // ProtectSystem=strict the helper can only write ReadWritePaths, so external
 // mode fails at the bridge write unless the nginx and Apache include
@@ -95,7 +109,7 @@ func TestInstallScriptGeneratedUnitWritesManagedTools(t *testing.T) {
 	if strings.Contains(script, `UNIT_DIR="${REPO_ROOT}/build/systemd"`) {
 		t.Fatal("install.sh can reuse the static units instead of templating the actual home")
 	}
-	if !strings.Contains(script, `run install -d -m 0755 "${DEVSTACK_HOME_DIR}"`) {
+	if !strings.Contains(script, `run install -d -m 0755 -o "${USER_UID}" -g "${USER_GID}" "${DEVSTACK_HOME_DIR}"`) {
 		t.Fatal("install.sh does not create the devstack home as the installing user")
 	}
 	if !strings.Contains(script, `tool_root: "${DEVSTACK_HOME_DIR}"`) {
@@ -108,7 +122,7 @@ func TestNewServerSuppressesAutoForwardForDockerMarker(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "services"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "services", ".serving-provider"), []byte("docker\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "services", "serving-provider"), []byte("docker\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	srv, err := NewServer(Config{

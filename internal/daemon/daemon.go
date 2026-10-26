@@ -250,9 +250,13 @@ func Run(ctx context.Context, opts Options) error {
 		nil,
 	)
 	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
+	projectsRoot := cfg.ProjectsRoot
+	if projectsRoot == "" {
+		projectsRoot = paths.Projects
+	}
 	dockerWeb, err := dockerweb.NewManager(dockerweb.ManagerConfig{
 		Root:         cfg.Home,
-		Projects:     paths.Projects,
+		Projects:     projectsRoot,
 		Store:        st,
 		Certs:        certManager,
 		Dashboard:    dockerweb.DashboardSpec{Domain: "devstack.test", UIPort: cfg.UIPort},

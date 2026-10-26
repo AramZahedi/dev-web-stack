@@ -132,7 +132,7 @@ func WriteAtomic(path string, data []byte, mode fs.FileMode) error {
 	}
 
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		// systemd's ProtectSystem=strict plus a file-level ReadWritePaths entry
 		// for /etc/hosts makes the file writable while its parent directory

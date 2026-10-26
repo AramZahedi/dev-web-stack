@@ -655,7 +655,7 @@ func (s *Service) startAfterDockerLocked(ctx context.Context) error {
 	return nil
 }
 
-const servingProviderMarker = ".serving-provider"
+const servingProviderMarker = "serving-provider"
 
 // writeServingProviderMarker records which provider owns 80/443 so a helper
 // restart does not re-enable its forwarders over an active Docker web server.
@@ -670,7 +670,7 @@ func (s *Service) writeServingProviderMarker(provider string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".serving-provider-*")
+	tmp, err := os.CreateTemp(dir, "serving-provider-*.tmp")
 	if err != nil {
 		return err
 	}

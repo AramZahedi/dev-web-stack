@@ -28,7 +28,7 @@ func writeAtomicFile(path string, data []byte, perm fs.FileMode) error {
 // temporary path. The caller must rename or remove it.
 func stageAtomicFile(path string, data []byte, perm fs.FileMode) (string, error) {
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return "", err
 	}
