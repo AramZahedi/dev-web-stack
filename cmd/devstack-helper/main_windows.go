@@ -42,7 +42,15 @@ func parseWindowsOptions(args []string) (windowsOptions, error) {
 }
 
 func main() {
-	opts, err := parseWindowsOptions(os.Args[1:])
+	args := os.Args[1:]
+	if isWindowsServiceCommand(args) {
+		if err := serviceCommand(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "devstack-helper:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	opts, err := parseWindowsOptions(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "devstack-helper:", err)
 		os.Exit(2)
