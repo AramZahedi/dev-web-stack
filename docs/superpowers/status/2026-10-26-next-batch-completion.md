@@ -2,7 +2,7 @@
 
 - **Status:** implemented, reviewed, locally verified, merged to `master`.
 - **Integration branch:** `integration/service-platform-next-batch`.
-- **Code head before documentation:** `4477f06`; the merge commit is the current
+- **Code head before documentation:** `0319cc0`; the merge commit is the current
   `master` tip at the time this file is read (`git rev-parse HEAD`).
 - **Plan:** [Service Platform Next Batch](../plans/2026-10-26-service-platform-next-batch.md)
 - **Continuation:** [Continuation State](2026-10-26-continuation.md)
@@ -207,7 +207,11 @@ services, no generated `services/compose.yaml`.
    availability is not tied to the site's serving status.
 8. **External-site Docker bind mounts remain a follow-up.** Docker web servers serve
    sites under the managed projects root.
-9. **Live Wave 3 benchmark/performance evidence on a real host remains open.**
+9. **Changing daemon HTTP/HTTPS ports requires updating the helper's own config.** With
+   builtin 80/443 forwarding, edit `proxy_http_port`/`proxy_https_port` in
+   `/etc/devstack/helper.yaml` and restart devstack-helper. The Settings warning says
+   this; UI-port changes do not need it.
+10. **Live Wave 3 benchmark/performance evidence on a real host remains open.**
 
 ## 4. Merge and cleanup record
 
