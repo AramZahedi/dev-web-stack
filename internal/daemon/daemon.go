@@ -95,9 +95,9 @@ type Options struct {
 	LogLevel     string
 }
 
-// SocketPath returns the daemon's Unix-socket control path below home.
+// SocketPath returns the daemon's local control address below home.
 func SocketPath(home string) string {
-	return filepath.Join(home, "run", "daemon.sock")
+	return Endpoint(home).Address
 }
 
 // PidPath returns the daemon's pid file path below home.

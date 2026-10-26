@@ -28,11 +28,9 @@ type Options struct {
 	LogLevel     string
 }
 
-// SocketPath returns the Windows control endpoint below home. The Windows
-// daemon uses a named pipe; this placeholder is replaced by the IPC seam in
-// T0.2/T0.7.
+// SocketPath returns the Windows named-pipe address for home.
 func SocketPath(home string) string {
-	return `\\.\pipe\devstack-` + filepath.Base(filepath.Clean(home))
+	return Endpoint(home).Address
 }
 
 // PidPath returns the daemon pid file path below home.
