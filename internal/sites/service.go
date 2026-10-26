@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	"github.com/AramZahedi/dev-web-stack/internal/phpini"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
@@ -36,6 +38,7 @@ import (
 // options are rejected for static and Node sites.
 type CreateRequest struct {
 	Name, Path, Kind, NodeVersion, Command, DocumentRoot string
+	SourceMode                                           string
 	PHPVersion, PHPBuild                                 string
 	PHPExtensions                                        map[string]bool
 	PHPIni                                               map[string]string
@@ -55,6 +58,7 @@ type CreateRequest struct {
 // PHP sites only.
 type UpdateRequest struct {
 	Domain              string
+	SourceMode          string
 	WWW                 *bool
 	TLS                 *bool
 	ForceHTTPS          *bool
@@ -743,16 +747,31 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 	if err != nil {
 		return model.Site{}, fmt.Errorf("sites: %w", err)
 	}
-	project, err := domain.ValidateProjectPath(req.Path)
-	if err != nil {
-		return model.Site{}, fmt.Errorf("sites: %w", err)
-	}
-
 	kind := model.SiteKind(strings.ToLower(strings.TrimSpace(req.Kind)))
 	switch kind {
 	case model.SiteStatic, model.SiteNode, model.SitePHP:
 	default:
 		return model.Site{}, fmt.Errorf("sites: unsupported site kind %q", req.Kind)
+	}
+
+	sourceMode := model.SourceMode(strings.TrimSpace(req.SourceMode))
+	if sourceMode == "" {
+		sourceMode = pathmode.DefaultSourceMode(kind, runtime.GOOS)
+	}
+	if err := pathmode.ValidateSourceMode(sourceMode, runtime.GOOS); err != nil {
+		return model.Site{}, fmt.Errorf("sites: %w", err)
+	}
+	hostPath, backendPath, err := pathmode.TranslateSource(sourceMode, req.Path)
+	if err != nil {
+		return model.Site{}, fmt.Errorf("sites: %w", err)
+	}
+	project := hostPath
+	if sourceMode == model.SourceLocal {
+		project, err = domain.ValidateProjectPath(req.Path)
+		if err != nil {
+			return model.Site{}, fmt.Errorf("sites: %w", err)
+		}
+		hostPath, backendPath = project, project
 	}
 	if kind != model.SitePHP {
 		if err := rejectPHPOnlyCreateFields(req); err != nil {
@@ -812,8 +831,9 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		Domain:              siteDomain,
 		WWW:                 req.WWW,
 		Backend:             model.BackendLocal,
-		HostPath:            project,
-		BackendPath:         project,
+		SourceMode:          sourceMode,
+		HostPath:            hostPath,
+		BackendPath:         backendPath,
 		Kind:                kind,
 		NodeVersion:         strings.TrimSpace(req.NodeVersion),
 		Command:             strings.TrimSpace(req.Command),
@@ -832,7 +852,7 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 
 	switch kind {
 	case model.SiteStatic:
-		site.DocumentRoot, err = validateDocumentRoot(project, req.DocumentRoot)
+		site.DocumentRoot, err = resolveSiteDocumentRoot(site, req.DocumentRoot)
 		if err != nil {
 			return model.Site{}, err
 		}
@@ -859,7 +879,7 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		site.PHPIni = cloneStringMap(req.PHPIni)
 		site.PHPIniRaw = req.PHPIniRaw
 		site.FrontController = req.FrontController
-		site.DocumentRoot, err = validateDocumentRoot(project, req.DocumentRoot)
+		site.DocumentRoot, err = resolveSiteDocumentRoot(site, req.DocumentRoot)
 		if err != nil {
 			return model.Site{}, err
 		}
@@ -952,6 +972,9 @@ func cloneBuildProfile(b *model.BuildProfile) *model.BuildProfile {
 // store or external systems.
 func (s *Service) applyUpdate(ctx context.Context, current model.Site, req UpdateRequest) (model.Site, error) {
 	updated := current
+	if mode := model.SourceMode(strings.TrimSpace(req.SourceMode)); mode != "" && mode != current.SourceMode {
+		return model.Site{}, fmt.Errorf("sites: changing source mode from %q to %q requires a source copy", current.SourceMode, mode)
+	}
 
 	if value := strings.TrimSpace(req.Domain); value != "" {
 		value = strings.ToLower(value)
@@ -1023,7 +1046,7 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 		}
 		switch updated.Kind {
 		case model.SiteStatic, model.SitePHP:
-			root, err := validateDocumentRoot(updated.HostPath, req.DocumentRoot)
+			root, err := resolveSiteDocumentRoot(updated, req.DocumentRoot)
 			if err != nil {
 				return model.Site{}, err
 			}
@@ -1595,6 +1618,22 @@ func validateDocumentRoot(projectRoot, value string) (string, error) {
 		return "", fmt.Errorf("sites: document root %q escapes the project", root)
 	}
 	return root, nil
+}
+
+// resolveSiteDocumentRoot validates the document root in the site's source
+// namespace. Local sites keep the existing filesystem/symlink checks; Windows
+// and WSL paths are validated structurally and checked by the WSL agent when
+// the site is prepared.
+func resolveSiteDocumentRoot(site model.Site, value string) (string, error) {
+	if site.SourceMode == "" || site.SourceMode == model.SourceLocal {
+		return validateDocumentRoot(site.HostPath, value)
+	}
+	probe := site
+	probe.DocumentRoot = strings.TrimSpace(value)
+	if _, err := pathmode.ProxyDocumentRoot(probe); err != nil {
+		return "", fmt.Errorf("sites: %w", err)
+	}
+	return strings.TrimSpace(value), nil
 }
 
 func pathWithin(base, target string) bool {
