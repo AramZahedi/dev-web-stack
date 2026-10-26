@@ -7,17 +7,15 @@
     Copy,
     Eye,
     FileCode,
-    Image,
-    Lock,
     Package,
     RefreshCw,
+    Save,
     Server,
     ShieldCheck,
     Terminal,
     Trash2,
     TriangleAlert,
     Unplug,
-    WandSparkles,
     Wrench,
   } from 'lucide-svelte';
   import * as api from '../lib/api';
@@ -152,7 +150,6 @@
       ),
   );
   const composerTool = $derived(tools.find((tool) => tool.id === 'composer'));
-  const imagemagickTool = $derived(tools.find((tool) => tool.id === 'imagemagick'));
   const phpDefaultLabel = $derived(
     phpDefault?.configured
       ? phpDefault.configured
@@ -163,6 +160,28 @@
   const globalIniPath = $derived(
     globalIni?.path ?? phpDefault?.global_ini ?? '—',
   );
+  let portDrafts = $state({ http_port: 0, https_port: 0, ui_port: 0 });
+  let portsReady = $state(false);
+  let portSaving = $state(false);
+  let portError = $state<{ code: string; message: string } | null>(null);
+  let portWarnings = $state<string[]>([]);
+  let portsSaved = $state(false);
+
+  const restartRequired = $derived(Boolean(settings?.restart_required));
+  const portsDirty = $derived(
+    Boolean(settings) &&
+      (portDrafts.http_port !== settings?.http_port ||
+        portDrafts.https_port !== settings?.https_port ||
+        portDrafts.ui_port !== settings?.ui_port),
+  );
+
+  function setPortDrafts(config: Settings): void {
+    portDrafts = {
+      http_port: config.http_port,
+      https_port: config.https_port,
+      ui_port: config.ui_port,
+    };
+  }
 
   function usableTimestamp(value: string | undefined): boolean {
     return Boolean(value) && !value?.startsWith('0001-01-01');
@@ -222,6 +241,10 @@
       const [config, targets] = await Promise.all([api.getSettings(), api.getTrust()]);
       settings = config;
       trust = targets;
+      if (initial || !portsReady) {
+        setPortDrafts(config);
+        portsReady = true;
+      }
     } catch (caught) {
       error = describeError(caught);
     } finally {
@@ -305,6 +328,48 @@
       if (copyTimer) clearTimeout(copyTimer);
     };
   });
+
+  async function savePorts(): Promise<void> {
+    if (portSaving) return;
+    const httpPort = Number(portDrafts.http_port);
+    const httpsPort = Number(portDrafts.https_port);
+    const uiPort = Number(portDrafts.ui_port);
+    if (![httpPort, httpsPort, uiPort].every((port) => Number.isInteger(port) && port >= 1 && port <= 65535)) {
+      portError = { code: 'INVALID_REQUEST', message: 'Ports must be whole numbers between 1 and 65535.' };
+      return;
+    }
+    if (new Set([httpPort, httpsPort, uiPort]).size !== 3) {
+      portError = { code: 'INVALID_REQUEST', message: 'HTTP, HTTPS, and dashboard ports must differ.' };
+      return;
+    }
+    portSaving = true;
+    portError = null;
+    portsSaved = false;
+    try {
+      const updated = await api.updateSettings({
+        http_port: httpPort,
+        https_port: httpsPort,
+        ui_port: uiPort,
+      });
+      settings = updated;
+      setPortDrafts(updated);
+      portWarnings = updated.warnings ?? [];
+      portsSaved = true;
+      addToast({
+        kind: 'success',
+        title: updated.restart_required ? 'Ports saved — restart required' : 'Ports saved',
+        message: updated.restart_required
+          ? 'Run devstack daemon restart to bind the new listeners.'
+          : 'The running daemon already uses these ports.',
+      });
+    } catch (caught) {
+      const described = describeError(caught);
+      portError = described;
+      toastError('Could not save ports', `${described.code}: ${described.message}`);
+    } finally {
+      portSaving = false;
+    }
+  }
 
   function requestServingMode(mode: ServingMode): void {
     if (!vhostStatus || mode === vhostStatus.mode || modeBusy) return;
@@ -620,7 +685,9 @@
   {:else if settings}
     <Card title="Machine" subtitle="Configuration loaded from the daemon's config.yaml" headerWrap>
       {#snippet actions()}
-        <Badge icon={Lock}>Read only</Badge>
+        {#if restartRequired}
+          <Badge variant="warning">Restart required</Badge>
+        {/if}
         <Button size="sm" variant="ghost" onclick={copyConfigPath}>
           <Copy size={12} strokeWidth={2} aria-hidden="true" />
           Copy path
@@ -630,27 +697,35 @@
       <div class="config-note">
         <FileCode size={15} strokeWidth={1.8} aria-hidden="true" />
         <p>
-          Machine settings are read-only in the dashboard. Edit
-          <span class="mono">{configPath}</span> and restart the daemon to apply changes.
+          Listener ports are editable below and saved to
+          <span class="mono">{configPath}</span>. Other machine settings stay read-only.
         </p>
       </div>
+
+      {#if restartRequired}
+        <div class="restart-banner" role="status">
+          <TriangleAlert size={16} strokeWidth={2} aria-hidden="true" />
+          <div>
+            <p class="restart-title">Restart required</p>
+            <p>
+              The new ports are saved but the running daemon still owns the old listeners.
+              Run <span class="mono">devstack daemon restart</span> to apply them.
+            </p>
+            {#if portWarnings.length > 0}
+              <ul class="restart-warnings">
+                {#each portWarnings as warning (warning)}
+                  <li>{warning}</li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        </div>
+      {/if}
 
       <dl class="config-grid">
         <div class="config-item wide">
           <dt>Home</dt>
           <dd class="mono">{settings.home}</dd>
-        </div>
-        <div class="config-item">
-          <dt>HTTP port</dt>
-          <dd class="mono">{settings.http_port}</dd>
-        </div>
-        <div class="config-item">
-          <dt>HTTPS port</dt>
-          <dd class="mono">{settings.https_port}</dd>
-        </div>
-        <div class="config-item">
-          <dt>UI port</dt>
-          <dd class="mono">{settings.ui_port}</dd>
         </div>
         <div class="config-item">
           <dt>Auto-start sites</dt>
@@ -678,6 +753,95 @@
           <dd class="mono">{settings.wsl_distro || '—'}</dd>
         </div>
       </dl>
+
+      <form
+        class="port-form"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void savePorts();
+        }}
+      >
+        <div class="port-form-head">
+          <div>
+            <h3>Listener ports</h3>
+            <p>Loopback ports for the proxy and dashboard. Changes require a daemon restart.</p>
+          </div>
+          {#if portsSaved}<Badge variant="accent">Saved</Badge>{/if}
+        </div>
+        <div class="port-grid">
+          <label class="port-field" for="http-port">
+            <span>HTTP proxy port</span>
+            <input
+              id="http-port"
+              class="input mono"
+              type="number"
+              min="1"
+              max="65535"
+              bind:value={portDrafts.http_port}
+              oninput={() => {
+                portsSaved = false;
+                portError = null;
+              }}
+            />
+          </label>
+          <label class="port-field" for="https-port">
+            <span>HTTPS proxy port</span>
+            <input
+              id="https-port"
+              class="input mono"
+              type="number"
+              min="1"
+              max="65535"
+              bind:value={portDrafts.https_port}
+              oninput={() => {
+                portsSaved = false;
+                portError = null;
+              }}
+            />
+          </label>
+          <label class="port-field" for="ui-port">
+            <span>Dashboard/API port</span>
+            <input
+              id="ui-port"
+              class="input mono"
+              type="number"
+              min="1"
+              max="65535"
+              bind:value={portDrafts.ui_port}
+              oninput={() => {
+                portsSaved = false;
+                portError = null;
+              }}
+            />
+          </label>
+        </div>
+        <p class="port-hint">
+          Ports 41000–43999 are reserved for site backends. Public 80/443 remain owned by
+          the helper or the active web-server service.
+        </p>
+        {#if portError}
+          <div class="port-error">
+            <ErrorBanner
+              title="Could not save ports"
+              code={portError.code}
+              message={portError.message}
+              ondismiss={() => (portError = null)}
+            />
+          </div>
+        {/if}
+        <div class="port-actions">
+          <Button
+            type="submit"
+            size="sm"
+            variant="primary"
+            loading={portSaving}
+            disabled={portSaving || !portsDirty}
+          >
+            {#if !portSaving}<Save size={12} strokeWidth={2} aria-hidden="true" />{/if}
+            Save ports
+          </Button>
+        </div>
+      </form>
     </Card>
 
     <Card
@@ -1058,17 +1222,14 @@
 
     <Card
       title="Native tools"
-      subtitle="Managed Composer and ImageMagick wrappers installed by the privileged helper"
+      subtitle="Managed Composer wrapper installed by the privileged helper"
       headerWrap
+      className="native-tools-card"
     >
       {#snippet actions()}
-        {#if imagemagickTool}
-          <Badge variant={imagemagickTool.installed ? 'accent' : 'info'}>
-            ImageMagick {imagemagickTool.installed ? 'managed' : 'available'}
-          </Badge>
-        {:else}
-          <Badge variant="warning">ImageMagick pending</Badge>
-        {/if}
+        <Badge variant={composerTool?.installed ? 'accent' : 'info'}>
+          {composerTool?.installed ? 'Composer managed' : 'Composer available'}
+        </Badge>
       {/snippet}
 
       {#if toolsLoading && tools.length === 0}
@@ -1179,97 +1340,6 @@
             </div>
           </article>
 
-          {#if imagemagickTool}
-            <article class="tool-row">
-              <span class="tool-icon" aria-hidden="true"><Image size={18} strokeWidth={1.8} /></span>
-              <div class="tool-copy">
-                <div class="tool-title">
-                  <h3>ImageMagick CLI</h3>
-                  {#if imagemagickTool.installed}
-                    <Badge variant="accent">Installed</Badge>
-                  {:else}
-                    <Badge>Not installed</Badge>
-                  {/if}
-                  {#if imagemagickTool.managed}<Badge>Managed</Badge>{/if}
-                  {#if imagemagickTool.conflict}<Badge variant="danger">Conflict</Badge>{/if}
-                  {#if imagemagickTool.version}
-                    <span class="tool-version mono">{imagemagickTool.version}</span>
-                  {/if}
-                </div>
-                <p class="tool-path mono" title={imagemagickTool.wrapper_path}>
-                  {imagemagickTool.wrapper_path || 'No system wrapper reported'}
-                </p>
-                {#if imagemagickTool.target}
-                  <p class="tool-path mono" title={imagemagickTool.target}>
-                    → {imagemagickTool.target}
-                  </p>
-                {/if}
-                {#if imagemagickTool.conflict}
-                  <p class="tool-conflict" role="status">{imagemagickTool.conflict}</p>
-                {/if}
-              </div>
-              <div class="tool-actions">
-                {#if imagemagickTool.installed}
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    loading={toolBusy === 'imagemagick:update'}
-                    disabled={Boolean(toolBusy)}
-                    onclick={() => runToolAction(imagemagickTool, 'update')}
-                  >
-                    Update
-                  </Button>
-                {:else}
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    loading={toolBusy === 'imagemagick:install'}
-                    disabled={Boolean(toolBusy)}
-                    onclick={() => runToolAction(imagemagickTool, 'install')}
-                  >
-                    Install
-                  </Button>
-                {/if}
-                {#if imagemagickTool.installed || imagemagickTool.managed}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={Boolean(toolBusy)}
-                    onclick={() => {
-                      removeToolError = null;
-                      removeToolTarget = imagemagickTool ?? null;
-                    }}
-                  >
-                    <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
-                    Remove
-                  </Button>
-                {/if}
-              </div>
-            </article>
-          {:else}
-            <article class="tool-row pending">
-              <span class="tool-icon pending" aria-hidden="true"><Image size={18} strokeWidth={1.8} /></span>
-              <div class="tool-copy">
-                <div class="tool-title">
-                  <h3>ImageMagick CLI</h3>
-                  <Badge variant="warning">Wave 2 backend pending</Badge>
-                </div>
-                <p class="tool-note">
-                  This daemon does not expose an ImageMagick tool endpoint yet. The
-                  <span class="mono">/tools</span> API only manages PHP default and Composer, so
-                  install, update and remove stay disabled here rather than calling an invented
-                  route.
-                </p>
-                <p class="tool-note">
-                  PHP's bundled <span class="mono">imagick</span> extension remains available per
-                  site from the PHP extensions panel.
-                </p>
-              </div>
-              <div class="tool-actions">
-                <span class="tool-pending-label"><WandSparkles size={12} strokeWidth={2} aria-hidden="true" /> Unavailable</span>
-              </div>
-            </article>
-          {/if}
         </div>
       {/if}
     </Card>
@@ -1551,6 +1621,110 @@
     align-items: center;
     gap: 10px;
     padding: 4px 0;
+  }
+
+  :global(.native-tools-card) {
+    margin-top: 18px;
+  }
+
+  .port-form {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  .port-form-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+
+  .port-form-head h3 {
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .port-form-head p {
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .port-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .port-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .port-field > span {
+    color: var(--muted-2);
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .port-hint {
+    margin-top: 8px;
+    color: var(--muted-2);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .port-error {
+    margin-top: 10px;
+  }
+
+  .port-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 10px;
+  }
+
+  .restart-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin-bottom: 14px;
+    padding: 10px 11px;
+    border: 1px solid color-mix(in oklab, var(--warning-fg) 35%, var(--border));
+    border-radius: var(--radius);
+    background: color-mix(in oklab, var(--warning-bg) 55%, var(--surface));
+  }
+
+  .restart-banner :global(svg) {
+    flex: none;
+    margin-top: 1px;
+    color: var(--warning-fg);
+  }
+
+  .restart-title {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--warning-fg);
+  }
+
+  .restart-banner p {
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .restart-warnings {
+    margin: 5px 0 0 16px;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
   }
 
   .config-note {
@@ -2400,6 +2574,10 @@
   @media (max-width: 1000px) {
     .two-col,
     .tooling-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .port-grid {
       grid-template-columns: minmax(0, 1fr);
     }
 

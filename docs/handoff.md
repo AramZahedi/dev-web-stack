@@ -4,15 +4,16 @@
 - **Repository:** `https://github.com/AramZahedi/dev-web-stack`
 - **Handoff commit:** the commit containing this file; run `git rev-parse HEAD` for the exact SHA.
 - **Branch:** `master`
-- **Product status:** Linux M1 released as `v0.1.0`; Waves 0–1 and the Wave 2 phpMyAdmin/dashboard implementation are merged. The performance engine is implemented but not wired. The next batch is documented in the [Next Batch Plan](superpowers/plans/2026-10-26-service-platform-next-batch.md): service config editing, performance apply/reset/benchmark + dashboard, site terminal, editable listener ports, and UI cleanup. ImageMagick CLI is descoped. Automatic GitHub Actions are disabled; workflows are manual-dispatch only.
+- **Product status:** Linux M1 released as `v0.1.0`; Waves 0–1, Wave 2, and the next service-platform batch are merged. The next batch added service configuration editing, performance apply/reset/host tuning/benchmarks with dashboard, a site-scoped PTY terminal, editable listener ports, and the Settings cleanup. See [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md). ImageMagick CLI is descoped. Automatic GitHub Actions are disabled; workflows are manual-dispatch only.
 - **Wave 0 Merge SHA:** `04d1a2d5f111b33995961a90b19cf8df6abaa489`
 - **Wave 0 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40200118349` (green)
 - **Wave 1 merge SHA:** `b4be089429b3f63cb7ec94d5c6bf484a4db34da2`
 - **Wave 1 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40214920181` (green)
 - **Wave 2 merge SHA:** `ec2dca4523bf40d931d3e674001d6e832e5e1903`
 - **Wave 2 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40222270689` (green; includes the renewal-test race fix)
-- **Post-Wave-2 code:** `cbc1605` (action colors, install-scaffold status, compose side-effect, duplicate-badge fixes); current runtime build `v0.1.0-89-g26069ac`.
-- **Next step:** execute the [Next Batch Plan](superpowers/plans/2026-10-26-service-platform-next-batch.md) from [Continuation State](superpowers/status/2026-10-26-continuation.md). See also the
+- **Post-Wave-2 code:** `cbc1605` (action colors, install-scaffold status, compose side-effect, duplicate-badge fixes).
+- **Next-batch code:** [`5386c22`](superpowers/status/2026-10-26-next-batch-completion.md) plus its documentation/merge commit; current runtime build rebuilt from the merged branch.
+- **Next step:** read [Continuation State](superpowers/status/2026-10-26-continuation.md) and [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md). See also the
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
   [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
@@ -63,7 +64,20 @@ and the [service-platform design](superpowers/specs/2026-10-25-service-container
     front-controller/`.htaccess` policy/SPA fields, global PHP/Composer/tool management,
     grouped service cards, and degraded status;
   - pure bounded performance profile engine (nginx/Apache/PHP/host formulas, includes,
-    apply/reset plans, benchmark plan) — not yet wired to host tuning/UI.
+    apply/reset plans, benchmark plan).
+- Next service-platform batch:
+  - editable daemon listener ports (`http_port`, `https_port`, `ui_port`) with atomic
+    config persistence, bind validation, durable `restart_required`, dynamic native
+    dashboard backend port, and `devstack daemon restart`;
+  - service configuration manifests, safe read/content/diff/apply/reset API, CLI, and
+    dashboard editor; config-root manifest shared with Docker nginx/Apache and migrated
+    from the legacy service-root manifest;
+  - measured performance resource/profile/preview/apply/reset API and dashboard, fixed
+    helper host-tuning RPC with backup/verify/rollback, and stored measured benchmarks
+    from the built-in Go HTTP generator;
+  - site-scoped PTY terminal over a one-use ticket/WebSocket with the site PHP/Node
+    environment, process-group teardown, output/idle limits, and xterm.js dashboard;
+  - Settings cleanup: ImageMagick CLI removed and Native tools spacing fixed.
 
 The old standalone devstack-in-Docker image is **retired**. It was removed from the repo
 and reference machine on 2026-10-25. Docker is reserved for the separate service
@@ -77,28 +91,19 @@ containers.
   `https://github.com/AramZahedi/dev-web-stack/releases/tag/php-runtimes-2026-10-25`
   — PHP 8.2.35, 8.3.36, 8.4.27, 8.5.12 with checksums/SBOMs.
 
-## 2. What is designed but not implemented
+## 2. What remains
 
-The next milestone is fully described in:
+The next batch is implemented. Remaining work is tracked in
+[Known issues](known-issues.md) and the
+[Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md):
 
-```text
-docs/superpowers/specs/2026-10-25-service-containers-and-performance-design.md
-```
+- external-site bind mounts for Docker web servers (sites outside the managed `projects/`
+  root currently require builtin/native serving);
+- real root host-tuning acceptance and live benchmark evidence;
+- PHP-FPM pool sizing merged into live FPM masters (OPcache/realpath ini values are live);
+- live Wave 3 acceptance on a real host.
 
-Waves 0–1 and the Wave 2 phpMyAdmin/dashboard work are implemented. The next batch is
-planned in detail:
-
-- service config manifest/read/diff/apply/reset API, CLI, and dashboard editor;
-- performance profile API, apply/reset, helper host tuning, benchmark results, dashboard;
-- site-scoped PTY terminal/command runner;
-- editable HTTP/HTTPS/dashboard ports in Settings, with restart-required handling;
-- remove the ImageMagick CLI placeholder (descoped), fix Native tools spacing.
-
-Remaining after that: external-site bind mounts for Docker web servers (sites outside the
-managed `projects/` root currently require builtin/native serving) and full Wave 3
-acceptance/benchmark evidence.
-
-**Do not tell users these items are shipped until implemented and verified.**
+**Do not claim the remaining host gates are passed until they are run.**
 
 ## 3. Current reference workstation
 
@@ -111,25 +116,25 @@ This is the machine state at handoff. It is not required on the next machine.
   the future service-container milestone; no devstack container runs now.
 - Host nginx owns 80/443; MySQL/PostgreSQL/Redis also own their default ports.
 - Current test daemon: `./dist/devstack --home /home/aram/.devstack` at
-  `http://127.0.0.1:7070` (version `v0.1.0-83-gcb443d8`).
+  `http://127.0.0.1:7070` (rebuilt from the merged branch; `devstack version` is
+  authoritative).
 - Current test helper: root process with temporary state under
   `/tmp/opencode/devstack-runtime`; hosts/trust are intentionally not modified.
 - This is a test runtime, not a system install. See
   [Continuation State](superpowers/status/2026-10-26-continuation.md) for commands.
 - `/usr/local/bin/composer` exists user-owned; `/usr/local/bin/php` is absent.
-- Apache image is installed, Nginx is not; phpMyAdmin is installed but inactive because
-  no MySQL-family service is active.
-- No test sites are registered.
+- No services are installed and no test sites are registered. The temporary smoke
+  install/site were removed; `~/.devstack/services` is empty.
 
 ## 4. Known issues
 
 See [known issues](known-issues.md). Important current points:
 
-1. Service config editing, performance apply/reset/benchmark/UI, and site terminal are not
-   implemented yet; the Services placeholders are truthful. See the Next Batch Plan.
+1. The next batch is implemented; see [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md)
+   for the remaining host/PHP-pool limitations.
 2. ImageMagick CLI is descoped. PHP `imagick` remains available per site.
 3. Automatic GitHub Actions are disabled. Workflows are manual `workflow_dispatch` only.
-4. Manual Linux M1 gates remain open.
+4. Manual Linux M1 and Wave 3 host gates remain open.
 5. No automatic `~/.devstack` → `/data/devstack` migration.
 6. `install.sh` adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
    existing helper config and restarts the helper; verify keys for manually managed configs.
@@ -206,15 +211,16 @@ Docker Engine remains installed for the new service containers.
 
 ### 5.5 Next implementation work
 
-Waves 0–2 are complete and merged. Do not re-run their kickoffs.
+Waves 0–2 and the next batch are complete and merged. Do not re-run their kickoffs.
 
-1. Read [Continuation State](superpowers/status/2026-10-26-continuation.md) and the
-   [Next Batch Plan](superpowers/plans/2026-10-26-service-platform-next-batch.md).
-2. Execute Phase 0 (port settings, contracts, UI cleanup), then the service-config,
-   performance, and terminal backend lanes, then dashboard integration.
-3. Preserve existing M1/Wave 0–2 behavior and tests. ImageMagick CLI is out of scope.
+1. Read [Continuation State](superpowers/status/2026-10-26-continuation.md) and
+   [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md).
+2. Work the remaining host gates and external-site Docker mounts from
+   [Known issues](known-issues.md).
+3. Preserve existing M1/Wave 0–2/next-batch behavior and tests. ImageMagick CLI is out of
+   scope.
 4. Keep the native external provider compatible.
-5. Do not rely on GitHub CI; workflows are manual-only. Run the local gate in the plan.
+5. Do not rely on GitHub CI; workflows are manual-only. Run the local gate manually.
 6. Do not start Windows/WSL Plan 3 without explicit user instruction.
 
 ## 6. Current requirements/constraints to preserve
@@ -286,10 +292,10 @@ make release-test
 
 ## 10. Open items for the next agent
 
-- Execute the Next Batch Plan; its first task is editable listener ports + API contracts.
-- Wire the existing performance engine, service config, and terminal per the plan.
-- Remove ImageMagick from requirements/UI (done in docs; code/UI removal pending).
+- The next batch is complete; start from [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md).
+- Remaining: external-site Docker mounts, real root host-tuning acceptance, live
+  benchmark evidence, and PHP-FPM pool sizing.
 - Keep automatic CI disabled; run the local gate manually.
-- Run the manual Linux M1 gates if claiming full M1.
+- Run the manual Linux M1/Wave 3 gates if claiming full acceptance.
 - Do not start Windows/WSL, arm64, signed packages, auto-update, or M4 work.
 - Do not recreate the old standalone Docker image.

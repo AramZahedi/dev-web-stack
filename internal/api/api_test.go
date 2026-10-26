@@ -29,11 +29,13 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
+	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
+	"github.com/AramZahedi/dev-web-stack/internal/serviceconfig"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
@@ -52,6 +54,7 @@ type apiFixture struct {
 	doctor   *fakeDoctorService
 	helper   *fakeHelperClient
 	vhosts   *fakeVhostService
+	terminal *fakeTerminalService
 	logs     *logs.Store
 	store    *store.Store
 	session  string
@@ -145,6 +148,10 @@ func newFixture(t *testing.T, cfg Config) *apiFixture {
 		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	cfg.Vhosts = fakeVhosts
+	fakeTerminal := &fakeTerminalService{}
+	if cfg.Terminal == nil {
+		cfg.Terminal = fakeTerminal
+	}
 	srv := NewServer(st, fakeSites, fakeRuntimes, fakeDoctor, logStore, fakeHelper, cfg)
 
 	return &apiFixture{
@@ -155,6 +162,7 @@ func newFixture(t *testing.T, cfg Config) *apiFixture {
 		doctor:   fakeDoctor,
 		helper:   fakeHelper,
 		vhosts:   fakeVhosts,
+		terminal: fakeTerminal,
 		logs:     logStore,
 		store:    st,
 		session:  testSessionValue,
@@ -1121,6 +1129,25 @@ func TestEventsSSEPollsNewEvents(t *testing.T) {
 	data := readSSEData(t, resp.Body, 3*time.Second)
 	if !strings.Contains(data, "site.running") || !strings.Contains(data, "blog") {
 		t.Fatalf("event data = %q", data)
+	}
+}
+
+func TestClassifyDockerWebConflictAsConfigConflict(t *testing.T) {
+	err := fmt.Errorf("site update: %w", &dockerweb.ConflictError{Conflicts: []serviceconfig.Conflict{{
+		Path:   "conf.d/generated/app.conf",
+		Reason: "generated file has local edits",
+		Diff:   "--- a/conf.d/generated/app.conf\n+++ b/conf.d/generated/app.conf\n",
+	}}})
+	status, code, _, details := classifyError(err)
+	if status != http.StatusConflict || code != codeConfigConflict {
+		t.Fatalf("classify = %d/%s, want 409/%s", status, code, codeConfigConflict)
+	}
+	detailsMap, ok := details.(map[string]any)
+	if !ok {
+		t.Fatalf("details = %T", details)
+	}
+	if _, ok := detailsMap["conflicts"]; !ok {
+		t.Fatalf("details = %+v, want conflicts", detailsMap)
 	}
 }
 

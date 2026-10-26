@@ -82,10 +82,10 @@ func testCatalog() services.Catalog {
 				Ports:       []services.Port{{Host: 6379, Container: 6379, Protocol: "tcp", Loopback: true}},
 			},
 			{
-				ID:          services.IDImageMagick,
-				DisplayName: "ImageMagick",
+				ID:          services.ID("cache"),
+				DisplayName: "Cache",
 				Group:       services.GroupStandalone,
-				Image:       testImage("imagemagick", '1'),
+				Image:       testImage("cache", '1'),
 			},
 		},
 	}
@@ -541,9 +541,9 @@ func TestStatusMapsContainerAndImageStates(t *testing.T) {
 		t.Errorf("postgres container ID = %q, want empty", postgres.ContainerID)
 	}
 
-	imagemagick := byID[string(services.IDImageMagick)]
-	if imagemagick.State != string(services.StateNotInstalled) || imagemagick.Active || imagemagick.Installed {
-		t.Errorf("imagemagick status = %+v, want not_installed", imagemagick)
+	cache := byID["cache"]
+	if cache.State != string(services.StateNotInstalled) || cache.Active || cache.Installed {
+		t.Errorf("cache status = %+v, want not_installed", cache)
 	}
 
 	psCalls := fx.runner.callsWithArg("ps")

@@ -67,16 +67,18 @@ On Fedora/RHEL the modules are normally built in or already loaded; verify with
 
 ### Dashboard port
 
-External mode requires the dashboard to listen on its default port **7070**:
+External mode supports any valid daemon dashboard port; 7070 is the default.
+The dashboard vhost proxies to the configured `ui_port`:
 
 ```yaml
 # ~/.devstack/config.yaml
 ui_port: 7070
 ```
 
-The generated `devstack.test` vhost always proxies to `127.0.0.1:7070`. A sync
-with another `ui_port` fails with a validation error instead of publishing a
-broken dashboard. Restart the daemon after changing the port, then sync again.
+Edit the port in Settings (or `config.yaml`), run `devstack daemon restart`, and
+reload/sync the external vhost. The native vhost and the helper both accept the
+configured UI backend port; a restart is required because the listener cannot be
+rebound safely inside the request that is using it.
 
 ### PHP prerequisites
 
@@ -420,9 +422,9 @@ system configuration file:
 - when an installed Node runtime exists, a Node site is served through the same
   nginx vhost; otherwise that check is skipped with a message.
 
-The dashboard vhost always targets `127.0.0.1:7070`, so external mode requires
-`ui_port: 7070`. If 7070 is already in use, the script runs the builtin flow on
-a high UI port and skips the external steps with an explicit message.
+The dashboard vhost targets the configured `ui_port` (default 7070), so the E2E
+script uses 7070 for the external flow. If that port is already in use, it runs the
+builtin flow on a high UI port and skips the external steps with an explicit message.
 
 The high listen ports used by the test are a test seam, not a production
 option: `vhost_http_port`/`vhost_https_port` (helper flags

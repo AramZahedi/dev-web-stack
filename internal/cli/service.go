@@ -25,6 +25,7 @@ func (a *App) newServiceCmd() *cobra.Command {
 		a.newServiceActionCmd("restart"),
 		a.newServiceUninstallCmd(),
 		a.newServiceLogsCmd(),
+		a.newServiceConfigCmd(),
 		a.newServiceCredentialsCmd(),
 	)
 	return cmd

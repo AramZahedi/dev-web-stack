@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 )
 
@@ -42,7 +43,7 @@ func (a *App) newDaemonCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Manage the devstack background daemon",
 	}
-	cmd.AddCommand(a.newDaemonRunCmd(), a.newDaemonStatusCmd(), a.newDaemonStopCmd())
+	cmd.AddCommand(a.newDaemonRunCmd(), a.newDaemonStatusCmd(), a.newDaemonStopCmd(), a.newDaemonRestartCmd())
 	return cmd
 }
 
@@ -107,6 +108,88 @@ func (a *App) newDaemonStatusCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "running")
 			default:
 				fmt.Fprintln(cmd.OutOrStdout(), "stopped")
+			}
+			return nil
+		},
+	}
+}
+
+func restoreConfigFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-restore-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+func (a *App) newDaemonRestartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart",
+		Short: "Stop and start the devstack daemon using config.yaml",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			home, err := resolveHome(a.home)
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			// Validate the durable source before stopping the running daemon;
+			// an invalid config must not strand the user with no dashboard.
+			if _, err := config.Load(home); err != nil {
+				return wrapError(err, "CONFIG_INVALID", "Fix config.yaml, then rerun `devstack daemon restart`.")
+			}
+			configPath := filepath.Join(home, "config.yaml")
+			previous, err := os.ReadFile(configPath)
+			if err != nil {
+				return wrapError(err, "CONFIG_INVALID", "Read config.yaml before restart.")
+			}
+			// Do not carry one-off run flags across a restart: config.yaml is
+			// the durable source for listener ports.
+			if _, err := stopDaemon(ctx, home); err != nil {
+				return err
+			}
+			opts := daemon.Options{Home: home, HelperSocket: a.helperSocketPath()}
+			if err := ensureRunning(ctx, opts); err != nil {
+				// A saved port can be taken after PATCH validated it. Restore the
+				// previous config and bring the old daemon back rather than leaving
+				// the user with no dashboard/API.
+				restoreErr := restoreConfigFile(configPath, previous)
+				if restoreErr == nil {
+					restoreErr = ensureRunning(ctx, opts)
+				}
+				if restoreErr != nil {
+					return wrapError(errors.Join(err, fmt.Errorf("restore previous daemon: %w", restoreErr)),
+						"DAEMON_UNAVAILABLE", "The new configuration did not start and the previous daemon could not be restored; inspect the daemon log.")
+				}
+				return wrapError(err, "DAEMON_UNAVAILABLE",
+					"New ports did not start; the previous config was restored and the daemon was restarted.")
+			}
+			dashboard := ""
+			if cfg, err := config.Load(home); err == nil {
+				dashboard = fmt.Sprintf("http://127.0.0.1:%d", cfg.UIPort)
+			}
+			if a.jsonOutput {
+				return a.writeJSON(cmd, struct {
+					Restarted    bool   `json:"restarted"`
+					DashboardURL string `json:"dashboard_url,omitempty"`
+				}{Restarted: true, DashboardURL: dashboard})
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "restarted")
+			if dashboard != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Dashboard: %s\n", dashboard)
 			}
 			return nil
 		},

@@ -170,8 +170,8 @@ func TestCatalogValidateAcceptsPinnedImages(t *testing.T) {
 		"docker.io/library/nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"nginx:1.30.6@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"mysql:8.4.13@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		"ghcr.io/devstack/imagemagick:1.0.0@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-		"ghcr.io/devstack/imagemagick@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		"ghcr.io/devstack/example:1.0.0@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		"ghcr.io/devstack/example@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 	}
 	for _, image := range images {
 		c := Catalog{Services: []Service{{

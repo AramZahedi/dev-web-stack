@@ -1,8 +1,8 @@
 # Developer guide
 
-- **Last reviewed:** 2026-10-25
-- **Current implementation:** Linux M1
-- **Planned work:** [service platform](planned-services.md)
+- **Last reviewed:** 2026-10-26
+- **Current implementation:** Linux M1 + Waves 0–2 + next service-platform batch
+- **Status/limitations:** [known issues](known-issues.md)
 
 ## 1. Prerequisites
 
@@ -58,7 +58,9 @@ Local full gate (CI-equivalent; automatic GitHub Actions are disabled):
 ```sh
 go vet ./...
 go test ./... -race -count=1
-(cd ui && npm ci && npm run check && npm test -- --run && npm run build)
+(cd ui && npm ci && npm run check && npm test -- --run && npm run test:e2e && npm run build)
+bash test/release/installer_test.sh
+bash test/release/workflow_test.sh
 ```
 
 Focused areas:
@@ -67,6 +69,8 @@ Focused areas:
 go test ./internal/helper ./internal/vhost -count=1
 go test ./internal/proxy ./internal/sites -count=1
 go test ./internal/store -run 'Migrate|Backup' -count=1 -v
+go test ./internal/serviceconfig ./internal/servicecontrol -count=1
+go test ./internal/performance/... ./internal/terminal -count=1
 ```
 
 Shell changes:
@@ -105,6 +109,11 @@ checks; `--skip-playwright` is available for a faster run but is not a pass.
 - `internal/daemon` wires services; don't put HTTP handlers there.
 - `internal/api` owns transport, session/CSRF, and error envelopes.
 - `internal/sites` owns site lifecycle and generated PHP/FPM configs.
+- `internal/serviceconfig` owns manifest/conflict/diff/backup primitives;
+  `internal/servicecontrol` owns the service config API service and lifecycle.
+- `internal/performance` is the pure resource/render/load engine;
+  `internal/performance/service` orchestrates profile/apply/reset/benchmarks.
+- `internal/terminal` owns site PTY tickets, sessions, environment, and WebSocket frames.
 - `internal/vhost` renders native nginx/Apache config; `internal/helper` installs and
   tests it.
 - `internal/proxy` owns host routing, reverse proxy, and FastCGI request semantics.
@@ -117,8 +126,7 @@ checks; `--skip-playwright` is available for a faster run but is not a pass.
 
 ## 7. Adding a feature
 
-1. Check the approved design. Do not implement service-platform features before the design
-   is approved and planned.
+1. Check the approved design and current limitations before changing behavior.
 2. Write tests first for behavior changes.
 3. Keep the helper surface narrow; add only catalog-defined operations.
 4. Add API route + client + CLI command + UI, or explicitly document the missing surface.
@@ -192,8 +200,8 @@ real `/etc/hosts`, trust stores, or 80/443 in automated tests.
 
 ## 14. Current constraints to remember
 
-- Native devstack; Docker only for optional services in the planned milestone.
+- Native devstack; Docker only for optional service containers.
 - Linux only. Do not start Windows/WSL Plan 3 without an explicit new instruction.
 - Existing native external nginx/Apache mode must remain compatible.
-- Do not implement service-platform features from the design until it is approved and
-  planned.
+- Preserve service config scope, terminal no-root scope, and fixed-target host tuning.
+- Do not claim host-tuning or benchmark acceptance without live evidence.

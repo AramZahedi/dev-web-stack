@@ -1,9 +1,9 @@
 # Current architecture
 
-- **Status:** describes the implemented Linux M1 system plus Waves 0–2. The next batch
-  adds service config editing, performance apply/reset/benchmark/UI, site terminal, and
-  editable listener ports. ImageMagick CLI is descoped; external-site Docker mounts remain
-  a follow-up.
+- **Status:** describes the implemented Linux M1 system, Waves 0–2, and the next
+  service-platform batch: config editing, performance apply/reset/benchmarks, site
+  terminal, and editable listener ports. ImageMagick CLI is descoped; external-site
+  Docker mounts and real host-tuning acceptance remain follow-ups.
 - **Last reviewed:** 2026-10-26
 - **Planned extension:** [service containers design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 
@@ -260,20 +260,24 @@ The daemon exposes the following route groups under `/api/v1`:
 - trust: status/repair/remove
 - doctor: status/run/repair
 - filesystem browser: directory listing only
-- settings
+- settings: read and PATCH listener ports (`http_port`, `https_port`, `ui_port`)
 - vhosts: status/mode/sync/preview
 - services: list/get, install/activate/deactivate/restart/uninstall, logs, credentials
   reveal/rotate
+- service configuration: list/content/diff/apply/reset under
+  `services/<id>/config`
+- performance: status/profile/preview/apply/reset and measured benchmark history
+- terminal: one-use ticket issuance plus ticket-authenticated WebSocket PTY
 - tooling: PHP default/ini/status and managed tool install/remove
 - builds: run a site build and read build logs
 
 The dashboard is embedded from `ui/dist` and served by the daemon. API mutations use a
 session cookie and CSRF token.
 
-The dashboard now exposes service lifecycle/credential/phpMyAdmin actions, build
-profile/run/log panels, grouped service cards, and global PHP/Composer/tool management.
-Service config diff/apply, performance apply/benchmark, and the site terminal remain
-follow-ups. The pure performance engine has no API/CLI wiring yet.
+The dashboard exposes service lifecycle/credential/phpMyAdmin actions, service
+configuration editing/diff/apply/reset, performance preview/apply/reset/benchmarks,
+build profile/run/log panels, grouped service cards, global PHP/Composer/tool management,
+editable listener ports, and the site-scoped terminal.
 
 ## 8. CLI surface (current)
 
@@ -281,7 +285,7 @@ follow-ups. The pure performance engine has no API/CLI wiring yet.
 devstack init
 devstack doctor [--repair] [--json]
 devstack trust install|repair|remove|status
-devstack daemon run|status|stop
+devstack daemon run|status|stop|restart
 devstack site add|list|show|start|stop|restart|remove|logs|open|php|ini|ext
 devstack php --site <name> -- <args...>
 devstack php <name> [version]
@@ -290,6 +294,7 @@ devstack php ext <name> ...
 devstack runtime list|install|remove|migrate
 devstack vhost status|use|sync|preview|path
 devstack service list|status <id>|install|activate|deactivate|restart|uninstall|logs|credentials
+devstack service config list|show|diff|apply|reset <id> ...
 devstack shell [--site <name>]
 devstack exec [--site <name>] -- <command...>
 devstack shell-init [--site <name>]
@@ -302,9 +307,10 @@ devstack version
 devstack uninstall --yes
 ```
 
-The dashboard service page now supports lifecycle/credential actions, build profiles,
-tooling, and grouped status; service config/performance panels and the project terminal
-remain follow-ups. CLI/API build, shell, credentials, and service lifecycle paths exist.
+The dashboard service page supports lifecycle/credential actions, service configuration,
+performance, build profiles, tooling, and grouped status. Site detail includes the
+site-scoped terminal. CLI/API build, shell, credentials, configuration, performance, and
+service lifecycle paths exist.
 
 ## 9. Package map
 
@@ -333,15 +339,17 @@ remain follow-ups. CLI/API build, shell, credentials, and service lifecycle path
 | `internal/hosts` | managed hosts block |
 | `internal/logs` | log stores/streams/redaction |
 | `internal/model` | domain models |
-| `internal/performance` | bounded nginx/Apache/PHP/host profile engine and plans |
+| `internal/performance` | bounded nginx/Apache/PHP/host profile engine, measured load generator, plans |
+| `internal/performance/service` | profile/host-tuning/apply/reset/benchmark orchestration |
 | `internal/phpfpm` | PHP-FPM process control |
 | `internal/phpini` | generated php.ini rendering/validation |
 | `internal/proxy` | host router, reverse proxy, PHP FastCGI proxy |
 | `internal/runtime` | download, verify, extract, install/remove runtimes |
 | `internal/serviceconfig` | config manifest, conflict detection, diff, backups |
-| `internal/servicecontrol` | service lifecycle manager, preparers, Docker/web switches |
+| `internal/servicecontrol` | service lifecycle manager, preparers, config service, Docker/web switches |
 | `internal/services` | service catalog, Compose rendering, state views |
 | `internal/sites` | site lifecycle, PHP/FPM generations, routes, vhosts |
+| `internal/terminal` | ticket-authenticated site PTY sessions and WebSocket protocol |
 | `internal/tooling` | global PHP/Composer shims, site shell/exec environment |
 | `internal/staticserve` | safe static file serving and SPA fallback |
 | `internal/store` | SQLite persistence and migrations |
@@ -391,6 +399,16 @@ remain follow-ups. CLI/API build, shell, credentials, and service lifecycle path
 - Native CA/trust remains host-only; containers receive leaf certs under `/certs`.
 - Shell/exec and builds run as the installing user, never root; build output is confined
   to the project root and snapshotted/restored on failure.
+- Service config access is confined to `services/<id>/config`, rejects symlinks and
+  sensitive/reserved names, caps files at 1 MiB, and validates/reloads through catalog
+  commands with file+manifest rollback. File contents require the dashboard session;
+  list metadata remains a read-only API.
+- Performance host tuning uses a fixed-target helper RPC with typed values, fixed
+  `/etc/sysctl.d` and `/etc/security/limits.d` paths, backups, verification, and rollback.
+  No host path or shell fragment comes from the API.
+- Terminal tickets are short-lived, one-use, site/UID-bound, and Origin/Host checked;
+  sessions run as the installing user with no root, sudo, or Docker socket, kill the PTY
+  process group on disconnect, and cap sessions/output/idle time.
 
 ## 12. Current limitations
 
@@ -399,11 +417,10 @@ remain follow-ups. CLI/API build, shell, credentials, and service lifecycle path
   administrator; devstack does not install packages.
 - M1 manual Linux gates (real root 80/443 install, browser trust, live UI) were not fully
   run.
-- Waves 0–1 plus phpMyAdmin/rotation and the dashboard action/build/tooling panels are
-  implemented.
-- Still pending: performance helper/apply/reset/benchmark + dashboard wiring, service
-  config diff/apply UI, site terminal/command runner, editable listener ports, and
-  external-site Docker mounts.
+- Waves 0–1, Wave 2, and the next service-platform batch are implemented.
+- Still pending: external-site Docker mounts, real root host-tuning acceptance, and
+  live Wave 3 benchmark evidence. PHP-FPM pool sizing is generated but not merged into
+  live FPM masters; OPcache/realpath ini values are applied.
 - Docker web servers currently serve only sites under the managed `projects/` root.
 - The official MySQL entrypoint can retain password values in the container process
   environment; Compose files/logs do not contain them.

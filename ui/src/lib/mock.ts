@@ -16,18 +16,37 @@ import type {
   PHPDefaultsResult,
   PHPExecResult,
   PHPExtension,
+  BenchmarkRequest,
+  BenchmarkRun,
+  PerformanceApplyResult,
+  PerformancePreview,
+  PerformanceProfile,
+  PerformanceResetResult,
+  PerformanceState,
+  PerformanceValues,
   PHPInfo,
   PHPMigrationRequest,
   PHPMigrationResult,
   PHPDefaultStatus,
   PHPResolvedExtension,
   RuntimeBuild,
+  ServiceConfigApplyRequest,
+  ServiceConfigContent,
+  ServiceConfigDiff,
+  ServiceConfigFile,
+  ServiceConfigList,
+  ServiceConfigResult,
   ServiceCredentials,
   ServiceUninstallResult,
   ServiceView,
   Session,
   Settings,
+  SettingsUpdate,
+  SettingsUpdateResult,
   ServingMode,
+  TerminalConnection,
+  TerminalHandlers,
+  TerminalSession,
   Site,
   SiteStatus,
   ToolStatus,
@@ -187,6 +206,23 @@ let toolStatuses: ToolStatus[] = clone(seedToolStatuses);
 export function resetMockServiceStateForTests(): void {
   mockServices = clone(seedMockServices);
   toolStatuses = clone(seedToolStatuses);
+  settings = clone(seedSettings);
+  mockPerformance = {
+    profile: 'balanced',
+    values: mockPerformanceValues('balanced'),
+    resources: mockPerformanceResources,
+    active_server: 'nginx',
+    host_tuning: {
+      available: true,
+      managed: false,
+      applied: false,
+      sysctl_path: '/etc/sysctl.d/99-devstack-performance.conf',
+      limits_path: '/etc/security/limits.d/99-devstack-performance.conf',
+      backup_dir: '/home/dev/.devstack/backups/performance',
+    },
+  };
+  mockBenchmarks = [];
+  mockConfigs = {};
   phpDefaultConfigured = DEFAULT_PHP_BUILD;
   globalIniContent = DEFAULT_GLOBAL_INI;
 }
@@ -691,7 +727,7 @@ let trustTargets: TrustTarget[] = [
   },
 ];
 
-const settings: Settings = {
+const seedSettings: Settings = {
   home: '/home/dev/.devstack',
   user_home: '/home/dev',
   http_port: 8080,
@@ -708,7 +744,9 @@ const settings: Settings = {
   version: '0.1.0',
   socket_path: '/home/dev/.devstack/devstack.sock',
   pid_path: '/home/dev/.devstack/devstack.pid',
+  restart_required: false,
 };
+let settings: Settings = clone(seedSettings);
 
 let vhostStatus: VhostStatus = {
   mode: 'builtin',
@@ -720,6 +758,171 @@ let vhostStatus: VhostStatus = {
   config_ok: true,
   last_sync: '',
 };
+
+function mockPerformanceValues(profile: PerformanceProfile): PerformanceValues {
+  const throughput = profile === 'throughput';
+  return {
+    profile,
+    nginx: {
+      workers: 4,
+      worker_connections: throughput ? 4096 : 1024,
+      worker_rlimit_nofile: throughput ? 8192 : 4096,
+      open_file_cache_max: 4096,
+      keepalive_timeout_seconds: 65,
+      keepalive_requests: 1000,
+      gzip: true,
+      gzip_comp_level: 5,
+    },
+    apache: {
+      threads_per_child: 25,
+      server_limit: 16,
+      max_request_workers: 400,
+      start_servers: 4,
+      min_spare_threads: 25,
+      max_spare_threads: 100,
+      async_request_worker_factor: 2,
+      max_connections_per_child: 10000,
+      keep_alive: true,
+      max_keepalive_requests: 1000,
+      keepalive_timeout_seconds: 5,
+      listen_backlog: 511,
+    },
+    php: {
+      mode: 'dynamic',
+      global_children: 32,
+      sites: [],
+      listen_backlog: 511,
+      opcache: {
+        enabled: true,
+        memory_mb: 128,
+        interned_strings_mb: 32,
+        max_accelerated_files: 20000,
+        validate_timestamps: true,
+        revalidate_freq_seconds: 2,
+      },
+      realpath_cache_size_kb: 4096,
+      realpath_cache_ttl_seconds: 120,
+    },
+    host: {
+      file_max: 100000,
+      somaxconn: 4096,
+      netdev_max_backlog: 4096,
+      ip_local_port_range: { min: 10240, max: 60999 },
+      nofile_soft: 20000,
+      nofile_hard: 40000,
+      user: 'dev',
+      group: 'dev',
+    },
+  };
+}
+
+const mockPerformanceResources = {
+  hostname: 'dev-workstation',
+  arch: 'x86_64',
+  cpu_count: 8,
+  cpu_quota_cpus: 0,
+  memory_total_bytes: 17_179_869_184,
+  memory_available_bytes: 9_126_805_504,
+  page_size_bytes: 4096,
+  nofile_soft: 1024,
+  nofile_hard: 524288,
+  user: 'dev',
+  group: 'dev',
+  sysctl: {
+    file_max: 9223372036854775807,
+    somaxconn: 4096,
+    netdev_max_backlog: 16384,
+    ip_local_port_range: { min: 32768, max: 60999 },
+  },
+};
+
+let mockPerformance: PerformanceState = {
+  profile: 'balanced',
+  values: mockPerformanceValues('balanced'),
+  resources: mockPerformanceResources,
+  active_server: 'nginx',
+  host_tuning: {
+    available: true,
+    managed: false,
+    applied: false,
+    sysctl_path: '/etc/sysctl.d/99-devstack-performance.conf',
+    limits_path: '/etc/security/limits.d/99-devstack-performance.conf',
+    backup_dir: '/home/dev/.devstack/backups/performance',
+  },
+};
+let mockBenchmarks: BenchmarkRun[] = [];
+
+interface MockConfigFile {
+  content: string;
+  class: string;
+  generated: boolean;
+  modified: boolean;
+  detached: boolean;
+  seeded: string;
+}
+
+let mockConfigs: Record<string, Record<string, MockConfigFile>> = {};
+
+function seedConfigFiles(service: ReturnType<typeof findService>): Record<string, MockConfigFile> {
+  const files: Record<string, MockConfigFile> = {};
+  const add = (path: string, cls: string, content: string) => {
+    files[path] = {
+      content,
+      class: cls,
+      generated: cls === 'generated',
+      modified: false,
+      detached: false,
+      seeded: content,
+    };
+  };
+  if (service.id === 'nginx') {
+    add('nginx.conf', 'base', 'worker_processes auto;\ninclude conf.d/*.conf;\n');
+    add('conf.d/devstack.conf', 'generated', '# Generated by devstack. Do not edit.\nserver {\n    listen 80;\n    server_name devstack.test;\n}\n');
+    add('conf.d/custom.conf', 'custom', '# User file. devstack never rewrites custom files.\n');
+  } else if (service.id === 'apache') {
+    add('httpd.conf', 'base', 'ServerRoot "/usr/local/apache2"\nInclude conf.d/*.conf\n');
+    add('conf.d/devstack.conf', 'generated', '# Generated by devstack. Do not edit.\nListen 80\n');
+  } else if (service.id === 'mysql' || service.id === 'mariadb') {
+    add('conf.d/devstack.cnf', 'generated', '[mysqld]\nbind-address = 127.0.0.1\n');
+    add('my.cnf', 'base', '[client]\ndefault-character-set = utf8mb4\n');
+  } else if (service.id === 'postgresql') {
+    add('postgresql.conf', 'base', 'listen_addresses = \'127.0.0.1\'\n');
+    add('pg_hba.conf', 'base', 'host all all 127.0.0.1/32 scram-sha-256\n');
+  } else if (service.id === 'redis') {
+    add('redis.conf', 'base', 'bind 127.0.0.1\nprotected-mode yes\n');
+  } else {
+    add('service.conf', 'base', `# ${service.display_name} managed configuration\n`);
+  }
+  return files;
+}
+
+function configFor(id: string): Record<string, MockConfigFile> {
+  const service = findService(id);
+  if (!service.installed) {
+    throw new ApiError('SERVICE_CONFLICT', `${service.display_name} is not installed.`, 409);
+  }
+  if (!mockConfigs[id]) mockConfigs[id] = seedConfigFiles(service);
+  return mockConfigs[id];
+}
+
+function configFileView(path: string, file: MockConfigFile): ServiceConfigFile {
+  return {
+    path,
+    class: file.class,
+    generated: file.generated,
+    modified: file.modified,
+    detached: file.detached,
+    size: new TextEncoder().encode(file.content).length,
+    conflict: file.detached
+      ? {
+          active: true,
+          resolution_required: true,
+          reason: 'Local edits are detached from generated output.',
+          allowed_resolutions: ['keep', 'use', 'merge'],
+        }
+      : { active: false, resolution_required: false },
+  };
+}
 
 const mockMaintenanceHTML =
   '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Site unavailable - devstack</title><body><h1>Site unavailable</h1><p>This site is stopped. Start it from the devstack dashboard or CLI, then reload the page.</p></body></html>';
@@ -1902,6 +2105,438 @@ export const mockApi = {
   async settings(): Promise<Settings> {
     await wait();
     return clone(settings);
+  },
+
+  async createTerminalSession(_ref: string): Promise<TerminalSession> {
+    await wait(40, 90);
+    return {
+      ticket: `mock-terminal-${Math.random().toString(36).slice(2)}`,
+      expires_at: new Date(Date.now() + 30_000).toISOString(),
+    };
+  },
+
+  async openTerminal(ref: string, handlers: TerminalHandlers): Promise<TerminalConnection> {
+    const site = findSite(ref);
+    let closed = false;
+    let line = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const write = (text: string) => {
+      if (!closed) handlers.onOutput(text);
+    };
+    const prompt = () => write('\r\n\x1b[36mdevstack\x1b[0m:\x1b[34m' + site.host_path + '\x1b[0m$ ');
+    handlers.onStatus('connecting');
+    timer = setTimeout(() => {
+      if (closed) return;
+      handlers.onStatus('connected');
+      write('\x1b[2mMock site shell — site PHP/Node shims and cwd are simulated.\x1b[0m');
+      prompt();
+    }, 80);
+    const connection: TerminalConnection = {
+      send(data: string) {
+        if (closed) return;
+        for (const char of data) {
+          if (char === '\r' || char === '\n') {
+            const command = line.trim();
+            line = '';
+            if (command === 'clear') {
+              write('\x1b[2J\x1b[H');
+              prompt();
+            } else if (command === 'exit') {
+              write('\r\nlogout\r\n');
+              closed = true;
+              if (timer) clearTimeout(timer);
+              handlers.onExit(0);
+              handlers.onStatus('closed');
+            } else if (command === 'pwd') {
+              write(`\r\n${site.host_path}`);
+              prompt();
+            } else if (command === 'ls') {
+              write('\r\nindex.html  package.json  src');
+              prompt();
+            } else if (command === 'php -v') {
+              write('\r\nPHP 8.4.4 (cli) (built: Oct 20 2026)');
+              prompt();
+            } else if (command === 'node -v') {
+              write('\r\nv22.20.0');
+              prompt();
+            } else if (command === '') {
+              prompt();
+            } else {
+              write(`\r\nbash: ${command}: command not found`);
+              prompt();
+            }
+          } else if (char === '\x7f') {
+            if (line.length > 0) {
+              line = line.slice(0, -1);
+              write('\b \b');
+            }
+          } else if (char === '\x03') {
+            line = '';
+            write('^C');
+            prompt();
+          } else if (char >= ' ') {
+            line += char;
+            write(char);
+          }
+        }
+      },
+      resize() {
+        // The mock terminal has no real PTY geometry.
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        if (timer) clearTimeout(timer);
+        handlers.onStatus('closed');
+      },
+    };
+    return connection;
+  },
+
+  async listServiceConfig(id: string): Promise<ServiceConfigList> {
+    await wait(90, 170);
+    const files = configFor(id);
+    return {
+      installed: true,
+      files: Object.entries(files)
+        .map(([path, file]) => configFileView(path, file))
+        .sort((a, b) => a.path.localeCompare(b.path)),
+    };
+  },
+
+  async getServiceConfigContent(id: string, path: string): Promise<ServiceConfigContent> {
+    await wait(70, 140);
+    const file = configFor(id)[path];
+    if (!file) throw new ApiError('NOT_FOUND', `Config file ${path} was not found.`, 404);
+    return {
+      path,
+      content: file.content,
+      size: new TextEncoder().encode(file.content).length,
+    };
+  },
+
+  async diffServiceConfig(id: string, path: string, content: string): Promise<ServiceConfigDiff> {
+    await wait(100, 180);
+    const file = configFor(id)[path];
+    if (!file) throw new ApiError('NOT_FOUND', `Config file ${path} was not found.`, 404);
+    const before = file.content.split('\n');
+    const after = content.split('\n');
+    let diff = `--- a/${path}\n+++ b/${path}\n`;
+    const max = Math.max(before.length, after.length);
+    for (let i = 0; i < max; i += 1) {
+      if (before[i] === after[i]) {
+        if (before[i] !== undefined) diff += ` ${before[i]}\n`;
+        continue;
+      }
+      if (before[i] !== undefined) diff += `-${before[i]}\n`;
+      if (after[i] !== undefined) diff += `+${after[i]}\n`;
+    }
+    return {
+      path,
+      diff,
+      conflict: {
+        active: file.detached,
+        resolution_required: file.detached,
+        reason: file.detached ? 'This file has detached local edits.' : undefined,
+        allowed_resolutions: ['keep', 'use', 'merge'],
+      },
+    };
+  },
+
+  async applyServiceConfig(
+    id: string,
+    body: ServiceConfigApplyRequest,
+  ): Promise<ServiceConfigResult> {
+    await wait(220, 380);
+    const service = findService(id);
+    const file = configFor(id)[body.path];
+    if (!file) throw new ApiError('NOT_FOUND', `Config file ${body.path} was not found.`, 404);
+    if (body.resolution === 'keep') {
+      return {
+        changed: false,
+        action: 'apply',
+        path: body.path,
+        message: 'Local edits kept; no write was performed.',
+      };
+    }
+    if (file.detached && !body.resolution) {
+      throw new ApiError(
+        'CONFIG_CONFLICT',
+        'This file has tracked local edits; choose keep, use, or merge.',
+        409,
+        {
+          path: body.path,
+          reason: 'This file has detached local edits.',
+          conflict: {
+            active: true,
+            resolution_required: true,
+            reason: 'This file has detached local edits.',
+            allowed_resolutions: ['keep', 'use', 'merge'],
+          },
+        },
+      );
+    }
+    const backup = `/home/dev/.devstack/services/${id}/config/backups/config/20261026T120000Z/${body.path}`;
+    file.content = body.content;
+    file.modified = false;
+    file.detached = body.resolution === 'merge';
+    file.class = body.resolution === 'use' || body.resolution === 'merge' ? 'generated' : file.class;
+    return {
+      service: id,
+      path: body.path,
+      action: 'apply',
+      changed: true,
+      backup_path: backup,
+      live: service.active,
+      reloaded: service.active,
+      validation_pending: !service.active,
+      restart_required: !service.active,
+      message: !service.active
+        ? 'Saved. Validation is pending until the service is activated.'
+        : file.detached
+          ? 'Merged content saved and marked detached from future generated writes.'
+          : 'Configuration validated and reloaded.',
+    };
+  },
+
+  async resetServiceConfig(id: string, path: string): Promise<ServiceConfigResult> {
+    await wait(180, 320);
+    const service = findService(id);
+    const file = configFor(id)[path];
+    if (!file) throw new ApiError('NOT_FOUND', `Config file ${path} was not found.`, 404);
+    file.content = file.seeded;
+    file.modified = false;
+    file.detached = false;
+    return {
+      service: id,
+      path,
+      action: 'reset',
+      changed: true,
+      live: service.active,
+      backup_path: `/home/dev/.devstack/services/${id}/backups/config/20261026T120500Z/${path}`,
+      message: 'Restored the last known backup for this file.',
+    };
+  },
+
+  async getPerformance(): Promise<PerformanceState> {
+    await wait(100, 200);
+    return clone(mockPerformance);
+  },
+
+  async setPerformanceProfile(
+    profile: PerformanceProfile,
+    custom?: PerformanceValues,
+  ): Promise<PerformanceState> {
+    await wait(120, 220);
+    if (profile === 'custom' && !custom) {
+      throw new ApiError('INVALID_REQUEST', 'Custom profile values are required.', 400);
+    }
+    if (profile !== 'balanced' && profile !== 'throughput' && profile !== 'custom') {
+      throw new ApiError('INVALID_REQUEST', 'Profile must be balanced, throughput, or custom.', 400);
+    }
+    mockPerformance = {
+      ...mockPerformance,
+      profile,
+      custom: profile === 'custom' ? clone(custom) : undefined,
+      values: profile === 'custom' ? clone(custom ?? {}) : mockPerformanceValues(profile),
+      applied: undefined,
+    };
+    return clone(mockPerformance);
+  },
+
+  async previewPerformance(): Promise<PerformancePreview> {
+    await wait(160, 280);
+    const values = clone(mockPerformance.values ?? mockPerformanceValues(mockPerformance.profile));
+    return {
+      profile: mockPerformance.profile,
+      values,
+      warnings: [
+        'Host tuning changes are global to this machine and require root through the helper.',
+        'Apply reloads only nginx/Apache and PHP-FPM; no arbitrary service is restarted.',
+      ],
+      managed_files: [
+        {
+          path: '/home/dev/.devstack/services/nginx/config/conf.d/performance/main.conf',
+          content: 'worker_processes 4;\nworker_rlimit_nofile 8192;\n',
+          active: true,
+        },
+        {
+          path: '/home/dev/.devstack/services/nginx/config/conf.d/performance/events.conf',
+          content: 'events {\n    worker_connections 4096;\n}\n',
+          active: true,
+        },
+        {
+          path: '/home/dev/.devstack/services/apache/config/conf.d/performance.conf',
+          content: 'ThreadsPerChild 25\nServerLimit 16\n',
+          active: false,
+        },
+      ],
+      host_tuning: {
+        opt_in: false,
+        files: [
+          {
+            path: '/etc/sysctl.d/99-devstack-performance.conf',
+            exists: false,
+            current: '',
+            proposed: 'fs.file-max = 100000\nnet.core.somaxconn = 4096\n',
+            diff: '+fs.file-max = 100000\n+net.core.somaxconn = 4096\n',
+          },
+          {
+            path: '/etc/security/limits.d/99-devstack-performance.conf',
+            exists: false,
+            current: '',
+            proposed: 'dev soft nofile 20000\ndev hard nofile 40000\n',
+            diff: '+dev soft nofile 20000\n+dev hard nofile 40000\n',
+          },
+        ],
+        warnings: ['Host tuning changes are global to this machine and require root through the helper.'],
+      },
+    };
+  },
+
+  async applyPerformance(hostTuning: boolean): Promise<PerformanceApplyResult> {
+    await wait(420, 700);
+    const appliedAt = new Date().toISOString();
+    mockPerformance = {
+      ...mockPerformance,
+      applied: {
+        profile: mockPerformance.profile,
+        values: mockPerformance.values,
+        applied_at: appliedAt,
+        host_tuning: hostTuning,
+        backup_dir: '/home/dev/.devstack/backups/performance/20261026T120000Z',
+      },
+      host_tuning: hostTuning
+        ? {
+            ...mockPerformance.host_tuning,
+            managed: true,
+            applied: true,
+            applied_at: appliedAt,
+            profile: mockPerformance.profile,
+            error: undefined,
+          }
+        : mockPerformance.host_tuning,
+    };
+    return {
+      applied: true,
+      profile: mockPerformance.profile,
+      applied_at: appliedAt,
+      host_tuning: hostTuning,
+      backup_dir: '/home/dev/.devstack/backups/performance/20261026T120000Z',
+      steps: [
+        { name: 'write nginx performance includes', status: 'ok' },
+        { name: 'write Apache performance include', status: 'skipped', detail: 'inactive server only' },
+        { name: 'write PHP-FPM pool budgets', status: 'ok' },
+        ...(hostTuning
+          ? [
+              { name: 'apply host sysctl/limits', status: 'ok', detail: 'helper verified values' },
+              { name: 'reload nginx', status: 'ok' },
+              { name: 'reload PHP-FPM', status: 'ok' },
+            ]
+          : [
+              { name: 'reload nginx', status: 'ok' },
+              { name: 'reload PHP-FPM', status: 'ok' },
+            ]),
+      ],
+    };
+  },
+
+  async resetPerformance(): Promise<PerformanceResetResult> {
+    await wait(320, 520);
+    mockPerformance = {
+      ...mockPerformance,
+      applied: undefined,
+      host_tuning: { ...mockPerformance.host_tuning, applied: false, managed: false, error: undefined },
+    };
+    return {
+      reset: true,
+      backup_dir: '/home/dev/.devstack/backups/performance/20261026T120500Z',
+      steps: [
+        { name: 'restore host tuning', status: 'ok' },
+        { name: 'write safe nginx includes', status: 'ok' },
+        { name: 'reload nginx', status: 'ok' },
+      ],
+    };
+  },
+
+  async listBenchmarks(): Promise<BenchmarkRun[]> {
+    await wait(80, 160);
+    return clone(mockBenchmarks).sort((a, b) => b.started_at.localeCompare(a.started_at));
+  },
+
+  async getBenchmark(id: string): Promise<BenchmarkRun> {
+    await wait(60, 120);
+    const run = mockBenchmarks.find((entry) => entry.id === id);
+    if (!run) throw new ApiError('NOT_FOUND', `Benchmark ${id} was not found.`, 404);
+    return clone(run);
+  },
+
+  async runBenchmark(request: BenchmarkRequest): Promise<BenchmarkRun> {
+    await wait(650, 950);
+    const targetSite = findSite(request.site);
+    const duration = request.duration_s ?? 10;
+    const connections = request.connections ?? 32;
+    const seed = 900 + connections * 7 + duration * 3;
+    const started = new Date();
+    const directory = `/home/dev/.devstack/logs/performance/${started.toISOString().replaceAll(':', '-')}`;
+    const run: BenchmarkRun = {
+      id: `bench-${started.getTime().toString(36)}`,
+      site: targetSite.name,
+      tool: 'devstack-go-http',
+      tool_version: 'built-in (mock)',
+      target: `http://127.0.0.1:${targetSite.http_port || 41001}/`,
+      profile: mockPerformance.profile,
+      status: 'completed',
+      started_at: started.toISOString(),
+      finished_at: new Date(started.getTime() + duration * 1000).toISOString(),
+      duration_s: duration,
+      connections,
+      measured: {
+        requests: seed * duration,
+        errors: 0,
+        requests_per_second: seed,
+        p50_ms: (1000 / seed) * 5,
+        p95_ms: (1000 / seed) * 11,
+        p99_ms: (1000 / seed) * 18,
+        duration_seconds: duration,
+      },
+      limitations: ['Mock measurement for dashboard tests; not a host benchmark.'],
+      directory,
+      raw_file: `${directory}/raw.log`,
+    };
+    mockBenchmarks = [...mockBenchmarks, run];
+    return clone(run);
+  },
+
+  async updateSettings(update: SettingsUpdate): Promise<SettingsUpdateResult> {
+    await wait(120, 220);
+    const next = {
+      http_port: update.http_port ?? settings.http_port,
+      https_port: update.https_port ?? settings.https_port,
+      ui_port: update.ui_port ?? settings.ui_port,
+    };
+    for (const [field, port] of Object.entries(next)) {
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new ApiError('INVALID_REQUEST', `${field} must be between 1 and 65535.`, 400);
+      }
+      if (port >= 41_000 && port <= 43_999) {
+        throw new ApiError('INVALID_REQUEST', `${field} is inside the reserved backend range.`, 400);
+      }
+    }
+    if (new Set(Object.values(next)).size !== 3) {
+      throw new ApiError('INVALID_REQUEST', 'HTTP, HTTPS, and UI ports must differ.', 400);
+    }
+    const changed =
+      next.http_port !== settings.http_port ||
+      next.https_port !== settings.https_port ||
+      next.ui_port !== settings.ui_port;
+    settings = { ...settings, ...next, restart_required: changed };
+    return {
+      ...clone(settings),
+      warnings: changed
+        ? ['Run `devstack daemon restart` to move the listeners.']
+        : undefined,
+    };
   },
 
   async listServices(): Promise<ServiceView[]> {

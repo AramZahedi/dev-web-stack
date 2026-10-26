@@ -115,6 +115,25 @@ func main() {
 	if err := os.MkdirAll(filepath.Join(*out, "logs"), 0o755); err != nil {
 		fatalf("mkdir logs: %v", err)
 	}
+	if srv == dockerweb.ServerNginx {
+		// EnsureBase seeds these safe snippets in production because the base
+		// nginx config includes them unconditionally. Mirror that here so the
+		// live fixture parses before the performance flow runs.
+		perfDir := filepath.Join(*out, "conf.d", "performance")
+		if err := os.MkdirAll(perfDir, 0o755); err != nil {
+			fatalf("mkdir performance includes: %v", err)
+		}
+		performanceFiles := map[string]string{
+			"main.conf":   "worker_processes 2;\nworker_rlimit_nofile 4096;\n",
+			"events.conf": "worker_connections 2048;\n",
+			"http.conf":   "sendfile on;\ntcp_nopush on;\nkeepalive_timeout 30s;\nkeepalive_requests 1000;\ngzip on;\ngzip_comp_level 2;\ngzip_min_length 1024;\ngzip_types text/plain text/css application/json application/javascript application/xml image/svg+xml;\n",
+		}
+		for name, content := range performanceFiles {
+			if err := os.WriteFile(filepath.Join(perfDir, name), []byte(content), 0o644); err != nil {
+				fatalf("write performance %s: %v", name, err)
+			}
+		}
+	}
 	if err := os.WriteFile(filepath.Join(*out, "base.conf"), base, 0o644); err != nil {
 		fatalf("write base: %v", err)
 	}

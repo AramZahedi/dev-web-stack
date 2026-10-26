@@ -35,6 +35,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	perfservice "github.com/AramZahedi/dev-web-stack/internal/performance/service"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
@@ -42,6 +43,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/supervisor"
+	"github.com/AramZahedi/dev-web-stack/internal/terminal"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
@@ -236,11 +238,12 @@ func Run(ctx context.Context, opts Options) error {
 	// web switch and Docker config manager use it, the site service consumes
 	// the Docker syncer/switch, and the web provider registers its preparer
 	// once the site service exists.
+	serviceCatalog := services.DefaultCatalog()
 	serviceManager := servicecontrol.NewManager(
 		cfg.Home,
 		st,
 		serviceHelper{client: helper},
-		services.DefaultCatalog(),
+		serviceCatalog,
 		nil,
 	)
 	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
@@ -326,15 +329,56 @@ func Run(ctx context.Context, opts Options) error {
 		Runtimes: runtimes,
 		Paths:    paths,
 	})
+	serviceConfigService, err := servicecontrol.NewConfigService(servicecontrol.ConfigDeps{
+		Root:      cfg.Home,
+		Catalog:   serviceCatalog,
+		Services:  serviceManager,
+		Validator: serviceHelper{client: helper},
+		Events:    st,
+		Logger:    logger,
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: service config manager: %w", err)
+	}
+	terminalManager := terminal.NewManager(terminal.Deps{
+		Paths:    paths,
+		Runtimes: runtimes,
+		PHP:      siteService,
+		Logger:   logger,
+		UID:      os.Getuid(),
+	})
+	// Close runs before d.shutdown because it is deferred later: hijacked
+	// WebSockets are not tracked by http.Server.Shutdown.
+	defer terminalManager.Close()
+
+	performanceService := perfservice.NewService(perfservice.ServiceConfig{
+		Root:        cfg.Home,
+		Store:       st,
+		Helper:      helper,
+		Services:    serviceManager,
+		Sites:       siteService,
+		HTTPPort:    cfg.HTTPPort,
+		HTTPSPort:   cfg.HTTPSPort,
+		ServingMode: cfg.ServingMode,
+		Logger:      logger,
+	})
 
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
-		Vhosts:       siteService,
-		Services:     serviceManager,
-		Tooling:      toolingService,
-		Build:        buildService,
-		Logger:       logger,
+		Listeners: api.ListenerPorts{
+			HTTPPort:  cfg.HTTPPort,
+			HTTPSPort: cfg.HTTPSPort,
+			UIPort:    cfg.UIPort,
+		},
+		Vhosts:        siteService,
+		Services:      serviceManager,
+		ServiceConfig: serviceConfigService,
+		Tooling:       toolingService,
+		Build:         buildService,
+		Terminal:      terminalManager,
+		Performance:   performanceService,
+		Logger:        logger,
 	})
 
 	// The built-in proxy owns the loopback HTTP/HTTPS listeners only in
@@ -550,6 +594,7 @@ func (d *daemon) persistSettings(ctx context.Context) {
 		"max_request_body_mb":   strconv.Itoa(d.cfg.MaxRequestBodyMB),
 		"log_max_mb":            strconv.Itoa(d.cfg.LogMaxMB),
 		"log_keep":              strconv.Itoa(d.cfg.LogKeep),
+		"restart_required":      "false",
 	}
 	for key, value := range values {
 		if err := d.store.SetSetting(ctx, key, value); err != nil {

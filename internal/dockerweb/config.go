@@ -58,15 +58,19 @@ func nginxBaseConfig(httpPort, httpsPort int) []byte {
 # Site vhosts are generated under conf.d/generated; user includes live under conf.d/custom.
 
 user  nginx;
-worker_processes  auto;
 error_log  /var/log/nginx/error.log warn;
 pid        /var/run/nginx.pid;
 
+# Managed performance profile (main context). Seeded empty and rewritten only
+# by the performance apply/reset flow.
+include /etc/nginx/conf.d/performance/main.conf;
+
 events {
-    worker_connections  1024;
+    include /etc/nginx/conf.d/performance/events.conf;
 }
 
 http {
+    include /etc/nginx/conf.d/performance/http.conf;
     include       /etc/nginx/mime.types;
     default_type  application/octet-stream;
 
@@ -75,13 +79,7 @@ http {
                       '"$http_user_agent" "$http_x_forwarded_for"';
     access_log  /var/log/nginx/access.log  main;
 
-    sendfile        on;
-    tcp_nopush      on;
-    keepalive_timeout  65;
     server_tokens   off;
-
-    gzip  on;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml image/svg+xml;
 
     # Default branded 404 for unknown hosts. Seeded by devstack.
     include /etc/nginx/conf.d/00-devstack-default.conf;

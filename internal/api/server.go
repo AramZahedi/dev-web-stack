@@ -29,10 +29,12 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/performance"
 	"github.com/AramZahedi/dev-web-stack/internal/phpfpm"
 	"github.com/AramZahedi/dev-web-stack/internal/phpini"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
@@ -40,6 +42,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
+	"github.com/AramZahedi/dev-web-stack/internal/terminal"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/version"
@@ -60,33 +63,43 @@ const (
 // Stable API error codes. They are part of the dashboard and CLI contract; do
 // not rename an existing value.
 const (
-	codeInvalidRequest     = "INVALID_REQUEST"
-	codeNotFound           = "NOT_FOUND"
-	codeForbidden          = "FORBIDDEN"
-	codeUnauthorized       = "UNAUTHORIZED"
-	codeDomainConflict     = "DOMAIN_CONFLICT"
-	codeHostsSyncFailed    = "HOSTS_SYNC_FAILED"
-	codeRuntimeMissing     = "RUNTIME_MISSING"
-	codePHPVersionInUse    = "PHP_VERSION_IN_USE"
-	codePHPConfigInvalid   = "PHP_CONFIG_INVALID"
-	codeTrustMissing       = "TRUST_MISSING"
-	codePortInUse          = "PORT_IN_USE"
-	codeInternal           = "INTERNAL"
-	codePayloadTooLarge    = "PAYLOAD_TOO_LARGE"
-	codeHelperUnavailable  = "HELPER_UNAVAILABLE"
-	codeHelperError        = "HELPER_ERROR"
-	codeServiceUnavailable = "SERVICE_UNAVAILABLE"
-	codeServiceConflict    = "SERVICE_CONFLICT"
-	codeCredentialRotate   = "CREDENTIAL_ROTATION_UNAVAILABLE"
-	codeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
-	codeToolConflict       = "TOOL_CONFLICT"
+	codeInvalidRequest      = "INVALID_REQUEST"
+	codeNotFound            = "NOT_FOUND"
+	codeForbidden           = "FORBIDDEN"
+	codeUnauthorized        = "UNAUTHORIZED"
+	codeDomainConflict      = "DOMAIN_CONFLICT"
+	codeHostsSyncFailed     = "HOSTS_SYNC_FAILED"
+	codeRuntimeMissing      = "RUNTIME_MISSING"
+	codePHPVersionInUse     = "PHP_VERSION_IN_USE"
+	codePHPConfigInvalid    = "PHP_CONFIG_INVALID"
+	codeTrustMissing        = "TRUST_MISSING"
+	codePortInUse           = "PORT_IN_USE"
+	codeInternal            = "INTERNAL"
+	codePayloadTooLarge     = "PAYLOAD_TOO_LARGE"
+	codeHelperUnavailable   = "HELPER_UNAVAILABLE"
+	codeHelperError         = "HELPER_ERROR"
+	codeServiceUnavailable  = "SERVICE_UNAVAILABLE"
+	codeServiceConflict     = "SERVICE_CONFLICT"
+	codeCredentialRotate    = "CREDENTIAL_ROTATION_UNAVAILABLE"
+	codeMethodNotAllowed    = "METHOD_NOT_ALLOWED"
+	codeToolConflict        = "TOOL_CONFLICT"
+	codePerformanceConflict = "PERFORMANCE_CONFLICT"
+	codeBenchmarkBusy       = "BENCHMARK_IN_PROGRESS"
 
+	codeTerminalTicketInvalid  = "TERMINAL_TICKET_INVALID"
+	codeTerminalUnavailable    = "TERMINAL_UNAVAILABLE"
+	codeTerminalLimit          = "TERMINAL_LIMIT"
 	codeServingModeUnavailable = "SERVING_MODE_UNAVAILABLE"
 	codeVhostConfigInvalid     = "VHOST_CONFIG_INVALID"
 	codeVhostSyncFailed        = "VHOST_SYNC_FAILED"
 	codeVhostIncludeMissing    = "VHOST_INCLUDE_MISSING"
 	codeServerReloadFailed     = "SERVER_RELOAD_FAILED"
 	codeVhostSyncBusy          = "VHOST_SYNC_BUSY"
+
+	codeConfigConflict         = "CONFIG_CONFLICT"
+	codeConfigResetUnavailable = "CONFIG_RESET_UNAVAILABLE"
+	codeConfigValidationFailed = "CONFIG_VALIDATION_FAILED"
+	codeConfigReloadFailed     = "CONFIG_RELOAD_FAILED"
 )
 
 // SiteService is the site lifecycle surface used by the API.
@@ -155,6 +168,16 @@ type ServiceService interface {
 	RotateCredentials(ctx context.Context, id services.ID) (servicecontrol.Credentials, error)
 }
 
+// ServiceConfigService is the service config manifest/read/diff/apply/reset
+// surface used by the API.
+type ServiceConfigService interface {
+	List(ctx context.Context, id services.ID) (servicecontrol.ConfigListing, error)
+	Content(ctx context.Context, id services.ID, path string) (servicecontrol.ConfigContent, error)
+	Diff(ctx context.Context, id services.ID, path, content string) (servicecontrol.ConfigDiff, error)
+	Apply(ctx context.Context, id services.ID, req servicecontrol.ConfigApplyRequest) (servicecontrol.ConfigApplyResult, error)
+	Reset(ctx context.Context, id services.ID, path string) (servicecontrol.ConfigApplyResult, error)
+}
+
 // ToolService is the machine-wide PHP default and managed tool surface used by
 // the API.
 type ToolService interface {
@@ -172,6 +195,34 @@ type ToolService interface {
 type BuildService interface {
 	Build(ctx context.Context, site model.Site) (build.Result, error)
 	Logs(ctx context.Context, site model.Site, tail int) (build.Logs, error)
+}
+
+// TerminalService issues one-use tickets and serves site-scoped PTY
+// WebSocket sessions. The implementation is internal/terminal.Manager.
+type TerminalService interface {
+	IssueTicket(ctx context.Context, site model.Site) (terminal.Ticket, error)
+	Serve(ctx context.Context, w http.ResponseWriter, r *http.Request, site model.Site, ticket string) error
+}
+
+// PerformanceService is the throughput profile, host tuning, and benchmark
+// surface used by the API.
+type PerformanceService interface {
+	Status(ctx context.Context) (performance.Status, error)
+	SetProfile(ctx context.Context, req performance.ProfileRequest) (performance.Status, error)
+	Preview(ctx context.Context) (performance.Preview, error)
+	Apply(ctx context.Context, req performance.ApplyRequest) (performance.ApplyResult, error)
+	Reset(ctx context.Context, req performance.ResetRequest) (performance.ResetResult, error)
+	RunBenchmark(ctx context.Context, req performance.BenchmarkRequest) (performance.BenchmarkResult, error)
+	ListBenchmarks(ctx context.Context) ([]performance.BenchmarkResult, error)
+	GetBenchmark(ctx context.Context, id string) (performance.BenchmarkResult, error)
+}
+
+// ListenerPorts is the set of loopback listener ports the daemon bound at
+// startup. Zero values mean the caller did not supply them.
+type ListenerPorts struct {
+	HTTPPort  int
+	HTTPSPort int
+	UIPort    int
 }
 
 // errServiceManagerUnavailable reports that only the read-only service
@@ -227,26 +278,36 @@ type Config struct {
 	UserHome     string
 	MaxBodyBytes int64
 	AllowedHosts []string
-	Vhosts       VhostService
-	Services     ServiceService
-	Tooling      ToolService
-	Build        BuildService
-	Logger       *slog.Logger
+	// Listeners records the ports the running daemon actually bound. Settings
+	// patches compare against these, not against config.yaml, so a saved but
+	// not-yet-applied port change keeps restart_required set.
+	Listeners     ListenerPorts
+	Vhosts        VhostService
+	Services      ServiceService
+	ServiceConfig ServiceConfigService
+	Tooling       ToolService
+	Build         BuildService
+	Terminal      TerminalService
+	Performance   PerformanceService
+	Logger        *slog.Logger
 }
 
 // Server owns the HTTP API and dashboard handler.
 type Server struct {
-	store    *store.Store
-	sites    SiteService
-	runtimes RuntimeService
-	doctor   DoctorService
-	logs     *logs.Store
-	helper   HelperClient
-	vhosts   VhostService
-	services ServiceService
-	tooling  ToolService
-	build    BuildService
-	cfg      Config
+	store         *store.Store
+	sites         SiteService
+	runtimes      RuntimeService
+	doctor        DoctorService
+	logs          *logs.Store
+	helper        HelperClient
+	vhosts        VhostService
+	services      ServiceService
+	serviceConfig ServiceConfigService
+	tooling       ToolService
+	build         BuildService
+	terminal      TerminalService
+	performance   PerformanceService
+	cfg           Config
 
 	secret       [sha256.Size]byte
 	allowedHosts map[string]struct{}
@@ -287,8 +348,11 @@ func NewServer(
 		helper:            helper,
 		vhosts:            cfg.Vhosts,
 		services:          cfg.Services,
+		serviceConfig:     cfg.ServiceConfig,
 		tooling:           cfg.Tooling,
 		build:             cfg.Build,
+		terminal:          cfg.Terminal,
+		performance:       cfg.Performance,
 		cfg:               cfg,
 		allowedHosts:      normalizeAllowedHosts(cfg.AllowedHosts),
 		ui:                cfg.UI,
@@ -346,6 +410,8 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/sites/{ref}/start", s.handleStartSite},
 		{http.MethodPost, "/api/v1/sites/{ref}/stop", s.handleStopSite},
 		{http.MethodPost, "/api/v1/sites/{ref}/restart", s.handleRestartSite},
+		{http.MethodPost, "/api/v1/sites/{ref}/terminal/session", s.handleTerminalSession},
+		{http.MethodGet, "/api/v1/sites/{ref}/terminal", s.handleTerminalWebSocket},
 		{http.MethodPost, "/api/v1/sites/{ref}/build", s.handleBuildSite},
 		{http.MethodGet, "/api/v1/sites/{ref}/build/logs", s.handleBuildLogs},
 		{http.MethodGet, "/api/v1/sites/{ref}/php", s.handlePHPInfo},
@@ -383,6 +449,7 @@ func (s *Server) apiRoutes() []route {
 
 		{http.MethodGet, "/api/v1/fs", s.handleFS},
 		{http.MethodGet, "/api/v1/settings", s.handleSettings},
+		{http.MethodPatch, "/api/v1/settings", s.handleUpdateSettings},
 
 		{http.MethodGet, "/api/v1/vhosts/status", s.handleVhostStatus},
 		{http.MethodPost, "/api/v1/vhosts/mode", s.handleVhostMode},
@@ -397,8 +464,22 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/services/{id}/deactivate", s.handleDeactivateService},
 		{http.MethodPost, "/api/v1/services/{id}/restart", s.handleRestartService},
 		{http.MethodGet, "/api/v1/services/{id}/logs", s.handleServiceLogs},
+		{http.MethodGet, "/api/v1/services/{id}/config", s.handleServiceConfigList},
+		{http.MethodGet, "/api/v1/services/{id}/config/content", s.handleServiceConfigContent},
+		{http.MethodPost, "/api/v1/services/{id}/config/diff", s.handleServiceConfigDiff},
+		{http.MethodPost, "/api/v1/services/{id}/config/apply", s.handleServiceConfigApply},
+		{http.MethodPost, "/api/v1/services/{id}/config/reset", s.handleServiceConfigReset},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/reveal", s.handleRevealServiceCredentials},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/rotate", s.handleRotateServiceCredentials},
+
+		{http.MethodGet, "/api/v1/performance", s.handlePerformanceStatus},
+		{http.MethodPut, "/api/v1/performance/profile", s.handlePerformanceProfile},
+		{http.MethodGet, "/api/v1/performance/preview", s.handlePerformancePreview},
+		{http.MethodPost, "/api/v1/performance/apply", s.handlePerformanceApply},
+		{http.MethodPost, "/api/v1/performance/reset", s.handlePerformanceReset},
+		{http.MethodPost, "/api/v1/performance/benchmarks", s.handleRunBenchmark},
+		{http.MethodGet, "/api/v1/performance/benchmarks", s.handleListBenchmarks},
+		{http.MethodGet, "/api/v1/performance/benchmarks/{id}", s.handleGetBenchmark},
 	}
 }
 
@@ -473,6 +554,7 @@ type settingsResponse struct {
 	MaxRequestBodyMB    int    `json:"max_request_body_mb"`
 	LogMaxMB            int    `json:"log_max_mb"`
 	LogKeep             int    `json:"log_keep"`
+	RestartRequired     bool   `json:"restart_required"`
 }
 
 // handleSettings reports the machine configuration. Defaults come from
@@ -545,6 +627,7 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 	readInt("max_request_body_mb", &out.MaxRequestBodyMB)
 	readInt("log_max_mb", &out.LogMaxMB)
 	readInt("log_keep", &out.LogKeep)
+	readBool("restart_required", &out.RestartRequired)
 	return out
 }
 
@@ -849,8 +932,91 @@ func classifyError(err error) (int, string, string, any) {
 	if errors.Is(err, servicecontrol.ErrActiveDatabaseRequired) {
 		return http.StatusConflict, codeServiceConflict, err.Error(), nil
 	}
+	var webConflict *dockerweb.ConflictError
+	if errors.As(err, &webConflict) {
+		conflicts := make([]map[string]string, 0, len(webConflict.Conflicts))
+		for _, conflict := range webConflict.Conflicts {
+			conflicts = append(conflicts, map[string]string{
+				"path":   conflict.Path,
+				"reason": conflict.Reason,
+				"diff":   conflict.Diff,
+			})
+		}
+		return http.StatusConflict, codeConfigConflict, err.Error(), map[string]any{"conflicts": conflicts}
+	}
+	var configConflict *servicecontrol.ConfigConflictError
+	if errors.As(err, &configConflict) {
+		return http.StatusConflict, codeConfigConflict, err.Error(), map[string]any{
+			"path":          configConflict.Path,
+			"reason":        configConflict.Reason,
+			"current_hash":  configConflict.CurrentHash,
+			"proposed_hash": configConflict.ProposedHash,
+			"diff":          configConflict.Diff,
+			"conflict":      configConflict.Conflict,
+		}
+	}
+	if errors.Is(err, servicecontrol.ErrConfigConflict) {
+		return http.StatusConflict, codeConfigConflict, err.Error(), nil
+	}
+	var configFailure *servicecontrol.ConfigApplyFailure
+	if errors.As(err, &configFailure) {
+		status := http.StatusUnprocessableEntity
+		code := codeConfigValidationFailed
+		if configFailure.Kind == servicecontrol.ConfigFailureReload {
+			status = http.StatusBadGateway
+			code = codeConfigReloadFailed
+		}
+		details := map[string]any{
+			"operation":   configFailure.Kind,
+			"path":        configFailure.Path,
+			"rolled_back": configFailure.RolledBack,
+		}
+		if configFailure.BackupPath != "" {
+			details["backup_path"] = configFailure.BackupPath
+		}
+		if configFailure.RollbackError != nil {
+			details["rollback_error"] = servicecontrol.RedactSecrets(configFailure.RollbackError.Error())
+		}
+		return status, code, servicecontrol.RedactSecrets(err.Error()), details
+	}
+	if errors.Is(err, servicecontrol.ErrConfigNotInstalled) {
+		return http.StatusConflict, codeServiceConflict, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigPathInvalid) ||
+		errors.Is(err, servicecontrol.ErrConfigPathDenied) ||
+		errors.Is(err, servicecontrol.ErrConfigBinary) ||
+		errors.Is(err, servicecontrol.ErrConfigResolutionInvalid) {
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigTooLarge) {
+		return http.StatusRequestEntityTooLarge, codePayloadTooLarge, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigNotFound) {
+		return http.StatusNotFound, codeNotFound, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigResetUnavailable) {
+		return http.StatusConflict, codeConfigResetUnavailable, err.Error(), nil
+	}
+	if errors.Is(err, servicecontrol.ErrConfigServiceUnavailable) {
+		return http.StatusServiceUnavailable, codeServiceUnavailable, err.Error(), nil
+	}
 	if errors.Is(err, servicecontrol.ErrHelperUnavailable) {
 		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrProfileConflict) {
+		return http.StatusConflict, codePerformanceConflict, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrConfirmationRequired) {
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrBenchmarkSite) || errors.Is(err, performance.ErrBenchmarkNotFound) {
+		return http.StatusNotFound, codeNotFound, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrBenchmarkBusy) {
+		return http.StatusConflict, codeBenchmarkBusy, err.Error(), nil
+	}
+	if errors.Is(err, performance.ErrInvalid) {
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
 	}
 	if errors.Is(err, helperproto.ErrServiceConflict) {
 		return http.StatusConflict, codeServiceConflict, err.Error(), nil
@@ -883,6 +1049,20 @@ func classifyError(err error) (int, string, string, any) {
 			details = map[string]any{"argument": argument.Argument}
 		}
 		return http.StatusBadRequest, codeInvalidRequest, err.Error(), details
+	}
+	switch {
+	case errors.Is(err, terminal.ErrTicketInvalid),
+		errors.Is(err, terminal.ErrTicketExpired):
+		return http.StatusForbidden, codeTerminalTicketInvalid, "terminal ticket is invalid or expired", nil
+	case errors.Is(err, terminal.ErrLimit):
+		return http.StatusTooManyRequests, codeTerminalLimit, err.Error(), nil
+	case errors.Is(err, terminal.ErrRoot):
+		return http.StatusForbidden, codeForbidden, err.Error(), nil
+	case errors.Is(err, terminal.ErrSiteInvalid),
+		errors.Is(err, terminal.ErrEnvironment):
+		return http.StatusConflict, codeTerminalUnavailable, err.Error(), nil
+	case errors.Is(err, terminal.ErrClosed):
+		return http.StatusServiceUnavailable, codeTerminalUnavailable, err.Error(), nil
 	}
 	switch {
 	case errors.Is(err, helperproto.ErrServingModeUnavailable):

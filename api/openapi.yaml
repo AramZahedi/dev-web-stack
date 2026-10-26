@@ -42,6 +42,8 @@ tags:
   - name: settings
   - name: vhosts
   - name: services
+  - name: performance
+  - name: terminal
   - name: dashboard
 paths:
   /api/v1/health:
@@ -284,6 +286,125 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/v1/sites/{ref}/terminal/session:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites, terminal]
+      summary: Issue a site terminal ticket
+      description: |
+        Creates a cryptographically random, one-use ticket bound to the site ID
+        and the installing user's UID. The ticket expires within 30 seconds and
+        is consumed by the WebSocket upgrade. Issuance requires the normal
+        dashboard session and CSRF token. The ticket value is never logged.
+      operationId: createSiteTerminalSession
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: A one-use ticket for the site terminal WebSocket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TerminalTicket"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The site project or document root is missing or escapes through a symlink.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: A concurrent terminal session limit was reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: The terminal manager is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/sites/{ref}/terminal:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+      - name: ticket
+        in: query
+        required: true
+        description: One-use ticket returned by POST /sites/{ref}/terminal/session.
+        schema:
+          type: string
+    get:
+      tags: [sites, terminal]
+      summary: Open a site-scoped PTY over WebSocket
+      description: |
+        Upgrades an authenticated request to a WebSocket-backed PTY. The ticket
+        is the capability and must be fresh (<= 30 s) and unused. Origin must be
+        an allowed loopback dashboard host; a missing, `null`, or foreign Origin
+        is rejected with 403. The socket runs the installing user's shell in the
+        site project root with the site's PHP/Node shims, PHPRC, and site
+        environment, never as root or through sudo.
+
+        Text frames are JSON:
+
+        Client to server:
+        - `{"type":"input","data":"..."}` writes UTF-8 input to the PTY.
+        - `{"type":"resize","cols":80,"rows":24}` resizes the PTY (1-1000).
+
+        Server to client:
+        - `{"type":"output","data":"..."}` carries PTY output.
+        - `{"type":"exit","code":0}` is the final frame on a normal shell exit.
+          A non-exit termination adds `reason`: `idle_timeout`, `max_duration`,
+          `output_limit`, or `shutdown`.
+        - `{"type":"error","message":"..."}` reports a recoverable protocol error.
+
+        Binary frames are accepted as raw PTY input. Limits: 4 total sessions,
+        2 per site/user, 30-minute idle timeout, 4-hour absolute maximum, and
+        4 MiB of output per session. Disconnecting kills the shell's process
+        group. Audit logs record start/stop, site, UID, duration, and exit
+        status only; keystrokes and output are never logged.
+      operationId: openSiteTerminal
+      security: []
+      responses:
+        "101":
+          description: Switching Protocols; the WebSocket PTY session follows.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          description: Missing, expired, reused, or wrong-site ticket, or a disallowed Origin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The site project or document root is missing or escapes through a symlink.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: A concurrent terminal session limit was reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The terminal manager is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/sites/{ref}/logs/stream:
     parameters:
@@ -1249,6 +1370,51 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+    patch:
+      tags: [settings]
+      summary: Update listener ports
+      description: |
+        Updates one or more daemon listener ports in config.yaml. Omitted
+        fields are unchanged. A changed listener is persisted but is not
+        rebound inside this request; the response sets restart_required and
+        the caller uses `devstack daemon restart`. Ports must be distinct,
+        outside the reserved backend range, and bindable on loopback.
+      operationId: updateSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettingsUpdateRequest"
+      responses:
+        "200":
+          description: Persisted settings, including restart guidance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsUpdateResponse"
+        "400":
+          description: Invalid port value, duplicate ports, or reserved range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: A requested port is already in use.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The settings could not be loaded or persisted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/services:
     get:
@@ -1571,6 +1737,474 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/v1/services/{id}/config:
+    get:
+      tags: [services]
+      summary: List service config file metadata
+      description: |
+        Returns path, class, generated/modified/detached markers, hash, size,
+        and conflict summary for every allowed regular file under
+        `<home>/services/<id>/config`. Contents are never included.
+      operationId: listServiceConfig
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      responses:
+        "200":
+          description: Config file metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigListing"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The service is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/services/{id}/config/content:
+    get:
+      tags: [services]
+      summary: Read one service config file
+      description: |
+        Returns content only for a config file inside the service config root.
+        Path traversal, absolute paths, symlinks, non-regular files, sensitive
+        names, and files over 1 MiB are rejected.
+      operationId: getServiceConfigContent
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+        - name: path
+          in: query
+          required: true
+          description: Slash-relative path below the service config root.
+          schema:
+            type: string
+            examples: ["nginx.conf", "conf.d/custom/extra.conf"]
+      responses:
+        "200":
+          description: The allowed file and its content.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigContent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The service is not installed or the path is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The file exceeds the 1 MiB config limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/services/{id}/config/diff:
+    post:
+      tags: [services]
+      summary: Diff a proposed service config change
+      description: |
+        Returns a unified diff plus conflict metadata. A tracked generated file
+        whose current hash differs from the manifest reports
+        `conflict.resolution_required: true`.
+      operationId: diffServiceConfig
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceConfigDiffRequest"
+      responses:
+        "200":
+          description: The unified diff and conflict metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigDiff"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The service is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The proposed content exceeds the 1 MiB config limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/services/{id}/config/apply:
+    post:
+      tags: [services]
+      summary: Apply a service config change
+      description: |
+        Backs up the current file, writes atomically, and tracks conflicts.
+        A tracked generated conflict requires `resolution` keep, use, or merge.
+        An active service with a catalog validation command is validated first
+        and reloaded only after validation; validation or reload failure
+        restores the previous file. Inactive services are marked
+        `validation_pending` and never reported live.
+      operationId: applyServiceConfig
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceConfigApplyRequest"
+      responses:
+        "200":
+          description: The write outcome, backup, and live/validation state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigApplyResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            A tracked config conflict requires keep/use/merge, or the service
+            is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The content exceeds the 1 MiB config limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The catalog validation command rejected the new config; the previous file was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The service reload failed; the previous file was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperUnavailable"
+
+  /api/v1/services/{id}/config/reset:
+    post:
+      tags: [services]
+      summary: Reset a service config file from its newest backup
+      description: |
+        Backs up the current file and restores the newest previous backup. An
+        untracked custom file is never deleted without a backup.
+      operationId: resetServiceConfig
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceConfigResetRequest"
+      responses:
+        "200":
+          description: The reset outcome, backup, and live/validation state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConfigApplyResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: No previous backup exists, or the service is not installed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation failed; the current file was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Reload failed; the current file was restored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperUnavailable"
+
+
+  /api/v1/performance:
+    get:
+      tags: [performance]
+      summary: Read the throughput profile and measured resources
+      operationId: getPerformance
+      security: []
+      responses:
+        "200":
+          description: Persisted profile, measured resources, applied state, and host tuning status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceStatus"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/performance/profile:
+    put:
+      tags: [performance]
+      summary: Persist the throughput profile
+      operationId: setPerformanceProfile
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PerformanceProfileRequest"
+      responses:
+        "200":
+          description: The updated status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/performance/preview:
+    get:
+      tags: [performance]
+      summary: Preview generated includes and host tuning without writing
+      operationId: previewPerformance
+      security: []
+      responses:
+        "200":
+          description: Generated nginx/Apache/PHP values, include contents, host tuning diff, and warnings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformancePreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/performance/apply:
+    post:
+      tags: [performance]
+      summary: Apply the persisted performance profile
+      description: |
+        Requires `confirm:true`. Host-wide sysctl/limits tuning is a separate
+        explicit `host_tuning:true` opt-in. Database-only installs skip web
+        includes. Returns per-step results and a rollback path.
+      operationId: applyPerformance
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PerformanceApplyRequest"
+      responses:
+        "200":
+          description: The apply completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceApplyResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          description: Apply failed; details.result carries the per-step result and rollback path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+
+  /api/v1/performance/reset:
+    post:
+      tags: [performance]
+      summary: Reset performance tuning
+      description: |
+        Requires `confirm:true`. Restores prior host files and replaces managed
+        includes with safe built-in snippets, then validates/reloads.
+      operationId: resetPerformance
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PerformanceResetRequest"
+      responses:
+        "200":
+          description: The reset completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceResetResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          description: Reset failed; details.result carries the per-step result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+
+  /api/v1/performance/benchmarks:
+    post:
+      tags: [performance]
+      summary: Run and store a measured benchmark
+      description: |
+        Uses the built-in Go HTTP load generator. No RPS is synthesized; failed
+        runs store a result with status failed and no measured section.
+      operationId: runPerformanceBenchmark
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PerformanceBenchmarkRequest"
+      responses:
+        "200":
+          description: The measured benchmark result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceBenchmarkResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Another benchmark is already running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags: [performance]
+      summary: List stored benchmark results
+      operationId: listPerformanceBenchmarks
+      security: []
+      responses:
+        "200":
+          description: Benchmark results, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PerformanceBenchmarkResult"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+
+  /api/v1/performance/benchmarks/{id}:
+    get:
+      tags: [performance]
+      summary: Get one stored benchmark result
+      operationId: getPerformanceBenchmark
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The stored benchmark result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerformanceBenchmarkResult"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 
   /:
     get:
@@ -2318,6 +2952,18 @@ components:
           items:
             $ref: "#/components/schemas/FsEntry"
 
+    TerminalTicket:
+      type: object
+      required: [ticket, expires_at]
+      properties:
+        ticket:
+          type: string
+          description: One-use, URL-safe ticket. Never log this value.
+        expires_at:
+          type: string
+          format: date-time
+          description: Expiry timestamp; at most 30 seconds after issuance.
+
     Settings:
       type: object
       required:
@@ -2372,6 +3018,43 @@ components:
           type: integer
         log_keep:
           type: integer
+        restart_required:
+          type: boolean
+          description: |
+            True when config.yaml contains listener ports that the running
+            daemon has not bound yet. Cleared on daemon startup.
+
+    SettingsUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        http_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        https_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        ui_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+
+    SettingsUpdateResponse:
+      allOf:
+        - $ref: "#/components/schemas/Settings"
+        - type: object
+          required: [restart_required]
+          properties:
+            restart_required:
+              type: boolean
+              description: True when any listener port changed and a daemon restart is required.
+            warnings:
+              type: array
+              items:
+                type: string
 
     VhostStatus:
       type: object
@@ -2487,6 +3170,327 @@ components:
           type: string
           format: date-time
 
+    PerformanceStep:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [ok, skipped, failed, rolled_back]
+        detail:
+          type: string
+        backup:
+          type: string
+
+    PerformanceManagedFile:
+      type: object
+      required: [path, active]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        active:
+          type: boolean
+
+    PerformanceHostFile:
+      type: object
+      required: [path, exists]
+      properties:
+        path:
+          type: string
+        exists:
+          type: boolean
+        current:
+          type: string
+        proposed:
+          type: string
+        diff:
+          type: string
+
+    PerformanceHostTuning:
+      type: object
+      required: [available, managed, applied]
+      properties:
+        available:
+          type: boolean
+        managed:
+          type: boolean
+        applied:
+          type: boolean
+        sysctl_path:
+          type: string
+        limits_path:
+          type: string
+        backup_dir:
+          type: string
+        applied_at:
+          type: string
+          format: date-time
+        profile:
+          type: string
+        error:
+          type: string
+
+    PerformanceStatus:
+      type: object
+      required: [profile, resources, values, host_tuning]
+      properties:
+        profile:
+          type: string
+          enum: [balanced, throughput, custom]
+        custom:
+          type: object
+          description: Stored custom values; present when configured.
+        resources:
+          type: object
+          description: Measured CPU, cgroup quota, memory, page size, RLIMIT_NOFILE, and allowlisted sysctl values.
+        values:
+          type: object
+          description: Effective computed values for the current profile.
+        applied:
+          type: object
+          nullable: true
+          description: Last successfully applied profile and rollback metadata.
+        host_tuning:
+          $ref: "#/components/schemas/PerformanceHostTuning"
+        active_server:
+          type: string
+          enum: [nginx, apache]
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PerformanceProfileRequest:
+      type: object
+      required: [profile]
+      properties:
+        profile:
+          type: string
+          enum: [balanced, throughput, custom]
+        custom:
+          type: object
+          description: Required with profile=custom; revalidated on every preview/apply.
+
+    PerformancePreview:
+      type: object
+      required: [profile, values, nginx, apache, managed_files, host_tuning]
+      properties:
+        profile:
+          type: string
+        values:
+          type: object
+        resources:
+          type: object
+        active_server:
+          type: string
+        nginx:
+          type: object
+          properties:
+            main:
+              type: string
+            events:
+              type: string
+            http:
+              type: string
+        apache:
+          type: object
+          properties:
+            config:
+              type: string
+        php:
+          type: array
+          items:
+            type: object
+            properties:
+              site_id:
+                type: string
+              pool:
+                type: string
+              ini:
+                type: string
+        managed_files:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerformanceManagedFile"
+        host_tuning:
+          type: object
+          properties:
+            opt_in:
+              type: boolean
+            files:
+              type: array
+              items:
+                $ref: "#/components/schemas/PerformanceHostFile"
+            warnings:
+              type: array
+              items:
+                type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PerformanceApplyRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm:
+          type: boolean
+          description: Must be true.
+        host_tuning:
+          type: boolean
+          description: Explicit opt-in for host-wide sysctl/limits changes.
+
+    PerformanceApplyResult:
+      type: object
+      required: [applied, profile, host_tuning, steps]
+      properties:
+        applied:
+          type: boolean
+        profile:
+          type: string
+        applied_at:
+          type: string
+          format: date-time
+        host_tuning:
+          type: boolean
+        active_server:
+          type: string
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerformanceManagedFile"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerformanceStep"
+        backup_dir:
+          type: string
+        rollback_error:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PerformanceResetRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm:
+          type: boolean
+          description: Must be true.
+
+    PerformanceResetResult:
+      type: object
+      required: [reset, steps]
+      properties:
+        reset:
+          type: boolean
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerformanceStep"
+        backup_dir:
+          type: string
+        rollback_error:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PerformanceBenchmarkRequest:
+      type: object
+      required: [site]
+      properties:
+        site:
+          type: string
+          description: Registered site id or exact name.
+        duration_s:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 30
+        connections:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          default: 100
+
+    PerformanceMeasurement:
+      type: object
+      required: [requests, errors, requests_per_second, p50_ms, p95_ms, p99_ms]
+      properties:
+        requests:
+          type: integer
+          format: int64
+        errors:
+          type: integer
+          format: int64
+        requests_per_second:
+          type: number
+        p50_ms:
+          type: number
+        p95_ms:
+          type: number
+        p99_ms:
+          type: number
+        duration_seconds:
+          type: number
+
+    PerformanceBenchmarkResult:
+      type: object
+      required: [id, site, target, profile, status, tool, tool_version, duration_s, connections, started_at, finished_at, directory, raw_file]
+      properties:
+        id:
+          type: string
+        site:
+          type: string
+        target:
+          type: string
+        profile:
+          type: string
+        status:
+          type: string
+          enum: [completed, failed, canceled]
+        tool:
+          type: string
+        tool_version:
+          type: string
+        limitations:
+          type: array
+          items:
+            type: string
+        duration_s:
+          type: integer
+        connections:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        measured:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/PerformanceMeasurement"
+        error:
+          type: string
+        directory:
+          type: string
+        raw_file:
+          type: string
+        profile_applied_at:
+          type: string
+          format: date-time
+
+
     ServicePort:
       type: object
       required: [host, container]
@@ -2551,6 +3555,171 @@ components:
           type: string
         port:
           type: integer
+
+    ServiceConfigConflict:
+      type: object
+      required: [active, resolution_required]
+      properties:
+        active:
+          type: boolean
+        resolution_required:
+          type: boolean
+        reason:
+          type: string
+        allowed_resolutions:
+          type: array
+          items:
+            type: string
+            enum: [keep, use, merge]
+
+    ServiceConfigFile:
+      type: object
+      required: [path, class, generated, modified, detached, hash, size, conflict]
+      properties:
+        path:
+          type: string
+        class:
+          type: string
+          enum: [base, generated, custom]
+        generated:
+          type: boolean
+        modified:
+          type: boolean
+        detached:
+          type: boolean
+        hash:
+          type: string
+        size:
+          type: integer
+          format: int64
+        conflict:
+          $ref: "#/components/schemas/ServiceConfigConflict"
+
+    ServiceConfigListing:
+      type: object
+      required: [service, files]
+      properties:
+        service:
+          type: string
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceConfigFile"
+
+    ServiceConfigContent:
+      allOf:
+        - $ref: "#/components/schemas/ServiceConfigFile"
+        - type: object
+          required: [content]
+          properties:
+            content:
+              type: string
+
+    ServiceConfigDiffRequest:
+      type: object
+      required: [path, content]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+
+    ServiceConfigDiff:
+      type: object
+      required: [path, diff, current_hash, proposed_hash, current_size, proposed_size, status, conflict]
+      properties:
+        path:
+          type: string
+        diff:
+          type: string
+        current_hash:
+          type: string
+        proposed_hash:
+          type: string
+        current_size:
+          type: integer
+          format: int64
+        proposed_size:
+          type: integer
+          format: int64
+        status:
+          $ref: "#/components/schemas/ServiceConfigFile"
+        conflict:
+          $ref: "#/components/schemas/ServiceConfigConflict"
+
+    ServiceConfigApplyRequest:
+      type: object
+      required: [path, content]
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        resolution:
+          type: string
+          enum: [keep, use, merge]
+
+    ServiceConfigResetRequest:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+
+    ServiceConfigApplyResult:
+      type: object
+      required:
+        - service
+        - path
+        - action
+        - changed
+        - detached
+        - hash
+        - size
+        - active
+        - live
+        - reloaded
+        - validation_pending
+        - restart_required
+        - rolled_back
+      properties:
+        service:
+          type: string
+        path:
+          type: string
+        action:
+          type: string
+          enum: [apply, reset]
+        changed:
+          type: boolean
+        resolution:
+          type: string
+        backup_path:
+          type: string
+        restored_from:
+          type: string
+        detached:
+          type: boolean
+        hash:
+          type: string
+        size:
+          type: integer
+          format: int64
+        active:
+          type: boolean
+        live:
+          type: boolean
+          description: True only after a successful validation and reload of an active service.
+        reloaded:
+          type: boolean
+        validation_pending:
+          type: boolean
+        restart_required:
+          type: boolean
+        rolled_back:
+          type: boolean
+        message:
+          type: string
 
     ServiceView:
       type: object

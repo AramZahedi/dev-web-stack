@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -106,6 +107,17 @@ type fakeClient struct {
 	serviceLogsTail        int
 	serviceCredentials     servicecontrol.Credentials
 	serviceCredentialCalls []string
+
+	configListing    servicecontrol.ConfigListing
+	configContent    servicecontrol.ConfigContent
+	configDiff       servicecontrol.ConfigDiff
+	configApply      servicecontrol.ConfigApplyResult
+	configReset      servicecontrol.ConfigApplyResult
+	configCalls      []string
+	configActionID   string
+	configActionPath string
+	configActionBody string
+	configResolution string
 }
 
 func (f *fakeClient) maybeErr() error { return f.err }
@@ -339,6 +351,58 @@ func (f *fakeClient) ServiceLogs(_ context.Context, id string, tail int) (string
 	f.serviceActionID = id
 	f.serviceLogsTail = tail
 	return f.serviceLogs, nil
+}
+
+func (f *fakeClient) ListServiceConfig(_ context.Context, id string) (servicecontrol.ConfigListing, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigListing{}, err
+	}
+	f.configCalls = append(f.configCalls, "list")
+	f.configActionID = id
+	return f.configListing, nil
+}
+
+func (f *fakeClient) ServiceConfigContent(_ context.Context, id, path string) (servicecontrol.ConfigContent, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigContent{}, err
+	}
+	f.configCalls = append(f.configCalls, "show")
+	f.configActionID = id
+	f.configActionPath = path
+	return f.configContent, nil
+}
+
+func (f *fakeClient) DiffServiceConfig(_ context.Context, id, path, content string) (servicecontrol.ConfigDiff, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigDiff{}, err
+	}
+	f.configCalls = append(f.configCalls, "diff")
+	f.configActionID = id
+	f.configActionPath = path
+	f.configActionBody = content
+	return f.configDiff, nil
+}
+
+func (f *fakeClient) ApplyServiceConfig(_ context.Context, id string, req servicecontrol.ConfigApplyRequest) (servicecontrol.ConfigApplyResult, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigApplyResult{}, err
+	}
+	f.configCalls = append(f.configCalls, "apply")
+	f.configActionID = id
+	f.configActionPath = req.Path
+	f.configActionBody = req.Content
+	f.configResolution = req.Resolution
+	return f.configApply, nil
+}
+
+func (f *fakeClient) ResetServiceConfig(_ context.Context, id, path string) (servicecontrol.ConfigApplyResult, error) {
+	if err := f.maybeErr(); err != nil {
+		return servicecontrol.ConfigApplyResult{}, err
+	}
+	f.configCalls = append(f.configCalls, "reset")
+	f.configActionID = id
+	f.configActionPath = path
+	return f.configReset, nil
 }
 
 func (f *fakeClient) ServiceCredentials(_ context.Context, id string) (servicecontrol.Credentials, error) {
@@ -1038,6 +1102,138 @@ func TestCLIInitDaemonErrorUsesResolvedHome(t *testing.T) {
 	}
 	if strings.Contains(stderr, "~/.devstack") {
 		t.Fatalf("stderr = %q, must not contain a hardcoded home", stderr)
+	}
+}
+
+func TestCLIDaemonRestartStopsThenStartsWithPersistedConfig(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+
+	var events []string
+	oldStop := stopDaemon
+	stopDaemon = func(_ context.Context, gotHome string) (bool, error) {
+		if gotHome != home {
+			t.Errorf("stop home = %q, want %q", gotHome, home)
+		}
+		events = append(events, "stop")
+		return true, nil
+	}
+	t.Cleanup(func() { stopDaemon = oldStop })
+	oldEnsure := ensureRunning
+	ensureRunning = func(_ context.Context, opts daemon.Options) error {
+		if opts.Home != home {
+			t.Errorf("ensure home = %q, want %q", opts.Home, home)
+		}
+		if opts.HTTPPort != 0 || opts.HTTPSPort != 0 || opts.UIPort != 0 {
+			t.Errorf("restart passed port overrides: %+v", opts)
+		}
+		events = append(events, "start")
+		return nil
+	}
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{}
+	out := runCLI(t, fake, "daemon", "restart", "--home", home)
+	if !reflect.DeepEqual(events, []string{"stop", "start"}) {
+		t.Fatalf("events = %v, want stop then start", events)
+	}
+	if !strings.Contains(out, "restarted") {
+		t.Fatalf("output = %q, want restart confirmation", out)
+	}
+}
+
+func TestCLIDaemonRestartValidatesConfigBeforeStopping(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("http_port: 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldStop := stopDaemon
+	stopDaemon = func(context.Context, string) (bool, error) {
+		t.Fatal("daemon was stopped before config validation")
+		return false, nil
+	}
+	t.Cleanup(func() { stopDaemon = oldStop })
+
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "daemon", "restart", "--home", home)
+	if code == 0 || !strings.Contains(stderr, "CONFIG_INVALID") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestCLIDaemonRestartRestoresConfigAfterStartFailure(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.UIPort = 17070
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var events []string
+	oldStop := stopDaemon
+	stopDaemon = func(context.Context, string) (bool, error) {
+		events = append(events, "stop")
+		return true, nil
+	}
+	t.Cleanup(func() { stopDaemon = oldStop })
+	oldEnsure := ensureRunning
+	attempts := 0
+	ensureRunning = func(_ context.Context, opts daemon.Options) error {
+		if opts.Home != home {
+			t.Errorf("ensure home = %q, want %q", opts.Home, home)
+		}
+		attempts++
+		events = append(events, fmt.Sprintf("start%d", attempts))
+		if attempts == 1 {
+			return errors.New("address already in use")
+		}
+		return nil
+	}
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "daemon", "restart", "--home", home)
+	if code == 0 || !strings.Contains(stderr, "previous config was restored") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if !reflect.DeepEqual(events, []string{"stop", "start1", "start2"}) {
+		t.Fatalf("events = %v", events)
+	}
+	after, err := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("config was not restored:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func TestCLIDaemonRestartDoesNotStartAfterStopFailure(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	oldStop := stopDaemon
+	stopDaemon = func(context.Context, string) (bool, error) { return false, errors.New("daemon is wedged") }
+	t.Cleanup(func() { stopDaemon = oldStop })
+	oldEnsure := ensureRunning
+	ensureRunning = func(context.Context, daemon.Options) error {
+		t.Fatal("daemon restart started after a stop failure")
+		return nil
+	}
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "daemon", "restart", "--home", home)
+	if code == 0 || !strings.Contains(stderr, "daemon is wedged") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
 }
 

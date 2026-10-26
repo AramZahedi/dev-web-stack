@@ -17,17 +17,35 @@ import type {
   PHPDefaultsResult,
   PHPExecResult,
   PHPExtension,
+  BenchmarkRequest,
+  BenchmarkRun,
+  PerformanceApplyResult,
+  PerformancePreview,
+  PerformanceProfile,
+  PerformanceResetResult,
+  PerformanceState,
+  PerformanceValues,
   PHPInfo,
   PHPMigrationRequest,
   PHPMigrationResult,
   PHPDefaultStatus,
   RuntimeBuild,
+  ServiceConfigApplyRequest,
+  ServiceConfigContent,
+  ServiceConfigDiff,
+  ServiceConfigList,
+  ServiceConfigResult,
   ServiceCredentials,
   ServiceLogsResponse,
   ServiceUninstallResult,
   ServiceView,
   Session,
   Settings,
+  SettingsUpdate,
+  TerminalConnection,
+  TerminalHandlers,
+  TerminalSession,
+  SettingsUpdateResult,
   ServingMode,
   Site,
   ToolsResponse,
@@ -500,10 +518,202 @@ export async function browseFs(path: string): Promise<FsListing> {
   }
 }
 
+export async function listServiceConfig(id: string): Promise<ServiceConfigList> {
+  if (isMockMode) return mockApi.listServiceConfig(id);
+  const response = await request<ServiceConfigList | ServiceConfigList['files']>(
+    `/services/${encodeURIComponent(id)}/config`,
+  );
+  if (Array.isArray(response)) {
+    return { installed: true, files: response };
+  }
+  return { installed: response.installed ?? true, files: response.files ?? [] };
+}
+
+export async function getServiceConfigContent(
+  id: string,
+  path: string,
+): Promise<ServiceConfigContent> {
+  if (isMockMode) return mockApi.getServiceConfigContent(id, path);
+  const response = await request<ServiceConfigContent | string>(
+    `/services/${encodeURIComponent(id)}/config/content?path=${encodeURIComponent(path)}`,
+  );
+  if (typeof response === 'string') return { path, content: response };
+  return response;
+}
+
+export async function diffServiceConfig(
+  id: string,
+  path: string,
+  content: string,
+): Promise<ServiceConfigDiff> {
+  if (isMockMode) return mockApi.diffServiceConfig(id, path, content);
+  return request<ServiceConfigDiff>(`/services/${encodeURIComponent(id)}/config/diff`, {
+    method: 'POST',
+    body: { path, content },
+  });
+}
+
+export async function applyServiceConfig(
+  id: string,
+  body: ServiceConfigApplyRequest,
+): Promise<ServiceConfigResult> {
+  if (isMockMode) return mockApi.applyServiceConfig(id, body);
+  return request<ServiceConfigResult>(`/services/${encodeURIComponent(id)}/config/apply`, {
+    method: 'POST',
+    body,
+  });
+}
+
+export async function resetServiceConfig(
+  id: string,
+  path: string,
+): Promise<ServiceConfigResult> {
+  if (isMockMode) return mockApi.resetServiceConfig(id, path);
+  return request<ServiceConfigResult>(`/services/${encodeURIComponent(id)}/config/reset`, {
+    method: 'POST',
+    body: { path },
+  });
+}
+
+export async function getPerformance(): Promise<PerformanceState> {
+  if (isMockMode) return mockApi.getPerformance();
+  return request<PerformanceState>('/performance');
+}
+
+export async function setPerformanceProfile(
+  profile: PerformanceProfile,
+  custom?: PerformanceValues,
+): Promise<PerformanceState> {
+  if (isMockMode) return mockApi.setPerformanceProfile(profile, custom);
+  return request<PerformanceState>('/performance/profile', {
+    method: 'PUT',
+    body: custom === undefined ? { profile } : { profile, custom },
+  });
+}
+
+export async function previewPerformance(): Promise<PerformancePreview> {
+  if (isMockMode) return mockApi.previewPerformance();
+  return request<PerformancePreview>('/performance/preview');
+}
+
+export async function applyPerformance(
+  hostTuning: boolean,
+): Promise<PerformanceApplyResult> {
+  if (isMockMode) return mockApi.applyPerformance(hostTuning);
+  return request<PerformanceApplyResult>('/performance/apply', {
+    method: 'POST',
+    body: { confirm: true, host_tuning: hostTuning },
+  });
+}
+
+export async function resetPerformance(): Promise<PerformanceResetResult> {
+  if (isMockMode) return mockApi.resetPerformance();
+  return request<PerformanceResetResult>('/performance/reset', {
+    method: 'POST',
+    body: { confirm: true },
+  });
+}
+
+export async function listBenchmarks(): Promise<BenchmarkRun[]> {
+  if (isMockMode) return mockApi.listBenchmarks();
+  const response = await request<BenchmarkRun[] | { benchmarks?: BenchmarkRun[] }>('/performance/benchmarks');
+  return Array.isArray(response) ? response : response.benchmarks ?? [];
+}
+
+export async function getBenchmark(id: string): Promise<BenchmarkRun> {
+  if (isMockMode) return mockApi.getBenchmark(id);
+  return request<BenchmarkRun>(`/performance/benchmarks/${encodeURIComponent(id)}`);
+}
+
+export async function runBenchmark(requestBody: BenchmarkRequest): Promise<BenchmarkRun> {
+  if (isMockMode) return mockApi.runBenchmark(requestBody);
+  return request<BenchmarkRun>('/performance/benchmarks', {
+    method: 'POST',
+    body: requestBody,
+  });
+}
+
+export async function createTerminalSession(ref: string): Promise<TerminalSession> {
+  if (isMockMode) return mockApi.createTerminalSession(ref);
+  return request<TerminalSession>(`${sitePath(ref)}/terminal/session`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export async function openTerminal(
+  ref: string,
+  handlers: TerminalHandlers,
+): Promise<TerminalConnection> {
+  if (isMockMode) return mockApi.openTerminal(ref, handlers);
+  handlers.onStatus('connecting');
+  const session = await createTerminalSession(ref);
+  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${scheme}//${window.location.host}${API_BASE}${sitePath(ref)}/terminal?ticket=${encodeURIComponent(session.ticket)}`;
+  const socket = new WebSocket(url);
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    socket.close();
+  };
+  socket.onopen = () => handlers.onStatus('connected');
+  socket.onmessage = (event) => {
+    try {
+      const message = JSON.parse(String(event.data)) as {
+        type?: string;
+        data?: string;
+        code?: number;
+        message?: string;
+      };
+      if (message.type === 'output' && typeof message.data === 'string') {
+        handlers.onOutput(message.data);
+      } else if (message.type === 'exit') {
+        handlers.onExit(message.code ?? 0);
+        closed = true;
+        socket.close();
+      } else if (message.type === 'error') {
+        handlers.onStatus('error');
+        handlers.onError?.('TERMINAL_ERROR', message.message ?? 'The terminal session reported an error.');
+      }
+    } catch {
+      // Raw output is tolerated so older daemons still work.
+      if (typeof event.data === 'string') handlers.onOutput(event.data);
+    }
+  };
+  socket.onerror = () => handlers.onStatus('error');
+  socket.onclose = () => {
+    if (!closed) handlers.onStatus('closed');
+    closed = true;
+  };
+  return {
+    send(data) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'input', data }));
+      }
+    },
+    resize(cols, rows) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+      }
+    },
+    close,
+  };
+}
+
 export async function getSettings(): Promise<Settings> {
   if (isMockMode) return mockApi.settings();
   const settings = await request<Settings>('/settings');
   // Older daemons predate serving_provider; native is the compatible default.
+  return { ...settings, serving_provider: settings.serving_provider ?? 'native' };
+}
+
+export async function updateSettings(update: SettingsUpdate): Promise<SettingsUpdateResult> {
+  if (isMockMode) return mockApi.updateSettings(update);
+  const settings = await request<SettingsUpdateResult>('/settings', {
+    method: 'PATCH',
+    body: update,
+  });
   return { ...settings, serving_provider: settings.serving_provider ?? 'native' };
 }
 

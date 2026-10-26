@@ -12,7 +12,8 @@ machine, and the design for the next service-platform milestone.
 | [Architecture](architecture.md) | How the implemented system works today, package map, data model, and current limitations |
 | [Requirements](requirements.md) | Product requirements, user concerns, decisions, and traceability to the design |
 | [Decision log](decisions.md) | Implemented and planned decisions with rationale and rejected alternatives |
-| [Planned service platform](planned-services.md) | High-level overview of the next milestone; detailed spec linked below |
+| [Services guide](services.md) | Service lifecycle, config editing, performance/host tuning, benchmarks, and the site terminal |
+| [Planned service platform](planned-services.md) | High-level overview of the service platform; detailed spec linked below |
 | [Known issues](known-issues.md) | Current bugs, parked work, and limitations that should not be mistaken for completed features |
 | [Glossary](glossary.md) | Project terminology: sites, modes, services, conflicts, providers |
 | [Developer guide](development.md) | build/test/debug, package boundaries, migrations, release, commit discipline |
@@ -20,7 +21,7 @@ machine, and the design for the next service-platform milestone.
 ## Current design and plans
 
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
-  — Waves 0–2 implemented; next batch planned.
+  — Waves 0–2 and the next batch implemented; remaining host gates noted.
 - [M1 design](superpowers/specs/2026-10-22-dev-web-stack-m1-design.md)
   — released Linux foundation.
 - [External vhosts design](superpowers/specs/2026-10-22-external-vhosts-design.md)
@@ -35,9 +36,12 @@ machine, and the design for the next service-platform milestone.
   — service lifecycle, database/web-server/tooling implementation.
 - [Next Batch Plan](superpowers/plans/2026-10-26-service-platform-next-batch.md)
   — config editor, performance, terminal, ports, UI cleanup.
+- [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md)
+  — delivered scope, verification evidence, and remaining limitations.
 - [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md),
   [Wave 1 handoff](superpowers/status/2026-10-25-wave1-handoff.md),
-  [Wave 2 handoff](superpowers/status/2026-10-25-wave2-handoff.md), and
+  [Wave 2 handoff](superpowers/status/2026-10-25-wave2-handoff.md),
+  [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md), and
   [Continuation State](superpowers/status/2026-10-26-continuation.md)
   — verification and remaining work.
 - [Documentation audit findings](../DOCUMENTATION_AUDIT_FINDINGS.md)
@@ -65,9 +69,11 @@ The M1 user documentation remains authoritative for the released native product:
 ## Implementation status in one sentence
 
 The Linux M1 native application is implemented and released as `v0.1.0`. The old
-standalone devstack-in-Docker image was retired on 2026-10-25. Waves 0–2 are implemented: Docker nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis,
+standalone devstack-in-Docker image was retired on 2026-10-25. Waves 0–2 and the next
+service-platform batch are implemented: Docker nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis,
 phpMyAdmin, credentials/rotation, global PHP/Composer, site shell/exec, static builds,
-and dashboard action/build/tooling panels. The performance engine exists but is not
-wired. Service config editing, performance apply/benchmark, site terminal, editable
-listener ports, and external-site Docker mounts remain. ImageMagick CLI is descoped.
-Automatic GitHub CI is disabled; workflows are manual-dispatch only.
+service configuration editing, performance preview/apply/reset/benchmarks, site-scoped
+terminal, editable listener ports, and the dashboard surfaces. Remaining work is
+external-site Docker mounts, real root host-tuning acceptance, live benchmark evidence,
+and merged PHP-FPM pool sizing. ImageMagick CLI is descoped. Automatic GitHub CI is
+disabled; workflows are manual-dispatch only.

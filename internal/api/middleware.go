@@ -132,7 +132,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		// The filesystem browser is a privileged read: it discloses directory
 		// names outside the project. Require the dashboard session even though
 		// other GET endpoints intentionally allow the first /session call.
-		if r.URL.Path == "/api/v1/fs" {
+		if r.URL.Path == "/api/v1/fs" || strings.HasSuffix(r.URL.Path, "/config/content") {
 			cookie, err := r.Cookie(sessionCookieName)
 			if err != nil || strings.TrimSpace(cookie.Value) == "" {
 				writeError(w, http.StatusForbidden, codeForbidden, "missing dashboard session", nil)

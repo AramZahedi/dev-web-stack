@@ -363,8 +363,87 @@ test('Services groups containers, reveals credentials and reports activation con
   await expect(apache.getByRole('alert')).toContainText('Nginx Web Server is active');
   await expect(apache.getByText('Inactive', { exact: true })).toBeVisible();
 
-  await expect(page.getByText('Configuration & performance')).toBeVisible();
-  await expect(page.getByText('Wave 2 backend pending')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Performance' })).toBeVisible();
+  await expect(page.getByText('No benchmark runs yet')).toBeVisible();
+});
+
+test('Service configuration lists files, diffs, applies, and resets', async ({ page }) => {
+  await open(page, '#/services');
+  const nginx = page.locator('article').filter({ hasText: 'Nginx Web Server' }).first();
+  await nginx.getByRole('button', { name: 'Configuration' }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Nginx Web Server configuration' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('nginx.conf', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: /conf\.d\/devstack\.conf/ }).click();
+
+  const editor = dialog.getByLabel('File content');
+  await expect(editor).toHaveValue(/listen 80/);
+  await editor.fill('# custom nginx\nserver {\n    listen 8080;\n}\n');
+  await dialog.getByRole('button', { name: 'Preview diff' }).click();
+  await expect(dialog.getByText('Unified diff')).toBeVisible();
+  await expect(dialog.locator('.diff-panel pre')).toContainText('+    listen 8080;');
+
+  await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Configuration applied' }),
+  ).toBeVisible();
+  await expect(dialog.getByText('Configuration validated and reloaded.')).toBeVisible();
+
+  await dialog.getByRole('button', { name: 'Reset', exact: true }).click();
+  const reset = page.getByRole('dialog', { name: /Reset conf\.d\/devstack\.conf/ });
+  await reset.getByRole('textbox').fill('RESET');
+  await reset.getByRole('button', { name: 'Reset file' }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Configuration reset' }),
+  ).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(dialog).toBeHidden();
+});
+
+test('Performance previews, applies, resets, and records a measured benchmark', async ({ page }) => {
+  test.setTimeout(45_000);
+  await open(page, '#/services');
+  const performance = page.locator('.performance-card');
+  await expect(performance.getByRole('heading', { name: 'Performance' })).toBeVisible();
+  await expect(page.getByText('No benchmark runs yet')).toBeVisible();
+
+  await performance.getByRole('button', { name: 'Preview' }).click();
+  await expect(performance.getByText('Host tuning diff')).toBeVisible();
+  await expect(performance.getByText(/Host tuning changes are global/)).toBeVisible();
+  await performance.getByText(/Managed include files/).click();
+  await expect(performance.getByText(/worker_processes 4/)).toBeVisible();
+
+  await performance.getByRole('button', { name: 'Apply profile' }).click();
+  const applyDialog = page.getByRole('dialog', { name: 'Apply performance profile?' });
+  await expect(applyDialog).toBeVisible();
+  await applyDialog.getByRole('checkbox').check();
+  await expect(applyDialog.getByText(/Host tuning changes kernel/)).toBeVisible();
+  await applyDialog.getByRole('textbox').fill('APPLY');
+  await applyDialog.getByRole('button', { name: 'Apply profile' }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Performance applied with host tuning' }),
+  ).toBeVisible();
+  await expect(performance.getByText('Apply complete')).toBeVisible();
+  await expect(performance.getByText('Host tuned')).toBeVisible();
+  await expect(performance.getByText(/Per-site PHP-FPM/)).toBeVisible();
+
+  const benchmark = page.locator('.benchmark-card');
+  await benchmark.getByLabel('Duration (s)').fill('2');
+  await benchmark.getByLabel('Connections').fill('8');
+  await benchmark.getByRole('button', { name: 'Run benchmark' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Benchmark complete' })).toBeVisible();
+  const row = benchmark.locator('tbody tr').first();
+  await expect(benchmark.locator('thead')).toContainText('Status');
+  await expect(row).toContainText('blog');
+  await expect(row).toContainText('devstack-go-http');
+
+  await performance.getByRole('button', { name: 'Reset', exact: true }).click();
+  const resetDialog = page.getByRole('dialog', { name: 'Reset performance?' });
+  await resetDialog.getByRole('textbox').fill('RESET');
+  await resetDialog.getByRole('button', { name: 'Reset performance' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Performance reset' })).toBeVisible();
+  await expect(performance.getByText('Reset complete')).toBeVisible();
 });
 
 test('Site detail edits configuration and runs a static build', async ({ page }) => {
@@ -417,8 +496,32 @@ test('Settings manages the global PHP default, ini and Composer', async ({ page 
   await page.getByRole('button', { name: 'Update', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'composer updated' })).toBeVisible();
 
-  await expect(page.getByRole('heading', { name: 'ImageMagick CLI' })).toBeVisible();
-  await expect(page.getByText('Wave 2 backend pending')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'ImageMagick CLI' })).toHaveCount(0);
+});
+
+test('Settings edits listener ports and shows restart guidance', async ({ page }) => {
+  await open(page, '#/settings');
+
+  await page.getByLabel('HTTP proxy port').fill('18080');
+  await page.getByLabel('HTTPS proxy port').fill('18443');
+  await page.getByLabel('Dashboard/API port').fill('17070');
+  await page.getByRole('button', { name: 'Save ports' }).click();
+
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Ports saved — restart required' }),
+  ).toBeVisible();
+  const banner = page.locator('.restart-banner');
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText('devstack daemon restart');
+  await expect(page.getByLabel('HTTP proxy port')).toHaveValue('18080');
+  await expect(page.getByLabel('HTTPS proxy port')).toHaveValue('18443');
+  await expect(page.getByLabel('Dashboard/API port')).toHaveValue('17070');
+
+  const spacing = await page.locator('.native-tools-card').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return Number.parseFloat(style.marginTop);
+  });
+  expect(spacing).toBeGreaterThanOrEqual(12);
 });
 
 test('Runtimes asks for confirmation and installs a build', async ({ page }) => {
@@ -537,6 +640,23 @@ test('Settings Serving switches modes, syncs, and previews vhosts', async ({ pag
   await expect(previewButton).toBeFocused();
 });
 
+test('Site detail opens a site-scoped terminal and runs a command', async ({ page }) => {
+  await open(page, '#/sites/blog');
+  await expect(page.getByRole('heading', { name: 'blog', exact: true })).toBeVisible();
+
+  const terminalCard = page.locator('.terminal-card');
+  await expect(terminalCard.getByText('Open a shell in this site')).toBeVisible();
+  await terminalCard.getByRole('button', { name: 'Start terminal' }).click();
+  await expect(terminalCard.getByText('Connected', { exact: true })).toBeVisible();
+
+  await page.keyboard.type('pwd');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.xterm-rows')).toContainText('/home/dev/projects/blog');
+
+  await terminalCard.getByRole('button', { name: 'Close' }).click();
+  await expect(terminalCard.getByText('Closed', { exact: true })).toBeVisible();
+});
+
 test('Site detail previews its rendered vhost', async ({ page }) => {
   await open(page, '#/sites/blog');
   await expect(page.getByRole('heading', { name: 'blog' })).toBeVisible();
@@ -620,6 +740,29 @@ test.describe('375px viewport', () => {
       expect(width.body, `${route.name} body overflow`).toBeLessThanOrEqual(width.viewport);
     });
   }
+
+  test('site terminal stays within 375px after connecting', async ({ page }) => {
+    await open(page, '#/sites/blog');
+    await expect(page.getByRole('heading', { name: 'blog', exact: true })).toBeVisible();
+    await page.locator('.terminal-card').getByRole('button', { name: 'Start terminal' }).click();
+    await expect(page.locator('.terminal-card').getByText('Connected', { exact: true })).toBeVisible();
+    const width = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+    }));
+    expect(width.document).toBeLessThanOrEqual(width.viewport);
+    expect(width.body).toBeLessThanOrEqual(width.viewport);
+  });
+
+  test('Settings native tools card keeps vertical spacing at 375px', async ({ page }) => {
+    await open(page, '#/settings');
+    await expect(page.getByRole('heading', { name: 'Native tools' })).toBeVisible();
+    const spacing = await page.locator('.native-tools-card').evaluate((element) => {
+      return Number.parseFloat(getComputedStyle(element).marginTop);
+    });
+    expect(spacing).toBeGreaterThanOrEqual(12);
+  });
 
   test('vhost preview drawer has no horizontal overflow', async ({ page }) => {
     await open(page, '#/settings');

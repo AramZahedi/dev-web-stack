@@ -15,6 +15,7 @@ import type {
 vi.mock('../lib/api', () => ({
   isMockMode: false,
   getSettings: vi.fn(),
+  updateSettings: vi.fn(),
   getTrust: vi.fn(),
   getVhostStatus: vi.fn(),
   setServingMode: vi.fn(),
@@ -47,6 +48,7 @@ const SETTINGS: SettingsType = {
   max_request_body_mb: 1024,
   log_max_mb: 10,
   log_keep: 5,
+  restart_required: false,
 };
 
 const VHOSTS: VhostStatus = {
@@ -107,6 +109,7 @@ const mockApi = vi.mocked(api);
 
 beforeEach(() => {
   mockApi.getSettings.mockResolvedValue(SETTINGS);
+  mockApi.updateSettings.mockResolvedValue({ ...SETTINGS, restart_required: false });
   mockApi.getTrust.mockResolvedValue([]);
   mockApi.getVhostStatus.mockResolvedValue(VHOSTS);
   mockApi.getPHPDefault.mockResolvedValue(DEFAULT_STATUS);
@@ -154,11 +157,48 @@ describe('Settings tooling', () => {
 
     expect(screen.getByRole('heading', { name: 'Composer' })).toBeTruthy();
     expect(screen.getByText('2.8.4')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'ImageMagick CLI' })).toBeTruthy();
-    expect(screen.getByText('Wave 2 backend pending')).toBeTruthy();
-    expect(screen.getByText(/does not expose an ImageMagick tool endpoint/)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'ImageMagick CLI' })).toBeNull();
+    expect(screen.queryByText(/ImageMagick/i)).toBeNull();
     const toolCard = screen.getByRole('heading', { name: 'Native tools' }).closest('section');
-    expect(within(toolCard as HTMLElement).queryByRole('button', { name: 'Install ImageMagick' })).toBeNull();
+    expect(toolCard?.className).toContain('native-tools-card');
+  });
+
+  it('saves listener ports and shows durable restart guidance', async () => {
+    const updated = {
+      ...SETTINGS,
+      http_port: 18080,
+      https_port: 18443,
+      ui_port: 17070,
+      restart_required: true,
+    };
+    mockApi.updateSettings.mockResolvedValue({
+      ...updated,
+      warnings: ['Run `devstack daemon restart` to move the listeners.'],
+    });
+
+    render(Settings);
+    const http = (await screen.findByLabelText('HTTP proxy port')) as HTMLInputElement;
+    const https = screen.getByLabelText('HTTPS proxy port') as HTMLInputElement;
+    const ui = screen.getByLabelText('Dashboard/API port') as HTMLInputElement;
+    expect(http.value).toBe('8080');
+    expect(https.value).toBe('8443');
+    expect(ui.value).toBe('7070');
+
+    await fireEvent.input(http, { target: { value: '18080' } });
+    await fireEvent.input(https, { target: { value: '18443' } });
+    await fireEvent.input(ui, { target: { value: '17070' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save ports' }));
+
+    await waitFor(() =>
+      expect(mockApi.updateSettings).toHaveBeenCalledWith({
+        http_port: 18080,
+        https_port: 18443,
+        ui_port: 17070,
+      }),
+    );
+    expect((await screen.findAllByText('Restart required')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/devstack daemon restart/).length).toBeGreaterThan(0);
+    expect(http.value).toBe('18080');
   });
 
   it('saves and clears the machine-wide PHP CLI default', async () => {
@@ -222,27 +262,6 @@ describe('Settings tooling', () => {
     expect(alert.textContent).toContain('HELPER_UNAVAILABLE');
     expect(alert.textContent).toContain('service helper is unavailable');
     expect(screen.getByRole('dialog', { name: 'Remove composer?' })).toBeTruthy();
-  });
-
-  it('uses the real ImageMagick row and label when the daemon reports it', async () => {
-    const imagemagick: ToolStatus = {
-      id: 'imagemagick',
-      installed: true,
-      managed: true,
-      wrapper_path: '/usr/local/bin/magick',
-      target: '/home/dev/.devstack/tools/imagemagick/bin/magick',
-      version: '7.1.1',
-    };
-    mockApi.listTools.mockResolvedValue([COMPOSER, imagemagick]);
-
-    render(Settings);
-    const heading = await screen.findByRole('heading', { name: 'ImageMagick CLI' });
-    const row = heading.closest('article') as HTMLElement;
-    expect(within(row).getByRole('button', { name: 'Update' })).toBeTruthy();
-    expect(within(row).getByRole('button', { name: 'Remove' })).toBeTruthy();
-    expect(screen.queryByText('ImageMagick pending')).toBeNull();
-    expect(screen.getByText('ImageMagick managed')).toBeTruthy();
-    expect(screen.queryByText(/does not expose an ImageMagick tool endpoint/)).toBeNull();
   });
 
   it('offers install for an unmanaged Composer and shows tool conflicts verbatim', async () => {

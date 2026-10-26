@@ -49,9 +49,10 @@ sudo apt install libnss3-tools
 the tools and run `devstack trust repair` afterwards.
 
 Ports 80 and 443 must be free for the helper's forwarders. The daemon uses
-loopback ports 8080 (HTTP), 8443 (HTTPS), and 7070 (dashboard) by default. If
-those daemon ports are taken, edit `~/.devstack/config.yaml` before running
-`devstack init`.
+loopback ports 8080 (HTTP), 8443 (HTTPS), and 7070 (dashboard) by default. Change
+them in Settings or `config.yaml`; the API validates them, persists them, and
+reports `restart_required`. Run `devstack daemon restart` to bind the new
+listeners.
 
 ## Build
 
@@ -260,8 +261,12 @@ daemon's `http_port` and `https_port`; `devstack init` rejects a mismatch.
 
 The daemon's own settings live in `~/.devstack/config.yaml` (`http_port`,
 `https_port`, `ui_port`, log rotation, and request limits). The daemon creates
-the file with defaults on first start. Keep the helper proxy ports aligned with
-the daemon HTTP/HTTPS ports when you change either side.
+the file with defaults on first start. The dashboard PATCH validates new listener
+ports and returns `restart_required`; `devstack daemon restart` applies them. At
+startup the daemon reconciles serving mode, but the helper's own
+`proxy_http_port`/`proxy_https_port` values are read from its config file. If you
+change the daemon HTTP/HTTPS ports while builtin forwarding is active, update
+`/etc/devstack/helper.yaml` and restart devstack-helper as well.
 
 ## Logs
 

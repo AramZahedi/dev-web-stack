@@ -1,12 +1,12 @@
 # Decision log
 
 - **Last reviewed:** 2026-10-26
-- **Status:** M1 and Waves 0–2 implemented; next-batch config/performance/terminal/port work is planned. ImageMagick CLI is descoped; automatic GitHub CI is disabled.
+- **Status:** M1, Waves 0–2, and the next service-platform batch are implemented. ImageMagick CLI is descoped; automatic GitHub CI is disabled.
 - **Detailed service design:** [2026-10-25 design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 
 This is an ADR-style record. “Current” decisions are shipped or in the released M1 code.
-“Planned” decisions are approved in the design conversation but not implemented. “Open”
-items are implementation choices that do not change the product architecture.
+The service-platform decisions below are implemented; residual host gates and limitations
+are tracked in [known issues](known-issues.md).
 
 ## 1. Current product decisions
 
@@ -31,7 +31,7 @@ items are implementation choices that do not change the product architecture.
 | C17 | Standalone devstack Docker image retired | Removed on 2026-10-25. Docker is reserved for the planned separate service containers. Generic public-port URL/redirect support and the mounted-hosts fallback were retained because they are useful outside the old image. |
 | C18 | Automatic GitHub Actions disabled | Pushes, pull requests, and tags do not start workflows; `ci.yml`, `php.yml`, and `release.yml` are manual dispatch only. Local verification is authoritative. |
 
-## 2. Planned service-platform decisions
+## 2. Service-platform decisions (implemented)
 
 | ID | Decision | Rationale / consequences |
 |---|---|---|
@@ -82,6 +82,11 @@ items are implementation choices that do not change the product architecture.
 | S45 | Performance apply/reset/host tuning is explicit and reversible | Host-wide kernel changes require confirmation, fixed helper targets, backup, verification, and reset. |
 | S46 | Browser terminal is site-scoped and user-only | No root/sudo/Docker socket; PTY ticket bound to UID/site; no arbitrary host command surface. |
 | S47 | Editable Settings ports are daemon listener ports | `http_port`/`https_port`/`ui_port` persist and require restart; public 80/443 remain helper/Docker-owned. |
+| S48 | Service config manifest lives under the config root | Keeps the manifest inside the editable scope and shares it with Docker nginx/Apache; legacy service-root manifests are migrated with a `config/` prefix strip. |
+| S49 | Performance benchmarks use a labelled built-in Go generator | No verified pinned wrk/hey image; measurements are real and labelled, never synthesized. |
+| S50 | Host tuning is fixed-path helper data, not host content from the API | The helper derives paths, backs up, verifies, and rolls back; the daemon never sends arbitrary paths or commands. |
+| S51 | Terminal tickets are site/UID-bound one-use capabilities | WebSocket GETs are authenticated by the ticket; issuance still requires session+CSRF; Origin and Host are checked. |
+| S52 | UI builds are static and embedded; xterm.js is the terminal renderer | Keeps dashboard parity without a second server; terminal is explicit-start only. |
 
 ## 3. Rejected alternatives
 
@@ -108,15 +113,11 @@ items are implementation choices that do not change the product architecture.
 
 These do not change the architecture:
 
-- exact initial image tags/digests;
-- exact nginx/Apache wrapper Dockerfiles;
-- exact formulas and caps for worker/MPM/PHP budgets;
-- benchmark workloads/concurrency;
-- phpMyAdmin configuration mechanism;
-- how much legacy native-provider UI remains;
-- optional Redis password;
-- exact Composer version/PHAR digest;
-- exact host-tuning values per machine class.
+- optional public 80/443 editing (currently helper/Docker-owned);
+- exact host-tuning values per machine class;
+- whether to merge PHP-FPM pool sizing into the persisted site contract;
+- external-site Docker bind mounts;
+- live Wave 3 benchmark/host acceptance evidence.
 
 ## 5. Decision provenance
 

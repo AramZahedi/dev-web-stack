@@ -277,11 +277,270 @@ export interface Settings {
   max_request_body_mb: number;
   log_max_mb: number;
   log_keep: number;
+  restart_required?: boolean;
   version?: string;
   socket_path?: string;
   pid_path?: string;
   /** Optional convenience field; real daemons may omit it. */
   user_home?: string;
+}
+
+export interface SettingsUpdate {
+  http_port?: number;
+  https_port?: number;
+  ui_port?: number;
+}
+
+export interface SettingsUpdateResult extends Settings {
+  warnings?: string[];
+}
+
+export interface ServiceConfigConflict {
+  active?: boolean;
+  resolution_required?: boolean;
+  reason?: string;
+  allowed_resolutions?: string[];
+}
+
+export interface ServiceConfigFile {
+  path: string;
+  class: string;
+  generated: boolean;
+  modified: boolean;
+  detached: boolean;
+  hash?: string;
+  size?: number;
+  conflict?: ServiceConfigConflict;
+}
+
+export interface ServiceConfigList {
+  service?: string;
+  installed: boolean;
+  files: ServiceConfigFile[];
+  validation_pending?: boolean;
+}
+
+export interface ServiceConfigContent {
+  path: string;
+  content: string;
+  class?: string;
+  generated?: boolean;
+  modified?: boolean;
+  detached?: boolean;
+  hash?: string;
+  size?: number;
+  conflict?: ServiceConfigConflict;
+}
+
+export interface ServiceConfigDiff {
+  path: string;
+  diff: string;
+  current_hash?: string;
+  proposed_hash?: string;
+  current_size?: number;
+  proposed_size?: number;
+  status?: ServiceConfigFile;
+  conflict?: ServiceConfigConflict;
+}
+
+export type ServiceConfigResolution = 'keep' | 'use' | 'merge';
+
+export interface ServiceConfigApplyRequest {
+  path: string;
+  content: string;
+  resolution?: ServiceConfigResolution;
+}
+
+export interface ServiceConfigResult {
+  service?: string;
+  path?: string;
+  action?: 'apply' | 'reset';
+  changed?: boolean;
+  resolution?: string;
+  backup_path?: string;
+  restored_from?: string;
+  detached?: boolean;
+  hash?: string;
+  size?: number;
+  active?: boolean;
+  live?: boolean;
+  reloaded?: boolean;
+  validation_pending?: boolean;
+  restart_required?: boolean;
+  rolled_back?: boolean;
+  message?: string;
+  conflict?: ServiceConfigConflict;
+}
+
+export type PerformanceProfile = 'balanced' | 'throughput' | 'custom';
+
+export interface PerformanceResources {
+  hostname?: string;
+  arch?: string;
+  cpu_count?: number;
+  cpu_quota_cpus?: number;
+  memory_total_bytes?: number;
+  memory_available_bytes?: number;
+  page_size_bytes?: number;
+  nofile_soft?: number;
+  nofile_hard?: number;
+  user?: string;
+  group?: string;
+  [key: string]: unknown;
+}
+
+export interface PerformanceValues {
+  [key: string]: unknown;
+}
+
+export interface PerformanceStep {
+  name: string;
+  status: 'ok' | 'skipped' | 'failed' | 'rolled_back' | string;
+  detail?: string;
+  backup?: string;
+}
+
+export interface PerformanceAppliedState {
+  profile: PerformanceProfile;
+  values?: PerformanceValues;
+  applied_at?: string;
+  host_tuning?: boolean;
+  backup_dir?: string;
+  servers?: string[];
+  steps?: PerformanceStep[];
+}
+
+export interface PerformanceHostTuning {
+  available?: boolean;
+  managed?: boolean;
+  applied?: boolean;
+  sysctl_path?: string;
+  limits_path?: string;
+  backup_dir?: string;
+  applied_at?: string;
+  profile?: string;
+  error?: string;
+}
+
+export interface PerformanceState {
+  profile: PerformanceProfile;
+  custom?: PerformanceValues;
+  values: PerformanceValues;
+  resources: PerformanceResources;
+  applied?: PerformanceAppliedState;
+  host_tuning: PerformanceHostTuning;
+  active_server?: string;
+  warnings?: string[];
+}
+
+export interface PerformanceManagedFile {
+  path: string;
+  content?: string;
+  active: boolean;
+}
+
+export interface PerformanceHostFile {
+  path: string;
+  exists: boolean;
+  current?: string;
+  proposed?: string;
+  diff?: string;
+}
+
+export interface PerformanceHostPreview {
+  opt_in: boolean;
+  files: PerformanceHostFile[];
+  warnings?: string[];
+}
+
+export interface PerformancePreview {
+  profile: PerformanceProfile;
+  values: PerformanceValues;
+  resources?: PerformanceResources;
+  active_server?: string;
+  nginx?: { main?: string; events?: string; http?: string };
+  apache?: { config?: string };
+  php?: { site_id: string; pool: string; ini: string }[];
+  managed_files: PerformanceManagedFile[];
+  host_tuning: PerformanceHostPreview;
+  warnings?: string[];
+}
+
+export interface PerformanceApplyResult {
+  applied: boolean;
+  profile: PerformanceProfile;
+  applied_at?: string;
+  host_tuning: boolean;
+  active_server?: string;
+  files?: PerformanceManagedFile[];
+  steps: PerformanceStep[];
+  backup_dir?: string;
+  rollback_error?: string;
+  warnings?: string[];
+}
+
+export interface PerformanceResetResult {
+  reset: boolean;
+  steps: PerformanceStep[];
+  backup_dir?: string;
+  rollback_error?: string;
+  warnings?: string[];
+}
+
+export interface BenchmarkRequest {
+  site: string;
+  duration_s?: number;
+  connections?: number;
+}
+
+export interface BenchmarkMeasurement {
+  requests: number;
+  errors: number;
+  requests_per_second: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  duration_seconds: number;
+}
+
+export interface BenchmarkRun {
+  id: string;
+  site: string;
+  target: string;
+  profile: string;
+  status: 'completed' | 'failed' | 'canceled' | string;
+  tool: string;
+  tool_version: string;
+  limitations?: string[];
+  duration_s: number;
+  connections: number;
+  started_at: string;
+  finished_at: string;
+  measured?: BenchmarkMeasurement | null;
+  error?: string;
+  directory: string;
+  raw_file: string;
+  profile_applied_at?: string;
+}
+
+export interface TerminalSession {
+  ticket: string;
+  expires_at: string;
+}
+
+export type TerminalStatus = 'connecting' | 'connected' | 'closed' | 'error';
+
+export interface TerminalHandlers {
+  onOutput: (text: string) => void;
+  onExit: (code: number) => void;
+  onStatus: (status: TerminalStatus) => void;
+  onError?: (code: string, message: string) => void;
+}
+
+export interface TerminalConnection {
+  send: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  close: () => void;
 }
 
 export interface FsEntry {

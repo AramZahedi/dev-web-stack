@@ -59,6 +59,7 @@
   import PHPIniEditor from '../lib/components/PHPIniEditor.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
   import StatusPill from '../lib/components/StatusPill.svelte';
+  import TerminalPanel from '../lib/components/TerminalPanel.svelte';
   import Toggle from '../lib/components/Toggle.svelte';
   import VhostPreviewDrawer from '../lib/components/VhostPreviewDrawer.svelte';
 
@@ -938,6 +939,8 @@
         </Card>
       </aside>
     </div>
+
+    <TerminalPanel {site} />
 
     <section class="config-section" aria-labelledby="config-heading">
       <div class="section-head">
