@@ -1,0 +1,9 @@
+# Reproducible source inputs for the managed Debian 12 WSL rootfs.
+debian_suite=bookworm
+debian_snapshot=20251027T000000Z
+debian_mirror=https://snapshot.debian.org/archive/debian/20251027T000000Z/
+debian_security_mirror=https://snapshot.debian.org/archive/debian-security/20251027T000000Z/
+rootfs_artifact=debian-12-wsl-rootfs.tar.gz
+rootfs_sha256=release-manifest
+rootfs_arch=amd64
+rootfs_minimum_bytes=1073741824
