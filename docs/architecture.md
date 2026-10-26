@@ -4,8 +4,9 @@
   service-platform batch: config editing, performance apply/reset/benchmarks, site
   terminal, and editable listener ports. ImageMagick CLI is descoped; external-site
   Docker mounts and real host-tuning acceptance remain follow-ups.
-- **Last reviewed:** 2026-10-26
+- **Last reviewed:** 2026-10-27
 - **Planned extension:** [service containers design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
+- **Planned Windows/WSL extension:** [Windows design, revised 2026-10-27](superpowers/specs/2026-10-26-windows-wsl-design.md)
 
 ## 1. Purpose
 
@@ -412,8 +413,10 @@ service lifecycle paths exist.
 
 ## 12. Current limitations
 
-- Linux x86_64 is the implemented platform. Windows 11 + WSL2 is planned but not
-  implemented; see [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md).
+- Linux x86_64 is the implemented platform. Windows 11 + WSL2 has a revised
+  design and plan (2026-10-27) but is not implemented; see the
+  [Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md) and
+  [review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md).
   macOS and arm64 remain out of scope.
 - External nginx/Apache mode requires the server to be installed and configured by the
   administrator; devstack does not install packages.
@@ -434,3 +437,30 @@ service lifecycle paths exist.
 - For the next milestone: [planned services](planned-services.md) and the
   [full design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
 - For continuation state: [handoff](handoff.md).
+
+## 14. Planned Windows/WSL architecture (not implemented)
+
+The approved Windows design keeps Windows in charge of the public entry and
+host integration, and uses a managed Debian 12 WSL2 agent for Linux site
+execution:
+
+- Windows helper owns 80/443 and always forwards to the Windows daemon proxy.
+- The Windows daemon is the single public HTTP/TLS router, dashboard host, and
+  route table. It binds loopback plus the WSL host adapter; the WSL-facing
+  listener is firewall-restricted.
+- The WSL agent runs a fixed 80/443 ingress to the Windows daemon. WSL
+  `/etc/hosts` maps `.test` names to `127.0.0.1`.
+- Windows-mode and WSL-mode site backends run in the agent. The agent allocates
+  WSL ports; the daemon persists and routes them.
+- WSL ext4 is canonical for generated site/service data, secrets, runtimes,
+  logs, and Docker data. Windows keeps SQLite metadata, config, leaf certs,
+  daemon logs, cache, and the VHDX.
+- Docker web servers in WSL use private HTTP ports; the daemon owns public TLS
+  and the dashboard route.
+- The agent API uses HTTPS with a pinned certificate and bearer token. Helper
+  and daemon control pipes are ACL-restricted and SID-checked.
+- Global PHP/Composer, shells, and builds run in WSL; Windows gets `.cmd` shims.
+
+See the [Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md) and
+[revised implementation plan](superpowers/plans/2026-10-26-windows-wsl.md). Do
+not treat this section as implemented behavior.

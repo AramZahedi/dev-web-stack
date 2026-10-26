@@ -45,7 +45,7 @@ containers, not the required runtime for devstack itself.
 | R23 | Existing native external nginx/Apache mode remains available | Required compatibility |
 | R24 | No automatic root migration from `~/.devstack` | Planned decision |
 | R25 | Keep work committed/pushed and CI green | Process |
-| R26 | Windows 11 native daemon/helper with managed WSL2 agent and Docker services | Planned — design and five-lane plan written; not implemented |
+| R26 | Windows 11 native daemon/helper with managed WSL2 agent and Docker services | Planned — design and five-lane plan revised 2026-10-27; not implemented |
 
 ## 3. Hard constraints
 
@@ -185,7 +185,9 @@ The CLI remains an alternative interface, not a prerequisite.
 
 ## 6. Explicit non-goals
 
-- Windows, WSL, macOS, arm64, or multi-user shared workstations.
+- macOS, arm64, or multi-user shared workstations. Windows 11 + WSL2 is
+  planned (R26), not a non-goal; no Windows support is claimed until its
+  acceptance criteria pass.
 - Native packages/systemd for optional services.
 - Running nginx and Apache simultaneously.
 - Running MySQL and MariaDB simultaneously.
@@ -215,23 +217,57 @@ The CLI remains an alternative interface, not a prerequisite.
   settings.
 - Existing M1 site/runtime/release tests remain green.
 
-## 8. Traceability
+## 8. Windows/WSL acceptance criteria
+
+Windows support is not claimed until all of these have recorded evidence:
+
+- A fresh Windows 11 install validates WSL 2.0.0+/systemd, installs the
+  helper/daemon/agent, and reports healthy diagnostics.
+- Trusted `https://<name>.test` works from Windows and from inside WSL in both
+  builtin and Docker modes; `https://devstack.test` works in both.
+- Windows-mode and WSL-mode static, PHP, and Node sites work, including the
+  site terminal, builds, global `php`/`composer`, and Xdebug/path mapping.
+- The Windows helper forwards public 80/443 only to the Windows daemon proxy;
+  the daemon terminates public TLS and routes Docker web traffic to a private
+  HTTP port in WSL.
+- WSL localhost forwarding is validated; failure is reported with remediation,
+  not silently bypassed.
+- Source-mode switching is stopped-site, agent-verified, copy-and-verify, and
+  rollback-safe; cross-boundary symlinks/junctions are rejected.
+- Helper and daemon control pipes reject a foreign SID; the agent rejects a
+  missing/wrong token or certificate pin.
+- Service config/data/secrets are ext4-only, credentials rotate, and
+  phpMyAdmin follows the active MySQL family.
+- Upgrade preserves state/projects/VHDX and replaces the rootfs/agent with
+  rollback; uninstall cleans trust/hosts/firewall and preserves projects by
+  default.
+- No devstack-created Windows basename starts with a dot.
+- The existing Linux full gate, E2E, PHP acceptance, Docker smokes, and
+  `v0.1.0` upgrade path remain green.
+
+## 9. Traceability
 
 | Requirement area | Detailed location |
 |---|---|
-| Service topology/state | design §5, §7–§8 |
-| Filesystem/config/conflicts | design §6, §10 |
-| Web servers/vhosts/front controller/.htaccess | design §9 |
-| CA/trust | design §11 |
-| Performance | design §12 |
-| API/CLI/dashboard | design §13 |
-| Security | design §15 |
-| Compatibility | design §16 |
-| Tests/acceptance | design §17 |
-| Builder review resolutions | design §19 |
+| Windows process model | Windows design §3 |
+| Roots, source modes, path contract | Windows design §4 |
+| Windows/Linux/WSL layouts | Windows design §5 |
+| Canonical data and secrets | Windows design §6 |
+| Public entry, WSL ingress, Docker private ports | Windows design §7 |
+| PHP/Node/static/terminal/performance/tooling | Windows design §8 |
+| Installation, upgrade, uninstall, artifacts | Windows design §9 |
+| Security | Windows design §10 |
+| Windows testing/acceptance | Windows design §11; Windows plan Acceptance Matrix |
+| Review resolution | [Windows plan review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md) |
+| Service topology/state (Linux) | [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md) §5, §7–§8 |
+| Filesystem/config/conflicts (Linux) | same design §6, §10 |
+| Web servers/vhosts/front controller/.htaccess (Linux) | same design §9 |
+| CA/trust (Linux) | same design §11 |
+| Performance (Linux) | same design §12 |
+| API/CLI/dashboard | same design §13; Windows design §8 |
 | Current implementation | [architecture](architecture.md) |
 
-## 9. Open product decisions
+## 10. Open product decisions
 
 These are tracked in the design’s “Open Builder Decisions” section; they do not change the
 architecture unless the user overrides them:

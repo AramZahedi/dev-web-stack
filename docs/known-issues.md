@@ -1,7 +1,8 @@
 # Known issues and parked work
 
-- **Last reviewed:** 2026-10-26
-- **Scope:** current native implementation and the planned service platform.
+- **Last reviewed:** 2026-10-27
+- **Scope:** current native implementation, the planned service platform, and
+  the revised Windows/WSL plan.
 
 ## 1. Standalone Docker image removed
 
@@ -146,10 +147,22 @@ under `/tmp/opencode/devstack-runtime`; hosts/trust are intentionally not modifi
 is not a system install. Host nginx owns 80/443, so Docker web-server activation will
 conflict until those ports are freed. See [Continuation State](superpowers/status/2026-10-26-continuation.md).
 
+### K16 — Windows/WSL plan revised; implementation not started
+
+The 2026-10-27 review resolved the first plan’s public-entry/WSL ingress,
+backend/port/route/PHP-path, canonical storage, source-copy, agent TLS/token,
+helper/daemon pipe security, no-dot, tooling, Linux layout, and rootfs/artifact
+gaps. The revised [design](superpowers/specs/2026-10-26-windows-wsl-design.md),
+[plan](superpowers/plans/2026-10-26-windows-wsl.md), and
+[review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md)
+are the source of truth. No Windows artifact, agent, installer, ingress, or
+acceptance run exists yet.
+
 ## 3. Current native product limitations
 
-- Linux x86_64 is the implemented platform. Windows 11 + WSL2 is designed and planned
-  but not implemented; macOS and arm64 remain out of scope.
+- Linux x86_64 is the implemented platform. Windows 11 + WSL2 has a revised
+  design and implementation plan (2026-10-27) but no implementation has
+  started; macOS and arm64 remain out of scope.
 - Native external nginx/Apache mode requires the server to be installed and configured by
   the administrator; devstack does not install packages.
 - Browser trust, root install on 80/443, and live UI gates remain manual.
@@ -165,8 +178,10 @@ conflict until those ports are freed. See [Continuation State](superpowers/statu
 
 ## 4. Deferred/parked work
 
-- Windows/WSL is no longer deferred: it has an approved architecture and implementation
-  plan, but no Windows artifact exists yet.
+- Windows/WSL is no longer deferred: it has a revised architecture and
+  implementation plan (2026-10-27), but no Windows artifact exists yet and
+  implementation has not started. The revised plan supersedes the 2026-10-26
+  version.
 - Signed packages/installers, auto-update, diagnostics bundles, remote catalog, arm64, and
   log aggregation are later milestones.
 - The old standalone Docker image is not coming back; the new Docker model is service

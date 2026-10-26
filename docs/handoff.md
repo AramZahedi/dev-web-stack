@@ -1,6 +1,7 @@
 # Project handoff
 
 - **Date:** 2026-10-26
+- **Revised:** 2026-10-27 (Windows/WSL plan review resolution; no implementation started)
 - **Repository:** `https://github.com/AramZahedi/dev-web-stack`
 - **Handoff commit:** the commit containing this file; run `git rev-parse HEAD` for the exact SHA.
 - **Branch:** `master`
@@ -14,7 +15,7 @@
 - **Post-Wave-2 code:** `cbc1605` (action colors, install-scaffold status, compose side-effect, duplicate-badge fixes).
 - **Next-batch code:** `5386c22`.
 - **Next-batch merge SHA:** `3c0ddc7` ([completion record](superpowers/status/2026-10-26-next-batch-completion.md)).
-- **Next step:** read [Continuation State](superpowers/status/2026-10-26-continuation.md) and [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md). The planned Windows/WSL work is specified in the [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md) and [implementation plan](superpowers/plans/2026-10-26-windows-wsl.md); implementation has **not** started. See also the
+- **Next step:** read [Continuation State](superpowers/status/2026-10-26-continuation.md), [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md), and the [Windows plan review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md). The approved Windows/WSL architecture and revised plan are specified in the [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md) and [implementation plan](superpowers/plans/2026-10-26-windows-wsl.md); implementation has **not** started. The revised plan supersedes the 2026-10-26 version. See also the
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
   [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
@@ -36,7 +37,7 @@ and the [service-platform design](superpowers/specs/2026-10-25-service-container
 - SQLite state, migrations, backups before migration.
 - Checksummed unsigned Linux release, installer, upgrade path.
 - Existing tests and CI pass for M1.
-- Wave 0 Foundation (tasks F1–F6): root layout/permissions (`/data/devstack`), service catalog & state store with SQLite migration `0004_services.sql`, config manifest/diff/backup/conflict engine, Compose rendering & fixed privileged helper control plane, site config contracts & build profiles with SQLite migration `0005_site_contracts.sql`, and read-only service API/CLI/UI skeleton.
+- Wave 0 Foundation (tasks F1–F6): configurable root layout/permissions (existing installs use `~/.devstack`; new Linux installs plan `/data/devstack`), service catalog & state store with SQLite migration `0004_services.sql`, config manifest/diff/backup/conflict engine, Compose rendering & fixed privileged helper control plane, site config contracts & build profiles with SQLite migration `0005_site_contracts.sql`, and read-only service API/CLI/UI skeleton.
 - Wave 1 service platform:
   - pinned Docker catalog entries for nginx 1.30.6, Apache httpd 2.4.69, MySQL 8.4.13,
     MariaDB 11.8.9, PostgreSQL 18.6, and Redis 8.8.3, all digest-pinned;
@@ -107,14 +108,20 @@ The next batch is implemented. Remaining work is tracked in
 
 ### Windows/WSL planning
 
-The approved architecture and five-lane execution plan are written but not implemented:
+The approved architecture and revised five-lane execution plan are written but
+not implemented. The 2026-10-27 revision resolved the public-entry/WSL ingress,
+backend/port/route/PHP-path, canonical storage, source-copy, agent TLS/token,
+helper/daemon pipe security, no-dot, tooling, Linux layout, and artifact
+contracts:
 
+- [Windows plan review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md)
 - [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)
 - [Windows/WSL implementation plan](superpowers/plans/2026-10-26-windows-wsl.md)
 - [Windows/WSL knowledge handoff](superpowers/status/2026-10-26-windows-wsl-handoff.md)
 - [Next agent on Windows](superpowers/status/2026-10-26-windows-next-agent.md)
 
-Do not start Wave 0 or create lane worktrees until the human partner approves the plan.
+Do not start Wave 0 or create lane worktrees until the human partner approves
+the revised plan.
 
 ## 3. Current reference workstation
 
@@ -224,15 +231,18 @@ Docker Engine remains installed for the new service containers.
 
 Waves 0–2 and the next batch are complete and merged. Do not re-run their kickoffs.
 
-1. Read [Continuation State](superpowers/status/2026-10-26-continuation.md) and
-   [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md).
-2. Work the remaining host gates and external-site Docker mounts from
+1. Read [Continuation State](superpowers/status/2026-10-26-continuation.md),
+   [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md), and
+   the [Windows plan review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md).
+2. Work the remaining Linux host gates and external-site Docker mounts from
    [Known issues](known-issues.md).
 3. Preserve existing M1/Wave 0–2/next-batch behavior and tests. ImageMagick CLI is out of
    scope.
 4. Keep the native external provider compatible.
 5. Do not rely on GitHub CI; workflows are manual-only. Run the local gate manually.
-6. Do not start Windows/WSL Plan 3 without explicit user instruction.
+6. Do not start Windows/WSL Wave 0 without explicit user approval. The revised
+   [Windows/WSL plan](superpowers/plans/2026-10-26-windows-wsl.md) is the source of truth;
+   start at T0.1, not Wave 1.
 
 ## 6. Current requirements/constraints to preserve
 
@@ -251,6 +261,8 @@ Waves 0–2 and the next batch are complete and merged. Do not re-run their kick
 - Resource-aware performance, host tuning with backup/reset.
 - Existing native external mode retained; no automatic root migration.
 - Linux is the implemented platform; Windows/WSL is planned but not implemented.
+  The revised 2026-10-27 design/plan resolves the networking, storage, backend,
+  path, protocol, security, tooling, and Linux-layout contracts.
 
 ## 7. Data and secrets policy
 
@@ -309,6 +321,9 @@ make release-test
   benchmark evidence.
 - Keep automatic CI disabled; run the local gate manually.
 - Run the manual Linux M1/Wave 3 gates if claiming full acceptance.
-- Windows/WSL is planned but not implemented. Read the design and plan; wait for explicit
-  approval before starting Wave 0. Do not start arm64, signed packages, auto-update, or M4 work.
+- Windows/WSL is planned but not implemented. Read the revised
+  [design](superpowers/specs/2026-10-26-windows-wsl-design.md),
+  [plan](superpowers/plans/2026-10-26-windows-wsl.md), and
+  [review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md);
+  wait for explicit approval before starting Wave 0 T0.1. Do not start arm64, signed packages, auto-update, or M4 work.
 - Do not recreate the old standalone Docker image.

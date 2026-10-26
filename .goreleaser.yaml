@@ -1,8 +1,8 @@
 # GoReleaser v2 configuration for the Linux amd64 M1 release.
 #
-# Linux amd64 is the only supported release target. Windows/WSL and the
-# devstack-agent are deferred with Plan 3, and signing/diagnostics bundles are
-# M4, so neither appears here.
+# Linux amd64 is the only supported release target today. Windows/WSL has a
+# revised design and implementation plan (2026-10-27) but no Windows artifact
+# is produced yet. Signing/diagnostics bundles are M4, so neither appears here.
 #
 # `make ui` runs before GoReleaser builds the binaries so the dashboard stays
 # embedded, exactly like build/release.sh. The archive name, member set, and

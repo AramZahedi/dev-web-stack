@@ -179,14 +179,20 @@ Full implementation details, APIs, security rules, ordering, and acceptance gate
   use builtin/native serving).
 - Real root host-tuning acceptance and benchmark evidence on a real host.
 - Full Wave 3 acceptance; M4 release/signing/diagnostics remains out of scope.
+- Windows/WSL is planned, not implemented. The revised design/plan (2026-10-27)
+  and review resolution are the source of truth; start at Wave 0 T0.1 only
+  after approval.
 
 ## 7. Resume procedure
 
-1. Read the [Next Batch Completion](2026-10-26-next-batch-completion.md) and
-   [Known issues](../../known-issues.md).
+1. Read the [Next Batch Completion](2026-10-26-next-batch-completion.md),
+   [Known issues](../../known-issues.md), and the
+   [Windows plan review resolution](2026-10-27-windows-plan-review-resolution.md).
 2. Work the remaining host gates or external-site mounts; do not re-run completed waves.
 3. Preserve the merged behavior and run the full local gate before claiming completion.
 4. Do not wait for GitHub CI; automatic workflows are disabled.
+5. Do not start Windows/WSL Wave 0 without explicit approval; begin at T0.1, not
+   Wave 1.
 
 ## 8. Useful commands
 

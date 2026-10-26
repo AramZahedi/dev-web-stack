@@ -2,7 +2,7 @@
 
 This directory is the starting point for both users and contributors. It contains the
 current implementation documentation, the handoff for continuing the project on another
-machine, and the design for the next service-platform milestone.
+machine, and the design/plan for the next milestone.
 
 ## Start here
 
@@ -23,15 +23,20 @@ machine, and the design for the next service-platform milestone.
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
   — Waves 0–2 and the next batch implemented; remaining host gates noted.
 - [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)
-  — planned native Windows daemon/helper, managed WSL2 agent, and Docker services; not implemented.
+  — revised 2026-10-27; planned native Windows daemon/helper, managed WSL2
+  agent, WSL ingress, and Docker services; not implemented.
 - [Windows/WSL implementation plan](superpowers/plans/2026-10-26-windows-wsl.md)
-  — five-lane parallel TDD plan, merge protocol, and Windows acceptance matrix.
+  — revised five-lane TDD plan, frozen contracts, Wave 0 T0.1–T0.10, merge
+  protocol, and Windows acceptance matrix.
+- [Windows plan review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md)
+  — the 2026-10-27 review findings and resolved contracts.
 - [Windows/WSL planning checkpoint](superpowers/status/2026-10-26-windows-planning.md)
   — locked decisions, execution shape, and the planning pause point.
 - [Windows/WSL knowledge handoff](superpowers/status/2026-10-26-windows-wsl-handoff.md)
   — consolidated decisions, rejected alternatives, caveats, risks, and open questions.
 - [Next agent on Windows](superpowers/status/2026-10-26-windows-next-agent.md)
-  — environment checklist, first commands, Wave 0 start, five-lane rules.
+  — environment checklist, toolchain/CRLF prerequisites, Wave 0 start, and
+  five-lane dependency rules.
 - [M1 design](superpowers/specs/2026-10-22-dev-web-stack-m1-design.md)
   — released Linux foundation.
 - [External vhosts design](superpowers/specs/2026-10-22-external-vhosts-design.md)
@@ -86,6 +91,8 @@ service configuration editing, performance preview/apply/reset/benchmarks, site-
 terminal, editable listener ports, and the dashboard surfaces. Remaining work is
 external-site Docker mounts, real root host-tuning acceptance, and live benchmark
 evidence. Per-site PHP-FPM pool sizing is persisted and applied to live masters.
-ImageMagick CLI is descoped. Windows 11 + WSL2 has a complete design and
-five-lane implementation plan, but no Windows implementation has started.
-Automatic GitHub CI is disabled; workflows are manual-dispatch only.
+ImageMagick CLI is descoped. Windows 11 + WSL2 has a revised design and
+five-lane implementation plan (2026-10-27) with resolved networking, storage,
+backend, path, protocol, and tooling contracts, but no Windows implementation
+has started. Automatic GitHub CI is disabled; workflows are manual-dispatch
+only.

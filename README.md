@@ -13,10 +13,12 @@ trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 > [Plan 4 acceptance report](docs/superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md)
 > and the [M1 handoff](docs/superpowers/status/2026-10-24-m1-handoff.md).
 >
-> **M1 is Linux-only and unsigned.** Windows/WSL is planned but not implemented:
-> there is no Windows artifact, `devstack-agent`, named-pipe helper, or `install.ps1`
-> yet. See the [Windows design](docs/superpowers/specs/2026-10-26-windows-wsl-design.md)
-> and [implementation plan](docs/superpowers/plans/2026-10-26-windows-wsl.md).
+> **Windows/WSL is planned but not implemented.** There is no Windows
+> artifact, `devstack-agent`, named-pipe helper, WSL ingress, or `install.ps1`
+> yet. The Windows/WSL design and plan were revised on 2026-10-27; see the
+> [Windows design](docs/superpowers/specs/2026-10-26-windows-wsl-design.md),
+> [implementation plan](docs/superpowers/plans/2026-10-26-windows-wsl.md), and
+> [review resolution](docs/superpowers/status/2026-10-27-windows-plan-review-resolution.md).
 > Signed packages/installers, diagnostics bundles, auto-update, remote catalogs,
 > arm64, and log aggregation are M4 work.
 >
@@ -29,11 +31,16 @@ trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 > attach to a bug report. M1 does not create a diagnostics zip/bundle, and it
 > never checks for or installs updates automatically.
 >
-> **Next milestone:** the managed Docker service platform (nginx/Apache,
-> MySQL/MariaDB, PostgreSQL, Redis, phpMyAdmin, global PHP/Composer, editable
-> configs, dashboard parity, and performance tuning) is **designed but not
-> implemented**. Start with the [documentation index](docs/README.md) and the
-> [handoff](docs/handoff.md).
+> **Service platform:** Waves 0–2 and the next service-platform batch are
+> implemented: managed Docker nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis,
+> phpMyAdmin, credentials/rotation, global PHP/Composer, site shell/exec,
+> builds, service configuration editing, performance apply/reset/benchmarks,
+> site terminal, and editable listener ports. Remaining Linux host gates are
+> listed in [known issues](docs/known-issues.md).
+>
+> **Next milestone:** first-class Windows 11 + WSL2 support. The architecture
+> and plan are written and revised; implementation has not started. Start with
+> the [documentation index](docs/README.md) and the [handoff](docs/handoff.md).
 
 ## Quick start
 

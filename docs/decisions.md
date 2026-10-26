@@ -1,8 +1,9 @@
 # Decision log
 
-- **Last reviewed:** 2026-10-26
-- **Status:** M1, Waves 0–2, and the next service-platform batch are implemented. ImageMagick CLI is descoped; automatic GitHub CI is disabled.
+- **Last reviewed:** 2026-10-27
+- **Status:** M1, Waves 0–2, and the next service-platform batch are implemented. ImageMagick CLI is descoped; automatic GitHub CI is disabled. Windows/WSL has a revised design/plan and is not implemented.
 - **Detailed service design:** [2026-10-25 design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
+- **Windows/WSL design:** [2026-10-26 design, revised 2026-10-27](superpowers/specs/2026-10-26-windows-wsl-design.md)
 
 This is an ADR-style record. “Current” decisions are shipped or in the released M1 code.
 The service-platform decisions below are implemented; residual host gates and limitations
@@ -93,6 +94,20 @@ are tracked in [known issues](known-issues.md).
 | S56 | Windows and WSL/Linux use platform roots `C:\devstack` and `/data/devstack` | Projects default under `projects/`; Windows has no dot-prefixed devstack names. SQLite/CA stay native, Linux runtimes/Docker data stay ext4. |
 | S57 | Projects support per-site Windows or WSL source modes | Users choose editor/tool compatibility versus native WSL filesystem performance; cross-boundary symlink bridging is rejected. |
 | S58 | Docker PHP and native Windows PHP are excluded | PHP stays native Linux PHP-FPM in WSL/Linux so Linux-only extensions and per-site FPM behavior remain available. |
+| S59 | Windows public entry is always the helper → Windows daemon proxy | The helper never forwards to WSL. A dynamic root forwarder target is avoided; the daemon is the single public HTTP/TLS router and dashboard host. |
+| S60 | Windows daemon terminates public TLS; Docker web servers use private HTTP ports | nginx/Apache still serve site traffic and `.htaccess`, but do not own public 80/443 or the dashboard on Windows. A container change cannot strand `devstack.test`. |
+| S61 | The WSL agent runs a fixed 80/443 ingress to the Windows daemon | WSL `.test` names map to `127.0.0.1`; the ingress forwards to the Windows host gateway. This makes curl/Composer/Node/PHP/terminal `.test` access work in both serving modes. |
+| S62 | Windows→WSL backend traffic requires WSL localhost forwarding | Site backends bind WSL loopback; the agent API also listens on the distro IP for control fallback. The doctor fails clearly when forwarding is unavailable. |
+| S63 | All Windows site backends run in the WSL agent; the agent owns WSL port allocation | The Windows daemon does not run a local site supervisor. `PreparedSite` returns the backend host and ports; the daemon persists and routes them. |
+| S64 | WSL ext4 is canonical for generated site/service data | Service config/data/secrets, generated PHP configs, runtimes, logs, and Docker data live in WSL. Windows keeps metadata, config, leaf certs, daemon logs, cache, and the VHDX; APIs proxy to the agent. |
+| S65 | WSL path validation and source copy are agent-side | UNC is not a reliable authorization/permission boundary. The agent uses lstat/readlink/realpath, tar, SHA-256 manifests, ownership/mode checks, and symlink/junction rejection. |
+| S66 | The agent API uses HTTPS with a pinned certificate and bearer token | Token/fingerprint are DPAPI-protected on Windows; agent token/key files are 0600/0700 in WSL. Secrets never appear in process arguments. |
+| S67 | Helper and daemon control pipes are ACL-restricted and SID-checked; the Windows helper surface is reduced | Only the installing SID/SYSTEM (plus Administrators for the helper) may connect. The Windows helper serves CA/trust/hosts/firewall/forwarder/health only. |
+| S68 | Global PHP/Composer, shells, and builds run in WSL; Windows gets `.cmd` shims | Preserves Linux PHP semantics and avoids native Windows PHP. `.cmd` shims invoke the managed distro and site/global context. |
+| S69 | New Linux installs use `/data/devstack`; existing installs are preserved | Explicit `--home`/`DEVSTACK_HOME` wins; legacy `~/.devstack` and helper paths are detected. The top-level root is root-owned, user data is user-owned, and `system` is root-only. |
+| S70 | No devstack-created Windows basename starts with a dot | Internal temp, manifest, state, and backup names are renamed and migrated; project-owned `.git`/`.env`/`.idea`/`.htaccess` are exempt. |
+| S71 | WSL rootfs, Docker Engine/Compose, agent, and PHP/Node artifacts are pinned and published | Checksums/SBOMs and installer verification prevent floating or invented artifacts; a clean WSL import/Docker smoke is part of acceptance. |
+| S72 | Windows daemon proxy is the only public listener; the control API stays on loopback | The WSL-facing proxy listener is firewall-restricted to the WSL subnet. WSL reaches the dashboard through the public `devstack.test` route, not the control API. |
 
 ## 3. Rejected alternatives
 
