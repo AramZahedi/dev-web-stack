@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -186,8 +187,10 @@ func EnsureRunning(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("daemon: locate executable: %w", err)
 	}
-	args := []string{"daemon", "run", "--home", cfg.Home}
-	cmd := exec.Command(bin, args...)
+	if opts.Home == "" {
+		opts.Home = cfg.Home
+	}
+	cmd := exec.Command(bin, windowsDaemonArgs(opts)...)
 	logFile, err := os.OpenFile(filepath.Join(cfg.Home, "logs", "daemon.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("daemon: open daemon log: %w", err)
@@ -258,6 +261,13 @@ func validateWindowsHome(home string) error {
 	if !filepath.IsAbs(home) || filepath.VolumeName(home) == "" || strings.HasPrefix(home, `\\`) {
 		return fmt.Errorf("daemon: Windows SQLite home must be an absolute local-drive path, got %q", home)
 	}
+	isNTFS, err := isNTFS(home)
+	if err != nil {
+		return fmt.Errorf("daemon: verify local filesystem for SQLite home %q: %w", home, err)
+	}
+	if !isNTFS {
+		return fmt.Errorf("daemon: SQLite home %q must be on an NTFS volume", home)
+	}
 	return nil
 }
 
@@ -303,6 +313,29 @@ func daemonEnvironment(home string) []string {
 		}
 	}
 	return append(env, "DEVSTACK_HOME="+home)
+}
+
+func windowsDaemonArgs(opts Options) []string {
+	args := []string{"daemon", "run", "--home", opts.Home}
+	if opts.HelperSocket != "" {
+		args = append(args, "--helper-socket", opts.HelperSocket)
+	}
+	if opts.HostsPath != "" {
+		args = append(args, "--hosts", opts.HostsPath)
+	}
+	if opts.HTTPPort != 0 {
+		args = append(args, "--http-port", strconv.Itoa(opts.HTTPPort))
+	}
+	if opts.HTTPSPort != 0 {
+		args = append(args, "--https-port", strconv.Itoa(opts.HTTPSPort))
+	}
+	if opts.UIPort != 0 {
+		args = append(args, "--ui-port", strconv.Itoa(opts.UIPort))
+	}
+	if opts.LogLevel != "" {
+		args = append(args, "--log-level", opts.LogLevel)
+	}
+	return args
 }
 
 func newWindowsProxy(cfg config.Config, logger *slog.Logger) (*proxy.Router, *proxy.Server, error) {

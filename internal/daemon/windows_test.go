@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,10 +16,11 @@ import (
 
 func TestWindowsRunOpensSQLiteWritesLogAndCleansReadiness(t *testing.T) {
 	home := t.TempDir()
+	httpPort, httpsPort, uiPort := freeTCPPort(t), freeTCPPort(t), freeTCPPort(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, Options{Home: home, HTTPPort: freeTCPPort(t), HTTPSPort: freeTCPPort(t), UIPort: freeTCPPort(t)})
+		done <- Run(ctx, Options{Home: home, HTTPPort: httpPort, HTTPSPort: httpsPort, UIPort: uiPort})
 	}()
 	ready := filepath.Join(home, "run", "daemon.ready")
 	deadline := time.Now().Add(5 * time.Second)
@@ -61,6 +63,26 @@ func TestWindowsRunOpensSQLiteWritesLogAndCleansReadiness(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWindowsSQLiteHomeRequiresNTFS(t *testing.T) {
+	original := windowsFileSystemForPath
+	windowsFileSystemForPath = func(string) (string, error) { return "exFAT", nil }
+	t.Cleanup(func() { windowsFileSystemForPath = original })
+	if err := validateWindowsHome(t.TempDir()); err == nil || !strings.Contains(err.Error(), "NTFS") {
+		t.Fatalf("validateWindowsHome error = %v, want NTFS requirement", err)
+	}
+}
+
+func TestWindowsEnsureArgsPreserveRunOverrides(t *testing.T) {
+	got := windowsDaemonArgs(Options{
+		Home: `C:\devstack-test`, HelperSocket: `\\.\pipe\devstack-helper-test`,
+		HostsPath: `C:\temp\hosts`, HTTPPort: 18080, HTTPSPort: 18443, UIPort: 17070, LogLevel: "debug",
+	})
+	want := []string{"daemon", "run", "--home", `C:\devstack-test`, "--helper-socket", `\\.\pipe\devstack-helper-test`, "--hosts", `C:\temp\hosts`, "--http-port", "18080", "--https-port", "18443", "--ui-port", "17070", "--log-level", "debug"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Windows daemon args = %#v, want %#v", got, want)
 	}
 }
 
