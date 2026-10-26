@@ -90,7 +90,9 @@ Scope and safety:
 
 Docker nginx/Apache site vhosts are generated under `config/conf.d/generated/`. Do not
 edit generated files by hand unless you intend to detach them; change the site or service
-instead. User includes belong under `config/conf.d/custom/`.
+instead. User includes belong under `config/conf.d/custom/`. Performance-managed
+includes (`conf.d/performance/` and `conf.d/performance.conf`) are reserved and hidden
+from the config editor; use the Performance panel instead.
 
 ## Performance
 

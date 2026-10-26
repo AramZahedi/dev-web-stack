@@ -85,8 +85,9 @@ destination-root tests pass.
 - PHP-FPM `pm.*` pool sizing is generated under `services/php/performance/` but is not
   merged into live per-site FPM masters because the site model has no persisted
   pool-sizing contract. OPcache/realpath ini values are applied through `sites.ApplyPHP`.
-- Managed performance includes are not registered in the service-config manifest; they
-  may appear as existing/custom files in the editor.
+- Performance-managed includes are reserved and hidden from the service-config editor
+  (`conf.d/performance/` and `conf.d/performance.conf`), so an editor write cannot be
+  silently replaced by the next profile apply.
 - Existing pre-change nginx/Apache base configs do not gain the managed include lines
   automatically; base files are user-owned. Fresh installs seed them, and apply reports a
   profile conflict until an existing base config adds them.

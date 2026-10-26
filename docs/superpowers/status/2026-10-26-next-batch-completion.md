@@ -187,8 +187,9 @@ services, no generated `services/compose.yaml`.
 3. **Benchmarks use the built-in Go generator,** not wrk/hey, because no verified pinned
    benchmark image is part of the product. Results are measured and labelled; they are
    not directly comparable to wrk/hey numbers.
-4. **Managed performance include files are not registered in the service-config
-   manifest.** They can appear as existing/custom files in the config editor.
+4. **Performance-managed includes are reserved.** They are hidden from the service-config
+   editor (`conf.d/performance/` and `conf.d/performance.conf`) so an editor write cannot
+   be silently replaced by the next profile apply.
 5. **Pre-change nginx/Apache base configs** do not gain the managed performance include
    lines automatically because base files are user-owned. A fresh install seeds them;
    apply reports a profile conflict until an existing base config adds them.

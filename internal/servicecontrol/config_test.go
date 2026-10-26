@@ -177,6 +177,7 @@ func TestConfigListReturnsMetadataNotContent(t *testing.T) {
 	f.write(services.IDNginx, "conf.d/generated/site.conf", "server { listen 8080; }\n")
 	f.write(services.IDNginx, "conf.d/custom/extra.conf", "client_max_body_size 4m;\n")
 	f.write(services.IDNginx, "conf.d/big.conf", strings.Repeat("x", MaxConfigFileBytes+1))
+	f.write(services.IDNginx, "conf.d/performance/main.conf", "worker_processes 8;\n")
 
 	listing, err := f.service.List(context.Background(), services.IDNginx)
 	if err != nil {
@@ -262,6 +263,7 @@ func TestConfigContentPolicy(t *testing.T) {
 		".env", "secrets/db.conf", "certs/site.pem", "keys/server.key",
 		"backups/config/old.conf", ".config-manifest.json", "conf.d/.hidden",
 		"conf.d/foo.sock", "conf.d/link.conf", "conf.d",
+		"conf.d/performance/main.conf", "conf.d/performance.conf",
 	}
 	for _, rel := range denied {
 		if _, err := f.service.Content(context.Background(), services.IDNginx, rel); err == nil {
