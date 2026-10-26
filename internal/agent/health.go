@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
@@ -12,9 +13,17 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "GET required")
 		return
 	}
+	capabilities := append([]string(nil), s.config.Capabilities...)
+	if s.docker != nil {
+		if _, err := s.docker.Health(r.Context()); err != nil {
+			writeAgentError(w, http.StatusServiceUnavailable, agentproto.CodeInternal, fmt.Sprintf("agent readiness check failed: %v", err))
+			return
+		}
+		capabilities = append(capabilities, "docker", "compose")
+	}
 	writeJSON(w, http.StatusOK, agentproto.HealthResponse{
 		Version: s.config.Version, Distro: s.config.Distro, Root: s.config.Root,
-		Capabilities: append([]string(nil), s.config.Capabilities...),
+		Capabilities: capabilities,
 	})
 }
 

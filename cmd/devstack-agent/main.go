@@ -24,7 +24,11 @@ func main() {
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		log.Fatalf("devstack-agent: reconcile runtime: %v", err)
 	}
-	server, err := agent.NewServerFromFilesWithRuntime(*configPath, nil, runtime)
+	docker, err := agent.NewDockerEngine(agent.DefaultAgentRoot, nil)
+	if err != nil {
+		log.Fatalf("devstack-agent: %v", err)
+	}
+	server, err := agent.NewServerFromFilesWithRuntimeAndDocker(*configPath, nil, runtime, docker)
 	if err != nil {
 		log.Fatalf("devstack-agent: %v", err)
 	}

@@ -22,6 +22,7 @@ type Server struct {
 	config    Config
 	handler   http.Handler
 	tlsConfig *tls.Config
+	docker    *DockerEngine
 }
 
 // NewServer creates the authenticated API handler and TLS configuration.
@@ -32,6 +33,12 @@ func NewServer(config Config, token string, identity TLSIdentity, modules []agen
 // NewServerWithRuntime mounts the static backend and port API when runtime is
 // non-nil. The module list is still mounted behind the same auth middleware.
 func NewServerWithRuntime(config Config, token string, identity TLSIdentity, modules []agentapi.Module, runtime *Runtime) (*Server, error) {
+	return NewServerWithRuntimeAndDocker(config, token, identity, modules, runtime, nil)
+}
+
+// NewServerWithRuntimeAndDocker mounts site runtime APIs and gates readiness
+// on Docker health when an engine is provided.
+func NewServerWithRuntimeAndDocker(config Config, token string, identity TLSIdentity, modules []agentapi.Module, runtime *Runtime, docker *DockerEngine) (*Server, error) {
 	if err := config.applyDefaultsAndValidate(); err != nil {
 		return nil, err
 	}
@@ -42,7 +49,7 @@ func NewServerWithRuntime(config Config, token string, identity TLSIdentity, mod
 	if err != nil {
 		return nil, fmt.Errorf("agent: load HTTPS identity: %w", err)
 	}
-	server := &Server{config: config, tlsConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}}
+	server := &Server{config: config, docker: docker, tlsConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}}
 	mux := http.NewServeMux()
 	mux.HandleFunc(agentproto.PathHealth, server.handleHealth)
 	mux.HandleFunc(agentproto.PathVersion, server.handleVersion)
@@ -68,6 +75,12 @@ func NewServerFromFiles(configPath string, modules []agentapi.Module) (*Server, 
 // NewServerFromFilesWithRuntime loads protected agent files and mounts the
 // static site/port runtime when supplied.
 func NewServerFromFilesWithRuntime(configPath string, modules []agentapi.Module, runtime *Runtime) (*Server, error) {
+	return NewServerFromFilesWithRuntimeAndDocker(configPath, modules, runtime, nil)
+}
+
+// NewServerFromFilesWithRuntimeAndDocker loads protected files, mounts site
+// APIs, and includes Docker in the health/readiness check when provided.
+func NewServerFromFilesWithRuntimeAndDocker(configPath string, modules []agentapi.Module, runtime *Runtime, docker *DockerEngine) (*Server, error) {
 	config, err := LoadConfig(configPath)
 	if err != nil {
 		return nil, err
@@ -92,7 +105,7 @@ func NewServerFromFilesWithRuntime(configPath string, modules []agentapi.Module,
 	if err != nil {
 		return nil, err
 	}
-	return NewServerWithRuntime(config, strings.TrimSpace(string(token)), identity, modules, runtime)
+	return NewServerWithRuntimeAndDocker(config, strings.TrimSpace(string(token)), identity, modules, runtime, docker)
 }
 
 // Handler returns the authenticated HTTP handler for tests and embedding.

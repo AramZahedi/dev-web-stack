@@ -1,0 +1,9 @@
+{
+  "data-root": "/data/devstack/docker",
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "local",
+  "live-restore": true,
+  "storage-driver": "overlay2",
+  "iptables": true,
+  "userland-proxy": false
+}

@@ -5,7 +5,7 @@ readonly SUITE=bookworm
 readonly SNAPSHOT=20251027T000000Z
 readonly MIRROR="https://snapshot.debian.org/archive/debian/${SNAPSHOT}/"
 readonly SECURITY_MIRROR="https://snapshot.debian.org/archive/debian-security/${SNAPSHOT}/"
-readonly PACKAGES="systemd systemd-sysv dbus ca-certificates curl iproute2 procps sudo"
+readonly PACKAGES="systemd systemd-sysv dbus ca-certificates curl gnupg iproute2 procps sudo"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "build-rootfs.sh must run as root" >&2

@@ -24,3 +24,10 @@ Never copy a running `ext4.vhdx` as a backup. Shut WSL down and use `wsl
 --export` for a consistent archive. Unregistering the managed distro requires
 an explicit confirmation and should be preceded by the documented export or
 project-discard flow.
+
+`install-docker.sh` installs the exact Engine/Compose versions in
+`versions.lock`, verifies Docker's repository key fingerprint, installs the
+fixed daemon configuration, and enables the systemd service. The daemon uses
+`/data/devstack/docker` on WSL ext4 and does not expose a TCP API. The agent
+reports readiness only when systemd's Docker service is active, Engine reports
+that data-root, and the Compose v2 plugin is present.
