@@ -59,7 +59,10 @@ Security and behavior:
 - Listing never returns contents; responses never expose secrets. The single-file
   content endpoint requires the dashboard session, while list metadata remains a
   read-only loopback API.
-- Tracked generated conflicts require explicit `keep`, `use`, or `merge`.
+- Tracked generated conflicts require explicit `keep`, `use`, or `merge`. Keep writes
+  nothing and detaches; use writes the submitted editor text as generated; merge writes
+  it detached. The service renderer does not expose a separate generated baseline, so the
+  dashboard labels the actions by what they actually do.
 - Apply backs up, writes atomically, validates through the catalog command when active,
   reloads only after validation, and restores the previous file/manifest entry on
   validation or reload failure. Inactive services report `validation_pending`, `live=false`.

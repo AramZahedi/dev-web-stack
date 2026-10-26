@@ -73,15 +73,20 @@ Scope and safety:
 - The file list shows `base`, `generated`, and `custom` classes plus modified/detached
   and conflict markers. Contents are fetched one file at a time; the content endpoint
   requires the dashboard session even though list metadata remains a read-only API.
-- Generated files with local edits are conflicts. Choose **Keep mine**, **Use proposed**,
-  or **Use merged editor content**. The API requires an explicit
-  `keep|use|merge` resolution.
+- Generated files with local edits are conflicts. **Keep local & detach** writes nothing
+  and protects the local file from future generation. **Accept editor as generated**
+  writes the editor text and allows a later generation to replace it. **Accept editor &
+  detach** writes the editor text and protects it from later generation. The API requires
+  an explicit `keep|use|merge` resolution; `use` and `merge` both submit the editor text.
 - Apply backs up, writes atomically, validates when the service is active, and reloads
   only after validation. Failed validation/reload restores the previous file and manifest
   entry.
 - Inactive services save with `validation_pending`; the dashboard never claims the file
   is live.
-- Reset restores the newest backup and refuses when no backup exists.
+- Apply/reset backups are under `services/<id>/config/backups/config/`; reset-audit
+  snapshots use `backups/config-reset/` and are never chosen as the next reset source.
+  The editor hides both directories. Reset restores the newest ordinary backup and
+  refuses when none exists.
 - The config manifest is `services/<id>/config/.config-manifest.json` and is shared with
   Docker nginx/Apache generated vhosts. Legacy manifests at the service root are migrated
   automatically.

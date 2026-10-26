@@ -95,7 +95,15 @@ destination-root tests pass.
   measured but not directly comparable to wrk/hey.
 - Host tuning was not applied to the real `/etc` during verification.
 
-### K13 — Terminal limitations
+### K13 — Service config baseline and backups
+
+- Generate-conflict reset uses the newest ordinary backup; it cannot reconstruct a
+  generated baseline from a hash alone. A directly edited generated file with no prior
+  backup cannot be reset. The UI requires an explicit keep/use/merge action instead.
+- Backups live under `services/<id>/config/backups/{config,config-reset}` because the
+  manager is rooted at the config directory. They are hidden from the editor/API policy.
+
+### K14 — Terminal limitations
 
 - A stopped site still gets a shell if its project directory is valid.
 - Descendants that deliberately create a new session/process group can escape process
