@@ -4,6 +4,12 @@ name: CI
 # pushes and pull requests. Manual dispatch is still available.
 on:
   workflow_dispatch:
+    inputs:
+      windows:
+        description: 'Run the Windows cross-build and test compilation'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -102,3 +108,37 @@ jobs:
       # sudo is needed for the E2E flow.
       - name: Linux installer and daemon E2E
         run: E2E_SKIP_BUILD=1 bash test/e2e/linux.sh
+
+  # Manual Windows matrix. This runs on Linux and only cross-compiles; real
+  # Windows host tests are dispatched on a Windows runner or recorded from the
+  # controller's Windows acceptance evidence.
+  windows-cross:
+    name: Windows cross-build
+    if: ${{ inputs.windows }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Windows cross-build
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./...
+          make build-windows
+
+      - name: Windows test compilation
+        run: make test-windows-cross
+
+      - name: Upload Windows binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: devstack-windows-amd64
+          path: |
+            dist/devstack.exe
+            dist/devstack-helper.exe

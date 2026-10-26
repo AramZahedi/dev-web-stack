@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package helper implements the privileged devstack helper's local HTTP
 // service. It owns operations that need root: the managed hosts block,
 // certificate authority, trust stores, and privileged port forwarders.

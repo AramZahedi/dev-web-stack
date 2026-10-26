@@ -387,7 +387,7 @@ func signalProcess(pid int, signal syscall.Signal) error {
 // processRunning treats a zombie as stopped; a detached daemon may remain a
 // zombie until its new parent reaps it.
 func processRunning(pid int) bool {
-	if err := syscall.Kill(pid, 0); err != nil {
+	if err := probeProcess(pid); err != nil {
 		return !errors.Is(err, syscall.ESRCH)
 	}
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))

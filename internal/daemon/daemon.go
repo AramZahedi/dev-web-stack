@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package daemon wires the long-running devstack services together: the
 // SQLite store, logs, privileged helper client, runtime and certificate
 // managers, local backend, site lifecycle, doctor, proxy, REST API, and the

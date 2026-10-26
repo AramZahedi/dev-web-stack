@@ -159,6 +159,13 @@ assert_fixed "${CI_WORKFLOW}" 'test/release/workflow_test.sh' "CI runs this work
 assert_fixed "${CI_WORKFLOW}" 'shellcheck --severity=error' "CI lints shell scripts"
 assert_fixed "${CI_WORKFLOW}" 'bash -n' "CI checks shell syntax"
 
+# --- Manual Windows cross-build dispatch. ---
+assert_regex "${CI_WORKFLOW}" '^[[:space:]]+windows:' "CI has a windows dispatch input"
+assert_fixed "${CI_WORKFLOW}" 'GOOS=windows' "CI cross-builds Windows binaries"
+assert_fixed "${CI_WORKFLOW}" 'Windows cross-build' "CI names the Windows cross-build step"
+assert_regex "${REPO_ROOT}/Makefile" '^build-windows:' "Makefile has a build-windows target"
+assert_regex "${REPO_ROOT}/Makefile" '^test-windows-cross:' "Makefile has a test-windows-cross target"
+
 if [ "${FAILURES}" -ne 0 ]; then
 	printf 'workflow-test: %d assertion(s) failed\n' "${FAILURES}" >&2
 	exit 1

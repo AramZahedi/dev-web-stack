@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // CollectOptions supplies the test seams used by CollectFrom. Zero values use
@@ -55,13 +54,7 @@ func CollectFrom(opts CollectOptions) (Resources, error) {
 	}
 	getrlimit := opts.Getrlimit
 	if getrlimit == nil {
-		getrlimit = func() (uint64, uint64, error) {
-			var limit syscall.Rlimit
-			if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
-				return 0, 0, err
-			}
-			return limit.Cur, limit.Max, nil
-		}
+		getrlimit = defaultNofileLimit
 	}
 	lookupUser := opts.LookupUser
 	if lookupUser == nil {

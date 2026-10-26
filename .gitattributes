@@ -1,0 +1,43 @@
+# The repository builds Linux artifacts and runs shell scripts in Git Bash and
+# WSL. Keep every text artifact LF so a Windows checkout with autocrlf=true
+# cannot corrupt scripts, SQL, or generated Linux configuration.
+* text=auto eol=lf
+
+*.go           text eol=lf
+*.sh           text eol=lf
+*.bash         text eol=lf
+*.sql          text eol=lf
+*.yml          text eol=lf
+*.yaml         text eol=lf
+Makefile       text eol=lf
+*.md           text eol=lf
+*.json         text eol=lf
+*.js           text eol=lf
+*.ts           text eol=lf
+*.svelte       text eol=lf
+*.css          text eol=lf
+*.html         text eol=lf
+*.service      text eol=lf
+*.conf         text eol=lf
+*.lock         text eol=lf
+*.txt          text eol=lf
+
+# Windows-only launchers keep the native CRLF convention.
+*.ps1          text eol=crlf
+*.cmd          text eol=crlf
+*.bat          text eol=crlf
+
+# Binary artifacts must never be normalized.
+*.exe          binary
+*.dll          binary
+*.tar.gz       binary
+*.tgz          binary
+*.zip          binary
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.ico          binary
+*.woff         binary
+*.woff2        binary
+*.ttf          binary
