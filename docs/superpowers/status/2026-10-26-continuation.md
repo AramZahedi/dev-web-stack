@@ -21,7 +21,7 @@ This is the current-state record for resuming the service-platform work. Read it
 - **Worktrees/branches:** service-config, performance, and terminal lane worktrees were
   merged into the integration branch and removed after the final merge. The worktree is
   clean.
-- **Tests at final gate:** Go unit/race/vet/build, UI check/106-unit/31-Playwright/build,
+- **Tests at final gate:** Go unit/race/vet/build, UI check/107-unit/31-Playwright/build,
   installer/workflow tests, and the earlier Wave 1/2 live Docker smoke suites pass.
 
 ## 2. What is implemented

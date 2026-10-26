@@ -145,11 +145,14 @@ go test ./... -race -count=1                   # pass
 go vet ./...                                   # clean
 go build ./...                                 # clean
 cd ui && npm ci && npm run check               # 0 errors, 0 warnings
-cd ui && npm test -- --run                     # 13 files, 106 tests pass
+cd ui && npm test -- --run                     # 13 files, 107 tests pass
 cd ui && npm run test:e2e                      # 31 Playwright tests pass
 make build                                     # UI + CLI + helper build
 bash test/release/installer_test.sh            # all installer checks pass
 bash test/release/workflow_test.sh             # all workflow checks pass
+sg docker -c 'DEVSTACK_DOCKER_TESTS=1 bash test/docker/wave1-web.sh'       # pass
+sg docker -c 'DEVSTACK_DOCKER_TESTS=1 bash test/docker/wave1-databases.sh' # pass
+sg docker -c 'DEVSTACK_DOCKER_TESTS=1 bash test/docker/wave2-phpmyadmin.sh' # pass
 ```
 
 Live smoke on the test runtime:
