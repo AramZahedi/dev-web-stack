@@ -293,6 +293,7 @@ make release-test
 ## 10. Open items for the next agent
 
 - The next batch is complete; start from [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md).
+- Automatic FPM sizing and helper proxy targets: [Completion report](superpowers/status/2026-10-26-auto-performance-ports-completion.md).
 - Remaining: external-site Docker mounts, real root host-tuning acceptance, and live
   benchmark evidence.
 - Keep automatic CI disabled; run the local gate manually.

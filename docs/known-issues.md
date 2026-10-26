@@ -34,7 +34,8 @@ Waves 0–1, Wave 2, and the next batch are implemented. Still missing:
 external-site Docker bind mounts, real root host-tuning acceptance, and live Wave 3
 benchmark/acceptance evidence. Per-site PHP-FPM pool sizing is persisted and applied
 through the live validate/swap flow. See the
-[Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md).
+[Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md) and the
+[automatic performance/ports report](superpowers/status/2026-10-26-auto-performance-ports-completion.md).
 
 ### K2 — Existing native provider vs Docker provider
 
