@@ -576,6 +576,13 @@
               {/each}
             </ul>
           {/if}
+          {#if result.warnings && result.warnings.length > 0}
+            <ul class="result-warnings">
+              {#each result.warnings as warning (warning)}
+                <li>{warning}</li>
+              {/each}
+            </ul>
+          {/if}
           {#if result.backup_dir}
             <p class="result-path mono">Backups: {result.backup_dir}</p>
           {/if}
@@ -1126,6 +1133,13 @@
 
   .result li.failed {
     color: var(--danger-fg);
+  }
+
+  .result-warnings {
+    margin: 7px 0 0 16px;
+    color: var(--warning-fg);
+    font-size: 10px;
+    line-height: 1.45;
   }
 
   .result-path {
