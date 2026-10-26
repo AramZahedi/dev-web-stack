@@ -25,6 +25,7 @@
     BuildProfile,
     FrontControllerMode,
     RuntimeBuild,
+    SourceMode,
     Settings,
   } from '../lib/types';
   import Button from '../lib/components/Button.svelte';
@@ -32,6 +33,7 @@
   import Field from '../lib/components/Field.svelte';
   import IconButton from '../lib/components/IconButton.svelte';
   import PathBrowser from '../lib/components/PathBrowser.svelte';
+  import ProjectSourceMode from '../lib/components/ProjectSourceMode.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
   import Toggle from '../lib/components/Toggle.svelte';
 
@@ -51,6 +53,8 @@
   let name = $state('');
   let path = $state('');
   let kind = $state<Kind>('static');
+  let sourceMode = $state<SourceMode>('local');
+  let sourceModeTouched = $state(false);
   let nodeVersion = $state('');
   let phpBuild = $state('');
   let command = $state('npm run dev');
@@ -134,6 +138,19 @@
           : 'Node — not selected',
   );
   const initialBrowsePath = $derived(settings?.user_home ?? '/');
+  const isWindowsHost = $derived(Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)));
+  const pathPlaceholder = $derived(
+    sourceMode === 'windows'
+      ? 'C:\\devstack\\projects\\my-app'
+      : sourceMode === 'wsl'
+        ? '\\\\wsl.localhost\\devstack\\data\\devstack\\projects\\my-app'
+        : '/home/you/projects/my-app',
+  );
+
+  function defaultSourceMode(siteKind: Kind, windowsHost: boolean): SourceMode {
+    if (!windowsHost) return 'local';
+    return siteKind === 'static' ? 'windows' : 'wsl';
+  }
 
   const errorItems = $derived(
     Object.entries(errors).map(([key, message]) => ({
@@ -153,6 +170,7 @@
       ]);
       runtimes = builds;
       settings = config;
+      if (!sourceModeTouched) sourceMode = defaultSourceMode(kind, Boolean(config?.home && /^[a-z]:[\\/]/i.test(config.home)));
       if (!nodeVersion && nodeRuntimes.length > 0) nodeVersion = nodeRuntimes[0].version;
       if (!buildNodeVersion && nodeRuntimes.length > 0) buildNodeVersion = nodeRuntimes[0].version;
       if (!phpBuild && phpRuntimes.length > 0) phpBuild = phpRuntimes[0].id;
@@ -476,6 +494,7 @@
 
   function setKind(value: Kind): void {
     kind = value;
+    if (!sourceModeTouched) sourceMode = defaultSourceMode(value, isWindowsHost);
     const next = { ...errors };
     delete next.kind;
     delete next.node_version;
@@ -533,6 +552,7 @@
         name: name.trim(),
         path: path.trim(),
         kind,
+        source_mode: sourceMode,
         node_version: kind === 'node' ? nodeVersion : undefined,
         command: kind === 'node' ? command.trim() : undefined,
         document_root: kind === 'static' || kind === 'php' ? documentRoot.trim() : undefined,
@@ -660,7 +680,9 @@
                 id="site-path"
                 label="Project folder"
                 required
-                hint="An existing absolute path. devstack never writes to your project files."
+                hint={isWindowsHost
+                  ? 'Choose a C: drive folder or a folder in the configured WSL distro. devstack never writes to your source files.'
+                  : 'An existing absolute path. devstack never writes to your project files.'}
                 error={errors.path}
               >
                 <div class="path-row">
@@ -668,7 +690,7 @@
                     id="site-path"
                     class="input mono"
                     type="text"
-                    placeholder="/home/you/projects/my-app"
+                    placeholder={pathPlaceholder}
                     autocomplete="off"
                     spellcheck="false"
                     bind:value={path}
@@ -739,6 +761,16 @@
                   </label>
                 </div>
               </fieldset>
+
+              <ProjectSourceMode
+                mode={sourceMode}
+                kind={kind}
+                isWindows={isWindowsHost}
+                onmodechange={(value) => {
+                  sourceMode = value;
+                  sourceModeTouched = isWindowsHost;
+                }}
+              />
             </div>
           {:else if step === 2}
             {#if kind === 'static'}

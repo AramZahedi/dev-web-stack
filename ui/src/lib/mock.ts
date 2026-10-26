@@ -1357,11 +1357,17 @@ export const mockApi = {
     if (sites.some((site) => site.name === name)) {
       throw new ApiError('DOMAIN_CONFLICT', `A site named “${name}” already exists.`, 409);
     }
-    if (!request.path?.startsWith('/')) {
-      throw new ApiError('INVALID_REQUEST', 'Project path must be absolute.', 400);
+    const sourceMode = request.source_mode ?? 'local';
+    const projectPath = request.path.trim();
+    const validPath = sourceMode === 'local'
+      ? projectPath.startsWith('/')
+      : sourceMode === 'windows'
+        ? /^[cC]:[\\/]/.test(projectPath)
+        : /^\\\\wsl(?:\.localhost|\$)\\[^\\]+\\.+/.test(projectPath);
+    if (!validPath) {
+      throw new ApiError('INVALID_REQUEST', 'Project path must be absolute and match the selected source mode.', 400);
     }
-    const projectPath = request.path.length > 1 ? request.path.replace(/\/+$/, '') : request.path;
-    if (!directories[projectPath]) {
+    if (sourceMode === 'local' && !directories[projectPath]) {
       throw new ApiError('INVALID_REQUEST', 'Project path must be an existing readable directory.', 400);
     }
     let phpBuild: RuntimeBuild | undefined;
@@ -1430,8 +1436,13 @@ export const mockApi = {
       domain: `${name}.test`,
       www: request.www ?? false,
       backend: 'local',
+      source_mode: sourceMode,
       host_path: projectPath,
-      backend_path: projectPath,
+      backend_path: sourceMode === 'windows'
+        ? `/mnt/c/${projectPath.slice(3).replace(/\\/g, '/')}`
+        : sourceMode === 'wsl'
+          ? `/${projectPath.replace(/\\/g, '/').split('/').slice(4).join('/')}`
+          : projectPath,
       kind: request.kind,
       php_version: phpVersion,
       php_build: phpBuild?.id ?? '',
