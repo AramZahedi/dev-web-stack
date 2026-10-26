@@ -125,6 +125,11 @@ func (a *App) newDaemonRestartCmd() *cobra.Command {
 				return err
 			}
 			ctx := cmd.Context()
+			// Validate the durable source before stopping the running daemon;
+			// an invalid config must not strand the user with no dashboard.
+			if _, err := config.Load(home); err != nil {
+				return wrapError(err, "CONFIG_INVALID", "Fix config.yaml, then rerun `devstack daemon restart`.")
+			}
 			// Do not carry one-off run flags across a restart: config.yaml is
 			// the durable source for listener ports.
 			if _, err := stopDaemon(ctx, home); err != nil {

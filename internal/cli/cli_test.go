@@ -1141,6 +1141,26 @@ func TestCLIDaemonRestartStopsThenStartsWithPersistedConfig(t *testing.T) {
 	}
 }
 
+func TestCLIDaemonRestartValidatesConfigBeforeStopping(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("http_port: 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldStop := stopDaemon
+	stopDaemon = func(context.Context, string) (bool, error) {
+		t.Fatal("daemon was stopped before config validation")
+		return false, nil
+	}
+	t.Cleanup(func() { stopDaemon = oldStop })
+
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "daemon", "restart", "--home", home)
+	if code == 0 || !strings.Contains(stderr, "CONFIG_INVALID") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
 func TestCLIDaemonRestartDoesNotStartAfterStopFailure(t *testing.T) {
 	useTestSeams(t)
 	home := t.TempDir()
