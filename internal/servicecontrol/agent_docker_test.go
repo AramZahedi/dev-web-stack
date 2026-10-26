@@ -64,6 +64,24 @@ func TestAgentDockerLifecycleAndLogsStayOnAgent(t *testing.T) {
 	}
 }
 
+func TestAgentDockerWebValidationAndReloadUseFixedAgentActions(t *testing.T) {
+	api := &fakeAgentServiceAPI{}
+	adapter, err := servicecontrol.NewAgentDocker(api, "/data/devstack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Validate(context.Background(), "nginx"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Reload(context.Background(), "apache"); err != nil {
+		t.Fatal(err)
+	}
+	want := []agentproto.ServiceRequest{{ID: "nginx", Action: "validate"}, {ID: "apache", Action: "reload"}}
+	if !reflect.DeepEqual(api.actions, want) {
+		t.Fatalf("agent validation/reload actions = %+v, want %+v", api.actions, want)
+	}
+}
+
 func TestAgentDockerStatusUsesExt4PathsAndFixedPorts(t *testing.T) {
 	api := &fakeAgentServiceAPI{statuses: map[string]agentproto.ServiceResponse{
 		"nginx":    {ID: "nginx", State: "active"},

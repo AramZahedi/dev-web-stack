@@ -104,6 +104,22 @@ func (a *AgentDocker) Restart(ctx context.Context, id string) error {
 	return a.action(ctx, id, "restart", nil)
 }
 
+// Validate runs the catalog-pinned validation command for nginx or Apache.
+func (a *AgentDocker) Validate(ctx context.Context, id services.ID) error {
+	if id != services.IDNginx && id != services.IDApache {
+		return fmt.Errorf("servicecontrol: validation is only supported for nginx and apache")
+	}
+	return a.action(ctx, string(id), "validate", nil)
+}
+
+// Reload runs the catalog-pinned reload command for nginx or Apache.
+func (a *AgentDocker) Reload(ctx context.Context, id services.ID) error {
+	if id != services.IDNginx && id != services.IDApache {
+		return fmt.Errorf("servicecontrol: reload is only supported for nginx and apache")
+	}
+	return a.action(ctx, string(id), "reload", nil)
+}
+
 // Uninstall preserves service data unless deleteData was explicitly confirmed.
 func (a *AgentDocker) Uninstall(ctx context.Context, id string, deleteData bool) error {
 	config := map[string]string(nil)

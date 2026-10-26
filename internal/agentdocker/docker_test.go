@@ -97,6 +97,36 @@ func TestLifecycleRejectsArbitraryIDsAndCommands(t *testing.T) {
 	}
 }
 
+func TestWebValidationAndReloadUseCatalogOwnedCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixed service Compose mounts are POSIX paths and execute in WSL")
+	}
+	runner := &fakeRunner{}
+	module, err := agentdocker.New(agentdocker.Config{Root: filepath.Join(t.TempDir(), "wsl-root"), Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, request := range []agentproto.ServiceRequest{
+		{ID: "nginx", Action: "validate"},
+		{ID: "apache", Action: "reload"},
+	} {
+		if _, err := module.Action(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(runner.calls) != 2 || !containsSequence(runner.calls[0], []string{"exec", "-T", "nginx", "nginx", "-t"}) ||
+		!containsSequence(runner.calls[1], []string{"exec", "-T", "apache", "apachectl", "graceful"}) {
+		t.Fatalf("validation/reload Docker calls = %v", runner.calls)
+	}
+	before := len(runner.calls)
+	if _, err := module.Action(context.Background(), agentproto.ServiceRequest{ID: "mysql", Action: "validate", Config: map[string]string{"command": "id"}}); err == nil {
+		t.Fatal("non-web validation accepted caller-supplied commands")
+	}
+	if len(runner.calls) != before {
+		t.Fatalf("rejected validation still invoked Docker: %v", runner.calls)
+	}
+}
+
 func TestModuleMountsAuthenticatedServiceRoutes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fixed service Compose mounts are POSIX paths and execute in WSL")

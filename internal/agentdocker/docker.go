@@ -175,6 +175,29 @@ func (d *Docker) Action(ctx context.Context, req agentproto.ServiceRequest) (age
 		}
 		return agentproto.ServiceResponse{ID: string(service.ID), State: "installed"}, nil
 	}
+	if req.Action == "validate" || req.Action == "reload" {
+		if service.Group != services.GroupWeb {
+			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: %s is supported only for nginx and apache", req.Action)
+		}
+		command := service.ValidateCommand
+		if req.Action == "reload" {
+			command = service.ReloadCommand
+		}
+		if len(command) == 0 {
+			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: catalog has no %s command for %s", req.Action, service.ID)
+		}
+		d.opMu.Lock()
+		defer d.opMu.Unlock()
+		if err := d.ensureCompose(); err != nil {
+			return agentproto.ServiceResponse{}, err
+		}
+		args := []string{"exec", "-T", string(service.ID)}
+		args = append(args, command...)
+		if _, err := d.compose(ctx, args...); err != nil {
+			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: %s %s: %w", req.Action, service.ID, err)
+		}
+		return agentproto.ServiceResponse{ID: string(service.ID), State: "active"}, nil
+	}
 	d.opMu.Lock()
 	defer d.opMu.Unlock()
 	if err := d.ensureCompose(); err != nil {
