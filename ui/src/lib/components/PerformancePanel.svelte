@@ -578,7 +578,7 @@
           {/if}
           {#if result.warnings && result.warnings.length > 0}
             <ul class="result-warnings">
-              {#each result.warnings as warning (warning)}
+              {#each result.warnings as warning, index (`${index}:${warning}`)}
                 <li>{warning}</li>
               {/each}
             </ul>
