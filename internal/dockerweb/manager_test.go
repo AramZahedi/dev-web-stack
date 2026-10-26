@@ -164,6 +164,13 @@ func TestManagerEnsureBaseSeedsAndPreservesUserEdits(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(serviceDir, "config", ".config-manifest.json")); err != nil {
 				t.Errorf("manifest is not under the config root: %v", err)
 			}
+			if server == ServerNginx {
+				for _, name := range []string{"main.conf", "events.conf", "http.conf"} {
+					if _, err := os.Stat(filepath.Join(serviceDir, "config", "conf.d", "performance", name)); err != nil {
+						t.Errorf("missing safe performance include %s: %v", name, err)
+					}
+				}
+			}
 			if _, err := os.Stat(filepath.Join(serviceDir, ".config-manifest.json")); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("manifest must not be at the service root: %v", err)
 			}
