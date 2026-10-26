@@ -364,7 +364,7 @@ Reviewers never edit code and never review while more than five total subagents 
 
 ### Lane A — Windows helper and host integration
 
-**Branch:** `lane/windows-helper`  
+**Branch:** `lane/windows-helper`
 **Owner:** one implementer subagent.
 
 #### Task A1: Named-pipe helper server and SID authentication
@@ -414,7 +414,7 @@ Reviewers never edit code and never review while more than five total subagents 
 
 ### Lane B — WSL provisioning and agent
 
-**Branch:** `lane/wsl-agent`  
+**Branch:** `lane/wsl-agent`
 **Owner:** one implementer subagent.
 
 #### Task B1: WSL distro provision/import lifecycle
@@ -459,7 +459,7 @@ Reviewers never edit code and never review while more than five total subagents 
 
 ### Lane C — Windows daemon and public proxy
 
-**Branch:** `lane/windows-daemon`  
+**Branch:** `lane/windows-daemon`
 **Owner:** one implementer subagent.
 
 #### Task C1: Windows daemon startup, config, SQLite, and CLI transport
@@ -504,7 +504,7 @@ Reviewers never edit code and never review while more than five total subagents 
 
 ### Lane D — Docker services and web-serving adapter
 
-**Branch:** `lane/docker-services`  
+**Branch:** `lane/docker-services`
 **Owner:** one implementer subagent.
 
 #### Task D1: Agent Docker control API
@@ -549,7 +549,7 @@ Reviewers never edit code and never review while more than five total subagents 
 
 ### Lane E — Source modes, path UX, CLI/UI
 
-**Branch:** `lane/site-source`  
+**Branch:** `lane/site-source`
 **Owner:** one implementer subagent.
 
 #### Task E1: Site source mode through service/API/CLI
