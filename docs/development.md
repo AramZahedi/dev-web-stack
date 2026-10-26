@@ -201,7 +201,10 @@ real `/etc/hosts`, trust stores, or 80/443 in automated tests.
 ## 14. Current constraints to remember
 
 - Native devstack; Docker only for optional service containers.
-- Linux only. Do not start Windows/WSL Plan 3 without an explicit new instruction.
+- Linux implementation is current. Windows/WSL is planned in
+  [the design](superpowers/specs/2026-10-26-windows-wsl-design.md) and
+  [implementation plan](superpowers/plans/2026-10-26-windows-wsl.md); do not start
+  implementation before plan approval.
 - Existing native external nginx/Apache mode must remain compatible.
 - Preserve service config scope, terminal no-root scope, and fixed-target host tuning.
 - Do not claim host-tuning or benchmark acceptance without live evidence.

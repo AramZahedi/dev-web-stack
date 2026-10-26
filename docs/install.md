@@ -6,8 +6,9 @@ hosts entries, and local certificate authority.
 
 This document covers the Linux install. External nginx/Apache serving is
 available. PHP 8.2–8.5 builds are published in the `v0.1.0` catalog (see
-[PHP](php.md)). M1 is Linux-only; Windows/WSL (Plan 3) is deferred by user
-request. Release archives are unsigned and checksum-verified. See
+[PHP](php.md)). M1 is Linux-only today. Windows 11 + WSL2 is planned but not
+implemented; see [the Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md).
+No Windows installer or artifact exists yet. Release archives are unsigned and checksum-verified. See
 [Sites](sites.md), [Vhosts](vhosts.md), and
 [TLS and trust](tls.md) for day-to-day use, and [Release](release.md) for the
 packaging and publication path.
@@ -391,8 +392,8 @@ markers by hand.
 - Static, Node, and PHP sites are supported. PHP sites need an installed build;
   `v0.1.0` embeds PHP 8.2.35, 8.3.36, 8.4.27, and 8.5.12 entries from the
   published runtime release (see [PHP](php.md)).
-- Linux x86_64 and systemd only. Windows/WSL (Plan 3) is **deferred by user
-  request**; there is no `devstack-agent`, `install.ps1`, or Windows release.
+- Linux x86_64 and systemd only. Windows/WSL is **planned but not implemented**;
+  there is no `devstack-agent`, `install.ps1`, or Windows release yet.
 - Release archives are unsigned and Linux x86_64 only. Signed packages and
   installers are M4 work.
 - M1 has no diagnostics bundle/zip, auto-update, remote catalog, arm64 build, or

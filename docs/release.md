@@ -21,8 +21,8 @@ PHP catalog merge that runs only after real PHP artifacts are published.
   `php-runtimes-2026-10-25`. Both carry checksummed archives. The app release
   also attaches `install.sh`.
 
-Windows/WSL is deferred with Plan 3; signing, diagnostics bundles, and
-auto-update are M4 non-goals. The Plan 4 acceptance report records the release,
+Windows/WSL is planned but not implemented; no Windows artifact is part of this
+release. Signing, diagnostics bundles, and auto-update are M4 non-goals. The Plan 4 acceptance report records the release,
 install, upgrade, and remaining gates:
 [2026-10-24-dev-web-stack-plan-4-acceptance.md](superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md).
 The M1 handoff records branch/commit state and next steps:

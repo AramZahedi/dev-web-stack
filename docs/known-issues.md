@@ -148,7 +148,8 @@ conflict until those ports are freed. See [Continuation State](superpowers/statu
 
 ## 3. Current native product limitations
 
-- Linux x86_64 only; Windows/WSL/macOS/arm64 are out of scope.
+- Linux x86_64 is the implemented platform. Windows 11 + WSL2 is designed and planned
+  but not implemented; macOS and arm64 remain out of scope.
 - Native external nginx/Apache mode requires the server to be installed and configured by
   the administrator; devstack does not install packages.
 - Browser trust, root install on 80/443, and live UI gates remain manual.
@@ -164,7 +165,8 @@ conflict until those ports are freed. See [Continuation State](superpowers/statu
 
 ## 4. Deferred/parked work
 
-- Windows/WSL Plan 3 is deferred by user request.
+- Windows/WSL is no longer deferred: it has an approved architecture and implementation
+  plan, but no Windows artifact exists yet.
 - Signed packages/installers, auto-update, diagnostics bundles, remote catalog, arm64, and
   log aggregation are later milestones.
 - The old standalone Docker image is not coming back; the new Docker model is service

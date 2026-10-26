@@ -6,15 +6,17 @@ trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 > **Status:** the Linux M1 release is published as `v0.1.0`. Plan 1
 > (foundation), Plan 2 (PHP), and Plan 4 (packaging/release) automated
 > acceptance pass; the final Linux run is **19 PASS, 0 FAIL, 1 SKIP,
-> 1 BLOCKED**. The skip is the manual browser/root/UI set; the block is
-> Windows/WSL (Plan 3, deferred by user request). The installer's public
+> 1 BLOCKED**. The skip is the manual browser/root/UI set; the block was
+> Windows/WSL at the time of the M1 Linux release. The installer's public
 > `--release 0.1.0` path, the runtime downloads, Apache HTTPS, and in-flight PHP
 > continuity were exercised. See the
 > [Plan 4 acceptance report](docs/superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md)
 > and the [M1 handoff](docs/superpowers/status/2026-10-24-m1-handoff.md).
 >
-> **M1 is Linux-only and unsigned.** Windows/WSL is deferred: there is no
-> `devstack-agent`, named-pipe helper, `install.ps1`, or Windows artifact.
+> **M1 is Linux-only and unsigned.** Windows/WSL is planned but not implemented:
+> there is no Windows artifact, `devstack-agent`, named-pipe helper, or `install.ps1`
+> yet. See the [Windows design](docs/superpowers/specs/2026-10-26-windows-wsl-design.md)
+> and [implementation plan](docs/superpowers/plans/2026-10-26-windows-wsl.md).
 > Signed packages/installers, diagnostics bundles, auto-update, remote catalogs,
 > arm64, and log aggregation are M4 work.
 >

@@ -41,4 +41,4 @@
 | **benchmark** | Measured HTTP throughput/latency run stored under `logs/performance/`; never estimated. |
 | **M1** | The released Linux foundation/static/Node/PHP/release milestone. |
 | **M4** | Later signed packages/installers, diagnostics bundle, auto-update, remote catalog, arm64, log aggregation. |
-| **Plan 3** | Deferred Windows/WSL work. |
+| **Plan 3** | Planned Windows 11 + WSL2 work; design and implementation plan exist, implementation not started. |

@@ -412,7 +412,9 @@ service lifecycle paths exist.
 
 ## 12. Current limitations
 
-- Linux x86_64 only; Windows/WSL/macOS/arm64 are out of scope.
+- Linux x86_64 is the implemented platform. Windows 11 + WSL2 is planned but not
+  implemented; see [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md).
+  macOS and arm64 remain out of scope.
 - External nginx/Apache mode requires the server to be installed and configured by the
   administrator; devstack does not install packages.
 - M1 manual Linux gates (real root 80/443 install, browser trust, live UI) were not fully

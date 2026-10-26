@@ -45,6 +45,7 @@ containers, not the required runtime for devstack itself.
 | R23 | Existing native external nginx/Apache mode remains available | Required compatibility |
 | R24 | No automatic root migration from `~/.devstack` | Planned decision |
 | R25 | Keep work committed/pushed and CI green | Process |
+| R26 | Windows 11 native daemon/helper with managed WSL2 agent and Docker services | Planned — design and five-lane plan written; not implemented |
 
 ## 3. Hard constraints
 
@@ -70,8 +71,9 @@ containers, not the required runtime for devstack itself.
     tuning must be reversible.
 11. **Existing installs remain valid.** `~/.devstack` installs and native external modes
     continue to work.
-12. **M1 platform scope.** Linux only; Windows/WSL Plan 3 remains deferred by user
-    request.
+12. **M1 platform scope.** Linux only today. Windows 11 + WSL2 is planned in
+    [the Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md); no Windows
+    support is claimed until its acceptance plan passes.
 13. **No invented runtime data.** PHP/Node catalog entries must correspond to real
     published checksums and sizes.
 14. **Dashboard-first usability.** A user must be able to perform every operational task

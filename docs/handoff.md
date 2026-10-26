@@ -14,7 +14,7 @@
 - **Post-Wave-2 code:** `cbc1605` (action colors, install-scaffold status, compose side-effect, duplicate-badge fixes).
 - **Next-batch code:** `5386c22`.
 - **Next-batch merge SHA:** `3c0ddc7` ([completion record](superpowers/status/2026-10-26-next-batch-completion.md)).
-- **Next step:** read [Continuation State](superpowers/status/2026-10-26-continuation.md) and [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md). See also the
+- **Next step:** read [Continuation State](superpowers/status/2026-10-26-continuation.md) and [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md). The planned Windows/WSL work is specified in the [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md) and [implementation plan](superpowers/plans/2026-10-26-windows-wsl.md); implementation has **not** started. See also the
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
   [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
@@ -104,6 +104,15 @@ The next batch is implemented. Remaining work is tracked in
 - live Wave 3 acceptance on a real host.
 
 **Do not claim the remaining host gates are passed until they are run.**
+
+### Windows/WSL planning
+
+The approved architecture and five-lane execution plan are written but not implemented:
+
+- [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)
+- [Windows/WSL implementation plan](superpowers/plans/2026-10-26-windows-wsl.md)
+
+Do not start Wave 0 or create lane worktrees until the human partner approves the plan.
 
 ## 3. Current reference workstation
 
@@ -239,7 +248,7 @@ Waves 0–2 and the next batch are complete and merged. Do not re-run their kick
 - Random per-engine DB credentials; phpMyAdmin cookie login.
 - Resource-aware performance, host tuning with backup/reset.
 - Existing native external mode retained; no automatic root migration.
-- Linux only; Windows/WSL deferred.
+- Linux is the implemented platform; Windows/WSL is planned but not implemented.
 
 ## 7. Data and secrets policy
 
@@ -298,5 +307,6 @@ make release-test
   benchmark evidence.
 - Keep automatic CI disabled; run the local gate manually.
 - Run the manual Linux M1/Wave 3 gates if claiming full acceptance.
-- Do not start Windows/WSL, arm64, signed packages, auto-update, or M4 work.
+- Windows/WSL is planned but not implemented. Read the design and plan; wait for explicit
+  approval before starting Wave 0. Do not start arm64, signed packages, auto-update, or M4 work.
 - Do not recreate the old standalone Docker image.

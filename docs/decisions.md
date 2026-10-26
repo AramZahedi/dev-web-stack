@@ -89,6 +89,10 @@ are tracked in [known issues](known-issues.md).
 | S52 | UI builds are static and embedded; xterm.js is the terminal renderer | Keeps dashboard parity without a second server; terminal is explicit-start only. |
 | S53 | Per-site PHP-FPM pool sizing is a persisted site field | The daemon owns the calculated budget and applies it through validate/swap; generated fragments remain previews, not the source of truth. |
 | S54 | Helper owns a narrow proxy-target update RPC | Daemon listener changes remain one restart; the helper rewrites only `proxy_http_port`/`proxy_https_port` atomically, and serving-mode reconciliation restarts its forwarders. Privileged listen ports remain helper-fixed. Requests remain same-UID and loopback-only. |
+| S55 | Windows 11 uses a native daemon/helper plus a managed WSL2 Linux agent | Windows owns UI/OS integration/ports; WSL owns PHP/Node/static and Linux-only extensions; Docker is limited to infrastructure services. |
+| S56 | Windows and WSL/Linux use platform roots `C:\devstack` and `/data/devstack` | Projects default under `projects/`; Windows has no dot-prefixed devstack names. SQLite/CA stay native, Linux runtimes/Docker data stay ext4. |
+| S57 | Projects support per-site Windows or WSL source modes | Users choose editor/tool compatibility versus native WSL filesystem performance; cross-boundary symlink bridging is rejected. |
+| S58 | Docker PHP and native Windows PHP are excluded | PHP stays native Linux PHP-FPM in WSL/Linux so Linux-only extensions and per-site FPM behavior remain available. |
 
 ## 3. Rejected alternatives
 
