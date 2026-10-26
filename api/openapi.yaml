@@ -2494,6 +2494,23 @@ components:
           type: string
         php_config_hash:
           type: string
+        php_fpm:
+          type: object
+          description: Persisted per-site php-fpm pool sizing applied to the live master.
+          properties:
+            mode:
+              type: string
+              enum: [dynamic, static]
+            max_children:
+              type: integer
+            start_servers:
+              type: integer
+            min_spare_servers:
+              type: integer
+            max_spare_servers:
+              type: integer
+            listen_backlog:
+              type: integer
         node_version:
           type: string
         command:

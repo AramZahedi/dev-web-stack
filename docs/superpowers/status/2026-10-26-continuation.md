@@ -76,7 +76,7 @@ ports and no ImageMagick row. There are no “Wave 2 backend pending” placehol
 
 Remaining limitations are listed in
 [Next Batch Completion](2026-10-26-next-batch-completion.md) and
-[Known issues](../../known-issues.md): PHP-FPM pool sizing not merged into live masters,
+[Known issues](../../known-issues.md): PHP-FPM pool sizing is persisted and live,
 real root host-tuning acceptance, benchmark evidence on a real host, external-site Docker
 mounts, and live Wave 3 acceptance.
 
@@ -166,8 +166,9 @@ Then `./dist/devstack --home "$HOME/.devstack" daemon run`.
 6. **Performance host tuning** is explicit opt-in, helper-applied to fixed paths, with
    backup/reset/verification. Benchmark results are measured by the labelled built-in Go
    generator; no synthetic RPS.
-7. **PHP-FPM pool sizing remains a limitation.** OPcache/realpath ini values are applied;
-   per-site `pm.*` values are generated but not merged into live masters.
+7. **PHP-FPM pool sizing is persisted and live.** OPcache/realpath ini values and
+   per-site `pm.*` values are applied through the site validate/swap flow. A later batch
+   also automated helper proxy-target updates on daemon listener changes.
 
 Full implementation details, APIs, security rules, ordering, and acceptance gates are in
 [the Next Batch Plan](../plans/2026-10-26-service-platform-next-batch.md).
@@ -177,7 +178,6 @@ Full implementation details, APIs, security rules, ordering, and acceptance gate
 - External-site bind mounts for Docker web servers (sites outside `projects/` currently
   use builtin/native serving).
 - Real root host-tuning acceptance and benchmark evidence on a real host.
-- Merge PHP-FPM pool sizing into the persisted site/FPM contract.
 - Full Wave 3 acceptance; M4 release/signing/diagnostics remains out of scope.
 
 ## 7. Resume procedure

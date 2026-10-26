@@ -148,6 +148,7 @@ func (s *Service) renderPHPFilesLocked(ctx context.Context, site model.Site, bui
 		User:     "",
 		Group:    "",
 		Env:      cloneEnv(site.Env),
+		Pool:     site.PHPFPM,
 	})
 	if err != nil {
 		return phpRendered{}, fmt.Errorf("sites: render php-fpm.conf for %q: %w", site.Name, err)

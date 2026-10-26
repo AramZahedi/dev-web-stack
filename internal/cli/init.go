@@ -23,6 +23,7 @@ type initResult struct {
 	Doctor        doctor.Report  `json:"doctor"`
 	DashboardURL  string         `json:"dashboard_url"`
 	FallbackURL   string         `json:"fallback_url"`
+	Warnings      []string       `json:"warnings,omitempty"`
 }
 
 func (a *App) newInitCmd() *cobra.Command {
@@ -74,6 +75,17 @@ func (a *App) runInit(cmd *cobra.Command) error {
 		case "nginx", "apache":
 			helperExternal = true
 		}
+	}
+	// Keep the helper's loopback targets in sync before enabling forwarders.
+	// This is what makes a changed daemon port a single restart instead of a
+	// manual helper-config edit, including on the init/upgrade path.
+	warnings := []string{}
+	proxyTargets, err := helper.UpdateProxyTargets(ctx, cfg.HTTPPort, cfg.HTTPSPort)
+	if err != nil {
+		return helperCallError(err, socket)
+	}
+	if proxyTargets.PersistenceError != "" {
+		warnings = append(warnings, proxyTargets.PersistenceError)
 	}
 	if !helperExternal && cfg.ServingMode == config.ServingModeBuiltin {
 		if err := helper.SetForwarders(ctx, cfg.HTTPPort, cfg.HTTPSPort, true); err != nil {
@@ -135,6 +147,7 @@ func (a *App) runInit(cmd *cobra.Command) error {
 		Doctor:        report,
 		DashboardURL:  dashboardURL,
 		FallbackURL:   fallback,
+		Warnings:      warnings,
 	}
 
 	if a.jsonOutput {
@@ -148,6 +161,9 @@ func (a *App) runInit(cmd *cobra.Command) error {
 		fmt.Fprintf(out, "Trust:      %d target(s)\n", len(targets))
 		fmt.Fprintf(out, "Hosts:      %d domain(s) synced\n", len(domains))
 		fmt.Fprintln(out, "Daemon:     running")
+		for _, warning := range result.Warnings {
+			fmt.Fprintf(out, "Warning:    %s\n", warning)
+		}
 		fmt.Fprintln(out)
 		if err := a.printDoctor(cmd, report); err != nil {
 			fmt.Fprintf(out, "\nDashboard:  %s\nFallback:   %s\n", dashboardURL, fallback)

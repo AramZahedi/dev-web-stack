@@ -73,6 +73,7 @@ type Site struct {
 	PHPIni        map[string]string `json:"php_ini"`
 	PHPIniRaw     string            `json:"php_ini_raw"`
 	PHPConfigHash string            `json:"php_config_hash"`
+	PHPFPM        *PHPFPMBudget     `json:"php_fpm,omitempty"`
 
 	NodeVersion string            `json:"node_version"`
 	Command     string            `json:"command"`
@@ -100,6 +101,69 @@ type Site struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// PHPFPMBudget is the persisted pool sizing for one PHP site's php-fpm
+// master. A nil budget (or a zero value) leaves the renderer's conservative
+// defaults in place. Mode is "dynamic" or "static"; empty means dynamic.
+type PHPFPMBudget struct {
+	Mode            string `json:"mode,omitempty"`
+	MaxChildren     int    `json:"max_children,omitempty"`
+	StartServers    int    `json:"start_servers,omitempty"`
+	MinSpareServers int    `json:"min_spare_servers,omitempty"`
+	MaxSpareServers int    `json:"max_spare_servers,omitempty"`
+	ListenBacklog   int    `json:"listen_backlog,omitempty"`
+}
+
+// IsZero reports whether the budget carries no pool override.
+func (b PHPFPMBudget) IsZero() bool {
+	return b.Mode == "" && b.MaxChildren == 0 && b.StartServers == 0 &&
+		b.MinSpareServers == 0 && b.MaxSpareServers == 0 && b.ListenBacklog == 0
+}
+
+// Validate rejects pool values that php-fpm cannot use. An empty or zero budget
+// is valid because it selects the renderer defaults.
+func (b PHPFPMBudget) Validate() error {
+	if b.IsZero() {
+		return nil
+	}
+	mode := b.Mode
+	if mode == "" {
+		mode = "dynamic"
+	}
+	if mode != "dynamic" && mode != "static" {
+		return fmt.Errorf("PHP-FPM mode %q must be dynamic or static", b.Mode)
+	}
+	if b.MaxChildren < 1 || b.MaxChildren > 100000 {
+		return fmt.Errorf("PHP-FPM max_children %d must be between 1 and 100000", b.MaxChildren)
+	}
+	for _, field := range []struct {
+		name  string
+		value int
+	}{
+		{"start_servers", b.StartServers},
+		{"min_spare_servers", b.MinSpareServers},
+		{"max_spare_servers", b.MaxSpareServers},
+	} {
+		if field.value < 0 || field.value > b.MaxChildren {
+			return fmt.Errorf("PHP-FPM %s %d must be between 0 and max_children %d", field.name, field.value, b.MaxChildren)
+		}
+	}
+	if b.MaxSpareServers > 0 && b.MinSpareServers > b.MaxSpareServers {
+		return fmt.Errorf("PHP-FPM min_spare_servers %d must not exceed max_spare_servers %d", b.MinSpareServers, b.MaxSpareServers)
+	}
+	if mode == "dynamic" {
+		if b.StartServers > 0 && b.MinSpareServers > 0 && b.StartServers < b.MinSpareServers {
+			return fmt.Errorf("PHP-FPM start_servers %d must not be below min_spare_servers %d", b.StartServers, b.MinSpareServers)
+		}
+		if b.StartServers > 0 && b.MaxSpareServers > 0 && b.StartServers > b.MaxSpareServers {
+			return fmt.Errorf("PHP-FPM start_servers %d must not exceed max_spare_servers %d", b.StartServers, b.MaxSpareServers)
+		}
+	}
+	if b.ListenBacklog < 0 || b.ListenBacklog > 65535 {
+		return fmt.Errorf("PHP-FPM listen_backlog %d must be between 0 and 65535", b.ListenBacklog)
+	}
+	return nil
 }
 
 // PHPDefaults holds the editable per-version php.ini directives and extension

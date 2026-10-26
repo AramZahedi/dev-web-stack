@@ -83,6 +83,10 @@ type Config struct {
 	// SetForwarders RPC may only name these configured ports.
 	ProxyHTTPPort  int
 	ProxyHTTPSPort int
+	// ProxyConfigPath is the helper YAML file updated when the daemon changes
+	// its loopback ports. Empty disables persistence; the in-memory targets
+	// still update for flag-only and test helper processes.
+	ProxyConfigPath string
 	// AutoForward makes Start begin forwarding the configured privileged
 	// ports immediately. The helper binary enables it so a service restart or
 	// reboot restores 80/443 without another `devstack init`; embedding
@@ -143,6 +147,7 @@ type Service struct {
 	RemoveTrust              func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
 	TrustStatus              func(context.Context, helperproto.TrustRequest) (helperproto.TrustResponse, error)
 	SetForwarders            func(context.Context, helperproto.ForwardersRequest) error
+	UpdateProxyTargets       func(context.Context, helperproto.ProxyTargetsRequest) (helperproto.ProxyTargetsResponse, error)
 	VhostStatus              func(context.Context) (helperproto.VhostStatusResponse, error)
 	VhostSync                func(context.Context, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
 	VhostSetMode             func(context.Context, string, helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error)
@@ -178,6 +183,11 @@ type Server struct {
 	performance    *PerformanceManager
 
 	hostsMu sync.Mutex
+
+	proxyUpdateMu  sync.Mutex
+	proxyMu        sync.RWMutex
+	proxyHTTPPort  int
+	proxyHTTPSPort int
 
 	forwardersMu  sync.Mutex
 	forwarders    *forwarder.Set
@@ -311,6 +321,9 @@ func (s *Server) wireService(service Service) Service {
 	}
 	if service.SetForwarders == nil {
 		service.SetForwarders = s.setForwarders
+	}
+	if service.UpdateProxyTargets == nil {
+		service.UpdateProxyTargets = s.updateProxyTargets
 	}
 	if s.vhosts != nil {
 		if service.VhostStatus == nil {
@@ -482,10 +495,9 @@ func (s *Server) newTrustManager(home string) *TrustManager {
 	return NewTrustManager(s.authority.RootPEM(), home, s.cfg.Runner, s.cfg.TrustDir)
 }
 
-// forwarderPorts resolves the configured listen and target ports and rejects
-// configurations that could bind a loop onto itself. Listen ports come only
-// from the helper's configuration; an RPC cannot choose them.
-func (s *Server) forwarderPorts() (httpListen, httpsListen, httpTarget, httpsTarget int, err error) {
+// forwardListenPorts resolves the privileged listen ports. They are fixed by
+// the helper configuration and are never accepted from an RPC.
+func (s *Server) forwardListenPorts() (httpListen, httpsListen int) {
 	httpListen = s.cfg.ForwardHTTPPort
 	if httpListen == 0 {
 		httpListen = defaultForwardHTTPPort
@@ -494,14 +506,32 @@ func (s *Server) forwarderPorts() (httpListen, httpsListen, httpTarget, httpsTar
 	if httpsListen == 0 {
 		httpsListen = defaultForwardHTTPSPort
 	}
-	httpTarget = s.cfg.ProxyHTTPPort
+	return httpListen, httpsListen
+}
+
+// currentProxyTargets returns the loopback targets. Runtime RPC updates win
+// over the startup configuration so a forwarder reconcile after the update
+// uses the daemon's new ports.
+func (s *Server) currentProxyTargets() (httpTarget, httpsTarget int) {
+	s.proxyMu.RLock()
+	httpTarget, httpsTarget = s.proxyHTTPPort, s.proxyHTTPSPort
+	s.proxyMu.RUnlock()
+	if httpTarget == 0 {
+		httpTarget = s.cfg.ProxyHTTPPort
+	}
+	if httpsTarget == 0 {
+		httpsTarget = s.cfg.ProxyHTTPSPort
+	}
 	if httpTarget == 0 {
 		httpTarget = defaultProxyHTTPPort
 	}
-	httpsTarget = s.cfg.ProxyHTTPSPort
 	if httpsTarget == 0 {
 		httpsTarget = defaultProxyHTTPSPort
 	}
+	return httpTarget, httpsTarget
+}
+
+func validateForwarderPorts(httpListen, httpsListen, httpTarget, httpsTarget int) error {
 	ports := []struct {
 		name string
 		port int
@@ -513,17 +543,28 @@ func (s *Server) forwarderPorts() (httpListen, httpsListen, httpTarget, httpsTar
 	}
 	for _, p := range ports {
 		if p.port < 1 || p.port > 65535 {
-			return 0, 0, 0, 0, fmt.Errorf("%s %d must be between 1 and 65535", p.name, p.port)
+			return fmt.Errorf("%s %d must be between 1 and 65535", p.name, p.port)
 		}
 	}
 	if httpListen == httpsListen {
-		return 0, 0, 0, 0, fmt.Errorf("forward_http_port and forward_https_port must differ, both are %d", httpListen)
+		return fmt.Errorf("forward_http_port and forward_https_port must differ, both are %d", httpListen)
 	}
 	if httpTarget == httpsTarget {
-		return 0, 0, 0, 0, fmt.Errorf("proxy_http_port and proxy_https_port must differ, both are %d", httpTarget)
+		return fmt.Errorf("proxy_http_port and proxy_https_port must differ, both are %d", httpTarget)
 	}
 	if httpListen == httpTarget || httpsListen == httpsTarget || httpListen == httpsTarget || httpsListen == httpTarget {
-		return 0, 0, 0, 0, errors.New("forwarder listen and proxy target ports must all differ")
+		return errors.New("forwarder listen and proxy target ports must all differ")
+	}
+	return nil
+}
+
+// forwarderPorts resolves the configured listen and target ports and rejects
+// configurations that could bind a loop onto itself.
+func (s *Server) forwarderPorts() (httpListen, httpsListen, httpTarget, httpsTarget int, err error) {
+	httpListen, httpsListen = s.forwardListenPorts()
+	httpTarget, httpsTarget = s.currentProxyTargets()
+	if err := validateForwarderPorts(httpListen, httpsListen, httpTarget, httpsTarget); err != nil {
+		return 0, 0, 0, 0, err
 	}
 	return httpListen, httpsListen, httpTarget, httpsTarget, nil
 }
@@ -533,6 +574,9 @@ func (s *Server) forwarderPorts() (httpListen, httpsListen, httpTarget, httpsTar
 // never taken from the request, so a caller cannot forward arbitrary traffic
 // or bind arbitrary privileged ports.
 func (s *Server) setForwarders(ctx context.Context, req helperproto.ForwardersRequest) error {
+	s.proxyUpdateMu.Lock()
+	defer s.proxyUpdateMu.Unlock()
+
 	httpListen, httpsListen, httpTarget, httpsTarget, err := s.forwarderPorts()
 	if err != nil {
 		return fmt.Errorf("%w: %v", helperproto.ErrInvalidRequest, err)
@@ -848,6 +892,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST "+helperproto.PathTrustRemove, s.handleTrustRemove)
 	mux.HandleFunc("POST "+helperproto.PathTrustStatus, s.handleTrustStatus)
 	mux.HandleFunc("POST "+helperproto.PathForwarders, s.handleForwarders)
+	mux.HandleFunc("POST "+helperproto.PathProxyTargets, s.handleProxyTargets)
 	mux.HandleFunc("GET "+helperproto.PathVhostsStatus, s.handleVhostsStatus)
 	mux.HandleFunc("POST "+helperproto.PathVhostsSync, s.handleVhostsSync)
 	mux.HandleFunc("POST "+helperproto.PathVhostsMode, s.handleVhostsMode)
@@ -1043,6 +1088,24 @@ func (s *Server) handleForwarders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleProxyTargets(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Service.UpdateProxyTargets == nil {
+		s.notImplemented(w, "UpdateProxyTargets")
+		return
+	}
+	var req helperproto.ProxyTargetsRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	resp, err := s.cfg.Service.UpdateProxyTargets(r.Context(), req)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleVhostsStatus(w http.ResponseWriter, r *http.Request) {

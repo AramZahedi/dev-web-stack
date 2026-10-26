@@ -69,20 +69,24 @@ func TestSiteCRUD(t *testing.T) {
 	s := openTemp(t)
 	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	site := model.Site{
-		ID:              "s1",
-		Name:            "blog",
-		Domain:          "blog.test",
-		WWW:             true,
-		Backend:         model.BackendWSL,
-		HostPath:        "/home/user/blog",
-		BackendPath:     "/mnt/c/home/user/blog",
-		Kind:            model.SitePHP,
-		PHPVersion:      "8.3",
-		PHPExtensions:   map[string]bool{"redis": true, "gd": false},
-		PHPIni:          map[string]string{"memory_limit": "256M"},
-		NodeVersion:     "22",
-		Command:         "npm start",
-		Env:             map[string]string{"APP_ENV": "local"},
+		ID:            "s1",
+		Name:          "blog",
+		Domain:        "blog.test",
+		WWW:           true,
+		Backend:       model.BackendWSL,
+		HostPath:      "/home/user/blog",
+		BackendPath:   "/mnt/c/home/user/blog",
+		Kind:          model.SitePHP,
+		PHPVersion:    "8.3",
+		PHPExtensions: map[string]bool{"redis": true, "gd": false},
+		PHPIni:        map[string]string{"memory_limit": "256M"},
+		PHPFPM: &model.PHPFPMBudget{
+			Mode: "dynamic", MaxChildren: 12, StartServers: 3,
+			MinSpareServers: 2, MaxSpareServers: 4, ListenBacklog: 511,
+		},
+		NodeVersion:         "22",
+		Command:             "npm start",
+		Env:                 map[string]string{"APP_ENV": "local"},
 		DocumentRoot:        "public",
 		FrontController:     true,
 		FrontControllerFile: "index.php",
@@ -91,13 +95,13 @@ func TestSiteCRUD(t *testing.T) {
 		SPAFallback:         true,
 		SPAFallbackFile:     "index.html",
 		TLS:                 true,
-		ForceHTTPS:      true,
-		DesiredState:    model.DesiredRunning,
-		Status:          model.StatusRunning,
-		HTTPPort:        41000,
-		FastCGIPort:     43000,
-		CreatedAt:       created,
-		UpdatedAt:       created.Add(time.Minute),
+		ForceHTTPS:          true,
+		DesiredState:        model.DesiredRunning,
+		Status:              model.StatusRunning,
+		HTTPPort:            41000,
+		FastCGIPort:         43000,
+		CreatedAt:           created,
+		UpdatedAt:           created.Add(time.Minute),
 	}
 	if err := s.CreateSite(ctx, site); err != nil {
 		t.Fatal(err)
@@ -572,6 +576,9 @@ func TestMigration0003UpgradesExistingDatabase(t *testing.T) {
 		t.Fatalf("new columns = %q %q %q, want empty defaults",
 			got.PHPBuild, got.PHPIniRaw, got.PHPConfigHash)
 	}
+	if got.PHPFPM != nil {
+		t.Fatalf("legacy site PHPFPM = %+v, want nil", got.PHPFPM)
+	}
 	cfg, err := s.GetSitePHPConfig(ctx, "s1")
 	if err != nil {
 		t.Fatal(err)
@@ -589,6 +596,73 @@ func TestMigration0003UpgradesExistingDatabase(t *testing.T) {
 	}
 	if version < 3 {
 		t.Fatalf("schema version = %d, want >= 3", version)
+	}
+}
+
+func TestMigration0006AddsPHPFPMWithoutLosingSites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (
+		version INTEGER PRIMARY KEY,
+		applied_at INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations {
+		if m.version > 5 {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, m.script); err != nil {
+			t.Fatalf("apply migration %04d: %v", m.version, err)
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+			m.version, time.Now().Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO sites (id, name, domain, kind) VALUES ('s1', 'blog', 'blog.test', 'php')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s := openStoreAt(t, path)
+	got, err := s.GetSite(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PHPFPM != nil {
+		t.Fatalf("legacy PHPFPM = %+v, want nil", got.PHPFPM)
+	}
+	budget := &model.PHPFPMBudget{Mode: "dynamic", MaxChildren: 7, ListenBacklog: 256}
+	got.PHPFPM = budget
+	if err := s.UpdateSite(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.GetSite(ctx, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PHPFPM == nil || *stored.PHPFPM != *budget {
+		t.Fatalf("stored PHPFPM = %+v, want %+v", stored.PHPFPM, budget)
+	}
+	var version int
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 6 {
+		t.Fatalf("schema version = %d, want 6", version)
 	}
 }
 
@@ -635,8 +709,8 @@ func TestSchemaAndPragmas(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 5 {
-		t.Fatalf("schema version = %d, want 5", version)
+	if version != 6 {
+		t.Fatalf("schema version = %d, want 6", version)
 	}
 }
 

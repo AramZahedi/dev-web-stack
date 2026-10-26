@@ -953,6 +953,7 @@ func TestCLIInit(t *testing.T) {
 	wantPaths := []string{
 		helperproto.PathEnsureCA,
 		helperproto.PathVhostsStatus,
+		helperproto.PathProxyTargets,
 		helperproto.PathForwarders,
 		helperproto.PathTrustInstall,
 		helperproto.PathHostsSync,
@@ -967,6 +968,7 @@ func TestCLIInit(t *testing.T) {
 	wantEvents := []string{
 		helperproto.PathEnsureCA,
 		helperproto.PathVhostsStatus,
+		helperproto.PathProxyTargets,
 		helperproto.PathForwarders,
 		helperproto.PathTrustInstall,
 		helperproto.PathHostsSync,
@@ -977,34 +979,69 @@ func TestCLIInit(t *testing.T) {
 		t.Fatalf("events = %v, want baseline hosts sync before daemon startup", gotEvents)
 	}
 	var forward helperproto.ForwardersRequest
-	if err := json.Unmarshal([]byte(calls[2].Body), &forward); err != nil {
+	if err := json.Unmarshal([]byte(calls[3].Body), &forward); err != nil {
 		t.Fatal(err)
 	}
 	if !forward.Enable || forward.HTTPPort != 8080 || forward.HTTPSPort != 8443 {
 		t.Fatalf("forwarders = %+v", forward)
 	}
 	var install helperproto.TrustRequest
-	if err := json.Unmarshal([]byte(calls[3].Body), &install); err != nil {
+	if err := json.Unmarshal([]byte(calls[4].Body), &install); err != nil {
 		t.Fatal(err)
 	}
 	if install.UserHome != userHome {
 		t.Fatalf("trust user home = %q, want %q", install.UserHome, userHome)
 	}
 	var baseline helperproto.HostsSyncRequest
-	if err := json.Unmarshal([]byte(calls[4].Body), &baseline); err != nil {
+	if err := json.Unmarshal([]byte(calls[5].Body), &baseline); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(baseline.Domains, []string{"devstack.test"}) {
 		t.Fatalf("baseline domains = %v, want [devstack.test]", baseline.Domains)
 	}
 	var sync helperproto.HostsSyncRequest
-	if err := json.Unmarshal([]byte(calls[5].Body), &sync); err != nil {
+	if err := json.Unmarshal([]byte(calls[6].Body), &sync); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"devstack.test", "blog.test", "www.blog.test"} {
 		if !contains(sync.Domains, want) {
 			t.Fatalf("synced domains = %v, missing %q", sync.Domains, want)
 		}
+	}
+}
+
+func TestCLIInitWarnsWhenProxyTargetsCannotPersist(t *testing.T) {
+	useTestSeams(t)
+	helper, socket := startFakeHelper(t)
+	helper.proxyPersistenceErr = "helper.yaml is read-only"
+	home := t.TempDir()
+	userHome := t.TempDir()
+
+	oldDial := dialHelper
+	dialHelper = func(string) (*helperclient.Client, error) { return helperclient.Dial(socket) }
+	t.Cleanup(func() { dialHelper = oldDial })
+	oldHome := userHomeDir
+	userHomeDir = func() (string, error) { return userHome, nil }
+	t.Cleanup(func() { userHomeDir = oldHome })
+	oldEnsure := ensureRunning
+	var ensured bool
+	ensureRunning = func(context.Context, daemon.Options) error {
+		ensured = true
+		return nil
+	}
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{doctorReport: doctor.Report{OK: true, Checks: []doctor.Check{}}}
+	out := runCLI(t, fake, "init", "--home", home, "--helper-socket", socket, "--json")
+	var result initResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !ensured {
+		t.Fatal("init did not continue to the daemon after a persistence warning")
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "read-only") {
+		t.Fatalf("warnings = %v", result.Warnings)
 	}
 }
 
@@ -1744,13 +1781,16 @@ func TestIsDevstackCmdline(t *testing.T) {
 // fakeHelper is an HTTP helper served over a Unix socket. It records the calls
 // the CLI makes so init/uninstall tests can assert the protocol surface.
 type fakeHelper struct {
-	mu          sync.Mutex
-	calls       []helperCall
-	failPath    string
-	failCode    string
-	failMessage string
-	onRequest   func(path string)
-	vhostStatus helperproto.VhostStatusResponse
+	mu                  sync.Mutex
+	calls               []helperCall
+	failPath            string
+	failCode            string
+	failMessage         string
+	onRequest           func(path string)
+	vhostStatus         helperproto.VhostStatusResponse
+	proxyHTTP           int
+	proxyHTTPS          int
+	proxyPersistenceErr string
 }
 
 type helperCall struct {
@@ -1764,6 +1804,7 @@ func (f *fakeHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.calls = append(f.calls, helperCall{Path: r.URL.Path, Body: string(body)})
 	failPath, failCode, failMessage, onRequest := f.failPath, f.failCode, f.failMessage, f.onRequest
 	vhostStatus := f.vhostStatus
+	proxyHTTP, proxyHTTPS := f.proxyHTTP, f.proxyHTTPS
 	f.mu.Unlock()
 	if onRequest != nil {
 		onRequest(r.URL.Path)
@@ -1778,7 +1819,31 @@ func (f *fakeHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case helperproto.PathEnsureCA:
 		writeHelperJSON(w, http.StatusOK, helperproto.EnsureCAResponse{RootPEM: []byte("test-root-pem"), Fingerprint: "test-fingerprint"})
-	case helperproto.PathForwarders, helperproto.PathUninstall:
+	case helperproto.PathProxyTargets:
+		var req helperproto.ProxyTargetsRequest
+		_ = json.Unmarshal(body, &req)
+		f.mu.Lock()
+		f.proxyHTTP, f.proxyHTTPS = req.HTTPPort, req.HTTPSPort
+		f.mu.Unlock()
+		f.mu.Lock()
+		persistenceErr := f.proxyPersistenceErr
+		f.mu.Unlock()
+		writeHelperJSON(w, http.StatusOK, helperproto.ProxyTargetsResponse{
+			HTTPPort: req.HTTPPort, HTTPSPort: req.HTTPSPort, Persisted: persistenceErr == "",
+			PersistenceError: persistenceErr, ConfigPath: "/tmp/helper.yaml",
+		})
+	case helperproto.PathForwarders:
+		var req helperproto.ForwardersRequest
+		_ = json.Unmarshal(body, &req)
+		if req.HTTPPort != proxyHTTP || req.HTTPSPort != proxyHTTPS {
+			writeHelperJSON(w, http.StatusBadRequest, helperproto.ErrorResponse{
+				Code:    helperproto.CodeInvalidRequest,
+				Message: "forwarder target was not synchronized before enable",
+			})
+			return
+		}
+		writeHelperJSON(w, http.StatusOK, struct{}{})
+	case helperproto.PathUninstall:
 		writeHelperJSON(w, http.StatusOK, struct{}{})
 	case helperproto.PathVhostsStatus:
 		if strings.TrimSpace(vhostStatus.Mode) == "" {

@@ -429,6 +429,24 @@ test('Performance previews, applies, resets, and records a measured benchmark', 
   await expect(performance.getByText(/Per-site PHP-FPM/)).toBeVisible();
 
   const benchmark = page.locator('.benchmark-card');
+  await expect(benchmark.locator('.benchmark-form .hint')).toHaveCount(0);
+  const benchmarkControls = [
+    benchmark.getByLabel('Site'),
+    benchmark.getByLabel('Duration (s)'),
+    benchmark.getByLabel('Connections'),
+    benchmark.getByRole('button', { name: 'Run benchmark' }),
+  ];
+  const controlBoxes = [];
+  for (const control of benchmarkControls) {
+    const box = await control.boundingBox();
+    if (!box) throw new Error('Benchmark control is not visible');
+    controlBoxes.push(box);
+  }
+  const controlBottom = controlBoxes[0].y + controlBoxes[0].height;
+  for (const box of controlBoxes.slice(1)) {
+    expect(Math.abs(box.y + box.height - controlBottom)).toBeLessThanOrEqual(1.5);
+  }
+  await expect(benchmark.locator('#benchmark-limits')).toContainText('1–3600 seconds');
   await benchmark.getByLabel('Duration (s)').fill('2');
   await benchmark.getByLabel('Connections').fill('8');
   await benchmark.getByRole('button', { name: 'Run benchmark' }).click();

@@ -73,6 +73,97 @@ func TestApplyPHPIniChangeOnlyAffectsOneSite(t *testing.T) {
 	}
 }
 
+func TestApplyPHPPoolBudgetPersistsAndRenders(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	oldHash, oldPort := site.PHPConfigHash, site.FastCGIPort
+	budget := &model.PHPFPMBudget{
+		Mode: "dynamic", MaxChildren: 12, StartServers: 3,
+		MinSpareServers: 2, MaxSpareServers: 4, ListenBacklog: 511,
+	}
+
+	updated, err := svc.ApplyPHP(ctx, site.ID, PHPChange{FPM: budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.PHPFPM == nil || *updated.PHPFPM != *budget {
+		t.Fatalf("PHPFPM = %+v, want %+v", updated.PHPFPM, budget)
+	}
+	if updated.PHPConfigHash == oldHash || updated.FastCGIPort == oldPort {
+		t.Fatalf("pool change did not stage a new generation: %+v", updated)
+	}
+	fpm := string(readFile(t, filepath.Join(phpGenerationDir(t, fakes, updated), "php-fpm.conf")))
+	for _, want := range []string{
+		"pm = dynamic", "pm.max_children = 12", "pm.start_servers = 3",
+		"pm.min_spare_servers = 2", "pm.max_spare_servers = 4",
+		"listen.backlog = 511",
+	} {
+		if !strings.Contains(fpm, want) {
+			t.Fatalf("generated fpm.conf missing %q:\n%s", want, fpm)
+		}
+	}
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PHPFPM == nil || *stored.PHPFPM != *budget {
+		t.Fatalf("stored PHPFPM = %+v, want %+v", stored.PHPFPM, budget)
+	}
+}
+
+func TestApplyPHPPoolBudgetRejectsInvalidValues(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	oldHash := site.PHPConfigHash
+
+	_, err := svc.ApplyPHP(ctx, site.ID, PHPChange{FPM: &model.PHPFPMBudget{
+		Mode: "dynamic", MaxChildren: 4, MinSpareServers: 5, MaxSpareServers: 3,
+	}})
+	if err == nil {
+		t.Fatal("want error")
+	}
+	stored, err := fakes.store.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PHPConfigHash != oldHash || stored.PHPFPM != nil {
+		t.Fatalf("invalid budget changed the row: %+v", stored)
+	}
+	if active := fakes.backend.phpActiveGeneration(site.ID); active != phpDefaultGeneration {
+		t.Fatalf("active generation = %q", active)
+	}
+}
+
+func TestApplyPHPZeroPoolBudgetRestoresDefaults(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+	budget := &model.PHPFPMBudget{Mode: "static", MaxChildren: 8, ListenBacklog: 128}
+	applied, err := svc.ApplyPHP(ctx, site.ID, PHPChange{FPM: budget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readFile(t, filepath.Join(phpGenerationDir(t, fakes, applied), "php-fpm.conf"))), "pm = static") {
+		t.Fatal("static budget was not rendered")
+	}
+
+	restored, err := svc.ApplyPHP(ctx, site.ID, PHPChange{FPM: &model.PHPFPMBudget{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.PHPFPM != nil {
+		t.Fatalf("PHPFPM = %+v, want nil after clearing", restored.PHPFPM)
+	}
+	fpm := string(readFile(t, filepath.Join(phpGenerationDir(t, fakes, restored), "php-fpm.conf")))
+	for _, want := range []string{"pm = dynamic", "pm.max_children = 5", "pm.start_servers = 2"} {
+		if !strings.Contains(fpm, want) {
+			t.Fatalf("default fpm.conf missing %q:\n%s", want, fpm)
+		}
+	}
+}
+
 func TestApplyPHPVersionSwitchPromotesAndDrains(t *testing.T) {
 	svc, fakes := newTestService(t)
 	useServingMode(svc, fakes, "nginx")

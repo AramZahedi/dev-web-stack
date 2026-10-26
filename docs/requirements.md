@@ -40,7 +40,7 @@ containers, not the required runtime for devstack itself.
 | R18 | Nuxt/Vite static-build profiles and SPA fallback | Implemented — native build executor |
 | R19 | Full dashboard parity with CLI | Implemented — service actions/credentials, config, performance, benchmarks, terminal, build/tooling/settings |
 | R20 | Global `php` and `composer`, with a machine-wide PHP CLI default | Implemented |
-| R21 | Auto-tuned nginx/Apache/PHP performance and host tuning | Partial — preview/apply/reset, fixed host tuning, and measured benchmarks are implemented; PHP-FPM pool sizing is not yet merged into live masters and real root host tuning remains a gate |
+| R21 | Auto-tuned nginx/Apache/PHP performance and host tuning | Partial — preview/apply/reset, live per-site PHP-FPM pooling, fixed host tuning, and measured benchmarks are implemented; real root host tuning remains a gate |
 | R22 | Project build/benchmark/terminal workflows in the dashboard | Implemented — build, performance benchmark history, and site terminal |
 | R23 | Existing native external nginx/Apache mode remains available | Required compatibility |
 | R24 | No automatic root migration from `~/.devstack` | Planned decision |

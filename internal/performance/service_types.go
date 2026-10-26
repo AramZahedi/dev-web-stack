@@ -3,6 +3,8 @@ package performance
 import (
 	"errors"
 	"time"
+
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 // Service-level errors. Invalid input still wraps ErrInvalid.
@@ -55,14 +57,15 @@ type Step struct {
 
 // AppliedState is the last successfully applied profile.
 type AppliedState struct {
-	Profile    Profile                      `json:"profile"`
-	Values     Values                       `json:"values"`
-	AppliedAt  time.Time                    `json:"applied_at"`
-	HostTuning bool                         `json:"host_tuning"`
-	BackupDir  string                       `json:"backup_dir,omitempty"`
-	Servers    []string                     `json:"servers,omitempty"`
-	PHPIni     map[string]map[string]string `json:"php_ini,omitempty"`
-	Steps      []Step                       `json:"steps,omitempty"`
+	Profile    Profile                       `json:"profile"`
+	Values     Values                        `json:"values"`
+	AppliedAt  time.Time                     `json:"applied_at"`
+	HostTuning bool                          `json:"host_tuning"`
+	BackupDir  string                        `json:"backup_dir,omitempty"`
+	Servers    []string                      `json:"servers,omitempty"`
+	PHPIni     map[string]map[string]string  `json:"php_ini,omitempty"`
+	PHPFPM     map[string]model.PHPFPMBudget `json:"php_fpm,omitempty"`
+	Steps      []Step                        `json:"steps,omitempty"`
 }
 
 // HostTuningStatus reports the helper-owned host tuning state.

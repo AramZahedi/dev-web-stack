@@ -419,8 +419,8 @@ service lifecycle paths exist.
   run.
 - Waves 0–1, Wave 2, and the next service-platform batch are implemented.
 - Still pending: external-site Docker mounts, real root host-tuning acceptance, and
-  live Wave 3 benchmark evidence. PHP-FPM pool sizing is generated but not merged into
-  live FPM masters; OPcache/realpath ini values are applied.
+  live Wave 3 benchmark evidence. Per-site PHP-FPM pool sizing and OPcache/realpath ini
+  values are persisted and applied through the site validate/swap flow.
 - Docker web servers currently serve only sites under the managed `projects/` root.
 - The official MySQL entrypoint can retain password values in the container process
   environment; Compose files/logs do not contain them.

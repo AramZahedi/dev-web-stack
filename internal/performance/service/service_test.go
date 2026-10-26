@@ -646,10 +646,12 @@ func TestServiceResetRequiresConfirmation(t *testing.T) {
 func TestServiceApplyMergesPHPIniAndResetRestores(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _, _, sitesFake, _ := newPerformanceTestService(t)
+	originalFPM := &model.PHPFPMBudget{Mode: "static", MaxChildren: 6, ListenBacklog: 128}
 	sitesFake.sites = []model.Site{{
 		ID: "php1", Name: "app", Domain: "app.test", Kind: model.SitePHP,
 		Status: model.StatusRunning, PHPVersion: "8.4",
 		PHPIni: map[string]string{"memory_limit": "256M"},
+		PHPFPM: originalFPM,
 	}}
 
 	result, err := svc.Apply(ctx, ApplyRequest{Confirm: true})
@@ -666,14 +668,21 @@ func TestServiceApplyMergesPHPIniAndResetRestores(t *testing.T) {
 	if merged["opcache.enable"] != "1" || merged["opcache.memory_consumption"] == "" || merged["realpath_cache_size"] == "" {
 		t.Fatalf("performance PHP ini settings missing: %+v", merged)
 	}
-	foundPoolWarning := false
-	for _, warning := range result.Warnings {
-		if strings.Contains(warning, "pool sizing") {
-			foundPoolWarning = true
-		}
+	pool := sitesFake.applied[0].Change.FPM
+	if pool == nil || pool.MaxChildren < 1 || pool.Mode == "" {
+		t.Fatalf("performance pool budget missing: %+v", pool)
 	}
-	if !foundPoolWarning {
-		t.Fatalf("missing PHP pool sizing warning: %v", result.Warnings)
+	applied, err := svc.loadAppliedLocked(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied == nil || applied.PHPFPM["php1"] != *originalFPM {
+		t.Fatalf("applied FPM snapshot = %+v, want %+v", applied.PHPFPM, originalFPM)
+	}
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "keep their current pool sizing") {
+			t.Fatalf("stale pool sizing warning: %v", result.Warnings)
+		}
 	}
 
 	sitesFake.applied = nil
@@ -686,6 +695,35 @@ func TestServiceApplyMergesPHPIniAndResetRestores(t *testing.T) {
 	restored := sitesFake.applied[0].Change.Ini
 	if len(restored) != 1 || restored["memory_limit"] != "256M" {
 		t.Fatalf("reset PHP ini = %+v, want only memory_limit", restored)
+	}
+	if used := sitesFake.applied[0].Change.FPM; used == nil || *used != *originalFPM {
+		t.Fatalf("reset FPM = %+v, want %+v", used, originalFPM)
+	}
+}
+
+func TestServiceApplyRollbackRestoresFPMBudget(t *testing.T) {
+	ctx := context.Background()
+	svc, _, helper, _, sitesFake, _ := newPerformanceTestService(t)
+	original := &model.PHPFPMBudget{Mode: "static", MaxChildren: 6, ListenBacklog: 128}
+	sitesFake.sites = []model.Site{{
+		ID: "php1", Name: "app", Domain: "app.test", Kind: model.SitePHP,
+		Status: model.StatusRunning, PHPVersion: "8.4", PHPFPM: original,
+	}}
+	helper.applyErr = errors.New("sysctl rejected")
+
+	if _, err := svc.Apply(ctx, ApplyRequest{Confirm: true, HostTuning: true}); err == nil {
+		t.Fatal("apply succeeded despite host tuning failure")
+	}
+	if len(sitesFake.applied) != 2 {
+		t.Fatalf("PHP applies = %d, want apply and rollback", len(sitesFake.applied))
+	}
+	appliedBudget := sitesFake.applied[0].Change.FPM
+	if appliedBudget == nil || *appliedBudget == *original {
+		t.Fatalf("apply budget = %+v, want a changed pool", appliedBudget)
+	}
+	restored := sitesFake.applied[1].Change.FPM
+	if restored == nil || *restored != *original {
+		t.Fatalf("rollback FPM = %+v, want %+v", restored, original)
 	}
 }
 

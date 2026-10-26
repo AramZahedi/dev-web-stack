@@ -24,6 +24,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helper"
+	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
@@ -407,6 +408,108 @@ func TestDaemonServesAndRestartsCleanly(t *testing.T) {
 			t.Fatalf("pid file still exists after shutdown: %v", err)
 		}
 	}
+}
+
+func startProxyTargetTestHelper(t *testing.T, dir, configPath string, proxyHTTP, proxyHTTPS int) helper.Config {
+	t.Helper()
+	hosts := filepath.Join(dir, "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := helper.Config{
+		SocketPath:       filepath.Join(dir, "run", "helper.sock"),
+		HostsPath:        hosts,
+		AllowUID:         os.Getuid(),
+		CADir:            filepath.Join(dir, "pki"),
+		TrustDir:         filepath.Join(dir, "trust"),
+		ForwardHTTPPort:  freePort(t),
+		ForwardHTTPSPort: freePort(t),
+		ProxyHTTPPort:    proxyHTTP,
+		ProxyHTTPSPort:   proxyHTTPS,
+		ProxyConfigPath:  configPath,
+	}
+	server, err := helper.NewServer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := server.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = server.Close()
+	})
+	return cfg
+}
+
+func assertDaemonMovedHelperTargets(t *testing.T, helperCfg helper.Config) Options {
+	t.Helper()
+	opts := testOptions(t, t.TempDir(), helperCfg.SocketPath)
+	run := startDaemon(t, opts)
+	defer run.stop(t)
+
+	client, err := helperclient.Dial(helperCfg.SocketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	// The helper rejects targets that do not match its configured values, so a
+	// successful no-op disable proves the daemon updated the in-memory targets.
+	if err := client.SetForwarders(context.Background(), opts.HTTPPort, opts.HTTPSPort, false); err != nil {
+		t.Fatalf("SetForwarders with daemon ports: %v", err)
+	}
+	st, err := store.Open(filepath.Join(opts.Home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	reconcileError, err := st.GetSetting(context.Background(), "serving_mode_error")
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		t.Fatal(err)
+	}
+	if reconcileError != "" {
+		t.Fatalf("serving-mode reconciliation failed: %s", reconcileError)
+	}
+	return opts
+}
+
+func TestDaemonUpdatesHelperProxyTargetsOnStartup(t *testing.T) {
+	useBuiltBinary(t)
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "helper.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`
+proxy_http_port: %d
+proxy_https_port: %d
+`, freePort(t), freePort(t))), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	helperCfg := startProxyTargetTestHelper(t, dir, configPath, freePort(t), freePort(t))
+	opts := assertDaemonMovedHelperTargets(t, helperCfg)
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("proxy_http_port: %d", opts.HTTPPort),
+		fmt.Sprintf("proxy_https_port: %d", opts.HTTPSPort),
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("helper config missing %q:\n%s", want, data)
+		}
+	}
+}
+
+func TestDaemonMovesHelperTargetsWhenConfigWriteFails(t *testing.T) {
+	useBuiltBinary(t)
+	dir := t.TempDir()
+	helperCfg := startProxyTargetTestHelper(t, dir, filepath.Join(dir, "missing.yaml"), freePort(t), freePort(t))
+	// The daemon logs the persistence error but must still move the runtime
+	// targets so serving-mode reconciliation restarts 80/443 against the new
+	// daemon ports.
+	assertDaemonMovedHelperTargets(t, helperCfg)
 }
 
 func TestDaemonPHPAPIIsWired(t *testing.T) {

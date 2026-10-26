@@ -389,6 +389,22 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
+	// Move the helper's 80/443 targets before serving-mode reconciliation. The
+	// loopback proxy above is already listening on the configured ports, so the
+	// reconcile below can restart the privileged forwarders without a dead
+	// target. An older helper (or a flag-only test helper) must not prevent the
+	// daemon from starting; the warning makes the manual fallback visible.
+	if resp, err := helper.UpdateProxyTargets(ctx, cfg.HTTPPort, cfg.HTTPSPort); err != nil {
+		logger.Warn("daemon: update helper proxy targets", "error", err)
+	} else if resp.PersistenceError != "" {
+		logger.Warn("helper proxy targets updated in memory but not persisted; a helper restart will need the config repaired",
+			"error", resp.PersistenceError,
+			"proxy_http_port", resp.HTTPPort, "proxy_https_port", resp.HTTPSPort)
+	} else if !resp.Persisted {
+		logger.Warn("helper proxy targets updated in memory only; the helper was started without a writable config file",
+			"proxy_http_port", resp.HTTPPort, "proxy_https_port", resp.HTTPSPort)
+	}
+
 	// Publish the API and socket before touching serving state. A broken helper
 	// vhost configuration must never lock the user out of `vhost use builtin`,
 	// Doctor, or site removal. The built-in proxy, when applicable, is already

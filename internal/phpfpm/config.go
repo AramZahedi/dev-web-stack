@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 // ErrConfigInvalid is the sentinel wrapped by every configuration and
@@ -45,6 +47,9 @@ type Config struct {
 	PIDFile      string
 	User, Group  string
 	Env          map[string]string
+	// Pool is the persisted per-site sizing. Nil or zero selects the
+	// conservative defaults.
+	Pool *model.PHPFPMBudget
 }
 
 // ConfigError reports one rejected field or value. It wraps ErrConfigInvalid.
@@ -108,6 +113,11 @@ func validateConfig(cfg Config) error {
 	if cfg.Group != "" {
 		if err := validateAccount("group", cfg.Group); err != nil {
 			return err
+		}
+	}
+	if cfg.Pool != nil {
+		if err := cfg.Pool.Validate(); err != nil {
+			return invalid("pool", "%v", err)
 		}
 	}
 

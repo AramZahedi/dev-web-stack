@@ -134,7 +134,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			"Run `devstack daemon restart` to move the listeners. The current browser connection may close.")
 		if cfg.HTTPPort != running.HTTPPort || cfg.HTTPSPort != running.HTTPSPort {
 			out.Warnings = append(out.Warnings,
-				"Public 80/443 forwarding is owned by the helper. If builtin forwarding is enabled, update proxy_http_port/proxy_https_port in /etc/devstack/helper.yaml and restart devstack-helper before public URLs can use the new daemon ports.")
+				"Public 80/443 forwarding is owned by the helper. The daemon updates its proxy_http_port/proxy_https_port automatically on restart when the helper has a writable config file; otherwise update /etc/devstack/helper.yaml and restart devstack-helper.")
 		}
 		if cfg.UIPort != running.UIPort {
 			out.Warnings = append(out.Warnings,

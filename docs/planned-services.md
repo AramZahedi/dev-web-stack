@@ -5,9 +5,10 @@
 > database credentials/rotation/admin bootstrap, global PHP/Composer, site shell/exec,
 > static builds, service configuration editing, performance preview/apply/reset and
 > measured benchmarks, site-scoped terminal, editable listener ports, and the dashboard
-> surfaces. ImageMagick CLI is descoped. Remaining: external-site Docker mounts, real
-> root host-tuning/benchmark acceptance, and merged PHP-FPM pool sizing. This document
-> remains the product overview, not a promise that every host gate is passed.
+> surfaces. ImageMagick CLI is descoped. Per-site PHP-FPM pool sizing is persisted and
+> applied to live masters. Remaining: external-site Docker mounts and real root
+> host-tuning/benchmark acceptance. This document remains the product overview, not a
+> promise that every host gate is passed.
 
 - **Status:** Waves 0–2 and the next batch implemented; remaining host gates tracked in known issues.
 - **Design status:** Implemented for Waves 0–2 and the next batch.
