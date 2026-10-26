@@ -38,11 +38,16 @@ type WriteResult struct {
 
 // Manager orchestrates config file seeding, generation, diffing, and conflict resolution.
 type Manager struct {
-	mu           sync.Mutex
+	mu           *sync.Mutex
 	root         string
 	manifestPath string
 	now          func() time.Time
 }
+
+// managerLocks serializes all Manager instances that point at the same root.
+// Docker web sync and the service-config API each create their own Manager,
+// but they share one manifest; a per-instance mutex is not enough.
+var managerLocks sync.Map
 
 // New returns a config Manager for root.
 func New(root string) (*Manager, error) {
@@ -54,7 +59,9 @@ func New(root string) (*Manager, error) {
 		return nil, fmt.Errorf("resolve root %q: %w", root, err)
 	}
 
+	lock, _ := managerLocks.LoadOrStore(abs, &sync.Mutex{})
 	return &Manager{
+		mu:           lock.(*sync.Mutex),
 		root:         abs,
 		manifestPath: filepath.Join(abs, ".config-manifest.json"),
 		now:          time.Now,
@@ -193,6 +200,9 @@ func (m *Manager) SeedBase(rel string, data []byte, mode os.FileMode) (bool, err
 	if err := atomicWrite(full, data, mode); err != nil {
 		return false, err
 	}
+	if err := m.writeBaselineLocked(cleaned, data); err != nil {
+		return false, err
+	}
 
 	manifest.Entries[cleaned] = ManifestEntry{
 		Path:      cleaned,
@@ -279,6 +289,9 @@ func (m *Manager) WriteGenerated(rel string, data []byte, mode os.FileMode, reas
 
 	// Write file atomically
 	if err := atomicWrite(full, data, mode); err != nil {
+		return WriteResult{}, err
+	}
+	if err := m.writeBaselineLocked(cleaned, data); err != nil {
 		return WriteResult{}, err
 	}
 
@@ -387,6 +400,33 @@ func (m *Manager) RestoreEntry(rel string, entry ManifestEntry, tracked bool) er
 		delete(manifest.Entries, cleaned)
 	}
 	return saveManifest(m.manifestPath, manifest)
+}
+
+// LatestBaseline returns the last content written by the generated/base flow for
+// rel, or an empty string when no baseline was recorded. It lets reset restore
+// the managed baseline when no ordinary backup exists.
+func (m *Manager) LatestBaseline(rel string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cleaned, _, err := m.cleanRel(rel)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(m.root, "backups", "baseline", filepath.FromSlash(cleaned))
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+		return path, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect config baseline: %w", err)
+	}
+	return "", nil
+}
+
+func (m *Manager) writeBaselineLocked(rel string, data []byte) error {
+	path := filepath.Join(m.root, "backups", "baseline", filepath.FromSlash(rel))
+	if err := atomicWrite(path, data, 0o600); err != nil {
+		return fmt.Errorf("write config baseline: %w", err)
+	}
+	return nil
 }
 
 // LatestBackup returns the newest backup file for rel, or an empty string when
@@ -502,6 +542,9 @@ func (m *Manager) UseGenerated(rel string, proposed []byte) (string, error) {
 	if err := atomicWrite(full, proposed, mode); err != nil {
 		return "", err
 	}
+	if err := m.writeBaselineLocked(cleaned, proposed); err != nil {
+		return "", err
+	}
 
 	manifest.Entries[cleaned] = ManifestEntry{
 		Path:      cleaned,
@@ -573,6 +616,17 @@ func (m *Manager) MergeWithBackup(rel string, data []byte) (string, error) {
 
 // Backup creates a timestamped copy under <root>/backups/config/<timestamp>/...
 func (m *Manager) Backup(rel string) (string, error) {
+	return m.backupUnder(rel, "config")
+}
+
+// BackupReset creates the audit copy taken immediately before a reset. It is
+// deliberately stored outside backups/config so it can never become the source
+// of a later LatestBackup call (which would make repeated resets toggle).
+func (m *Manager) BackupReset(rel string) (string, error) {
+	return m.backupUnder(rel, "config-reset")
+}
+
+func (m *Manager) backupUnder(rel, area string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -580,18 +634,21 @@ func (m *Manager) Backup(rel string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	return m.backupLocked(cleaned, full)
+	return m.backupLockedAt(cleaned, full, area)
 }
 
 func (m *Manager) backupLocked(rel, full string) (string, error) {
+	return m.backupLockedAt(rel, full, "config")
+}
+
+func (m *Manager) backupLockedAt(rel, full, area string) (string, error) {
 	content, err := os.ReadFile(full)
 	if err != nil {
 		return "", fmt.Errorf("read %s for backup: %w", full, err)
 	}
 
 	ts := m.now().UTC().Format("20060102T150405Z")
-	baseDest := filepath.Join(m.root, "backups", "config", ts, filepath.FromSlash(rel))
+	baseDest := filepath.Join(m.root, "backups", area, ts, filepath.FromSlash(rel))
 
 	dest := baseDest
 	counter := 1

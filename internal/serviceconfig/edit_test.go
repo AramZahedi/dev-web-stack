@@ -1,8 +1,10 @@
 package serviceconfig
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -86,6 +88,71 @@ func TestWriteUserCreatesMissingFileWithoutBackup(t *testing.T) {
 	}
 	if status.Class != ClassCustom || !status.Modified {
 		t.Fatalf("status = %+v, want a custom modified file", status)
+	}
+}
+
+func TestManagersForSameRootShareManifestLock(t *testing.T) {
+	root := t.TempDir()
+	first, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.mu != second.mu {
+		t.Fatal("two managers for the same root do not share a lock")
+	}
+
+	var wg sync.WaitGroup
+	for i, manager := range []*Manager{first, second} {
+		wg.Add(1)
+		go func(i int, manager *Manager) {
+			defer wg.Done()
+			rel := fmt.Sprintf("conf.d/generated/%d.conf", i)
+			if _, err := manager.WriteGenerated(rel, []byte("server {}\n"), 0o644, "test"); err != nil {
+				t.Errorf("WriteGenerated %d: %v", i, err)
+			}
+		}(i, manager)
+	}
+	wg.Wait()
+	manifest, err := loadManifest(filepath.Join(root, ".config-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Entries) != 2 {
+		t.Fatalf("manifest entries = %d, want 2", len(manifest.Entries))
+	}
+}
+
+func TestLatestBaselineTracksGeneratedContent(t *testing.T) {
+	root := t.TempDir()
+	m, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := "conf.d/generated/app.conf"
+	generated := []byte("server { listen 80; }\n")
+	if _, err := m.WriteGenerated(rel, generated, 0o644, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, rel), []byte("user edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := m.LatestBaseline(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline == "" {
+		t.Fatal("generated file has no baseline")
+	}
+	data, err := os.ReadFile(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(generated) {
+		t.Fatalf("baseline = %q, want generated content", data)
 	}
 }
 

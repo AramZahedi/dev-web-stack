@@ -164,6 +164,18 @@ func (f *configFixture) setActive(id services.ID, active bool) {
 	f.lifecycle.views[id] = view
 }
 
+func TestConfigListRequiresInstalledServiceState(t *testing.T) {
+	f := newConfigFixture(t)
+	f.install(services.IDNginx)
+	view := f.lifecycle.views[services.IDNginx]
+	view.Installed = false
+	f.lifecycle.views[services.IDNginx] = view
+
+	if _, err := f.service.List(context.Background(), services.IDNginx); !errors.Is(err, ErrConfigNotInstalled) {
+		t.Fatalf("List on a retained-but-uninstalled service = %v, want ErrConfigNotInstalled", err)
+	}
+}
+
 func TestConfigListReturnsMetadataNotContent(t *testing.T) {
 	f := newConfigFixture(t)
 	f.install(services.IDNginx)
@@ -760,6 +772,35 @@ func TestConfigResetRestoresLatestBackup(t *testing.T) {
 	}
 	if len(f.validator.calls) != 2 {
 		t.Fatalf("validator calls = %v", f.validator.calls)
+	}
+
+	// A reset creates an audit backup of the pre-reset file. That backup must
+	// never become the source of a later reset, or repeated resets toggle
+	// between the baseline and the edited content.
+	if _, err := f.service.Reset(context.Background(), services.IDNginx, "nginx.conf"); err != nil {
+		t.Fatalf("second reset: %v", err)
+	}
+	if got := f.read(services.IDNginx, "nginx.conf"); got != "worker_processes 1;\n" {
+		t.Fatalf("second reset content = %q, want the managed baseline", got)
+	}
+}
+
+func TestConfigResetRestoresGeneratedBaselineWithoutBackup(t *testing.T) {
+	f := newConfigFixture(t)
+	f.install(services.IDNginx)
+	m := f.manager(services.IDNginx)
+	generated := "server { listen 80; }\n"
+	if _, err := m.WriteGenerated("conf.d/generated/site.conf", []byte(generated), 0o644, "test"); err != nil {
+		t.Fatal(err)
+	}
+	f.write(services.IDNginx, "conf.d/generated/site.conf", "server { listen 9999; }\n")
+
+	result, err := f.service.Reset(context.Background(), services.IDNginx, "conf.d/generated/site.conf")
+	if err != nil {
+		t.Fatalf("reset generated baseline: %v", err)
+	}
+	if !result.Changed || f.read(services.IDNginx, "conf.d/generated/site.conf") != generated {
+		t.Fatalf("reset result = %+v content=%q", result, f.read(services.IDNginx, "conf.d/generated/site.conf"))
 	}
 }
 

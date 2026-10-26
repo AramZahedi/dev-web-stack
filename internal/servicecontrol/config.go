@@ -294,7 +294,7 @@ func (s *ConfigService) List(ctx context.Context, id services.ID) (ConfigListing
 	if err := ctx.Err(); err != nil {
 		return ConfigListing{}, err
 	}
-	_, configRoot, manager, err := s.prepare(id)
+	_, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {
 		return ConfigListing{}, err
 	}
@@ -359,7 +359,7 @@ func (s *ConfigService) Content(ctx context.Context, id services.ID, rel string)
 	if err := ctx.Err(); err != nil {
 		return ConfigContent{}, err
 	}
-	_, configRoot, manager, err := s.prepare(id)
+	_, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {
 		return ConfigContent{}, err
 	}
@@ -384,7 +384,7 @@ func (s *ConfigService) Diff(ctx context.Context, id services.ID, rel, content s
 	if err := ctx.Err(); err != nil {
 		return ConfigDiff{}, err
 	}
-	svc, configRoot, manager, err := s.prepare(id)
+	svc, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {
 		return ConfigDiff{}, err
 	}
@@ -443,7 +443,7 @@ func (s *ConfigService) Apply(ctx context.Context, id services.ID, req ConfigApp
 	if err := ctx.Err(); err != nil {
 		return ConfigApplyResult{}, err
 	}
-	svc, configRoot, manager, err := s.prepare(id)
+	svc, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {
 		return ConfigApplyResult{}, err
 	}
@@ -601,7 +601,7 @@ func (s *ConfigService) Reset(ctx context.Context, id services.ID, rel string) (
 	if err := ctx.Err(); err != nil {
 		return ConfigApplyResult{}, err
 	}
-	svc, configRoot, manager, err := s.prepare(id)
+	svc, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {
 		return ConfigApplyResult{}, err
 	}
@@ -624,6 +624,12 @@ func (s *ConfigService) Reset(ctx context.Context, id services.ID, rel string) (
 	source, err := manager.LatestBackup(clean)
 	if err != nil {
 		return ConfigApplyResult{}, err
+	}
+	if source == "" && status.Modified {
+		source, err = manager.LatestBaseline(clean)
+		if err != nil {
+			return ConfigApplyResult{}, err
+		}
 	}
 	if source == "" {
 		if !status.Modified && status.Class != serviceconfig.ClassCustom {
@@ -657,7 +663,7 @@ func (s *ConfigService) Reset(ctx context.Context, id services.ID, rel string) (
 	if err != nil {
 		return ConfigApplyResult{}, err
 	}
-	backupPath, err := manager.Backup(clean)
+	backupPath, err := manager.BackupReset(clean)
 	if err != nil {
 		return ConfigApplyResult{}, fmt.Errorf("back up service config %s before reset: %w", clean, err)
 	}
@@ -784,7 +790,7 @@ func (s *ConfigService) lifecycleView(ctx context.Context, svc services.Service)
 	return view, nil
 }
 
-func (s *ConfigService) prepare(id services.ID) (services.Service, string, *serviceconfig.Manager, error) {
+func (s *ConfigService) prepare(ctx context.Context, id services.ID) (services.Service, string, *serviceconfig.Manager, error) {
 	svc, ok := s.catalog.Get(id)
 	if !ok {
 		return services.Service{}, "", nil, fmt.Errorf("%w: %q", services.ErrNotFound, id)
@@ -792,6 +798,13 @@ func (s *ConfigService) prepare(id services.ID) (services.Service, string, *serv
 	serviceRoot := filepath.Join(s.root, "services", string(id))
 	if err := checkServiceScaffold(serviceRoot); err != nil {
 		return services.Service{}, "", nil, err
+	}
+	view, err := s.lifecycleView(ctx, svc)
+	if err != nil {
+		return services.Service{}, "", nil, err
+	}
+	if !view.Installed {
+		return services.Service{}, "", nil, ErrConfigNotInstalled
 	}
 	configRoot := filepath.Join(serviceRoot, "config")
 	if err := serviceconfig.MigrateManifest(serviceRoot, configRoot, "config/"); err != nil {
