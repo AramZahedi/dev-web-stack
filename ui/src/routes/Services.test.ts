@@ -518,6 +518,15 @@ describe('Services', () => {
     await waitFor(() => expect(mockApi.uninstallService).toHaveBeenCalledWith('mysql', true));
   });
 
+  it('requires saving custom performance values before preview', async () => {
+    render(Services);
+    await screen.findByRole('button', { name: /Custom/ });
+    await fireEvent.click(screen.getByRole('button', { name: /Custom/ }));
+    expect(await screen.findByLabelText('Custom JSON')).toBeTruthy();
+    const preview = screen.getByRole('button', { name: 'Preview' }) as HTMLButtonElement;
+    expect(preview.disabled).toBe(true);
+  });
+
   it('edits a service config with diff and apply', async () => {
     render(Services);
     const nginx = await cardFor('Nginx Web Server');

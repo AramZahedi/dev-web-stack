@@ -163,6 +163,8 @@
     if (profile === 'custom') {
       customOpen = true;
       customError = null;
+      preview = null;
+      previewError = null;
       customText = JSON.stringify(performance?.custom ?? performance?.values ?? {}, null, 2);
       return;
     }
@@ -343,7 +345,7 @@
         size="sm"
         variant="secondary"
         loading={previewLoading}
-        disabled={previewLoading || !performance}
+        disabled={previewLoading || !performance || customOpen}
         onclick={loadPreview}
       >
         {#if !previewLoading}<Gauge size={12} strokeWidth={2} aria-hidden="true" />{/if}
