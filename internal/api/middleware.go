@@ -18,9 +18,12 @@ var defaultAllowedHosts = []string{"127.0.0.1", "localhost", "devstack.test"}
 // authenticated by peer credentials.
 type socketAuthKey struct{}
 
-// WithSocketAuth marks every request as authenticated by the Unix-socket
-// transport. Such requests skip the browser session cookie and CSRF check;
-// the host allowlist still applies because it wraps this handler.
+// WithSocketAuth marks every request as authenticated by the local control
+// transport. The listener must already have verified the peer UID/SID (see
+// internal/ipc.PeerPolicy); this middleware must never wrap a listener that
+// accepts unverified local clients. Such requests skip the browser session
+// cookie and CSRF check; the host allowlist still applies because it wraps
+// this handler.
 func WithSocketAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), socketAuthKey{}, true)

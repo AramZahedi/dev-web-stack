@@ -35,6 +35,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	perfservice "github.com/AramZahedi/dev-web-stack/internal/performance/service"
@@ -511,7 +512,7 @@ func (d *daemon) startAPI(handler http.Handler) error {
 	if err := prepareSocketPath(d.socketPath); err != nil {
 		return err
 	}
-	unixLn, err := net.Listen("unix", d.socketPath)
+	unixLn, err := ipc.Listen(ipc.UnixEndpoint(d.socketPath), ipc.WithAllowUID(os.Getuid()))
 	if err != nil {
 		return fmt.Errorf("daemon: listen on socket %s: %w", d.socketPath, err)
 	}

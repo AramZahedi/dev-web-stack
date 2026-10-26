@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 )
 
@@ -104,10 +105,13 @@ func Dial(socketPath string) (*Client, error) {
 	if socketPath == "" {
 		return nil, fmt.Errorf("helperclient: socket path is empty")
 	}
+	endpoint := ipc.EndpointFromAddress(socketPath)
+	if err := endpoint.Validate(); err != nil {
+		return nil, fmt.Errorf("helperclient: helper endpoint: %w", err)
+	}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", socketPath)
+			return ipc.Dial(ctx, endpoint, 10*time.Second)
 		},
 		MaxIdleConns:    4,
 		IdleConnTimeout: 90 * time.Second,

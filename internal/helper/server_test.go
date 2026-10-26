@@ -128,17 +128,13 @@ func TestHelperRejectsWrongUID(t *testing.T) {
 
 	err := c.SyncHosts(context.Background(), []string{"blog.test"})
 	if err == nil {
-		t.Fatal("want unauthorized error")
+		t.Fatal("want a rejected connection")
 	}
-	if !errors.Is(err, helperclient.ErrUnauthorized) {
-		t.Fatalf("error = %v, want ErrUnauthorized", err)
-	}
-	var apiErr *helperclient.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("error = %T, want *helperclient.Error", err)
-	}
-	if apiErr.Status != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", apiErr.Status)
+	// The IPC listener rejects a foreign UID before HTTP, so the client sees
+	// a transport failure rather than a helper 403. The per-request UID check
+	// remains as defense in depth.
+	if errors.Is(err, helperclient.ErrUnauthorized) {
+		t.Fatalf("error = %v, want transport-level rejection", err)
 	}
 	if _, statErr := os.Stat(hostsPath); !os.IsNotExist(statErr) {
 		t.Fatalf("handler ran for rejected peer: stat error = %v", statErr)

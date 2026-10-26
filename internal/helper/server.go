@@ -28,6 +28,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/forwarder"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/hosts"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
@@ -757,7 +758,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if err := removeStaleSocket(socketPath); err != nil {
 		return err
 	}
-	ln, err := net.Listen("unix", socketPath)
+	ln, err := ipc.Listen(ipc.UnixEndpoint(socketPath), ipc.WithAllowUID(s.cfg.AllowUID))
 	if err != nil {
 		return fmt.Errorf("helper: listen on %s: %w", socketPath, err)
 	}
