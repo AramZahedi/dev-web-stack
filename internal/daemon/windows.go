@@ -126,7 +126,9 @@ func Run(ctx context.Context, opts Options) error {
 	_ = router
 	if err := startWindowsPublicEntry(ctx,
 		func() error { return publicProxy.Start(ctx) },
-		func(ctx context.Context) error { return updateWindowsProxyTargets(ctx, opts.HelperSocket, cfg.HTTPPort, cfg.HTTPSPort) },
+		func(ctx context.Context) error {
+			return updateWindowsProxyTargets(ctx, opts.HelperSocket, cfg.HTTPPort, cfg.HTTPSPort)
+		},
 		func(context.Context) error { return nil },
 	); err != nil {
 		_ = publicProxy.Stop(context.Background())

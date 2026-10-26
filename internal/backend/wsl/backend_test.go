@@ -102,7 +102,7 @@ func TestLifecycleStatusLogsAndExecUseAgent(t *testing.T) {
 	logReader := io.NopCloser(strings.NewReader("agent log"))
 	agent := &fakeAgent{
 		status: agentproto.SiteStatusResponse{Status: "running", PID: 77},
-		logs: logReader, execResult: agentproto.SiteExecResponse{ExitCode: 3, Stdout: "out", Stderr: "err"},
+		logs:   logReader, execResult: agentproto.SiteExecResponse{ExitCode: 3, Stdout: "out", Stderr: "err"},
 	}
 	b := New(agent)
 	if info, err := b.Start(context.Background(), "site"); err != nil || info.PID != 41 || len(agent.started) != 1 {
