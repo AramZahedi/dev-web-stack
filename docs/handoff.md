@@ -12,7 +12,7 @@
 - **Wave 2 merge SHA:** `ec2dca4523bf40d931d3e674001d6e832e5e1903`
 - **Wave 2 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40222270689` (green; includes the renewal-test race fix)
 - **Post-Wave-2 code:** `cbc1605` (action colors, install-scaffold status, compose side-effect, duplicate-badge fixes).
-- **Next-batch code:** [`843abc5`](superpowers/status/2026-10-26-next-batch-completion.md) plus its documentation/merge commit; current runtime build rebuilt from the merged branch.
+- **Next-batch code:** [`4477f06`](superpowers/status/2026-10-26-next-batch-completion.md) plus its documentation/merge commit; current runtime build rebuilt from the merged branch.
 - **Next step:** read [Continuation State](superpowers/status/2026-10-26-continuation.md) and [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md). See also the
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
