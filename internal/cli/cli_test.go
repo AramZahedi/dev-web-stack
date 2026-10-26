@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -1158,6 +1159,61 @@ func TestCLIDaemonRestartValidatesConfigBeforeStopping(t *testing.T) {
 	code, _, stderr := runCLIExit(t, fake, "daemon", "restart", "--home", home)
 	if code == 0 || !strings.Contains(stderr, "CONFIG_INVALID") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestCLIDaemonRestartRestoresConfigAfterStartFailure(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.UIPort = 17070
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var events []string
+	oldStop := stopDaemon
+	stopDaemon = func(context.Context, string) (bool, error) {
+		events = append(events, "stop")
+		return true, nil
+	}
+	t.Cleanup(func() { stopDaemon = oldStop })
+	oldEnsure := ensureRunning
+	attempts := 0
+	ensureRunning = func(_ context.Context, opts daemon.Options) error {
+		if opts.Home != home {
+			t.Errorf("ensure home = %q, want %q", opts.Home, home)
+		}
+		attempts++
+		events = append(events, fmt.Sprintf("start%d", attempts))
+		if attempts == 1 {
+			return errors.New("address already in use")
+		}
+		return nil
+	}
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "daemon", "restart", "--home", home)
+	if code == 0 || !strings.Contains(stderr, "previous config was restored") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if !reflect.DeepEqual(events, []string{"stop", "start1", "start2"}) {
+		t.Fatalf("events = %v", events)
+	}
+	after, err := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("config was not restored:\nbefore=%s\nafter=%s", before, after)
 	}
 }
 

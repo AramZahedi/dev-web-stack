@@ -1010,7 +1010,9 @@ func catalogAllows(svc services.Service, rel string) bool {
 		case sub == "." || sub == "":
 			continue
 		case sub == "config":
-			return true
+			// A whole-directory mount permits existing safe files, but not
+			// creating arbitrary new files through the editor.
+			continue
 		case !strings.HasPrefix(sub, "config/"):
 			continue
 		}
@@ -1022,7 +1024,12 @@ func catalogAllows(svc services.Service, rel string) bool {
 		// has no explicit kind, so use the same convention as the Docker
 		// config tree: ".d" directories and extensionless directories.
 		if strings.HasSuffix(base, ".d") || filepath.Ext(base) == "" {
-			if rel == base || strings.HasPrefix(rel, base+"/") {
+			if rel == base {
+				// The base itself is a directory mount target; never create a
+				// regular file where the service expects a directory.
+				return false
+			}
+			if strings.HasPrefix(rel, base+"/") {
 				return true
 			}
 			continue

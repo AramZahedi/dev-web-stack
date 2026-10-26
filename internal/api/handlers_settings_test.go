@@ -81,6 +81,10 @@ func TestPatchSettingsPersistsListenerPortsAndReportsRestart(t *testing.T) {
 	if len(response.Warnings) == 0 {
 		t.Fatal("warnings are empty, want restart/forwarder guidance")
 	}
+	joinedWarnings := strings.Join(response.Warnings, " ")
+	if !strings.Contains(joinedWarnings, "proxy_http_port") || !strings.Contains(joinedWarnings, "devstack-helper") {
+		t.Fatalf("missing explicit helper-forwarder warning: %v", response.Warnings)
+	}
 
 	loaded, err := config.Load(home)
 	if err != nil {
@@ -131,6 +135,43 @@ func TestPatchSettingsPersistsListenerPortsAndReportsRestart(t *testing.T) {
 	}
 	if !response.RestartRequired {
 		t.Fatal("restart_required = false while the running daemon still owns the old listeners")
+	}
+}
+
+func TestPatchSettingsPreservesManualConfigEdits(t *testing.T) {
+	home, fx := settingsTestHome(t)
+	used := map[int]bool{}
+	manualHTTP := settingsFreePort(t, used)
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.HTTPPort = manualHTTP
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	nUI := settingsFreePort(t, used)
+	rec := fx.request(t, http.MethodPatch, "/api/v1/settings",
+		strings.NewReader(fmt.Sprintf(`{"ui_port":%d}`, nUI)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		HTTPPort int `json:"http_port"`
+		UIPort   int `json:"ui_port"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.HTTPPort != manualHTTP || response.UIPort != nUI {
+		t.Fatalf("response ports = %d/%d, want manual %d and %d", response.HTTPPort, response.UIPort, manualHTTP, nUI)
+	}
+	loaded, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.HTTPPort != manualHTTP || loaded.UIPort != nUI {
+		t.Fatalf("saved ports = %d/%d, want %d/%d", loaded.HTTPPort, loaded.UIPort, manualHTTP, nUI)
 	}
 }
 

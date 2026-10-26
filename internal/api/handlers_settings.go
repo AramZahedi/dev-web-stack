@@ -53,13 +53,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store settings may already contain a saved-but-not-restarted port
-	// change. Preserve omitted pending values; only the running listeners are
-	// exempt from the bind probe and drive restart_required.
+	// config.yaml is the durable source. It already contains any saved-but-not-
+	// restarted port change and any deliberate out-of-band edit. The store is
+	// only a mirror for GET /settings, so omitted values must come from cfg.
 	running := s.runningPorts(current)
-	cfg.HTTPPort = current.HTTPPort
-	cfg.HTTPSPort = current.HTTPSPort
-	cfg.UIPort = current.UIPort
 	if req.HTTPPort != nil {
 		cfg.HTTPPort = *req.HTTPPort
 	}
@@ -137,7 +134,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			"Run `devstack daemon restart` to move the listeners. The current browser connection may close.")
 		if cfg.HTTPPort != running.HTTPPort || cfg.HTTPSPort != running.HTTPSPort {
 			out.Warnings = append(out.Warnings,
-				"Builtin helper forwarders are reconciled with the new proxy ports when the daemon restarts.")
+				"Public 80/443 forwarding is owned by the helper. If builtin forwarding is enabled, update proxy_http_port/proxy_https_port in /etc/devstack/helper.yaml and restart devstack-helper before public URLs can use the new daemon ports.")
 		}
 		if cfg.UIPort != running.UIPort {
 			out.Warnings = append(out.Warnings,

@@ -49,9 +49,14 @@ feasibility. A saved change returns `restart_required` and remains visibly pendi
 devstack daemon restart
 ```
 
-The daemon reconciles builtin helper forwarders with the new HTTP/HTTPS ports on
-startup. Native nginx/Apache dashboard vhosts use the configured UI port. Public 80/443
-remain owned by the helper or the active web-server container.
+Native nginx/Apache dashboard vhosts and the helper dashboard vhost use the configured
+UI port. Public 80/443 remain owned by the helper or the active web-server container.
+Changing `http_port`/`https_port` does **not** rewrite the helper's own
+`/etc/devstack/helper.yaml`: if builtin forwarding is active, update its
+`proxy_http_port`/`proxy_https_port` to the new daemon ports and restart
+devstack-helper. Until then, public 80/443 keeps targeting the old (now stopped)
+daemon port. The Settings warning says this explicitly; see
+[known issues](known-issues.md#k14--daemon-httphttps-port-changes-need-a-helper-config-update).
 
 ## Service configuration
 
@@ -159,7 +164,7 @@ Open a site and choose **Start terminal** in the Terminal card. The terminal:
 Tickets are one-use, expire in 30 seconds, and are bound to the site and installing UID.
 The WebSocket is allowed only from an allowed loopback Origin/Host. Terminal availability
 does not require the site to be running, only a valid project directory. See
-[known issues](known-issues.md#k13--terminal-limitations).
+[known issues](known-issues.md#k15--terminal-limitations).
 
 ## Related
 

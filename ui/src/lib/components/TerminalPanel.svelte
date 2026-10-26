@@ -144,6 +144,9 @@
         onStatus: (next) => {
           if (generation === startGeneration) status = next;
         },
+        onError: (code, message) => {
+          if (generation === startGeneration) error = { code, message };
+        },
       })
       .then((next) => {
         if (generation !== startGeneration) {

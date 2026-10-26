@@ -103,7 +103,15 @@ destination-root tests pass.
 - Backups live under `services/<id>/config/backups/{config,config-reset}` because the
   manager is rooted at the config directory. They are hidden from the editor/API policy.
 
-### K14 — Terminal limitations
+### K14 — Daemon HTTP/HTTPS port changes need a helper config update
+
+The Settings PATCH persists and validates daemon listener ports, but it cannot
+rewrite the root helper's `/etc/devstack/helper.yaml`. With builtin 80/443
+forwarding, update `proxy_http_port`/`proxy_https_port` and restart
+devstack-helper; otherwise public URLs keep targeting the old port. The API
+returns this warning. UI-only changes do not need it.
+
+### K15 — Terminal limitations
 
 - A stopped site still gets a shell if its project directory is valid.
 - Descendants that deliberately create a new session/process group can escape process

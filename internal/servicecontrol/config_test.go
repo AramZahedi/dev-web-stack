@@ -681,6 +681,22 @@ func TestConfigApplyRejectsNewArbitraryFile(t *testing.T) {
 		t.Fatal("a directory was created for a file mount")
 	}
 
+	if _, err := f.service.Apply(context.Background(), services.IDNginx, ConfigApplyRequest{
+		Path: "conf.d", Content: "not a directory\n",
+	}); !errors.Is(err, ErrConfigPathDenied) {
+		t.Fatalf("directory-mount target error = %v, want ErrConfigPathDenied", err)
+	}
+	if info, err := os.Stat(filepath.Join(f.configRoot(services.IDNginx), "conf.d")); err == nil && !info.IsDir() {
+		t.Fatalf("conf.d was replaced by a file: %v", info)
+	}
+
+	f.install(services.IDMySQL)
+	if _, err := f.service.Apply(context.Background(), services.IDMySQL, ConfigApplyRequest{
+		Path: "new.cnf", Content: "arbitrary\n",
+	}); !errors.Is(err, ErrConfigPathDenied) {
+		t.Fatalf("whole-directory mount new file error = %v, want ErrConfigPathDenied", err)
+	}
+
 	result, err := f.service.Apply(context.Background(), services.IDNginx, ConfigApplyRequest{
 		Path: "conf.d/custom/new.conf", Content: "client_max_body_size 4m;\n",
 	})

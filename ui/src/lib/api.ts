@@ -674,6 +674,7 @@ export async function openTerminal(
         socket.close();
       } else if (message.type === 'error') {
         handlers.onStatus('error');
+        handlers.onError?.('TERMINAL_ERROR', message.message ?? 'The terminal session reported an error.');
       }
     } catch {
       // Raw output is tolerated so older daemons still work.

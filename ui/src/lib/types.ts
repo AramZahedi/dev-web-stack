@@ -534,6 +534,7 @@ export interface TerminalHandlers {
   onOutput: (text: string) => void;
   onExit: (code: number) => void;
   onStatus: (status: TerminalStatus) => void;
+  onError?: (code: string, message: string) => void;
 }
 
 export interface TerminalConnection {

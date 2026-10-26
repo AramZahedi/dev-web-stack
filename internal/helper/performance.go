@@ -231,7 +231,7 @@ func (m *PerformanceManager) Apply(ctx context.Context, req helperproto.Performa
 	if err := writePerformanceFile(sysctlPath, sysctlContent, 0o644); err != nil {
 		step("write-sysctl", "failed", err.Error())
 		rollbackErr := m.rollback(marker, prior)
-		if createdMarker {
+		if createdMarker && rollbackErr == nil {
 			_ = os.Remove(m.markerPath())
 		}
 		return response, &PerformanceApplyError{Err: errors.Join(err, rollbackErr), Response: response}
@@ -240,7 +240,7 @@ func (m *PerformanceManager) Apply(ctx context.Context, req helperproto.Performa
 	if err := writePerformanceFile(limitsPath, limitsContent, 0o644); err != nil {
 		step("write-limits", "failed", err.Error())
 		rollbackErr := m.rollback(marker, prior)
-		if createdMarker {
+		if createdMarker && rollbackErr == nil {
 			_ = os.Remove(m.markerPath())
 		}
 		return response, &PerformanceApplyError{Err: errors.Join(err, rollbackErr), Response: response}
@@ -250,7 +250,7 @@ func (m *PerformanceManager) Apply(ctx context.Context, req helperproto.Performa
 	if _, err := m.runner.Run(ctx, "sysctl", "--system"); err != nil {
 		step("apply-sysctl", "failed", err.Error())
 		rollbackErr := m.rollback(marker, prior)
-		if createdMarker {
+		if createdMarker && rollbackErr == nil {
 			_ = os.Remove(m.markerPath())
 		}
 		return response, &PerformanceApplyError{Err: errors.Join(err, rollbackErr), Response: response}
@@ -261,7 +261,7 @@ func (m *PerformanceManager) Apply(ctx context.Context, req helperproto.Performa
 	if err != nil {
 		step("verify", "failed", err.Error())
 		rollbackErr := m.rollback(marker, prior)
-		if createdMarker {
+		if createdMarker && rollbackErr == nil {
 			_ = os.Remove(m.markerPath())
 		}
 		return response, &PerformanceApplyError{Err: errors.Join(err, rollbackErr), Response: response}

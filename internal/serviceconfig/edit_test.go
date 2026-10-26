@@ -156,6 +156,40 @@ func TestLatestBaselineTracksGeneratedContent(t *testing.T) {
 	}
 }
 
+func TestLatestBackupDoesNotMatchDottedSiblingFiles(t *testing.T) {
+	root := t.TempDir()
+	m, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"nginx.conf", "nginx.conf.1"} {
+		full := filepath.Join(root, rel)
+		if err := os.WriteFile(full, []byte(rel+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixed := time.Date(2026, 10, 26, 11, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return fixed }
+	first, err := m.Backup("nginx.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.Backup("nginx.conf.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("collision backup reused the first path")
+	}
+	latest, err := m.LatestBackup("nginx.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest != first {
+		t.Fatalf("LatestBackup(nginx.conf) = %q, want %q (not %q)", latest, first, second)
+	}
+}
+
 func TestLatestBackupReturnsNewestVersion(t *testing.T) {
 	root := t.TempDir()
 	m, err := New(root)

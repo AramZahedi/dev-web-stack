@@ -114,6 +114,27 @@ func (a *App) newDaemonStatusCmd() *cobra.Command {
 	}
 }
 
+func restoreConfigFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-restore-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
 func (a *App) newDaemonRestartCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart",
@@ -130,13 +151,31 @@ func (a *App) newDaemonRestartCmd() *cobra.Command {
 			if _, err := config.Load(home); err != nil {
 				return wrapError(err, "CONFIG_INVALID", "Fix config.yaml, then rerun `devstack daemon restart`.")
 			}
+			configPath := filepath.Join(home, "config.yaml")
+			previous, err := os.ReadFile(configPath)
+			if err != nil {
+				return wrapError(err, "CONFIG_INVALID", "Read config.yaml before restart.")
+			}
 			// Do not carry one-off run flags across a restart: config.yaml is
 			// the durable source for listener ports.
 			if _, err := stopDaemon(ctx, home); err != nil {
 				return err
 			}
-			if err := ensureRunning(ctx, daemon.Options{Home: home, HelperSocket: a.helperSocketPath()}); err != nil {
-				return wrapError(err, "DAEMON_UNAVAILABLE", "Run `devstack daemon restart` again, or inspect the daemon log.")
+			opts := daemon.Options{Home: home, HelperSocket: a.helperSocketPath()}
+			if err := ensureRunning(ctx, opts); err != nil {
+				// A saved port can be taken after PATCH validated it. Restore the
+				// previous config and bring the old daemon back rather than leaving
+				// the user with no dashboard/API.
+				restoreErr := restoreConfigFile(configPath, previous)
+				if restoreErr == nil {
+					restoreErr = ensureRunning(ctx, opts)
+				}
+				if restoreErr != nil {
+					return wrapError(errors.Join(err, fmt.Errorf("restore previous daemon: %w", restoreErr)),
+						"DAEMON_UNAVAILABLE", "The new configuration did not start and the previous daemon could not be restored; inspect the daemon log.")
+				}
+				return wrapError(err, "DAEMON_UNAVAILABLE",
+					"New ports did not start; the previous config was restored and the daemon was restarted.")
 			}
 			dashboard := ""
 			if cfg, err := config.Load(home); err == nil {

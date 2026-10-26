@@ -20,15 +20,19 @@ type performanceRunnerCall struct {
 }
 
 type performanceTestRunner struct {
-	mu    sync.Mutex
-	calls []performanceRunnerCall
-	err   error
+	mu     sync.Mutex
+	calls  []performanceRunnerCall
+	err    error
+	failAt int
 }
 
 func (r *performanceTestRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, performanceRunnerCall{name: name, args: append([]string(nil), args...)})
+	if r.failAt > 0 && len(r.calls) == r.failAt {
+		return nil, errors.New("injected command failure")
+	}
 	return nil, r.err
 }
 
@@ -228,6 +232,45 @@ func TestPerformanceManagerApplyRollsBackOnVerificationFailure(t *testing.T) {
 	}
 	if status.Managed {
 		t.Fatal("failed apply left the managed marker")
+	}
+}
+
+func TestPerformanceManagerKeepsMarkerWhenRollbackFails(t *testing.T) {
+	ctx := context.Background()
+	manager, _, dest, runner := newPerformanceManagerForTest(t)
+	manager.readSysctl = func(key string) (string, error) { return "1", nil }
+	runner.failAt = 2 // first sysctl --system (apply) succeeds; rollback reload fails
+	sysctlPath := filepath.Join(dest, strings.TrimPrefix(performanceSysctlTarget, "/"))
+	if err := os.MkdirAll(filepath.Dir(sysctlPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("fs.file-max = 1000\n")
+	if err := os.WriteFile(sysctlPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := manager.Apply(ctx, helperproto.PerformanceApplyRequest{Profile: "balanced", Host: testPerformanceHost()})
+	if err == nil {
+		t.Fatal("apply succeeded with verification mismatch and failed rollback")
+	}
+	if _, statErr := os.Stat(manager.markerPath()); statErr != nil {
+		t.Fatalf("rollback failure removed the marker: %v", statErr)
+	}
+	status, statusErr := manager.Status(ctx)
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	if !status.Managed {
+		t.Fatal("status does not retain a managed marker after failed rollback")
+	}
+
+	runner.failAt = 0
+	if _, resetErr := manager.Reset(ctx, helperproto.PerformanceResetRequest{}); resetErr != nil {
+		t.Fatalf("reset after failed rollback: %v", resetErr)
+	}
+	data, readErr := os.ReadFile(sysctlPath)
+	if readErr != nil || string(data) != string(original) {
+		t.Fatalf("reset content = %q, %v; want original baseline", data, readErr)
 	}
 }
 

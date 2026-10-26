@@ -471,7 +471,7 @@ func (m *Manager) LatestBackup(rel string) (string, error) {
 			return nil
 		}
 		candidate := strings.Join(parts[1:], "/")
-		if candidate != cleaned && !strings.HasPrefix(candidate, cleaned+".") {
+		if candidate != cleaned {
 			return nil
 		}
 		if newest == "" || path > newest {
@@ -648,21 +648,21 @@ func (m *Manager) backupLockedAt(rel, full, area string) (string, error) {
 	}
 
 	ts := m.now().UTC().Format("20060102T150405Z")
-	baseDest := filepath.Join(m.root, "backups", area, ts, filepath.FromSlash(rel))
-
-	dest := baseDest
+	baseDir := filepath.Join(m.root, "backups", area, ts)
+	destDir := baseDir
 	counter := 1
 	for {
-		_, err := os.Stat(dest)
+		_, err := os.Stat(destDir)
 		if os.IsNotExist(err) {
 			break
 		}
 		if err != nil {
-			return "", fmt.Errorf("stat backup destination %s: %w", dest, err)
+			return "", fmt.Errorf("stat backup directory %s: %w", destDir, err)
 		}
-		dest = fmt.Sprintf("%s.%d", baseDest, counter)
+		destDir = fmt.Sprintf("%s-%d", baseDir, counter)
 		counter++
 	}
+	dest := filepath.Join(destDir, filepath.FromSlash(rel))
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return "", fmt.Errorf("create backup directory: %w", err)
