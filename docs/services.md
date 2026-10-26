@@ -51,12 +51,12 @@ devstack daemon restart
 
 Native nginx/Apache dashboard vhosts and the helper dashboard vhost use the configured
 UI port. Public 80/443 remain owned by the helper or the active web-server container.
-Changing `http_port`/`https_port` does **not** rewrite the helper's own
-`/etc/devstack/helper.yaml`: if builtin forwarding is active, update its
-`proxy_http_port`/`proxy_https_port` to the new daemon ports and restart
-devstack-helper. Until then, public 80/443 keeps targeting the old (now stopped)
-daemon port. The Settings warning says this explicitly; see
-[known issues](known-issues.md#k14--daemon-httphttps-port-changes-need-a-helper-config-update).
+On daemon restart, the daemon updates the helper's `proxy_http_port`/
+`proxy_https_port` through a narrow RPC before serving-mode reconciliation. The helper
+persists those two keys atomically in `/etc/devstack/helper.yaml`, and the following
+reconcile restarts its forwarders. A helper started with flags but no config file updates
+only its in-memory targets for that process. See
+[known issues](known-issues.md#k14--helper-proxy-targets-follow-daemon-restart-automatically).
 
 ## Service configuration
 
@@ -124,8 +124,9 @@ Workflow:
 
 Apply requires an active nginx/Apache service for web includes; database-only installs
 skip them. OPcache/realpath ini values are merged through the PHP validate-then-swap
-path. PHP-FPM `pm.*` pool sizing is generated but not yet merged into live FPM masters;
-the result includes a warning. See [known issues](known-issues.md#k12--performance-limitations).
+path. PHP-FPM `pm.*` pool sizing is persisted per site and applied to each running FPM
+master through the same validate-then-swap path. See
+[known issues](known-issues.md#k12--performance-limitations).
 
 Host tuning uses only:
 

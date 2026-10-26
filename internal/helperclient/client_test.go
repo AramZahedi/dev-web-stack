@@ -190,6 +190,32 @@ func TestServiceActionMethodsUseProtocolPaths(t *testing.T) {
 	}
 }
 
+func TestUpdateProxyTargetsUsesProtocolPathAndBody(t *testing.T) {
+	var got helperproto.ProxyTargetsRequest
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != helperproto.PathProxyTargets {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode proxy targets: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(helperproto.ProxyTargetsResponse{
+			HTTPPort: got.HTTPPort, HTTPSPort: got.HTTPSPort, Persisted: true, ConfigPath: "/etc/devstack/helper.yaml",
+		})
+	})
+	client := newUnixClient(t, handler)
+	resp, err := client.UpdateProxyTargets(context.Background(), 18080, 18443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HTTPPort != 18080 || got.HTTPSPort != 18443 {
+		t.Fatalf("request = %+v", got)
+	}
+	if resp.HTTPPort != 18080 || resp.HTTPSPort != 18443 || !resp.Persisted {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
 func TestVhostErrorsMapToProtocolSentinels(t *testing.T) {
 	tests := []struct {
 		code   string

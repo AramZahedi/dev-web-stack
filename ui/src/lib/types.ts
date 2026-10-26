@@ -56,6 +56,15 @@ export interface CertificateInfo {
   serial?: string;
 }
 
+export interface SitePHPFPMBudget {
+  mode?: 'dynamic' | 'static';
+  max_children?: number;
+  start_servers?: number;
+  min_spare_servers?: number;
+  max_spare_servers?: number;
+  listen_backlog?: number;
+}
+
 export interface Site {
   id: string;
   name: string;
@@ -71,6 +80,7 @@ export interface Site {
   php_ini?: Record<string, string>;
   php_ini_raw: string;
   php_config_hash: string;
+  php_fpm?: SitePHPFPMBudget;
   node_version: string;
   command: string;
   env: Record<string, string>;

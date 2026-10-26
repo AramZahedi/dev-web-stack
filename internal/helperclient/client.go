@@ -206,6 +206,15 @@ func (c *Client) SetForwarders(ctx context.Context, httpPort, httpsPort int, ena
 	return c.do(ctx, http.MethodPost, helperproto.PathForwarders, req, nil)
 }
 
+// UpdateProxyTargets updates the helper's forwarding targets and, when the
+// helper was started with a writable --config file, persists the new ports.
+func (c *Client) UpdateProxyTargets(ctx context.Context, httpPort, httpsPort int) (helperproto.ProxyTargetsResponse, error) {
+	var resp helperproto.ProxyTargetsResponse
+	req := helperproto.ProxyTargetsRequest{HTTPPort: httpPort, HTTPSPort: httpsPort}
+	err := c.do(ctx, http.MethodPost, helperproto.PathProxyTargets, req, &resp)
+	return resp, err
+}
+
 // Uninstall removes the helper's hosts entries, trust, and forwarders.
 func (c *Client) Uninstall(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, helperproto.PathUninstall, helperproto.UninstallRequest{}, nil)

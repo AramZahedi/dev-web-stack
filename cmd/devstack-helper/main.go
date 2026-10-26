@@ -162,6 +162,7 @@ func newHelperServer(opts options, logger *slog.Logger) (*helper.Server, error) 
 		ForwardHTTPSPort: opts.httpsPort,
 		ProxyHTTPPort:    opts.proxyHTTPPort,
 		ProxyHTTPSPort:   opts.proxyHTTPSPort,
+		ProxyConfigPath:  opts.configPath,
 		AutoForward:      opts.autoForward,
 		VhostRoot:        opts.vhostRoot,
 		VhostStatePath:   opts.vhostState,

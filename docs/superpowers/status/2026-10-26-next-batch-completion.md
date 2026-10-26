@@ -183,11 +183,14 @@ services, no generated `services/compose.yaml`.
 
 ## 3. Remaining limitations
 
-1. **PHP-FPM pool sizing is generated but not merged into live FPM masters.** OPcache and
-   realpath ini values are applied through the PHP validate-then-swap path. Per-site
-   `pm.max_children`/spare-server values remain in
-   `services/php/performance/` fragments because the site model has no persisted
-   pool-sizing contract. The performance result includes a warning.
+> **Follow-up 2026-10-26:** the automatic performance/ports batch resolved items 1 and 9.
+> PHP-FPM pool sizing is now persisted on the site row and applied through validate/swap;
+> the helper updates and persists its proxy targets on daemon restart.
+
+1. **Resolved — PHP-FPM pool sizing is persisted and applied to live masters.** OPcache,
+   realpath ini values, and per-site `pm.max_children`/spare-server values all use the PHP
+   validate-then-swap path. The generated `services/php/performance/` fragment remains a
+   readable preview.
 2. **Host tuning was tested with destination-root overrides and a fake runner, not by
    changing this host's `/etc`.** The helper owns fixed paths, backup, verification, and
    rollback. A real root acceptance run remains an explicit host gate.
@@ -207,10 +210,10 @@ services, no generated `services/compose.yaml`.
    availability is not tied to the site's serving status.
 8. **External-site Docker bind mounts remain a follow-up.** Docker web servers serve
    sites under the managed projects root.
-9. **Changing daemon HTTP/HTTPS ports requires updating the helper's own config.** With
-   builtin 80/443 forwarding, edit `proxy_http_port`/`proxy_https_port` in
-   `/etc/devstack/helper.yaml` and restart devstack-helper. The Settings warning says
-   this; UI-port changes do not need it.
+9. **Resolved — daemon HTTP/HTTPS port changes synchronize helper targets.** On daemon
+   restart, the helper updates `proxy_http_port`/`proxy_https_port` atomically and restarts
+   its forwarders. A flag-only helper without a config file keeps in-memory targets for
+   that process.
 10. **Live Wave 3 benchmark/performance evidence on a real host remains open.**
 
 ## 4. Merge and cleanup record

@@ -240,9 +240,6 @@ func (s *Service) Preview(ctx context.Context) (Preview, error) {
 	}
 	host, hostWarnings := s.hostPreviewLocked(ctx, values)
 	warnings = append(warnings, hostWarnings...)
-	if len(values.PHP.Sites) > 0 {
-		warnings = append(warnings, "PHP-FPM pool sizing fragments are generated under services/php/performance; per-site masters keep their current pool sizing (OPcache/realpath settings are merged through the site validate/swap flow).")
-	}
 
 	return Preview{
 		Profile:      profile,
@@ -291,9 +288,6 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 	}
 	if active == "" {
 		warnings = append(warnings, "no active nginx/Apache catalog service; web-server includes are skipped (database-only or native serving)")
-	}
-	if len(values.PHP.Sites) > 0 {
-		warnings = append(warnings, "PHP-FPM pool sizing fragments are generated under services/php/performance; per-site masters keep their current pool sizing (OPcache/realpath settings are merged through the site validate/swap flow).")
 	}
 	hostRequested := req.HostTuning && active != ""
 	if req.HostTuning && active == "" {
@@ -355,7 +349,7 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 	for _, file := range files {
 		if err := writeFileAtomic(file.Path, file.Content, file.Mode); err != nil {
 			step("write-includes", "failed", err.Error())
-			result.RollbackError = errorString(s.rollbackApplyLocked(ctx, snapshots, nil, false, "", false))
+			result.RollbackError = errorString(s.rollbackApplyLocked(ctx, snapshots, phpConfigSnapshot{}, false, "", false))
 			return result, &ApplyError{Err: err, Result: result}
 		}
 		result.Files = append(result.Files, ManagedFilePreview{
@@ -366,16 +360,16 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 
 	reloaded := false
 	priorApplied, _ := s.loadAppliedLocked(ctx)
-	phpSnapshots, phpErr := s.applyPHPIniLocked(ctx, values, priorApplied)
+	phpSnapshots, phpErr := s.applyPHPConfigLocked(ctx, values, priorApplied)
 	if phpErr != nil {
-		step("php-ini", "failed", phpErr.Error())
+		step("php-config", "failed", phpErr.Error())
 		result.RollbackError = errorString(s.rollbackApplyLocked(ctx, snapshots, phpSnapshots, false, "", false))
 		return result, &ApplyError{Err: phpErr, Result: result}
 	}
-	if len(phpSnapshots) > 0 {
-		step("php-ini", "ok", fmt.Sprintf("%d PHP site(s) updated through validate/swap", len(phpSnapshots)))
+	if len(phpSnapshots.Ini) > 0 {
+		step("php-config", "ok", fmt.Sprintf("%d PHP site(s) updated (ini + FPM pool) through validate/swap", len(phpSnapshots.Ini)))
 	} else {
-		step("php-ini", "skipped", "no running PHP sites")
+		step("php-config", "skipped", "no running PHP sites")
 	}
 
 	if active != "" {
@@ -441,7 +435,8 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 		HostTuning: hostApplied,
 		BackupDir:  result.BackupDir,
 		Servers:    activeServers(active),
-		PHPIni:     phpSnapshots,
+		PHPIni:     phpSnapshots.Ini,
+		PHPFPM:     phpSnapshots.FPM,
 		Steps:      result.Steps,
 	}
 	data, err := json.Marshal(applied)
@@ -526,14 +521,18 @@ func (s *Service) Reset(ctx context.Context, req ResetRequest) (ResetResult, err
 		}
 	}
 
-	if applied != nil && len(applied.PHPIni) > 0 {
-		if err := s.restorePHPIniLocked(ctx, applied.PHPIni); err != nil {
-			step("php-ini", "failed", err.Error())
+	phpSnapshot := phpConfigSnapshot{}
+	if applied != nil {
+		phpSnapshot = phpConfigSnapshot{Ini: applied.PHPIni, FPM: applied.PHPFPM}
+	}
+	if len(phpSnapshot.Ini) > 0 || len(phpSnapshot.FPM) > 0 {
+		if err := s.restorePHPConfigLocked(ctx, phpSnapshot); err != nil {
+			step("php-config", "failed", err.Error())
 			return result, &ResetError{Err: err, Result: result}
 		}
-		step("php-ini", "ok", fmt.Sprintf("%d PHP site(s) restored", len(applied.PHPIni)))
+		step("php-config", "ok", fmt.Sprintf("%d PHP site(s) restored", phpSnapshot.SiteCount()))
 	} else {
-		step("php-ini", "skipped", "no PHP ini snapshot")
+		step("php-config", "skipped", "no PHP config snapshot")
 	}
 
 	hostApplied := applied != nil && applied.HostTuning
@@ -1055,14 +1054,36 @@ func (s *Service) hostPreviewLocked(ctx context.Context, values Values) (HostPre
 	return preview, preview.Warnings
 }
 
-func (s *Service) applyPHPIniLocked(ctx context.Context, values Values, prior *AppliedState) (map[string]map[string]string, error) {
-	snapshots := make(map[string]map[string]string)
+type phpConfigSnapshot struct {
+	Ini map[string]map[string]string
+	FPM map[string]model.PHPFPMBudget
+}
+
+func (s phpConfigSnapshot) SiteCount() int {
+	seen := make(map[string]struct{}, len(s.Ini)+len(s.FPM))
+	for id := range s.Ini {
+		seen[id] = struct{}{}
+	}
+	for id := range s.FPM {
+		seen[id] = struct{}{}
+	}
+	return len(seen)
+}
+
+func (s *Service) applyPHPConfigLocked(ctx context.Context, values Values, prior *AppliedState) (phpConfigSnapshot, error) {
+	snapshots := phpConfigSnapshot{
+		Ini: make(map[string]map[string]string),
+		FPM: make(map[string]model.PHPFPMBudget),
+	}
 	if prior != nil {
 		for id, ini := range prior.PHPIni {
 			if ini == nil {
 				ini = map[string]string{}
 			}
-			snapshots[id] = cloneStringMap(ini)
+			snapshots.Ini[id] = cloneStringMap(ini)
+		}
+		for id, budget := range prior.PHPFPM {
+			snapshots.FPM[id] = budget
 		}
 	}
 	if s.cfg.Sites == nil || len(values.PHP.Sites) == 0 {
@@ -1086,22 +1107,40 @@ func (s *Service) applyPHPIniLocked(ctx context.Context, values Values, prior *A
 		if current == nil {
 			current = map[string]string{}
 		}
-		if _, exists := snapshots[site.ID]; !exists {
-			snapshots[site.ID] = cloneStringMap(current)
+		if _, exists := snapshots.Ini[site.ID]; !exists {
+			snapshots.Ini[site.ID] = cloneStringMap(current)
+		}
+		if _, exists := snapshots.FPM[site.ID]; !exists {
+			if site.PHPFPM != nil {
+				snapshots.FPM[site.ID] = *site.PHPFPM
+			} else {
+				snapshots.FPM[site.ID] = model.PHPFPMBudget{}
+			}
 		}
 		merged := cloneStringMap(current)
 		for key, value := range settings {
 			merged[key] = value
 		}
-		if _, err := s.cfg.Sites.ApplyPHP(ctx, site.ID, sites.PHPChange{Ini: merged}); err != nil {
+		budget := model.PHPFPMBudget{
+			Mode:            string(values.PHP.Mode),
+			MaxChildren:     generated.MaxChildren,
+			StartServers:    generated.StartServers,
+			MinSpareServers: generated.MinSpareServers,
+			MaxSpareServers: generated.MaxSpareServers,
+			ListenBacklog:   values.PHP.ListenBacklog,
+		}
+		if err := budget.Validate(); err != nil {
+			return snapshots, fmt.Errorf("performance PHP-FPM pool for %s: %w", site.Name, err)
+		}
+		if _, err := s.cfg.Sites.ApplyPHP(ctx, site.ID, sites.PHPChange{Ini: merged, FPM: &budget}); err != nil {
 			return snapshots, err
 		}
 	}
 	return snapshots, nil
 }
 
-func (s *Service) restorePHPIniLocked(ctx context.Context, previous map[string]map[string]string) error {
-	if s.cfg.Sites == nil || len(previous) == 0 {
+func (s *Service) restorePHPConfigLocked(ctx context.Context, previous phpConfigSnapshot) error {
+	if s.cfg.Sites == nil || (len(previous.Ini) == 0 && len(previous.FPM) == 0) {
 		return nil
 	}
 	list, err := s.cfg.Sites.List(ctx)
@@ -1112,9 +1151,14 @@ func (s *Service) restorePHPIniLocked(ctx context.Context, previous map[string]m
 	for _, site := range list {
 		byID[site.ID] = site
 	}
-	ids := make([]string, 0, len(previous))
-	for id := range previous {
+	ids := make([]string, 0, previous.SiteCount())
+	for id := range previous.Ini {
 		ids = append(ids, id)
+	}
+	for id := range previous.FPM {
+		if _, exists := previous.Ini[id]; !exists {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	var errs []error
@@ -1125,19 +1169,26 @@ func (s *Service) restorePHPIniLocked(ctx context.Context, previous map[string]m
 			// directory is gone, so there is nothing to restore.
 			continue
 		}
-		current := cloneStringMap(site.PHPIni)
-		if current == nil {
-			current = map[string]string{}
-		}
-		original := previous[id]
-		for _, key := range managedPHPIniKeys() {
-			if value, ok := original[key]; ok {
-				current[key] = value
-			} else {
-				delete(current, key)
+		change := sites.PHPChange{}
+		if original, exists := previous.Ini[id]; exists {
+			current := cloneStringMap(site.PHPIni)
+			if current == nil {
+				current = map[string]string{}
 			}
+			for _, key := range managedPHPIniKeys() {
+				if value, ok := original[key]; ok {
+					current[key] = value
+				} else {
+					delete(current, key)
+				}
+			}
+			change.Ini = current
 		}
-		if _, err := s.cfg.Sites.ApplyPHP(ctx, id, sites.PHPChange{Ini: current}); err != nil {
+		if budget, exists := previous.FPM[id]; exists {
+			restored := budget
+			change.FPM = &restored
+		}
+		if _, err := s.cfg.Sites.ApplyPHP(ctx, id, change); err != nil {
 			errs = append(errs, fmt.Errorf("restore PHP site %s: %w", id, err))
 		}
 	}
@@ -1147,7 +1198,7 @@ func (s *Service) restorePHPIniLocked(ctx context.Context, previous map[string]m
 func (s *Service) rollbackApplyLocked(
 	ctx context.Context,
 	snapshots []fileSnapshot,
-	phpSnapshots map[string]map[string]string,
+	phpSnapshots phpConfigSnapshot,
 	hostApplied bool,
 	active services.ID,
 	reloaded bool,
@@ -1164,7 +1215,7 @@ func (s *Service) rollbackApplyLocked(
 			errs = append(errs, fmt.Errorf("remove %s: %w", snapshot.Path, err))
 		}
 	}
-	if err := s.restorePHPIniLocked(ctx, phpSnapshots); err != nil {
+	if err := s.restorePHPConfigLocked(ctx, phpSnapshots); err != nil {
 		errs = append(errs, err)
 	}
 	if hostApplied && s.cfg.Helper != nil {

@@ -634,8 +634,9 @@ if [ -e "${HELPER_CONFIG}" ] && [ "${CONFIG_MODE}" != "force" ]; then
 else
 	config_tmp="${TMP_DIR}/helper.yaml"
 	cat >"${config_tmp}" <<EOF
-# Managed by devstack install.sh. Edit and restart devstack-helper after
-# changing ports or paths. Command-line flags override this file.
+# Managed by devstack install.sh. The daemon keeps proxy_http_port and
+# proxy_https_port in sync on startup; edit other values and restart
+# devstack-helper. Command-line flags override this file.
 socket: /run/devstack-helper/helper.sock
 state_dir: /var/lib/devstack-helper
 hosts: /etc/hosts

@@ -6,6 +6,8 @@ import (
 	"net"
 	"sort"
 	"strings"
+
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 // Render produces one complete php-fpm.conf for cfg. Values are validated
@@ -38,11 +40,17 @@ func Render(cfg Config) ([]byte, error) {
 	if cfg.Group != "" {
 		fmt.Fprintf(&out, "group = %s\n", cfg.Group)
 	}
-	out.WriteString("pm = dynamic\n")
-	out.WriteString("pm.max_children = 5\n")
-	out.WriteString("pm.start_servers = 2\n")
-	out.WriteString("pm.min_spare_servers = 1\n")
-	out.WriteString("pm.max_spare_servers = 3\n")
+	mode, maxChildren, startServers, minSpare, maxSpare, backlog := poolSizing(cfg.Pool)
+	fmt.Fprintf(&out, "pm = %s\n", mode)
+	fmt.Fprintf(&out, "pm.max_children = %d\n", maxChildren)
+	if mode == "dynamic" {
+		fmt.Fprintf(&out, "pm.start_servers = %d\n", startServers)
+		fmt.Fprintf(&out, "pm.min_spare_servers = %d\n", minSpare)
+		fmt.Fprintf(&out, "pm.max_spare_servers = %d\n", maxSpare)
+	}
+	if backlog > 0 {
+		fmt.Fprintf(&out, "listen.backlog = %d\n", backlog)
+	}
 	out.WriteString("catch_workers_output = yes\n")
 	out.WriteString("clear_env = no\n")
 	fmt.Fprintf(&out, "chdir = %s\n", quote(cfg.DocumentRoot))
@@ -59,6 +67,64 @@ func Render(cfg Config) ([]byte, error) {
 		}
 	}
 	return out.Bytes(), nil
+}
+
+// poolSizing resolves a persisted budget against the conservative defaults.
+// Small explicit maxima can make a default spare count larger than the pool,
+// so the resolved values are clamped before they reach php-fpm.
+func poolSizing(pool *model.PHPFPMBudget) (mode string, maxChildren, startServers, minSpare, maxSpare, backlog int) {
+	mode = "dynamic"
+	maxChildren, startServers, minSpare, maxSpare = 5, 2, 1, 3
+	explicitStart, explicitMin, explicitMax := false, false, false
+	if pool != nil {
+		if pool.Mode != "" {
+			mode = pool.Mode
+		}
+		if pool.MaxChildren > 0 {
+			maxChildren = pool.MaxChildren
+		}
+		if pool.StartServers > 0 {
+			startServers, explicitStart = pool.StartServers, true
+		}
+		if pool.MinSpareServers > 0 {
+			minSpare, explicitMin = pool.MinSpareServers, true
+		}
+		if pool.MaxSpareServers > 0 {
+			maxSpare, explicitMax = pool.MaxSpareServers, true
+		}
+		backlog = pool.ListenBacklog
+	}
+	if mode == "static" {
+		return mode, maxChildren, 0, 0, 0, backlog
+	}
+	// Fill omitted bounds around the values that were supplied. Validation has
+	// already rejected an explicitly inconsistent set; this keeps partial
+	// budgets valid without inventing a second contract for callers.
+	if !explicitMin {
+		minSpare = 1
+	}
+	if !explicitMax {
+		maxSpare = max(3, minSpare, startServers)
+	}
+	if !explicitStart {
+		startServers = min(max(2, minSpare), maxSpare)
+	}
+	if startServers > maxChildren {
+		startServers = maxChildren
+	}
+	if minSpare > maxChildren {
+		minSpare = maxChildren
+	}
+	if maxSpare < minSpare {
+		maxSpare = minSpare
+	}
+	if maxSpare > maxChildren {
+		maxSpare = maxChildren
+	}
+	if startServers > maxSpare {
+		startServers = maxSpare
+	}
+	return mode, maxChildren, startServers, minSpare, maxSpare, backlog
 }
 
 // quote renders a php-fpm double-quoted string. Backslashes, double quotes,

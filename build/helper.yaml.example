@@ -14,7 +14,8 @@ trust_dir: ""
 allow_uid: 1000
 
 # Privileged listeners owned by the root helper. They forward to the daemon's
-# unprivileged proxy ports.
+# unprivileged proxy ports. The daemon rewrites only proxy_http_port and
+# proxy_https_port on startup to match its configured HTTP/HTTPS ports.
 forward_http_port: 80
 forward_https_port: 443
 proxy_http_port: 8080

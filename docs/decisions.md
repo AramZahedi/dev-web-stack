@@ -87,6 +87,8 @@ are tracked in [known issues](known-issues.md).
 | S50 | Host tuning is fixed-path helper data, not host content from the API | The helper derives paths, backs up, verifies, and rolls back; the daemon never sends arbitrary paths or commands. |
 | S51 | Terminal tickets are site/UID-bound one-use capabilities | WebSocket GETs are authenticated by the ticket; issuance still requires session+CSRF; Origin and Host are checked. |
 | S52 | UI builds are static and embedded; xterm.js is the terminal renderer | Keeps dashboard parity without a second server; terminal is explicit-start only. |
+| S53 | Per-site PHP-FPM pool sizing is a persisted site field | The daemon owns the calculated budget and applies it through validate/swap; generated fragments remain previews, not the source of truth. |
+| S54 | Helper owns a narrow proxy-target update RPC | Daemon listener changes remain one restart; the helper rewrites only `proxy_http_port`/`proxy_https_port` atomically, and serving-mode reconciliation restarts its forwarders. Privileged listen ports remain helper-fixed. Requests remain same-UID and loopback-only. |
 
 ## 3. Rejected alternatives
 
@@ -115,7 +117,6 @@ These do not change the architecture:
 
 - optional public 80/443 editing (currently helper/Docker-owned);
 - exact host-tuning values per machine class;
-- whether to merge PHP-FPM pool sizing into the persisted site contract;
 - external-site Docker bind mounts;
 - live Wave 3 benchmark/host acceptance evidence.
 

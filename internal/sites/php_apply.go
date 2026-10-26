@@ -37,6 +37,9 @@ type PHPChange struct {
 	Extensions map[string]bool
 	Ini        map[string]string
 	IniRaw     *string
+	// FPM replaces the persisted pool budget when non-nil. A pointer to a zero
+	// budget clears the override and restores the renderer defaults.
+	FPM *model.PHPFPMBudget
 }
 
 // PHPInfo is the effective PHP configuration of one site: the persisted row,
@@ -545,6 +548,16 @@ func (s *Service) mergePHPChangeLocked(ctx context.Context, current model.Site, 
 	if change.IniRaw != nil {
 		next.PHPIniRaw = *change.IniRaw
 	}
+	if change.FPM != nil {
+		if err := change.FPM.Validate(); err != nil {
+			return current, model.RuntimeBuild{}, fmt.Errorf("sites: PHP site %q: %w", current.Name, err)
+		}
+		if change.FPM.IsZero() {
+			next.PHPFPM = nil
+		} else {
+			next.PHPFPM = clonePHPFPMBudget(change.FPM)
+		}
+	}
 	// A stale override can become a built-in when the target line changes
 	// (opcache is built into 8.5). Drop those overrides instead of failing the
 	// whole apply with ErrInvalidExtension.
@@ -559,6 +572,14 @@ func (s *Service) mergePHPChangeLocked(ctx context.Context, current model.Site, 
 			current.Name, targetVersion, strings.Join(dropped, ", ")))
 	}
 	return next, build, nil
+}
+
+func clonePHPFPMBudget(budget *model.PHPFPMBudget) *model.PHPFPMBudget {
+	if budget == nil {
+		return nil
+	}
+	copy := *budget
+	return &copy
 }
 
 // phpLineForBuildLocked derives the PHP line from an installed build row.

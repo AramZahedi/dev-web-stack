@@ -456,6 +456,14 @@ curl_site "${FORWARD_HTTPS_PORT}" "${RESPONSE}" 100 ||
 grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "post-restart forwarder response did not contain the site marker"
 printf 'e2e: helper restarted and forwarder restored automatically\n'
 
+# Moving the daemon's loopback ports must move the helper's proxy targets and
+# restart its privileged forwarders. The helper config still names the old
+# ports here; the daemon startup RPC is the only thing that rewrites them.
+pick_port
+PROXY_HTTP_PORT="${PICKED_PORT}"
+pick_port
+PROXY_HTTPS_PORT="${PICKED_PORT}"
+
 OLD_DAEMON_PID="${DAEMON_PID}"
 run_cli daemon stop >"${STOP_LOG}" 2>&1 || fail "daemon stop failed"
 wait "${OLD_DAEMON_PID}" 2>/dev/null || true
@@ -471,14 +479,33 @@ start_daemon
 wait_for_ready "${DAEMON_PID}" || fail "daemon did not become ready after restart"
 [ "$(cat "${DEVSTACK_HOME}/run/daemon.ready")" = "${DAEMON_PID}" ] || fail "restarted daemon readiness marker mismatch"
 [ "${DAEMON_PID}" != "${OLD_DAEMON_PID}" ] || fail "daemon pid did not change across restart"
+grep -q "proxy_http_port: ${PROXY_HTTP_PORT}" "${HELPER_CONFIG}" ||
+	fail "helper config did not receive the new HTTP proxy port"
+grep -q "proxy_https_port: ${PROXY_HTTPS_PORT}" "${HELPER_CONFIG}" ||
+	fail "helper config did not receive the new HTTPS proxy port"
 
 curl_site "${PROXY_HTTPS_PORT}" "${RESPONSE}" 50 ||
-	fail "site did not serve after daemon restart"
-grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "response after restart did not contain the site marker"
+	fail "site did not serve after daemon listener-port change"
+grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "response after listener-port change did not contain the site marker"
 curl_site "${FORWARD_HTTPS_PORT}" "${RESPONSE}" 50 ||
-	fail "forwarder did not serve after daemon restart"
-grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "forwarder response after restart did not contain the site marker"
-assert_serve_static_groups 1 || fail "expected exactly one serve-static group after restart"
+	fail "forwarder did not serve after daemon listener-port change"
+grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "forwarder response after listener-port change did not contain the site marker"
+assert_serve_static_groups 1 || fail "expected exactly one serve-static group after daemon restart"
+printf 'e2e: daemon ports moved to %s/%s; helper targets and forwarders followed\n' \
+	"${PROXY_HTTP_PORT}" "${PROXY_HTTPS_PORT}"
+
+# The rewritten helper config must survive a helper restart and keep the
+# privileged forwarders on the daemon's new ports.
+OLD_HELPER_PID="${HELPER_PID}"
+kill -TERM "${HELPER_PID}" 2>/dev/null || fail "could not stop the helper after port change"
+wait "${OLD_HELPER_PID}" 2>/dev/null || true
+start_helper
+[ "${HELPER_PID}" != "${OLD_HELPER_PID}" ] || fail "helper pid did not change after port change"
+curl_site "${FORWARD_HTTPS_PORT}" "${RESPONSE}" 100 ||
+	fail "forwarder did not serve from the persisted targets after helper restart"
+grep -q 'devstack-e2e-ok' "${RESPONSE}" || fail "persisted-target response did not contain the site marker"
+printf 'e2e: helper restart reused persisted proxy targets %s/%s\n' \
+	"${PROXY_HTTP_PORT}" "${PROXY_HTTPS_PORT}"
 
 # External nginx mode. nginx and the dashboard top out at 7070 for external
 # serving, so both must be available; otherwise the builtin flow above stands

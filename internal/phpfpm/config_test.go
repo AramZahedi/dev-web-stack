@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 var testContext = context.Background()
@@ -50,6 +52,120 @@ func TestRenderFPMConfigMatchesSpec(t *testing.T) {
 	}
 	if strings.Index(text, "[global]") > strings.Index(text, "[www]") {
 		t.Fatalf("[global] must come before [www]:\n%s", text)
+	}
+}
+
+func TestRenderFPMConfigUsesPersistedPoolBudget(t *testing.T) {
+	cfg := validConfig()
+	cfg.Pool = &model.PHPFPMBudget{
+		Mode:            "dynamic",
+		MaxChildren:     12,
+		StartServers:    3,
+		MinSpareServers: 2,
+		MaxSpareServers: 4,
+		ListenBacklog:   511,
+	}
+	got, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		"pm = dynamic", "pm.max_children = 12", "pm.start_servers = 3",
+		"pm.min_spare_servers = 2", "pm.max_spare_servers = 4",
+		"listen.backlog = 511",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+}
+
+func TestRenderFPMConfigStaticPoolOmitsDynamicSpares(t *testing.T) {
+	cfg := validConfig()
+	cfg.Pool = &model.PHPFPMBudget{Mode: "static", MaxChildren: 8, ListenBacklog: 128}
+	got, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		"pm = static", "pm.max_children = 8", "listen.backlog = 128",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{"pm.start_servers", "pm.min_spare_servers", "pm.max_spare_servers"} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("static pool contains %q:\n%s", unwanted, text)
+		}
+	}
+}
+
+func TestRenderFPMConfigFillsPartialPoolBudget(t *testing.T) {
+	cases := []struct {
+		name   string
+		pool   model.PHPFPMBudget
+		expect []string
+	}{
+		{
+			name: "minimum spare only",
+			pool: model.PHPFPMBudget{MaxChildren: 8, MinSpareServers: 4},
+			expect: []string{
+				"pm.start_servers = 4", "pm.min_spare_servers = 4", "pm.max_spare_servers = 4",
+			},
+		},
+		{
+			name: "start only",
+			pool: model.PHPFPMBudget{MaxChildren: 8, StartServers: 6},
+			expect: []string{
+				"pm.start_servers = 6", "pm.min_spare_servers = 1", "pm.max_spare_servers = 6",
+			},
+		},
+		{
+			name: "max spare only",
+			pool: model.PHPFPMBudget{MaxChildren: 8, MaxSpareServers: 2},
+			expect: []string{
+				"pm.start_servers = 2", "pm.min_spare_servers = 1", "pm.max_spare_servers = 2",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Pool = &tc.pool
+			got, err := Render(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.expect {
+				if !strings.Contains(string(got), want) {
+					t.Fatalf("missing %q in:\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderFPMConfigRejectsInvalidPoolBudget(t *testing.T) {
+	cases := []model.PHPFPMBudget{
+		{Mode: "ondemand", MaxChildren: 8},
+		{Mode: "dynamic", MaxChildren: 0, StartServers: 1},
+		{Mode: "dynamic", MaxChildren: 8, MinSpareServers: 6, MaxSpareServers: 4},
+		{Mode: "dynamic", MaxChildren: 8, StartServers: 1, MinSpareServers: 4, MaxSpareServers: 6},
+		{Mode: "dynamic", MaxChildren: 8, StartServers: 7, MinSpareServers: 1, MaxSpareServers: 6},
+		{Mode: "dynamic", MaxChildren: 4, MaxSpareServers: 5},
+		{Mode: "dynamic", MaxChildren: 8, ListenBacklog: 65536},
+	}
+	for _, budget := range cases {
+		t.Run(budget.Mode, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Pool = &budget
+			if _, err := Render(cfg); !errors.Is(err, ErrConfigInvalid) {
+				t.Fatalf("Render error = %v, want ErrConfigInvalid", err)
+			}
+		})
 	}
 }
 

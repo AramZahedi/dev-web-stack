@@ -74,6 +74,7 @@ service-platform batch are implemented: Docker nginx/Apache, MySQL/MariaDB/Postg
 phpMyAdmin, credentials/rotation, global PHP/Composer, site shell/exec, static builds,
 service configuration editing, performance preview/apply/reset/benchmarks, site-scoped
 terminal, editable listener ports, and the dashboard surfaces. Remaining work is
-external-site Docker mounts, real root host-tuning acceptance, live benchmark evidence,
-and merged PHP-FPM pool sizing. ImageMagick CLI is descoped. Automatic GitHub CI is
-disabled; workflows are manual-dispatch only.
+external-site Docker mounts, real root host-tuning acceptance, and live benchmark
+evidence. Per-site PHP-FPM pool sizing is persisted and applied to live masters.
+ImageMagick CLI is descoped. Automatic GitHub CI is disabled; workflows are
+manual-dispatch only.

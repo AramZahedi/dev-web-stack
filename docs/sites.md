@@ -194,9 +194,9 @@ If a site says running but the URL fails:
 1. Run `devstack doctor`.
 2. Check `devstack site show <name>` for the allocated backend port and status.
 3. Check `devstack site logs <name>` for a backend crash.
-4. Confirm the daemon's proxy ports in `~/.devstack/config.yaml` match the
-   helper's `proxy_*` values in `/etc/devstack/helper.yaml` exactly, then run
-   `devstack init`. A mismatch makes `init` reject the forwarder configuration.
+4. Restart the daemon once (`devstack daemon restart`). It synchronizes the
+   helper's `proxy_*` targets in `/etc/devstack/helper.yaml` and reconciles the
+   privileged forwarders.
 
 ## Limitations
 

@@ -484,9 +484,9 @@
         </div>
       </dl>
       <p class="value-note">
-        Per-site PHP-FPM <span class="mono">pm.*</span> pool sizing is generated in the
-        preview but not yet merged into live masters; OPcache and realpath ini settings
-        are applied through the site validate/swap flow.
+        Per-site PHP-FPM <span class="mono">pm.*</span> pool sizing, OPcache, and realpath
+        ini settings are applied to each running PHP master through the site
+        validate/swap flow when you apply this profile.
       </p>
 
       {#if previewError}
@@ -644,24 +644,26 @@
           {/each}
         </select>
       </Field>
-      <Field id="benchmark-duration" label="Duration (s)" hint="1–3600 seconds">
+      <Field id="benchmark-duration" label="Duration (s)">
         <input
           id="benchmark-duration"
           class="input mono"
           type="number"
           min="1"
           max="3600"
+          aria-describedby="benchmark-limits"
           bind:value={benchDuration}
           disabled={benchBusy}
         />
       </Field>
-      <Field id="benchmark-connections" label="Connections" hint="1–100000">
+      <Field id="benchmark-connections" label="Connections">
         <input
           id="benchmark-connections"
           class="input mono"
           type="number"
           min="1"
           max="100000"
+          aria-describedby="benchmark-limits"
           bind:value={benchConnections}
           disabled={benchBusy}
         />
@@ -679,6 +681,9 @@
         </Button>
       </div>
     </div>
+    <p class="benchmark-limits" id="benchmark-limits">
+      Allowed ranges: duration 1–3600 seconds · connections 1–100000.
+    </p>
     <p class="benchmark-note">
       Runs are measured by the daemon's built-in Go HTTP generator against
       {benchSiteName || 'the selected site'} and stored under <span class="mono">logs/performance/</span>.
@@ -1226,12 +1231,15 @@
     gap: 10px;
   }
 
-  .benchmark-action {
-    padding-bottom: 1px;
+  .benchmark-limits {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.5;
   }
 
   .benchmark-note {
-    margin-top: 8px;
+    margin-top: 4px;
     color: var(--muted-2);
     font-size: 10px;
     line-height: 1.5;

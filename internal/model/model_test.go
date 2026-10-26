@@ -98,6 +98,66 @@ func TestSiteJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPHPFPMBudgetValidate(t *testing.T) {
+	valid := PHPFPMBudget{
+		Mode:            "dynamic",
+		MaxChildren:     12,
+		StartServers:    3,
+		MinSpareServers: 2,
+		MaxSpareServers: 4,
+		ListenBacklog:   511,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid budget rejected: %v", err)
+	}
+	static := PHPFPMBudget{Mode: "static", MaxChildren: 8, ListenBacklog: 128}
+	if err := static.Validate(); err != nil {
+		t.Fatalf("valid static budget rejected: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		budget PHPFPMBudget
+	}{
+		{"unknown mode", PHPFPMBudget{Mode: "ondemand", MaxChildren: 8}},
+		{"zero children", PHPFPMBudget{Mode: "dynamic", StartServers: 1}},
+		{"negative children", PHPFPMBudget{Mode: "dynamic", MaxChildren: -1}},
+		{"too many children", PHPFPMBudget{Mode: "dynamic", MaxChildren: 100001}},
+		{"negative start", PHPFPMBudget{Mode: "dynamic", MaxChildren: 8, StartServers: -1}},
+		{"start exceeds children", PHPFPMBudget{Mode: "dynamic", MaxChildren: 4, StartServers: 5}},
+		{"min exceeds max spare", PHPFPMBudget{Mode: "dynamic", MaxChildren: 8, MinSpareServers: 5, MaxSpareServers: 4}},
+		{"start below min spare", PHPFPMBudget{Mode: "dynamic", MaxChildren: 8, StartServers: 1, MinSpareServers: 4, MaxSpareServers: 6}},
+		{"start above max spare", PHPFPMBudget{Mode: "dynamic", MaxChildren: 8, StartServers: 7, MinSpareServers: 1, MaxSpareServers: 6}},
+		{"max spare exceeds children", PHPFPMBudget{Mode: "dynamic", MaxChildren: 4, MaxSpareServers: 5}},
+		{"backlog out of range", PHPFPMBudget{Mode: "dynamic", MaxChildren: 8, ListenBacklog: 65536}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.budget.Validate(); err == nil {
+				t.Fatalf("budget %+v accepted", tc.budget)
+			}
+		})
+	}
+}
+
+func TestSitePHPFPMJSONRoundTrip(t *testing.T) {
+	site := Site{
+		ID: "s1", Name: "blog", Domain: "blog.test", Kind: SitePHP,
+		PHPFPM: &PHPFPMBudget{Mode: "static", MaxChildren: 8, ListenBacklog: 256},
+	}
+	data, err := json.Marshal(site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Site
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.PHPFPM == nil || *got.PHPFPM != *site.PHPFPM {
+		t.Fatalf("PHPFPM = %+v, want %+v", got.PHPFPM, site.PHPFPM)
+	}
+}
+
 func TestBuildProfileJSONRoundTrip(t *testing.T) {
 	bp := BuildProfile{
 		NodeVersion: "20.10.0",

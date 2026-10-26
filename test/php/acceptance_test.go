@@ -127,6 +127,33 @@ func TestPHPSubsystemAcceptance(t *testing.T) {
 	assertPHPResponse(t, h.directBody(api), phpVersion, "256M", false, "secondary")
 	t.Logf("acceptance: per-site memory_limit verified; blog=%d api=%d", blog.FastCGIPort, api.FastCGIPort)
 
+	// 3b. A persisted FPM pool budget is rendered into the live generation and
+	// accepted by the real php-fpm binary. The unrelated site keeps defaults.
+	budget := &model.PHPFPMBudget{
+		Mode: "dynamic", MaxChildren: 8, StartServers: 2,
+		MinSpareServers: 1, MaxSpareServers: 3, ListenBacklog: 511,
+	}
+	blog = h.applyPHP(blog.Name, sites.PHPChange{FPM: budget})
+	if blog.PHPFPM == nil || *blog.PHPFPM != *budget {
+		t.Fatalf("blog FPM budget = %+v, want %+v", blog.PHPFPM, budget)
+	}
+	info, err := h.svc.PHPInfo(timeoutContext(t, 30*time.Second), blog.Name)
+	if err != nil {
+		t.Fatalf("read blog PHP info: %v", err)
+	}
+	for _, want := range []string{
+		"pm = dynamic", "pm.max_children = 8", "pm.start_servers = 2",
+		"pm.min_spare_servers = 1", "pm.max_spare_servers = 3",
+		"listen.backlog = 511",
+	} {
+		if !strings.Contains(info.FPMConfig, want) {
+			t.Fatalf("live php-fpm.conf missing %q:\n%s", want, info.FPMConfig)
+		}
+	}
+	assertPHPResponse(t, h.directBody(blog), phpVersion, "512M", true, "primary")
+	assertPHPResponse(t, h.directBody(api), phpVersion, "256M", false, "secondary")
+	t.Logf("acceptance: persisted FPM pool accepted by real php-fpm on blog port %d", blog.FastCGIPort)
+
 	// 4. A malformed raw ini is rejected with a line number and the old master
 	// keeps serving the old configuration.
 	beforeInvalid := h.getSite(blog.Name)

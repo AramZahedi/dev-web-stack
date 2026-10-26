@@ -104,7 +104,8 @@ const siteColumns = `id, name, domain, www_alias, backend, host_path, backend_pa
 	node_version, command, env_json,
 	document_root, front_controller, spa_fallback, tls, force_https, desired_state,
 	status, http_port, fastcgi_port, created_at, updated_at,
-	front_controller_file, front_controller_mode, apache_allow_override, spa_fallback_file, build_json`
+	front_controller_file, front_controller_mode, apache_allow_override, spa_fallback_file, build_json,
+	php_fpm_json`
 
 // CreateSite inserts a new site.
 func (s *Store) CreateSite(ctx context.Context, site model.Site) error {
@@ -113,7 +114,7 @@ func (s *Store) CreateSite(ctx context.Context, site model.Site) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO sites (`+siteColumns+`) VALUES (
-		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
 	if err != nil {
 		return fmt.Errorf("create site %q: %w", site.ID, err)
 	}
@@ -134,7 +135,7 @@ func (s *Store) CreateSiteWithPHPConfig(ctx context.Context, site model.Site, cf
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sites (`+siteColumns+`) VALUES (
-		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
 		return fmt.Errorf("create site %q: %w", site.ID, err)
 	}
 	if err := saveSitePHPConfig(ctx, tx, cfg); err != nil {
@@ -149,7 +150,7 @@ func (s *Store) CreateSiteWithPHPConfig(ctx context.Context, site model.Site, cf
 // UpdateSite replaces the mutable fields of an existing site. The creation
 // timestamp is preserved. It returns ErrNotFound when the site does not exist.
 func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
-	phpExtensions, phpIni, env, err := marshalSiteFields(site)
+	phpExtensions, phpIni, env, phpFPM, err := marshalSiteFields(site)
 	if err != nil {
 		return err
 	}
@@ -186,7 +187,7 @@ func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
 		desired_state = ?, status = ?, http_port = ?, fastcgi_port = ?,
 		updated_at = ?,
 		front_controller_file = ?, front_controller_mode = ?, apache_allow_override = ?,
-		spa_fallback_file = ?, build_json = ?
+		spa_fallback_file = ?, build_json = ?, php_fpm_json = ?
 		WHERE id = ?`,
 		site.Name, site.Domain, boolInt(site.WWW), string(site.Backend),
 		site.HostPath, site.BackendPath, string(site.Kind), site.PHPVersion,
@@ -196,7 +197,7 @@ func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
 		boolInt(site.TLS), boolInt(site.ForceHTTPS), string(site.DesiredState),
 		string(site.Status), site.HTTPPort, site.FastCGIPort,
 		site.UpdatedAt.Unix(),
-		fcFile, fcMode, override, spaFile, buildJSON,
+		fcFile, fcMode, override, spaFile, buildJSON, phpFPM,
 		site.ID)
 	if err != nil {
 		return fmt.Errorf("update site %q: %w", site.ID, err)
@@ -685,7 +686,7 @@ func (s *Store) ListEvents(ctx context.Context, limit int) ([]model.Event, error
 
 // siteInsertArgs encodes a site into the column order used by CreateSite.
 func siteInsertArgs(site model.Site) ([]any, error) {
-	phpExtensions, phpIni, env, err := marshalSiteFields(site)
+	phpExtensions, phpIni, env, phpFPM, err := marshalSiteFields(site)
 	if err != nil {
 		return nil, err
 	}
@@ -722,22 +723,28 @@ func siteInsertArgs(site model.Site) ([]any, error) {
 		boolInt(site.TLS), boolInt(site.ForceHTTPS), string(site.DesiredState),
 		string(site.Status), site.HTTPPort, site.FastCGIPort,
 		site.CreatedAt.Unix(), site.UpdatedAt.Unix(),
-		fcFile, fcMode, override, spaFile, buildJSON,
+		fcFile, fcMode, override, spaFile, buildJSON, phpFPM,
 	}, nil
 }
 
 // marshalSiteFields encodes the site's JSON columns.
-func marshalSiteFields(site model.Site) (phpExtensions, phpIni, env string, err error) {
+func marshalSiteFields(site model.Site) (phpExtensions, phpIni, env, phpFPM string, err error) {
 	if phpExtensions, err = marshalJSON(site.PHPExtensions); err != nil {
-		return "", "", "", fmt.Errorf("encode site %q php extensions: %w", site.ID, err)
+		return "", "", "", "", fmt.Errorf("encode site %q php extensions: %w", site.ID, err)
 	}
 	if phpIni, err = marshalJSON(site.PHPIni); err != nil {
-		return "", "", "", fmt.Errorf("encode site %q php ini: %w", site.ID, err)
+		return "", "", "", "", fmt.Errorf("encode site %q php ini: %w", site.ID, err)
 	}
 	if env, err = marshalJSON(site.Env); err != nil {
-		return "", "", "", fmt.Errorf("encode site %q env: %w", site.ID, err)
+		return "", "", "", "", fmt.Errorf("encode site %q env: %w", site.ID, err)
 	}
-	return phpExtensions, phpIni, env, nil
+	budget := site.PHPFPM
+	if budget == nil || budget.IsZero() {
+		phpFPM = "{}"
+	} else if phpFPM, err = marshalJSON(budget); err != nil {
+		return "", "", "", "", fmt.Errorf("encode site %q php fpm: %w", site.ID, err)
+	}
+	return phpExtensions, phpIni, env, phpFPM, nil
 }
 
 func marshalJSON(value any) (string, error) {
@@ -762,7 +769,7 @@ func scanSite(scanner rowScanner, label, value string) (model.Site, error) {
 		tlsEnabled, forceHTTPS            int
 		phpExtensions, phpIni, env        string
 		createdAt, updatedAt              int64
-		buildJSON                         string
+		buildJSON, phpFPM                 string
 	)
 	err := scanner.Scan(
 		&site.ID, &site.Name, &site.Domain, &www, &site.Backend, &site.HostPath,
@@ -773,7 +780,7 @@ func scanSite(scanner rowScanner, label, value string) (model.Site, error) {
 		&site.DesiredState, &site.Status, &site.HTTPPort, &site.FastCGIPort,
 		&createdAt, &updatedAt,
 		&site.FrontControllerFile, &site.FrontControllerMode,
-		&site.ApacheAllowOverride, &site.SPAFallbackFile, &buildJSON,
+		&site.ApacheAllowOverride, &site.SPAFallbackFile, &buildJSON, &phpFPM,
 	)
 	if err != nil {
 		if label != "" && errors.Is(err, sql.ErrNoRows) {
@@ -822,6 +829,15 @@ func scanSite(scanner rowScanner, label, value string) (model.Site, error) {
 		}
 		if profile.NodeVersion != "" || profile.Command != "" || profile.Output != "" || len(profile.Env) > 0 {
 			site.Build = &profile
+		}
+	}
+	if phpFPM != "" && phpFPM != "null" {
+		var budget model.PHPFPMBudget
+		if err := json.Unmarshal([]byte(phpFPM), &budget); err != nil {
+			return model.Site{}, fmt.Errorf("decode site %q php fpm: %w", site.ID, err)
+		}
+		if !budget.IsZero() {
+			site.PHPFPM = &budget
 		}
 	}
 	return site, nil

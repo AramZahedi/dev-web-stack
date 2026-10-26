@@ -256,17 +256,20 @@ devstack init
 `auto_forward: true` makes the helper restore the forwarders on every start.
 If another server owns 80/443, set it to `false`; `devstack init` then fails at
 `SetForwarders` until the ports are free or the configuration is changed.
-The helper's `proxy_http_port` and `proxy_https_port` must be exactly the
-daemon's `http_port` and `https_port`; `devstack init` rejects a mismatch.
+The helper's `proxy_http_port` and `proxy_https_port` are the default targets for
+the daemon. On daemon startup, the daemon updates them to its configured
+`http_port`/`https_port` through a narrow helper RPC before reconciling serving
+mode. The helper rewrites only those two keys in `/etc/devstack/helper.yaml`,
+updates its in-memory targets, and serving-mode reconciliation then restarts its
+forwarders. A helper started with flags but no `--config` file can update only
+that process. If you pass `--proxy-http`/`--proxy-https` together with `--config`,
+those flags still win on helper restart; remove them to use the persisted values.
 
 The daemon's own settings live in `~/.devstack/config.yaml` (`http_port`,
 `https_port`, `ui_port`, log rotation, and request limits). The daemon creates
 the file with defaults on first start. The dashboard PATCH validates new listener
-ports and returns `restart_required`; `devstack daemon restart` applies them. At
-startup the daemon reconciles serving mode, but the helper's own
-`proxy_http_port`/`proxy_https_port` values are read from its config file. If you
-change the daemon HTTP/HTTPS ports while builtin forwarding is active, update
-`/etc/devstack/helper.yaml` and restart devstack-helper as well.
+ports and returns `restart_required`; `devstack daemon restart` applies them and
+synchronizes the helper targets.
 
 ## Logs
 

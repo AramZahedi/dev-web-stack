@@ -31,8 +31,9 @@ container bug is historical and no longer relevant to this repository.
 ### K1 — Remaining platform work
 
 Waves 0–1, Wave 2, and the next batch are implemented. Still missing:
-external-site Docker bind mounts, real root host-tuning acceptance, live Wave 3
-benchmark/acceptance evidence, and merged PHP-FPM pool sizing. See the
+external-site Docker bind mounts, real root host-tuning acceptance, and live Wave 3
+benchmark/acceptance evidence. Per-site PHP-FPM pool sizing is persisted and applied
+through the live validate/swap flow. See the
 [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md).
 
 ### K2 — Existing native provider vs Docker provider
@@ -82,9 +83,10 @@ destination-root tests pass.
 
 ### K12 — Performance limitations
 
-- PHP-FPM `pm.*` pool sizing is generated under `services/php/performance/` but is not
-  merged into live per-site FPM masters because the site model has no persisted
-  pool-sizing contract. OPcache/realpath ini values are applied through `sites.ApplyPHP`.
+- PHP-FPM `pm.*` pool sizing is persisted on the site row and applied to each running
+  per-site FPM master through the same validate/swap flow as OPcache and realpath ini
+  values. The generated fragment under `services/php/performance/` remains a readable
+  preview of the applied budget.
 - Performance-managed includes are reserved and hidden from the service-config editor
   (`conf.d/performance/` and `conf.d/performance.conf`), so an editor write cannot be
   silently replaced by the next profile apply.
@@ -103,13 +105,17 @@ destination-root tests pass.
 - Backups live under `services/<id>/config/backups/{config,config-reset}` because the
   manager is rooted at the config directory. They are hidden from the editor/API policy.
 
-### K14 — Daemon HTTP/HTTPS port changes need a helper config update
+### K14 — Helper proxy targets follow daemon restart automatically
 
-The Settings PATCH persists and validates daemon listener ports, but it cannot
-rewrite the root helper's `/etc/devstack/helper.yaml`. With builtin 80/443
-forwarding, update `proxy_http_port`/`proxy_https_port` and restart
-devstack-helper; otherwise public URLs keep targeting the old port. The API
-returns this warning. UI-only changes do not need it.
+The daemon calls a narrow helper RPC with its configured HTTP/HTTPS ports before
+serving-mode reconciliation. The helper validates the targets, rewrites only
+`proxy_http_port`/`proxy_https_port` in `/etc/devstack/helper.yaml` atomically and
+updates its in-memory targets. Serving-mode reconciliation then restarts the
+privileged forwarders against the new targets. A helper started with flags but
+no `--config` file still updates in memory for that process and reports that
+persistence was unavailable. Explicit `--proxy-http`/`--proxy-https` flags also
+override the file after a helper restart, so production units should rely on the
+config file for these two keys.
 
 ### K15 — Terminal limitations
 
@@ -150,8 +156,7 @@ conflict until those ports are freed. See [Continuation State](superpowers/statu
   are implemented.
 - ImageMagick CLI is descoped; PHP `imagick` remains available.
 - Docker web servers require sites under the managed projects root (K7).
-- PHP-FPM pool sizing, external-site Docker mounts, and real host-tuning acceptance
-  remain (K1/K12/K13).
+- External-site Docker mounts and real host-tuning acceptance remain (K1/K7/K12).
 - `install.sh` adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
   existing helper config and restarts it. A manually managed config without
   `service_root` leaves the service API at helper NOT_IMPLEMENTED until fixed.

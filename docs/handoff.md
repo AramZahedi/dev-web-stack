@@ -101,7 +101,6 @@ The next batch is implemented. Remaining work is tracked in
 - external-site bind mounts for Docker web servers (sites outside the managed `projects/`
   root currently require builtin/native serving);
 - real root host-tuning acceptance and live benchmark evidence;
-- PHP-FPM pool sizing merged into live FPM masters (OPcache/realpath ini values are live);
 - live Wave 3 acceptance on a real host.
 
 **Do not claim the remaining host gates are passed until they are run.**
@@ -294,8 +293,8 @@ make release-test
 ## 10. Open items for the next agent
 
 - The next batch is complete; start from [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md).
-- Remaining: external-site Docker mounts, real root host-tuning acceptance, live
-  benchmark evidence, and PHP-FPM pool sizing.
+- Remaining: external-site Docker mounts, real root host-tuning acceptance, and live
+  benchmark evidence.
 - Keep automatic CI disabled; run the local gate manually.
 - Run the manual Linux M1/Wave 3 gates if claiming full acceptance.
 - Do not start Windows/WSL, arm64, signed packages, auto-update, or M4 work.
