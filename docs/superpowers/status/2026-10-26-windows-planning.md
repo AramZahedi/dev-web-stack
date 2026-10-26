@@ -22,6 +22,17 @@
 - Symlink/junction bridging between Windows and WSL is rejected.
 - Existing Linux installs are not auto-migrated.
 
+## Builder-check resolutions
+
+- WSL baseline: Windows 11 22H2+ x64, WSL 2.0.0+ with systemd. The installer validates but does not enable features or reboot.
+- Managed distro identity is proven by `/data/devstack/managed.json`; unmarked `devstack` distros are refused.
+- Five implementers may edit in parallel, but real machine-wide Windows resources are controller-serialized; lanes use isolated test roots/distro names/ports.
+- Windows access to WSL database/Redis/phpMyAdmin ports goes through an agent loopback relay and helper loopback forwarding.
+- WSL-mode projects are preserved by default on uninstall; removing WSL requires verified export or explicit discard.
+- Existing Linux PHP builds must pass a Debian 12 WSL compatibility gate; a WSL-compatible variant is published if needed.
+- The agent manages WSL `/etc/hosts` with `generateHosts=false` so `.test` names resolve inside WSL.
+- Source-mode changes are stopped-site copy-and-verify operations; source is kept unless `--remove-source` is explicit.
+
 ## Execution design
 
 - Wave 0 foundation is sequential.

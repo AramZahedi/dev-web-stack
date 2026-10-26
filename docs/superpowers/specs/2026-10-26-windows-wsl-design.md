@@ -134,7 +134,13 @@ Rules:
 - Accept absolute drive-letter paths and managed `\\wsl.localhost\<distro>\...` paths only.
 - Reject arbitrary UNC paths, device paths, and cross-boundary symlinks/junctions.
 - Windows mode uses `/mnt/c`; show a performance and watcher warning at creation.
-- Switching modes is an explicit move operation; never rewrite paths silently.
+- Switching modes is an explicit **copy-and-verify** operation, never an in-place rebind:
+  - site must be stopped;
+  - destination must be absent/empty;
+  - copy to a temporary sibling, verify file count/checksums and permissions, then switch the row;
+  - default keeps the source; `--remove-source` deletes it only after verification;
+  - failure leaves the original site row and source untouched;
+  - no automatic overwrite/merge in v1.
 - No devstack-created Windows path starts with a dot. Project-owned `.git`, `.idea`, `.env`, `.htaccess` are unaffected.
 - Project files are never stored under the protected `system` subtree.
 
@@ -241,7 +247,7 @@ PhpStorm 2026.2+ opens WSL projects natively. Windows-mode projects remain norma
 
 ### Configuration additions
 
-- `source_mode` on sites: `windows` or `wsl`.
+- `source_mode` on sites: `local`, `windows`, or `wsl`.
 - `projects_root` for the default project directory.
 - `wsl_distro` used by the managed distro.
 - Agent endpoint/discovery metadata; the Windows daemon stores the bearer token with Windows DPAPI-backed user protection, while the agent stores its copy at `/data/devstack/agent.token` mode 0600.
@@ -257,6 +263,7 @@ PhpStorm 2026.2+ opens WSL projects natively. Windows-mode projects remain norma
 - Windows trust: LocalMachine/CurrentUser certificate store as appropriate, Edge/Chrome inheritance, Firefox enterprise policy.
 - Linux trust: existing OS/browser trust path.
 - WSL curl/Node/PHP trust: CA public bundle copied to the agent runtime.
+- WSL DNS/hosts: the agent manages a devstack block in `/etc/hosts` and sets `[network] generateHosts=false` in the managed distro, preserving localhost entries and unrelated user entries. This lets Composer, curl, Node, PHP, and terminal sessions resolve `.test` names inside WSL.
 
 ## 7. Networking and public ports
 
@@ -278,7 +285,12 @@ PhpStorm 2026.2+ opens WSL projects natively. Windows-mode projects remain norma
 - Docker:
   - Dedicated Docker Engine inside WSL.
   - Host networking for web server containers so they can reach native PHP-FPM/Node on WSL loopback.
-  - Database/Redis/phpMyAdmin remain loopback-only as today.
+  - Database/Redis/phpMyAdmin remain loopback-only inside WSL.
+- Windows access to WSL service ports:
+  - The agent exposes a fixed loopback-service relay on the WSL NAT interface for enabled service ports (MySQL/MariaDB, PostgreSQL, Redis, phpMyAdmin).
+  - The Windows helper forwards selected Windows loopback ports to the agent relay and creates loopback-only firewall rules.
+  - Windows clients connect to `127.0.0.1:<port>`; nothing is exposed to the LAN.
+  - The relay accepts only catalog service IDs/ports and forwards only to container loopback.
 
 ## 8. Runtime and feature behavior
 
@@ -286,7 +298,9 @@ PhpStorm 2026.2+ opens WSL projects natively. Windows-mode projects remain norma
 
 - Native Linux PHP-FPM in WSL/Linux.
 - Existing Linux PHP builds and extension catalog remain the basis.
-- Linux-only extensions are supported; validate ABI/glibc/system libraries in the Debian 12 WSL image.
+- Every catalog PHP build must pass a Debian 12 WSL compatibility gate (`php -v`, FPM start, each supported extension load). The WSL rootfs includes required system libraries.
+- If an existing build fails the gate, the release must publish a WSL-compatible variant and catalog entry; Lane F owns that fallback and its artifacts.
+- Linux-only extensions are supported.
 - Per-site FPM pool sizing remains persisted and applied through validate/swap.
 - No Docker PHP.
 
@@ -322,6 +336,8 @@ PhpStorm 2026.2+ opens WSL projects natively. Windows-mode projects remain norma
 
 ## 9. Windows installation and lifecycle
 
+- **WSL baseline:** Windows 11 22H2+ x86_64 with WSL 2.0.0 or newer and systemd support. The installer does **not** enable Windows optional features, install WSL, or reboot. It validates `wsl.exe --version`, WSL2, virtualization, and systemd support; if missing, it prints the exact `wsl --install`/`wsl --update` commands and exits. It uses `--version 2` on import and does not change the user's default distro.
+- **Managed distro identity:** a distro named `devstack` is managed only if it contains `/data/devstack/managed.json` with `managed_by=devstack` and a generated install ID. A pre-existing distro without the marker is refused, never adopted or replaced. The error instructs the user to rename/remove it or select another distro name.
 - `install.ps1` requires elevation for root creation, helper service, ACLs, and firewall.
 - Installer:
   - creates `C:\devstack` and protected `system` ACLs;
@@ -339,8 +355,9 @@ PhpStorm 2026.2+ opens WSL projects natively. Windows-mode projects remain norma
   - stops daemon/agent/containers;
   - backs up SQLite/config if requested;
   - removes helper service/firewall/hosts/trust;
-  - optionally unregisters the WSL distro;
-  - never deletes projects by default.
+  - leaves the WSL distro and WSL-mode projects by default;
+  - `--remove-wsl` requires either `--export-wsl-projects <path>` with a verified archive or an explicit `--discard-wsl-projects` confirmation;
+  - never deletes Windows projects.
 - WSL distro export is the backup unit for Linux runtime state and Docker data.
 
 ## 10. Failure and security rules
@@ -359,7 +376,14 @@ PhpStorm 2026.2+ opens WSL projects natively. Windows-mode projects remain norma
 
 ## 11. Testing and acceptance
 
-Automated:
+### Test isolation
+
+- Lane implementers run only fakes/unit tests and cross-compiles concurrently.
+- Real Windows host resources are serialized by the controller: one helper service/named pipe, one real `C:\devstack` install, one managed distro, one 80/443 owner, one hosts/trust mutation, one Docker engine at a time.
+- Test-mode runs may use a lane-unique root (`C:\devstack-test\<lane>`), named-pipe suffix, distro name (`devstack-test-<lane>`), high ports, and no hosts/trust/firewall writes. These are never used as production paths.
+- Linux regressions run in WSL/Linux; Windows-tagged tests run on the Windows host.
+
+### Automated tests
 
 - Windows cross-compilation and unit tests.
 - Named-pipe protocol/ACL tests.

@@ -30,6 +30,11 @@
 - WSL agent listens on the NAT interface with bearer auth; mirrored networking is rejected.
 - No implementation is merged without a watched RED test and a green suite.
 - At most **5 active subagents** at any time; never 3 as a hard cap.
+- Windows WSL baseline: Windows 11 22H2+ x64, WSL 2.0.0+ with systemd. Installer validates but never enables Windows features or reboots.
+- Managed WSL distro marker: `/data/devstack/managed.json`; never adopt or replace an unmarked distro.
+- WSL-mode projects are never deleted by default uninstall; removal requires export or explicit discard confirmation.
+- Windows loopback access to WSL services uses the agent service relay plus helper loopback forwarding.
+- WSL PHP catalog artifacts must pass the Debian 12 compatibility gate before use.
 
 ## Review Focus
 
@@ -112,6 +117,14 @@ After a lane report arrives, the controller:
 
 Reviewers never edit code and never review while more than five total subagents are active.
 
+### Test isolation and machine-wide resources
+
+- Lane implementers run unit tests, compile checks, and fakes concurrently.
+- Real Windows resources are controller-serialized: one helper service/pipe, one production `C:\devstack`, one managed `devstack` distro, one owner of 80/443, one hosts/trust mutation, and one Docker engine at a time.
+- Lane-local smokes may use unique `C:\devstack-test\<lane>`, named-pipe suffix, `devstack-test-<lane>` distro, high ports, and no hosts/trust/firewall writes.
+- Windows-tagged tests require the Windows host; Linux regression tests run in WSL or a Linux checkout on the same frozen code.
+- Five implementers can edit concurrently, but they cannot all install the production Windows service or run real port 80/443 tests. The controller reserves those for integration.
+
 ### Reviews and merging
 
 - After each wave, controller creates a diff package for each lane and dispatches one fresh reviewer per lane, max 5 concurrently.
@@ -131,6 +144,7 @@ Reviewers never edit code and never review while more than five total subagents 
 - Create: `internal/ipc/ipc.go`, `internal/ipc/ipc_unix.go`, `internal/ipc/ipc_windows.go` — Unix socket/named-pipe endpoint.
 - Create: `internal/agentproto/protocol.go`, `internal/agentproto/types.go` — agent API contract.
 - Create: `internal/agentclient/client.go` — authenticated agent client.
+- Create: `internal/securestore/` — DPAPI/Linux token storage.
 - Create: `internal/wsl/runner.go`, `internal/wsl/path.go` — `wsl.exe` seam and path translation.
 - Modify: `internal/config/config.go`, `internal/config/paths.go` — roots, projects root, Windows platform defaults.
 - Modify: `internal/model/model.go` — source mode and source paths.
@@ -151,7 +165,7 @@ Reviewers never edit code and never review while more than five total subagents 
 ### Lane B — WSL provisioning and agent
 
 - Create: `cmd/devstack-agent/main.go`
-- Create: `internal/agent/server.go`, `internal/agent/auth.go`, `internal/agent/config.go`, `internal/agent/health.go`
+- Create: `internal/agent/server.go`, `internal/agent/auth.go`, `internal/agent/config.go`, `internal/agent/health.go`, `internal/agent/hosts.go`
 - Create: `internal/wsl/provision.go`, `internal/wsl/distro.go`, `internal/wsl/rootfs.go`
 - Create: `build/wsl/README.md`, `build/wsl/build-rootfs.sh`, `build/wsl/agent.service`
 - Create: `internal/agent/*_test.go`, `internal/wsl/*_test.go`
@@ -169,12 +183,13 @@ Reviewers never edit code and never review while more than five total subagents 
 
 ### Lane D — Docker services and web-serving adapter
 
-- Create: `internal/agent/docker.go`, `internal/agent/docker_test.go`
+- Create: `internal/agent/docker.go`, `internal/agent/service_relay.go`, tests
 - Create: `internal/servicecontrol/agent_docker.go`, `internal/servicecontrol/agent_docker_test.go`
 - Create: `internal/services/agent_targets.go`
 - Modify: `internal/dockerweb/`, `internal/vhost/` only through adapter interfaces.
 - Create: `internal/agent/web_targets.go`, `internal/agent/web_targets_test.go`
 - Create: `internal/wsl/docker_rootfs_test.go`
+- Create: `internal/helper/service_relay_targets_windows.go`, tests
 
 ### Lane E — Source modes, paths, CLI/UI
 
@@ -421,9 +436,9 @@ Reviewers never edit code and never review while more than five total subagents 
 
 **Files:** `internal/wsl/provision.go`, `provision_test.go`, `build/wsl/build-rootfs.sh`, `build/wsl/README.md`.
 
-- [ ] Write failing fake-`wsl.exe` tests for existing-distro detection, import, start, systemd check, idempotent reuse, and unregister with confirmation.
+- [ ] Write failing fake-`wsl.exe` tests for the WSL 2.0.0/systemd preflight, existing-distro marker, unmarked-distro refusal, import, start, idempotent reuse, and unregister with confirmation.
 - [ ] Run; expect fail.
-- [ ] Implement provisioner with `C:\devstack\wsl\devstack`, Debian 12 rootfs, and no arbitrary commands.
+- [ ] Implement provisioner with `C:\devstack\wsl\devstack`, Debian 12 rootfs, `/data/devstack/managed.json`, and no arbitrary commands. Refuse an unmarked `devstack` distro.
 - [ ] Run tests and a Windows fake integration.
 - [ ] Commit `feat: provision managed WSL distro`.
 
@@ -456,6 +471,16 @@ Reviewers never edit code and never review while more than five total subagents 
 - [ ] Implement Docker bootstrap/health and systemd unit dependencies.
 - [ ] Run tests and a real WSL Docker `hello-world`/Compose smoke.
 - [ ] Commit `feat: add dedicated docker engine to WSL agent`.
+
+#### Task B5: WSL `/etc/hosts` management
+
+**Files:** `internal/agent/hosts.go`, `hosts_test.go`, `internal/wsl/hosts_config_test.go`.
+
+- [ ] Write failing tests for a managed hosts block, localhost preservation, `generateHosts=false`, unrelated-line preservation, and removal on uninstall.
+- [ ] Run; expect fail.
+- [ ] Implement root-only hosts updates through the agent.
+- [ ] Run tests and WSL smoke resolving a registered `.test` name with curl.
+- [ ] Commit `feat: manage WSL devstack hosts`.
 
 ### Lane C — Windows daemon and public proxy
 
@@ -547,6 +572,16 @@ Reviewers never edit code and never review while more than five total subagents 
 - [ ] Run tests and full service smoke.
 - [ ] Commit `feat: enforce WSL service data rules`.
 
+#### Task D5: Windows loopback service relay
+
+**Files:** `internal/agent/service_relay.go`, `service_relay_test.go`, `internal/helper/service_relay_targets_windows.go`, `internal/helper/service_relay_targets_windows_test.go`.
+
+- [ ] Write failing tests for the fixed service-port allowlist, relay to WSL loopback, Windows helper loopback forwarding, firewall scoping, and rejection of arbitrary ports.
+- [ ] Run; expect fail.
+- [ ] Implement agent relay and helper targets for MySQL/MariaDB, PostgreSQL, Redis, and phpMyAdmin.
+- [ ] Run tests and a Windows→WSL phpMyAdmin smoke.
+- [ ] Commit `feat: add windows loopback service relay`.
+
 ### Lane E — Source modes, path UX, CLI/UI
 
 **Branch:** `lane/site-source`
@@ -556,9 +591,9 @@ Reviewers never edit code and never review while more than five total subagents 
 
 **Files:** `internal/sites/source_mode.go`, `internal/sites/service.go`, `internal/api/handlers_sites.go`, `internal/cli/site.go`, tests.
 
-- [ ] Write failing tests for Windows/WSL source defaults, path translation, move-mode rejection/success, and Linux `local`.
+- [ ] Write failing tests for Windows/WSL source defaults, path translation, move-mode rejection/success, stopped-site requirement, copy/verify, source retention, and failure rollback.
 - [ ] Run; expect fail.
-- [ ] Implement source-mode service/API/CLI behavior.
+- [ ] Implement source-mode service/API/CLI behavior. Move copies to a temporary sibling, verifies checksums/permissions, switches the site row, and keeps the source unless `--remove-source` is explicitly requested.
 - [ ] Run tests.
 - [ ] Commit `feat: expose site source modes`.
 
@@ -623,6 +658,7 @@ Before dispatching Wave 2, the controller expands each lane into the same task-b
 ### Lane F — PHP/Node/FPM and terminal parity
 
 - [ ] Agent PHP runtime install/select/validate/swap and per-site FPM pool; real Linux-only extension smoke (`swoole` or the approved extension set).
+- [ ] Debian 12 PHP catalog compatibility gate for every supported artifact; if an artifact fails, publish a WSL-compatible variant/catalog entry and update the rootfs library set.
 - [ ] Node runtime and static build parity.
 - [ ] Site terminal/PTY through agent WebSocket; path mapping and Xdebug docs.
 - [ ] Windows-mode PHP/Node performance warning and benchmark fixture.
@@ -631,11 +667,12 @@ Before dispatching Wave 2, the controller expands each lane into the same task-b
 
 ### Lane G — Installers, trust, upgrade, uninstall
 
-- [ ] `install.ps1` with elevation, fixed `C:\devstack`, protected `system` ACL, helper service, WSL import, per-user startup.
+- [ ] `install.ps1` with elevation, fixed `C:\devstack`, protected `system` ACL, helper service, per-user startup, and WSL 2.0.0/systemd preflight that never enables features or reboots.
 - [ ] Update `install.sh` for new `/data/devstack` roots and helper `system` layout on a fresh Linux install.
 - [ ] Detect legacy Linux `~/.devstack`, `/etc/devstack/helper.yaml`, and `/var/lib/devstack-helper`; preserve them without silent migration.
 - [ ] Upgrade preserves state/projects/system; WSL distro export/import; rollback.
 - [ ] Trust repair/hosts repair/firewall remove.
+- [ ] Uninstall preserves the WSL distro and WSL projects by default; `--remove-wsl` requires a verified project export or explicit discard confirmation.
 - [ ] Uninstall with project preservation and optional VHDX removal.
 - [ ] TDD tests with fake PowerShell/sudo/service runners and `test/release/installer_test.sh`.
 - [ ] Commit `feat: add cross-platform installer lifecycle`.
