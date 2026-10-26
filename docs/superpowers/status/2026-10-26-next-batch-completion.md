@@ -2,7 +2,7 @@
 
 - **Status:** implemented, reviewed, locally verified, merged to `master`.
 - **Integration branch:** `integration/service-platform-next-batch`.
-- **Code head before documentation:** `c72fb86`; the merge commit is the current
+- **Code head before documentation:** `843abc5`; the merge commit is the current
   `master` tip at the time this file is read (`git rev-parse HEAD`).
 - **Plan:** [Service Platform Next Batch](../plans/2026-10-26-service-platform-next-batch.md)
 - **Continuation:** [Continuation State](2026-10-26-continuation.md)
