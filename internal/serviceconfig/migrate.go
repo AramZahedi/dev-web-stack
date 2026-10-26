@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // MigrateManifest copies a legacy manifest from oldRoot into newRoot, keeping
@@ -17,6 +18,14 @@ func MigrateManifest(oldRoot, newRoot, prefix string) error {
 	if oldRoot == "" || newRoot == "" {
 		return errors.New("serviceconfig: migration roots cannot be empty")
 	}
+	absNew, err := filepath.Abs(newRoot)
+	if err != nil {
+		return fmt.Errorf("resolve migration destination: %w", err)
+	}
+	lock, _ := managerLocks.LoadOrStore(absNew, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
+
 	oldPath := filepath.Join(oldRoot, ".config-manifest.json")
 	newPath := filepath.Join(newRoot, ".config-manifest.json")
 	if _, err := os.Stat(newPath); err == nil {
