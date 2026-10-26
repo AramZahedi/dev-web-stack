@@ -2276,14 +2276,7 @@ export const mockApi = {
         },
       );
     }
-    if (!service.active) {
-      throw new ApiError(
-        'VALIDATION_PENDING',
-        'The service is inactive; the config is saved but validation requires activation.',
-        202,
-      );
-    }
-    const backup = `/home/dev/.devstack/services/${id}/backups/config/20261026T120000Z/${body.path}`;
+    const backup = `/home/dev/.devstack/services/${id}/config/backups/config/20261026T120000Z/${body.path}`;
     file.content = body.content;
     file.modified = false;
     file.detached = body.resolution === 'merge';
@@ -2294,12 +2287,15 @@ export const mockApi = {
       action: 'apply',
       changed: true,
       backup_path: backup,
-      live: true,
-      reloaded: true,
-      validation_pending: false,
-      message: file.detached
-        ? 'Merged content saved and marked detached from future generated writes.'
-        : 'Configuration validated and reloaded.',
+      live: service.active,
+      reloaded: service.active,
+      validation_pending: !service.active,
+      restart_required: !service.active,
+      message: !service.active
+        ? 'Saved. Validation is pending until the service is activated.'
+        : file.detached
+          ? 'Merged content saved and marked detached from future generated writes.'
+          : 'Configuration validated and reloaded.',
     };
   },
 

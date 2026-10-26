@@ -245,8 +245,8 @@
         kind: 'success',
         title: result.host_tuning ? 'Performance applied with host tuning' : 'Performance applied',
         message: result.backup_dir
-          ? `Backups are under ${result.backup_dir}.`
-          : 'Managed includes and PHP pools were validated and reloaded.',
+          ? `Backups are under ${result.backup_dir}. Review warnings for any skipped work.`
+          : 'Managed includes and PHP ini changes were applied. Review warnings for any skipped work.',
       });
     } catch (caught) {
       const partial = partialPerformanceResult(caught);
@@ -475,14 +475,19 @@
           <dd>{numberValue(apache, 'max_request_workers')} · {numberValue(apache, 'server_limit')} slots</dd>
         </div>
         <div>
-          <dt>PHP children</dt>
-          <dd>{numberValue(php, 'global_children')} global · {numberValue(section(php, 'opcache'), 'memory_mb')} MB OPcache</dd>
+          <dt>PHP OPcache</dt>
+          <dd>{numberValue(section(php, 'opcache'), 'memory_mb')} MB · realpath and validate-timestamps applied</dd>
         </div>
         <div>
           <dt>Host limits</dt>
           <dd>{numberValue(host, 'file_max')} file-max · {numberValue(host, 'somaxconn')} somaxconn</dd>
         </div>
       </dl>
+      <p class="value-note">
+        Per-site PHP-FPM <span class="mono">pm.*</span> pool sizing is generated in the
+        preview but not yet merged into live masters; OPcache and realpath ini settings
+        are applied through the site validate/swap flow.
+      </p>
 
       {#if previewError}
         <div class="inline-error">
@@ -711,6 +716,7 @@
               <th>Started</th>
               <th>Site</th>
               <th>Profile</th>
+              <th>Status</th>
               <th>RPS</th>
               <th>p95</th>
               <th>Errors</th>
@@ -964,6 +970,13 @@
     font-family: var(--font-mono);
     font-size: 10.5px;
     overflow-wrap: anywhere;
+  }
+
+  .value-note {
+    margin-top: 7px;
+    color: var(--warning-fg);
+    font-size: 10px;
+    line-height: 1.5;
   }
 
   .custom-editor {

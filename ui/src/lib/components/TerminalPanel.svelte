@@ -27,6 +27,7 @@
   let fitAddon: FitAddonType | null = null;
   let connection: TerminalConnection | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let startGeneration = 0;
 
   const statusLabel = $derived(
     status === 'connected'
@@ -59,6 +60,7 @@
   }
 
   function disposeTerminal(): void {
+    startGeneration += 1;
     connection?.close();
     connection = null;
     resizeObserver?.disconnect();
@@ -74,6 +76,7 @@
     if (!surface) return;
     terminalEl = surface;
     disposeTerminal();
+    const generation = startGeneration;
     error = null;
     status = 'connecting';
 
@@ -92,7 +95,7 @@
       status = 'error';
       return;
     }
-    if (status !== 'connecting') return;
+    if (generation !== startGeneration || status !== 'connecting') return;
 
     const term = new TerminalCtor({
       cursorBlink: true,
@@ -130,20 +133,28 @@
 
     void api
       .openTerminal(site.id, {
-        onOutput: (text) => term.write(text),
+        onOutput: (text) => {
+          if (generation === startGeneration) term.write(text);
+        },
         onExit: (code) => {
+          if (generation !== startGeneration) return;
           term.write(`\r\n\x1b[2m[process exited with code ${code}]\x1b[0m\r\n`);
           status = 'closed';
         },
         onStatus: (next) => {
-          status = next;
+          if (generation === startGeneration) status = next;
         },
       })
       .then((next) => {
+        if (generation !== startGeneration) {
+          next.close();
+          return;
+        }
         connection = next;
         fit();
       })
       .catch((caught) => {
+        if (generation !== startGeneration) return;
         const described = describeError(caught);
         error = described;
         status = 'error';
@@ -152,6 +163,7 @@
   }
 
   function close(): void {
+    startGeneration += 1;
     connection?.close();
     connection = null;
     status = 'closed';

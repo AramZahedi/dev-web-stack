@@ -426,6 +426,7 @@ test('Performance previews, applies, resets, and records a measured benchmark', 
   ).toBeVisible();
   await expect(performance.getByText('Apply complete')).toBeVisible();
   await expect(performance.getByText('Host tuned')).toBeVisible();
+  await expect(performance.getByText(/Per-site PHP-FPM/)).toBeVisible();
 
   const benchmark = page.locator('.benchmark-card');
   await benchmark.getByLabel('Duration (s)').fill('2');
@@ -433,6 +434,7 @@ test('Performance previews, applies, resets, and records a measured benchmark', 
   await benchmark.getByRole('button', { name: 'Run benchmark' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Benchmark complete' })).toBeVisible();
   const row = benchmark.locator('tbody tr').first();
+  await expect(benchmark.locator('thead')).toContainText('Status');
   await expect(row).toContainText('blog');
   await expect(row).toContainText('devstack-go-http');
 
