@@ -6,7 +6,7 @@ This is the current-state record for resuming the service-platform work. Read it
 
 ## 1. Repository state
 
-- **Code baseline:** the next-batch code head is `5386c22`; the documentation/merge commit is the current `master` tip (`git rev-parse HEAD`).
+- **Code baseline:** next-batch code `5386c22`, merged to `master` as `3c0ddc7`.
 - **Current runtime build:** rebuilt from the merged next-batch branch after verification; run `./dist/devstack version` for the exact build string.
 - **Next batch:** **implemented, reviewed, and merged**; see
   [Next Batch Completion](2026-10-26-next-batch-completion.md) for scope, evidence, and

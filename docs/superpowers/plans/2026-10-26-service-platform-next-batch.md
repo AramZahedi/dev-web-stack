@@ -3,7 +3,7 @@
 - **Date:** 2026-10-26
 - **Baseline:** Phase 0 started from `cbc1605` (Wave 2 merged; action colors and installed-state fix). The batch code head is `5386c22`; the merged tip is the current `master`. Last automatic CI green was `cb443d8`; automatic CI remains disabled.
 - **Scope owner:** next implementation batch
-- **Status:** implemented and merged; see [Next Batch Completion](../status/2026-10-26-next-batch-completion.md) for evidence and remaining limitations.
+- **Status:** implemented and merged as `3c0ddc7`; see [Next Batch Completion](../status/2026-10-26-next-batch-completion.md) for evidence and remaining limitations.
 
 ## 1. Scope
 
