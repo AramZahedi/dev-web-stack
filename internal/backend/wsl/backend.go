@@ -174,15 +174,24 @@ func (b *Backend) check() error {
 
 func toWSLPath(p string) string {
 	p = strings.TrimSpace(p)
-	if p == "" || strings.HasPrefix(p, "/") {
-		return p
+	if p == "" {
+		return ""
 	}
-	if strings.HasPrefix(strings.ToLower(p), `\\wsl.localhost\`) || strings.HasPrefix(strings.ToLower(p), `\\wsl$\`) {
-		slash := strings.ReplaceAll(p, `\`, "/")
-		parts := strings.Split(strings.TrimPrefix(slash, "//"), "/")
+	pNorm := strings.ReplaceAll(p, `\`, "/")
+	pLower := strings.ToLower(pNorm)
+	if strings.HasPrefix(pLower, "//wsl.localhost/") || strings.HasPrefix(pLower, "//wsl$/") ||
+		pLower == "//wsl.localhost" || pLower == "//wsl$" {
+		parts := strings.Split(strings.TrimPrefix(pNorm, "//"), "/")
 		if len(parts) >= 2 {
-			return "/" + strings.Join(parts[2:], "/")
+			subPath := strings.Join(parts[2:], "/")
+			if subPath == "" {
+				return "/"
+			}
+			return "/" + subPath
 		}
+	}
+	if strings.HasPrefix(p, "/") {
+		return p
 	}
 	if len(p) >= 2 && p[1] == ':' {
 		drive := strings.ToLower(string(p[0]))
@@ -206,8 +215,10 @@ func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 		proxyRoot += `\` + strings.ReplaceAll(filepathToSlash(documentRoot), "/", `\`)
 	}
 	mode := ""
+	hostNorm := strings.ReplaceAll(strings.ToLower(spec.HostPath), `\`, "/")
 	switch {
-	case strings.HasPrefix(strings.ToLower(spec.HostPath), `\\wsl.localhost\`), strings.HasPrefix(strings.ToLower(spec.HostPath), `\\wsl$\`):
+	case strings.HasPrefix(hostNorm, "//wsl.localhost/"), strings.HasPrefix(hostNorm, "//wsl$/"),
+		hostNorm == "//wsl.localhost", hostNorm == "//wsl$":
 		mode = string(model.SourceWSL)
 	case len(spec.HostPath) >= 3 && spec.HostPath[1] == ':' && (spec.HostPath[2] == '\\' || spec.HostPath[2] == '/'):
 		mode = string(model.SourceWindows)

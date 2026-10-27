@@ -53,6 +53,7 @@ type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 3 * time.Second
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
@@ -62,6 +63,7 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 
 func (execRunner) RunInput(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 3 * time.Second
 	cmd.Stdin = bytes.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 var (
@@ -32,6 +33,7 @@ func (ExecDockerCommandRunner) Run(ctx context.Context, name string, args ...str
 		ctx = context.Background()
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 3 * time.Second
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))

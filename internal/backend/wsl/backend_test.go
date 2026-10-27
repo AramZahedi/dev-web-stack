@@ -135,3 +135,51 @@ func TestLifecycleStatusLogsAndExecUseAgent(t *testing.T) {
 		t.Fatalf("Exec = %+v, %v; request=%+v", result, err, agent.execRequest)
 	}
 }
+
+func TestToWSLPath(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"/var/www/site", "/var/www/site"},
+		{`C:\Projects\app`, "/mnt/c/Projects/app"},
+		{`c:/Projects/app`, "/mnt/c/Projects/app"},
+		{`D:\Data\site`, "/mnt/d/Data/site"},
+		{`\\wsl.localhost\devstack\data\devstack\projects\app`, "/data/devstack/projects/app"},
+		{`\\wsl$\devstack\home\user\site`, "/home/user/site"},
+		{`//wsl.localhost/devstack/var/www`, "/var/www"},
+		{`//wsl$/devstack/srv/data`, "/srv/data"},
+		{`\\wsl.localhost\devstack`, "/"},
+		{`//wsl.localhost/devstack/`, "/"},
+	}
+
+	for _, tc := range tests {
+		got := toWSLPath(tc.input)
+		if got != tc.want {
+			t.Errorf("toWSLPath(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestToAgentSiteSourceMode(t *testing.T) {
+	tests := []struct {
+		hostPath string
+		wantMode string
+	}{
+		{`C:\Projects\app`, "windows"},
+		{`c:/Projects/app`, "windows"},
+		{`\\wsl.localhost\devstack\data\app`, "wsl"},
+		{`//wsl.localhost/devstack/data/app`, "wsl"},
+		{`\\wsl$\devstack\home\user\app`, "wsl"},
+		{`//wsl$/devstack/home/user/app`, "wsl"},
+		{`/data/app`, ""},
+	}
+
+	for _, tc := range tests {
+		spec := toAgentSite(backend.SiteSpec{HostPath: tc.hostPath})
+		if spec.SourceMode != tc.wantMode {
+			t.Errorf("toAgentSite(%q).SourceMode = %q, want %q", tc.hostPath, spec.SourceMode, tc.wantMode)
+		}
+	}
+}

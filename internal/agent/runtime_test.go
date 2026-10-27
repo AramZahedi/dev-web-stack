@@ -539,6 +539,55 @@ func TestAgentTerminalTicketAndWebSocketPTY(t *testing.T) {
 	if res3.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 on reused ticket, got %d", res3.StatusCode)
 	}
+
+	// 5. Connect via WebSocket with ticket in X-Terminal-Ticket header
+	ticketResp2, err := runtime.IssueTerminalTicket(spec.ID, agentproto.TerminalTicketRequest{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("IssueTerminalTicket = %v", err)
+	}
+	wsHeader2 := http.Header{}
+	wsHeader2.Set(agentproto.HeaderProtocol, agentproto.ProtocolVersion)
+	wsHeader2.Set(agentproto.HeaderAuth, agentproto.BearerPrefix+"secret-token")
+	wsHeader2.Set("X-Terminal-Ticket", ticketResp2.Ticket)
+	wsURLNoParam := "ws" + strings.TrimPrefix(ts.URL, "http") + agentproto.PathSiteTerminalFor(spec.ID)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	conn2, resp2, err := websocket.Dial(ctx2, wsURLNoParam, &websocket.DialOptions{HTTPHeader: wsHeader2})
+	if err != nil {
+		t.Fatalf("websocket dial with X-Terminal-Ticket header failed: %v (resp=%+v)", err, resp2)
+	}
+	defer conn2.CloseNow()
+	if err := conn2.Write(ctx2, websocket.MessageText, inputData); err != nil {
+		t.Fatalf("write input frame = %v", err)
+	}
+	if _, _, err := conn2.Read(ctx2); err != nil {
+		t.Fatalf("read frame = %v", err)
+	}
+
+	// 6. Connect via WebSocket with ticket in Sec-WebSocket-Protocol
+	ticketResp3, err := runtime.IssueTerminalTicket(spec.ID, agentproto.TerminalTicketRequest{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("IssueTerminalTicket = %v", err)
+	}
+	wsHeader3 := http.Header{}
+	wsHeader3.Set(agentproto.HeaderProtocol, agentproto.ProtocolVersion)
+	wsHeader3.Set(agentproto.HeaderAuth, agentproto.BearerPrefix+"secret-token")
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel3()
+	conn3, resp3, err := websocket.Dial(ctx3, wsURLNoParam, &websocket.DialOptions{
+		HTTPHeader:   wsHeader3,
+		Subprotocols: []string{ticketResp3.Ticket},
+	})
+	if err != nil {
+		t.Fatalf("websocket dial with Sec-WebSocket-Protocol failed: %v (resp=%+v)", err, resp3)
+	}
+	defer conn3.CloseNow()
+	if err := conn3.Write(ctx3, websocket.MessageText, inputData); err != nil {
+		t.Fatalf("write input frame = %v", err)
+	}
+	if _, _, err := conn3.Read(ctx3); err != nil {
+		t.Fatalf("read frame = %v", err)
+	}
 }
 
 func TestAgentSiteExec(t *testing.T) {
@@ -566,5 +615,79 @@ func TestAgentSiteExec(t *testing.T) {
 	}
 	if resp.ExitCode != 0 || !strings.Contains(resp.Stdout, "hello-exec") {
 		t.Fatalf("unexpected ExecSite response: %+v", resp)
+	}
+}
+
+func TestToPOSIXPath(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"/var/www/site", "/var/www/site"},
+		{`C:\Projects\app`, "/mnt/c/Projects/app"},
+		{`c:/Projects/app`, "/mnt/c/Projects/app"},
+		{`D:\Data\site`, "/mnt/d/Data/site"},
+		{`\\wsl.localhost\devstack\data\devstack\projects\app`, "/data/devstack/projects/app"},
+		{`\\wsl$\devstack\home\user\site`, "/home/user/site"},
+		{`//wsl.localhost/devstack/var/www`, "/var/www"},
+		{`//wsl$/devstack/srv/data`, "/srv/data"},
+		{`\\wsl.localhost\devstack`, "/"},
+		{`//wsl.localhost/devstack/`, "/"},
+	}
+
+	for _, tc := range tests {
+		got := toPOSIXPath(tc.input)
+		if got != tc.want {
+			t.Errorf("toPOSIXPath(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestLogHubReaderCloseUnregistersSubscriber(t *testing.T) {
+	dir := t.TempDir()
+	hub := newLogHub(dir)
+	hub.append("mysite", "line 1")
+
+	// Read with follow=true using a background context that is NOT cancelled
+	rc, err := hub.read("mysite", true, 10, context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hub.mu.Lock()
+	subsCount := len(hub.subs["mysite"])
+	hub.mu.Unlock()
+	if subsCount != 1 {
+		t.Fatalf("expected 1 subscriber, got %d", subsCount)
+	}
+
+	// Reading initial line
+	buf := make([]byte, 100)
+	n, err := rc.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(buf[:n]), "line 1") {
+		t.Fatalf("expected line 1, got %q", string(buf[:n]))
+	}
+
+	// Closing read closer MUST unregister subscriber without needing new log lines or ctx cancellation
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		hub.mu.Lock()
+		count := len(hub.subs["mysite"])
+		hub.mu.Unlock()
+		if count == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("subscriber was not unregistered after Close(): count = %d", count)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

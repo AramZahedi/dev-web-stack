@@ -37,8 +37,11 @@ func TestDistroPath(t *testing.T) {
 		err  bool
 	}{
 		{`C:\Users\Aram\app`, "/mnt/c/Users/Aram/app", false},
+		{`c:/Users/Aram/app`, "/mnt/c/Users/Aram/app", false},
 		{`\\wsl.localhost\Ubuntu\home\aram\app`, "/home/aram/app", false},
+		{`//wsl.localhost/Ubuntu/home/aram/app`, "/home/aram/app", false},
 		{`\\wsl$\Ubuntu\home\aram\app`, "/home/aram/app", false},
+		{`//wsl$/Ubuntu/home/aram/app`, "/home/aram/app", false},
 		{`\\server\share\app`, "", true},
 		{`app`, "", true},
 	}

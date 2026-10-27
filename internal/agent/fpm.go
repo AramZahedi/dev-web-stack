@@ -33,7 +33,23 @@ type fpmProcess struct {
 
 func toPOSIXPath(p string) string {
 	p = strings.TrimSpace(p)
-	if p == "" || strings.HasPrefix(p, "/") {
+	if p == "" {
+		return ""
+	}
+	pNorm := strings.ReplaceAll(p, `\`, "/")
+	pLower := strings.ToLower(pNorm)
+	if strings.HasPrefix(pLower, "//wsl.localhost/") || strings.HasPrefix(pLower, "//wsl$/") ||
+		pLower == "//wsl.localhost" || pLower == "//wsl$" {
+		parts := strings.Split(strings.TrimPrefix(pNorm, "//"), "/")
+		if len(parts) >= 2 {
+			subPath := strings.Join(parts[2:], "/")
+			if subPath == "" {
+				return "/"
+			}
+			return "/" + subPath
+		}
+	}
+	if strings.HasPrefix(p, "/") {
 		return p
 	}
 	if len(p) >= 2 && p[1] == ':' {

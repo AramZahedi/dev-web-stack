@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -49,6 +50,7 @@ func (ExecRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 		ctx = context.Background()
 	}
 	cmd := exec.CommandContext(ctx, "wsl.exe", args...)
+	cmd.WaitDelay = 3 * time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -93,8 +95,10 @@ func decodeUTF16LE(raw []byte) string {
 // DistroPath maps a Windows path to the path the WSL agent sees.
 func DistroPath(windowsPath string) (string, error) {
 	path := strings.TrimSpace(windowsPath)
+	normalized := strings.ReplaceAll(path, "/", `\`)
+	normLower := strings.ToLower(normalized)
 	mode := model.SourceWindows
-	if strings.HasPrefix(strings.ToLower(path), `\\wsl.localhost\`) || strings.HasPrefix(strings.ToLower(path), `\\wsl$\`) {
+	if strings.HasPrefix(normLower, `\\wsl.localhost\`) || strings.HasPrefix(normLower, `\\wsl$\`) {
 		mode = model.SourceWSL
 	}
 	_, backend, err := pathmode.TranslateSource(mode, path)

@@ -196,6 +196,88 @@ func TestRelayForwarding(t *testing.T) {
 	_ = listener.Close()
 }
 
+func TestRelayForwardingHalfClose(t *testing.T) {
+	// Upstream waits for client to half-close (send EOF), then writes a response.
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen() upstream error: %v", err)
+	}
+	defer upstream.Close()
+
+	_, upstreamPortStr, _ := net.SplitHostPort(upstream.Addr().String())
+	upstreamPort, _ := strconv.Atoi(upstreamPortStr)
+
+	responseMsg := []byte("HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+
+	go func() {
+		for {
+			conn, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				// Read until client closes write half (EOF)
+				_, _ = io.ReadAll(c)
+				// Write response after EOF
+				_, _ = c.Write(responseMsg)
+			}(conn)
+		}
+	}()
+
+	relay, err := agentrelay.New(agentrelay.Config{
+		ListenIP:   "127.0.0.1",
+		TargetHost: "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("agentrelay.New() error = %v", err)
+	}
+	defer relay.Close()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen() relay error: %v", err)
+	}
+
+	testPort := 3306 // MySQL port (allowlisted)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = relay.ForwardListener(ctx, listener, testPort, upstreamPort)
+	}()
+
+	client, err := net.DialTimeout("tcp", listener.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("net.Dial() client error: %v", err)
+	}
+	defer client.Close()
+
+	// Write request
+	if _, err := client.Write([]byte("GET / HTTP/1.0\r\n\r\n")); err != nil {
+		t.Fatalf("client.Write() error: %v", err)
+	}
+
+	// Half-close client write side
+	tcpClient, ok := client.(*net.TCPConn)
+	if !ok {
+		t.Fatalf("client is not *net.TCPConn")
+	}
+	if err := tcpClient.CloseWrite(); err != nil {
+		t.Fatalf("client.CloseWrite() error: %v", err)
+	}
+
+	// Client must be able to read full response without truncation
+	got, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("client.ReadAll() error: %v", err)
+	}
+
+	if !bytes.Equal(got, responseMsg) {
+		t.Fatalf("received %q, want %q", string(got), string(responseMsg))
+	}
+}
+
 func TestHTTPHandlers(t *testing.T) {
 	relay, err := agentrelay.New(agentrelay.Config{
 		ListenIP:   "127.0.0.1",

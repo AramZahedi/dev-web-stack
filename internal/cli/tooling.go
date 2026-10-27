@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,6 +23,7 @@ import (
 
 var runWSL = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	command := exec.CommandContext(ctx, "wsl.exe", args...)
+	command.WaitDelay = 3 * time.Second
 	command.Stdin = stdin
 	command.Stdout = stdout
 	command.Stderr = stderr

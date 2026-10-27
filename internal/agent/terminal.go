@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,7 +104,26 @@ func (r *Runtime) consumeTerminalTicket(token, id string) (*terminalTicket, bool
 
 // HandleTerminalWebSocket upgrades to WebSocket, validates the ticket, and runs a PTY shell.
 func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Request, siteID string) {
-	token := req.URL.Query().Get("ticket")
+	token := strings.TrimSpace(req.URL.Query().Get("ticket"))
+	if token == "" {
+		token = strings.TrimSpace(req.Header.Get("X-Terminal-Ticket"))
+	}
+	if token == "" {
+		if proto := req.Header.Get("Sec-WebSocket-Protocol"); proto != "" {
+			for _, p := range strings.Split(proto, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					token = p
+					r.termMu.Lock()
+					_, exists := r.termTickets[p]
+					r.termMu.Unlock()
+					if exists {
+						break
+					}
+				}
+			}
+		}
+	}
 	if token == "" {
 		writeAgentError(w, http.StatusForbidden, agentproto.CodeForbidden, "terminal ticket is required")
 		return
@@ -121,9 +141,16 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	conn, err := websocket.Accept(w, req, &websocket.AcceptOptions{
+	acceptOpts := &websocket.AcceptOptions{
+		// Origin checking is disabled because this is an internal loopback agent
+		// protected by bearer token auth and single-use 30s TTL tickets.
 		InsecureSkipVerify: true,
-	})
+	}
+	if req.Header.Get("Sec-WebSocket-Protocol") != "" {
+		acceptOpts.Subprotocols = []string{token}
+	}
+
+	conn, err := websocket.Accept(w, req, acceptOpts)
 	if err != nil {
 		return
 	}

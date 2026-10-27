@@ -77,9 +77,11 @@ func (h *logHub) read(site string, follow bool, tail int, ctx context.Context) (
 	}
 	h.subs[site][subscriber] = struct{}{}
 	h.mu.Unlock()
+	readCtx, cancel := context.WithCancel(ctx)
 	reader, writer := io.Pipe()
 	go func() {
 		defer func() {
+			cancel()
 			h.mu.Lock()
 			delete(h.subs[site], subscriber)
 			h.mu.Unlock()
@@ -97,12 +99,19 @@ func (h *logHub) read(site string, follow bool, tail int, ctx context.Context) (
 				if _, err := io.WriteString(writer, line+"\n"); err != nil {
 					return
 				}
-			case <-ctx.Done():
+			case <-readCtx.Done():
 				return
 			}
 		}
 	}()
-	return &pipeReadCloser{Reader: reader, close: writer.Close}, nil
+	return &pipeReadCloser{
+		Reader: reader,
+		close: func() error {
+			cancel()
+			_ = reader.Close()
+			return writer.Close()
+		},
+	}, nil
 }
 
 type pipeReadCloser struct {

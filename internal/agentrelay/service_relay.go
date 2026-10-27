@@ -318,19 +318,48 @@ func (r *ServiceRelay) handleConn(ctx context.Context, rl *relayListener, client
 		_ = upstream.Close()
 	}()
 
-	errCh := make(chan error, 2)
+	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel()
+
 	go func() {
-		_, err := io.Copy(upstream, client)
-		errCh <- err
-	}()
-	go func() {
-		_, err := io.Copy(client, upstream)
-		errCh <- err
+		<-connCtx.Done()
+		_ = client.Close()
+		_ = upstream.Close()
 	}()
 
-	select {
-	case <-ctx.Done():
-	case <-errCh:
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		_, err := io.Copy(upstream, client)
+		if err != nil {
+			connCancel()
+		} else {
+			closeWrite(upstream)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		_, err := io.Copy(client, upstream)
+		if err != nil {
+			connCancel()
+		} else {
+			closeWrite(client)
+		}
+	}()
+
+	wg.Wait()
+}
+
+type closeWriter interface {
+	CloseWrite() error
+}
+
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(closeWriter); ok {
+		_ = cw.CloseWrite()
 	}
 }
 
