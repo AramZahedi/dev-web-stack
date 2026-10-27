@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -1906,16 +1908,31 @@ func (f *fakeHelper) reset() {
 func startFakeHelper(t *testing.T) (*fakeHelper, string) {
 	t.Helper()
 	fake := &fakeHelper{}
-	socket := filepath.Join(t.TempDir(), "helper.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatalf("listen helper socket: %v", err)
+	var listener net.Listener
+	var socket string
+	if runtime.GOOS == "windows" {
+		socket = fmt.Sprintf(`\\.\pipe\devstack-test-helper-%d-%d`, os.Getpid(), time.Now().UnixNano())
+		ln, err := ipc.Listen(ipc.NamedPipeEndpoint(socket))
+		if err != nil {
+			t.Fatalf("listen helper pipe: %v", err)
+		}
+		listener = ln
+	} else {
+		socket = filepath.Join(t.TempDir(), "helper.sock")
+		ln, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Fatalf("listen helper socket: %v", err)
+		}
+		listener = ln
 	}
 	server := &http.Server{Handler: fake}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() {
 		_ = server.Close()
-		_ = os.Remove(socket)
+		_ = listener.Close()
+		if runtime.GOOS != "windows" {
+			_ = os.Remove(socket)
+		}
 	})
 	return fake, socket
 }

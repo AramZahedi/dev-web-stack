@@ -1869,6 +1869,9 @@ func TestFSBrowserRequiresSession(t *testing.T) {
 
 func TestFSBrowserFailsClosedWithoutUserHome(t *testing.T) {
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 	fx := newFixture(t, Config{})
 	rec := fx.request(t, http.MethodGet, "/api/v1/fs?path="+url.QueryEscape(t.TempDir()), nil)
 	assertError(t, rec, http.StatusInternalServerError, codeInternal)

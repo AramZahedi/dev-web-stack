@@ -3,7 +3,9 @@ package services
 import (
 	"context"
 	"errors"
+	"path"
 	"path/filepath"
+	"strings"
 )
 
 // ErrNotFound is returned when a requested service is not in the catalog.
@@ -108,8 +110,13 @@ func (c *Coordinator) buildView(s Service, rec Record, found bool) View {
 
 	var configPath, dataPath string
 	if c.root != "" {
-		configPath = filepath.Join(c.root, "services", string(s.ID), "config")
-		dataPath = filepath.Join(c.root, "services", string(s.ID), "data")
+		if strings.HasPrefix(c.root, "/") {
+			configPath = path.Join(c.root, "services", string(s.ID), "config")
+			dataPath = path.Join(c.root, "services", string(s.ID), "data")
+		} else {
+			configPath = filepath.Join(c.root, "services", string(s.ID), "config")
+			dataPath = filepath.Join(c.root, "services", string(s.ID), "data")
+		}
 	}
 
 	return View{

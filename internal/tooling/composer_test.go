@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -34,6 +35,10 @@ func TestComposerWrapperUsesSitePHPAndPreservesArgv(t *testing.T) {
 	siteBin := SiteShimDir(paths, "app")
 	fakePHP := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellQuote(out) + "\n"
 	writeTestScript(t, filepath.Join(siteBin, "php"), fakePHP, 0o755)
+
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script wrappers is not supported on Windows")
+	}
 
 	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "arg one", "--flag", "x y")
 	command.Env = []string{
@@ -74,6 +79,10 @@ func TestComposerWrapperUsesGlobalShimOutsideSite(t *testing.T) {
 	fakePHP := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellQuote(out) + "\n"
 	writeTestScript(t, filepath.Join(ShimDir(paths), "php"), fakePHP, 0o755)
 
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script wrappers is not supported on Windows")
+	}
+
 	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
 	command.Env = []string{
 		"DEVSTACK_HOME=" + home,
@@ -111,6 +120,10 @@ func TestComposerWrapperRefusesNonSitePHPWhenSiteSet(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "args")
 	writeTestScript(t, filepath.Join(otherBin, "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
 
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script wrappers is not supported on Windows")
+	}
+
 	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
 	command.Env = []string{
 		"DEVSTACK_SITE=site-1",
@@ -142,6 +155,10 @@ func TestComposerWrapperRefusesGlobalPHPForSiteShell(t *testing.T) {
 	}
 	out := filepath.Join(t.TempDir(), "args")
 	writeTestScript(t, filepath.Join(ShimDir(paths), "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
+
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script wrappers is not supported on Windows")
+	}
 
 	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
 	command.Env = []string{
@@ -177,6 +194,10 @@ func TestComposerWrapperRefusesWhenNodeSiteHasNoSitePHP(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "args")
 	writeTestScript(t, filepath.Join(ShimDir(paths), "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
 
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script wrappers is not supported on Windows")
+	}
+
 	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
 	command.Env = []string{
 		"DEVSTACK_SITE=node-1",
@@ -210,6 +231,10 @@ func TestComposerWrapperRefusesAnotherSitesShim(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "args")
 	writeTestScript(t, filepath.Join(otherSite, "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
 
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script wrappers is not supported on Windows")
+	}
+
 	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
 	command.Env = []string{
 		"DEVSTACK_SITE=site-1",
@@ -240,6 +265,10 @@ func TestComposerWrapperRejectsInvalidSiteName(t *testing.T) {
 	}
 	out := filepath.Join(t.TempDir(), "args")
 	writeTestScript(t, filepath.Join(home, "tools", "sites", "evil", "bin", "php"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > "+shellQuote(out)+"\n", 0o755)
+
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script wrappers is not supported on Windows")
+	}
 
 	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")
 	command.Env = []string{
@@ -278,6 +307,10 @@ func TestComposerWrapperRejectsSymlinkedSitePHPOutsideSite(t *testing.T) {
 	}
 	if err := os.Symlink(outside, filepath.Join(siteBin, "php")); err != nil {
 		t.Fatal(err)
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script wrappers is not supported on Windows")
 	}
 
 	command := exec.Command(filepath.Join(ComposerBinDir(paths), "composer"), "install")

@@ -470,7 +470,7 @@ func lookPathIn(pathValue, name, dir string) (string, error) {
 			candidate = filepath.Join(dir, candidate)
 		}
 		info, err := os.Stat(candidate)
-		if err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+		if err != nil || info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0) {
 			return "", fmt.Errorf("not executable")
 		}
 		return candidate, nil
@@ -481,7 +481,7 @@ func lookPathIn(pathValue, name, dir string) (string, error) {
 		}
 		candidate := filepath.Join(dir, name)
 		info, err := os.Stat(candidate)
-		if err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+		if err != nil || info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0) {
 			continue
 		}
 		return candidate, nil

@@ -135,7 +135,7 @@ func (s *Set) Start(ctx context.Context) error {
 			for _, open := range listeners {
 				_ = open.ln.Close()
 			}
-			return fmt.Errorf("forwarder: listen on %s: %w", sp.listen, err)
+			return fmt.Errorf("forwarder: listen on %s: %w", sp.listen, mapListenErr(err))
 		}
 		listeners = append(listeners, &listener{spec: sp, ln: ln})
 	}
