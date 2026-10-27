@@ -43,8 +43,63 @@ func (a *App) newDaemonCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Manage the devstack background daemon",
 	}
-	cmd.AddCommand(a.newDaemonRunCmd(), a.newDaemonStatusCmd(), a.newDaemonStopCmd(), a.newDaemonRestartCmd())
+	cmd.AddCommand(a.newDaemonRunCmd(), a.newDaemonStartCmd(), a.newDaemonStatusCmd(), a.newDaemonStopCmd(), a.newDaemonRestartCmd())
 	return cmd
+}
+
+func (a *App) newDaemonStartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Start the devstack daemon in the background",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			home, err := resolveHome(a.home)
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			status := readDaemonStatus(home)
+			if status.Running {
+				if a.jsonOutput {
+					return a.writeJSON(cmd, struct {
+						Running bool `json:"running"`
+						PID     int  `json:"pid,omitempty"`
+					}{Running: true, PID: status.PID})
+				}
+				if status.PID > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "already running (pid %d)\n", status.PID)
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), "already running")
+				}
+				return nil
+			}
+			opts := daemon.Options{Home: home, HelperSocket: a.helperSocketPath()}
+			if err := ensureRunning(ctx, opts); err != nil {
+				return wrapError(err, "DAEMON_UNAVAILABLE", "Inspect daemon log and rerun `devstack daemon start`.")
+			}
+			status = readDaemonStatus(home)
+			dashboard := ""
+			if cfg, err := config.Load(home); err == nil {
+				dashboard = fmt.Sprintf("http://127.0.0.1:%d", cfg.UIPort)
+			}
+			if a.jsonOutput {
+				return a.writeJSON(cmd, struct {
+					Started      bool   `json:"started"`
+					PID          int    `json:"pid,omitempty"`
+					DashboardURL string `json:"dashboard_url,omitempty"`
+				}{Started: true, PID: status.PID, DashboardURL: dashboard})
+			}
+			if status.PID > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "started (pid %d)\n", status.PID)
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "started")
+			}
+			if dashboard != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Dashboard: %s\n", dashboard)
+			}
+			return nil
+		},
+	}
 }
 
 func (a *App) newDaemonRunCmd() *cobra.Command {

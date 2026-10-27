@@ -1755,6 +1755,30 @@ func TestCLIDaemonStatusStopped(t *testing.T) {
 	}
 }
 
+func TestCLIDaemonStart(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	called := false
+	oldEnsure := ensureRunning
+	ensureRunning = func(_ context.Context, opts daemon.Options) error {
+		if opts.Home != home {
+			t.Errorf("home = %q, want %q", opts.Home, home)
+		}
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { ensureRunning = oldEnsure })
+
+	fake := &fakeClient{}
+	out := runCLI(t, fake, "daemon", "start", "--home", home)
+	if !called {
+		t.Fatal("ensureRunning was not called")
+	}
+	if !strings.Contains(out, "started") {
+		t.Fatalf("output = %q, want started", out)
+	}
+}
+
 func TestCLIDaemonStopRejectsPidOne(t *testing.T) {
 	useTestSeams(t)
 	home := t.TempDir()
