@@ -2,7 +2,7 @@
 # Run from a normal PowerShell prompt; it never elevates.
 param(
     [string]$Home = "$env:USERPROFILE\.devstack",
-    [string]$Binary = "$env:LOCALAPPDATA\devstack\devstack.exe"
+    [string]$Binary = "C:\devstack\bin\devstack.exe"
 )
 
 $ErrorActionPreference = "Stop"

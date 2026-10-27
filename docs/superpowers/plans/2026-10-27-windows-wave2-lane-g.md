@@ -44,18 +44,18 @@
 - Exit codes: 0 (Success), 1 (General error), 2 (Elevation / prerequisite missing), 3010 (Reboot required)
 - Manifest file: `C:\devstack\system\install-manifest.json` tracking prerequisite check states.
 
-- [ ] **Step 1:** Write failing tests in `test/windows/installer_test.ps1` covering elevation check, OS build validation (<19045 rejected, ≥19045 accepted), virtualization check, manifest creation, and dry-run output.
-- [ ] **Step 2:** Run `pwsh test/windows/installer_test.ps1` and verify RED.
-- [ ] **Step 3:** Implement elevation validation and self-elevation logic in `install.ps1`.
-- [ ] **Step 4:** Implement Windows build (≥ 19045 x64) and hardware virtualization detection.
-- [ ] **Step 5:** Implement Windows optional feature enablement (`Microsoft-Windows-Subsystem-Linux`, `VirtualMachinePlatform`) with DISM/Enable-WindowsOptionalFeature, reboot requirement detection (exit code 3010 / RestartNeeded), and resume scheduling with `-AllowReboot`.
-- [ ] **Step 6:** Implement `C:\devstack` layout creation: `C:\devstack\bin`, `C:\devstack\system`, `C:\devstack\wsl\devstack` with protected DACL (SYSTEM + Administrators FullControl; Users ReadAndExecute).
-- [ ] **Step 7:** Implement binary staging (`devstack.exe`, `devstack-helper.exe` to `C:\devstack\bin`) and add `C:\devstack\bin` to System PATH.
-- [ ] **Step 8:** Implement helper service installation (`devstack-helper service install --config C:\devstack\system\helper.yaml`) and service startup via Windows Service Controller.
-- [ ] **Step 9:** Implement inbound Windows Firewall rule for proxy ports 8080 and 8443 (TCP) scoped to WSL subnet.
-- [ ] **Step 10:** Update `build/windows/devstack-daemon-task.ps1` to reference `C:\devstack\bin\devstack.exe` and register user logon task.
-- [ ] **Step 11:** Run `pwsh test/windows/installer_test.ps1` and verify GREEN.
-- [ ] **Step 12:** Commit `feat(installer): add Windows system phase and prerequisite orchestrator`.
+- [x] **Step 1:** Write failing tests in `test/windows/installer_test.ps1` covering elevation check, OS build validation (<19045 rejected, ≥19045 accepted), virtualization check, manifest creation, and dry-run output.
+- [x] **Step 2:** Run `pwsh test/windows/installer_test.ps1` and verify RED.
+- [x] **Step 3:** Implement elevation validation and self-elevation logic in `install.ps1`.
+- [x] **Step 4:** Implement Windows build (≥ 19045 x64) and hardware virtualization detection.
+- [x] **Step 5:** Implement Windows optional feature enablement (`Microsoft-Windows-Subsystem-Linux`, `VirtualMachinePlatform`) with DISM/Enable-WindowsOptionalFeature, reboot requirement detection (exit code 3010 / RestartNeeded), and resume scheduling with `-AllowReboot`.
+- [x] **Step 6:** Implement `C:\devstack` layout creation: `C:\devstack\bin`, `C:\devstack\system`, `C:\devstack\wsl\devstack` with protected DACL (SYSTEM + Administrators FullControl; Users ReadAndExecute).
+- [x] **Step 7:** Implement binary staging (`devstack.exe`, `devstack-helper.exe` to `C:\devstack\bin`) and add `C:\devstack\bin` to System PATH.
+- [x] **Step 8:** Implement helper service installation (`devstack-helper service install --config C:\devstack\system\helper.yaml`) and service startup via Windows Service Controller.
+- [x] **Step 9:** Implement inbound Windows Firewall rule for proxy ports 8080 and 8443 (TCP) scoped to WSL subnet.
+- [x] **Step 10:** Update `build/windows/devstack-daemon-task.ps1` to reference `C:\devstack\bin\devstack.exe` and register user logon task.
+- [x] **Step 11:** Run `pwsh test/windows/installer_test.ps1` and verify GREEN.
+- [x] **Step 12:** Commit `feat(installer): add Windows system phase and prerequisite orchestrator`.
 
 ---
 
