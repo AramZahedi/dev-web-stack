@@ -11,13 +11,23 @@ $taskName = "devstack-daemon"
 if (-not (Test-Path $HomeDir)) {
     New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
 }
-$action = New-ScheduledTaskAction -Execute $Binary -Argument "daemon run" -WorkingDirectory $HomeDir
+
+$systemDir = Split-Path (Split-Path $Binary -Parent) -Parent
+$systemDir = Join-Path $systemDir "system"
+if (-not (Test-Path $systemDir)) {
+    $systemDir = $HomeDir
+}
+$vbsPath = Join-Path $systemDir "devstack-daemon.vbs"
+$vbsContent = "Set WshShell = CreateObject(""WScript.Shell"")`r`nWshShell.Run """"""$Binary"""" daemon run"", 0, False`r`n"
+Set-Content -Path $vbsPath -Value $vbsContent -Encoding Ascii -Force
+
+$action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsPath`"" -WorkingDirectory $HomeDir
 $trigger = try {
     New-ScheduledTaskTrigger -AtLogOn -User $UserId
 } catch {
     New-ScheduledTaskTrigger -AtLogOn
 }
 $principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 Write-Output "registered $taskName for limited user $env:USERNAME"

@@ -275,6 +275,13 @@ if ($DryRun) {
     if ($null -ne $srcDaemonTask) {
         Copy-Item -Path $srcDaemonTask -Destination (Join-Path $systemDir "devstack-daemon-task.ps1") -Force
     }
+    $srcDaemonVbs = @(
+        (Join-Path $repoRoot "build\windows\devstack-daemon.vbs"),
+        (Join-Path $repoRoot "devstack-daemon.vbs")
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($null -ne $srcDaemonVbs) {
+        Copy-Item -Path $srcDaemonVbs -Destination (Join-Path $systemDir "devstack-daemon.vbs") -Force
+    }
     Write-Host "devstack installer: Directory layout created with protected system DACL."
 }
 
@@ -898,14 +905,17 @@ if (-not $DryRun -and -not $isSandbox) {
             $userProfileDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { "C:\Users\$env:USERNAME" }
             $homeDir = Join-Path $userProfileDir ".devstack"
             if (-not (Test-Path $homeDir)) { New-Item -ItemType Directory -Force -Path $homeDir | Out-Null }
-            $action = New-ScheduledTaskAction -Execute "$dstDevstack" -Argument "daemon run" -WorkingDirectory $homeDir
+            $vbsPath = Join-Path $systemDir "devstack-daemon.vbs"
+            $vbsContent = "Set WshShell = CreateObject(""WScript.Shell"")`r`nWshShell.Run """"""$dstDevstack"""" daemon run"", 0, False`r`n"
+            Set-Content -Path $vbsPath -Value $vbsContent -Encoding Ascii -Force
+            $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsPath`"" -WorkingDirectory $homeDir
             $trigger = try {
                 New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
             } catch {
                 New-ScheduledTaskTrigger -AtLogOn
             }
             $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 0)
             Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
             Write-Host "devstack installer: Registered $taskName for limited user $env:USERNAME"
         }

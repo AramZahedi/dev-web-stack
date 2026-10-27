@@ -112,6 +112,9 @@ try {
     if (Test-Path (Join-Path $repoRoot "build\windows\devstack-daemon-task.ps1")) {
         Copy-Item -Path (Join-Path $repoRoot "build\windows\devstack-daemon-task.ps1") -Destination (Join-Path $stageDir "devstack-daemon-task.ps1") -Force
     }
+    if (Test-Path (Join-Path $repoRoot "build\windows\devstack-daemon.vbs")) {
+        Copy-Item -Path (Join-Path $repoRoot "build\windows\devstack-daemon.vbs") -Destination (Join-Path $stageDir "devstack-daemon.vbs") -Force
+    }
     Copy-Item -Path (Join-Path $repoRoot "README.md") -Destination (Join-Path $stageDir "README.md") -Force
     if (Test-Path (Join-Path $repoRoot "LICENSE")) {
         Copy-Item -Path (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $stageDir "LICENSE") -Force
