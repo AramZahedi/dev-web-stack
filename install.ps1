@@ -33,13 +33,26 @@ param(
     [switch]$DryRun,
     [string]$TestSandbox = "",
     [switch]$Upgrade,
+    [string]$ResumeUserSID = "",
     [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
 
+function Remove-ResumeTask {
+    if (-not $DryRun -and -not $isSandbox) {
+        try {
+            Unregister-ScheduledTask -TaskName "devstack-installer-resume" -Confirm:$false -ErrorAction SilentlyContinue
+        } catch {}
+        try {
+            & schtasks.exe /Delete /TN "devstack-installer-resume" /F 2>$null | Out-Null
+        } catch {}
+    }
+}
+
 function Write-InstallerError([string]$Message) {
     [Console]::Error.WriteLine("devstack installer: $Message")
+    Remove-ResumeTask
 }
 
 function Show-Usage {
@@ -86,14 +99,41 @@ $repoRoot = $PSScriptRoot
 $targetDir = if (-not [string]::IsNullOrEmpty($TestSandbox)) { $TestSandbox } else { $InstallDir }
 $isSandbox = -not [string]::IsNullOrEmpty($TestSandbox)
 
+$script:LoggedTestOverrides = @{}
+function Get-TestOverride([string]$Name) {
+    if (-not $isSandbox) {
+        return $null
+    }
+    $val = [Environment]::GetEnvironmentVariable($Name)
+    if ($null -ne $val -and $val -ne "") {
+        if (-not $script:LoggedTestOverrides.ContainsKey($Name)) {
+            $script:LoggedTestOverrides[$Name] = $true
+            Write-Host "devstack installer: [TestSandbox] Using test override: $Name=$val"
+        }
+        return $val
+    }
+    return $null
+}
+
+if ($isSandbox) {
+    Get-ChildItem env:DEVSTACK_TEST_* -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Value) {
+            if (-not $script:LoggedTestOverrides.ContainsKey($_.Name)) {
+                $script:LoggedTestOverrides[$_.Name] = $true
+                Write-Host "devstack installer: [TestSandbox] Using test override: $($_.Name)=$($_.Value)"
+            }
+        }
+    }
+}
+
 # -----------------------------------------------------------------------------
 # 1. Elevation check
 # -----------------------------------------------------------------------------
 function Test-IsElevated {
-    if ($env:DEVSTACK_TEST_ELEVATED -eq "false") {
+    if ((Get-TestOverride "DEVSTACK_TEST_ELEVATED") -eq "false") {
         return $false
     }
-    if ($env:DEVSTACK_TEST_ELEVATED -eq "true") {
+    if ((Get-TestOverride "DEVSTACK_TEST_ELEVATED") -eq "true") {
         return $true
     }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -114,9 +154,9 @@ if (-not $elevated) {
 # -----------------------------------------------------------------------------
 # 2. OS Build and Architecture Check
 # -----------------------------------------------------------------------------
-$detectedArch = if ($env:DEVSTACK_TEST_OS_ARCH) { $env:DEVSTACK_TEST_OS_ARCH } else { $env:PROCESSOR_ARCHITECTURE }
-$is64Bit = if ($env:DEVSTACK_TEST_OS_ARCH) {
-    $env:DEVSTACK_TEST_OS_ARCH -match "64|AMD64"
+$detectedArch = if ((Get-TestOverride "DEVSTACK_TEST_OS_ARCH")) { (Get-TestOverride "DEVSTACK_TEST_OS_ARCH") } else { $env:PROCESSOR_ARCHITECTURE }
+$is64Bit = if ((Get-TestOverride "DEVSTACK_TEST_OS_ARCH")) {
+    (Get-TestOverride "DEVSTACK_TEST_OS_ARCH") -match "64|AMD64"
 } else {
     [Environment]::Is64BitOperatingSystem
 }
@@ -126,8 +166,8 @@ if (-not $is64Bit) {
     exit 2
 }
 
-$detectedBuild = if ($env:DEVSTACK_TEST_OS_BUILD) {
-    [int]$env:DEVSTACK_TEST_OS_BUILD
+$detectedBuild = if ((Get-TestOverride "DEVSTACK_TEST_OS_BUILD")) {
+    [int](Get-TestOverride "DEVSTACK_TEST_OS_BUILD")
 } else {
     [Environment]::OSVersion.Version.Build
 }
@@ -143,9 +183,9 @@ Write-Host "devstack installer: OS build $detectedBuild ($detectedArch) verified
 # 3. Hardware Virtualization Check
 # -----------------------------------------------------------------------------
 $virtEnabled = $false
-if ($env:DEVSTACK_TEST_VIRTUALIZATION -eq "false") {
+if ((Get-TestOverride "DEVSTACK_TEST_VIRTUALIZATION") -eq "false") {
     $virtEnabled = $false
-} elseif ($env:DEVSTACK_TEST_VIRTUALIZATION -eq "true") {
+} elseif ((Get-TestOverride "DEVSTACK_TEST_VIRTUALIZATION") -eq "true") {
     $virtEnabled = $true
 } else {
     try {
@@ -215,6 +255,26 @@ if ($DryRun) {
     $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sidUsers, $rightsRead, $inheritFlags, $propFlags, $allow)))
 
     Set-Acl -Path $systemDir -AclObject $acl
+
+    # Apply protected DACL to bin directory to prevent unprivileged binary replacement or DLL planting
+    $binAcl = Get-Acl -Path $binDir
+    $binAcl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($binAcl.Access)) {
+        $binAcl.RemoveAccessRule($rule) | Out-Null
+    }
+    $binAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sidSystem, $rightsFull, $inheritFlags, $propFlags, $allow)))
+    $binAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sidAdmins, $rightsFull, $inheritFlags, $propFlags, $allow)))
+    $binAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sidUsers, $rightsRead, $inheritFlags, $propFlags, $allow)))
+    Set-Acl -Path $binDir -AclObject $binAcl
+
+    # Stage devstack-daemon-task.ps1 to system directory if present
+    $srcDaemonTask = @(
+        (Join-Path $repoRoot "build\windows\devstack-daemon-task.ps1"),
+        (Join-Path $repoRoot "devstack-daemon-task.ps1")
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($null -ne $srcDaemonTask) {
+        Copy-Item -Path $srcDaemonTask -Destination (Join-Path $systemDir "devstack-daemon-task.ps1") -Force
+    }
     Write-Host "devstack installer: Directory layout created with protected system DACL."
 }
 
@@ -229,7 +289,7 @@ $featuresStatus = @{
 
 if ($SkipWSL) {
     Write-Host "devstack installer: Skipping WSL optional features check (-SkipWSL specified)."
-} elseif ($env:DEVSTACK_TEST_REBOOT_REQUIRED -eq "true") {
+} elseif ((Get-TestOverride "DEVSTACK_TEST_REBOOT_REQUIRED") -eq "true") {
     $rebootNeeded = $true
     $featuresStatus["Microsoft-Windows-Subsystem-Linux"] = "PendingRestart"
     $featuresStatus["VirtualMachinePlatform"] = "PendingRestart"
@@ -279,12 +339,48 @@ if (-not $DryRun) {
 
 if ($rebootNeeded) {
     Write-Host "devstack installer: System restart is required to complete Windows feature enablement."
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $currentUserName = "$env:USERDOMAIN\$env:USERNAME"
+    $argList = @()
+    foreach ($key in $PSBoundParameters.Keys) {
+        if ($key -in @("AllowReboot", "Help")) { continue }
+        $val = $PSBoundParameters[$key]
+        if ($val -is [switch]) {
+            if ($val.IsPresent) { $argList += "-$key" }
+        } else {
+            $argList += "-$key `"$val`""
+        }
+    }
+    if (-not $PSBoundParameters.ContainsKey("ResumeUserSID")) {
+        $argList += "-ResumeUserSID `"$currentSid`""
+    }
+    $argString = $argList -join " "
+
+    $resumeStatePath = Join-Path $systemDir "resume-state.json"
+    if (-not $DryRun) {
+        $resumeState = [ordered]@{
+            user_sid = $currentSid
+            user_name = $currentUserName
+            arguments = $argString
+            resumed = $false
+        }
+        $resumeState | ConvertTo-Json -Depth 3 | Set-Content -Path $resumeStatePath -Encoding utf8
+    }
+
     if ($AllowReboot -and -not $isSandbox) {
         Write-Host "devstack installer: Scheduling resume task and initiating restart..."
         $resumeTaskName = "devstack-installer-resume"
-        $action = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        $actionArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        if ($argString) {
+            $actionArgs += " $argString"
+        }
+        $action = New-ScheduledTaskAction -Execute $psExe -Argument $actionArgs
         $trigger = New-ScheduledTaskTrigger -AtLogOn
-        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $principal = try {
+            New-ScheduledTaskPrincipal -UserId $currentUserName -LogonType Interactive -RunLevel Highest
+        } catch {
+            New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        }
         Register-ScheduledTask -TaskName $resumeTaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
         Restart-Computer -Force
     } else {
@@ -293,34 +389,73 @@ if ($rebootNeeded) {
     exit 3010
 }
 
-# Clean up resume task if it exists
-if (-not $DryRun -and -not $isSandbox) {
-    Unregister-ScheduledTask -TaskName "devstack-installer-resume" -Confirm:$false -ErrorAction SilentlyContinue
-}
+# Clean up resume task on resume or when no reboot needed
+Remove-ResumeTask
 
 # -----------------------------------------------------------------------------
 # 7. Helper Configuration
 # -----------------------------------------------------------------------------
+$resumeStatePath = Join-Path $systemDir "resume-state.json"
+$persistedSid = $null
+if (Test-Path $resumeStatePath) {
+    try {
+        $resStateObj = Get-Content -Raw $resumeStatePath | ConvertFrom-Json
+        if ($resStateObj.user_sid) {
+            $persistedSid = $resStateObj.user_sid
+        }
+    } catch {}
+}
+$effectiveUserSid = if ($ResumeUserSID) {
+    $ResumeUserSID
+} elseif ($persistedSid) {
+    $persistedSid
+} else {
+    [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+}
+if ($effectiveUserSid -eq "S-1-5-18" -and $persistedSid) {
+    $effectiveUserSid = $persistedSid
+}
+
 $helperYamlPath = Join-Path $systemDir "helper.yaml"
-if (-not $DryRun -and -not (Test-Path $helperYamlPath)) {
-    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $helperYaml = @"
-allow_sid: "$currentSid"
+if (-not $DryRun) {
+    $writeHelper = $false
+    if (-not (Test-Path $helperYamlPath)) {
+        $writeHelper = $true
+    } else {
+        $existingYaml = Get-Content -Raw $helperYamlPath -ErrorAction SilentlyContinue
+        if ($existingYaml -match 'allow_sid:\s*"S-1-5-18"' -and $effectiveUserSid -ne "S-1-5-18") {
+            $writeHelper = $true
+        }
+    }
+    if ($writeHelper) {
+        $helperYaml = @"
+allow_sid: "$effectiveUserSid"
 pipe: "\\\\.\\pipe\\devstack-helper"
 proxy_http_port: 8080
 proxy_https_port: 8443
 "@
-    Set-Content -Path $helperYamlPath -Value $helperYaml -Encoding utf8
+        Set-Content -Path $helperYamlPath -Value $helperYaml -Encoding utf8
+    }
 }
 
 # -----------------------------------------------------------------------------
-# 8. Binary Staging & System PATH
+# 8. Upgrade Flow & Transactional Rollback
 # -----------------------------------------------------------------------------
 $repoRoot = $PSScriptRoot
 $dstDevstack = Join-Path $binDir "devstack.exe"
 $dstHelper = Join-Path $binDir "devstack-helper.exe"
+$mockWSLRoot = Join-Path $targetDir "mock-wsl"
+$mockData = Join-Path $mockWSLRoot "data\devstack"
+$mockDataBin = Join-Path $mockData "bin"
+$mockBackupTar = Join-Path $mockWSLRoot "data\devstack-backup.tar.gz"
+$mockBackupDir = Join-Path $mockWSLRoot "data\devstack-backup"
+$mockRollbackTmp = Join-Path $mockWSLRoot "data\devstack.rollback-tmp"
+$mockFailedTmp = Join-Path $mockWSLRoot "data\devstack.failed-tmp"
 
 if ($Upgrade) {
+    Write-Host "devstack installer: Starting upgrade flow..."
+
+    # 1. Stop daemon
     Write-Host "devstack installer: Stopping daemon for upgrade..."
     if (Test-Path $dstDevstack) {
         try { & "$dstDevstack" daemon stop 2>$null | Out-Null } catch {}
@@ -329,147 +464,32 @@ if ($Upgrade) {
         Get-Process -Name "devstack" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     } catch {}
 
+    # 2. Stop DevstackHelper service before staging/replacing binaries to avoid file sharing violations (C3)
+    if (-not $isSandbox) {
+        Write-Host "devstack installer: Stopping DevstackHelper service for binary upgrade..."
+        try { Stop-Service -Name "DevstackHelper" -Force -ErrorAction SilentlyContinue } catch {}
+        try { & sc.exe stop DevstackHelper 2>$null | Out-Null } catch {}
+        try {
+            Get-Process -Name "devstack-helper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        } catch {}
+        # Wait for file handles to be released
+        $stopWaitTimeout = [DateTime]::UtcNow.AddSeconds(5)
+        while ([DateTime]::UtcNow -lt $stopWaitTimeout) {
+            $lingering = Get-Process -Name "devstack", "devstack-helper" -ErrorAction SilentlyContinue
+            if (-not $lingering) { break }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+
+    # 3. Back up Windows binaries
     if (Test-Path $dstDevstack) {
         Copy-Item -Path $dstDevstack -Destination "$dstDevstack.bak" -Force
     }
     if (Test-Path $dstHelper) {
         Copy-Item -Path $dstHelper -Destination "$dstHelper.bak" -Force
     }
-}
 
-if ($DryRun) {
-    Write-Host "devstack installer: [DryRun] Would stage binaries to $binDir"
-} elseif (-not $isSandbox) {
-    # Check prebuilt binaries
-    $prebuiltDevstack = @(
-        (Join-Path $repoRoot "devstack.exe"),
-        (Join-Path $repoRoot "bin\devstack.exe"),
-        (Join-Path $repoRoot "build\windows\devstack.exe")
-    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-    $prebuiltHelper = @(
-        (Join-Path $repoRoot "devstack-helper.exe"),
-        (Join-Path $repoRoot "bin\devstack-helper.exe"),
-        (Join-Path $repoRoot "build\windows\devstack-helper.exe")
-    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-    Push-Location $repoRoot
-    try {
-        if ($null -ne $prebuiltDevstack) {
-            Copy-Item -Path $prebuiltDevstack -Destination $dstDevstack -Force
-        } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack\main.go")) {
-            Write-Host "devstack installer: Building devstack.exe..."
-            & go build -o $dstDevstack ./cmd/devstack
-        }
-
-        if ($null -ne $prebuiltHelper) {
-            Copy-Item -Path $prebuiltHelper -Destination $dstHelper -Force
-        } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack-helper\main.go")) {
-            Write-Host "devstack installer: Building devstack-helper.exe..."
-            & go build -o $dstHelper ./cmd/devstack-helper
-        }
-    } finally {
-        Pop-Location
-    }
-
-    # Add binDir to Machine PATH
-    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $paths = ($machinePath -split ";") | Where-Object { $_ -ne "" }
-    if ($paths -notcontains $binDir) {
-        $newPath = "$binDir;$machinePath"
-        [Environment]::SetEnvironmentVariable("Path", $newPath, "Machine")
-        $env:Path = "$binDir;$env:Path"
-        Write-Host "devstack installer: Added $binDir to Machine PATH."
-    }
-}
-
-# -----------------------------------------------------------------------------
-# 9. Helper Service Registration & Startup
-# -----------------------------------------------------------------------------
-if ($DryRun) {
-    Write-Host "devstack installer: [DryRun] Would register and start DevstackHelper service"
-} elseif (-not $isSandbox -and (Test-Path $dstHelper)) {
-    Write-Host "devstack installer: Installing helper service..."
-    & "$dstHelper" service install --config "$helperYamlPath"
-    try {
-        Start-Service -Name "DevstackHelper" -ErrorAction Stop
-        Write-Host "devstack installer: DevstackHelper service started."
-    } catch {
-        & sc.exe start DevstackHelper | Out-Null
-    }
-}
-
-# -----------------------------------------------------------------------------
-# 10. Inbound Windows Firewall Rule for WSL Proxy
-# -----------------------------------------------------------------------------
-$ruleName = "devstack-daemon-proxy"
-$displayName = "Devstack Daemon Proxy"
-$ports = @("8080", "8443")
-
-if ($DryRun -or $isSandbox -or ($env:DEVSTACK_TEST_FIREWALL_CHECK -eq "true")) {
-    Write-Host "devstack installer: Firewall rule '$ruleName' (DisplayName: '$displayName') Protocol: TCP Ports: $($ports -join ',') Direction: Inbound Action: Allow Scoped: WSL"
-}
-
-if (-not $DryRun -and -not $isSandbox) {
-    # Detect WSL adapter or subnet
-    $wslSubnet = $null
-    $wslAdapter = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -match "Hyper-V Virtual Ethernet" -and $_.Name -match "WSL" }
-    if ($null -ne $wslAdapter) {
-        $ip = Get-NetIPAddress -InterfaceIndex $wslAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -ne $ip) {
-            $wslSubnet = "$($ip.IPAddress)/$($ip.PrefixLength)"
-        }
-    }
-
-    Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-
-    $fwParams = @{
-        Name = $ruleName
-        DisplayName = $displayName
-        Description = "Inbound proxy rule for devstack daemon allowing traffic from WSL"
-        Direction = "Inbound"
-        Action = "Allow"
-        Protocol = "TCP"
-        LocalPort = $ports
-        Profile = "Private,Domain"
-        Enabled = "True"
-    }
-    if ($null -ne $wslAdapter) {
-        $fwParams["InterfaceAlias"] = $wslAdapter.Name
-    }
-    if ($null -ne $wslSubnet) {
-        $fwParams["RemoteAddress"] = $wslSubnet
-    }
-
-    try {
-        New-NetFirewallRule @fwParams -ErrorAction Stop | Out-Null
-        Write-Host "devstack installer: Created inbound firewall rule '$ruleName' for ports $($ports -join ', ')."
-    } catch {
-        $portStr = $ports -join ","
-        $remoteStr = if ($wslSubnet) { "remoteip=$wslSubnet" } else { "" }
-        & netsh.exe advfirewall firewall add rule name="$ruleName" dir=in action=allow protocol=TCP localport=$portStr profile=private $remoteStr | Out-Null
-    }
-}
-
-if ($SkipWSL) {
-    Write-Host "devstack installer: Skipping WSL distro and agent provisioning (-SkipWSL specified)."
-    Write-Host "devstack installer: System phase completed successfully."
-    exit 0
-}
-
-# -----------------------------------------------------------------------------
-# 10.1 Upgrade Flow & Transactional Rollback
-# -----------------------------------------------------------------------------
-if ($Upgrade) {
-    Write-Host "devstack installer: Starting upgrade flow..."
-
-    # 1. Backup /data/devstack inside WSL
-    $mockWSLRoot = Join-Path $targetDir "mock-wsl"
-    $mockData = Join-Path $mockWSLRoot "data\devstack"
-    $mockDataBin = Join-Path $mockData "bin"
-    $mockBackupTar = Join-Path $mockWSLRoot "data\devstack-backup.tar.gz"
-    $mockBackupDir = Join-Path $mockWSLRoot "data\devstack-backup"
-
+    # 4. WSL Backup BEFORE Windows binary staging (C3)
     if ($DryRun) {
         Write-Host "devstack installer: [DryRun] Would backup /data/devstack to /data/devstack-backup.tar.gz"
         Write-Host "devstack installer: [DryRun] Would stage updated binaries and restart devstack-agent.service"
@@ -477,25 +497,102 @@ if ($Upgrade) {
         exit 0
     }
 
-    Write-Host "devstack installer: Backing up /data/devstack to /data/devstack-backup.tar.gz..."
-    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
-        if (Test-Path $mockData) {
-            if (Test-Path $mockBackupDir) { Remove-Item -Path $mockBackupDir -Recurse -Force }
-            Copy-Item -Path $mockData -Destination $mockBackupDir -Recurse -Force
-            Set-Content -Path $mockBackupTar -Value "mock-backup-archive" -Encoding utf8
-        }
-        if (Test-Path (Join-Path $mockDataBin "devstack-agent")) {
-            Copy-Item -Path (Join-Path $mockDataBin "devstack-agent") -Destination (Join-Path $mockDataBin "devstack-agent.bak") -Force
-        }
-    } else {
-        & wsl.exe -d devstack -u root -- sh -c "tar -czf /data/devstack-backup.tar.gz -C /data devstack && cp /data/devstack/bin/devstack-agent /data/devstack/bin/devstack-agent.bak 2>/dev/null || true"
-        if ($LASTEXITCODE -ne 0) {
-            Write-InstallerError "Failed to backup /data/devstack inside WSL distro."
-            exit 1
+    if (-not $SkipWSL) {
+        Write-Host "devstack installer: Backing up /data/devstack to /data/devstack-backup.tar.gz..."
+        if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
+            if ((Get-TestOverride "DEVSTACK_TEST_BACKUP_FAIL") -eq "true") {
+                Write-InstallerError "Failed to backup /data/devstack inside WSL distro."
+                exit 1
+            }
+            if (Test-Path $mockData) {
+                if (Test-Path $mockBackupDir) { Remove-Item -Path $mockBackupDir -Recurse -Force }
+                Copy-Item -Path $mockData -Destination $mockBackupDir -Recurse -Force
+                Set-Content -Path $mockBackupTar -Value "mock-backup-archive" -Encoding utf8
+            }
+            if (Test-Path (Join-Path $mockDataBin "devstack-agent")) {
+                Copy-Item -Path (Join-Path $mockDataBin "devstack-agent") -Destination (Join-Path $mockDataBin "devstack-agent.bak") -Force
+            }
+            if ((Get-TestOverride "DEVSTACK_TEST_BACKUP_VERIFY_FAIL") -eq "true") {
+                Write-InstallerError "Backup archive verification failed for /data/devstack-backup.tar.gz."
+                exit 1
+            }
+        } else {
+            & wsl.exe -d devstack -u root -- tar -czf /data/devstack-backup.tar.gz -C /data devstack
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "Failed to backup /data/devstack inside WSL distro."
+                exit 1
+            }
+            & wsl.exe -d devstack -u root -- tar -tzf /data/devstack-backup.tar.gz 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "Backup archive verification failed for /data/devstack-backup.tar.gz."
+                exit 1
+            }
+            & wsl.exe -d devstack -u root -- sh -c "cp /data/devstack/bin/devstack-agent /data/devstack/bin/devstack-agent.bak 2>/dev/null || true"
         }
     }
 
-    # 2. Stage updated agent binary
+    # 5. Stage updated Windows binaries
+    if (-not $isSandbox) {
+        $prebuiltDevstack = @(
+            (Join-Path $repoRoot "devstack.exe"),
+            (Join-Path $repoRoot "bin\devstack.exe"),
+            (Join-Path $repoRoot "build\windows\devstack.exe")
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+        $prebuiltHelper = @(
+            (Join-Path $repoRoot "devstack-helper.exe"),
+            (Join-Path $repoRoot "bin\devstack-helper.exe"),
+            (Join-Path $repoRoot "build\windows\devstack-helper.exe")
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+        Push-Location $repoRoot
+        try {
+            if ($null -ne $prebuiltDevstack) {
+                Copy-Item -Path $prebuiltDevstack -Destination $dstDevstack -Force
+            } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack\main.go")) {
+                Write-Host "devstack installer: Building devstack.exe..."
+                & go build -o $dstDevstack ./cmd/devstack
+                if ($LASTEXITCODE -ne 0) {
+                    Write-InstallerError "go build for devstack.exe failed with exit code $LASTEXITCODE."
+                    $upgradeFailed = $true
+                }
+            }
+
+            if (-not $upgradeFailed) {
+                if ($null -ne $prebuiltHelper) {
+                    Copy-Item -Path $prebuiltHelper -Destination $dstHelper -Force
+                } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack-helper\main.go")) {
+                    Write-Host "devstack installer: Building devstack-helper.exe..."
+                    & go build -o $dstHelper ./cmd/devstack-helper
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-InstallerError "go build for devstack-helper.exe failed with exit code $LASTEXITCODE."
+                        $upgradeFailed = $true
+                    }
+                }
+            }
+
+            if (-not (Test-Path $dstDevstack) -or -not (Test-Path $dstHelper)) {
+                Write-InstallerError "Required Windows binaries not found after build/stage step."
+                $upgradeFailed = $true
+            }
+        } finally {
+            Pop-Location
+        }
+
+        # Restart DevstackHelper service
+        if (Test-Path $dstHelper) {
+            Write-Host "devstack installer: Restarting DevstackHelper service..."
+            try {
+                Start-Service -Name "DevstackHelper" -ErrorAction Stop
+                Write-Host "devstack installer: DevstackHelper service started."
+            } catch {
+                & sc.exe start DevstackHelper | Out-Null
+            }
+        }
+    }
+
+    # 6. Stage updated Linux agent binary
+    $upgradeFailed = $false
     $stagedAgentLinux = Join-Path $binDir "devstack-agent"
     $prebuiltAgentLinux = @(
         (Join-Path $repoRoot "devstack-agent"),
@@ -514,7 +611,11 @@ if ($Upgrade) {
             $env:GOOS = "linux"
             $env:GOARCH = "amd64"
             & go build -o $stagedAgentLinux ./cmd/devstack-agent
-        } catch {} finally {
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "go build for devstack-agent failed with exit code $LASTEXITCODE."
+                $upgradeFailed = $true
+            }
+        } finally {
             $env:GOOS = $prevGOOS
             $env:GOARCH = $prevGOARCH
             Pop-Location
@@ -522,66 +623,107 @@ if ($Upgrade) {
     }
 
     if (-not (Test-Path $stagedAgentLinux)) {
-        Set-Content -Path $stagedAgentLinux -Value "#!/bin/sh`necho devstack-agent`n" -Encoding utf8
+        Write-InstallerError "devstack-agent binary not found at '$stagedAgentLinux' and cross-compilation failed. Refusing to install placeholder stub."
+        $upgradeFailed = $true
     }
 
-    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
-        Copy-Item -Path $stagedAgentLinux -Destination (Join-Path $mockDataBin "devstack-agent") -Force
-    } else {
-        $cleanAgentPath = $stagedAgentLinux.Replace('\', '/')
-        $wslAgentSrc = try {
-            (& wsl.exe -d devstack -u root -- wslpath -a -u "$cleanAgentPath" 2>$null | Out-String).Trim()
-        } catch { "" }
-        if (-not $wslAgentSrc -and ($cleanAgentPath -match "^([a-zA-Z]):/(.*)$")) {
-            $wslAgentSrc = "/mnt/$($Matches[1].ToLower())/$($Matches[2])"
-        }
-        if ($wslAgentSrc) {
-            & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack/bin && cp '$wslAgentSrc' /data/devstack/bin/devstack-agent && chmod 0755 /data/devstack/bin/devstack-agent"
-            if ($LASTEXITCODE -ne 0) {
-                Write-InstallerError "Failed to copy updated devstack-agent binary into WSL distro."
+    if (-not $upgradeFailed) {
+        if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
+            Copy-Item -Path $stagedAgentLinux -Destination (Join-Path $mockDataBin "devstack-agent") -Force
+        } else {
+            $cleanAgentPath = $stagedAgentLinux.Replace('\', '/')
+            $wslAgentSrc = try {
+                (& wsl.exe -d devstack -u root -- wslpath -a -u "$cleanAgentPath" 2>$null | Out-String).Trim()
+            } catch { "" }
+            if (-not $wslAgentSrc -and ($cleanAgentPath -match "^([a-zA-Z]):/(.*)$")) {
+                $wslAgentSrc = "/mnt/$($Matches[1].ToLower())/$($Matches[2])"
+            }
+            if ($wslAgentSrc) {
+                & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack/bin && cp '$wslAgentSrc' /data/devstack/bin/devstack-agent && chmod 0755 /data/devstack/bin/devstack-agent"
+                if ($LASTEXITCODE -ne 0) {
+                    Write-InstallerError "Failed to copy updated devstack-agent binary into WSL distro."
+                    $upgradeFailed = $true
+                }
+            } else {
+                Write-InstallerError "Unable to resolve WSL path for '$stagedAgentLinux'."
                 $upgradeFailed = $true
             }
         }
     }
 
-    # 3. Restart devstack-agent.service and verify health
-    Write-Host "devstack installer: Restarting devstack-agent.service and verifying health..."
-    $upgradeFailed = $false
-    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
-        if (($env:DEVSTACK_TEST_UPGRADE_FAIL -eq "true") -or ($env:DEVSTACK_TEST_AGENT_HEALTH -eq "failing")) {
-            $upgradeFailed = $true
-        }
-    } else {
-        & wsl.exe -d devstack -u root -- systemctl restart devstack-agent.service
-        $healthy = $false
-        for ($i = 0; $i -lt 10; $i++) {
-            Start-Sleep -Seconds 1
-            $st = try { (& wsl.exe -d devstack -u root -- systemctl is-active devstack-agent.service 2>$null).Trim() } catch { "" }
-            if ($st -eq "active") {
-                $healthy = $true
-                break
+    # 7. Restart devstack-agent.service and verify health (C3, H2)
+    if (-not $upgradeFailed) {
+        Write-Host "devstack installer: Restarting devstack-agent.service and verifying health..."
+        if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
+            if (((Get-TestOverride "DEVSTACK_TEST_UPGRADE_FAIL") -eq "true") -or ((Get-TestOverride "DEVSTACK_TEST_AGENT_HEALTH") -eq "failing")) {
+                $upgradeFailed = $true
             }
-        }
-        if (-not $healthy) {
-            $upgradeFailed = $true
+        } else {
+            & wsl.exe -d devstack -u root -- systemctl restart devstack-agent.service
+            $healthy = $false
+            for ($i = 0; $i -lt 10; $i++) {
+                Start-Sleep -Seconds 1
+                $st = try { (& wsl.exe -d devstack -u root -- systemctl is-active devstack-agent.service 2>$null).Trim() } catch { "" }
+                if ($st -eq "active") {
+                    $healthy = $true
+                    break
+                }
+            }
+            if (-not $healthy) {
+                $upgradeFailed = $true
+            } else {
+                # Probe HTTPS health endpoint
+                $probeCmd = "if [ -r /data/devstack/agent.yaml ] && [ -r /data/devstack/agent.token ]; then port=`$(awk '/port:/ {print `$2}' /data/devstack/agent.yaml 2>/dev/null || echo 7443); token=`$(cat /data/devstack/agent.token 2>/dev/null | tr -d '\r\n'); code=`$(curl -k -s -o /dev/null -w '%{http_code}' -H `"Authorization: Bearer `$token`" -H `"X-Devstack-Agent-Protocol: v1`" https://127.0.0.1:`$port/v1/health 2>/dev/null || echo 000); if [ `"`$code`" != `"200`" ]; then exit 1; fi; fi"
+                [System.Text.Encoding]::UTF8.GetBytes("$probeCmd`n") | & wsl.exe -d devstack -u root -- sh
+                if ($LASTEXITCODE -ne 0) {
+                    Write-InstallerError "devstack-agent HTTPS health probe failed."
+                    $upgradeFailed = $true
+                }
+            }
         }
     }
 
-    # 4. Handle rollback on error
+    # 8. Handle rollback on error (C3: Never rm -rf before verified extraction)
     if ($upgradeFailed) {
         Write-InstallerError "devstack-agent health check failed. Initiating rollback..."
-        if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
-            if (Test-Path $mockBackupDir) {
-                Remove-Item -Path $mockData -Recurse -Force -ErrorAction SilentlyContinue
-                Copy-Item -Path $mockBackupDir -Destination $mockData -Recurse -Force
+        if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
+            if (Test-Path $mockBackupTar) {
+                Remove-Item -Path $mockRollbackTmp -Recurse -Force -ErrorAction SilentlyContinue
+                New-Item -ItemType Directory -Force -Path $mockRollbackTmp | Out-Null
+                if (Test-Path $mockBackupDir) {
+                    Copy-Item -Path $mockBackupDir -Destination (Join-Path $mockRollbackTmp "devstack") -Recurse -Force
+                }
+                if (Test-Path (Join-Path $mockRollbackTmp "devstack")) {
+                    Remove-Item -Path $mockFailedTmp -Recurse -Force -ErrorAction SilentlyContinue
+                    if (Test-Path $mockData) {
+                        Move-Item -Path $mockData -Destination $mockFailedTmp -Force
+                    }
+                    Move-Item -Path (Join-Path $mockRollbackTmp "devstack") -Destination $mockData -Force
+                    Remove-Item -Path $mockFailedTmp -Recurse -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path $mockRollbackTmp -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                Remove-Item -Path $mockBackupTar -Force -ErrorAction SilentlyContinue
                 Remove-Item -Path $mockBackupDir -Recurse -Force -ErrorAction SilentlyContinue
             }
             if (Test-Path (Join-Path $mockDataBin "devstack-agent.bak")) {
                 Move-Item -Path (Join-Path $mockDataBin "devstack-agent.bak") -Destination (Join-Path $mockDataBin "devstack-agent") -Force
             }
-            Remove-Item -Path $mockBackupTar -Force -ErrorAction SilentlyContinue
         } else {
-            & wsl.exe -d devstack -u root -- sh -c "rm -rf /data/devstack && tar -xzf /data/devstack-backup.tar.gz -C /data && rm -f /data/devstack-backup.tar.gz"
+            & wsl.exe -d devstack -u root -- tar -tzf /data/devstack-backup.tar.gz 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                $rollbackScript = @"
+tar -tzf /data/devstack-backup.tar.gz >/dev/null 2>&1 && \
+rm -rf /data/devstack.rollback-tmp && \
+mkdir -p /data/devstack.rollback-tmp && \
+tar -xzf /data/devstack-backup.tar.gz -C /data/devstack.rollback-tmp && \
+test -d /data/devstack.rollback-tmp/devstack && \
+rm -rf /data/devstack.failed-tmp && \
+mv /data/devstack /data/devstack.failed-tmp && \
+mv /data/devstack.rollback-tmp/devstack /data/devstack && \
+rm -rf /data/devstack.failed-tmp /data/devstack.rollback-tmp /data/devstack-backup.tar.gz
+"@
+                $rollbackScript -replace "`r`n", "`n" | & wsl.exe -d devstack -u root -- sh
+            }
             & wsl.exe -d devstack -u root -- systemctl restart devstack-agent.service 2>$null
         }
         if (Test-Path "$dstDevstack.bak") {
@@ -589,14 +731,18 @@ if ($Upgrade) {
         }
         if (Test-Path "$dstHelper.bak") {
             Move-Item -Path "$dstHelper.bak" -Destination $dstHelper -Force
+            try {
+                Stop-Service -Name "DevstackHelper" -Force -ErrorAction SilentlyContinue
+                Start-Service -Name "DevstackHelper" -ErrorAction SilentlyContinue
+            } catch {}
         }
         Write-InstallerError "Upgrade rolled back successfully to previous version."
         exit 1
     }
 
-    # 5. Success cleanup and manifest update
+    # 9. Success cleanup and manifest update
     Write-Host "devstack installer: Agent health verified successfully."
-    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+    if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
         Remove-Item -Path $mockBackupTar -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $mockBackupDir -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -Path (Join-Path $mockDataBin "devstack-agent.bak") -Force -ErrorAction SilentlyContinue
@@ -625,19 +771,163 @@ if ($Upgrade) {
     $manifestJson = ConvertTo-Json $manifestDict -Depth 5
     Set-Content -Path $manifestPath -Value $manifestJson -Encoding utf8
 
+    # Restart user daemon so dashboard is not left stopped (M8)
+    Write-Host "devstack installer: Restarting user daemon..."
+    if (Test-Path $dstDevstack) {
+        try {
+            & "$dstDevstack" daemon restart 2>$null | Out-Null
+        } catch {
+            Write-Host "devstack installer: Note: Run 'devstack daemon restart' to restart the dashboard daemon."
+        }
+    }
+
     Write-Host "devstack installer: Upgrade completed successfully."
     exit 0
 }
 
 # -----------------------------------------------------------------------------
+# 9. Binary Staging & System PATH (Fresh Install)
+# -----------------------------------------------------------------------------
+if ($DryRun) {
+    Write-Host "devstack installer: [DryRun] Would stage binaries to $binDir"
+} elseif (-not $isSandbox) {
+    $prebuiltDevstack = @(
+        (Join-Path $repoRoot "devstack.exe"),
+        (Join-Path $repoRoot "bin\devstack.exe"),
+        (Join-Path $repoRoot "build\windows\devstack.exe")
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    $prebuiltHelper = @(
+        (Join-Path $repoRoot "devstack-helper.exe"),
+        (Join-Path $repoRoot "bin\devstack-helper.exe"),
+        (Join-Path $repoRoot "build\windows\devstack-helper.exe")
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    Push-Location $repoRoot
+    try {
+        if ($null -ne $prebuiltDevstack) {
+            Copy-Item -Path $prebuiltDevstack -Destination $dstDevstack -Force
+        } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack\main.go")) {
+            Write-Host "devstack installer: Building devstack.exe..."
+            & go build -o $dstDevstack ./cmd/devstack
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "go build for devstack.exe failed with exit code $LASTEXITCODE."
+                exit 1
+            }
+        }
+
+        if ($null -ne $prebuiltHelper) {
+            Copy-Item -Path $prebuiltHelper -Destination $dstHelper -Force
+        } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack-helper\main.go")) {
+            Write-Host "devstack installer: Building devstack-helper.exe..."
+            & go build -o $dstHelper ./cmd/devstack-helper
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "go build for devstack-helper.exe failed with exit code $LASTEXITCODE."
+                exit 1
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+
+    if (-not (Test-Path $dstDevstack)) {
+        Write-InstallerError "devstack.exe binary not found at '$dstDevstack' and compilation failed."
+        exit 1
+    }
+    if (-not (Test-Path $dstHelper)) {
+        Write-InstallerError "devstack-helper.exe binary not found at '$dstHelper' and compilation failed."
+        exit 1
+    }
+
+    # Add binDir to Machine PATH
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $paths = ($machinePath -split ";") | Where-Object { $_ -ne "" }
+    if ($paths -notcontains $binDir) {
+        $newPath = "$binDir;$machinePath"
+        [Environment]::SetEnvironmentVariable("Path", $newPath, "Machine")
+        $env:Path = "$binDir;$env:Path"
+        Write-Host "devstack installer: Added $binDir to Machine PATH."
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 10. Helper Service Registration & Startup (Fresh Install)
+# -----------------------------------------------------------------------------
+if ($DryRun) {
+    Write-Host "devstack installer: [DryRun] Would register and start DevstackHelper service"
+} elseif (-not $isSandbox -and (Test-Path $dstHelper)) {
+    $svc = Get-Service -Name "DevstackHelper" -ErrorAction SilentlyContinue
+    if ($null -eq $svc) {
+        Write-Host "devstack installer: Installing helper service..."
+        & "$dstHelper" service install --config "$helperYamlPath"
+        if ($LASTEXITCODE -ne 0) {
+            Write-InstallerError "Failed to install DevstackHelper service (exit code $LASTEXITCODE)."
+            exit 1
+        }
+    }
+    try {
+        Start-Service -Name "DevstackHelper" -ErrorAction Stop
+        Write-Host "devstack installer: DevstackHelper service started."
+    } catch {
+        & sc.exe start DevstackHelper | Out-Null
+        $svcCheck = Get-Service -Name "DevstackHelper" -ErrorAction SilentlyContinue
+        if ($null -eq $svcCheck -or $svcCheck.Status -ne "Running") {
+            Write-InstallerError "Failed to start DevstackHelper service."
+            exit 1
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 10.1 Daemon Logon Scheduled Task (H6)
+# -----------------------------------------------------------------------------
+$daemonTaskScript = @(
+    (Join-Path $repoRoot "build\windows\devstack-daemon-task.ps1"),
+    (Join-Path $repoRoot "devstack-daemon-task.ps1"),
+    (Join-Path $systemDir "devstack-daemon-task.ps1")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if (-not $DryRun -and -not $isSandbox) {
+    Write-Host "devstack installer: Registering devstack-daemon logon task..."
+    try {
+        if ($null -ne $daemonTaskScript -and (Test-Path $daemonTaskScript)) {
+            & $daemonTaskScript -Binary "$dstDevstack" -UserId "$env:USERDOMAIN\$env:USERNAME"
+        } else {
+            # Direct registration fallback if helper script is absent in standalone package
+            $taskName = "devstack-daemon"
+            $userProfileDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { "C:\Users\$env:USERNAME" }
+            $homeDir = Join-Path $userProfileDir ".devstack"
+            if (-not (Test-Path $homeDir)) { New-Item -ItemType Directory -Force -Path $homeDir | Out-Null }
+            $action = New-ScheduledTaskAction -Execute "$dstDevstack" -Argument "daemon run" -WorkingDirectory $homeDir
+            $trigger = try {
+                New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+            } catch {
+                New-ScheduledTaskTrigger -AtLogOn
+            }
+            $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+            Write-Host "devstack installer: Registered $taskName for limited user $env:USERNAME"
+        }
+    } catch {
+        Write-Host "devstack installer: Note: Failed to register devstack-daemon task: $_"
+    }
+}
+
+if ($SkipWSL) {
+    Write-Host "devstack installer: Skipping WSL distro and proxy firewall rule (-SkipWSL specified)."
+    Write-Host "devstack installer: System phase completed successfully."
+    exit 0
+}
+# -----------------------------------------------------------------------------
 # 11. WSL Managed Distro, RootFS, & Agent Service Provisioning (WSL Phase)
 # -----------------------------------------------------------------------------
 function Get-WSLVersionString {
-    if ($env:DEVSTACK_TEST_WSL_VERSION) {
-        if ($env:DEVSTACK_TEST_WSL_VERSION -eq "missing") {
+    if ((Get-TestOverride "DEVSTACK_TEST_WSL_VERSION")) {
+        if ((Get-TestOverride "DEVSTACK_TEST_WSL_VERSION") -eq "missing") {
             return $null
         }
-        return $env:DEVSTACK_TEST_WSL_VERSION
+        return (Get-TestOverride "DEVSTACK_TEST_WSL_VERSION")
     }
     try {
         $outRaw = & wsl.exe --version 2>&1 | Out-String
@@ -666,7 +956,7 @@ Write-Host "devstack installer: Starting WSL provisioning phase..."
 # 11.1 WSL runtime version check (>= 2.0.0)
 $wslVer = Get-WSLVersionString
 if (-not $wslVer -or (Compare-VersionString $wslVer "2.0.0") -lt 0) {
-    if (-not $isSandbox -and -not $DryRun -and -not $env:DEVSTACK_TEST_WSL_VERSION) {
+    if (-not $isSandbox -and -not $DryRun -and -not (Get-TestOverride "DEVSTACK_TEST_WSL_VERSION")) {
         Write-Host "devstack installer: Outdated or missing WSL runtime. Attempting 'wsl.exe --update'..."
         try {
             & wsl.exe --update
@@ -681,8 +971,8 @@ if (-not $wslVer -or (Compare-VersionString $wslVer "2.0.0") -lt 0) {
 Write-Host "devstack installer: WSL runtime version $wslVer verified (>= 2.0.0)."
 
 # 11.2 .wslconfig check enforcing NAT networking
-$wslConfigPath = if ($env:DEVSTACK_TEST_WSLCONFIG) {
-    $env:DEVSTACK_TEST_WSLCONFIG
+$wslConfigPath = if ((Get-TestOverride "DEVSTACK_TEST_WSLCONFIG")) {
+    (Get-TestOverride "DEVSTACK_TEST_WSLCONFIG")
 } else {
     Join-Path $env:USERPROFILE ".wslconfig"
 }
@@ -737,7 +1027,7 @@ if ([string]::IsNullOrEmpty($effectiveRootFS)) {
     $defaultCandidate = @((Join-Path $repoRoot "debian-12-wsl-rootfs.tar.gz"), (Join-Path $repoRoot "build\wsl\debian-12-wsl-rootfs.tar.gz")) | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (Test-Path $defaultCandidate) {
         $effectiveRootFS = $defaultCandidate
-    } elseif ($DryRun -or $isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+    } elseif ($DryRun -or $isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
         $mockDir = Join-Path $targetDir "mock-rootfs"
         New-Item -ItemType Directory -Force -Path $mockDir | Out-Null
         $effectiveRootFS = Join-Path $mockDir "debian-12-wsl-rootfs.tar.gz"
@@ -755,10 +1045,15 @@ if (-not $DryRun -and (-not $effectiveRootFS -or -not (Test-Path $effectiveRootF
 if (Test-Path $effectiveRootFS) {
     $actualHash = (Get-FileHash -Path $effectiveRootFS -Algorithm SHA256).Hash.ToLower()
     $expectedHash = $null
-    if ($env:DEVSTACK_TEST_ROOTFS_SHA256) {
-        $expectedHash = $env:DEVSTACK_TEST_ROOTFS_SHA256.ToLower()
-    } elseif ($wslVersions.ContainsKey("rootfs_sha256") -and $wslVersions["rootfs_sha256"] -match "^[0-9a-fA-F]{64}$") {
-        $expectedHash = $wslVersions["rootfs_sha256"].ToLower()
+    $rootfsFileName = [System.IO.Path]::GetFileName($effectiveRootFS)
+    $expectedArtifact = if ($wslVersions.ContainsKey("rootfs_artifact")) { $wslVersions["rootfs_artifact"] } else { "debian-12-wsl-rootfs.tar.gz" }
+
+    if ((Get-TestOverride "DEVSTACK_TEST_ROOTFS_SHA256")) {
+        $expectedHash = (Get-TestOverride "DEVSTACK_TEST_ROOTFS_SHA256").ToLower()
+    } elseif ($wslVersions.ContainsKey("rootfs_sha256") -and $wslVersions["rootfs_sha256"] -match "^[0-9a-fA-F]{64}$" -and ($rootfsFileName -eq $expectedArtifact)) {
+        if (-not ($isSandbox -and $effectiveRootFS -like "*mock-rootfs*")) {
+            $expectedHash = $wslVersions["rootfs_sha256"].ToLower()
+        }
     } else {
         $sidecar = "$effectiveRootFS.sha256"
         if (Test-Path $sidecar) {
@@ -766,24 +1061,28 @@ if (Test-Path $effectiveRootFS) {
         }
     }
 
-    if ($expectedHash -and ($actualHash -ne $expectedHash)) {
-        Write-InstallerError "Rootfs SHA256 checksum mismatch for $effectiveRootFS. Expected: $expectedHash, got: $actualHash."
-        exit 2
+    if ($expectedHash) {
+        if ($actualHash -ne $expectedHash) {
+            Write-InstallerError "Rootfs SHA256 checksum mismatch for $effectiveRootFS. Expected: $expectedHash, got: $actualHash."
+            exit 2
+        }
+        Write-Host "devstack installer: RootFS archive checksum verified ($actualHash)."
+    } else {
+        Write-Warning "devstack installer: WARNING: RootFS archive checksum unverified ($actualHash); no expected checksum resolved from versions.lock, environment, or sidecar."
     }
-    Write-Host "devstack installer: RootFS archive checksum verified ($actualHash)."
 }
 
 # 11.4 Managed distro import & unmanaged distro check
 $distroExists = $false
 $isDistroManaged = $false
 
-if ($env:DEVSTACK_TEST_DISTRO_EXISTS -eq "unmanaged") {
+if ((Get-TestOverride "DEVSTACK_TEST_DISTRO_EXISTS") -eq "unmanaged") {
     $distroExists = $true
     $isDistroManaged = $false
-} elseif ($env:DEVSTACK_TEST_DISTRO_EXISTS -eq "managed") {
+} elseif ((Get-TestOverride "DEVSTACK_TEST_DISTRO_EXISTS") -eq "managed") {
     $distroExists = $true
     $isDistroManaged = $true
-} elseif ($DryRun -or $isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+} elseif ($DryRun -or $isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
     $distroExists = $false
 } else {
     try {
@@ -812,12 +1111,40 @@ if ($distroExists -and -not $isDistroManaged) {
 if (-not $distroExists) {
     if ($DryRun) {
         Write-Host "devstack installer: [DryRun] Would import distro: wsl.exe --import devstack `"$wslDistroDir`" `"$effectiveRootFS`" --version 2"
-    } elseif (-not $isSandbox -and ($env:DEVSTACK_TEST_MOCK_WSL -ne "true")) {
+    } elseif (-not $isSandbox -and ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -ne "true")) {
         Write-Host "devstack installer: Importing devstack WSL distribution into $wslDistroDir..."
         & wsl.exe --import devstack "$wslDistroDir" "$effectiveRootFS" --version 2
         if ($LASTEXITCODE -ne 0) {
             Write-InstallerError "Failed to import WSL distribution 'devstack'."
             exit 1
+        }
+        # If running as SYSTEM and effective user SID is known, sync the Lxss registration to the user hive!
+        if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq "S-1-5-18" -and $effectiveUserSid -and $effectiveUserSid -ne "S-1-5-18") {
+            try {
+                $userLxssPath = "Registry::HKEY_USERS\$effectiveUserSid\Software\Microsoft\Windows\CurrentVersion\Lxss"
+                if (Test-Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss") {
+                    if (-not (Test-Path $userLxssPath)) {
+                        New-Item -Path $userLxssPath -Force | Out-Null
+                    }
+                    Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss | ForEach-Object {
+                        $prop = Get-ItemProperty $_.PSPath
+                        if ($prop.DistributionName -eq "devstack") {
+                            $targetSubKey = Join-Path $userLxssPath $_.PSChildName
+                            if (-not (Test-Path $targetSubKey)) {
+                                New-Item -Path $targetSubKey -Force | Out-Null
+                            }
+                            $srcKey = Get-Item $_.PSPath
+                            foreach ($valName in $srcKey.GetValueNames()) {
+                                $v = $srcKey.GetValue($valName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                                $k = $srcKey.GetValueKind($valName)
+                                Set-ItemProperty -Path $targetSubKey -Name $valName -Value $v -Type $k
+                            }
+                        }
+                    }
+                }
+            } catch {
+                Write-Host "devstack installer: Note: Could not sync WSL registration to user hive: $_"
+            }
         }
     } else {
         Write-Host "devstack installer: [TestSandbox] Simulating distro import into $wslDistroDir."
@@ -849,7 +1176,7 @@ $managedJsonContent = ConvertTo-Json ([ordered]@{
 
 if ($DryRun) {
     Write-Host "devstack installer: [DryRun] Would configure /etc/wsl.conf and /data/devstack/managed.json"
-} elseif ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+} elseif ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
     $mockWSLRoot = Join-Path $targetDir "mock-wsl"
     $mockEtc = Join-Path $mockWSLRoot "etc"
     $mockSystemd = Join-Path $mockWSLRoot "etc\systemd\system"
@@ -867,20 +1194,28 @@ if ($DryRun) {
 } else {
     Write-Host "devstack installer: Configuring /etc/wsl.conf..."
     $wslConfContent | & wsl.exe -d devstack -u root -- sh -c "cat > /etc/wsl.conf"
+    if ($LASTEXITCODE -ne 0) {
+        Write-InstallerError "Failed to configure /etc/wsl.conf in managed distro."
+        exit 1
+    }
     Write-Host "devstack installer: Initializing /data/devstack/managed.json marker..."
     & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack && chmod 0755 /data/devstack"
     $managedJsonContent | & wsl.exe -d devstack -u root -- sh -c "cat > /data/devstack/managed.json && chmod 0644 /data/devstack/managed.json"
+    if ($LASTEXITCODE -ne 0) {
+        Write-InstallerError "Failed to initialize /data/devstack/managed.json in managed distro."
+        exit 1
+    }
 }
 
 # 11.6 Systemd PID 1 verification
-if (-not $DryRun -and -not $isSandbox -and ($env:DEVSTACK_TEST_MOCK_WSL -ne "true")) {
+if (-not $DryRun -and -not $isSandbox -and ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -ne "true")) {
     & wsl.exe --terminate devstack
     & wsl.exe -d devstack -u root -- /bin/true
 }
 
-$comm = if ($env:DEVSTACK_TEST_SYSTEMD_PID1) {
-    $env:DEVSTACK_TEST_SYSTEMD_PID1
-} elseif ($DryRun -or $isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+$comm = if ((Get-TestOverride "DEVSTACK_TEST_SYSTEMD_PID1")) {
+    (Get-TestOverride "DEVSTACK_TEST_SYSTEMD_PID1")
+} elseif ($DryRun -or $isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
     "systemd"
 } else {
     try {
@@ -898,14 +1233,14 @@ Write-Host "devstack installer: Systemd verified as PID 1 in distro devstack."
 $dockerDaemonJsonSrc = Join-Path $repoRoot "build\wsl\docker-daemon.json"
 $installDockerScript = Join-Path $repoRoot "build\wsl\install-docker.sh"
 
-if ($env:DEVSTACK_TEST_FAIL_INSTALL_DOCKER -eq "true") {
+if ((Get-TestOverride "DEVSTACK_TEST_FAIL_INSTALL_DOCKER") -eq "true") {
     Write-InstallerError "Docker Engine installation script failed inside WSL distro (exit code 1)."
     exit 1
 }
 
 if ($DryRun) {
     Write-Host "devstack installer: [DryRun] Would install Docker Engine using build/wsl/install-docker.sh with data-root /data/devstack/docker"
-} elseif ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+} elseif ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
     if (Test-Path $dockerDaemonJsonSrc) {
         Copy-Item -Path $dockerDaemonJsonSrc -Destination (Join-Path $mockDataBin "docker-daemon.json") -Force
     }
@@ -947,8 +1282,10 @@ if ($DryRun) {
             $env:GOOS = "linux"
             $env:GOARCH = "amd64"
             & go build -o $stagedAgentLinux ./cmd/devstack-agent
-        } catch {
-            Write-Host "devstack installer: Note: go build devstack-agent failed: $_"
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "go build for devstack-agent failed with exit code $LASTEXITCODE."
+                exit 1
+            }
         } finally {
             $env:GOOS = $prevGOOS
             $env:GOARCH = $prevGOARCH
@@ -957,18 +1294,19 @@ if ($DryRun) {
     }
 
     if (-not (Test-Path $stagedAgentLinux)) {
-        Set-Content -Path $stagedAgentLinux -Value "#!/bin/sh`necho devstack-agent`n" -Encoding utf8
+        Write-InstallerError "devstack-agent binary not found at '$stagedAgentLinux' and cross-compilation failed. Refusing to install placeholder stub."
+        exit 1
     }
 
     $agentServiceSrc = Join-Path $repoRoot "build\wsl\agent.service"
     $installAgentSrc = Join-Path $repoRoot "build\wsl\install-agent.sh"
 
-    if ($env:DEVSTACK_TEST_FAIL_INSTALL_AGENT -eq "true") {
+    if ((Get-TestOverride "DEVSTACK_TEST_FAIL_INSTALL_AGENT") -eq "true") {
         Write-InstallerError "devstack-agent installation script failed inside WSL distro (exit code 1)."
         exit 1
     }
 
-    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+    if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
         Copy-Item -Path $stagedAgentLinux -Destination (Join-Path $mockDataBin "devstack-agent") -Force
         if (Test-Path $agentServiceSrc) {
             Copy-Item -Path $agentServiceSrc -Destination (Join-Path $mockSystemd "devstack-agent.service") -Force
@@ -1004,6 +1342,95 @@ if ($DryRun) {
                 Write-InstallerError "devstack-agent installation script failed inside WSL distro (exit code $LASTEXITCODE)."
                 exit 1
             }
+        }
+    }
+
+    # Verify agent binary and health probe before writing manifest
+    if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
+        if ((Get-TestOverride "DEVSTACK_TEST_AGENT_HEALTH") -eq "failing") {
+            Write-InstallerError "devstack-agent health check probe failed."
+            exit 1
+        }
+    } else {
+        & wsl.exe -d devstack -u root -- /data/devstack/bin/devstack-agent -h 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-InstallerError "devstack-agent binary verification failed inside WSL distro."
+            exit 1
+        }
+        $probeCmd = "if [ -r /data/devstack/agent.yaml ] && [ -r /data/devstack/agent.token ]; then port=`$(awk '/port:/ {print `$2}' /data/devstack/agent.yaml 2>/dev/null || echo 7443); token=`$(cat /data/devstack/agent.token 2>/dev/null | tr -d '\r\n'); code=`$(curl -k -s -o /dev/null -w '%{http_code}' -H `"Authorization: Bearer `$token`" -H `"X-Devstack-Agent-Protocol: v1`" https://127.0.0.1:`$port/v1/health 2>/dev/null || echo 000); if [ `"`$code`" != `"200`" ]; then exit 1; fi; fi"
+        [System.Text.Encoding]::UTF8.GetBytes("$probeCmd`n") | & wsl.exe -d devstack -u root -- sh
+        if ($LASTEXITCODE -ne 0) {
+            Write-InstallerError "devstack-agent HTTPS health probe failed."
+            exit 1
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 11.10 Inbound Windows Firewall Rule for WSL Proxy (H1: Deferred until WSL adapter/subnet exists)
+# -----------------------------------------------------------------------------
+$ruleName = "devstack-daemon-proxy"
+$displayName = "Devstack Daemon Proxy"
+$ports = @("8080", "8443")
+
+if ($DryRun -or $isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_FIREWALL_CHECK") -eq "true")) {
+    Write-Host "devstack installer: Firewall rule '$ruleName' (DisplayName: '$displayName') Protocol: TCP Ports: $($ports -join ',') Direction: Inbound Action: Allow Scoped: WSL"
+}
+
+if (-not $DryRun -and -not $isSandbox) {
+    # Detect WSL adapter or subnet
+    $wslSubnet = $null
+    if ((Get-TestOverride "DEVSTACK_TEST_WSL_SUBNET")) {
+        if ((Get-TestOverride "DEVSTACK_TEST_WSL_SUBNET") -ne "missing") {
+            $wslSubnet = (Get-TestOverride "DEVSTACK_TEST_WSL_SUBNET")
+        }
+    } else {
+        $wslAdapter = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+            ($_.InterfaceDescription -match "Hyper-V Virtual Ethernet" -or $_.Name -match "WSL") -and $_.Status -eq "Up"
+        }
+        if ($null -eq $wslAdapter) {
+            $wslAdapter = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "WSL" }
+        }
+        if ($null -ne $wslAdapter) {
+            $ip = Get-NetIPAddress -InterfaceIndex $wslAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $ip) {
+                $wslSubnet = "$($ip.IPAddress)/$($ip.PrefixLength)"
+            }
+        }
+    }
+
+    if ([string]::IsNullOrEmpty($wslSubnet)) {
+        Write-InstallerError "Unable to determine WSL subnet for firewall rule scoping. Refusing to create unscoped inbound firewall rule."
+        exit 1
+    }
+
+    Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+
+    $fwParams = @{
+        Name = $ruleName
+        DisplayName = $displayName
+        Description = "Inbound proxy rule for devstack daemon allowing traffic from WSL"
+        Direction = "Inbound"
+        Action = "Allow"
+        Protocol = "TCP"
+        LocalPort = $ports
+        Profile = "Private,Domain"
+        Enabled = "True"
+        RemoteAddress = $wslSubnet
+    }
+    if ($null -ne $wslAdapter) {
+        $fwParams["InterfaceAlias"] = $wslAdapter.Name
+    }
+
+    try {
+        New-NetFirewallRule @fwParams -ErrorAction Stop | Out-Null
+        Write-Host "devstack installer: Created inbound firewall rule '$ruleName' for ports $($ports -join ', ')."
+    } catch {
+        $portStr = $ports -join ","
+        & netsh.exe advfirewall firewall add rule name="$ruleName" dir=in action=allow protocol=TCP localport=$portStr profile=private,domain remoteip=$wslSubnet | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-InstallerError "Failed to create inbound firewall rule using netsh.exe (exit code $LASTEXITCODE)."
+            exit 1
         }
     }
 }

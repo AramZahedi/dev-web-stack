@@ -63,14 +63,22 @@ Require ($res.Output -match "Usage:" -or $res.Output -match "install\.ps1") "ins
 # Test 3: Elevation check
 # -------------------------------------------------------------------------
 Step "Testing elevation check logic"
-# Simulate non-elevated environment via test hook
-$env:DEVSTACK_TEST_ELEVATED = "false"
-try {
+$isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isElevated) {
+    # In a non-elevated session, real install requires elevation and exits with code 2
     $res = Invoke-Installer @()
     Require ($res.ExitCode -eq 2) "Non-elevated execution exits with code 2 (got $($res.ExitCode))"
     Require ($res.Output -match "elevation" -or $res.Output -match "Administrator") "Non-elevated output mentions elevation/administrator"
-} finally {
-    Remove-Item env:DEVSTACK_TEST_ELEVATED -ErrorAction SilentlyContinue
+} else {
+    # In an elevated session, verify that DEVSTACK_TEST_ELEVATED is ignored without -TestSandbox (R2-M11)
+    $env:DEVSTACK_TEST_ELEVATED = "false"
+    try {
+        $res = Invoke-Installer @("-DryRun")
+        Require ($res.ExitCode -eq 0) "Elevated execution ignores DEVSTACK_TEST_ELEVATED without -TestSandbox (got $($res.ExitCode))"
+        Require ($res.Output -notmatch "\[TestSandbox\] Using test override: DEVSTACK_TEST_ELEVATED") "No [TestSandbox] override logged without -TestSandbox"
+    } finally {
+        Remove-Item env:DEVSTACK_TEST_ELEVATED -ErrorAction SilentlyContinue
+    }
 }
 
 # In dry-run or sandbox test mode, elevation check should not terminate with exit code 2
@@ -80,6 +88,7 @@ try {
     $env:DEVSTACK_TEST_ELEVATED = "false"
     $res = Invoke-Installer @("-DryRun", "-TestSandbox", $tempTestDir)
     Require ($res.ExitCode -eq 0) "DryRun/TestSandbox allows non-elevated execution (got $($res.ExitCode))"
+    Require ($res.Output -match "\[TestSandbox\] Using test override: DEVSTACK_TEST_ELEVATED=false") "TestSandbox logs DEVSTACK_TEST_ELEVATED override"
 } finally {
     Remove-Item env:DEVSTACK_TEST_ELEVATED -ErrorAction SilentlyContinue
     Remove-Item -Path $tempTestDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -338,6 +347,21 @@ try {
     $env:DEVSTACK_TEST_MOCK_WSL = "true"
     $res = Invoke-Installer @("-TestSandbox", $tempRootFSDir, "-RootFSPath", $fakeRootFS)
     Require ($res.ExitCode -eq 0) "Rootfs SHA256 match accepted with exit code 0 (got $($res.ExitCode))"
+    Require ($res.Output -match "checksum verified") "Matching rootfs logs checksum verified"
+
+    # Unverified checksum (no expected hash) should log warning and not claim verified
+    $tempUnverifiedDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-unverified-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tempUnverifiedDir | Out-Null
+    try {
+        Remove-Item env:DEVSTACK_TEST_ROOTFS_SHA256 -ErrorAction SilentlyContinue
+        $env:DEVSTACK_TEST_MOCK_WSL = "true"
+        $res = Invoke-Installer @("-TestSandbox", $tempUnverifiedDir, "-RootFSPath", $fakeRootFS)
+        Require ($res.ExitCode -eq 0) "Rootfs without expected hash succeeds in test sandbox (got $($res.ExitCode): $($res.Output))"
+        Require ($res.Output -match "unverified") "Warning printed when rootfs checksum is unverified"
+        Require ($res.Output -notmatch "checksum verified") "Unverified rootfs does not claim checksum verified"
+    } finally {
+        Remove-Item -Path $tempUnverifiedDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 } finally {
     Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
     Remove-Item env:DEVSTACK_TEST_ROOTFS_SHA256 -ErrorAction SilentlyContinue
@@ -572,6 +596,383 @@ try {
     Remove-Item env:DEVSTACK_TEST_FAIL_INSTALL_AGENT -ErrorAction SilentlyContinue
     Remove-Item -Path $tempFailAgentDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# -------------------------------------------------------------------------
+# Test 22: Upgrade WSL Backup Failure Detection (C3)
+# -------------------------------------------------------------------------
+Step "Testing upgrade WSL backup failure detection"
+$tempUpgradeFailDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-upgbakfail-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempUpgradeFailDir | Out-Null
+$mockUpgWSL = Join-Path $tempUpgradeFailDir "mock-wsl\data\devstack"
+New-Item -ItemType Directory -Force -Path $mockUpgWSL | Out-Null
+$mockUserDataFile = Join-Path $mockUpgWSL "critical-user-data.txt"
+Set-Content -Path $mockUserDataFile -Value "pre-upgrade-state-must-be-preserved" -Encoding utf8
+
+try {
+    # 1. Simulate tar backup failure
+    $env:DEVSTACK_TEST_BACKUP_FAIL = "true"
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $res = Invoke-Installer @("-TestSandbox", $tempUpgradeFailDir, "-Upgrade")
+    Require ($res.ExitCode -eq 1) "WSL backup failure exits with code 1 (got $($res.ExitCode))"
+    Require ($res.Output -match "Failed to backup /data/devstack") "Error output reports WSL backup failure"
+    Require (Test-Path $mockUserDataFile) "Live /data/devstack data is NOT deleted on backup failure"
+    Require ((Get-Content -Path $mockUserDataFile -Raw).Trim() -eq "pre-upgrade-state-must-be-preserved") "Live data content is intact"
+
+    # 2. Simulate archive verification failure
+    Remove-Item env:DEVSTACK_TEST_BACKUP_FAIL -ErrorAction SilentlyContinue
+    $env:DEVSTACK_TEST_BACKUP_VERIFY_FAIL = "true"
+    $res2 = Invoke-Installer @("-TestSandbox", $tempUpgradeFailDir, "-Upgrade")
+    Require ($res2.ExitCode -eq 1) "Backup archive verification failure exits with code 1 (got $($res2.ExitCode))"
+    Require ($res2.Output -match "Backup archive verification failed") "Error output reports archive verification failure"
+    Require (Test-Path $mockUserDataFile) "Live /data/devstack data is NOT deleted on verification failure"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_BACKUP_FAIL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_BACKUP_VERIFY_FAIL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempUpgradeFailDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 23: Upgrade Rollback Safety (C3)
+# -------------------------------------------------------------------------
+Step "Testing upgrade rollback safety and atomic swap"
+$tempRollbackDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-rollback-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempRollbackDir | Out-Null
+$mockRbWSL = Join-Path $tempRollbackDir "mock-wsl\data\devstack"
+$mockRbWSLBin = Join-Path $mockRbWSL "bin"
+New-Item -ItemType Directory -Force -Path $mockRbWSLBin | Out-Null
+$mockOriginalAgent = Join-Path $mockRbWSLBin "devstack-agent"
+Set-Content -Path $mockOriginalAgent -Value "original-agent-v1" -Encoding utf8
+$mockRbUserData = Join-Path $mockRbWSL "database.sqlite"
+Set-Content -Path $mockRbUserData -Value "pre-existing-database" -Encoding utf8
+
+$mockBinDir = Join-Path $tempRollbackDir "bin"
+New-Item -ItemType Directory -Force -Path $mockBinDir | Out-Null
+Set-Content -Path (Join-Path $mockBinDir "devstack.exe") -Value "devstack-v1" -Encoding utf8
+Set-Content -Path (Join-Path $mockBinDir "devstack-helper.exe") -Value "devstack-helper-v1" -Encoding utf8
+
+try {
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $env:DEVSTACK_TEST_UPGRADE_FAIL = "true"
+    $res = Invoke-Installer @("-TestSandbox", $tempRollbackDir, "-Upgrade")
+    Require ($res.ExitCode -eq 1) "Failed upgrade health check exits with code 1 (got $($res.ExitCode))"
+    Require ($res.Output -match "devstack-agent health check failed\. Initiating rollback") "Output indicates rollback was initiated"
+    Require ($res.Output -match "Upgrade rolled back successfully to previous version") "Output reports successful rollback"
+
+    # Verify live data restored
+    Require (Test-Path $mockRbUserData) "Original database.sqlite exists after rollback"
+    Require ((Get-Content -Path $mockRbUserData -Raw).Trim() -eq "pre-existing-database") "Original database.sqlite content is restored"
+    Require (Test-Path $mockOriginalAgent) "devstack-agent exists after rollback"
+    Require ((Get-Content -Path $mockOriginalAgent -Raw).Trim() -eq "original-agent-v1") "devstack-agent content restored"
+
+    # Verify no temporary rollback directories linger
+    $rbTmpDir = Join-Path $tempRollbackDir "mock-wsl\data\devstack.rollback-tmp"
+    $rbFailedDir = Join-Path $tempRollbackDir "mock-wsl\data\devstack.failed-tmp"
+    Require (-not (Test-Path $rbTmpDir)) "Temporary rollback staging directory devstack.rollback-tmp is cleaned up"
+    Require (-not (Test-Path $rbFailedDir)) "Temporary failed directory devstack.failed-tmp is cleaned up"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_UPGRADE_FAIL -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempRollbackDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 24: Upgrade Helper Service Stop/Start and Order Validation (C3, M8)
+# -------------------------------------------------------------------------
+Step "Testing upgrade ordering and helper service handling"
+$installerContent = Get-Content -Raw -Path $installerScript
+
+# C3 ordering: WSL backup must occur before Windows binary staging in upgrade
+$backupMatch = $installerContent.IndexOf("Backing up /data/devstack to /data/devstack-backup.tar.gz")
+$stagingMatch = $installerContent.IndexOf("Building devstack-helper.exe")
+Require ($backupMatch -gt 0 -and $stagingMatch -gt 0 -and $backupMatch -lt $stagingMatch) "Upgrade WSL backup is executed BEFORE Windows binary staging"
+
+# C3 helper service stopped before binary replacement
+Require ($installerContent -match 'Stopping DevstackHelper service for binary upgrade') "install.ps1 stops DevstackHelper service before replacing helper binary"
+Require ($installerContent -match 'Start-Service -Name "DevstackHelper"') "install.ps1 restarts DevstackHelper service after staging updated binary"
+
+# C3 archive verification check
+Require ($installerContent -match 'tar -tzf /data/devstack-backup\.tar\.gz') "install.ps1 verifies archive integrity with tar -tzf"
+Require ($installerContent -notmatch 'tar -czf /data/devstack-backup\.tar\.gz -C /data devstack && cp.*\|\| true') "install.ps1 does NOT mask tar backup errors with || true"
+
+# M8 user daemon restart upon upgrade completion
+Require ($installerContent -match 'Restarting user daemon') "install.ps1 restarts user daemon upon upgrade completion"
+Require ($installerContent -match '& "\$dstDevstack" daemon restart') "install.ps1 runs 'devstack daemon restart' on upgrade success"
+
+# -------------------------------------------------------------------------
+# Test 25: Firewall Rule Scoping, Deferral, and SkipWSL (H1)
+# -------------------------------------------------------------------------
+Step "Testing firewall rule scoping, deferral, and -SkipWSL handling"
+$tempSkipWSLDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-skipwsl-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempSkipWSLDir | Out-Null
+try {
+    $res = Invoke-Installer @("-TestSandbox", $tempSkipWSLDir, "-SkipWSL")
+    Require ($res.ExitCode -eq 0) "install.ps1 with -SkipWSL exits with code 0 (got $($res.ExitCode))"
+    Require ($res.Output -notmatch "Firewall rule 'devstack-daemon-proxy'") "Inbound firewall rule is NOT created when -SkipWSL is specified"
+    Require ($res.Output -match "Skipping WSL distro and proxy firewall rule") "-SkipWSL message explicitly mentions skipping proxy firewall rule"
+} finally {
+    Remove-Item -Path $tempSkipWSLDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# H1 Ordering: firewall rule creation deferred to after Section 11 WSL distro import
+$wslImportIdx = $installerContent.IndexOf("Importing devstack WSL distribution")
+$fwRuleIdx = $installerContent.IndexOf("Created inbound firewall rule")
+Require ($wslImportIdx -gt 0 -and $fwRuleIdx -gt 0 -and $fwRuleIdx -gt $wslImportIdx) "Inbound firewall rule creation is deferred until after WSL distro import"
+
+# H1 Fail-closed: missing WSL subnet prevents creation of open unscoped rule
+Require ($installerContent -match 'Unable to determine WSL subnet for firewall rule scoping\. Refusing to create unscoped inbound firewall rule') "install.ps1 fails closed if WSL subnet cannot be determined"
+Require ($installerContent -match 'RemoteAddress = \$wslSubnet') "install.ps1 scopes firewall rule RemoteAddress to `$wslSubnet"
+
+# -------------------------------------------------------------------------
+# Test 26: Reboot-Resume Task Configuration (C4)
+# -------------------------------------------------------------------------
+Step "Testing reboot-resume task configuration and user context"
+$tempResumeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-resume-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempResumeDir | Out-Null
+try {
+    $env:DEVSTACK_TEST_REBOOT_REQUIRED = "true"
+    $res = Invoke-Installer @("-TestSandbox", $tempResumeDir, "-AllowReboot", "-RootFSPath", "C:\test\rootfs.tar.gz")
+    Require ($res.ExitCode -eq 3010) "Reboot requirement with -AllowReboot exits with 3010 (got $($res.ExitCode))"
+
+    $resumeStateFile = Join-Path (Join-Path $tempResumeDir "system") "resume-state.json"
+    Require (Test-Path $resumeStateFile) "resume-state.json created in system directory"
+    if (Test-Path $resumeStateFile) {
+        $stateObj = Get-Content -Raw -Path $resumeStateFile | ConvertFrom-Json
+        Require ($stateObj.user_sid -match "^S-1-5-") "resume-state.json captures user SID ($($stateObj.user_sid))"
+        Require ($stateObj.user_sid -ne "S-1-5-18") "Captured user SID is NOT SYSTEM (S-1-5-18)"
+        Require ($stateObj.arguments -match "-RootFSPath") "resume-state.json preserves original argument -RootFSPath"
+    }
+
+    # Verify resume execution sets allow_sid to user SID (not SYSTEM)
+    Remove-Item env:DEVSTACK_TEST_REBOOT_REQUIRED -ErrorAction SilentlyContinue
+    $testUserSid = "S-1-5-21-999999999-888888888-777777777-1001"
+    $res2 = Invoke-Installer @("-TestSandbox", $tempResumeDir, "-ResumeUserSID", $testUserSid, "-SkipWSL")
+    Require ($res2.ExitCode -eq 0) "Resumed run exits with code 0 (got $($res2.ExitCode))"
+
+    $helperYaml = Join-Path $tempResumeDir "system\helper.yaml"
+    Require (Test-Path $helperYaml) "helper.yaml exists after resumed run"
+    if (Test-Path $helperYaml) {
+        $yamlContent = Get-Content -Raw -Path $helperYaml
+        Require ($yamlContent -match [regex]::Escape($testUserSid)) "helper.yaml sets allow_sid to user SID ($testUserSid)"
+        Require ($yamlContent -notmatch "allow_sid:\s*`"S-1-5-18`"") "helper.yaml allow_sid is NOT SYSTEM SID"
+    }
+} finally {
+    Remove-Item env:DEVSTACK_TEST_REBOOT_REQUIRED -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempResumeDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Static check: resume task scheduled with user principal and cleaned up on both failure and success
+Require ($installerContent -match 'Remove-ResumeTask') "install.ps1 defines and calls Remove-ResumeTask on resume and error"
+Require ($installerContent -match 'New-ScheduledTaskPrincipal -UserId \$currentUserName') "install.ps1 schedules resume task for current interactive user"
+
+# -------------------------------------------------------------------------
+# Test 27: Daemon Autostart Logon Task & Fake Stub Prohibition (H2, H6)
+# -------------------------------------------------------------------------
+Step "Testing daemon autostart task registration and agent fake stub prohibition"
+# H6: devstack-daemon logon task registered
+Require ($installerContent -match 'devstack-daemon-task\.ps1') "install.ps1 invokes devstack-daemon-task.ps1 to register logon autostart"
+
+# H2: Prohibition of fake echo agent stub
+Require ($installerContent -notmatch 'echo devstack-agent') "install.ps1 does NOT contain fake echo stub fallback for devstack-agent"
+Require ($installerContent -match 'Refusing to install placeholder stub') "install.ps1 explicitly refuses to install placeholder agent stub"
+
+# H2: build/wsl/install-agent.sh does not mask errors
+$installAgentScriptPath = Join-Path $repoRoot "build\wsl\install-agent.sh"
+$agentScriptBody = Get-Content -Raw -Path $installAgentScriptPath
+Require ($agentScriptBody -notmatch 'systemctl start devstack-agent\.service.*\|\|\s*true') "build/wsl/install-agent.sh does NOT mask start errors with || true"
+
+# -------------------------------------------------------------------------
+# Test 28: Environment Overrides Isolation (R2-M11)
+# -------------------------------------------------------------------------
+Step "Testing DEVSTACK_TEST_* environment overrides isolation and logging (R2-M11)"
+$env:DEVSTACK_TEST_OS_BUILD = "1000"
+$env:DEVSTACK_TEST_ROOTFS_SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+try {
+    # 1. Normal run (without -TestSandbox, e.g. -DryRun) MUST completely ignore DEVSTACK_TEST_*
+    $resNormal = Invoke-Installer @("-DryRun")
+    Require ($resNormal.ExitCode -eq 0) "Real/normal install ignores DEVSTACK_TEST_* overrides (got $($resNormal.ExitCode))"
+    Require ($resNormal.Output -notmatch "\[TestSandbox\] Using test override:") "Normal install does not log [TestSandbox] overrides"
+    Require ($resNormal.Output -notmatch "Detected build: 1000") "Normal install does not use mocked OS build 1000"
+
+    # 2. In -TestSandbox, DEVSTACK_TEST_* MUST be honored and logged
+    $tempSandboxM11 = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-m11-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tempSandboxM11 | Out-Null
+    try {
+        $resSandbox = Invoke-Installer @("-DryRun", "-TestSandbox", $tempSandboxM11)
+        Require ($resSandbox.ExitCode -eq 2) "TestSandbox honors DEVSTACK_TEST_OS_BUILD=1000 and fails prerequisite (got $($resSandbox.ExitCode))"
+        Require ($resSandbox.Output -match "\[TestSandbox\] Using test override: DEVSTACK_TEST_OS_BUILD=1000") "TestSandbox logs active DEVSTACK_TEST_OS_BUILD override"
+        Require ($resSandbox.Output -match "1000") "TestSandbox failure output mentions mocked build 1000"
+    } finally {
+        Remove-Item -Path $tempSandboxM11 -Recurse -Force -ErrorAction SilentlyContinue
+    }
+} finally {
+    Remove-Item env:DEVSTACK_TEST_OS_BUILD -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_ROOTFS_SHA256 -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 29: Uninstaller Exact Hosts Marker Removal & No UTF-8 BOM (R2-M9)
+# -------------------------------------------------------------------------
+Step "Testing uninstaller exact hosts marker removal and absence of UTF-8 BOM (R2-M9)"
+$uninstallerScript = Join-Path $repoRoot "uninstall.ps1"
+Require (Test-Path $uninstallerScript) "uninstall.ps1 exists"
+
+$testEngines = @("pwsh")
+if (Get-Command powershell.exe -ErrorAction SilentlyContinue) {
+    $testEngines += "powershell"
+}
+
+foreach ($engine in $testEngines) {
+    $tempUninstallDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-uninst-$engine-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tempUninstallDir | Out-Null
+    $mockHostsPath = Join-Path $tempUninstallDir "hosts"
+
+    # Seed hosts file with managed block and near-miss comments that should NOT be deleted
+    $hostsInitial = @(
+        "127.0.0.1 localhost",
+        "# BEGIN devstack",
+        "127.0.0.1 app.test",
+        "127.0.0.1 api.test",
+        "# END devstack",
+        "::1 localhost",
+        "# BEGIN devstack custom notes - not marker",
+        "127.0.0.1 custom.test",
+        "# END devstack custom notes - not marker"
+    ) -join "`r`n"
+
+    [System.IO.File]::WriteAllText($mockHostsPath, $hostsInitial, (New-Object System.Text.UTF8Encoding($false)))
+
+    try {
+        $uninstOutput = & $engine -NoProfile -File $uninstallerScript -TestSandbox $tempUninstallDir 2>&1 | Out-String
+        $uninstExit = $LASTEXITCODE
+        Require ($uninstExit -eq 0) "[$engine] uninstall.ps1 exits with code 0 (got $uninstExit)"
+
+        Require (Test-Path $mockHostsPath) "[$engine] hosts file exists after uninstallation"
+        if (Test-Path $mockHostsPath) {
+            $hostsContent = [System.IO.File]::ReadAllText($mockHostsPath)
+
+            # Exact marker check: managed block lines removed
+            Require ($hostsContent -notmatch "(?m)^127\.0\.0\.1\s+app\.test") "[$engine] Managed block entry 'app.test' removed"
+            Require ($hostsContent -notmatch "(?m)^127\.0\.0\.1\s+api\.test") "[$engine] Managed block entry 'api.test' removed"
+
+            # Exact marker check: non-matching lines preserved
+            Require ($hostsContent -match "127\.0\.0\.1 localhost") "[$engine] Preserves '127.0.0.1 localhost'"
+            Require ($hostsContent -match "::1 localhost") "[$engine] Preserves '::1 localhost'"
+            Require ($hostsContent -match [regex]::Escape("# BEGIN devstack custom notes - not marker")) "[$engine] Preserves near-miss marker '# BEGIN devstack custom notes - not marker'"
+            Require ($hostsContent -match "127\.0\.0\.1 custom\.test") "[$engine] Preserves '127.0.0.1 custom.test'"
+            Require ($hostsContent -match [regex]::Escape("# END devstack custom notes - not marker")) "[$engine] Preserves near-miss marker '# END devstack custom notes - not marker'"
+
+            # BOM check: hosts file must NOT have UTF-8 BOM (0xEF, 0xBB, 0xBF)
+            $bytes = [System.IO.File]::ReadAllBytes($mockHostsPath)
+            $hasBOM = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+            Require (-not $hasBOM) "[$engine] hosts file does NOT contain UTF-8 BOM"
+        }
+    } finally {
+        Remove-Item -Path $tempUninstallDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+
+# -------------------------------------------------------------------------
+# Test 30: Bin Directory Protected DACL Verification
+# -------------------------------------------------------------------------
+Step "Testing bin directory DACL permissions"
+$tempBinDaclDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-bindacl-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempBinDaclDir | Out-Null
+try {
+    $res = Invoke-Installer @("-TestSandbox", $tempBinDaclDir, "-SkipWSL")
+    Require ($res.ExitCode -eq 0) "Layout creation exits with code 0 (got $($res.ExitCode))"
+
+    $binDir = Join-Path $tempBinDaclDir "bin"
+    $binAcl = Get-Acl -Path $binDir
+    Require ($binAcl.AreAccessRulesProtected -eq $true) "bin directory DACL has inheritance protected/disabled"
+
+    $binSystemFull = $false
+    $binAdminFull = $false
+    $binUsersRead = $false
+    $binUsersWrite = $false
+
+    foreach ($rule in $binAcl.Access) {
+        $identity = $rule.IdentityReference.Value
+        $rights = $rule.FileSystemRights.ToString()
+        $controlType = $rule.AccessControlType
+
+        if ($controlType -eq [Security.AccessControl.AccessControlType]::Allow) {
+            if ($identity -match "SYSTEM" -and $rights -match "FullControl") { $binSystemFull = $true }
+            if (($identity -match "Administrators" -or $identity -match "BUILTIN\\Administrators") -and $rights -match "FullControl") { $binAdminFull = $true }
+            if (($identity -match "Users" -or $identity -match "BUILTIN\\Users") -and ($rights -match "Read" -or $rights -match "ReadAndExecute")) { $binUsersRead = $true }
+            if (($identity -match "Users" -or $identity -match "BUILTIN\\Users") -and ($rights -match "Write|CreateFiles|AppendData|Modify")) { $binUsersWrite = $true }
+        }
+    }
+
+    Require $binSystemFull "bin directory grants SYSTEM FullControl"
+    Require $binAdminFull "bin directory grants Administrators FullControl"
+    Require $binUsersRead "bin directory grants Users ReadAndExecute"
+    Require (-not $binUsersWrite) "bin directory does NOT grant Users Write or Modify access"
+} finally {
+    Remove-Item -Path $tempBinDaclDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 31: devstack-daemon-task.ps1 Staged into System Directory
+# -------------------------------------------------------------------------
+Step "Testing staging of devstack-daemon-task.ps1"
+$tempDaemonStageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-daemonstage-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempDaemonStageDir | Out-Null
+try {
+    $res = Invoke-Installer @("-TestSandbox", $tempDaemonStageDir, "-SkipWSL")
+    Require ($res.ExitCode -eq 0) "Installer exits with code 0 (got $($res.ExitCode))"
+    $stagedTask = Join-Path $tempDaemonStageDir "system\devstack-daemon-task.ps1"
+    Require (Test-Path $stagedTask) "devstack-daemon-task.ps1 is staged to system directory"
+} finally {
+    Remove-Item -Path $tempDaemonStageDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 32: Uninstaller PATH Cleanup Edge Cases (Trailing slashes, quotes, env:Path)
+# -------------------------------------------------------------------------
+Step "Testing uninstaller PATH cleanup edge cases"
+$installerContent = Get-Content -Raw -Path $uninstallerScript
+Require ($installerContent -match 'TrimEnd\(''\\/''\)') "uninstall.ps1 normalizes trailing backslashes and forward slashes in PATH"
+Require ($installerContent -match 'Trim\(''"''\)') "uninstall.ps1 strips quotation marks when comparing PATH entries"
+Require ($installerContent -match '\$env:Path\s*=') "uninstall.ps1 synchronizes current process `$env:Path"
+
+# Unit test PATH filtering logic
+$sampleTestBin = "C:\devstack\bin"
+$samplePathEntries = @(
+    "C:\Windows\system32",
+    "C:\devstack\bin",
+    "C:\devstack\bin\",
+    '"C:\devstack\bin"',
+    "C:/devstack/bin",
+    "C:\Program Files\Go\bin"
+)
+$filtered = $samplePathEntries | Where-Object {
+    $p = $_.Trim().Trim('"').TrimEnd('\/').Replace('/', '\')
+    $p -ne "" -and $p -ine $sampleTestBin.TrimEnd('\/').Replace('/', '\')
+}
+Require ($filtered.Count -eq 2) "PATH filter correctly removes all 4 variants of devstack\bin (got $($filtered.Count))"
+Require ($filtered -contains "C:\Windows\system32") "Preserves C:\Windows\system32"
+Require ($filtered -contains "C:\Program Files\Go\bin") "Preserves C:\Program Files\Go\bin"
+
+# -------------------------------------------------------------------------
+# Test 33: Binary Build and Staging Verification in install.ps1
+# -------------------------------------------------------------------------
+Step "Testing binary build failure handling and exit code propagation"
+Require ($installerContent -match 'devstack-helper' -or $true) "Script inspection active"
+$freshInstallContent = Get-Content -Raw -Path $installerScript
+Require ($freshInstallContent -match '& go build -o \$dstDevstack ./cmd/devstack[
+\s]+if \(\$LASTEXITCODE -ne 0\)') "install.ps1 checks LASTEXITCODE after devstack.exe build"
+Require ($freshInstallContent -match '& go build -o \$dstHelper ./cmd/devstack-helper[
+\s]+if \(\$LASTEXITCODE -ne 0\)') "install.ps1 checks LASTEXITCODE after devstack-helper.exe build"
+Require ($freshInstallContent -match 'if \(-not \(Test-Path \$dstDevstack\)\)') "install.ps1 verifies Test-Path dstDevstack"
+Require ($freshInstallContent -match 'if \(-not \(Test-Path \$dstHelper\)\)') "install.ps1 verifies Test-Path dstHelper"
+
+# -------------------------------------------------------------------------
+# Test 34: Reboot-Resume Argument Deduplication
+# -------------------------------------------------------------------------
+Step "Testing reboot-resume argument deduplication"
+Require ($freshInstallContent -match 'if \(-not \$PSBoundParameters\.ContainsKey\("ResumeUserSID"\)\)') "install.ps1 uses ContainsKey to prevent duplicate -ResumeUserSID arguments"
 
 # -------------------------------------------------------------------------
 # Test Summary

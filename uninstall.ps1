@@ -80,11 +80,13 @@ $dstHelper = Join-Path $binDir "devstack-helper.exe"
 # 1. Elevation check
 # -----------------------------------------------------------------------------
 function Test-IsElevated {
-    if ($env:DEVSTACK_TEST_ELEVATED -eq "false") {
-        return $false
-    }
-    if ($env:DEVSTACK_TEST_ELEVATED -eq "true") {
-        return $true
+    if ($isSandbox) {
+        if ($env:DEVSTACK_TEST_ELEVATED -eq "false") {
+            return $false
+        }
+        if ($env:DEVSTACK_TEST_ELEVATED -eq "true") {
+            return $true
+        }
     }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -155,7 +157,7 @@ if ($DryRun) {
 # 4. Clean managed devstack hosts entries
 # -----------------------------------------------------------------------------
 Write-Host "devstack uninstaller: Cleaning managed hosts entries..."
-$hostsPath = if ($env:DEVSTACK_TEST_HOSTS_PATH) {
+$hostsPath = if ($isSandbox -and $env:DEVSTACK_TEST_HOSTS_PATH) {
     $env:DEVSTACK_TEST_HOSTS_PATH
 } elseif ($isSandbox) {
     Join-Path $targetDir "hosts"
@@ -172,11 +174,11 @@ if ($DryRun) {
         $inBlock = $false
         foreach ($line in $lines) {
             $trimmed = $line.Trim()
-            if ($trimmed -match "(?i)^#\s*BEGIN\s+devstack") {
+            if ($trimmed -eq "# BEGIN devstack") {
                 $inBlock = $true
                 continue
             }
-            if ($trimmed -match "(?i)^#\s*END\s+devstack") {
+            if ($trimmed -eq "# END devstack") {
                 $inBlock = $false
                 continue
             }
@@ -185,7 +187,7 @@ if ($DryRun) {
             }
         }
         $cleanedText = ($newLines -join "`r`n").TrimEnd() + "`r`n"
-        Set-Content -Path $hostsPath -Value $cleanedText -Encoding utf8
+        [System.IO.File]::WriteAllText($hostsPath, $cleanedText, (New-Object System.Text.UTF8Encoding($false)))
     } catch {
         Write-Host "devstack uninstaller: Warning: could not update hosts file: $_"
     }
@@ -223,10 +225,13 @@ if ($DryRun) {
     Write-Host "devstack uninstaller: [DryRun] Would stop and delete DevstackHelper service"
 } elseif (-not $isSandbox) {
     try {
-        Stop-Service -Name "DevstackHelper" -ErrorAction SilentlyContinue
+        Stop-Service -Name "DevstackHelper" -Force -ErrorAction SilentlyContinue
     } catch {}
     try {
         & sc.exe stop DevstackHelper 2>$null | Out-Null
+    } catch {}
+    try {
+        Get-Process -Name "devstack-helper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     } catch {}
     try {
         & sc.exe delete DevstackHelper 2>$null | Out-Null
@@ -245,6 +250,12 @@ if ($DryRun) {
     } catch {}
     try {
         & schtasks.exe /Delete /TN "devstack-daemon" /F 2>$null | Out-Null
+    } catch {}
+    try {
+        Unregister-ScheduledTask -TaskName "devstack-installer-resume" -Confirm:$false -ErrorAction SilentlyContinue
+    } catch {}
+    try {
+        & schtasks.exe /Delete /TN "devstack-installer-resume" /F 2>$null | Out-Null
     } catch {}
 }
 
@@ -265,11 +276,32 @@ if ($PurgeDistro) {
         }
     } else {
         try {
-            & wsl.exe --unregister devstack
+            & wsl.exe --terminate devstack 2>$null
+        } catch {}
+        try {
+            & wsl.exe --unregister devstack 2>$null
         } catch {}
         if (Test-Path $wslDistroDir) {
             Remove-Item -Path $wslDistroDir -Recurse -Force -ErrorAction SilentlyContinue
         }
+        # Clean any orphan devstack Lxss registry entries across HKCU and HKEY_USERS
+        try {
+            $lxssPaths = @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss")
+            if (Test-Path "Registry::HKEY_USERS") {
+                Get-ChildItem "Registry::HKEY_USERS" -ErrorAction SilentlyContinue | ForEach-Object {
+                    $sub = Join-Path $_.PSPath "Software\Microsoft\Windows\CurrentVersion\Lxss"
+                    if (Test-Path $sub) { $lxssPaths += $sub }
+                }
+            }
+            foreach ($lxPath in $lxssPaths) {
+                Get-ChildItem $lxPath -ErrorAction SilentlyContinue | ForEach-Object {
+                    $dp = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+                    if ($null -ne $dp -and $dp.DistributionName -eq "devstack") {
+                        Remove-Item $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        } catch {}
     }
 } else {
     Write-Host "devstack uninstaller: Preserving WSL distro 'devstack' and user projects."
@@ -281,7 +313,7 @@ if ($PurgeDistro) {
 if ($PurgeData) {
     Write-Host "devstack uninstaller: Purging devstack data and DPAPI secrets..."
     $secretsDirs = @()
-    if ($env:DEVSTACK_TEST_SECRETS_DIR) {
+    if ($isSandbox -and $env:DEVSTACK_TEST_SECRETS_DIR) {
         $secretsDirs += $env:DEVSTACK_TEST_SECRETS_DIR
     }
     if ($env:DEVSTACK_HOME) {
@@ -298,6 +330,14 @@ if ($PurgeData) {
     }
 
     if (-not $DryRun) {
+        # Avoid file locking if current working directory is inside targetDir
+        try {
+            $currPath = (Get-Location).Path
+            if ($currPath.StartsWith($targetDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Set-Location $env:SystemRoot
+            }
+        } catch {}
+
         if ($isSandbox) {
             Get-ChildItem -Path $targetDir -Exclude "hosts" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         } else {
@@ -314,11 +354,22 @@ if ($PurgeData) {
 Write-Host "devstack uninstaller: Cleaning $binDir from Machine PATH..."
 if (-not $DryRun -and -not $isSandbox) {
     try {
+        $cleanBinDir = $binDir.TrimEnd('\/').Replace('/', '\')
         $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
         if ($machinePath) {
-            $paths = ($machinePath -split ";") | Where-Object { $_ -ne "" -and $_ -ne $binDir -and $_ -ne "$binDir\" }
+            $paths = ($machinePath -split ";") | Where-Object {
+                $p = $_.Trim().Trim('"').TrimEnd('\/').Replace('/', '\')
+                $p -ne "" -and $p -ine $cleanBinDir
+            }
             $newPath = $paths -join ";"
             [Environment]::SetEnvironmentVariable("Path", $newPath, "Machine")
+        }
+        if ($env:Path) {
+            $currPaths = ($env:Path -split ";") | Where-Object {
+                $p = $_.Trim().Trim('"').TrimEnd('\/').Replace('/', '\')
+                $p -ne "" -and $p -ine $cleanBinDir
+            }
+            $env:Path = $currPaths -join ";"
         }
     } catch {}
 }
