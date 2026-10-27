@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -31,7 +32,7 @@ func TestValidateRejectsDuplicatePorts(t *testing.T) {
 
 func TestDefaultValues(t *testing.T) {
 	cfg := Default()
-	if cfg.HTTPPort != 8080 || cfg.HTTPSPort != 8443 || cfg.UIPort != 7070 {
+	if cfg.HTTPPort != 8080 || cfg.HTTPSPort != 8443 || cfg.UIPort != 7070 || cfg.AgentPort != 7443 {
 		t.Fatalf("ports = %+v", cfg)
 	}
 	if cfg.ServingMode != ServingModeBuiltin {
@@ -285,7 +286,7 @@ func TestSaveWritesPrivateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("mode = %o, want 600", got)
 	}
 

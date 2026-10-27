@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -62,8 +65,10 @@ type Config struct {
 	HTTPPort  int `yaml:"http_port"`
 	HTTPSPort int `yaml:"https_port"`
 	UIPort    int `yaml:"ui_port"`
+	AgentPort int `yaml:"agent_port"`
 
 	WSLDistro       string `yaml:"wsl_distro"`
+	ProjectsRoot    string `yaml:"projects_root"`
 	AutoStartSites  bool   `yaml:"auto_start_sites"`
 	ServingMode     string `yaml:"serving_mode"`
 	ServingProvider string `yaml:"serving_provider"`
@@ -81,6 +86,7 @@ func Default() Config {
 		HTTPPort:            8080,
 		HTTPSPort:           8443,
 		UIPort:              7070,
+		AgentPort:           7443,
 		WSLDistro:           "devstack",
 		AutoStartSites:      true,
 		ServingMode:         ServingModeBuiltin,
@@ -110,6 +116,7 @@ func Load(home string) (Config, error) {
 
 	cfg := Default()
 	cfg.Home = resolved
+	cfg.ProjectsRoot = platform.Join(runtime.GOOS, resolved, "projects")
 
 	data, err := os.ReadFile(paths.Config)
 	switch {
@@ -118,6 +125,9 @@ func Load(home string) (Config, error) {
 			return Config{}, fmt.Errorf("parse %s: %w", paths.Config, err)
 		}
 		cfg.Home = resolved
+		if cfg.ProjectsRoot == "" {
+			cfg.ProjectsRoot = platform.Join(runtime.GOOS, resolved, "projects")
+		}
 	case errors.Is(err, os.ErrNotExist):
 		if err := cfg.Save(); err != nil {
 			return Config{}, err
@@ -142,6 +152,7 @@ func (c Config) Validate() error {
 		{"http_port", c.HTTPPort},
 		{"https_port", c.HTTPSPort},
 		{"ui_port", c.UIPort},
+		{"agent_port", c.AgentPort},
 	}
 	seen := make(map[int]string, len(ports))
 	for _, p := range ports {
@@ -171,6 +182,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("serving_provider %s requires serving_mode %s or %s, got %s",
 			ServingProviderDocker, ServingModeNginx, ServingModeApache, c.ServingMode)
 	}
+	if c.ProjectsRoot != "" && !filepath.IsAbs(c.ProjectsRoot) {
+		return fmt.Errorf("projects_root %q must be an absolute path", c.ProjectsRoot)
+	}
 	return nil
 }
 
@@ -193,7 +207,7 @@ func (c Config) Save() error {
 		return fmt.Errorf("encode config: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(c.Home, ".config-*.yaml")
+	tmp, err := os.CreateTemp(c.Home, "config-*.yaml.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary config: %w", err)
 	}
@@ -227,17 +241,30 @@ func (c Config) Save() error {
 	return nil
 }
 
-// resolveHome applies the override precedence and returns an absolute path.
+// resolveHome applies the override precedence and returns an absolute path:
+// explicit home, DEVSTACK_HOME, a detected legacy ~/.devstack, then the
+// platform default. Legacy Linux installs are never moved.
 func resolveHome(home string) (string, error) {
+	userHome, _ := os.UserHomeDir()
+	return resolveHomeFrom(home, os.Getenv("DEVSTACK_HOME"), userHome, func(candidate string) bool {
+		info, err := os.Stat(candidate)
+		return err == nil && info.IsDir()
+	})
+}
+
+func resolveHomeFrom(home, envHome, userHome string, legacyExists func(string) bool) (string, error) {
+	home = strings.TrimSpace(home)
 	if home == "" {
-		home = os.Getenv("DEVSTACK_HOME")
+		home = strings.TrimSpace(envHome)
+	}
+	if home == "" && userHome != "" && legacyExists != nil {
+		legacy := filepath.Join(userHome, ".devstack")
+		if legacyExists(legacy) {
+			home = legacy
+		}
 	}
 	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve user home: %w", err)
-		}
-		home = filepath.Join(userHome, ".devstack")
+		home = platform.DefaultRoot(runtime.GOOS)
 	}
 	abs, err := filepath.Abs(home)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -40,8 +41,16 @@ func (s *Service) checkTools() Check {
 	checked := 0
 	for _, name := range []string{"php", "composer"} {
 		managed := targets[name]
-		managedExists := regularExecutable(managed)
 		wrapper := filepath.Join(binDir, name)
+		if runtime.GOOS == "windows" {
+			if !regularExecutable(managed) && regularExecutable(managed+".cmd") {
+				managed += ".cmd"
+			}
+			if !regularExecutable(wrapper) && regularExecutable(wrapper+".cmd") {
+				wrapper += ".cmd"
+			}
+		}
+		managedExists := regularExecutable(managed)
 		resolved, err := lookPath(name)
 		if err != nil || strings.TrimSpace(resolved) == "" {
 			problems = append(problems, fmt.Sprintf("`%s` does not resolve on PATH; managed shim is %s", name, wrapper))
@@ -71,7 +80,13 @@ func (s *Service) checkTools() Check {
 
 func regularExecutable(path string) bool {
 	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return info.Mode().Perm()&0o111 != 0
 }
 
 func sameFile(a, b string) bool {

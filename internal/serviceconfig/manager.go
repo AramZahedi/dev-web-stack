@@ -2,9 +2,11 @@ package serviceconfig
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -60,12 +62,37 @@ func New(root string) (*Manager, error) {
 	}
 
 	lock, _ := managerLocks.LoadOrStore(abs, &sync.Mutex{})
-	return &Manager{
+	m := &Manager{
 		mu:           lock.(*sync.Mutex),
 		root:         abs,
-		manifestPath: filepath.Join(abs, ".config-manifest.json"),
+		manifestPath: filepath.Join(abs, manifestName),
 		now:          time.Now,
-	}, nil
+	}
+	if err := m.migrateLegacyManifest(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// migrateLegacyManifest renames the one legacy dot-prefixed manifest. New
+// installs never create it; an existing install keeps its data with a single
+// atomic rename.
+func (m *Manager) migrateLegacyManifest() error {
+	if _, err := os.Stat(m.manifestPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat manifest %s: %w", m.manifestPath, err)
+	}
+	legacy := filepath.Join(m.root, legacyManifestName)
+	if _, err := os.Stat(legacy); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("stat legacy manifest %s: %w", legacy, err)
+	}
+	if err := os.Rename(legacy, m.manifestPath); err != nil {
+		return fmt.Errorf("migrate legacy manifest %s: %w", legacy, err)
+	}
+	return nil
 }
 
 // cleanRel validates and cleans rel, ensuring it is a relative path that stays inside root
@@ -74,17 +101,19 @@ func (m *Manager) cleanRel(rel string) (string, string, error) {
 	if rel == "" {
 		return "", "", fmt.Errorf("config path cannot be empty")
 	}
-	if filepath.IsAbs(rel) {
+	slashPath := filepath.ToSlash(rel)
+	if filepath.IsAbs(rel) || filepath.VolumeName(rel) != "" || path.IsAbs(slashPath) {
 		return "", "", fmt.Errorf("config path must be relative: %q", rel)
 	}
 
-	// Normalize slashes
-	cleaned := filepath.Clean(filepath.ToSlash(rel))
+	// Normalize slashes with the slash-based cleaner so reserved prefixes are
+	// compared identically on Windows and Linux.
+	cleaned := path.Clean(slashPath)
 	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return "", "", fmt.Errorf("config path escapes root: %q", rel)
 	}
 
-	if cleaned == ".config-manifest.json" || cleaned == "backups" || strings.HasPrefix(cleaned, "backups/") {
+	if cleaned == manifestName || cleaned == legacyManifestName || cleaned == "backups" || strings.HasPrefix(cleaned, "backups/") {
 		return "", "", fmt.Errorf("config path %q is reserved", rel)
 	}
 
@@ -686,7 +715,7 @@ func atomicWrite(dest string, data []byte, mode os.FileMode) error {
 		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	tmp, err := os.CreateTemp(dir, "tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp file in %s: %w", dir, err)
 	}

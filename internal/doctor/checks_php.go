@@ -150,6 +150,9 @@ func checkPHPBuilds(sites []model.Site, builds []model.RuntimeBuild, listErr err
 // needs bin/php, sbin/php-fpm, and extension modules either directly under
 // lib/php/extensions or in one architecture subdirectory.
 func verifyPHPBuild(build model.RuntimeBuild) error {
+	if build.Backend == model.BackendWSL {
+		return nil
+	}
 	if strings.TrimSpace(build.Path) == "" {
 		return errors.New("build path is empty")
 	}

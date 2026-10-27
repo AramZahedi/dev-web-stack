@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -78,7 +79,7 @@ func TestWriteUserCreatesMissingFileWithoutBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o640 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("mode = %o, want 0640", info.Mode().Perm())
 	}
 
@@ -117,7 +118,7 @@ func TestManagersForSameRootShareManifestLock(t *testing.T) {
 		}(i, manager)
 	}
 	wg.Wait()
-	manifest, err := loadManifest(filepath.Join(root, ".config-manifest.json"))
+	manifest, err := loadManifest(filepath.Join(root, "config-manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -39,14 +40,17 @@ const (
 // FrontController are carried for PHP routes so the FastCGI transport can
 // resolve script paths; the static and Node transports ignore them.
 type Route struct {
-	SiteID          string
-	Host            string
-	Kind            Kind
-	Upstream        string
-	DocumentRoot    string
-	FrontController bool
-	ForceHTTPS      bool
-	TLS             bool
+	SiteID       string
+	Host         string
+	Kind         Kind
+	Upstream     string
+	DocumentRoot string
+	// ProxyDocumentRoot is the Windows-visible document root used for local
+	// file checks. DocumentRoot remains the backend path passed to FPM.
+	ProxyDocumentRoot string
+	FrontController   bool
+	ForceHTTPS        bool
+	TLS               bool
 	// State and DesiredState prevent a stopped or failed site from being
 	// proxied to a stale/dead upstream. Empty values are treated as running
 	// for compatibility with standalone routes.
@@ -78,7 +82,8 @@ var emptySnapshot = &Snapshot{}
 // Router serves the current snapshot through an atomic pointer. Replacing a
 // snapshot is safe while requests are in flight.
 type Router struct {
-	snapshot atomic.Pointer[Snapshot]
+	snapshot       atomic.Pointer[Snapshot]
+	backupSnapshot atomic.Pointer[Snapshot]
 
 	staticTransport *http.Transport
 	nodeTransport   *http.Transport
@@ -124,6 +129,39 @@ func (r *Router) Replace(s Snapshot) {
 		Certs:       certs,
 		DefaultCert: s.DefaultCert,
 	})
+}
+
+// UpdateDockerWebRoutes redirects all non-dashboard routes to the private Docker
+// web server (e.g. 127.0.0.1:18080) when active is true, and restores original
+// routes when active is false.
+func (r *Router) UpdateDockerWebRoutes(ctx context.Context, active bool, host string, port int) error {
+	current := r.load()
+	if active {
+		newRoutes := make(map[string]Route, len(current.Routes))
+		upstream := net.JoinHostPort(host, strconv.Itoa(port))
+		for h, route := range current.Routes {
+			if route.Host == "devstack.test" || route.SiteID == "__dashboard__" {
+				newRoutes[h] = route
+				continue
+			}
+			newRoute := route
+			newRoute.Upstream = upstream
+			newRoute.Kind = KindNode
+			newRoutes[h] = newRoute
+		}
+		r.backupSnapshot.Store(current)
+		r.snapshot.Store(&Snapshot{
+			Routes:      newRoutes,
+			Certs:       current.Certs,
+			DefaultCert: current.DefaultCert,
+		})
+		return nil
+	}
+
+	if backup := r.backupSnapshot.Swap(nil); backup != nil {
+		r.snapshot.Store(backup)
+	}
+	return nil
 }
 
 // Lookup returns the route for host. Matching is exact after lowercasing,

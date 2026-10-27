@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
@@ -185,5 +186,37 @@ func TestRouterServesStatePageWithoutDialingUpstream(t *testing.T) {
 				t.Fatalf("code = %d, want %d; body=%q", rec.Code, tc.want, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestRouterUpdateDockerWebRoutes(t *testing.T) {
+	r := NewRouter()
+	r.Replace(Snapshot{
+		Routes: map[string]Route{
+			"devstack.test": {SiteID: "__dashboard__", Host: "devstack.test", Kind: KindStatic, Upstream: "127.0.0.1:7070"},
+			"shop.test":     {SiteID: "shop", Host: "shop.test", Kind: KindPHP, Upstream: "127.0.0.1:43001"},
+		},
+	})
+
+	if err := r.UpdateDockerWebRoutes(context.Background(), true, "127.0.0.1", 18080); err != nil {
+		t.Fatal(err)
+	}
+
+	dash, ok := r.Lookup("devstack.test")
+	if !ok || dash.Upstream != "127.0.0.1:7070" {
+		t.Fatalf("dashboard route = %+v, want untouched upstream 127.0.0.1:7070", dash)
+	}
+
+	shop, ok := r.Lookup("shop.test")
+	if !ok || shop.Upstream != "127.0.0.1:18080" || shop.Kind != KindNode {
+		t.Fatalf("shop route = %+v, want 127.0.0.1:18080 KindNode", shop)
+	}
+
+	if err := r.UpdateDockerWebRoutes(context.Background(), false, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	shopRestored, ok := r.Lookup("shop.test")
+	if !ok || shopRestored.Upstream != "127.0.0.1:43001" || shopRestored.Kind != KindPHP {
+		t.Fatalf("shop restored = %+v, want 127.0.0.1:43001 KindPHP", shopRestored)
 	}
 }

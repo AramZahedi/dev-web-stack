@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // CollectOptions supplies the test seams used by CollectFrom. Zero values use
@@ -27,6 +27,9 @@ type CollectOptions struct {
 
 // Collect measures the host resources used by the performance engine.
 func Collect() (Resources, error) {
+	if runtime.GOOS == "windows" {
+		return collectWindows()
+	}
 	return CollectFrom(CollectOptions{})
 }
 
@@ -55,13 +58,7 @@ func CollectFrom(opts CollectOptions) (Resources, error) {
 	}
 	getrlimit := opts.Getrlimit
 	if getrlimit == nil {
-		getrlimit = func() (uint64, uint64, error) {
-			var limit syscall.Rlimit
-			if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
-				return 0, 0, err
-			}
-			return limit.Cur, limit.Max, nil
-		}
+		getrlimit = defaultNofileLimit
 	}
 	lookupUser := opts.LookupUser
 	if lookupUser == nil {
@@ -220,11 +217,11 @@ func cgroupV2Path(procRoot string) string {
 		if len(fields) != 3 || fields[0] != "0" || fields[1] != "" {
 			continue
 		}
-		rel := filepath.Clean("/" + fields[2])
-		if rel == "/" {
+		rel := path.Clean("/" + strings.TrimSpace(fields[2]))
+		if rel == "/" || rel == "." {
 			return ""
 		}
-		return strings.TrimPrefix(rel, "/")
+		return filepath.FromSlash(strings.TrimPrefix(rel, "/"))
 	}
 	return ""
 }

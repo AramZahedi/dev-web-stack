@@ -3,6 +3,7 @@ package serviceconfig
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -278,16 +279,16 @@ func TestAtomicWritesPreserveMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %o, want 0600", info.Mode().Perm())
 	}
 
 	// Manifest mode should be 0600
-	manifestInfo, err := os.Stat(filepath.Join(root, ".config-manifest.json"))
+	manifestInfo, err := os.Stat(filepath.Join(root, "config-manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifestInfo.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && manifestInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("manifest mode = %o, want 0600", manifestInfo.Mode().Perm())
 	}
 }
@@ -314,7 +315,7 @@ func TestSymlinkEscapeRejected(t *testing.T) {
 	}
 
 	// Reserved paths must fail
-	for _, res := range []string{".config-manifest.json", "backups/foo.conf", "backups"} {
+	for _, res := range []string{"config-manifest.json", "backups/foo.conf", "backups"} {
 		if _, err := m.WriteGenerated(res, []byte("x"), 0o644, "test"); err == nil {
 			t.Fatalf("expected reserved path %q to be rejected", res)
 		}

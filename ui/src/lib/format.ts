@@ -132,5 +132,35 @@ export function isSecretKey(key: string): boolean {
 }
 
 export function isAbsolutePath(value: string): boolean {
-  return value.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(value);
+  const input = value.trim();
+  if (!input) return false;
+  if (input.startsWith('/') && !input.startsWith('//')) {
+    return !input.split('/').includes('..');
+  }
+
+  const windowsPath = input.replace(/\//g, '\\');
+  if (/^C:\\/i.test(windowsPath)) {
+    return !windowsPath.slice(3).split('\\').some((part) => part === '..' || part.includes(':'));
+  }
+
+  const wslPath = /^\\\\wsl(?:\.localhost|\$)\\([^\\]+)\\(.+)$/i.exec(windowsPath);
+  return Boolean(
+    wslPath &&
+      wslPath[1] !== '.' &&
+      wslPath[1] !== '..' &&
+      !wslPath[2].split('\\').some((part) => part === '.' || part === '..' || part.includes(':')),
+  );
+}
+
+export function sourceModeLabel(mode?: string): string {
+  switch (mode) {
+    case 'windows':
+      return 'Windows drive';
+    case 'wsl':
+      return 'WSL distro';
+    case 'local':
+      return 'Local';
+    default:
+      return '';
+  }
 }

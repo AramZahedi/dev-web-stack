@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package daemon wires the long-running devstack services together: the
 // SQLite store, logs, privileged helper client, runtime and certificate
 // managers, local backend, site lifecycle, doctor, proxy, REST API, and the
@@ -33,6 +35,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	perfservice "github.com/AramZahedi/dev-web-stack/internal/performance/service"
@@ -92,9 +95,9 @@ type Options struct {
 	LogLevel     string
 }
 
-// SocketPath returns the daemon's Unix-socket control path below home.
+// SocketPath returns the daemon's local control address below home.
 func SocketPath(home string) string {
-	return filepath.Join(home, "run", "daemon.sock")
+	return Endpoint(home).Address
 }
 
 // PidPath returns the daemon's pid file path below home.
@@ -247,9 +250,13 @@ func Run(ctx context.Context, opts Options) error {
 		nil,
 	)
 	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
+	projectsRoot := cfg.ProjectsRoot
+	if projectsRoot == "" {
+		projectsRoot = paths.Projects
+	}
 	dockerWeb, err := dockerweb.NewManager(dockerweb.ManagerConfig{
 		Root:         cfg.Home,
-		Projects:     paths.Projects,
+		Projects:     projectsRoot,
 		Store:        st,
 		Certs:        certManager,
 		Dashboard:    dockerweb.DashboardSpec{Domain: "devstack.test", UIPort: cfg.UIPort},
@@ -509,7 +516,7 @@ func (d *daemon) startAPI(handler http.Handler) error {
 	if err := prepareSocketPath(d.socketPath); err != nil {
 		return err
 	}
-	unixLn, err := net.Listen("unix", d.socketPath)
+	unixLn, err := ipc.Listen(ipc.UnixEndpoint(d.socketPath), ipc.WithAllowUID(os.Getuid()))
 	if err != nil {
 		return fmt.Errorf("daemon: listen on socket %s: %w", d.socketPath, err)
 	}

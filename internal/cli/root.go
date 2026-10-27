@@ -100,7 +100,7 @@ var (
 	ensureRunning = daemon.EnsureRunning
 	runDaemon     = daemon.Run
 	dialHelper    = helperclient.Dial
-	stopDaemon    = daemonStop
+	stopDaemon    = stopDaemonPlatform
 	openBrowser   = openURL
 	userHomeDir   = os.UserHomeDir
 	currentEUID   = os.Geteuid

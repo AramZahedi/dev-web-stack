@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,7 +28,9 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	"github.com/AramZahedi/dev-web-stack/internal/phpini"
+	"github.com/AramZahedi/dev-web-stack/internal/ports"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
@@ -36,6 +39,7 @@ import (
 // options are rejected for static and Node sites.
 type CreateRequest struct {
 	Name, Path, Kind, NodeVersion, Command, DocumentRoot string
+	SourceMode                                           string
 	PHPVersion, PHPBuild                                 string
 	PHPExtensions                                        map[string]bool
 	PHPIni                                               map[string]string
@@ -55,6 +59,7 @@ type CreateRequest struct {
 // PHP sites only.
 type UpdateRequest struct {
 	Domain              string
+	SourceMode          string
 	WWW                 *bool
 	TLS                 *bool
 	ForceHTTPS          *bool
@@ -138,11 +143,13 @@ type Deps struct {
 	DockerSwitch DockerSwitch
 	Router       *proxy.Router
 	Ports        *domain.PortAllocator
+	PortProvider ports.Provider
 	Config       config.Config
 	Logs         *logs.Store
 	PHP          PHPCommands
 	PHPBackend   backend.PHPStager
 	PHPManifest  *catalog.PHPManifest
+	SourceCopier SourceCopier
 	Now          func() time.Time
 	NewID        func() string
 }
@@ -166,6 +173,11 @@ type Service struct {
 	// only accessed while mu is held.
 	retainedPHP map[string]map[string]int
 
+	// backendHosts records the address returned by the backend for each site.
+	// It is only accessed while mu is held. A missing entry defaults to
+	// 127.0.0.1 so a daemon restart can serve before the backend is prepared.
+	backendHosts map[string]string
+
 	// servingStateErr records a Docker->builtin transition where the builtin
 	// runtime is serving but persisting builtin/native failed. It is surfaced
 	// through VhostStatus and cleared by the next successful state save.
@@ -186,6 +198,9 @@ func NewService(deps Deps) *Service {
 	if deps.Ports == nil {
 		deps.Ports = domain.NewPortAllocator()
 	}
+	if deps.PortProvider == nil {
+		deps.PortProvider = ports.NewLocal(deps.Ports)
+	}
 	if deps.PHP == nil {
 		deps.PHP = defaultPHPCommands{}
 	}
@@ -196,7 +211,7 @@ func NewService(deps Deps) *Service {
 			deps.PHPBackend = stager
 		}
 	}
-	svc := &Service{deps: deps}
+	svc := &Service{deps: deps, backendHosts: make(map[string]string)}
 	svc.reserveExistingPorts()
 	return svc
 }
@@ -244,7 +259,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		// PHP sites use only a FastCGI port, allocated before any external
 		// side effects.
 	case site.Kind == model.SiteNode || !s.externalServing():
-		port, err = s.deps.Ports.Allocate(domain.PortHTTP)
+		port, err = s.allocatePort(ctx, site.ID, domain.PortHTTP)
 		if err != nil {
 			return model.Site{}, fmt.Errorf("sites: allocate HTTP port for %q: %w", site.Name, err)
 		}
@@ -266,7 +281,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		if err := s.checkPHPBackend(); err != nil {
 			return model.Site{}, err
 		}
-		fastCGIPort, err := s.deps.Ports.Allocate(domain.PortFastCGI)
+		fastCGIPort, err := s.allocatePort(ctx, site.ID, domain.PortFastCGI)
 		if err != nil {
 			return model.Site{}, fmt.Errorf("sites: allocate FastCGI port for %q: %w", site.Name, err)
 		}
@@ -333,9 +348,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		if err != nil {
 			return fail(err, true)
 		}
-		if _, err := s.deps.PHPBackend.PreparePHP(ctx, site.ID, phpDefaultGeneration, spec); err != nil {
+		prepared, err := s.deps.PHPBackend.PreparePHP(ctx, site.ID, phpDefaultGeneration, spec)
+		if err != nil {
 			return fail(fmt.Errorf("sites: prepare %q: %w", site.Name, err), true)
 		}
+		s.recordBackendHost(site.ID, prepared)
 		if _, err := s.deps.PHPBackend.StartPHP(ctx, site.ID, phpDefaultGeneration); err != nil {
 			return fail(fmt.Errorf("sites: start %q: %w", site.Name, err), true)
 		}
@@ -377,6 +394,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	if err != nil {
 		return fail(fmt.Errorf("sites: prepare %q: %w", site.Name, err), true)
 	}
+	s.recordBackendHost(site.ID, prepared)
 	if _, err := s.deps.Backend.Start(ctx, site.ID); err != nil {
 		return fail(fmt.Errorf("sites: start %q: %w", site.Name, err), true)
 	}
@@ -718,9 +736,9 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	}
 	s.emitEvent(ctx, site.ID, "site.deleted", fmt.Sprintf("site %s deleted", site.Name))
 
-	s.deps.Ports.Release(site.HTTPPort)
+	s.releasePort(ctx, site.ID, site.HTTPPort)
 	if site.FastCGIPort != 0 {
-		s.deps.Ports.Release(site.FastCGIPort)
+		s.releasePort(ctx, site.ID, site.FastCGIPort)
 	}
 	var removeErr error
 	if site.Kind == model.SitePHP {
@@ -743,16 +761,31 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 	if err != nil {
 		return model.Site{}, fmt.Errorf("sites: %w", err)
 	}
-	project, err := domain.ValidateProjectPath(req.Path)
-	if err != nil {
-		return model.Site{}, fmt.Errorf("sites: %w", err)
-	}
-
 	kind := model.SiteKind(strings.ToLower(strings.TrimSpace(req.Kind)))
 	switch kind {
 	case model.SiteStatic, model.SiteNode, model.SitePHP:
 	default:
 		return model.Site{}, fmt.Errorf("sites: unsupported site kind %q", req.Kind)
+	}
+
+	sourceMode := model.SourceMode(strings.TrimSpace(req.SourceMode))
+	if sourceMode == "" {
+		sourceMode = pathmode.DefaultSourceMode(kind, runtime.GOOS)
+	}
+	if err := pathmode.ValidateSourceMode(sourceMode, runtime.GOOS); err != nil {
+		return model.Site{}, fmt.Errorf("sites: %w", err)
+	}
+	hostPath, backendPath, err := pathmode.TranslateSourceForDistro(sourceMode, req.Path, s.deps.Config.WSLDistro)
+	if err != nil {
+		return model.Site{}, fmt.Errorf("sites: %w", err)
+	}
+	project := hostPath
+	if sourceMode == model.SourceLocal {
+		project, err = domain.ValidateProjectPath(req.Path)
+		if err != nil {
+			return model.Site{}, fmt.Errorf("sites: %w", err)
+		}
+		hostPath, backendPath = project, project
 	}
 	if kind != model.SitePHP {
 		if err := rejectPHPOnlyCreateFields(req); err != nil {
@@ -812,8 +845,9 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		Domain:              siteDomain,
 		WWW:                 req.WWW,
 		Backend:             model.BackendLocal,
-		HostPath:            project,
-		BackendPath:         project,
+		SourceMode:          sourceMode,
+		HostPath:            hostPath,
+		BackendPath:         backendPath,
 		Kind:                kind,
 		NodeVersion:         strings.TrimSpace(req.NodeVersion),
 		Command:             strings.TrimSpace(req.Command),
@@ -832,7 +866,7 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 
 	switch kind {
 	case model.SiteStatic:
-		site.DocumentRoot, err = validateDocumentRoot(project, req.DocumentRoot)
+		site.DocumentRoot, err = resolveSiteDocumentRoot(site, req.DocumentRoot)
 		if err != nil {
 			return model.Site{}, err
 		}
@@ -859,7 +893,7 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		site.PHPIni = cloneStringMap(req.PHPIni)
 		site.PHPIniRaw = req.PHPIniRaw
 		site.FrontController = req.FrontController
-		site.DocumentRoot, err = validateDocumentRoot(project, req.DocumentRoot)
+		site.DocumentRoot, err = resolveSiteDocumentRoot(site, req.DocumentRoot)
 		if err != nil {
 			return model.Site{}, err
 		}
@@ -952,6 +986,9 @@ func cloneBuildProfile(b *model.BuildProfile) *model.BuildProfile {
 // store or external systems.
 func (s *Service) applyUpdate(ctx context.Context, current model.Site, req UpdateRequest) (model.Site, error) {
 	updated := current
+	if mode := model.SourceMode(strings.TrimSpace(req.SourceMode)); mode != "" && mode != current.SourceMode {
+		return model.Site{}, fmt.Errorf("sites: changing source mode from %q to %q requires a source copy", current.SourceMode, mode)
+	}
 
 	if value := strings.TrimSpace(req.Domain); value != "" {
 		value = strings.ToLower(value)
@@ -1023,7 +1060,7 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 		}
 		switch updated.Kind {
 		case model.SiteStatic, model.SitePHP:
-			root, err := validateDocumentRoot(updated.HostPath, req.DocumentRoot)
+			root, err := resolveSiteDocumentRoot(updated, req.DocumentRoot)
 			if err != nil {
 				return model.Site{}, err
 			}
@@ -1060,7 +1097,7 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 
 	var allocated int
 	if site.HTTPPort == 0 {
-		port, err := s.deps.Ports.Allocate(domain.PortHTTP)
+		port, err := s.allocatePort(ctx, site.ID, domain.PortHTTP)
 		if err != nil {
 			return site, fmt.Errorf("sites: allocate HTTP port for %q: %w", site.Name, err)
 		}
@@ -1069,7 +1106,7 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 	}
 	releaseAllocated := func() {
 		if allocated != 0 {
-			s.deps.Ports.Release(allocated)
+			s.releasePort(ctx, site.ID, allocated)
 		}
 	}
 
@@ -1078,6 +1115,7 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 		releaseAllocated()
 		return site, fmt.Errorf("sites: prepare %q: %w", site.Name, err)
 	}
+	s.recordBackendHost(site.ID, prepared)
 
 	wasRunning := site.Status == model.StatusRunning
 	if _, err := s.deps.Backend.Start(ctx, site.ID); err != nil {
@@ -1227,10 +1265,10 @@ func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current 
 		}
 	}
 	if previous.HTTPPort == 0 && current.HTTPPort != 0 && s.deps.Ports != nil {
-		s.deps.Ports.Release(current.HTTPPort)
+		s.releasePort(ctx, current.ID, current.HTTPPort)
 	}
 	if previous.FastCGIPort == 0 && current.FastCGIPort != 0 && s.deps.Ports != nil && phpStopped {
-		s.deps.Ports.Release(current.FastCGIPort)
+		s.releasePort(ctx, current.ID, current.FastCGIPort)
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("rollback: republish routes: %w", err))
@@ -1323,7 +1361,7 @@ func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts 
 		}
 	}
 	if port != 0 && s.deps.Ports != nil {
-		s.deps.Ports.Release(port)
+		s.releasePort(ctx, site.ID, port)
 	}
 	if site.Kind == model.SitePHP {
 		// A failed stop may leave a master listening on the FastCGI port, so
@@ -1339,7 +1377,7 @@ func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts 
 				errs = append(errs, fmt.Errorf("rollback: remove PHP config for %q: %w", site.Name, err))
 			}
 			if site.FastCGIPort != 0 && s.deps.Ports != nil {
-				s.deps.Ports.Release(site.FastCGIPort)
+				s.releasePort(ctx, site.ID, site.FastCGIPort)
 			}
 		}
 	}
@@ -1478,7 +1516,7 @@ func (s *Service) reserveExistingPorts() {
 	for _, site := range stored {
 		for _, port := range []int{site.HTTPPort, site.FastCGIPort} {
 			if port > 0 {
-				_ = s.deps.Ports.Reserve(port)
+				_ = s.reservePort(context.Background(), site.ID, port)
 			}
 		}
 	}
@@ -1520,6 +1558,7 @@ func backendSpec(site model.Site) backend.SiteSpec {
 	return backend.SiteSpec{
 		ID:              site.ID,
 		Kind:            string(site.Kind),
+		Domain:          site.Domain,
 		HostPath:        site.HostPath,
 		BackendPath:     site.BackendPath,
 		DocumentRoot:    site.DocumentRoot,
@@ -1597,12 +1636,77 @@ func validateDocumentRoot(projectRoot, value string) (string, error) {
 	return root, nil
 }
 
+// resolveSiteDocumentRoot validates the document root in the site's source
+// namespace. Local sites keep the existing filesystem/symlink checks; Windows
+// and WSL paths are validated structurally and checked by the WSL agent when
+// the site is prepared.
+func resolveSiteDocumentRoot(site model.Site, value string) (string, error) {
+	if site.SourceMode == "" || site.SourceMode == model.SourceLocal {
+		return validateDocumentRoot(site.HostPath, value)
+	}
+	probe := site
+	probe.DocumentRoot = strings.TrimSpace(value)
+	if _, err := pathmode.ProxyDocumentRoot(probe); err != nil {
+		return "", fmt.Errorf("sites: %w", err)
+	}
+	return strings.TrimSpace(value), nil
+}
+
 func pathWithin(base, target string) bool {
 	rel, err := filepath.Rel(base, target)
 	if err != nil {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+// allocatePort asks the placement provider for a backend port. Linux uses the
+// host allocator; Windows delegates to the WSL agent.
+// recordBackendHost persists the backend's routing address for this process
+// lifetime. The default is loopback.
+func (s *Service) recordBackendHost(siteID string, prepared backend.PreparedSite) {
+	host := strings.TrimSpace(prepared.BackendHost)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if s.backendHosts == nil {
+		s.backendHosts = make(map[string]string)
+	}
+	s.backendHosts[siteID] = host
+}
+
+func (s *Service) backendHost(siteID string) string {
+	if host := strings.TrimSpace(s.backendHosts[siteID]); host != "" {
+		return host
+	}
+	return "127.0.0.1"
+}
+
+func (s *Service) allocatePort(ctx context.Context, siteID string, kind domain.PortKind) (int, error) {
+	if s.deps.PortProvider == nil {
+		return s.deps.Ports.Allocate(kind)
+	}
+	return s.deps.PortProvider.Allocate(ctx, siteID, kind)
+}
+
+func (s *Service) releasePort(ctx context.Context, siteID string, port int) {
+	if port == 0 {
+		return
+	}
+	if s.deps.PortProvider == nil {
+		if s.deps.Ports != nil {
+			s.deps.Ports.Release(port)
+		}
+		return
+	}
+	s.deps.PortProvider.Release(ctx, siteID, port)
+}
+
+func (s *Service) reservePort(ctx context.Context, siteID string, port int) error {
+	if s.deps.PortProvider == nil {
+		return s.deps.Ports.Reserve(port)
+	}
+	return s.deps.PortProvider.Reserve(ctx, siteID, port)
 }
 
 func (s *Service) currentTime() time.Time {

@@ -105,6 +105,7 @@ const (
 // SiteService is the site lifecycle surface used by the API.
 type SiteService interface {
 	Create(ctx context.Context, req sites.CreateRequest) (model.Site, error)
+	ChangeSourceMode(ctx context.Context, ref string, mode model.SourceMode, destination string, removeSource bool) (model.Site, error)
 	Update(ctx context.Context, ref string, req sites.UpdateRequest) (model.Site, error)
 	Get(ctx context.Context, ref string) (model.Site, error)
 	List(ctx context.Context) ([]model.Site, error)
@@ -404,6 +405,7 @@ func (s *Server) apiRoutes() []route {
 
 		{http.MethodGet, "/api/v1/sites", s.handleListSites},
 		{http.MethodPost, "/api/v1/sites", s.handleCreateSite},
+		{http.MethodPost, "/api/v1/sites/{ref}/source", s.handleChangeSiteSourceMode},
 		{http.MethodGet, "/api/v1/sites/{ref}", s.handleGetSite},
 		{http.MethodPatch, "/api/v1/sites/{ref}", s.handleUpdateSite},
 		{http.MethodDelete, "/api/v1/sites/{ref}", s.handleDeleteSite},
@@ -913,6 +915,15 @@ func classifyError(err error) (int, string, string, any) {
 	}
 	if errors.Is(err, sites.ErrRuntimeMissing) {
 		return http.StatusConflict, codeRuntimeMissing, err.Error(), nil
+	}
+	if errors.Is(err, sites.ErrSiteMustBeStopped) {
+		return http.StatusConflict, codeInvalidRequest, err.Error(), nil
+	}
+	if errors.Is(err, sites.ErrSourceCopyUnavailable) {
+		return http.StatusServiceUnavailable, codeServiceUnavailable, err.Error(), nil
+	}
+	if errors.Is(err, sites.ErrSourceRemovalBlocked) {
+		return http.StatusNotImplemented, codeInvalidRequest, err.Error(), nil
 	}
 	if errors.Is(err, phpini.ErrInvalidConfig) || errors.Is(err, phpfpm.ErrConfigInvalid) {
 		return http.StatusUnprocessableEntity, codePHPConfigInvalid, err.Error(), phpConfigDetails(err)

@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatRelative, checksumPrefix, daysUntil, siteUrl } from './format';
+import { formatBytes, formatRelative, checksumPrefix, daysUntil, siteUrl, isAbsolutePath, sourceModeLabel } from './format';
 
 describe('format helpers', () => {
+  it('accepts only Linux, C-drive, and WSL UNC absolute project paths', () => {
+    expect(isAbsolutePath('/home/aram/project')).toBe(true);
+    expect(isAbsolutePath('C:\\devstack\\projects\\site')).toBe(true);
+    expect(isAbsolutePath('\\\\wsl.localhost\\devstack\\home\\aram\\site')).toBe(true);
+    expect(isAbsolutePath('\\\\wsl$\\devstack\\home\\aram\\site')).toBe(true);
+    expect(isAbsolutePath('D:\\projects\\site')).toBe(false);
+    expect(isAbsolutePath('\\\\server\\share\\site')).toBe(false);
+    expect(isAbsolutePath('\\\\?\\C:\\site')).toBe(false);
+    expect(isAbsolutePath('C:\\site\\..\\other')).toBe(false);
+    expect(isAbsolutePath('C:\\site\\file:stream')).toBe(false);
+  });
+
   it('formats bytes with binary units', () => {
     expect(formatBytes(0)).toBe('0 B');
     expect(formatBytes(1536)).toBe('1.5 KB');
@@ -35,5 +47,12 @@ describe('format helpers', () => {
     expect(siteUrl({ domain: 'blog.test', tls: true }, { http: '80', https: '443' })).toBe(
       'https://blog.test',
     );
+  });
+
+  it('formats source mode labels for display', () => {
+    expect(sourceModeLabel('windows')).toBe('Windows drive');
+    expect(sourceModeLabel('wsl')).toBe('WSL distro');
+    expect(sourceModeLabel('local')).toBe('Local');
+    expect(sourceModeLabel(undefined)).toBe('');
   });
 });

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -39,10 +41,16 @@ import (
 
 // fakeClient implements Client for CLI tests. It never touches a daemon.
 type fakeClient struct {
-	sites     []model.Site
-	site      model.Site
-	addReq    sites.CreateRequest
-	updateReq sites.UpdateRequest
+	sites        []model.Site
+	site         model.Site
+	addReq       sites.CreateRequest
+	updateReq    sites.UpdateRequest
+	sourceChange struct {
+		ref         string
+		mode        model.SourceMode
+		destination string
+		remove      bool
+	}
 	action    string
 	actionRef string
 	deleted   string
@@ -118,6 +126,14 @@ type fakeClient struct {
 	configActionPath string
 	configActionBody string
 	configResolution string
+}
+
+func (f *fakeClient) ChangeSourceMode(_ context.Context, ref string, mode model.SourceMode, destination string, remove bool) (model.Site, error) {
+	f.sourceChange.ref = ref
+	f.sourceChange.mode = mode
+	f.sourceChange.destination = destination
+	f.sourceChange.remove = remove
+	return model.Site{ID: "site-1", Name: ref, SourceMode: mode}, nil
 }
 
 func (f *fakeClient) maybeErr() error { return f.err }
@@ -630,6 +646,18 @@ func TestCLIAddAndList(t *testing.T) {
 	out := runCLI(t, fake, "site", "list")
 	if !strings.Contains(out, "blog") || !strings.Contains(out, "https://blog.test") {
 		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestCLISiteSourceChangeUsesExplicitTargetAndPath(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExit(t, fake, "site", "source", "blog", "--mode", "wsl", "--path", `\\wsl.localhost\Ubuntu\home\aram\blog`)
+	if code != 0 {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if fake.sourceChange.ref != "blog" || fake.sourceChange.mode != model.SourceWSL || fake.sourceChange.destination != `\\wsl.localhost\Ubuntu\home\aram\blog` || fake.sourceChange.remove {
+		t.Fatalf("source change = %+v", fake.sourceChange)
 	}
 }
 
@@ -1317,7 +1345,11 @@ func TestCLIUninstall(t *testing.T) {
 	if result.Status != "complete" {
 		t.Fatalf("status = %q, want complete", result.Status)
 	}
-	if !strings.Contains(result.Command, "sudo") {
+	wantElevated := "sudo"
+	if runtime.GOOS == "windows" {
+		wantElevated = "uninstall.ps1"
+	}
+	if !strings.Contains(result.Command, wantElevated) {
 		t.Fatalf("elevated command = %q", result.Command)
 	}
 	if result.ProjectFilesRemoved {
@@ -1377,7 +1409,11 @@ func TestCLIUninstallHelperUnavailable(t *testing.T) {
 	if !stopped {
 		t.Fatal("daemon was not stopped before the helper failure")
 	}
-	for _, want := range []string{"Uninstall incomplete.", "To remove the helper unit", "sudo", "Checklist:", "Project files were left untouched", home} {
+	wantElevated := "sudo"
+	if runtime.GOOS == "windows" {
+		wantElevated = "uninstall.ps1"
+	}
+	for _, want := range []string{"Uninstall incomplete.", "To remove the helper unit", wantElevated, "Checklist:", "Project files were left untouched", home} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, missing %q", stdout, want)
 		}
@@ -1417,7 +1453,11 @@ func TestCLIUninstallHelperError(t *testing.T) {
 	if result.Status != "incomplete" || result.Uninstalled {
 		t.Fatalf("result = %+v, want incomplete and not uninstalled", result)
 	}
-	if !strings.Contains(result.Command, "sudo") || !containsFold(result.Checklist, home) {
+	wantElevated := "sudo"
+	if runtime.GOOS == "windows" {
+		wantElevated = "uninstall.ps1"
+	}
+	if !strings.Contains(result.Command, wantElevated) || !containsFold(result.Checklist, home) {
 		t.Fatalf("instructions = %+v", result)
 	}
 	for _, want := range []string{"INTERNAL", "uninstall blew up", `"remediation"`} {
@@ -1448,7 +1488,11 @@ func TestCLIUninstallDaemonStopFailureStillPrintsInstructions(t *testing.T) {
 	if code == 0 {
 		t.Fatal("want non-zero exit")
 	}
-	for _, want := range []string{"Uninstall incomplete.", "Daemon: stop failed", "sudo", "Checklist:", "Project files were left untouched", home} {
+	wantElevated := "sudo"
+	if runtime.GOOS == "windows" {
+		wantElevated = "uninstall.ps1"
+	}
+	for _, want := range []string{"Uninstall incomplete.", "Daemon: stop failed", wantElevated, "Checklist:", "Project files were left untouched", home} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, missing %q", stdout, want)
 		}
@@ -1458,6 +1502,16 @@ func TestCLIUninstallDaemonStopFailureStillPrintsInstructions(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "daemon is wedged") {
 		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestCLIUninstallWindowsElevatedCommand(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	want := `powershell.exe -ExecutionPolicy Bypass -File C:\devstack\uninstall.ps1`
+	if elevatedRemovalCommand != want {
+		t.Fatalf("elevatedRemovalCommand = %q, want %q", elevatedRemovalCommand, want)
 	}
 }
 
@@ -1880,16 +1934,32 @@ func (f *fakeHelper) reset() {
 func startFakeHelper(t *testing.T) (*fakeHelper, string) {
 	t.Helper()
 	fake := &fakeHelper{}
-	socket := filepath.Join(t.TempDir(), "helper.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatalf("listen helper socket: %v", err)
+	var listener net.Listener
+	var socket string
+	if runtime.GOOS == "windows" {
+		setupFakeWSLForCLITests(t)
+		socket = fmt.Sprintf(`\\.\pipe\devstack-test-helper-%d-%d`, os.Getpid(), time.Now().UnixNano())
+		ln, err := ipc.Listen(ipc.NamedPipeEndpoint(socket))
+		if err != nil {
+			t.Fatalf("listen helper pipe: %v", err)
+		}
+		listener = ln
+	} else {
+		socket = filepath.Join(t.TempDir(), "helper.sock")
+		ln, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Fatalf("listen helper socket: %v", err)
+		}
+		listener = ln
 	}
 	server := &http.Server{Handler: fake}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() {
 		_ = server.Close()
-		_ = os.Remove(socket)
+		_ = listener.Close()
+		if runtime.GOOS != "windows" {
+			_ = os.Remove(socket)
+		}
 	})
 	return fake, socket
 }

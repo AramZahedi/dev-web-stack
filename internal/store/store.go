@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -67,7 +68,13 @@ func Open(path string) (*Store, error) {
 		_ = os.Chmod(abs+suffix, 0o600)
 	}
 
-	dsn := url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
+	// A Windows drive path must be a URI path component (/C:/...), not a URI
+	// authority. Otherwise SQLite parses "C:" as the host and rejects the DSN.
+	dsnPath := filepath.ToSlash(abs)
+	if runtime.GOOS == "windows" && len(dsnPath) >= 2 && dsnPath[1] == ':' {
+		dsnPath = "/" + dsnPath
+	}
+	dsn := url.URL{Scheme: "file", Path: dsnPath}
 	query := dsn.Query()
 	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "foreign_keys(1)")
@@ -105,7 +112,7 @@ const siteColumns = `id, name, domain, www_alias, backend, host_path, backend_pa
 	document_root, front_controller, spa_fallback, tls, force_https, desired_state,
 	status, http_port, fastcgi_port, created_at, updated_at,
 	front_controller_file, front_controller_mode, apache_allow_override, spa_fallback_file, build_json,
-	php_fpm_json`
+	php_fpm_json, source_mode`
 
 // CreateSite inserts a new site.
 func (s *Store) CreateSite(ctx context.Context, site model.Site) error {
@@ -114,7 +121,7 @@ func (s *Store) CreateSite(ctx context.Context, site model.Site) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO sites (`+siteColumns+`) VALUES (
-		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...)
 	if err != nil {
 		return fmt.Errorf("create site %q: %w", site.ID, err)
 	}
@@ -135,7 +142,7 @@ func (s *Store) CreateSiteWithPHPConfig(ctx context.Context, site model.Site, cf
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sites (`+siteColumns+`) VALUES (
-		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, args...); err != nil {
 		return fmt.Errorf("create site %q: %w", site.ID, err)
 	}
 	if err := saveSitePHPConfig(ctx, tx, cfg); err != nil {
@@ -187,7 +194,7 @@ func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
 		desired_state = ?, status = ?, http_port = ?, fastcgi_port = ?,
 		updated_at = ?,
 		front_controller_file = ?, front_controller_mode = ?, apache_allow_override = ?,
-		spa_fallback_file = ?, build_json = ?, php_fpm_json = ?
+		spa_fallback_file = ?, build_json = ?, php_fpm_json = ?, source_mode = ?
 		WHERE id = ?`,
 		site.Name, site.Domain, boolInt(site.WWW), string(site.Backend),
 		site.HostPath, site.BackendPath, string(site.Kind), site.PHPVersion,
@@ -197,7 +204,7 @@ func (s *Store) UpdateSite(ctx context.Context, site model.Site) error {
 		boolInt(site.TLS), boolInt(site.ForceHTTPS), string(site.DesiredState),
 		string(site.Status), site.HTTPPort, site.FastCGIPort,
 		site.UpdatedAt.Unix(),
-		fcFile, fcMode, override, spaFile, buildJSON, phpFPM,
+		fcFile, fcMode, override, spaFile, buildJSON, phpFPM, string(normalizedSourceMode(site.SourceMode)),
 		site.ID)
 	if err != nil {
 		return fmt.Errorf("update site %q: %w", site.ID, err)
@@ -723,8 +730,15 @@ func siteInsertArgs(site model.Site) ([]any, error) {
 		boolInt(site.TLS), boolInt(site.ForceHTTPS), string(site.DesiredState),
 		string(site.Status), site.HTTPPort, site.FastCGIPort,
 		site.CreatedAt.Unix(), site.UpdatedAt.Unix(),
-		fcFile, fcMode, override, spaFile, buildJSON, phpFPM,
+		fcFile, fcMode, override, spaFile, buildJSON, phpFPM, string(normalizedSourceMode(site.SourceMode)),
 	}, nil
+}
+
+func normalizedSourceMode(mode model.SourceMode) model.SourceMode {
+	if mode == "" {
+		return model.SourceLocal
+	}
+	return mode
 }
 
 // marshalSiteFields encodes the site's JSON columns.
@@ -781,6 +795,7 @@ func scanSite(scanner rowScanner, label, value string) (model.Site, error) {
 		&createdAt, &updatedAt,
 		&site.FrontControllerFile, &site.FrontControllerMode,
 		&site.ApacheAllowOverride, &site.SPAFallbackFile, &buildJSON, &phpFPM,
+		&site.SourceMode,
 	)
 	if err != nil {
 		if label != "" && errors.Is(err, sql.ErrNoRows) {

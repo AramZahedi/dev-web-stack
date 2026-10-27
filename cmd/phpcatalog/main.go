@@ -181,7 +181,7 @@ func writeEntry(path string, entry catalog.Entry) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create output directory %s: %w", dir, err)
 	}
-	file, err := os.CreateTemp(dir, ".phpcatalog-*")
+	file, err := os.CreateTemp(dir, "phpcatalog-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create output file in %s: %w", dir, err)
 	}

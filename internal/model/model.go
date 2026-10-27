@@ -27,6 +27,26 @@ const (
 	BackendWSL   BackendKind = "wsl"
 )
 
+// SourceMode identifies where a site's project files live relative to the
+// Windows daemon. Linux only uses SourceLocal.
+type SourceMode string
+
+const (
+	SourceLocal   SourceMode = "local"
+	SourceWindows SourceMode = "windows"
+	SourceWSL     SourceMode = "wsl"
+)
+
+// ValidSourceMode reports whether mode is one of the supported source modes.
+func ValidSourceMode(mode SourceMode) bool {
+	switch mode {
+	case SourceLocal, SourceWindows, SourceWSL:
+		return true
+	default:
+		return false
+	}
+}
+
 // DesiredState is the lifecycle state the supervisor should converge on.
 type DesiredState string
 
@@ -63,6 +83,7 @@ type Site struct {
 	Domain      string      `json:"domain"`
 	WWW         bool        `json:"www"`
 	Backend     BackendKind `json:"backend"`
+	SourceMode  SourceMode  `json:"source_mode"`
 	HostPath    string      `json:"host_path"`
 	BackendPath string      `json:"backend_path"`
 	Kind        SiteKind    `json:"kind"`

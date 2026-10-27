@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package supervisor manages the lifecycle of site backend processes.
 //
 // Each process runs in its own process group so the whole tree can be stopped

@@ -57,6 +57,16 @@ test('Sites loads the seeded sites and their summary', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Add site' })).toBeVisible();
 });
 
+test('Add Site exposes the local source selector without internal dot paths on Linux', async ({ page }) => {
+  await open(page, '#/sites/new');
+
+  const sourceGroup = page.getByRole('group', { name: 'Project source' });
+  await expect(sourceGroup).toBeVisible();
+  await expect(sourceGroup.getByRole('radio', { name: /Local Linux/ })).toBeChecked();
+  await expect(sourceGroup).not.toContainText('.devstack');
+  await expect(sourceGroup).not.toContainText('/mnt/c');
+});
+
 test('Add Site browses a folder, applies options, and navigates to the new site', async ({ page }) => {
   await open(page, '#/sites/new');
 

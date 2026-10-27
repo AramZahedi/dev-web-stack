@@ -1,0 +1,88 @@
+// Package platform defines the operating-system capabilities and path policy
+// shared by the daemon, helper, CLI, and WSL agent.
+package platform
+
+import (
+	"fmt"
+	"path"
+	"strings"
+)
+
+const (
+	// LinuxRoot is the application root for new Linux and WSL installs.
+	LinuxRoot = "/data/devstack"
+	// WindowsRoot is the application root on Windows.
+	WindowsRoot = `C:\devstack`
+)
+
+// IsWindows reports whether goos is Windows.
+func IsWindows(goos string) bool { return goos == "windows" }
+
+// DefaultRoot returns the platform application root. Existing Linux installs
+// at ~/.devstack are detected by config.resolveHome and preserved; this value
+// is only the default for a new install.
+func DefaultRoot(goos string) string {
+	if IsWindows(goos) {
+		return WindowsRoot
+	}
+	return LinuxRoot
+}
+
+// Join joins path elements with the separator for goos. It is deliberately
+// independent of the host so tests can assert the Windows layout on Linux.
+func Join(goos string, parts ...string) string {
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		clean = append(clean, part)
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	if IsWindows(goos) {
+		return strings.Join(clean, `\`)
+	}
+	return path.Join(clean...)
+}
+
+// DefaultProjectsRoot returns the default projects directory below root.
+func DefaultProjectsRoot(root, goos string) string {
+	return Join(goos, root, "projects")
+}
+
+// SystemDir returns the protected devstack system directory. It owns the CA
+// key and other machine-local material that must never live in WSL or Docker.
+func SystemDir(root, goos string) string {
+	return Join(goos, root, "system")
+}
+
+// ValidateDevstackName rejects names that devstack itself must never create on
+// Windows: empty, dot, dot-dot, and any basename starting with a dot. Project
+// content (for example .git or .env) is outside this policy.
+func ValidateDevstackName(name string) error {
+	if name == "" {
+		return fmt.Errorf("platform: empty devstack file name")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("platform: invalid devstack file name %q", name)
+	}
+	if strings.HasPrefix(name, ".") {
+		return fmt.Errorf("platform: devstack-created name %q must not start with a dot", name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("platform: devstack file name %q must be a basename", name)
+	}
+	return nil
+}
+
+// TempName converts base into a non-dot temporary basename. Two concurrent
+// writers still need a unique suffix (CreateTemp adds one).
+func TempName(base string) string {
+	base = strings.TrimLeft(base, ".")
+	if base == "" {
+		base = "tmp"
+	}
+	return base + ".tmp"
+}

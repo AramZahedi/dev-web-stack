@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +56,16 @@ func GlobalIniPath(paths config.Paths) string {
 // ShimDir returns the directory holding the global PHP CLI shims.
 func ShimDir(paths config.Paths) string {
 	return filepath.Join(paths.Tools, "php-default", "bin")
+}
+
+// WindowsShimDir returns the directory holding public Windows command shims.
+func WindowsShimDir(paths config.Paths) string {
+	return filepath.Join(paths.Home, "bin")
+}
+
+// WindowsPHPShimPath returns the public Windows php.cmd shim path.
+func WindowsPHPShimPath(paths config.Paths) string {
+	return filepath.Join(WindowsShimDir(paths), "php.cmd")
 }
 
 // SiteShimDir returns the per-site shim directory prepended to a project
@@ -118,6 +129,13 @@ func ResolveDefault(ctx context.Context, st *store.Store) (model.RuntimeBuild, e
 	return build, nil
 }
 
+func isCompatibleBackend(b model.BackendKind) bool {
+	if runtime.GOOS == "windows" {
+		return b == model.BackendWSL || b == model.BackendLocal || b == ""
+	}
+	return b == model.BackendLocal || b == ""
+}
+
 // installedPHPBuilds returns installed PHP builds, newest first.
 func installedPHPBuilds(ctx context.Context, st *store.Store) ([]model.RuntimeBuild, error) {
 	builds, err := st.ListRuntimes(ctx)
@@ -126,7 +144,7 @@ func installedPHPBuilds(ctx context.Context, st *store.Store) ([]model.RuntimeBu
 	}
 	php := make([]model.RuntimeBuild, 0, len(builds))
 	for _, build := range builds {
-		if build.Kind == "php" && build.Backend == model.BackendLocal {
+		if build.Kind == "php" && isCompatibleBackend(build.Backend) {
 			php = append(php, build)
 		}
 	}
@@ -170,7 +188,7 @@ func ResolvePHPBuild(builds []model.RuntimeBuild, buildID, version string) (mode
 	buildID = strings.TrimSpace(buildID)
 	if buildID != "" {
 		for _, build := range builds {
-			if build.Kind == "php" && build.ID == buildID && (build.Backend == "" || build.Backend == model.BackendLocal) {
+			if build.Kind == "php" && build.ID == buildID && isCompatibleBackend(build.Backend) {
 				return build, nil
 			}
 		}
@@ -183,7 +201,7 @@ func ResolvePHPBuild(builds []model.RuntimeBuild, buildID, version string) (mode
 	var best model.RuntimeBuild
 	found := false
 	for _, build := range builds {
-		if build.Kind != "php" || catalog.LineOf(build.Version) != line || (build.Backend != "" && build.Backend != model.BackendLocal) {
+		if build.Kind != "php" || catalog.LineOf(build.Version) != line || !isCompatibleBackend(build.Backend) {
 			continue
 		}
 		if !found || compareVersions(build.Version, best.Version) > 0 {
@@ -207,7 +225,7 @@ func ResolveNodeBuild(builds []model.RuntimeBuild, requested string) (model.Runt
 	var best model.RuntimeBuild
 	found := false
 	for _, build := range builds {
-		if build.Kind != "node" || (build.Backend != "" && build.Backend != model.BackendLocal) {
+		if build.Kind != "node" || !isCompatibleBackend(build.Backend) {
 			continue
 		}
 		match := build.Version == requested ||
@@ -308,7 +326,7 @@ func WriteGlobalIni(_ model.RuntimeBuild, path string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("tooling: create global ini directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".php.ini-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "php.ini-*.tmp")
 	if err != nil {
 		return fmt.Errorf("tooling: create temporary global ini: %w", err)
 	}
@@ -388,6 +406,9 @@ func extensionDir(buildPath string) string {
 // selected build provides each binary. The php wrapper executes the absolute
 // build binary with the global ini; it never resolves back to the shim.
 func EnsurePHPShims(build model.RuntimeBuild, paths config.Paths, iniPath string) ([]string, error) {
+	if build.Backend == model.BackendWSL {
+		return nil, nil
+	}
 	if strings.TrimSpace(build.Path) == "" {
 		return nil, errors.New("tooling: PHP build path is empty")
 	}
@@ -448,7 +469,7 @@ func writeAtomicFile(path string, content []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("tooling: create directory %s: %w", filepath.Dir(path), err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return fmt.Errorf("tooling: create temporary %s: %w", path, err)
 	}

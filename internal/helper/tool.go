@@ -1,3 +1,5 @@
+//go:build !windows
+
 package helper
 
 import (
@@ -233,7 +235,7 @@ func (m *ToolManager) Install(ctx context.Context, req helperproto.ToolInstallRe
 }
 
 func installSymlink(target, wrapper string) error {
-	temp, err := os.CreateTemp(filepath.Dir(wrapper), ".devstack-tool-*")
+	temp, err := os.CreateTemp(filepath.Dir(wrapper), "devstack-tool-*.tmp")
 	if err != nil {
 		return fmt.Errorf("helper: create temporary tool link: %w", err)
 	}

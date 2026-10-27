@@ -273,7 +273,7 @@ func (s *Store) Replace(engine, name, value string) error {
 
 func (s *Store) writeReplacement(engine, target, value string) error {
 	dir := s.Dir(engine)
-	tmp, err := os.CreateTemp(dir, ".secret-*")
+	tmp, err := os.CreateTemp(dir, "secret-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary secret for %q: %w", engine, err)
 	}

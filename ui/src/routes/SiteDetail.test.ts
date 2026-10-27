@@ -299,4 +299,11 @@ describe('SiteDetail configuration and builds', () => {
     await renderSite();
     expect(screen.getByLabelText('Status: Degraded')).toBeTruthy();
   });
+
+  it('renders source mode in overview card when set', async () => {
+    mockApi.getSite.mockResolvedValue({ ...STATIC_SITE, source_mode: 'windows' });
+    await renderSite();
+    expect(await screen.findByText('Source mode')).toBeTruthy();
+    expect(screen.getByText('Windows drive')).toBeTruthy();
+  });
 });

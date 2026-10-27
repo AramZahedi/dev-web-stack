@@ -132,7 +132,7 @@ func WriteAtomic(path string, data []byte, mode fs.FileMode) error {
 	}
 
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		// systemd's ProtectSystem=strict plus a file-level ReadWritePaths entry
 		// for /etc/hosts makes the file writable while its parent directory
@@ -196,10 +196,10 @@ func writeInPlace(path string, data []byte, mode fs.FileMode) error {
 		return fmt.Errorf("hosts: write %s in place: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFile(f); err != nil {
 		return fmt.Errorf("hosts: lock %s: %w", path, err)
 	}
-	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	defer func() { _ = unlockFile(f) }()
 	if _, err := f.WriteAt(data, 0); err != nil {
 		return fmt.Errorf("hosts: write %s in place: %w", path, err)
 	}

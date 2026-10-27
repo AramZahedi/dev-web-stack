@@ -1,5 +1,6 @@
 # Build output
 /dist/
+/build/wsl/*.tar.gz*
 
 # Embedded dashboard build (the placeholder is tracked)
 ui/dist/*

@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Command devstack-helper is the narrowly privileged helper service. It owns
 // the managed hosts block, the local certificate authority, trust stores, and
 // the privileged 80/443 forwarders.

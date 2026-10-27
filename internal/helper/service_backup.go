@@ -1,3 +1,5 @@
+//go:build !windows
+
 package helper
 
 import (
@@ -57,7 +59,7 @@ func (c *DockerServiceController) backupService(id services.ID) (string, error) 
 		dest = filepath.Join(backupDir, fmt.Sprintf("%s-%d.tar.gz", timestamp, suffix))
 	}
 
-	tmp, err := os.CreateTemp(backupDir, ".backup-*.tar.gz")
+	tmp, err := os.CreateTemp(backupDir, "backup-*.tar.gz.tmp")
 	if err != nil {
 		return "", fmt.Errorf("create backup archive: %w", err)
 	}

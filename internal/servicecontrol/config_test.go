@@ -273,7 +273,7 @@ func TestConfigContentPolicy(t *testing.T) {
 	denied := []string{
 		"../data/x", "/etc/passwd", "..", ".", `conf.d\..\nginx.conf`,
 		".env", "secrets/db.conf", "certs/site.pem", "keys/server.key",
-		"backups/config/old.conf", ".config-manifest.json", "conf.d/.hidden",
+		"backups/config/old.conf", "config-manifest.json", "conf.d/.hidden",
 		"conf.d/foo.sock", "conf.d/link.conf", "conf.d",
 		"conf.d/performance/main.conf", "conf.d/performance.conf",
 	}
@@ -548,10 +548,10 @@ func TestConfigManifestStaysInsideConfigRoot(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(f.configRoot(services.IDNginx), ".config-manifest.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(f.configRoot(services.IDNginx), "config-manifest.json")); err != nil {
 		t.Fatalf("manifest missing from config root: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(f.root, "services", "nginx", ".config-manifest.json")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(f.root, "services", "nginx", "config-manifest.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("manifest was written outside the config root: %v", err)
 	}
 }

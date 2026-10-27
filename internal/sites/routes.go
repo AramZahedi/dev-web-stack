@@ -86,7 +86,7 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 			upstreamPort = site.FastCGIPort
 		}
 		if upstreamPort > 0 {
-			upstream := net.JoinHostPort("127.0.0.1", strconv.Itoa(upstreamPort))
+			upstream := net.JoinHostPort(s.backendHost(site.ID), strconv.Itoa(upstreamPort))
 			route := proxy.Route{
 				SiteID:       site.ID,
 				Kind:         kind,
@@ -98,6 +98,7 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 			}
 			if site.Kind == model.SitePHP {
 				route.DocumentRoot = absoluteDocumentRoot(site)
+				route.ProxyDocumentRoot = proxyDocumentRoot(site)
 				route.FrontController = site.FrontController
 			}
 			for _, host := range siteDomains(site) {

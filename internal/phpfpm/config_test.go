@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -392,6 +393,9 @@ func TestValidateMissingFilesWrapsErrConfigInvalid(t *testing.T) {
 }
 
 func TestValidateInvokesFPMAndClearsScanDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script without .cmd/.bat is not supported on Windows")
+	}
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "php-fpm.conf")
 	iniPath := filepath.Join(dir, "php.ini")
@@ -432,6 +436,9 @@ func TestValidateInvokesFPMAndClearsScanDir(t *testing.T) {
 }
 
 func TestValidateRejectsPHPErrorWithZeroExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script without .cmd/.bat is not supported on Windows")
+	}
 	dir := t.TempDir()
 	configPath, iniPath := writeValidateInputs(t, dir)
 	script := filepath.Join(dir, "php-fpm")
@@ -455,6 +462,9 @@ func TestValidateRejectsPHPErrorWithZeroExit(t *testing.T) {
 }
 
 func TestValidateAcceptsNoticeOnlyZeroExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script without .cmd/.bat is not supported on Windows")
+	}
 	dir := t.TempDir()
 	configPath, iniPath := writeValidateInputs(t, dir)
 	script := filepath.Join(dir, "php-fpm")

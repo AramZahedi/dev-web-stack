@@ -22,6 +22,7 @@ RELEASE_VERSION=""
 ARCHIVE_PATH=""
 CHECKSUMS_PATH=""
 BASE_URL=""
+DEVSTACK_HOME_FLAG=""
 RELEASE_SEEN=0
 ARCHIVE_SEEN=0
 CHECKSUMS_SEEN=0
@@ -43,10 +44,11 @@ devstack, not as root.
 
 Source:
   --dry-run                 Verify and print the install steps without writing.
+  --home <path>             Override the devstack home directory.
   --upgrade                 Stop the existing daemon, keep its config, and
                             replace the binaries. Requires an existing CLI.
-  --keep-config             Keep an existing /etc/devstack/helper.yaml (default).
-  --force-config            Replace /etc/devstack/helper.yaml with defaults.
+  --keep-config             Keep an existing helper config (default).
+  --force-config            Replace helper config with defaults.
 
 Release:
   --release <version>       Download devstack_<version>_linux_amd64.tar.gz and
@@ -89,6 +91,11 @@ while [ "$#" -gt 0 ]; do
 	--dry-run)
 		DRY_RUN=1
 		shift
+		;;
+	--home)
+		[ "$#" -ge 2 ] || die "--home requires a path"
+		DEVSTACK_HOME_FLAG="$2"
+		shift 2
 		;;
 	--release)
 		[ "$#" -ge 2 ] || die "--release requires a version"
@@ -161,6 +168,13 @@ if [ "${FORCE_SEEN}" -eq 1 ] && [ "${KEEP_SEEN}" -eq 1 ]; then
 	die "--force-config and --keep-config cannot be used together"
 fi
 
+if [ -n "${DEVSTACK_HOME_FLAG}" ]; then
+	case "${DEVSTACK_HOME_FLAG}" in
+	/*) ;;
+	*) die "--home must be an absolute path, got ${DEVSTACK_HOME_FLAG}" ;;
+	esac
+fi
+
 if [ "${RELEASE_SEEN}" -eq 1 ]; then
 	RELEASE_VERSION="${RELEASE_VERSION#v}"
 	if [[ ! "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
@@ -214,6 +228,7 @@ fi
 
 USER_NAME="$(id -un)"
 USER_UID="$(id -u)"
+USER_GID="$(id -g)"
 USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
 if [ -z "${USER_HOME}" ] || [ ! -d "${USER_HOME}" ]; then
 	die "cannot determine the home directory for UID ${USER_UID}"
@@ -225,11 +240,37 @@ case "${CONFIG_HOME}" in
 *) die "XDG_CONFIG_HOME must be an absolute path, got ${CONFIG_HOME}" ;;
 esac
 
-DEVSTACK_HOME_DIR="${DEVSTACK_HOME:-${USER_HOME}/.devstack}"
+# Detect legacy install: check if ~/.devstack or /etc/devstack/helper.yaml exists.
+LEGACY_CONFIG="${DEVSTACK_LEGACY_CONFIG:-/etc/devstack/helper.yaml}"
+LEGACY_INSTALL=0
+if [ -d "${USER_HOME}/.devstack" ] || [ -f "${LEGACY_CONFIG}" ]; then
+	LEGACY_INSTALL=1
+fi
+
+# New Linux installs use the machine-wide /data/devstack root. An explicit
+# --home or DEVSTACK_HOME wins. If not provided, an existing legacy install
+# (~/.devstack or /etc/devstack/helper.yaml) is preserved in place.
+if [ -n "${DEVSTACK_HOME_FLAG}" ]; then
+	DEVSTACK_HOME_DIR="${DEVSTACK_HOME_FLAG}"
+elif [ -n "${DEVSTACK_HOME:-}" ]; then
+	DEVSTACK_HOME_DIR="${DEVSTACK_HOME}"
+elif [ "${LEGACY_INSTALL}" -eq 1 ]; then
+	DEVSTACK_HOME_DIR="${USER_HOME}/.devstack"
+else
+	DEVSTACK_HOME_DIR="/data/devstack"
+fi
 case "${DEVSTACK_HOME_DIR}" in
 /*) ;;
 *) die "DEVSTACK_HOME must be an absolute path, got ${DEVSTACK_HOME_DIR}" ;;
 esac
+DEVSTACK_HOME_DIR="${DEVSTACK_HOME_DIR%/}"
+
+if [ "${LEGACY_INSTALL}" -eq 1 ]; then
+	HELPER_CONFIG_DIR="/etc/devstack"
+else
+	HELPER_CONFIG_DIR="${DEVSTACK_HOME_DIR}/system"
+fi
+HELPER_CONFIG="${HELPER_CONFIG_DIR}/helper.yaml"
 
 USER_UNIT_DIR="${CONFIG_HOME}/systemd/user"
 USER_UNIT="${USER_UNIT_DIR}/devstack-daemon.service"
@@ -444,7 +485,8 @@ User=root
 Group=root
 ExecStartPre=-/usr/bin/mkdir -p /usr/local/share/ca-certificates
 ExecStartPre=-/usr/bin/mkdir -p /var/lib/devstack-helper
-ExecStart=/usr/local/lib/devstack/devstack-helper --config /etc/devstack/helper.yaml
+ExecStartPre=-/usr/bin/mkdir -p /data/devstack/system
+ExecStart=/usr/local/lib/devstack/devstack-helper --config ${HELPER_CONFIG}
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=20s
@@ -468,7 +510,7 @@ RuntimeDirectoryMode=0755
 # writable; the helper falls back to an in-place write if the parent /etc mount
 # is read-only. Distribution trust paths are optional and differ between
 # Fedora/RHEL and Debian/Ubuntu.
-ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper /usr/local/bin -"${DEVSTACK_HOME_DIR}"
+ReadWritePaths=/etc/hosts /etc/devstack /var/lib/devstack-helper /run/devstack-helper /usr/local/bin -"${DEVSTACK_HOME_DIR}" -/data/devstack -/data/devstack/system
 # External mode writes exactly one bridge file into the server's include
 # directory. These paths are optional because the selected server (or a
 # custom include layout) may not exist on this machine.
@@ -485,7 +527,7 @@ ReadWritePaths=-/var/lib/ca-certificates
 [Install]
 WantedBy=multi-user.target
 EOF
-	cat >"${UNIT_DIR}/devstack-daemon.service" <<'EOF'
+	cat >"${UNIT_DIR}/devstack-daemon.service" <<EOF
 [Unit]
 Description=devstack user daemon
 Documentation=https://github.com/AramZahedi/dev-web-stack/blob/master/docs/install.md
@@ -494,7 +536,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=HOME=%h
-Environment=DEVSTACK_HOME=%h/.devstack
+Environment=DEVSTACK_HOME=${DEVSTACK_HOME_DIR}
 ExecStart=%h/.local/bin/devstack daemon run
 Restart=on-failure
 RestartSec=2s
@@ -537,7 +579,9 @@ resolve_units
 # The helper's ReadWritePaths names the devstack home as optional, and both the
 # helper and daemon need it. Create it as the installing user before any
 # privileged install or service restart.
-run install -d -m 0755 "${DEVSTACK_HOME_DIR}"
+if [ "${DEVSTACK_HOME_DIR}" != "/data/devstack" ] && [ "${LEGACY_INSTALL}" -eq 1 ]; then
+	run install -d -m 0755 -o "${USER_UID}" -g "${USER_GID}" "${DEVSTACK_HOME_DIR}"
+fi
 
 log "installing for ${USER_NAME} (uid ${USER_UID}, home ${USER_HOME})"
 if [ "${DRY_RUN}" -eq 1 ]; then
@@ -603,10 +647,17 @@ fi
 run install -d -m 0755 "${USER_HOME}/.local/bin"
 run install -m 0755 "${BINARY_DIR}/devstack" "${USER_BIN}"
 
-# Root-owned helper binary and configuration.
+# Root-owned helper binary, directory layout, and configuration.
 run sudo install -d -m 0755 "${HELPER_ROOT}"
 run sudo install -m 0755 "${BINARY_DIR}/devstack-helper" "${HELPER_BINARY}"
-run sudo install -d -m 0755 "${HELPER_CONFIG_DIR}"
+
+if [ "${LEGACY_INSTALL}" -eq 0 ]; then
+	run sudo install -d -m 0755 -o "${USER_UID}" -g "${USER_GID}" "${DEVSTACK_HOME_DIR}"
+	run sudo install -d -m 0755 -o "${USER_UID}" -g "${USER_GID}" "${DEVSTACK_HOME_DIR}/bin"
+	run sudo install -d -m 0700 "${DEVSTACK_HOME_DIR}/system"
+else
+	run sudo install -d -m 0755 "${HELPER_CONFIG_DIR}"
+fi
 
 if [ -e "${HELPER_CONFIG}" ] && [ "${CONFIG_MODE}" != "force" ]; then
 	log "keeping existing ${HELPER_CONFIG} (use --force-config to replace it)"

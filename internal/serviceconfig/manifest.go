@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+const (
+	// manifestName is the non-dot manifest name for new installs. Windows
+	// never creates a dot-prefixed devstack path.
+	manifestName = "config-manifest.json"
+	// legacyManifestName is read and migrated once, never written again.
+	legacyManifestName = ".config-manifest.json"
+)
+
 // Class distinguishes config file ownership and lifecycle.
 type Class string
 
@@ -71,7 +79,7 @@ func saveManifest(path string, m *Manifest) error {
 		return fmt.Errorf("create manifest dir %s: %w", dir, err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".config-manifest-*.tmp")
+	tmp, err := os.CreateTemp(dir, "config-manifest-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp manifest: %w", err)
 	}

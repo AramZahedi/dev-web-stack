@@ -149,11 +149,11 @@ func TestRenderNginxPHPFrontControllerUsesHostPaths(t *testing.T) {
 	out := renderOne(t, ServerNginx, baseSet(f, site), "app.conf")
 	for _, want := range []string{
 		"root /sites/app/public;",
-		`fastcgi_param SCRIPT_FILENAME "` + filepath.Dir(index) + `$fastcgi_script_name";`,
-		`fastcgi_param DOCUMENT_ROOT "` + filepath.Dir(index) + `";`,
+		"fastcgi_param SCRIPT_FILENAME " + nginxQuotedValue(filepath.Dir(index)+"$fastcgi_script_name") + ";",
+		"fastcgi_param DOCUMENT_ROOT " + nginxQuotedValue(filepath.Dir(index)) + ";",
 		`fastcgi_param PATH_INFO $devstack_path_info;`,
 		`fastcgi_param REQUEST_URI $request_uri;`,
-		`fastcgi_param SCRIPT_FILENAME "` + index + `";`,
+		"fastcgi_param SCRIPT_FILENAME " + nginxQuotedValue(index) + ";",
 		`fastcgi_param SCRIPT_NAME "/index.php";`,
 		`fastcgi_param PATH_INFO $uri;`,
 		"fastcgi_pass 127.0.0.1:43000;",
@@ -297,9 +297,9 @@ func TestRenderApachePHPHtaccessAuto(t *testing.T) {
 		"AcceptPathInfo On",
 		"DirectoryIndex index.php index.html",
 		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^proxy:fcgi://[^/]+/sites/app/public(/.*?\.php)(/.*)$#" PATH_INFO "$2"`,
-		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^proxy:fcgi://[^/]+/sites/app/public(/.*?\.php)(?:/.*)?$#" SCRIPT_FILENAME "` + filepath.Join(f.projects, "app/public") + `$1"`,
+		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^proxy:fcgi://[^/]+/sites/app/public(/.*?\.php)(?:/.*)?$#" SCRIPT_FILENAME ` + apacheQuote(filepath.Join(f.projects, "app/public")+"$1"),
 		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^/sites/app/public(/.*?\.php)(/.*)$#" PATH_INFO "$2"`,
-		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^/sites/app/public(/.*?\.php)(?:/.*)?$#" SCRIPT_FILENAME "` + filepath.Join(f.projects, "app/public") + `$1"`,
+		`ProxyFCGISetEnvIf "reqenv('SCRIPT_FILENAME') =~ m#^/sites/app/public(/.*?\.php)(?:/.*)?$#" SCRIPT_FILENAME ` + apacheQuote(filepath.Join(f.projects, "app/public")+"$1"),
 		`SetHandler "proxy:fcgi://127.0.0.1:43000"`,
 	} {
 		if !strings.Contains(out, want) {

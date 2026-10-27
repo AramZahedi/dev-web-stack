@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
@@ -656,7 +657,7 @@ func (s *Service) startAfterDockerLocked(ctx context.Context) error {
 	return nil
 }
 
-const servingProviderMarker = ".serving-provider"
+const servingProviderMarker = "serving-provider"
 
 // writeServingProviderMarker records which provider owns 80/443 so a helper
 // restart does not re-enable its forwarders over an active Docker web server.
@@ -671,7 +672,7 @@ func (s *Service) writeServingProviderMarker(provider string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".serving-provider-*")
+	tmp, err := os.CreateTemp(dir, "serving-provider-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -1018,30 +1019,6 @@ func validateVhostSiteForSync(site model.Site) error {
 	return nil
 }
 
-// validateVhostBackendOwnership mirrors the helper's ownership boundary so one
-// root-owned or foreign backend degrades to a 503 instead of poisoning the
-// entire external vhost sync.
-func validateVhostBackendOwnership(path string) error {
-	if os.Geteuid() == 0 {
-		return nil
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("stat backend path %q: %w", path, err)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("backend path %q has no ownership metadata", path)
-	}
-	if int(stat.Uid) == os.Geteuid() {
-		return nil
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" && vhostPathContained(path, home) {
-		return nil
-	}
-	return fmt.Errorf("backend path %q is not owned by the devstack user", path)
-}
-
 func resolveVhostDirectory(kind, value string) (string, error) {
 	if !filepath.IsAbs(value) {
 		return "", fmt.Errorf("%s %q must be absolute", kind, value)
@@ -1139,8 +1116,33 @@ func (s *Service) PreviewVhost(ctx context.Context, ref, server string) (string,
 // absoluteDocumentRoot resolves a site document root against its backend path.
 // Static and PHP sites with an empty or "." root serve the backend path itself;
 // an empty Node document root stays empty.
+// proxyDocumentRoot is the Windows-visible path the Go proxy uses for PHP
+// file checks. Windows and WSL sources differ from the backend path FPM sees.
+func proxyDocumentRoot(site model.Site) string {
+	if site.SourceMode != "" && site.SourceMode != model.SourceLocal {
+		if root, err := pathmode.ProxyDocumentRoot(site); err == nil {
+			return root
+		}
+	}
+	return absoluteDocumentRoot(site)
+}
+
 func absoluteDocumentRoot(site model.Site) string {
 	root := strings.TrimSpace(site.DocumentRoot)
+	if site.Backend == model.BackendWSL || site.SourceMode == model.SourceWindows || site.SourceMode == model.SourceWSL || strings.HasPrefix(site.BackendPath, "/") {
+		slashBackend := strings.ReplaceAll(site.BackendPath, `\`, "/")
+		slashRoot := strings.ReplaceAll(root, `\`, "/")
+		if slashRoot == "" || slashRoot == "." {
+			if site.Kind == model.SiteStatic || site.Kind == model.SitePHP {
+				return path.Clean(slashBackend)
+			}
+			return ""
+		}
+		if path.IsAbs(slashRoot) {
+			return path.Clean(slashRoot)
+		}
+		return path.Clean(path.Join(slashBackend, slashRoot))
+	}
 	if root == "" || root == "." {
 		if site.Kind == model.SiteStatic || site.Kind == model.SitePHP {
 			return filepath.Clean(site.BackendPath)
@@ -1246,9 +1248,9 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 	if s.deps.Backend != nil {
 		s.releaseRetainedPHPGenerationsLocked(site.ID)
 	}
-	s.deps.Ports.Release(site.HTTPPort)
+	s.releasePort(ctx, site.ID, site.HTTPPort)
 	if site.FastCGIPort != 0 {
-		s.deps.Ports.Release(site.FastCGIPort)
+		s.releasePort(ctx, site.ID, site.FastCGIPort)
 	}
 	var removeErr error
 	if site.Kind == model.SitePHP {

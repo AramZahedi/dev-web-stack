@@ -161,7 +161,7 @@ func TestManagerEnsureBaseSeedsAndPreservesUserEdits(t *testing.T) {
 					t.Errorf("expected directory %s: %v", dir, err)
 				}
 			}
-			if _, err := os.Stat(filepath.Join(serviceDir, "config", ".config-manifest.json")); err != nil {
+			if _, err := os.Stat(filepath.Join(serviceDir, "config", "config-manifest.json")); err != nil {
 				t.Errorf("manifest is not under the config root: %v", err)
 			}
 			if server == ServerNginx {
@@ -171,7 +171,7 @@ func TestManagerEnsureBaseSeedsAndPreservesUserEdits(t *testing.T) {
 					}
 				}
 			}
-			if _, err := os.Stat(filepath.Join(serviceDir, ".config-manifest.json")); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(filepath.Join(serviceDir, "config-manifest.json")); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("manifest must not be at the service root: %v", err)
 			}
 			if err := os.WriteFile(base, []byte("user edited\n"), 0o644); err != nil {

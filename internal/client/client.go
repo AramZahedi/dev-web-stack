@@ -27,6 +27,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -76,21 +77,29 @@ func New(home string) (*Client, error) {
 		return nil, err
 	}
 	socket := daemon.SocketPath(resolved)
-	info, err := os.Stat(socket)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("devstack daemon is not running: socket %s does not exist", socket)
-		}
-		return nil, fmt.Errorf("devstack daemon socket %s: %w", socket, err)
+	endpoint := ipc.EndpointFromAddress(socket)
+	if err := endpoint.Validate(); err != nil {
+		return nil, fmt.Errorf("devstack daemon endpoint %s: %w", socket, err)
 	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return nil, fmt.Errorf("devstack daemon socket %s is not a Unix socket", socket)
+	// Named pipes are not filesystem objects; the first request reports a
+	// missing daemon. Unix sockets keep the explicit stale/missing check so
+	// the CLI error is immediate and actionable.
+	if endpoint.Network == ipc.NetworkUnix {
+		info, err := os.Stat(socket)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("devstack daemon is not running: socket %s does not exist", socket)
+			}
+			return nil, fmt.Errorf("devstack daemon socket %s: %w", socket, err)
+		}
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("devstack daemon socket %s is not a Unix socket", socket)
+		}
 	}
 
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			dialer := &net.Dialer{Timeout: dialTimeout}
-			return dialer.DialContext(ctx, "unix", socket)
+			return ipc.Dial(ctx, endpoint, dialTimeout)
 		},
 		MaxIdleConns:    4,
 		IdleConnTimeout: 30 * time.Second,
@@ -163,6 +172,7 @@ func (c *Client) AddSite(ctx context.Context, req sites.CreateRequest) (model.Si
 		Name:                req.Name,
 		Path:                req.Path,
 		Kind:                req.Kind,
+		SourceMode:          req.SourceMode,
 		NodeVersion:         req.NodeVersion,
 		Command:             req.Command,
 		DocumentRoot:        req.DocumentRoot,
@@ -748,6 +758,7 @@ type createSitePayload struct {
 	Name                string              `json:"name"`
 	Path                string              `json:"path"`
 	Kind                string              `json:"kind"`
+	SourceMode          string              `json:"source_mode,omitempty"`
 	NodeVersion         string              `json:"node_version,omitempty"`
 	Command             string              `json:"command,omitempty"`
 	DocumentRoot        string              `json:"document_root,omitempty"`

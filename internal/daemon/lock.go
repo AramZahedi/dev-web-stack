@@ -1,3 +1,5 @@
+//go:build !windows
+
 package daemon
 
 import (
@@ -126,7 +128,7 @@ func daemonReady(home string) bool {
 // renames it into place with the requested mode.
 func writeAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	temp, err := os.CreateTemp(dir, filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary file in %s: %w", dir, err)
 	}

@@ -1,7 +1,8 @@
+//go:build !windows
+
 package sites
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -18,8 +19,6 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
-
-var ctx = context.Background()
 
 func TestCreateStaticSiteSyncsHostsAndPublishesRoute(t *testing.T) {
 	svc, fakes := newTestService(t)

@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Command php-smoke verifies an extracted devstack PHP build by starting its
 // php-fpm binary with a temporary configuration and issuing one FastCGI health
 // request. It is intended for CI and refuses to run as root.

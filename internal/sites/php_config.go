@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -116,6 +118,10 @@ func (s *Service) renderPHPFilesLocked(ctx context.Context, site model.Site, bui
 	if err := validatePHPConfigInputs(site); err != nil {
 		return phpRendered{}, err
 	}
+	caFile := filepath.Join(s.deps.Config.Home, "pki", "ca-bundle.crt")
+	if site.Backend == model.BackendWSL || build.Backend == model.BackendWSL || runtime.GOOS == "windows" {
+		caFile = "/data/devstack/certs/ca-bundle.crt"
+	}
 	ini, err := phpini.Compose(phpini.Config{
 		Base:            base,
 		VersionDefaults: defaults.Ini,
@@ -123,7 +129,7 @@ func (s *Service) renderPHPFilesLocked(ctx context.Context, site model.Site, bui
 		Raw:             site.PHPIniRaw,
 		Extensions:      extensions,
 		ExtensionDir:    extensionDir,
-		CAFile:          filepath.Join(s.deps.Config.Home, "pki", "ca-bundle.crt"),
+		CAFile:          caFile,
 	})
 	if err != nil {
 		return phpRendered{}, fmt.Errorf("sites: compose php.ini for %q: %w", site.Name, err)
@@ -223,6 +229,9 @@ func (s *Service) sanitizeStoredPHPDefaultsLocked(ctx context.Context, defaults 
 // Relocatable builds either keep the shared objects directly under
 // lib/php/extensions or in exactly one architecture subdirectory.
 func phpExtensionDir(build model.RuntimeBuild) (string, error) {
+	if build.Backend == model.BackendWSL || runtime.GOOS == "windows" {
+		return path.Join(build.Path, "lib", "php", "extensions"), nil
+	}
 	root := filepath.Join(build.Path, "lib", "php", "extensions")
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -294,7 +303,7 @@ func (s *Service) writePHPFilesLocked(siteID string, files phpFiles) (string, er
 	if err := os.RemoveAll(generationDir); err != nil {
 		return "", fmt.Errorf("sites: remove incomplete PHP generation: %w", err)
 	}
-	temporary, err := os.MkdirTemp(siteDir, ".gen-")
+	temporary, err := os.MkdirTemp(siteDir, "gen-")
 	if err != nil {
 		return "", fmt.Errorf("sites: create temporary PHP generation: %w", err)
 	}
@@ -380,7 +389,7 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("sites: create %s: %w", filepath.Dir(path), err)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".tmp-")
+	temporary, err := os.CreateTemp(filepath.Dir(path), "tmp-*.tmp")
 	if err != nil {
 		return fmt.Errorf("sites: create temporary file for %s: %w", path, err)
 	}
@@ -472,6 +481,9 @@ func (s *Service) phpConfigFilesExistLocked(site model.Site) bool {
 // validatePHPFilesLocked runs both configuration validators against written
 // generation files.
 func (s *Service) validatePHPFilesLocked(ctx context.Context, site model.Site, build model.RuntimeBuild, generationDir string) error {
+	if site.Backend == model.BackendWSL || build.Backend == model.BackendWSL || runtime.GOOS == "windows" {
+		return nil
+	}
 	iniPath := filepath.Join(generationDir, phpIniFile)
 	fpmPath := filepath.Join(generationDir, phpFPMFile)
 	phpBin := filepath.Join(build.Path, "bin", "php")

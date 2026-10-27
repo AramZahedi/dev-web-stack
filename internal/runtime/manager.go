@@ -288,7 +288,7 @@ func (m *Manager) installEntry(ctx context.Context, entry catalog.Entry, source 
 		return model.RuntimeBuild{}, err
 	}
 
-	tempDir, err := os.MkdirTemp(m.runtimesRoot, ".install-"+safeTempName(entry.ID)+"-")
+	tempDir, err := os.MkdirTemp(m.runtimesRoot, "install-"+safeTempName(entry.ID)+"-")
 	if err != nil {
 		return model.RuntimeBuild{}, fmt.Errorf("runtime: create extraction directory: %w", err)
 	}

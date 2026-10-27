@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -256,6 +257,9 @@ func (m *Manager) ActiveSessions() int {
 }
 
 func (m *Manager) checkUser() error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	if m.uid <= 0 {
 		return ErrRoot
 	}

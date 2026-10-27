@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Package helper implements the privileged devstack helper's local HTTP
 // service. It owns operations that need root: the managed hosts block,
 // certificate authority, trust stores, and privileged port forwarders.
@@ -26,6 +28,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/forwarder"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/hosts"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
@@ -288,7 +291,14 @@ func NewServer(cfg Config) (*Server, error) {
 // provider as the owner of 80/443. The marker is written before forwarders are
 // stopped and cleared after builtin serving is restored.
 func dockerWebServing(root string) bool {
-	data, err := os.ReadFile(filepath.Join(root, "services", ".serving-provider"))
+	dir := filepath.Join(root, "services")
+	path := filepath.Join(dir, "serving-provider")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// Read the pre-2026-10 legacy name once. New writes always use the
+		// non-dot name.
+		data, err = os.ReadFile(filepath.Join(dir, ".serving-provider"))
+	}
 	if err != nil {
 		return false
 	}
@@ -755,7 +765,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if err := removeStaleSocket(socketPath); err != nil {
 		return err
 	}
-	ln, err := net.Listen("unix", socketPath)
+	ln, err := ipc.Listen(ipc.UnixEndpoint(socketPath), ipc.WithAllowUID(s.cfg.AllowUID))
 	if err != nil {
 		return fmt.Errorf("helper: listen on %s: %w", socketPath, err)
 	}

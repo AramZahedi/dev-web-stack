@@ -46,7 +46,9 @@ type Report struct {
 // Deps are the services the doctor inspects. Optional dependencies may be nil;
 // the corresponding check or repair step is then skipped.
 type Deps struct {
-	Config   config.Config
+	Config config.Config
+	// Platform is normally runtime.GOOS; tests can force the Windows branch.
+	Platform string
 	Home     string
 	Store    *store.Store
 	Helper   Helper
@@ -68,6 +70,18 @@ type Deps struct {
 	ToolBinDir string
 	// LookPath resolves a bare command. Nil uses exec.LookPath.
 	LookPath func(string) (string, error)
+	Windows  WindowsDiagnostics
+}
+
+// WindowsDiagnostics describes the Windows/WSL dependencies without granting
+// doctor any host mutation privileges. Production wiring supplies the WSL and
+// authenticated-agent probes; tests use a fake implementation.
+type WindowsDiagnostics interface {
+	CheckWSL(ctx context.Context, distro string) error
+	CheckAgent(ctx context.Context, distro string) error
+	CheckDocker(ctx context.Context, distro string) error
+	CheckLocalhostForwarding(ctx context.Context, distro string, port int) error
+	CheckPorts(ctx context.Context, distro string) error
 }
 
 // Helper is the privileged helper surface used by the doctor.
@@ -141,8 +155,8 @@ func (s *Service) Run(ctx context.Context) (Report, error) {
 		s.checkRuntimes(ctx),
 		s.checkTools(),
 		s.checkDisk(),
-		s.checkWSL(),
 	}
+	checks = append(checks, s.windowsChecks(ctx)...)
 	checks = append(checks, s.checkVhosts(ctx)...)
 	checks = append(checks, s.checkPHP(ctx)...)
 	return newReport(checks), nil

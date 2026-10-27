@@ -20,7 +20,31 @@ CATALOG           ?=
 PHP_ARTIFACTS_DIR ?= artifacts
 PHP_CATALOG_CHECK ?= 0
 
-.PHONY: build test lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test acceptance
+.PHONY: build build-windows build-agent test test-linux test-windows-cross lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test release-windows release-windows-test acceptance
+
+# Cross-build the Windows daemon and helper. The output stays in dist/ so the
+# same artifacts feed packaging and the manual Windows CI dispatch.
+build-windows:
+	mkdir -p dist
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o dist/devstack.exe ./cmd/devstack
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o dist/devstack-helper.exe ./cmd/devstack-helper
+
+# The Linux agent is built for the WSL rootfs. Lane B creates cmd/devstack-agent;
+# this target is part of the frozen build matrix from T0.1 onward.
+build-agent:
+	mkdir -p dist
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o dist/devstack-agent ./cmd/devstack-agent
+
+# Compile every package, test package, and vet check for Windows without
+# executing Windows binaries on the host. Run natively on Windows for tests.
+test-windows-cross:
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -run '^$$' -exec 'true' ./...
+
+# Linux regression suite; run in WSL ext4 or on a Linux checkout.
+test-linux:
+	go test ./...
 
 build: ui
 	mkdir -p dist
@@ -60,6 +84,13 @@ release:
 
 release-test:
 	bash test/release/release_test.sh
+
+# Build the local Windows amd64 release archive with checksums, rootfs, and SBOM.
+release-windows:
+	bash build/release-windows.sh --version "$(VERSION)"
+
+release-windows-test:
+	bash test/release/release_windows_test.sh
 
 # PHP artifacts are built and published by the php.yml CI workflow. These
 # targets are for contributors who have the build dependencies from

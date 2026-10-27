@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -173,6 +174,9 @@ func shellFixture(t *testing.T) (*fakeClient, string, model.Site) {
 }
 
 func TestShellInitAndExec(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-init export tests are Linux-only; Windows uses WSL exec")
+	}
 	useTestSeams(t)
 	fake, home, site := shellFixture(t)
 
@@ -187,6 +191,10 @@ func TestShellInitAndExec(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("shell-init missing %q:\n%s", want, out)
 		}
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell scripts without Windows shim is not supported on Windows")
 	}
 
 	script := filepath.Join(t.TempDir(), "print-env")
@@ -220,6 +228,9 @@ func TestShellInitAndExec(t *testing.T) {
 }
 
 func TestShellAndExecResolveByCWD(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-init CWD export resolution is Linux-only; Windows uses WSL exec")
+	}
 	useTestSeams(t)
 	fake, home, site := shellFixture(t)
 	sub := filepath.Join(site.HostPath, "src", "pages")

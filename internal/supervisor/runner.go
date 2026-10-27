@@ -1,3 +1,5 @@
+//go:build !windows
+
 package supervisor
 
 import (
@@ -435,7 +437,7 @@ func (m *Manager) writePIDFile(id string, pid int, ticks uint64, token string) e
 	}
 	data = append(data, '\n')
 
-	tmp, err := os.CreateTemp(m.runDir, "."+id+"-*.tmp")
+	tmp, err := os.CreateTemp(m.runDir, id+"-*.tmp")
 	if err != nil {
 		return fmt.Errorf("supervisor: create pid file for %q: %w", id, err)
 	}

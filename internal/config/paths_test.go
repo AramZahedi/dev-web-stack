@@ -2,34 +2,40 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestNewPathsIncludesServiceLayout(t *testing.T) {
-	p := NewPaths("/data/devstack")
-	if p.Projects != "/data/devstack/projects" {
-		t.Errorf("Projects = %q, want %q", p.Projects, "/data/devstack/projects")
+	root := filepath.Join(t.TempDir(), "devstack")
+	p := NewPaths(root)
+	if want := filepath.Join(root, "projects"); p.Projects != want {
+		t.Errorf("Projects = %q, want %q", p.Projects, want)
 	}
-	if p.Services != "/data/devstack/services" {
-		t.Errorf("Services = %q, want %q", p.Services, "/data/devstack/services")
+	if p.ProjectsRoot != p.Projects {
+		t.Errorf("ProjectsRoot = %q, want %q", p.ProjectsRoot, p.Projects)
 	}
-	if p.ServiceCompose != "/data/devstack/services/compose.yaml" {
-		t.Errorf("ServiceCompose = %q, want %q", p.ServiceCompose, "/data/devstack/services/compose.yaml")
+	if want := filepath.Join(root, "services"); p.Services != want {
+		t.Errorf("Services = %q, want %q", p.Services, want)
 	}
-	if p.Secrets != "/data/devstack/secrets" {
-		t.Errorf("Secrets = %q, want %q", p.Secrets, "/data/devstack/secrets")
+	if want := filepath.Join(root, "services", "compose.yaml"); p.ServiceCompose != want {
+		t.Errorf("ServiceCompose = %q, want %q", p.ServiceCompose, want)
 	}
-	if p.Certs != "/data/devstack/certs" {
-		t.Errorf("Certs = %q, want %q", p.Certs, "/data/devstack/certs")
+	if want := filepath.Join(root, "secrets"); p.Secrets != want {
+		t.Errorf("Secrets = %q, want %q", p.Secrets, want)
 	}
-	if p.Backups != "/data/devstack/backups" {
-		t.Errorf("Backups = %q, want %q", p.Backups, "/data/devstack/backups")
+	if want := filepath.Join(root, "certs"); p.Certs != want {
+		t.Errorf("Certs = %q, want %q", p.Certs, want)
 	}
-	if p.Tools != "/data/devstack/tools" {
-		t.Errorf("Tools = %q, want %q", p.Tools, "/data/devstack/tools")
+	if want := filepath.Join(root, "backups"); p.Backups != want {
+		t.Errorf("Backups = %q, want %q", p.Backups, want)
 	}
-	if p.CLI != "/data/devstack/config/cli" {
-		t.Errorf("CLI = %q, want %q", p.CLI, "/data/devstack/config/cli")
+	if want := filepath.Join(root, "tools"); p.Tools != want {
+		t.Errorf("Tools = %q, want %q", p.Tools, want)
+	}
+	if want := filepath.Join(root, "config", "cli"); p.CLI != want {
+		t.Errorf("CLI = %q, want %q", p.CLI, want)
 	}
 }
 
@@ -48,7 +54,7 @@ func TestEnsureCreatesLayoutAndSecretMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
 		t.Fatalf("secrets mode = %o, want 0700", info.Mode().Perm())
 	}
 }

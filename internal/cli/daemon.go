@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 )
 
 const daemonStopTimeout = 10 * time.Second
@@ -115,7 +115,7 @@ func (a *App) newDaemonStatusCmd() *cobra.Command {
 }
 
 func restoreConfigFile(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-restore-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "config-restore-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -226,9 +226,11 @@ func (a *App) newDaemonStopCmd() *cobra.Command {
 }
 
 func readDaemonStatus(home string) daemonStatus {
-	socket := daemon.SocketPath(home)
-	status := daemonStatus{Socket: socket}
-	conn, err := net.DialTimeout("unix", socket, time.Second)
+	endpoint := daemon.Endpoint(home)
+	status := daemonStatus{Socket: endpoint.Address}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := ipc.Dial(ctx, endpoint, time.Second)
 	if err != nil {
 		return status
 	}
@@ -382,19 +384,4 @@ func signalProcess(pid int, signal syscall.Signal) error {
 		return err
 	}
 	return process.Signal(signal)
-}
-
-// processRunning treats a zombie as stopped; a detached daemon may remain a
-// zombie until its new parent reaps it.
-func processRunning(pid int) bool {
-	if err := syscall.Kill(pid, 0); err != nil {
-		return !errors.Is(err, syscall.ESRCH)
-	}
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return false
-	}
-	text := string(data)
-	end := strings.LastIndexByte(text, ')')
-	return !(end >= 0 && end+2 < len(text) && text[end+2] == 'Z')
 }

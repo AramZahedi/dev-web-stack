@@ -227,6 +227,56 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/sites/{ref}/source:
+    parameters:
+      - $ref: "#/components/parameters/SiteRef"
+    post:
+      tags: [sites]
+      summary: Change a site's source mode and copy source files
+      operationId: changeSiteSourceMode
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeSiteSourceRequest"
+      responses:
+        "200":
+          description: The updated site after verified source copy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Conflict, such as changing source mode while the site is running or destination conflict.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "501":
+          description: Removing source files after copy is blocked/unsupported.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Source copy service or agent is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/sites/{ref}/start:
     parameters:
       - $ref: "#/components/parameters/SiteRef"
@@ -2437,6 +2487,11 @@ components:
       type: string
       enum: [local, wsl]
 
+    SourceMode:
+      type: string
+      enum: [local, windows, wsl]
+      description: Storage mode identifying where a site's project files reside.
+
     DesiredState:
       type: string
       enum: [running, stopped]
@@ -2453,6 +2508,7 @@ components:
         - domain
         - www
         - backend
+        - source_mode
         - host_path
         - backend_path
         - kind
@@ -2472,6 +2528,8 @@ components:
           type: boolean
         backend:
           $ref: "#/components/schemas/BackendKind"
+        source_mode:
+          $ref: "#/components/schemas/SourceMode"
         host_path:
           type: string
         backend_path:
@@ -2561,6 +2619,8 @@ components:
           description: Alias for path, accepted for the M1 appendix shape.
         kind:
           $ref: "#/components/schemas/SiteKind"
+        source_mode:
+          $ref: "#/components/schemas/SourceMode"
         node_version:
           type: string
         command:
@@ -2634,6 +2694,9 @@ components:
       properties:
         domain:
           type: string
+        source_mode:
+          $ref: "#/components/schemas/SourceMode"
+          description: Direct modification via update is rejected; use POST /api/v1/sites/{ref}/source instead.
         www:
           type: boolean
         tls:
@@ -2652,6 +2715,20 @@ components:
           type: object
           additionalProperties:
             type: string
+
+    ChangeSiteSourceRequest:
+      type: object
+      required: [mode, path]
+      properties:
+        mode:
+          $ref: "#/components/schemas/SourceMode"
+        path:
+          type: string
+          description: Destination path on the target source filesystem.
+        remove_source:
+          type: boolean
+          description: Whether to remove the original source directory after copy (currently unsupported).
+          default: false
 
     PHPChangeRequest:
       type: object

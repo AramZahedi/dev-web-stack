@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ import (
 // runtime is required; the command proves the shell executes in the project
 // root as the current user.
 func TestTerminalWebSocketEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("terminal PTY end-to-end requires Linux")
+	}
 	_, fx := newTestAPIWithFakes(t)
 	project := t.TempDir()
 	site := model.Site{

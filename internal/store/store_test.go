@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -74,6 +75,7 @@ func TestSiteCRUD(t *testing.T) {
 		Domain:        "blog.test",
 		WWW:           true,
 		Backend:       model.BackendWSL,
+		SourceMode:    model.SourceLocal,
 		HostPath:      "/home/user/blog",
 		BackendPath:   "/mnt/c/home/user/blog",
 		Kind:          model.SitePHP,
@@ -645,6 +647,9 @@ func TestMigration0006AddsPHPFPMWithoutLosingSites(t *testing.T) {
 	if got.PHPFPM != nil {
 		t.Fatalf("legacy PHPFPM = %+v, want nil", got.PHPFPM)
 	}
+	if got.SourceMode != model.SourceLocal {
+		t.Fatalf("legacy source mode = %q, want local", got.SourceMode)
+	}
 	budget := &model.PHPFPMBudget{Mode: "dynamic", MaxChildren: 7, ListenBacklog: 256}
 	got.PHPFPM = budget
 	if err := s.UpdateSite(ctx, got); err != nil {
@@ -661,8 +666,8 @@ func TestMigration0006AddsPHPFPMWithoutLosingSites(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
-		t.Fatalf("schema version = %d, want 6", version)
+	if version != 7 {
+		t.Fatalf("schema version = %d, want 7", version)
 	}
 }
 
@@ -709,8 +714,8 @@ func TestSchemaAndPragmas(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
-		t.Fatalf("schema version = %d, want 6", version)
+	if version != 7 {
+		t.Fatalf("schema version = %d, want 7", version)
 	}
 }
 
@@ -823,8 +828,39 @@ func TestStoreDatabaseAndWALPermissionsAreOwnerOnly(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != 0o600 {
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s mode = %o, want 600", candidate, info.Mode().Perm())
 		}
+	}
+}
+
+func TestSiteSourceModeRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	site := model.Site{
+		ID: "s-win", Name: "win", Domain: "win.test", Kind: model.SiteStatic,
+		SourceMode: model.SourceWindows, HostPath: `C:\Users\a\win`,
+		BackendPath: "/mnt/c/Users/a/win",
+	}
+	if err := s.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SourceMode != model.SourceWindows || got.HostPath != site.HostPath || got.BackendPath != site.BackendPath {
+		t.Fatalf("source fields = %+v", got)
+	}
+	got.SourceMode = model.SourceWSL
+	if err := s.UpdateSite(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.GetSite(ctx, site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.SourceMode != model.SourceWSL {
+		t.Fatalf("updated source mode = %q", updated.SourceMode)
 	}
 }

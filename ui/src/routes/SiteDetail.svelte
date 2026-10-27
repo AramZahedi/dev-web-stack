@@ -33,6 +33,7 @@
     isSecretKey,
     runtimeLabel,
     siteUrl,
+    sourceModeLabel,
   } from '../lib/format';
   import { addToast, toastError } from '../lib/stores';
   import type {
@@ -826,6 +827,14 @@
               <div class="row">
                 <dt>Backend path</dt>
                 <dd class="mono break" title={site.backend_path}>{site.backend_path}</dd>
+              </div>
+            {/if}
+            {#if site.source_mode}
+              <div class="row">
+                <dt>Source mode</dt>
+                <dd>
+                  <Badge variant="neutral">{sourceModeLabel(site.source_mode)}</Badge>
+                </dd>
               </div>
             {/if}
           </dl>
