@@ -40,6 +40,8 @@ Architectures: ${architecture}
 Signed-By: /etc/apt/keyrings/docker.gpg
 EOF
 
+printf 'Acquire::Check-Valid-Until "false";\n' >/etc/apt/apt.conf.d/99snapshot
+
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
   "containerd.io=${CONTAINERD_VERSION}" \

@@ -32,6 +32,10 @@ cat >"${root}/etc/apt/sources.list" <<EOF
 deb ${MIRROR} bookworm main
 deb ${SECURITY_MIRROR} bookworm-security main
 EOF
+mkdir -p "${root}/etc/apt/apt.conf.d"
+cat >"${root}/etc/apt/apt.conf.d/99snapshot" <<'EOF'
+Acquire::Check-Valid-Until "false";
+EOF
 cat >"${root}/etc/wsl.conf" <<'EOF'
 [boot]
 systemd=true
