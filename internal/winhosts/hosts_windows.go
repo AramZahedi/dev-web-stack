@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/AramZahedi/dev-web-stack/internal/hosts"
 )
 
@@ -64,10 +66,23 @@ func (m *Manager) Sync(domains []string) (bool, error) {
 	if string(existing) == rendered {
 		return false, nil
 	}
+	clearReadOnly(m.Path)
 	if err := hosts.WriteAtomic(m.Path, []byte(rendered), 0); err != nil {
 		return false, fmt.Errorf("winhosts: write hosts file: %w", err)
 	}
 	return true, nil
+}
+
+func clearReadOnly(path string) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return
+	}
+	attrs, err := windows.GetFileAttributes(p)
+	if err != nil || (attrs&windows.FILE_ATTRIBUTE_READONLY == 0) {
+		return
+	}
+	_ = windows.SetFileAttributes(p, attrs&^windows.FILE_ATTRIBUTE_READONLY)
 }
 
 func (m *Manager) Status() (domains []string, found bool, err error) {

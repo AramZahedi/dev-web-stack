@@ -3,13 +3,17 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 )
 
 var windowsFileSystemForPath = func(path string) (string, error) {
@@ -56,7 +60,18 @@ func writeWindowsReady(path string, pid int) error {
 
 func readyWindows(home string) bool {
 	data, err := os.ReadFile(ReadyPath(home))
-	return err == nil && len(data) > 0
+	if err != nil || len(data) == 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	conn, err := ipc.Dial(ctx, Endpoint(home), 200*time.Millisecond)
+	if err != nil {
+		_ = os.Remove(ReadyPath(home))
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func isNTFS(path string) (bool, error) {

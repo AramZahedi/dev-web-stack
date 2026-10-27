@@ -146,8 +146,9 @@ func ValidateWSLPath(ctx context.Context, runner Runner, distro, path string) (V
 	return ValidatedPath{Path: validated, Exists: true}, nil
 }
 
-const probeScript = `set -eu
-port="$1"
+const probeScript = `# devstack-probe
+set -eu
+port=%d
 gw=$(ip route show default 2>/dev/null | awk '{print $3; exit}')
 [ -n "$gw" ] || gw=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf)
 [ -n "$gw" ] || exit 1
@@ -165,7 +166,8 @@ func ProbeLocalhostForwarding(ctx context.Context, runner Runner, distro string,
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("wsl: invalid port %d", port)
 	}
-	out, err := runner.Run(ctx, "-d", distro, "--", "bash", "-lc", probeScript, "devstack-probe", fmt.Sprintf("%d", port))
+	script := fmt.Sprintf(probeScript, port)
+	out, err := runner.Run(ctx, "-d", distro, "--", "bash", "-lc", script)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrLocalhostForwarding, err)
 	}
