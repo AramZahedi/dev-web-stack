@@ -42,6 +42,7 @@ const (
 	PathHosts         = "/v1/hosts"
 	PathCerts         = "/v1/certs"
 	PathCA            = "/v1/ca"
+	PathCAInstall     = "/v1/ca/install"
 	PathPathsValidate = "/v1/paths/validate"
 	PathSourceCopy    = "/v1/source/copy"
 )
@@ -453,6 +454,12 @@ type CertResponse struct {
 type CAResponse struct {
 	CertPEM     []byte `json:"cert_pem"`
 	Fingerprint string `json:"fingerprint"`
+}
+
+// CAInstallRequest installs the Windows daemon's root certificate as the WSL
+// trust anchor used by site and terminal environments.
+type CAInstallRequest struct {
+	CertPEM []byte `json:"cert_pem"`
 }
 
 // PathValidateRequest checks one source path.

@@ -45,7 +45,7 @@ containers, not the required runtime for devstack itself.
 | R23 | Existing native external nginx/Apache mode remains available | Required compatibility |
 | R24 | No automatic root migration from `~/.devstack` | Planned decision |
 | R25 | Keep work committed/pushed and CI green | Process |
-| R26 | Windows 11 native daemon/helper with managed WSL2 agent and Docker services | Planned — design and five-lane plan revised 2026-10-27; not implemented |
+| R26 | Windows 10 22H2/Windows 11 native daemon/helper with managed WSL2 agent and Docker services | Planned — design and five-lane plan revised 2026-10-27; not implemented |
 
 ## 3. Hard constraints
 
@@ -71,7 +71,7 @@ containers, not the required runtime for devstack itself.
     tuning must be reversible.
 11. **Existing installs remain valid.** `~/.devstack` installs and native external modes
     continue to work.
-12. **M1 platform scope.** Linux only today. Windows 11 + WSL2 is planned in
+12. **M1 platform scope.** Linux only today. Windows 10 22H2 + Windows 11 with WSL2 is planned in
     [the Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md); no Windows
     support is claimed until its acceptance plan passes.
 13. **No invented runtime data.** PHP/Node catalog entries must correspond to real
@@ -185,7 +185,7 @@ The CLI remains an alternative interface, not a prerequisite.
 
 ## 6. Explicit non-goals
 
-- macOS, arm64, or multi-user shared workstations. Windows 11 + WSL2 is
+- macOS, arm64, or multi-user shared workstations. Windows 10 22H2/Windows 11 + WSL2 is
   planned (R26), not a non-goal; no Windows support is claimed until its
   acceptance criteria pass.
 - Native packages/systemd for optional services.
@@ -221,7 +221,7 @@ The CLI remains an alternative interface, not a prerequisite.
 
 Windows support is not claimed until all of these have recorded evidence:
 
-- A fresh Windows 11 install validates WSL 2.0.0+/systemd, installs the
+- A fresh Windows 10 22H2 or Windows 11 install validates and installs the
   helper/daemon/agent, and reports healthy diagnostics.
 - Trusted `https://<name>.test` works from Windows and from inside WSL in both
   builtin and Docker modes; `https://devstack.test` works in both.
