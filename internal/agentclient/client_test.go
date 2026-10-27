@@ -156,3 +156,72 @@ func TestVersion(t *testing.T) {
 		t.Fatalf("version = %+v", version)
 	}
 }
+
+func TestInstallCAAndCA(t *testing.T) {
+	var installedCert []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc(agentproto.PathCAInstall, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(agentproto.HeaderProtocol) != agentproto.ProtocolVersion {
+			writeJSON(w, http.StatusUpgradeRequired, agentproto.ErrorResponse{Code: agentproto.CodeVersionMismatch, Message: "version"})
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			writeJSON(w, http.StatusUnauthorized, agentproto.ErrorResponse{Code: agentproto.CodeUnauthenticated, Message: "token"})
+			return
+		}
+		var req agentproto.CAInstallRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, agentproto.ErrorResponse{Code: agentproto.CodeInvalidRequest, Message: err.Error()})
+			return
+		}
+		installedCert = req.CertPEM
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc(agentproto.PathCA, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(agentproto.HeaderProtocol) != agentproto.ProtocolVersion {
+			writeJSON(w, http.StatusUpgradeRequired, agentproto.ErrorResponse{Code: agentproto.CodeVersionMismatch, Message: "version"})
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			writeJSON(w, http.StatusUnauthorized, agentproto.ErrorResponse{Code: agentproto.CodeUnauthenticated, Message: "token"})
+			return
+		}
+		if len(installedCert) == 0 {
+			writeJSON(w, http.StatusNotFound, agentproto.ErrorResponse{Code: agentproto.CodeNotFound, Message: "not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, agentproto.CAResponse{CertPEM: installedCert, Fingerprint: "abc123fingerprint"})
+	})
+
+	srv, pin := newTLSServer(t, mux)
+	c, err := New(Config{BaseURL: srv.URL, Token: "secret", PinSHA256: pin, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// 1. Before install, CA() returns ErrNotFound
+	_, err = c.CA(ctx)
+	if !errors.Is(err, agentproto.ErrNotFound) {
+		t.Fatalf("CA() before install = %v, want ErrNotFound", err)
+	}
+
+	// 2. InstallCA()
+	fakeCert := []byte("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n")
+	if err := c.InstallCA(ctx, fakeCert); err != nil {
+		t.Fatalf("InstallCA() = %v", err)
+	}
+
+	// 3. CA() returns installed cert
+	resp, err := c.CA(ctx)
+	if err != nil {
+		t.Fatalf("CA() = %v", err)
+	}
+	if string(resp.CertPEM) != string(fakeCert) {
+		t.Fatalf("cert PEM mismatch")
+	}
+	if resp.Fingerprint != "abc123fingerprint" {
+		t.Fatalf("fingerprint mismatch")
+	}
+}

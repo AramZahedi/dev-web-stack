@@ -1,0 +1,21 @@
+[Unit]
+Description=devstack WSL agent
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+RequiresMountsFor=/data/devstack
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStartPre=/usr/bin/test -r /data/devstack/agent.yaml
+ExecStartPre=/usr/bin/test -r /data/devstack/agent.token
+ExecStart=/data/devstack/bin/devstack-agent --config /data/devstack/agent.yaml
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
