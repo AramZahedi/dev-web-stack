@@ -3,16 +3,21 @@ package agent
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
@@ -271,5 +276,295 @@ func TestStaticRuntimeInjectsInstalledCABundleIntoSiteEnvironment(t *testing.T) 
 	prepared := runtime.sites[spec.ID].spec.Env
 	if prepared["SSL_CERT_FILE"] != caPath || prepared["CURL_CA_BUNDLE"] != caPath || prepared["NODE_EXTRA_CA_CERTS"] != caPath || !strings.Contains(prepared["PHP_INI_SCAN_DIR"], "php-conf.d") {
 		t.Fatalf("site CA environment = %#v", prepared)
+	}
+}
+
+func newTestRuntimeOnly(t *testing.T) (*Runtime, string) {
+	t.Helper()
+	root := t.TempDir()
+	runtimeRoot := filepath.Join(root, "agent-root")
+	runtime, err := NewRuntime(runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime, runtimeRoot
+}
+
+func TestAgentInstallRuntimeCatalogValidationAndListing(t *testing.T) {
+	runtime, _ := newTestRuntimeOnly(t)
+	resp, err := runtime.InstallRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "php@8.4.27-r1"})
+	if err != nil {
+		t.Fatalf("InstallRuntime(php@8.4.27-r1) = %v", err)
+	}
+	if resp.ID != "php@8.4.27-r1" || resp.Kind != "php" {
+		t.Fatalf("unexpected runtime response: %+v", resp)
+	}
+	if _, err := runtime.InstallRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "php@9.9.9"}); err == nil {
+		t.Fatal("InstallRuntime accepted uncataloged runtime")
+	}
+	list, err := runtime.ListRuntimes(context.Background())
+	if err != nil || len(list.Runtimes) == 0 {
+		t.Fatalf("ListRuntimes = %+v, %v", list, err)
+	}
+	if err := runtime.RemoveRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "php@8.4.27-r1"}); err != nil {
+		t.Fatalf("RemoveRuntime = %v", err)
+	}
+}
+
+func TestDebian12PHPCatalogCompatibilityGate(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := CheckDebian12PHPCompatibility(context.Background(), tempDir); err == nil {
+		t.Fatal("compatibility gate accepted missing php binaries")
+	}
+}
+
+func TestAgentPHPPrepareGeneratesFPMConfAndAllocatesPort(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	project := filepath.Join(root, "my-php-app")
+	publicDir := filepath.Join(project, "public")
+	if err := os.MkdirAll(publicDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(publicDir, "index.php"), []byte("<?php echo 'hello';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:           "php-site",
+		Kind:         "php",
+		BackendPath:  project,
+		DocumentRoot: "public",
+		PHPVersion:   "8.4",
+		PHPBuild:     "php@8.4.27-r1",
+	}
+	prepared, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{
+		Generation: "gen-1",
+		Site:       spec,
+	})
+	if err != nil {
+		t.Fatalf("PreparePHP = %v", err)
+	}
+	if prepared.FastCGIPort < 43000 || prepared.FastCGIPort > 43999 {
+		t.Fatalf("invalid FastCGI port: %d", prepared.FastCGIPort)
+	}
+	fpmConf := filepath.Join(root, "sites", spec.ID, "fpm.conf")
+	data, err := os.ReadFile(fpmConf)
+	if err != nil {
+		t.Fatalf("fpm.conf missing: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "[global]") || !strings.Contains(content, "[www]") || !strings.Contains(content, fmt.Sprintf("listen = 127.0.0.1:%d", prepared.FastCGIPort)) {
+		t.Fatalf("fpm.conf content invalid:\n%s", content)
+	}
+}
+
+func TestAgentPHPStartStopAndSwapGenerations(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	project := filepath.Join(root, "swap-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:          "swap-site",
+		Kind:        "php",
+		BackendPath: project,
+		PHPVersion:  "8.4",
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-1", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	startResp, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "gen-1"})
+	if err != nil {
+		t.Fatalf("StartPHP(gen-1) = %v", err)
+	}
+	if startResp.Status != "running" {
+		t.Fatalf("start status = %q", startResp.Status)
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-2", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	swapResp, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "gen-2"})
+	if err != nil {
+		t.Fatalf("StartPHP(gen-2) swap = %v", err)
+	}
+	if swapResp.Status != "running" {
+		t.Fatalf("swap status = %q", swapResp.Status)
+	}
+	stopResp, err := runtime.StopPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "gen-2"})
+	if err != nil {
+		t.Fatalf("StopPHP = %v", err)
+	}
+	if stopResp.Status != "stopped" {
+		t.Fatalf("stop status = %q", stopResp.Status)
+	}
+}
+
+func TestAgentNodeBuildDetectionAndExecution(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	project := filepath.Join(root, "node-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "package.json"), []byte(`{"name":"test","scripts":{"build":"echo build-ok"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:          "node-site",
+		Kind:        "static",
+		BackendPath: project,
+		SourceMode:  "windows",
+	}
+	if _, err := runtime.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	buildResp, err := runtime.BuildSite(context.Background(), spec.ID, agentproto.BuildRequest{})
+	if err != nil {
+		t.Fatalf("BuildSite = %v", err)
+	}
+	if buildResp.ExitCode != 0 {
+		t.Fatalf("build exit code = %d, stderr = %q", buildResp.ExitCode, buildResp.Stderr)
+	}
+	stream, err := runtime.SiteLogs(context.Background(), spec.ID, false, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	logData, _ := io.ReadAll(stream)
+	if !strings.Contains(string(logData), "warning") && !strings.Contains(string(logData), "performance") {
+		t.Fatalf("expected performance warning in logs:\n%s", logData)
+	}
+}
+
+func TestAgentTerminalTicketAndWebSocketPTY(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	project := filepath.Join(root, "term-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:          "term-site",
+		Kind:        "static",
+		BackendPath: project,
+	}
+	if _, err := runtime.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	ticketResp, err := runtime.IssueTerminalTicket(spec.ID, agentproto.TerminalTicketRequest{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("IssueTerminalTicket = %v", err)
+	}
+	if ticketResp.Ticket == "" || !strings.Contains(ticketResp.URL, spec.ID) {
+		t.Fatalf("invalid ticket response: %+v", ticketResp)
+	}
+
+	identity, err := GenerateTLSIdentity(filepath.Join(t.TempDir(), "tls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServerWithRuntime(Config{Root: t.TempDir(), Distro: "devstack"}, "secret-token", identity, nil, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	// 1. WebSocket request without ticket -> 403
+	reqWithoutTicket, _ := http.NewRequest(http.MethodGet, ts.URL+agentproto.PathSiteTerminalFor(spec.ID), nil)
+	reqWithoutTicket.Header.Set(agentproto.HeaderProtocol, agentproto.ProtocolVersion)
+	reqWithoutTicket.Header.Set(agentproto.HeaderAuth, agentproto.BearerPrefix+"secret-token")
+	res1, err := http.DefaultClient.Do(reqWithoutTicket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res1.Body.Close()
+	if res1.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 without ticket, got %d", res1.StatusCode)
+	}
+
+	// 2. WebSocket request with invalid ticket -> 403
+	reqWithBadTicket, _ := http.NewRequest(http.MethodGet, ts.URL+agentproto.PathSiteTerminalFor(spec.ID)+"?ticket=invalid", nil)
+	reqWithBadTicket.Header.Set(agentproto.HeaderProtocol, agentproto.ProtocolVersion)
+	reqWithBadTicket.Header.Set(agentproto.HeaderAuth, agentproto.BearerPrefix+"secret-token")
+	res2, err := http.DefaultClient.Do(reqWithBadTicket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res2.Body.Close()
+	if res2.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 with bad ticket, got %d", res2.StatusCode)
+	}
+
+	// 3. Connect via WebSocket with valid ticket
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + agentproto.PathSiteTerminalFor(spec.ID) + "?ticket=" + ticketResp.Ticket
+	wsHeader := http.Header{}
+	wsHeader.Set(agentproto.HeaderProtocol, agentproto.ProtocolVersion)
+	wsHeader.Set(agentproto.HeaderAuth, agentproto.BearerPrefix+"secret-token")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: wsHeader})
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v (resp=%+v)", err, resp)
+	}
+	defer conn.CloseNow()
+
+	// Send resize frame
+	resizeData, _ := json.Marshal(map[string]any{"type": "resize", "cols": 120, "rows": 40})
+	if err := conn.Write(ctx, websocket.MessageText, resizeData); err != nil {
+		t.Fatalf("write resize frame = %v", err)
+	}
+
+	// Send input frame
+	inputData, _ := json.Marshal(map[string]any{"type": "input", "data": "echo terminal-ok\n"})
+	if err := conn.Write(ctx, websocket.MessageText, inputData); err != nil {
+		t.Fatalf("write input frame = %v", err)
+	}
+
+	// Read frame from server
+	_, msg, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read frame = %v", err)
+	}
+	if len(msg) == 0 {
+		t.Fatal("empty message from terminal websocket")
+	}
+
+	// 4. Reuse same ticket -> should fail with 403 because ticket was consumed (one-time use)
+	reqReuseTicket, _ := http.NewRequest(http.MethodGet, ts.URL+agentproto.PathSiteTerminalFor(spec.ID)+"?ticket="+ticketResp.Ticket, nil)
+	reqReuseTicket.Header.Set(agentproto.HeaderProtocol, agentproto.ProtocolVersion)
+	reqReuseTicket.Header.Set(agentproto.HeaderAuth, agentproto.BearerPrefix+"secret-token")
+	res3, err := http.DefaultClient.Do(reqReuseTicket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res3.Body.Close()
+	if res3.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 on reused ticket, got %d", res3.StatusCode)
+	}
+}
+
+func TestAgentSiteExec(t *testing.T) {
+	rt, root := newTestRuntimeOnly(t)
+	project := filepath.Join(root, "exec-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:          "exec-site",
+		Kind:        "static",
+		BackendPath: project,
+		Env:         map[string]string{"MY_VAR": "my_val"},
+	}
+	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{"echo", "hello-exec"}
+	if runtime.GOOS == "windows" {
+		argv = []string{"cmd.exe", "/c", "echo", "hello-exec"}
+	}
+	resp, err := rt.ExecSite(context.Background(), spec.ID, agentproto.SiteExecRequest{Argv: argv})
+	if err != nil {
+		t.Fatalf("ExecSite = %v", err)
+	}
+	if resp.ExitCode != 0 || !strings.Contains(resp.Stdout, "hello-exec") {
+		t.Fatalf("unexpected ExecSite response: %+v", resp)
 	}
 }

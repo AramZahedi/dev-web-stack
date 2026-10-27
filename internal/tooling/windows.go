@@ -50,6 +50,60 @@ func EnsureWindowsToolShims(binDir, distro string) error {
 	return nil
 }
 
+// EnsureWindowsSiteShims creates site-scoped Windows command wrappers for
+// PHP, Composer, shell, and exec. Each wrapper invokes WSL within the site's
+// backend directory and environment, properly quoting paths and variables.
+func EnsureWindowsSiteShims(binDir, distro string, site model.Site) error {
+	if !wslDistroPattern.MatchString(strings.TrimSpace(distro)) {
+		return fmt.Errorf("tooling: invalid WSL distro name %q", distro)
+	}
+	if strings.TrimSpace(binDir) == "" {
+		return errors.New("tooling: Windows site shim directory is empty")
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return fmt.Errorf("tooling: create Windows site shim directory: %w", err)
+	}
+	env := WindowsSiteEnvironment(site)
+	var baseScript strings.Builder
+	baseScript.WriteString("cd -- ")
+	baseScript.WriteString(posixQuote(site.BackendPath))
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		baseScript.WriteString(" && export ")
+		baseScript.WriteString(k)
+		baseScript.WriteByte('=')
+		baseScript.WriteString(posixQuote(env[k]))
+	}
+
+	shims := map[string]string{
+		"php.cmd":      fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d \"%s\" -- bash -lc \"%s && exec php \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
+		"composer.cmd": fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d \"%s\" -- bash -lc \"%s && exec composer \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
+		"shell.cmd":    fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d \"%s\" -- bash -lc \"%s && exec \\\"${SHELL:-/bin/bash}\\\" -i\"\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
+		"exec.cmd":     fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d \"%s\" -- bash -lc \"%s && exec \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
+	}
+
+	for tool, content := range shims {
+		path := filepath.Join(binDir, tool)
+		temporary := path + ".tmp"
+		if err := os.WriteFile(temporary, []byte(content), 0o600); err != nil {
+			return fmt.Errorf("tooling: write %s: %w", temporary, err)
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			_ = os.Remove(temporary)
+			return fmt.Errorf("tooling: replace %s: %w", path, err)
+		}
+		if err := os.Rename(temporary, path); err != nil {
+			_ = os.Remove(temporary)
+			return fmt.Errorf("tooling: install %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
 // EnsureGlobalWindowsToolShims installs wrappers in the public Windows bin
 // directory using the persisted distro or the managed-distro default.
 func EnsureGlobalWindowsToolShims(home, distro string) error {

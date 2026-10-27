@@ -23,23 +23,29 @@ type runtimeSite struct {
 	desiredRunning bool
 	status         string
 	server         *http.Server
+	activeGen      string
+	phpGenerations map[string]*phpGeneration
 }
 
 // Runtime owns site state, backend ports, and process/server reconciliation in
 // the WSL filesystem. It stores its state beneath /data/devstack.
 type Runtime struct {
-	root      string
-	statePath string
-	ports     *PortAllocator
-	logs      *logHub
-	mu        sync.Mutex
-	sites     map[string]*runtimeSite
+	root        string
+	statePath   string
+	ports       *PortAllocator
+	logs        *logHub
+	mu          sync.Mutex
+	sites       map[string]*runtimeSite
+	runtimes    map[string]agentproto.RuntimeResponse
+	termMu      sync.Mutex
+	termTickets map[string]*terminalTicket
 }
 
 type persistedSite struct {
 	Spec           agentproto.SiteSpec `json:"spec"`
 	DocumentRoot   string              `json:"document_root"`
 	DesiredRunning bool                `json:"desired_running"`
+	ActiveGen      string              `json:"active_gen,omitempty"`
 }
 
 type persistedRuntime struct {
@@ -65,7 +71,16 @@ func NewRuntime(root string) (*Runtime, error) {
 			return nil, fmt.Errorf("agent: protect runtime directory %s: %w", dir, err)
 		}
 	}
-	runtime := &Runtime{root: root, statePath: filepath.Join(root, "run", "sites.json"), ports: NewPortAllocator(), logs: newLogHub(filepath.Join(root, "logs")), sites: make(map[string]*runtimeSite)}
+	runtime := &Runtime{
+		root:        root,
+		statePath:   filepath.Join(root, "run", "sites.json"),
+		ports:       NewPortAllocator(),
+		logs:        newLogHub(filepath.Join(root, "logs")),
+		sites:       make(map[string]*runtimeSite),
+		runtimes:    make(map[string]agentproto.RuntimeResponse),
+		termTickets: make(map[string]*terminalTicket),
+	}
+	runtime.loadRuntimes()
 	data, err := os.ReadFile(runtime.statePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return runtime, nil
@@ -81,10 +96,24 @@ func NewRuntime(root string) (*Runtime, error) {
 		if err := validateSiteID(item.Spec.ID); err != nil {
 			return nil, fmt.Errorf("agent: invalid persisted site: %w", err)
 		}
-		if err := runtime.ports.Restore(item.Spec.ID, "http", item.Spec.HTTPPort); err != nil {
-			return nil, err
+		if item.Spec.HTTPPort > 0 {
+			if err := runtime.ports.Restore(item.Spec.ID, "http", item.Spec.HTTPPort); err != nil {
+				return nil, err
+			}
 		}
-		runtime.sites[item.Spec.ID] = &runtimeSite{spec: cloneAgentSiteSpec(item.Spec), documentRoot: item.DocumentRoot, desiredRunning: item.DesiredRunning, status: "stopped"}
+		if item.Spec.FastCGIPort > 0 {
+			if err := runtime.ports.Restore(item.Spec.ID, "fastcgi", item.Spec.FastCGIPort); err != nil {
+				return nil, err
+			}
+		}
+		runtime.sites[item.Spec.ID] = &runtimeSite{
+			spec:           cloneAgentSiteSpec(item.Spec),
+			documentRoot:   item.DocumentRoot,
+			desiredRunning: item.DesiredRunning,
+			status:         "stopped",
+			activeGen:      item.ActiveGen,
+			phpGenerations: make(map[string]*phpGeneration),
+		}
 	}
 	return runtime, nil
 }
@@ -163,8 +192,24 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 		if err := ctxErr(ctx); err != nil {
 			return err
 		}
-		if _, err := r.StartSite(ctx, id); err != nil {
-			return fmt.Errorf("agent: reconcile site %q: %w", id, err)
+		r.mu.Lock()
+		site := r.sites[id]
+		kind := ""
+		gen := ""
+		if site != nil {
+			kind = site.spec.Kind
+			gen = site.activeGen
+		}
+		r.mu.Unlock()
+
+		if kind == "php" {
+			if _, err := r.StartPHP(ctx, id, agentproto.PHPActionRequest{Generation: gen}); err != nil {
+				return fmt.Errorf("agent: reconcile site %q: %w", id, err)
+			}
+		} else {
+			if _, err := r.StartSite(ctx, id); err != nil {
+				return fmt.Errorf("agent: reconcile site %q: %w", id, err)
+			}
 		}
 	}
 	return nil
@@ -173,7 +218,12 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 func (r *Runtime) saveLocked() error {
 	state := persistedRuntime{Version: 1}
 	for _, site := range r.sites {
-		state.Sites = append(state.Sites, persistedSite{Spec: cloneAgentSiteSpec(site.spec), DocumentRoot: site.documentRoot, DesiredRunning: site.desiredRunning})
+		state.Sites = append(state.Sites, persistedSite{
+			Spec:           cloneAgentSiteSpec(site.spec),
+			DocumentRoot:   site.documentRoot,
+			DesiredRunning: site.desiredRunning,
+			ActiveGen:      site.activeGen,
+		})
 	}
 	data, err := json.Marshal(state)
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 func TestEnsureWindowsToolShimsWritesNonDotCmdFiles(t *testing.T) {
@@ -120,5 +122,64 @@ func TestBuildWSLExecArgsRejectsUnsafeInputs(t *testing.T) {
 				t.Fatal("BuildWSLExecArgs accepted invalid input")
 			}
 		})
+	}
+}
+
+func TestEnsureWindowsSiteShimsWritesExpectedCmdFiles(t *testing.T) {
+	bin := t.TempDir()
+	site := model.Site{
+		Name:        "my-site",
+		BackendPath: "/mnt/c/Users/Aram/Projects/my site",
+		Env:         map[string]string{"APP_ENV": "local", "DB_NAME": "my app db"},
+		PHPBuild:    "php@8.4.27-r1",
+	}
+	if err := EnsureWindowsSiteShims(bin, "devstack", site); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"php.cmd", "composer.cmd", "shell.cmd", "exec.cmd"} {
+		content, err := os.ReadFile(filepath.Join(bin, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(content)
+		if strings.HasPrefix(name, ".") || !strings.Contains(text, `wsl.exe -d "devstack"`) {
+			t.Fatalf("unexpected %s content: %s", name, text)
+		}
+		if !strings.Contains(text, "cd -- '/mnt/c/Users/Aram/Projects/my site'") {
+			t.Fatalf("%s does not quote backend path with spaces:\n%s", name, text)
+		}
+	}
+}
+
+func TestEnsureWindowsSiteShimsPathWithSpaces(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "devstack tools sites my-site bin")
+	site := model.Site{
+		Name:        "my-site",
+		BackendPath: "/mnt/c/Users/Aram/Projects/my site",
+	}
+	if err := EnsureWindowsSiteShims(bin, "devstack", site); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"php.cmd", "composer.cmd", "shell.cmd", "exec.cmd"} {
+		if _, err := os.Stat(filepath.Join(bin, name)); err != nil {
+			t.Fatalf("expected %s in directory with spaces: %v", name, err)
+		}
+	}
+}
+
+func TestBuildWSLExecArgsQuotesSpacesAndQuotesInArguments(t *testing.T) {
+	args, err := BuildWSLExecArgs("devstack", "/mnt/c/Path With Spaces", map[string]string{"GREETING": "hello world"}, []string{"php", "artisan", "user:create", "--name=O'Connor & Smith", "with spaces"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := args[5]
+	for _, want := range []string{
+		"cd -- '/mnt/c/Path With Spaces'",
+		"export GREETING='hello world'",
+		"exec 'php' 'artisan' 'user:create' '--name=O'\\''Connor & Smith' 'with spaces'",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing %q:\n%s", want, script)
+		}
 	}
 }
