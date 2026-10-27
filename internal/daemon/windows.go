@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,12 +17,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentclient"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/api"
 	wslbackend "github.com/AramZahedi/dev-web-stack/internal/backend/wsl"
+	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -39,6 +42,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
+	"github.com/AramZahedi/dev-web-stack/internal/terminal"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/wsl"
@@ -143,7 +147,11 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
-	adapter := &helperAdapter{}
+	helperSocket := opts.HelperSocket
+	if strings.TrimSpace(helperSocket) == "" {
+		helperSocket = DefaultHelperSocket
+	}
+	adapter := &helperAdapter{socketPath: helperSocket}
 	wslBackend := wslbackend.New(nil)
 	agentPorts := ports.NewAgentProvider(nil)
 
@@ -173,13 +181,36 @@ func Run(ctx context.Context, opts Options) error {
 		PHPManifest:  &phpManifest,
 	})
 
-	agentConfig := &windowsAgentConfigAdapter{}
+	agentBaseURL := fmt.Sprintf("https://127.0.0.1:%d", cfg.AgentPort)
+	agentServices := &windowsAgentServiceAdapter{home: cfg.Home, baseURL: agentBaseURL}
+	agentDocker, err := servicecontrol.NewAgentDocker(agentServices, "/data/devstack")
+	if err != nil {
+		return fmt.Errorf("daemon: init agent docker: %w", err)
+	}
+
+	preparers := make(map[services.ID]servicecontrol.Preparer)
+	for _, id := range servicecontrol.AllowedAgentServiceIDs() {
+		preparers[services.ID(id)] = agentDocker
+	}
+	preparers[services.IDPostgreSQL] = agentDocker
+
+	serviceCatalog := services.DefaultCatalog()
+	serviceManager := servicecontrol.NewManager(
+		cfg.Home,
+		st,
+		agentDocker,
+		serviceCatalog,
+		preparers,
+	)
+
+	agentConfig := &windowsAgentConfigAdapter{home: cfg.Home, baseURL: agentBaseURL}
 	serviceConfigService, err := servicecontrol.NewConfigService(servicecontrol.ConfigDeps{
-		Root:    cfg.Home,
-		Catalog: services.DefaultCatalog(),
-		Events:  st,
-		Agent:   agentConfig,
-		Logger:  logger,
+		Root:     cfg.Home,
+		Catalog:  serviceCatalog,
+		Services: serviceManager,
+		Events:   st,
+		Agent:    agentConfig,
+		Logger:   logger,
 	})
 	if err != nil {
 		logger.Warn("daemon: service config manager init", "error", err)
@@ -188,6 +219,7 @@ func Run(ctx context.Context, opts Options) error {
 	performanceService := perfservice.NewService(perfservice.ServiceConfig{
 		Root:              cfg.Home,
 		Store:             st,
+		Services:          serviceManager,
 		Sites:             siteService,
 		HTTPPort:          cfg.HTTPPort,
 		HTTPSPort:         cfg.HTTPSPort,
@@ -196,7 +228,22 @@ func Run(ctx context.Context, opts Options) error {
 		Logger:            logger,
 	})
 
-	runtimeService := &windowsRuntimeService{backend: wslBackend, store: st}
+	runtimeService := &windowsRuntimeService{backend: wslBackend, store: st, agent: agentServices}
+
+	buildService := build.NewService(build.Deps{
+		Store:    st,
+		Runtimes: runtimeService,
+		Paths:    paths,
+	})
+
+	terminalManager := terminal.NewManager(terminal.Deps{
+		Paths:    paths,
+		Runtimes: runtimeService,
+		PHP:      siteService,
+		Logger:   logger,
+		UID:      1000,
+	})
+	defer terminalManager.Close()
 
 	toolingService := tooling.NewService(tooling.Deps{
 		Store:  st,
@@ -234,8 +281,11 @@ func Run(ctx context.Context, opts Options) error {
 		MaxBodyBytes:  int64(cfg.MaxRequestBodyMB) << 20,
 		Listeners:     api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},
 		Vhosts:        siteService,
+		Services:      serviceManager,
 		ServiceConfig: serviceConfigService,
 		Tooling:       toolingService,
+		Build:         buildService,
+		Terminal:      terminalManager,
 		Performance:   performanceService,
 		Logger:        logger,
 	})
@@ -294,16 +344,16 @@ func Run(ctx context.Context, opts Options) error {
 				logger.Warn("daemon: helper service not available or not yet started; continuing without privileged helper", "error", err)
 				return nil
 			}
+			adapter.set(client)
+			helper = client
+
 			statusCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			_, err = client.Status(statusCtx)
 			cancel()
 			if err != nil {
-				_ = client.Close()
 				logger.Warn("daemon: helper service ping failed; continuing without privileged helper", "error", err)
 				return nil
 			}
-			adapter.set(client)
-			helper = client
 
 			if err := updateWindowsProxyTargets(ctx, helperSocket, cfg.HTTPPort, cfg.HTTPSPort); err != nil {
 				logger.Warn("daemon: update helper proxy targets", "error", err)
@@ -334,6 +384,7 @@ func Run(ctx context.Context, opts Options) error {
 			}
 			agentClient = client
 			agentConfig.set(client)
+			agentServices.set(client)
 			wslBackend.Client = client
 			agentPorts.Client = client
 
@@ -432,7 +483,7 @@ func EnsureRunning(ctx context.Context, opts Options) error {
 		if !errors.Is(err, ErrAlreadyRunning) {
 			return fmt.Errorf("daemon: acquire spawn lock: %w", err)
 		}
-		return waitWindowsReady(ctx, cfg.Home, windowsStartTimeout)
+		return waitWindowsReady(ctx, cfg.Home, windowsStartTimeout, nil)
 	}
 	defer lock.release()
 	if readyWindows(cfg.Home) {
@@ -458,8 +509,16 @@ func EnsureRunning(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("daemon: start background daemon: %w", err)
 	}
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+	readyErr := waitWindowsReady(ctx, cfg.Home, windowsStartTimeout, waitCh)
+	if readyErr != nil {
+		return readyErr
+	}
 	_ = cmd.Process.Release()
-	return waitWindowsReady(ctx, cfg.Home, windowsStartTimeout)
+	return nil
 }
 
 func loadWindowsConfig(home string) (config.Config, error) {
@@ -607,6 +666,7 @@ func newWindowsProxy(cfg config.Config, logger *slog.Logger) (*proxy.Router, *pr
 		"devstack.test": {
 			SiteID: "__dashboard__", Host: "devstack.test", Kind: proxy.KindStatic,
 			Upstream: net.JoinHostPort("127.0.0.1", fmt.Sprint(cfg.UIPort)), TLS: true,
+			ForceHTTPS: true,
 		},
 	}})
 	return router, proxy.NewServer(proxy.ServerConfig{
@@ -655,8 +715,9 @@ func updateWindowsProxyTargets(ctx context.Context, socket string, httpPort, htt
 }
 
 type helperAdapter struct {
-	mu     sync.RWMutex
-	client *helperclient.Client
+	mu         sync.RWMutex
+	socketPath string
+	client     *helperclient.Client
 }
 
 func (h *helperAdapter) set(c *helperclient.Client) {
@@ -667,8 +728,24 @@ func (h *helperAdapter) set(c *helperclient.Client) {
 
 func (h *helperAdapter) get() *helperclient.Client {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.client
+	client := h.client
+	h.mu.RUnlock()
+	if client != nil {
+		return client
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.client != nil {
+		return h.client
+	}
+	if h.socketPath != "" {
+		c, err := helperclient.Dial(h.socketPath)
+		if err == nil {
+			h.client = c
+			return c
+		}
+	}
+	return nil
 }
 
 func (h *helperAdapter) SignCertificate(ctx context.Context, csrPEM []byte, domains []string) (helperproto.SignResponse, error) {
@@ -730,11 +807,18 @@ func (h *helperAdapter) Status(ctx context.Context) (helperproto.StatusResponse,
 func (h *helperAdapter) VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error) {
 	c := h.get()
 	if c == nil {
-		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin, ConfigOK: true}, nil
+		return helperproto.VhostStatusResponse{}, helperproto.ErrNotImplemented
 	}
 	resp, err := c.VhostStatus(ctx)
 	if err != nil {
-		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin, ConfigOK: true}, nil
+		var hErr *helperclient.Error
+		if errors.As(err, &hErr) && (hErr.Status == http.StatusNotFound || hErr.Status == http.StatusNotImplemented || errors.Is(err, helperproto.ErrNotImplemented)) {
+			return helperproto.VhostStatusResponse{}, helperproto.ErrNotImplemented
+		}
+		if errors.Is(err, helperproto.ErrNotImplemented) {
+			return helperproto.VhostStatusResponse{}, helperproto.ErrNotImplemented
+		}
+		return helperproto.VhostStatusResponse{}, err
 	}
 	return resp, nil
 }
@@ -742,20 +826,46 @@ func (h *helperAdapter) VhostStatus(ctx context.Context) (helperproto.VhostStatu
 func (h *helperAdapter) SyncVhosts(ctx context.Context, req helperproto.VHostSyncRequest) error {
 	c := h.get()
 	if c == nil {
-		return nil
+		return fmt.Errorf("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active: %w", helperproto.ErrNotImplemented)
 	}
-	_ = c.SyncVhosts(ctx, req)
+	err := c.SyncVhosts(ctx, req)
+	if err != nil {
+		var hErr *helperclient.Error
+		if errors.As(err, &hErr) && (hErr.Status == http.StatusNotFound || hErr.Status == http.StatusNotImplemented || errors.Is(err, helperproto.ErrNotImplemented)) {
+			return fmt.Errorf("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active: %w", helperproto.ErrNotImplemented)
+		}
+		return err
+	}
 	return nil
 }
 
 func (h *helperAdapter) SetServingMode(ctx context.Context, mode string, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error) {
+	if mode != config.ServingModeBuiltin {
+		c := h.get()
+		if c == nil {
+			return helperproto.VhostStatusResponse{}, fmt.Errorf("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active: %w", helperproto.ErrNotImplemented)
+		}
+		resp, err := c.SetServingMode(ctx, mode, req)
+		if err != nil {
+			var hErr *helperclient.Error
+			if errors.As(err, &hErr) && (hErr.Status == http.StatusNotFound || hErr.Status == http.StatusNotImplemented || errors.Is(err, helperproto.ErrNotImplemented)) {
+				return helperproto.VhostStatusResponse{}, fmt.Errorf("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active: %w", helperproto.ErrNotImplemented)
+			}
+			return helperproto.VhostStatusResponse{}, err
+		}
+		return resp, nil
+	}
 	c := h.get()
 	if c == nil {
 		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin, ConfigOK: true}, nil
 	}
 	resp, err := c.SetServingMode(ctx, mode, req)
 	if err != nil {
-		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin, ConfigOK: true}, nil
+		var hErr *helperclient.Error
+		if errors.As(err, &hErr) && (hErr.Status == http.StatusNotFound || hErr.Status == http.StatusNotImplemented || errors.Is(err, helperproto.ErrNotImplemented)) {
+			return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin, ConfigOK: true}, nil
+		}
+		return helperproto.VhostStatusResponse{}, err
 	}
 	return resp, nil
 }
@@ -765,7 +875,15 @@ func (h *helperAdapter) RemoveVhosts(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
-	return c.RemoveVhosts(ctx)
+	err := c.RemoveVhosts(ctx)
+	if err != nil {
+		var hErr *helperclient.Error
+		if errors.As(err, &hErr) && (hErr.Status == http.StatusNotFound || hErr.Status == http.StatusNotImplemented || errors.Is(err, helperproto.ErrNotImplemented)) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (h *helperAdapter) ToolStatus(ctx context.Context) (helperproto.ToolStatusResponse, error) {
@@ -886,11 +1004,12 @@ func wireDashboardTLS(ctx context.Context, router *proxy.Router, certManager *ce
 	return nil
 }
 
-func waitWindowsReady(ctx context.Context, home string, timeout time.Duration) error {
+func waitWindowsReady(ctx context.Context, home string, timeout time.Duration, waitCh <-chan error) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(windowsPollInterval)
 	defer ticker.Stop()
+	logPath := filepath.Join(home, "logs", "daemon.log")
 	for {
 		if readyWindows(home) {
 			return nil
@@ -898,6 +1017,15 @@ func waitWindowsReady(ctx context.Context, home string, timeout time.Duration) e
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("daemon: waiting for Windows startup: %w", ctx.Err())
+		case err, ok := <-waitCh:
+			if ok {
+				if lockHeld(home) {
+					waitCh = nil
+					continue
+				}
+				return fmt.Errorf("daemon: Windows daemon exited before becoming ready: %v\n%s", err, tailWindowsLog(logPath))
+			}
+			waitCh = nil
 		case <-deadline.C:
 			return fmt.Errorf("daemon: Windows daemon did not become ready within %s", timeout)
 		case <-ticker.C:
@@ -905,9 +1033,42 @@ func waitWindowsReady(ctx context.Context, home string, timeout time.Duration) e
 	}
 }
 
+const maxWindowsLogTailBytes = 4096
+
+func tailWindowsLog(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return "(daemon log is unavailable: " + err.Error() + ")"
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return "(daemon log is unavailable: " + err.Error() + ")"
+	}
+	offset := int64(0)
+	if info.Size() > maxWindowsLogTailBytes {
+		offset = info.Size() - maxWindowsLogTailBytes
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return "(daemon log is unavailable: " + err.Error() + ")"
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxWindowsLogTailBytes))
+	if err != nil {
+		return "(daemon log is unavailable: " + err.Error() + ")"
+	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return "(daemon log is empty)"
+	}
+	return trimmed
+}
+
 type windowsAgentConfigAdapter struct {
-	mu     sync.RWMutex
-	client *agentclient.Client
+	mu      sync.RWMutex
+	home    string
+	baseURL string
+	client  *agentclient.Client
 }
 
 func (a *windowsAgentConfigAdapter) set(client *agentclient.Client) {
@@ -918,11 +1079,24 @@ func (a *windowsAgentConfigAdapter) set(client *agentclient.Client) {
 
 func (a *windowsAgentConfigAdapter) get() (*agentclient.Client, error) {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.client == nil {
-		return nil, errors.New("WSL agent is not connected")
+	client := a.client
+	a.mu.RUnlock()
+	if client != nil {
+		return client, nil
 	}
-	return a.client, nil
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.client != nil {
+		return a.client, nil
+	}
+	if a.home != "" && a.baseURL != "" {
+		c, err := loadWindowsAgentClient(a.home, a.baseURL)
+		if err == nil {
+			a.client = c
+			return c, nil
+		}
+	}
+	return nil, errors.New("WSL agent is not connected")
 }
 
 func (a *windowsAgentConfigAdapter) ServiceConfig(ctx context.Context, id string) (agentproto.ServiceConfigResponse, error) {
@@ -955,6 +1129,73 @@ func (a *windowsAgentConfigAdapter) ServiceReset(ctx context.Context, req agentp
 		return err
 	}
 	return c.ServiceReset(ctx, req)
+}
+
+type windowsAgentServiceAdapter struct {
+	mu      sync.RWMutex
+	home    string
+	baseURL string
+	client  *agentclient.Client
+}
+
+func (a *windowsAgentServiceAdapter) set(client *agentclient.Client) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.client = client
+}
+
+func (a *windowsAgentServiceAdapter) get() (*agentclient.Client, error) {
+	a.mu.RLock()
+	client := a.client
+	a.mu.RUnlock()
+	if client != nil {
+		return client, nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.client != nil {
+		return a.client, nil
+	}
+	if a.home != "" && a.baseURL != "" {
+		c, err := loadWindowsAgentClient(a.home, a.baseURL)
+		if err == nil {
+			a.client = c
+			return c, nil
+		}
+	}
+	return nil, errors.New("WSL agent is not connected")
+}
+
+func (a *windowsAgentServiceAdapter) ServiceAction(ctx context.Context, req agentproto.ServiceRequest) (agentproto.ServiceResponse, error) {
+	c, err := a.get()
+	if err != nil {
+		return agentproto.ServiceResponse{}, err
+	}
+	return c.ServiceAction(ctx, req)
+}
+
+func (a *windowsAgentServiceAdapter) ServiceStatus(ctx context.Context, id string) (agentproto.ServiceResponse, error) {
+	c, err := a.get()
+	if err != nil {
+		return agentproto.ServiceResponse{}, err
+	}
+	return c.ServiceStatus(ctx, id)
+}
+
+func (a *windowsAgentServiceAdapter) ServiceLogs(ctx context.Context, id string, req agentproto.ServiceLogsRequest) (agentproto.ServiceLogsResponse, error) {
+	c, err := a.get()
+	if err != nil {
+		return agentproto.ServiceLogsResponse{}, err
+	}
+	return c.ServiceLogs(ctx, id, req)
+}
+
+func (a *windowsAgentServiceAdapter) ServiceCredential(ctx context.Context, req agentproto.ServiceCredentialRequest) (agentproto.ServiceCredentialResponse, error) {
+	c, err := a.get()
+	if err != nil {
+		return agentproto.ServiceCredentialResponse{}, err
+	}
+	return c.ServiceCredential(ctx, req)
 }
 
 type windowsDiagnostics struct {
@@ -1021,11 +1262,36 @@ func (w *windowsDiagnostics) CheckPorts(ctx context.Context, distro string) erro
 type portProbe struct{}
 
 func (portProbe) Listenable(addr string) error {
+	if strings.HasPrefix(addr, ":") {
+		if l, err := net.Listen("tcp", "127.0.0.1"+addr); err != nil {
+			if isPortInUse(err) {
+				return err
+			}
+		} else {
+			_ = l.Close()
+		}
+	}
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	return listener.Close()
+}
+
+func isPortInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		if errno == 10048 || errno == syscall.EADDRINUSE {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "only one usage of each socket address") ||
+		strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "eaddrinuse")
 }
 
 type windowsDiskChecker struct{}
@@ -1058,9 +1324,19 @@ func (c runtimeChecker) VerifyAll(ctx context.Context) error {
 type windowsRuntimeService struct {
 	backend *wslbackend.Backend
 	store   *store.Store
+	agent   *windowsAgentServiceAdapter
+}
+
+func (s *windowsRuntimeService) ensureClient() {
+	if s.backend != nil && s.backend.Client == nil && s.agent != nil {
+		if c, err := s.agent.get(); err == nil {
+			s.backend.Client = c
+		}
+	}
 }
 
 func (s *windowsRuntimeService) List(ctx context.Context) ([]model.RuntimeBuild, error) {
+	s.ensureClient()
 	if s.backend == nil || s.backend.Client == nil {
 		return nil, errors.New("WSL agent not connected")
 	}
@@ -1087,6 +1363,7 @@ func (s *windowsRuntimeService) List(ctx context.Context) ([]model.RuntimeBuild,
 }
 
 func (s *windowsRuntimeService) Install(ctx context.Context, id string) (model.RuntimeBuild, error) {
+	s.ensureClient()
 	if s.backend == nil || s.backend.Client == nil {
 		return model.RuntimeBuild{}, errors.New("WSL agent not connected")
 	}
@@ -1101,6 +1378,7 @@ func (s *windowsRuntimeService) Install(ctx context.Context, id string) (model.R
 }
 
 func (s *windowsRuntimeService) Remove(ctx context.Context, buildID string) error {
+	s.ensureClient()
 	if s.backend == nil || s.backend.Client == nil {
 		return errors.New("WSL agent not connected")
 	}

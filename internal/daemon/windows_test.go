@@ -25,7 +25,9 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
@@ -321,5 +323,210 @@ func TestWindowsDiagnosticsAndDoctorServices(t *testing.T) {
 	port := freeTCPPort(t)
 	if err := probe.Listenable(net.JoinHostPort("127.0.0.1", fmt.Sprint(port))); err != nil {
 		t.Fatalf("Listenable: %v", err)
+	}
+}
+
+func TestWindowsHelperAdapterTruthfulness(t *testing.T) {
+	ctx := context.Background()
+	req := helperproto.VHostSyncRequest{Mode: "nginx"}
+
+	t.Run("nil client returns ErrNotImplemented and does not fabricate success", func(t *testing.T) {
+		adapter := &helperAdapter{}
+
+		// VhostStatus must return an error and NOT claim success
+		status, err := adapter.VhostStatus(ctx)
+		if err == nil {
+			t.Fatalf("expected error from VhostStatus, got %+v", status)
+		}
+		if !errors.Is(err, helperproto.ErrNotImplemented) {
+			t.Fatalf("expected ErrNotImplemented, got: %v", err)
+		}
+		if status.ConfigOK {
+			t.Fatal("VhostStatus fabricated ConfigOK: true")
+		}
+
+		// SyncVhosts must return an error
+		if err := adapter.SyncVhosts(ctx, req); err == nil {
+			t.Fatal("expected error from SyncVhosts, got nil")
+		}
+
+		// SetServingMode with external mode must return an error and NOT claim success
+		status, err = adapter.SetServingMode(ctx, "nginx", req)
+		if err == nil {
+			t.Fatalf("expected error from SetServingMode(nginx), got %+v", status)
+		}
+		if !errors.Is(err, helperproto.ErrNotImplemented) {
+			t.Fatalf("expected ErrNotImplemented, got: %v", err)
+		}
+		if status.ConfigOK {
+			t.Fatal("SetServingMode(nginx) fabricated ConfigOK: true")
+		}
+
+		// SetServingMode with builtin succeeds
+		status, err = adapter.SetServingMode(ctx, config.ServingModeBuiltin, helperproto.VHostSyncRequest{})
+		if err != nil {
+			t.Fatalf("SetServingMode(builtin) error = %v", err)
+		}
+		if status.Mode != config.ServingModeBuiltin || !status.ConfigOK {
+			t.Fatalf("status = %+v, want builtin with ConfigOK: true", status)
+		}
+	})
+
+	t.Run("client without vhost endpoints returns ErrNotImplemented and does not fabricate success", func(t *testing.T) {
+		pipe := fmt.Sprintf(`\\.\pipe\test-vhost-truth-%d-%d`, os.Getpid(), freeTCPPort(t))
+		ln, err := ipc.Listen(ipc.NamedPipeEndpoint(pipe))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		srv := &http.Server{Handler: http.NotFoundHandler()}
+		go func() { _ = srv.Serve(ln) }()
+		defer srv.Close()
+
+		client, err := helperclient.Dial(pipe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+
+		adapter := &helperAdapter{}
+		adapter.set(client)
+
+		// VhostStatus
+		status, err := adapter.VhostStatus(ctx)
+		if err == nil {
+			t.Fatalf("expected error from VhostStatus, got %+v", status)
+		}
+		if !errors.Is(err, helperproto.ErrNotImplemented) {
+			t.Fatalf("expected ErrNotImplemented, got: %v", err)
+		}
+		if status.ConfigOK {
+			t.Fatal("VhostStatus fabricated ConfigOK: true")
+		}
+
+		// SyncVhosts
+		if err := adapter.SyncVhosts(ctx, req); err == nil {
+			t.Fatal("expected error from SyncVhosts, got nil")
+		}
+
+		// SetServingMode(nginx)
+		status, err = adapter.SetServingMode(ctx, "nginx", req)
+		if err == nil {
+			t.Fatalf("expected error from SetServingMode(nginx), got %+v", status)
+		}
+		if !errors.Is(err, helperproto.ErrNotImplemented) {
+			t.Fatalf("expected ErrNotImplemented, got: %v", err)
+		}
+		if status.ConfigOK {
+			t.Fatal("SetServingMode(nginx) fabricated ConfigOK: true")
+		}
+
+		// SetServingMode(builtin)
+		status, err = adapter.SetServingMode(ctx, config.ServingModeBuiltin, helperproto.VHostSyncRequest{})
+		if err != nil {
+			t.Fatalf("SetServingMode(builtin) error = %v", err)
+		}
+		if status.Mode != config.ServingModeBuiltin || !status.ConfigOK {
+			t.Fatalf("status = %+v, want builtin with ConfigOK: true", status)
+		}
+	})
+}
+
+func TestWaitWindowsReadyFailsFastOnChildExit(t *testing.T) {
+	home := t.TempDir()
+	logDir := filepath.Join(home, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logFile := filepath.Join(logDir, "daemon.log")
+	if err := os.WriteFile(logFile, []byte("fatal error: bind address already in use: 7070\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	waitCh := make(chan error, 1)
+	waitCh <- errors.New("exit status 1")
+
+	start := time.Now()
+	err := waitWindowsReady(context.Background(), home, 30*time.Second, waitCh)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from waitWindowsReady when child exits, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("waitWindowsReady took %v, want fail-fast in < 2s", elapsed)
+	}
+	if !strings.Contains(err.Error(), "exited before becoming ready") {
+		t.Fatalf("error = %q, want 'exited before becoming ready'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "bind address already in use") {
+		t.Fatalf("error = %q, want tail log containing bind address error", err.Error())
+	}
+}
+
+func TestHelperAdapterLazyReconnect(t *testing.T) {
+	pipe := fmt.Sprintf(`\\.\pipe\test-lazy-helper-%d-%d`, os.Getpid(), freeTCPPort(t))
+	adapter := &helperAdapter{socketPath: pipe}
+
+	// Before listener is up, get() should return nil
+	if client := adapter.get(); client != nil {
+		// helperclient.Dial creates the http.Client structure without connecting
+		t.Logf("get() returned initial client struct: %v", client)
+	}
+
+	ln, err := ipc.Listen(ipc.NamedPipeEndpoint(pipe))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"version":"1.0","hosts_synced":true}` + "\n"))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	client := adapter.get()
+	if client == nil {
+		t.Fatal("adapter.get() returned nil after listener started")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	status, err := client.Status(ctx)
+	if err != nil {
+		t.Fatalf("client.Status: %v", err)
+	}
+	if status.Version != "1.0" {
+		t.Fatalf("status.Version = %q, want 1.0", status.Version)
+	}
+}
+
+func TestWindowsLogTail(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "daemon.log")
+
+	// Missing log
+	if got := tailWindowsLog(logPath); !strings.Contains(got, "unavailable") {
+		t.Errorf("missing log tail = %q, want 'unavailable'", got)
+	}
+
+	// Empty log
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := tailWindowsLog(logPath); got != "(daemon log is empty)" {
+		t.Errorf("empty log tail = %q, want '(daemon log is empty)'", got)
+	}
+
+	// Normal content
+	content := "line 1\nline 2\nline 3"
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := tailWindowsLog(logPath); got != content {
+		t.Errorf("log tail = %q, want %q", got, content)
 	}
 }
