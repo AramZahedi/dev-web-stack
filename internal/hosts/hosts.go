@@ -38,6 +38,7 @@ const (
 // managed block so uninstall can remove the mappings without touching the
 // rest of the file.
 func Render(existing string, domains []string) (string, error) {
+	crlf := strings.Contains(existing, "\r\n")
 	managed, err := normalizeDomains(domains)
 	if err != nil {
 		return "", err
@@ -68,7 +69,7 @@ func Render(existing string, domains []string) (string, error) {
 	}
 
 	if begins == 0 && ends == 0 {
-		return joinLines(append(lines, block...)), nil
+		return joinLines(append(lines, block...), crlf), nil
 	}
 	if begins != 1 || ends != 1 || begin > end {
 		return "", fmt.Errorf("hosts: malformed devstack block: found %d begin and %d end markers", begins, ends)
@@ -78,7 +79,7 @@ func Render(existing string, domains []string) (string, error) {
 	out = append(out, lines[:begin]...)
 	out = append(out, block...)
 	out = append(out, lines[end+1:]...)
-	return joinLines(out), nil
+	return joinLines(out, crlf), nil
 }
 
 // Parse returns the domains inside the managed block and whether a complete
@@ -86,25 +87,33 @@ func Render(existing string, domains []string) (string, error) {
 func Parse(content string) (domains []string, found bool) {
 	lines := splitLines(content)
 	begin, end := -1, -1
+	begins, ends := 0, 0
 	for i, line := range lines {
 		switch strings.TrimSpace(line) {
 		case BeginMarker:
+			begins++
 			if begin < 0 {
 				begin = i
 			}
 		case EndMarker:
-			if begin >= 0 && end < 0 {
+			ends++
+			if end < 0 {
 				end = i
 			}
 		}
 	}
-	if begin < 0 || end < begin {
+	if begins != 1 || ends != 1 || begin < 0 || end < begin {
 		return nil, false
 	}
 	for _, line := range lines[begin+1 : end] {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && fields[0] == "127.0.0.1" {
-			domains = append(domains, fields[1])
+			for _, f := range fields[1:] {
+				if strings.HasPrefix(f, "#") {
+					break
+				}
+				domains = append(domains, f)
+			}
 		}
 	}
 	return domains, true
@@ -232,7 +241,7 @@ func normalizeDomains(domains []string) ([]string, error) {
 }
 
 // splitLines splits content into lines without the trailing newline sentinel,
-// preserving interior blank lines.
+// stripping any carriage returns to normalize line endings.
 func splitLines(content string) []string {
 	if content == "" {
 		return nil
@@ -241,12 +250,19 @@ func splitLines(content string) []string {
 	if lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
+	for i := range lines {
+		lines[i] = strings.TrimSuffix(lines[i], "\r")
+	}
 	return lines
 }
 
-func joinLines(lines []string) string {
+func joinLines(lines []string, crlf bool) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	return strings.Join(lines, "\n") + "\n"
+	sep := "\n"
+	if crlf {
+		sep = "\r\n"
+	}
+	return strings.Join(lines, sep) + sep
 }

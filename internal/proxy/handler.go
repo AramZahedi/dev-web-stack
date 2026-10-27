@@ -22,7 +22,7 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 	route, ok := r.Lookup(host)
 	if !ok {
 		// Even if not configured in the routing table, devstack.test must not be accessible externally.
-		if host == "devstack.test" && !isLoopbackAddress(req.RemoteAddr) {
+		if host == "devstack.test" && !isLoopbackRequest(req) {
 			writeBrandedPage(w, req, brandedPage{
 				Status:  http.StatusForbidden,
 				Title:   "Access forbidden",
@@ -45,7 +45,7 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Security boundary: the dashboard (devstack.test) is strictly loopback-only.
 	// Reject any non-loopback request attempting to reach devstack.test.
-	if isDashboardRoute(route, host) && !isLoopbackAddress(req.RemoteAddr) {
+	if isDashboardRoute(route, host) && !isLoopbackRequest(req) {
 		writeBrandedPage(w, req, brandedPage{
 			Status:  http.StatusForbidden,
 			Title:   "Access forbidden",
@@ -233,8 +233,16 @@ func publicURLPort(scheme string) string {
 }
 
 func redirectPermanent(w http.ResponseWriter, req *http.Request, scheme, host string) {
+	host = strings.ReplaceAll(host, "\r", "")
+	host = strings.ReplaceAll(host, "\n", "")
+	uri := ""
+	if req.URL != nil {
+		uri = req.URL.RequestURI()
+	}
+	uri = strings.ReplaceAll(uri, "\r", "")
+	uri = strings.ReplaceAll(uri, "\n", "")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Location", scheme+"://"+host+req.URL.RequestURI())
+	w.Header().Set("Location", scheme+"://"+host+uri)
 	w.WriteHeader(http.StatusPermanentRedirect)
 }
 
@@ -359,6 +367,44 @@ func isDashboardRoute(route Route, host string) bool {
 	return route.SiteID == "__dashboard__" || route.Host == "devstack.test" || host == "devstack.test"
 }
 
+// isLoopbackRequest reports whether req originated from a local loopback interface
+// and contains no untrusted external forwarding headers.
+func isLoopbackRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if !isLoopbackAddress(r.RemoteAddr) {
+		return false
+	}
+	for _, xff := range r.Header.Values("X-Forwarded-For") {
+		for _, part := range strings.Split(xff, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" && !isLoopbackAddress(part) {
+				return false
+			}
+		}
+	}
+	for _, xri := range r.Header.Values("X-Real-IP") {
+		xri = strings.TrimSpace(xri)
+		if xri != "" && !isLoopbackAddress(xri) {
+			return false
+		}
+	}
+	for _, fwd := range r.Header.Values("Forwarded") {
+		for _, part := range strings.Split(fwd, ";") {
+			part = strings.TrimSpace(part)
+			lower := strings.ToLower(part)
+			if strings.HasPrefix(lower, "for=") {
+				target := strings.Trim(strings.TrimPrefix(part[4:], "="), `"' `)
+				if target != "" && !isLoopbackAddress(target) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 // isLoopbackAddress reports whether addr (host:port or bare IP) is an IPv4 or IPv6 loopback address.
 func isLoopbackAddress(addr string) bool {
 	addr = strings.TrimSpace(addr)
@@ -369,8 +415,12 @@ func isLoopbackAddress(addr string) bool {
 	if parsedHost, _, err := net.SplitHostPort(addr); err == nil {
 		host = parsedHost
 	}
+	host = strings.TrimSpace(host)
 	host = strings.TrimPrefix(host, "[")
 	host = strings.TrimSuffix(host, "]")
+	if idx := strings.IndexByte(host, '%'); idx != -1 {
+		host = host[:idx]
+	}
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}

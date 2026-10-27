@@ -166,6 +166,32 @@ func TestParseReturnsManagedDomains(t *testing.T) {
 	if _, found := Parse("127.0.0.1 localhost\n"); found {
 		t.Fatal("found managed block in unrelated content")
 	}
+
+	// Multiple domains and inline comment handling
+	multiContent := BeginMarker + "\n127.0.0.1 a.test b.test # inline comment\n" + EndMarker + "\n"
+	domains, found = Parse(multiContent)
+	if !found || len(domains) != 2 || domains[0] != "a.test" || domains[1] != "b.test" {
+		t.Fatalf("multi-domain Parse got %v, want [a.test b.test]", domains)
+	}
+
+	// Duplicate markers must be rejected
+	dupContent := BeginMarker + "\n127.0.0.1 a.test\n" + EndMarker + "\n" + BeginMarker + "\n127.0.0.1 b.test\n" + EndMarker + "\n"
+	if _, found := Parse(dupContent); found {
+		t.Fatal("Parse accepted duplicate managed block markers")
+	}
+}
+
+func TestRenderConsistentLineEndings(t *testing.T) {
+	crlfExisting := "127.0.0.1 localhost\r\n10.0.0.1 internal\r\n"
+	rendered, err := Render(crlfExisting, []string{"blog.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Check that all lines end with \r\n and no standalone \n exists
+	withoutCRLF := strings.ReplaceAll(rendered, "\r\n", "")
+	if strings.Contains(withoutCRLF, "\n") {
+		t.Fatalf("rendered output contains mixed LF line endings: %q", rendered)
+	}
 }
 
 func TestWriteInPlaceTruncatesOldSuffix(t *testing.T) {

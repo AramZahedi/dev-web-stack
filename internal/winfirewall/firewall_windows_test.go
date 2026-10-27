@@ -72,11 +72,40 @@ func TestFirewallEnableUpdatesExistingRulesWithoutDuplicates(t *testing.T) {
 
 func TestFirewallRejectsInvalidSubnetBeforeCommands(t *testing.T) {
 	runner := &recordingRunner{}
-	if err := NewManager(runner).Enable(context.Background(), "0.0.0.0/0"); err == nil {
-		t.Fatal("Enable accepted an all-addresses rule")
+	invalidSubnets := []string{
+		"0.0.0.0/0",
+		"0.0.0.0/16",
+		"8.8.8.0/24",
+		"1.1.1.0/24",
+		"198.51.100.0/24",
+		"127.0.0.0/16",
+		"172.16.0.0/8", // wider than /16
+		"invalid-cidr",
 	}
-	if len(runner.calls) != 0 {
-		t.Fatalf("invalid subnet ran commands: %+v", runner.calls)
+
+	for _, subnet := range invalidSubnets {
+		t.Run(subnet, func(t *testing.T) {
+			runner.calls = nil
+			if err := NewManager(runner).Enable(context.Background(), subnet); err == nil {
+				t.Fatalf("Enable accepted invalid/non-private subnet %q", subnet)
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("invalid subnet %q ran commands: %+v", subnet, runner.calls)
+			}
+		})
+	}
+}
+
+func TestFirewallCanonicalizesSubnetCIDR(t *testing.T) {
+	runner := &recordingRunner{missingSets: true}
+	manager := NewManager(runner)
+	// Passing a host address with CIDR mask must be masked to canonical network address
+	if err := manager.Enable(context.Background(), "172.28.64.15/20"); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	joined := strings.Join(runner.calls[1].args, " ")
+	if !strings.Contains(joined, "remoteip=172.28.64.0/20") {
+		t.Fatalf("expected canonical network CIDR 172.28.64.0/20, got: %s", joined)
 	}
 }
 

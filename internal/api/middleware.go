@@ -76,6 +76,14 @@ func requestHost(raw string) (string, bool) {
 		return "", false
 	}
 
+	// Reject control characters and URI delimiters before parsing.
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c <= 0x20 || c == 0x7f || c == '/' || c == '\\' || c == '#' || c == '?' || c == '@' {
+			return "", false
+		}
+	}
+
 	host := raw
 	if parsedHost, port, err := net.SplitHostPort(raw); err == nil {
 		host = parsedHost
@@ -97,7 +105,7 @@ func requestHost(raw string) (string, bool) {
 		return "", false
 	}
 
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	host = strings.ToLower(strings.TrimRight(host, "."))
 	if host == "" {
 		return "", false
 	}
@@ -147,7 +155,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		// other GET endpoints intentionally allow the first /session call.
 		if r.URL.Path == "/api/v1/fs" || strings.HasSuffix(r.URL.Path, "/config/content") {
 			cookie, err := r.Cookie(sessionCookieName)
-			if err != nil || strings.TrimSpace(cookie.Value) == "" {
+			if err != nil || !isValidSessionValue(cookie.Value) {
 				writeError(w, http.StatusForbidden, codeForbidden, "missing dashboard session", nil)
 				return
 			}
@@ -161,7 +169,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		}
 
 		cookie, err := r.Cookie(sessionCookieName)
-		if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		if err != nil || !isValidSessionValue(cookie.Value) {
 			// A mutation without a session is a CSRF-style rejection.
 			writeError(w, http.StatusForbidden, codeForbidden, "missing dashboard session", nil)
 			return
@@ -278,7 +286,8 @@ func isMutation(method string) bool {
 }
 
 // isLoopbackRequest reports whether r originated from a local loopback interface
-// or was authenticated over the local Unix socket / Windows named pipe.
+// or was authenticated over the local Unix socket / Windows named pipe, and contains
+// no untrusted external forwarding headers.
 func isLoopbackRequest(r *http.Request) bool {
 	if socketAuthenticated(r.Context()) {
 		return true
@@ -286,7 +295,7 @@ func isLoopbackRequest(r *http.Request) bool {
 	if !isLoopbackAddress(r.RemoteAddr) {
 		return false
 	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+	for _, xff := range r.Header.Values("X-Forwarded-For") {
 		for _, part := range strings.Split(xff, ",") {
 			part = strings.TrimSpace(part)
 			if part != "" && !isLoopbackAddress(part) {
@@ -294,9 +303,22 @@ func isLoopbackRequest(r *http.Request) bool {
 			}
 		}
 	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		if !isLoopbackAddress(xri) {
+	for _, xri := range r.Header.Values("X-Real-IP") {
+		xri = strings.TrimSpace(xri)
+		if xri != "" && !isLoopbackAddress(xri) {
 			return false
+		}
+	}
+	for _, fwd := range r.Header.Values("Forwarded") {
+		for _, part := range strings.Split(fwd, ";") {
+			part = strings.TrimSpace(part)
+			lower := strings.ToLower(part)
+			if strings.HasPrefix(lower, "for=") {
+				target := strings.Trim(strings.TrimPrefix(part[4:], "="), `"' `)
+				if target != "" && !isLoopbackAddress(target) {
+					return false
+				}
+			}
 		}
 	}
 	return true
@@ -313,8 +335,12 @@ func isLoopbackAddress(addr string) bool {
 	if parsedHost, _, err := net.SplitHostPort(addr); err == nil {
 		host = parsedHost
 	}
+	host = strings.TrimSpace(host)
 	host = strings.TrimPrefix(host, "[")
 	host = strings.TrimSuffix(host, "]")
+	if idx := strings.IndexByte(host, '%'); idx != -1 {
+		host = host[:idx]
+	}
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}

@@ -428,6 +428,9 @@ func readResponseHead(reader *bufio.Reader) (*Response, error) {
 		}
 		name := strings.TrimSpace(line[:colon])
 		value := strings.TrimSpace(line[colon+1:])
+		if strings.ContainsAny(name, "\r\n\x00") || strings.ContainsAny(value, "\r\n\x00") {
+			return nil, fmt.Errorf("fcgi: response header %q contains invalid characters", name)
+		}
 		key := textproto.CanonicalMIMEHeaderKey(name)
 		if key == "" {
 			return nil, fmt.Errorf("fcgi: invalid response header name %q", name)

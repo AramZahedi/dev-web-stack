@@ -369,9 +369,7 @@ func NewServer(
 		s.ui = ui.Dist()
 	}
 	if _, err := rand.Read(s.secret[:]); err != nil {
-		// crypto/rand failure is not recoverable through this constructor's
-		// signature. A process-unique fallback still prevents a zero key.
-		s.secret = sha256.Sum256([]byte(fmt.Sprintf("%d-%p", time.Now().UnixNano(), s)))
+		panic(fmt.Sprintf("api: crypto/rand entropy failure: %v", err))
 	}
 	s.registerRoutes()
 	return s
@@ -525,9 +523,9 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	session := ""
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		session = strings.TrimSpace(cookie.Value)
+		session = cookie.Value
 	}
-	if session == "" {
+	if !isValidSessionValue(session) {
 		session = randomSessionValue()
 		http.SetCookie(w, &http.Cookie{
 			Name:     sessionCookieName,
@@ -680,10 +678,23 @@ func (s *Server) userHome() string {
 func randomSessionValue() string {
 	var raw [sessionValueBytes]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%d-%p", time.Now().UnixNano(), &raw)))
-		return hex.EncodeToString(sum[:sessionValueBytes])
+		panic(fmt.Sprintf("api: crypto/rand entropy failure: %v", err))
 	}
 	return hex.EncodeToString(raw[:])
+}
+
+// isValidSessionValue reports whether value is a valid 32-byte hex-encoded session identifier.
+func isValidSessionValue(value string) bool {
+	if len(value) != 2*sessionValueBytes {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // csrfFor derives the CSRF token for a session cookie.
@@ -695,7 +706,7 @@ func (s *Server) csrfFor(session string) string {
 
 // validCSRF reports whether token is the exact HMAC for session.
 func (s *Server) validCSRF(session, token string) bool {
-	if token == "" {
+	if !isValidSessionValue(session) || token == "" {
 		return false
 	}
 	return hmac.Equal([]byte(s.csrfFor(session)), []byte(token))

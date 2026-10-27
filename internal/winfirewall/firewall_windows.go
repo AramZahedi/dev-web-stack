@@ -52,11 +52,13 @@ func (m *Manager) Enable(ctx context.Context, wslSubnet string) error {
 	if err := validateWSLSubnet(wslSubnet); err != nil {
 		return err
 	}
+	_, subnet, _ := net.ParseCIDR(wslSubnet)
+	canonicalSubnet := subnet.String()
 	rules := []proxyRule{{httpRuleName, httpPort}, {httpsRuleName, httpsPort}}
 	for i, rule := range rules {
 		newSettings := []string{
 			"dir=in", "action=allow", "protocol=TCP", fmt.Sprintf("localport=%d", rule.port),
-			"remoteip=" + wslSubnet, "profile=private", "enable=yes",
+			"remoteip=" + canonicalSubnet, "profile=private", "enable=yes",
 		}
 		setArgs := append([]string{"advfirewall", "firewall", "set", "rule", "name=" + rule.name, "new"}, newSettings...)
 		_, err := m.runner.Run(ctx, "netsh.exe", setArgs...)
@@ -116,6 +118,9 @@ func validateWSLSubnet(value string) error {
 	}
 	if subnet.IP.To4() == nil {
 		return errors.New("winfirewall: WSL subnet must be IPv4")
+	}
+	if !subnet.IP.IsPrivate() || subnet.IP.IsLoopback() {
+		return errors.New("winfirewall: WSL subnet must be a private IPv4 network")
 	}
 	one, bits := subnet.Mask.Size()
 	if bits != 32 || one < 16 {

@@ -242,6 +242,14 @@ func normalizeHost(host string) string {
 	if withoutPort, _, err := net.SplitHostPort(host); err == nil {
 		host = withoutPort
 	}
-	host = strings.TrimSuffix(host, ".")
+	host = strings.TrimRight(host, ".")
+	// Reject control characters, CR, LF, whitespace, and URI delimiters that could lead
+	// to header injection, response splitting, or routing confusion.
+	for i := 0; i < len(host); i++ {
+		c := host[i]
+		if c <= 0x20 || c == 0x7f || c == '/' || c == '\\' || c == '#' || c == '?' || c == '@' {
+			return ""
+		}
+	}
 	return strings.ToLower(host)
 }

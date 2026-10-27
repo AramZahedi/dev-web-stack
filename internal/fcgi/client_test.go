@@ -657,6 +657,8 @@ func TestFastCGIMalformedHeadersAndStatus(t *testing.T) {
 		{"bad status", "Status: banana\r\n\r\n"},
 		{"status out of range", "Status: 42 Nope\r\n\r\n"},
 		{"no blank line", "Content-Type: text/plain\r\n"},
+		{"crlf injection", "X-Custom: foo\rInjected: evil\r\n\r\n"},
+		{"null byte injection", "X-Custom: foo\x00bar\r\n\r\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			addr, stop := startFakeServer(t, func(e *fakeExchange) error {

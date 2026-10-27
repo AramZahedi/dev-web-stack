@@ -162,3 +162,150 @@ func TestSecurityBoundarySessionTLSRequirement(t *testing.T) {
 		t.Fatalf("expected 200 OK for local 127.0.0.1 session, got %d", rec.Code)
 	}
 }
+
+func TestAPILoopbackBypassViaForwardingHeaders(t *testing.T) {
+	_, fx := newTestAPIWithFakes(t)
+	handler := fx.server.Handler()
+
+	bypassAttempts := []struct {
+		name       string
+		remoteAddr string
+		headers    map[string][]string
+	}{
+		{
+			name:       "multi-value X-Forwarded-For header",
+			remoteAddr: "127.0.0.1:12345",
+			headers:    map[string][]string{"X-Forwarded-For": {"127.0.0.1, 198.51.100.1"}},
+		},
+		{
+			name:       "multiple X-Forwarded-For headers",
+			remoteAddr: "127.0.0.1:12345",
+			headers:    map[string][]string{"X-Forwarded-For": {"127.0.0.1", "198.51.100.1"}},
+		},
+		{
+			name:       "single X-Real-IP external",
+			remoteAddr: "127.0.0.1:12345",
+			headers:    map[string][]string{"X-Real-IP": {"203.0.113.1"}},
+		},
+		{
+			name:       "multiple X-Real-IP headers",
+			remoteAddr: "127.0.0.1:12345",
+			headers:    map[string][]string{"X-Real-IP": {"127.0.0.1", "203.0.113.1"}},
+		},
+		{
+			name:       "Forwarded RFC 7239 external node",
+			remoteAddr: "127.0.0.1:12345",
+			headers:    map[string][]string{"Forwarded": {"for=203.0.113.195;proto=http"}},
+		},
+		{
+			name:       "Forwarded RFC 7239 loopback and external",
+			remoteAddr: "127.0.0.1:12345",
+			headers:    map[string][]string{"Forwarded": {"for=127.0.0.1", "for=203.0.113.1"}},
+		},
+	}
+
+	for _, tc := range bypassAttempts {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://127.0.0.1/api/v1/session", nil)
+			req.RemoteAddr = tc.remoteAddr
+			for k, values := range tc.headers {
+				for _, v := range values {
+					req.Header.Add(k, v)
+				}
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 Forbidden for %s, got %d (body: %s)", tc.name, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestAPISessionFixationProtection(t *testing.T) {
+	_, fx := newTestAPIWithFakes(t)
+	handler := fx.server.Handler()
+
+	invalidSessions := []string{
+		"short",
+		"attacker_chosen_session_id",
+		"0123456789abcdef", // too short (16 hex chars)
+		"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", // 64 chars, but non-hex 'z'
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ", // trailing space
+		"../escaped/session",
+	}
+
+	for _, invalid := range invalidSessions {
+		t.Run("session_endpoint_rejects_and_reissues_"+invalid, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://127.0.0.1/api/v1/session", nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: invalid})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("session code = %d, want 200", rec.Code)
+			}
+			// When client provides an invalid session, handleSession must issue a brand-new valid cookie
+			cookies := rec.Result().Cookies()
+			var issued *http.Cookie
+			for _, c := range cookies {
+				if c.Name == sessionCookieName {
+					issued = c
+					break
+				}
+			}
+			if issued == nil {
+				t.Fatal("expected handleSession to re-issue a clean cookie for invalid session input")
+			}
+			if issued.Value == invalid {
+				t.Fatalf("session fixation: server retained attacker-provided invalid session %q", invalid)
+			}
+			if !isValidSessionValue(issued.Value) {
+				t.Fatalf("re-issued session %q is not valid", issued.Value)
+			}
+		})
+
+		t.Run("authenticate_rejects_invalid_session_"+invalid, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "http://127.0.0.1/api/v1/services/mysql/activate", nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: invalid})
+			req.Header.Set(csrfHeader, fx.server.csrfFor(invalid))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 Forbidden for invalid session %q, got %d", invalid, rec.Code)
+			}
+		})
+	}
+}
+
+func TestAPIHostHeaderInjectionRejection(t *testing.T) {
+	_, fx := newTestAPIWithFakes(t)
+	handler := fx.server.Handler()
+
+	maliciousHosts := []string{
+		"127.0.0.1\r\nInjected: evil",
+		"localhost\nInjected: evil",
+		"127.0.0.1/api",
+		"localhost\\path",
+		"127.0.0.1#frag",
+		"localhost?query",
+	}
+
+	for _, h := range maliciousHosts {
+		t.Run(h, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://127.0.0.1/api/v1/health", nil)
+			req.Host = h
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 Forbidden for malicious host %q, got %d", h, rec.Code)
+			}
+		})
+	}
+}

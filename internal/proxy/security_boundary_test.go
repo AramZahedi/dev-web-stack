@@ -153,3 +153,162 @@ func TestProxyDashboardForceHTTPSAndNonLoopbackPrecedence(t *testing.T) {
 		t.Fatalf("unexpected redirect location: %s", location)
 	}
 }
+
+func TestProxyDashboardRejectsUntrustedForwardingHeaders(t *testing.T) {
+	upstreamCalled := false
+	dashboardUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"upstream":"dashboard"}`))
+	}))
+	defer dashboardUpstream.Close()
+
+	router := NewRouter()
+	router.Replace(Snapshot{
+		Routes: map[string]Route{
+			"devstack.test": {
+				SiteID:   "__dashboard__",
+				Host:     "devstack.test",
+				Kind:     KindStatic,
+				Upstream: strings.TrimPrefix(dashboardUpstream.URL, "http://"),
+				TLS:      false,
+			},
+		},
+	})
+
+	testCases := []struct {
+		name       string
+		remoteAddr string
+		headers    map[string][]string
+		wantStatus int
+	}{
+		{
+			name:       "clean loopback",
+			remoteAddr: "127.0.0.1:54321",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "IPv4-mapped IPv6 loopback",
+			remoteAddr: "[::ffff:127.0.0.1]:54321",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "scoped IPv6 loopback",
+			remoteAddr: "[::1%lo0]:54321",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "single XFF with external IP",
+			remoteAddr: "127.0.0.1:54321",
+			headers:    map[string][]string{"X-Forwarded-For": {"203.0.113.1"}},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "multi-IP XFF with loopback and external IP",
+			remoteAddr: "127.0.0.1:54321",
+			headers:    map[string][]string{"X-Forwarded-For": {"127.0.0.1, 203.0.113.1"}},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "multi-header XFF bypass attempt",
+			remoteAddr: "127.0.0.1:54321",
+			headers:    map[string][]string{"X-Forwarded-For": {"127.0.0.1", "203.0.113.1"}},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "single X-Real-IP external",
+			remoteAddr: "127.0.0.1:54321",
+			headers:    map[string][]string{"X-Real-IP": {"198.51.100.2"}},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "multi-header X-Real-IP bypass attempt",
+			remoteAddr: "127.0.0.1:54321",
+			headers:    map[string][]string{"X-Real-IP": {"127.0.0.1", "198.51.100.2"}},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "Forwarded RFC 7239 external node",
+			remoteAddr: "127.0.0.1:54321",
+			headers:    map[string][]string{"Forwarded": {"for=203.0.113.195;proto=http"}},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "Forwarded RFC 7239 loopback node",
+			remoteAddr: "127.0.0.1:54321",
+			headers:    map[string][]string{"Forwarded": {"for=127.0.0.1;proto=http"}},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstreamCalled = false
+			req := httptest.NewRequest("GET", "http://devstack.test/", nil)
+			req.RemoteAddr = tc.remoteAddr
+			for k, values := range tc.headers {
+				for _, v := range values {
+					req.Header.Add(k, v)
+				}
+			}
+			rec := httptest.NewRecorder()
+			router.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d (body: %s)", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			if tc.wantStatus == http.StatusForbidden && upstreamCalled {
+				t.Fatal("upstream was called for forbidden request")
+			}
+		})
+	}
+}
+
+func TestProxyHostHeaderValidationAndSplitting(t *testing.T) {
+	router := NewRouter()
+	router.Replace(Snapshot{
+		Routes: map[string]Route{
+			"blog.test": {
+				SiteID:     "site-1",
+				Host:       "blog.test",
+				Kind:       KindStatic,
+				Upstream:   "127.0.0.1:59999",
+				TLS:        true,
+				ForceHTTPS: true,
+			},
+		},
+	})
+
+	maliciousHosts := []string{
+		"blog.test\r\nInjected-Header: evil",
+		"blog.test\nInjected-Header: evil",
+		"blog.test/path",
+		"blog.test\\escape",
+		"blog.test#fragment",
+		"blog.test?query",
+		"blog.test@evil.test",
+		"blog .test",
+		"blog\ttest",
+	}
+
+	for _, h := range maliciousHosts {
+		t.Run(h, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			req.Host = h
+			req.RemoteAddr = "127.0.0.1:12345"
+			rec := httptest.NewRecorder()
+			router.Handler().ServeHTTP(rec, req)
+
+			// Must not route or redirect with injected headers
+			if rec.Code == http.StatusPermanentRedirect {
+				loc := rec.Header().Get("Location")
+				if strings.Contains(loc, "\r") || strings.Contains(loc, "\n") || strings.Contains(loc, "Injected-Header") {
+					t.Fatalf("CRLF injection in Location header: %q", loc)
+				}
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("expected 404 for invalid host %q, got %d", h, rec.Code)
+			}
+		})
+	}
+}
