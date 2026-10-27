@@ -1,18 +1,15 @@
 # Windows/WSL implementation resume state
 
 **Date:** 2026-10-27
-**Status:** Wave 0 complete and frozen. Wave 1 was interrupted mid-flight by
-provider quota exhaustion. **Windows support is not complete, not merged, and
-must not be claimed.**
+**Status:**
+- Wave 0: Complete and frozen (`992732b`).
+- Task T0.11: Complete (native Windows test partitioning & shared portability fixes).
+- Wave 1 (Lanes A, B, C, D, E): 100% implemented, independently reviewed, approved, and merged into `feature/windows-wsl`.
+- Wave 2 Lane G (Installers, Lifecycle, RootFS, & Prerequisites): 100% implemented, independently reviewed, approved, and merged into `feature/windows-wsl`.
+- Next Phase: Wave 2 parallel lanes (Lanes F, H, I, J) grounded in Lane G's installer and managed WSL distro.
 **Main worktree:** `C:\Users\Aram\Projects\Go\dev-web-stack`
 **Integration branch:** `feature/windows-wsl`
-**Lane worktrees:** `C:\Users\Aram\Projects\Go\devstack-lanes\{helper,wsl-agent,windows-daemon,docker-services,site-source}`
-
-This file is the authoritative resume record. It supersedes any lane report
-that predates the foundation fixes listed below. Read it before touching a lane.
-
-A ready-to-paste startup prompt for the next agent is in
-`docs/superpowers/status/2026-10-27-next-agent-prompt.md`.
+**Rule:** When using subagent-driven development skills, only Gemini 3.8 Flash (`Model: "flash"`) is allowed.
 
 ---
 
