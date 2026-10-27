@@ -290,7 +290,22 @@ func (d *Docker) backupConfig(id services.ID, rel string, content []byte, area s
 	}
 	_ = os.Chmod(base, 0o700)
 	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
-	dest := filepath.Join(base, stamp, filepath.FromSlash(rel))
+	stampDir := filepath.Join(base, stamp)
+	if err := os.MkdirAll(stampDir, 0o700); err != nil {
+		return "", err
+	}
+	_ = os.Chmod(stampDir, 0o700)
+	dest := filepath.Join(stampDir, filepath.FromSlash(rel))
+	destDir := filepath.Dir(dest)
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
+		return "", err
+	}
+	for p := destDir; strings.HasPrefix(p, stampDir); p = filepath.Dir(p) {
+		_ = os.Chmod(p, 0o700)
+		if p == stampDir {
+			break
+		}
+	}
 	if err := writeAtomic(dest, content, 0o600); err != nil {
 		return "", err
 	}
