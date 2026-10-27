@@ -225,3 +225,20 @@ func TestInstallCAAndCA(t *testing.T) {
 		t.Fatalf("fingerprint mismatch")
 	}
 }
+
+func TestClientPinWhitespace(t *testing.T) {
+	srv, pin := newTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	client, err := New(Config{
+		BaseURL:   srv.URL,
+		Token:     "test-token",
+		PinSHA256: "\r\n " + pin + " \n",
+	})
+	if err != nil {
+		t.Fatalf("New with whitespace pin failed: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected client, got nil")
+	}
+}

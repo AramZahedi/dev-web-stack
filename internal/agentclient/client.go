@@ -94,10 +94,11 @@ func New(cfg Config) (*Client, error) {
 	if strings.TrimSpace(cfg.Token) == "" {
 		return nil, errors.New("agentclient: token is empty")
 	}
-	if len(cfg.PinSHA256) != 64 {
+	pin := strings.TrimSpace(cfg.PinSHA256)
+	if len(pin) != 64 {
 		return nil, errors.New("agentclient: certificate pin must be 64 hex characters")
 	}
-	tlsConfig, err := agent.PinnedConfig(cfg.PinSHA256)
+	tlsConfig, err := agent.PinnedConfig(pin)
 	if err != nil {
 		return nil, err
 	}

@@ -36,6 +36,22 @@ type TLSIdentity struct {
 // GenerateTLSIdentity creates a P-256 self-signed certificate for the agent.
 // The key is written 0600 and the certificate 0644. Provisioning copies both
 // into WSL as root-owned files.
+//
+// Design Decision (M6 - 10-Year Certificate Validity & Exact Leaf Pinning):
+// 1. 10-Year Validity: The agent is a host-local service operating strictly across
+//    the Windows host to WSL2 boundary via loopback/virtual network. It does not
+//    rely on an external CA, public PKI, or ACME renewal daemon inside WSL.
+//    A 10-year validity window avoids arbitrary expiration outages on long-lived
+//    development machines, hibernated environments, and offline developer setups.
+// 2. Exact Leaf Fingerprint Pinning: Rather than relying on CA trust chains or
+//    hostname/EKU checks (which can be vulnerable to rogue local roots or loopback
+//    spoofing), the daemon uses InsecureSkipVerify: true paired with a strict
+//    VerifyPeerCertificate hook that checks the SHA-256 digest of the exact leaf
+//    certificate. This enforces a Trust-On-First-Use (TOFU) / provisioned secret model
+//    where only the exact certificate provisioned into the distro is accepted.
+// 3. Diagnostics: VerifyPeerCertificate explicitly validates the certificate validity
+//    window (NotBefore/NotAfter) and returns descriptive errors if the clock is skewed,
+//    the certificate has expired, or the leaf pin has changed (e.g. due to manual rotation).
 func GenerateTLSIdentity(dir string) (TLSIdentity, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return TLSIdentity{}, fmt.Errorf("agent: create TLS directory %s: %w", dir, err)
@@ -104,6 +120,18 @@ func LoadTLSIdentity(certPath, keyPath string) (TLSIdentity, error) {
 	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
 		return TLSIdentity{}, fmt.Errorf("agent: invalid TLS identity: %w", err)
 	}
+	block, _ := pem.Decode(certPEM)
+	if block != nil && block.Type == "CERTIFICATE" {
+		if cert, parseErr := x509.ParseCertificate(block.Bytes); parseErr == nil {
+			now := time.Now()
+			if now.Before(cert.NotBefore) {
+				return TLSIdentity{}, fmt.Errorf("agent: certificate %s is not yet valid (valid from %s, system time is %s); please verify system clock", certPath, cert.NotBefore.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+			}
+			if now.After(cert.NotAfter) {
+				return TLSIdentity{}, fmt.Errorf("agent: certificate %s expired on %s (system time is %s); certificate rotation required", certPath, cert.NotAfter.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+			}
+		}
+	}
 	pin, err := FingerprintCertPEM(certPEM)
 	if err != nil {
 		return TLSIdentity{}, err
@@ -128,8 +156,13 @@ func FingerprintCertPEM(certPEM []byte) (string, error) {
 
 // PinnedConfig returns a TLS config that accepts exactly the pinned
 // self-signed certificate. ServerName verification is intentionally replaced
-// by the stronger fingerprint pin.
+// by the stronger leaf SHA-256 fingerprint pin.
+//
+// If peer verification fails, descriptive diagnostic messages are returned to
+// distinguish pin mismatches (e.g., following an uncoordinated certificate rotation)
+// from certificate expiration or clock skew.
 func PinnedConfig(pin string) (*tls.Config, error) {
+	pin = strings.TrimSpace(pin)
 	if len(pin) != 64 {
 		return nil, errors.New("agent: certificate pin must be 64 hex characters")
 	}
@@ -142,11 +175,23 @@ func PinnedConfig(pin string) (*tls.Config, error) {
 		InsecureSkipVerify: true, // verification is the exact certificate pin below
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			if len(rawCerts) == 0 {
-				return fmt.Errorf("%w: no peer certificate", agentproto.ErrCertPinMismatch)
+				return fmt.Errorf("%w: no peer certificate presented by server", agentproto.ErrCertPinMismatch)
 			}
 			sum := sha256.Sum256(rawCerts[0])
-			if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(pin)) != 1 {
-				return fmt.Errorf("%w: got %s want %s", agentproto.ErrCertPinMismatch, hex.EncodeToString(sum[:]), pin)
+			gotPin := hex.EncodeToString(sum[:])
+			if subtle.ConstantTimeCompare([]byte(gotPin), []byte(pin)) != 1 {
+				return fmt.Errorf("%w: server certificate fingerprint %s does not match pinned fingerprint %s (certificate may have been regenerated or rotated; re-provision or update agent TLS pin in config)", agentproto.ErrCertPinMismatch, gotPin, pin)
+			}
+			cert, err := x509.ParseCertificate(rawCerts[0])
+			if err != nil {
+				return fmt.Errorf("agent: parse peer certificate: %w", err)
+			}
+			now := time.Now()
+			if now.Before(cert.NotBefore) {
+				return fmt.Errorf("agent: certificate is not yet valid (valid from %s, system time is %s); please verify system clock", cert.NotBefore.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+			}
+			if now.After(cert.NotAfter) {
+				return fmt.Errorf("agent: certificate expired on %s (system time is %s); certificate rotation required", cert.NotAfter.UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
 			}
 			return nil
 		},
