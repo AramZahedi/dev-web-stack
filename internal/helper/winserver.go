@@ -38,19 +38,27 @@ type peerSIDKey struct{}
 // Server is the Windows named-pipe helper. It deliberately exposes only the
 // host-integration protocol and never has a UID or Unix-socket path.
 type Server struct {
-	cfg       Config
-	logger    *slog.Logger
-	mu        sync.Mutex
-	listener  net.Listener
-	http      *http.Server
-	done      chan struct{}
-	close     sync.Once
-	closeErr  error
-	hosts     *winhosts.Manager
-	trust     *wintrust.Manager
-	firewall  *winfirewall.Manager
-	caMu      sync.Mutex
-	authority *Authority
+	cfg              Config
+	logger           *slog.Logger
+	mu               sync.Mutex
+	listener         net.Listener
+	http             *http.Server
+	done             chan struct{}
+	close            sync.Once
+	closeErr         error
+	hosts            *winhosts.Manager
+	trust            *wintrust.Manager
+	firewall         *winfirewall.Manager
+	caMu             sync.Mutex
+	authority        *Authority
+	proxyUpdateMu    sync.Mutex
+	proxyMu          sync.RWMutex
+	proxyHTTPPort    int
+	proxyHTTPSPort   int
+	forwardersMu     sync.Mutex
+	forwarders       windowsForwarders
+	forwardersKey    string
+	forwarderFactory windowsForwarderFactory
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -72,6 +80,18 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.HostsPath == "" {
 		cfg.HostsPath = DefaultWindowsHostsPath
 	}
+	if cfg.ConfigPath == "" {
+		cfg.ConfigPath = DefaultWindowsConfigPath
+	}
+	if cfg.ProxyHTTPPort == 0 {
+		cfg.ProxyHTTPPort = DefaultWindowsProxyHTTP
+	}
+	if cfg.ProxyHTTPSPort == 0 {
+		cfg.ProxyHTTPSPort = DefaultWindowsProxyHTTPS
+	}
+	if cfg.ProxyHTTPPort != DefaultWindowsProxyHTTP || cfg.ProxyHTTPSPort != DefaultWindowsProxyHTTPS {
+		return nil, fmt.Errorf("helper: Windows daemon proxy targets are fixed at 127.0.0.1:%d and 127.0.0.1:%d", DefaultWindowsProxyHTTP, DefaultWindowsProxyHTTPS)
+	}
 	endpoint := ipc.NamedPipeEndpoint(cfg.PipeName)
 	if err := endpoint.Validate(); err != nil {
 		return nil, fmt.Errorf("helper: invalid named pipe: %w", err)
@@ -91,7 +111,15 @@ func NewServer(cfg Config) (*Server, error) {
 	if firewall == nil {
 		firewall = winfirewall.NewManager(cfg.Runner)
 	}
-	return &Server{cfg: cfg, logger: cfg.Logger, hosts: hosts, trust: trustManager, firewall: firewall, authority: cfg.Authority}, nil
+	factory := cfg.forwarderFactory
+	if factory == nil {
+		factory = newWindowsForwarders
+	}
+	return &Server{
+		cfg: cfg, logger: cfg.Logger, hosts: hosts, trust: trustManager, firewall: firewall,
+		authority: cfg.Authority, proxyHTTPPort: cfg.ProxyHTTPPort, proxyHTTPSPort: cfg.ProxyHTTPSPort,
+		forwarderFactory: factory,
+	}, nil
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -111,8 +139,12 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("helper: configure WSL proxy firewall rules: %w", err)
 		}
 	}
+	if err := s.setForwarders(ctx, helperproto.ForwardersRequest{Enable: true, HTTPPort: s.cfg.ProxyHTTPPort, HTTPSPort: s.cfg.ProxyHTTPSPort}); err != nil {
+		return fmt.Errorf("helper: start Windows public forwarders: %w", err)
+	}
 	listener, err := ipc.Listen(ipc.NamedPipeEndpoint(s.cfg.PipeName), ipc.WithAllowSID(s.cfg.AllowSID), ipc.WithAdministrators(true))
 	if err != nil {
+		_ = s.setForwarders(context.Background(), helperproto.ForwardersRequest{Enable: false})
 		return fmt.Errorf("helper: listen on %s: %w", s.cfg.PipeName, err)
 	}
 	srv := &http.Server{
@@ -142,6 +174,15 @@ func (s *Server) Start(ctx context.Context) error {
 
 func (s *Server) Close() error {
 	s.close.Do(func() {
+		s.forwardersMu.Lock()
+		if s.forwarders != nil {
+			if err := s.forwarders.Stop(context.Background()); err != nil {
+				s.closeErr = err
+			}
+			s.forwarders = nil
+			s.forwardersKey = ""
+		}
+		s.forwardersMu.Unlock()
 		s.mu.Lock()
 		srv, listener, done := s.http, s.listener, s.done
 		s.mu.Unlock()

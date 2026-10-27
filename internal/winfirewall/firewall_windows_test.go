@@ -15,8 +15,10 @@ type commandCall struct {
 }
 
 type recordingRunner struct {
-	calls  []commandCall
-	failAt int
+	calls       []commandCall
+	failAt      int
+	missing     bool
+	missingSets bool
 }
 
 func (r *recordingRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -24,23 +26,47 @@ func (r *recordingRunner) Run(_ context.Context, name string, args ...string) ([
 	if r.failAt > 0 && len(r.calls) == r.failAt {
 		return nil, errors.New("injected command failure")
 	}
+	if r.missing || (r.missingSets && len(args) > 2 && args[2] == "set") {
+		return []byte("No rules match the specified criteria."), errors.New("netsh rule not found")
+	}
 	return nil, nil
 }
 
+func TestFirewallDisableAndRemoveAreIdempotentWhenRulesAreAbsent(t *testing.T) {
+	runner := &recordingRunner{missing: true}
+	manager := NewManager(runner)
+	if err := manager.Disable(context.Background()); err != nil {
+		t.Fatalf("Disable missing rules: %v", err)
+	}
+	if err := manager.Remove(context.Background()); err != nil {
+		t.Fatalf("Remove missing rules: %v", err)
+	}
+}
+
 func TestFirewallCreatesFixedProxyRulesForValidatedWSLSubnet(t *testing.T) {
-	runner := &recordingRunner{}
+	runner := &recordingRunner{missingSets: true}
 	manager := NewManager(runner)
 	if err := manager.Enable(context.Background(), "172.28.64.0/20"); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
-	if len(runner.calls) != 2 {
-		t.Fatalf("calls = %+v; want HTTP and HTTPS rules", runner.calls)
+	if len(runner.calls) != 4 {
+		t.Fatalf("calls = %+v; want update/creation for HTTP and HTTPS rules", runner.calls)
 	}
-	joined := strings.Join(runner.calls[0].args, " ") + " " + strings.Join(runner.calls[1].args, " ")
+	joined := strings.Join(runner.calls[1].args, " ") + " " + strings.Join(runner.calls[3].args, " ")
 	for _, value := range []string{"8080", "8443", "172.28.64.0/20", "enable=yes", "action=allow", "dir=in"} {
 		if !strings.Contains(joined, value) {
 			t.Errorf("firewall rules lack %q: %s", value, joined)
 		}
+	}
+}
+
+func TestFirewallEnableUpdatesExistingRulesWithoutDuplicates(t *testing.T) {
+	runner := &recordingRunner{}
+	if err := NewManager(runner).Enable(context.Background(), "172.28.64.0/20"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 2 || runner.calls[0].args[2] != "set" || runner.calls[1].args[2] != "set" {
+		t.Fatalf("Enable did not update existing fixed rules: %+v", runner.calls)
 	}
 }
 
@@ -80,12 +106,12 @@ func TestFirewallDisableAndDeleteOnlyManagedRules(t *testing.T) {
 }
 
 func TestFirewallEnableRollsBackPartiallyCreatedRules(t *testing.T) {
-	runner := &recordingRunner{failAt: 2}
+	runner := &recordingRunner{failAt: 4, missingSets: true}
 	err := NewManager(runner).Enable(context.Background(), "172.28.64.0/20")
 	if err == nil {
 		t.Fatal("Enable succeeded despite failure creating HTTPS rule")
 	}
-	if len(runner.calls) != 4 || runner.calls[2].args[2] != "delete" || !strings.Contains(strings.Join(runner.calls[2].args, " "), httpRuleName) || !strings.Contains(strings.Join(runner.calls[3].args, " "), httpsRuleName) {
+	if len(runner.calls) != 6 || runner.calls[4].args[2] != "delete" || !strings.Contains(strings.Join(runner.calls[4].args, " "), httpRuleName) || !strings.Contains(strings.Join(runner.calls[5].args, " "), httpsRuleName) {
 		t.Fatalf("partial firewall rule was not rolled back: %+v", runner.calls)
 	}
 }

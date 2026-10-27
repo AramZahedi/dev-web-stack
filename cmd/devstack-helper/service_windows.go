@@ -42,7 +42,7 @@ func windowsServiceInstallArgs(executable, allowSID string) ([]string, error) {
 	if _, err := helper.NewServer(helper.Config{AllowSID: allowSID}); err != nil {
 		return nil, err
 	}
-	command := windows.EscapeArg(executable) + " service run --allow-sid " + windows.EscapeArg(allowSID)
+	command := windows.EscapeArg(executable) + " service run --config " + windows.EscapeArg(helper.DefaultWindowsConfigPath) + " --allow-sid " + windows.EscapeArg(allowSID)
 	return []string{"create", windowsServiceName, "binPath=", command, "start=", "auto", "obj=", "LocalSystem", "DisplayName=", "Devstack Helper"}, nil
 }
 
@@ -68,7 +68,7 @@ func uninstallWindowsService(ctx context.Context, runner windowsCommandRunner, i
 	if err != nil && !windowsServiceMissing(output) {
 		return err
 	}
-	if err == nil && state != 1 {
+	if err == nil && state != 1 && state != 3 {
 		if _, err := runner.Run(ctx, "sc.exe", "stop", name); err != nil {
 			return fmt.Errorf("stop Windows helper service: %w", err)
 		}
@@ -87,7 +87,7 @@ func startWindowsService(ctx context.Context, runner windowsCommandRunner, name 
 	if err != nil {
 		return err
 	}
-	if state == 4 {
+	if state == 4 || state == 2 {
 		return nil
 	}
 	if _, err := runner.Run(ctx, "sc.exe", "start", name); err != nil {
@@ -101,7 +101,7 @@ func stopWindowsService(ctx context.Context, runner windowsCommandRunner, name s
 	if err != nil {
 		return err
 	}
-	if state == 1 {
+	if state == 1 || state == 3 {
 		return nil
 	}
 	if _, err := runner.Run(ctx, "sc.exe", "stop", name); err != nil {
@@ -160,6 +160,12 @@ func serviceCommand(args []string) error {
 		if err != nil {
 			return err
 		}
+		if !admin {
+			return errors.New("installing the Windows helper service requires an elevated administrator")
+		}
+		if err := persistWindowsOptions(opts); err != nil {
+			return fmt.Errorf("persist Windows helper configuration: %w", err)
+		}
 		exe, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("resolve helper executable: %w", err)
@@ -188,7 +194,10 @@ func serviceCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		return helper.RunWindowsService(windowsServiceName, helper.Config{AllowSID: opts.allowSID, PipeName: opts.pipe})
+		return helper.RunWindowsService(windowsServiceName, helper.Config{
+			AllowSID: opts.allowSID, PipeName: opts.pipe, ConfigPath: opts.configPath,
+			ProxyHTTPPort: opts.proxyHTTPPort, ProxyHTTPSPort: opts.proxyHTTPSPort,
+		})
 	default:
 		return fmt.Errorf("unknown service command %q", args[0])
 	}

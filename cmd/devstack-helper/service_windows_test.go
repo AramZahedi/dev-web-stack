@@ -73,6 +73,16 @@ func TestUninstallWindowsServiceStopsThenDeletes(t *testing.T) {
 	}
 }
 
+func TestUninstallWindowsServiceDoesNotRestopPendingService(t *testing.T) {
+	runner := &fakeServiceRunner{state: 3}
+	if err := uninstallWindowsService(context.Background(), runner, true, windowsServiceName); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	if len(runner.commands) != 2 || runner.commands[1].args[0] != "delete" {
+		t.Fatalf("commands = %+v; want query then delete", runner.commands)
+	}
+}
+
 func TestWindowsServiceStartAndStopAreIdempotent(t *testing.T) {
 	t.Run("start already running", func(t *testing.T) {
 		runner := &fakeServiceRunner{state: 4}
@@ -83,8 +93,26 @@ func TestWindowsServiceStartAndStopAreIdempotent(t *testing.T) {
 			t.Fatalf("commands = %+v; want query only", runner.commands)
 		}
 	})
+	t.Run("start already pending", func(t *testing.T) {
+		runner := &fakeServiceRunner{state: 2}
+		if err := startWindowsService(context.Background(), runner, windowsServiceName); err != nil {
+			t.Fatal(err)
+		}
+		if len(runner.commands) != 1 {
+			t.Fatalf("commands = %+v; want query only", runner.commands)
+		}
+	})
 	t.Run("stop already stopped", func(t *testing.T) {
 		runner := &fakeServiceRunner{state: 1}
+		if err := stopWindowsService(context.Background(), runner, windowsServiceName); err != nil {
+			t.Fatal(err)
+		}
+		if len(runner.commands) != 1 {
+			t.Fatalf("commands = %+v; want query only", runner.commands)
+		}
+	})
+	t.Run("stop already pending", func(t *testing.T) {
+		runner := &fakeServiceRunner{state: 3}
 		if err := stopWindowsService(context.Background(), runner, windowsServiceName); err != nil {
 			t.Fatal(err)
 		}
