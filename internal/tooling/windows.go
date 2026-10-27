@@ -31,9 +31,10 @@ func EnsureWindowsToolShims(binDir, distro string) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("tooling: create Windows shim directory: %w", err)
 	}
+	toolArgTranslate := `args=(); for a in \"$@\"; do a_norm=\"${a//\\\\//}\"; if [[ \"$a_norm\" =~ ^([a-zA-Z]):/(.*) ]]; then drive=\"${BASH_REMATCH[1],,}\"; rest=\"${BASH_REMATCH[2]}\"; args+=(\"/mnt/$drive/$rest\"); elif [[ \"$a_norm\" =~ ^([a-zA-Z0-9_.-]+)=([a-zA-Z]):/(.*) ]]; then opt=\"${BASH_REMATCH[1]}\"; drive=\"${BASH_REMATCH[2],,}\"; rest=\"${BASH_REMATCH[3]}\"; args+=(\"$opt=/mnt/$drive/$rest\"); elif [[ \"$a_norm\" =~ ^//wsl(\\.localhost|\\$)/[^/]+/?(.*) ]]; then rest=\"${BASH_REMATCH[2]}\"; if [[ -z \"$rest\" ]]; then args+=(\"/\"); else args+=(\"/$rest\"); fi; elif [[ \"$a_norm\" =~ ^([a-zA-Z0-9_.-]+)=//wsl(\\.localhost|\\$)/[^/]+/?(.*) ]]; then opt=\"${BASH_REMATCH[1]}\"; rest=\"${BASH_REMATCH[3]}\"; if [[ -z \"$rest\" ]]; then args+=(\"$opt=/\"); else args+=(\"$opt=/$rest\"); fi; elif [[ \"$a_norm\" =~ ^/[uU]sers/(.*) ]]; then rest=\"${BASH_REMATCH[1]}\"; args+=(\"/mnt/c/Users/$rest\"); else args+=(\"$a\"); fi; done;`
 	for _, tool := range []string{"php", "composer"} {
 		path := filepath.Join(binDir, tool+".cmd")
-		content := fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s --exec %s %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, tool)
+		content := fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s --exec bash -c \"%s exec %s \\\"${args[@]}\\\"\" _ %%*\r\n", distro, toolArgTranslate, tool)
 		temporary := path + ".tmp"
 		if err := os.WriteFile(temporary, []byte(content), 0o600); err != nil {
 			return fmt.Errorf("tooling: write %s: %w", temporary, err)
@@ -79,11 +80,12 @@ func EnsureWindowsSiteShims(binDir, distro string, site model.Site) error {
 		baseScript.WriteString(posixQuote(env[k]))
 	}
 
+	siteArgTranslate := `args=(); for a in \"$@\"; do a_norm=\"${a//\\\\//}\"; if [[ \"$a_norm\" =~ ^([a-zA-Z]):/(.*) ]]; then drive=\"${BASH_REMATCH[1],,}\"; rest=\"${BASH_REMATCH[2]}\"; args+=(\"/mnt/$drive/$rest\"); elif [[ \"$a_norm\" =~ ^([a-zA-Z0-9_.-]+)=([a-zA-Z]):/(.*) ]]; then opt=\"${BASH_REMATCH[1]}\"; drive=\"${BASH_REMATCH[2],,}\"; rest=\"${BASH_REMATCH[3]}\"; args+=(\"$opt=/mnt/$drive/$rest\"); elif [[ \"$a_norm\" =~ ^//wsl(\\.localhost|\\$)/[^/]+/?(.*) ]]; then rest=\"${BASH_REMATCH[2]}\"; if [[ -z \"$rest\" ]]; then args+=(\"/\"); else args+=(\"/$rest\"); fi; elif [[ \"$a_norm\" =~ ^([a-zA-Z0-9_.-]+)=//wsl(\\.localhost|\\$)/[^/]+/?(.*) ]]; then opt=\"${BASH_REMATCH[1]}\"; rest=\"${BASH_REMATCH[3]}\"; if [[ -z \"$rest\" ]]; then args+=(\"$opt=/\"); else args+=(\"$opt=/$rest\"); fi; elif [[ \"$a_norm\" =~ ^/[uU]sers/(.*) ]]; then rest=\"${BASH_REMATCH[1]}\"; args+=(\"/mnt/c/Users/$rest\"); else args+=(\"$a\"); fi; done;`
 	shims := map[string]string{
-		"php.cmd":      fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && exec php \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
-		"composer.cmd": fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && exec composer \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
-		"shell.cmd":    fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && exec \\\"${SHELL:-/bin/bash}\\\" -i\"\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
-		"exec.cmd":     fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && exec \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
+		"php.cmd":      fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && %s exec php \\\"${args[@]}\\\"\" -- %%*\r\n", distro, baseScript.String(), siteArgTranslate),
+		"composer.cmd": fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && %s exec composer \\\"${args[@]}\\\"\" -- %%*\r\n", distro, baseScript.String(), siteArgTranslate),
+		"shell.cmd":    fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && exec \\\"${SHELL:-/bin/bash}\\\" -i\"\r\n", distro, baseScript.String()),
+		"exec.cmd":     fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && %s exec \\\"${args[@]}\\\"\" -- %%*\r\n", distro, baseScript.String(), siteArgTranslate),
 	}
 
 	for tool, content := range shims {

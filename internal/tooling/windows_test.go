@@ -2,6 +2,7 @@ package tooling
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,6 +22,12 @@ func TestEnsureWindowsToolShimsWritesNonDotCmdFiles(t *testing.T) {
 		}
 		if strings.HasPrefix(name, ".") || !strings.Contains(string(content), `wsl.exe -d devstack --exec`) {
 			t.Fatalf("unexpected %s shim: %q", name, content)
+		}
+		if !strings.Contains(string(content), "//wsl") {
+			t.Fatalf("%s missing UNC path translation:\n%s", name, content)
+		}
+		if strings.Contains(string(content), "exit /b %ERRORLEVEL%") {
+			t.Fatalf("%s should not contain trailing exit /b to avoid trapping Ctrl+C:\n%s", name, content)
 		}
 	}
 }
@@ -148,6 +155,12 @@ func TestEnsureWindowsSiteShimsWritesExpectedCmdFiles(t *testing.T) {
 		if !strings.Contains(text, "cd -- '/mnt/c/Users/Aram/Projects/my site'") {
 			t.Fatalf("%s does not quote backend path with spaces:\n%s", name, text)
 		}
+		if name != "shell.cmd" && !strings.Contains(text, "//wsl") {
+			t.Fatalf("%s missing UNC path translation:\n%s", name, text)
+		}
+		if strings.Contains(text, "exit /b %ERRORLEVEL%") {
+			t.Fatalf("%s should not contain trailing exit /b to avoid trapping Ctrl+C:\n%s", name, text)
+		}
 	}
 }
 
@@ -182,4 +195,72 @@ func TestBuildWSLExecArgsQuotesSpacesAndQuotesInArguments(t *testing.T) {
 			t.Fatalf("script missing %q:\n%s", want, script)
 		}
 	}
+}
+
+func TestWindowsShimArgumentTranslationInBash(t *testing.T) {
+	var bashPath string
+	if gitBash := filepath.Join(os.Getenv("ProgramFiles"), "Git", "bin", "bash.exe"); fileExists(gitBash) {
+		bashPath = gitBash
+	} else if p, err := exec.LookPath("bash"); err == nil && !strings.Contains(strings.ToLower(p), "windowsapps") {
+		bashPath = p
+	}
+	if bashPath == "" {
+		t.Skip("bash is not available")
+	}
+	bin := t.TempDir()
+	if err := EnsureWindowsToolShims(bin, "devstack"); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(bin, "php.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	idx := strings.Index(text, `bash -c "`)
+	if idx < 0 {
+		t.Fatalf("bash -c not found in php.cmd: %s", text)
+	}
+	scriptPart := text[idx+len(`bash -c "`):]
+	endIdx := strings.LastIndex(scriptPart, `" _ %*`)
+	if endIdx < 0 {
+		t.Fatalf("closing delimiter not found in php.cmd: %s", scriptPart)
+	}
+	unescapedScript := strings.ReplaceAll(scriptPart[:endIdx], `\"`, `"`)
+	// Replace "exec php" with "printf '%s\n'" to inspect the translated arguments
+	testScript := strings.Replace(unescapedScript, `exec php "${args[@]}"`, `printf '%s\n' "${args[@]}"`, 1)
+
+	tests := []struct {
+		arg  string
+		want string
+	}{
+		{`C:\Projects\app`, `/mnt/c/Projects/app`},
+		{`c:/Projects/app`, `/mnt/c/Projects/app`},
+		{`--opt=C:\Users\Aram`, `--opt=/mnt/c/Users/Aram`},
+		{`\\wsl.localhost\devstack\data\devstack\projects\app\artisan`, `/data/devstack/projects/app/artisan`},
+		{`\\wsl$\devstack\home\user\site`, `/home/user/site`},
+		{`//wsl.localhost/devstack/var/www`, `/var/www`},
+		{`--working-dir=\\wsl.localhost\devstack\data`, `--working-dir=/data`},
+		{`\Users\Aram\test`, `/mnt/c/Users/Aram/test`},
+		{`/Users/Aram/test`, `/mnt/c/Users/Aram/test`},
+		{`--name=Smith`, `--name=Smith`},
+		{`-r`, `-r`},
+		{`echo "hello";`, `echo "hello";`},
+	}
+
+	for _, tc := range tests {
+		cmd := exec.Command(bashPath, "-c", testScript, "_", tc.arg)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("bash failed on %q: %v, output: %s", tc.arg, err, string(out))
+		}
+		got := strings.TrimSpace(string(out))
+		if got != tc.want {
+			t.Errorf("translate(%q) = %q, want %q", tc.arg, got, tc.want)
+		}
+	}
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
