@@ -6,9 +6,15 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"runtime"
 
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
+)
+
+var (
+	modadvapi32                    = windows.NewLazySystemDLL("advapi32.dll")
+	procImpersonateNamedPipeClient = modadvapi32.NewProc("ImpersonateNamedPipeClient")
 )
 
 func listen(endpoint Endpoint, cfg listenConfig) (net.Listener, error) {
@@ -34,7 +40,9 @@ func dial(ctx context.Context, endpoint Endpoint) (net.Conn, error) {
 	if endpoint.Network != NetworkNamedPipe {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupported, endpoint.Network)
 	}
-	conn, err := winio.DialPipeContext(ctx, endpoint.Address)
+	conn, err := winio.DialPipeAccessImpLevel(ctx, endpoint.Address,
+		uint32(windows.GENERIC_READ|windows.GENERIC_WRITE),
+		winio.PipeImpLevelImpersonation)
 	if err != nil {
 		return nil, fmt.Errorf("ipc: dial %s: %w", endpoint.Address, err)
 	}
@@ -44,34 +52,55 @@ func dial(ctx context.Context, endpoint Endpoint) (net.Conn, error) {
 // PeerIdentityOf resolves the client process behind a named-pipe connection
 // and returns the user SID from its token. A pipe server can trust this value:
 // the handle belongs to the accepted connection, not to a caller-supplied PID.
+// It uses ImpersonateNamedPipeClient to bind directly to the client token
+// on the pipe handle, eliminating PID-reuse TOCTOU.
 func PeerIdentityOf(conn net.Conn) (PeerIdentity, error) {
 	fdConn, ok := conn.(interface{ Fd() uintptr })
 	if !ok {
 		return PeerIdentity{}, fmt.Errorf("ipc: %T has no pipe handle", conn)
 	}
-	var pid uint32
-	if err := windows.GetNamedPipeClientProcessId(windows.Handle(fdConn.Fd()), &pid); err != nil {
-		return PeerIdentity{}, fmt.Errorf("ipc: named-pipe client pid: %w", err)
-	}
-	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	handle := windows.Handle(fdConn.Fd())
+
+	// Primary method: derive identity directly from the connected pipe handle
+	// via ImpersonateNamedPipeClient. This eliminates the PID-reuse TOCTOU race
+	// where a client process could terminate and have its PID reused between
+	// GetNamedPipeClientProcessId and OpenProcess.
+	sid, err := peerIdentityFromImpersonation(handle)
 	if err != nil {
-		return PeerIdentity{}, fmt.Errorf("ipc: open client process %d: %w", pid, err)
+		return PeerIdentity{}, fmt.Errorf("ipc: verify named-pipe client identity: %w", err)
 	}
-	defer func() { _ = windows.CloseHandle(process) }()
+	return PeerIdentity{SID: sid}, nil
+}
+
+func peerIdentityFromImpersonation(handle windows.Handle) (string, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	r1, _, lastErr := procImpersonateNamedPipeClient.Call(uintptr(handle))
+	if r1 == 0 {
+		return "", fmt.Errorf("ipc: impersonate named pipe client: %w", lastErr)
+	}
+	defer func() { _ = windows.RevertToSelf() }()
+
 	var token windows.Token
-	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); err != nil {
-		return PeerIdentity{}, fmt.Errorf("ipc: open client token: %w", err)
+	// OpenAsSelf must be true so the server's process context is used to open
+	// the thread token, which succeeds even when the client connected with
+	// SecurityIdentification level or restricted token privileges.
+	if err := windows.OpenThreadToken(windows.CurrentThread(), windows.TOKEN_QUERY, true, &token); err != nil {
+		return "", fmt.Errorf("ipc: open thread token: %w", err)
 	}
 	defer func() { _ = token.Close() }()
+
 	user, err := token.GetTokenUser()
 	if err != nil {
-		return PeerIdentity{}, fmt.Errorf("ipc: read client token user: %w", err)
+		return "", fmt.Errorf("ipc: read client token user: %w", err)
 	}
 	if user.User.Sid == nil {
-		return PeerIdentity{}, fmt.Errorf("ipc: client token has no user SID")
+		return "", fmt.Errorf("ipc: client token has no user SID")
 	}
-	return PeerIdentity{SID: user.User.Sid.String()}, nil
+	return user.User.Sid.String(), nil
 }
+
 
 // PipeSDDL builds a protected DACL that grants full access to SYSTEM, the
 // installing user, and optionally Administrators. No inherited or anonymous
