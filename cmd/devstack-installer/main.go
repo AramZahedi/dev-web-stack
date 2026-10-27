@@ -58,6 +58,13 @@ func main() {
 			scriptPath, _ = filepath.Abs(scriptName)
 		}
 	}
+	// If uninstalling, also check if script exists in the target installation directory
+	if scriptPath == "" && opts.Uninstall && opts.InstallDir != "" {
+		targetScript := filepath.Join(opts.InstallDir, scriptName)
+		if fi, err := os.Stat(targetScript); err == nil && !fi.IsDir() {
+			scriptPath = targetScript
+		}
+	}
 
 	if scriptPath == "" || len(embeddedPayload) > 22 || opts.ZipPath != "" {
 		payloadReader, size, err := locatePayload(opts)
@@ -67,6 +74,9 @@ func main() {
 			os.Exit(1)
 		}
 		if payloadReader != nil {
+			if closer, ok := payloadReader.(interface{ Close() error }); ok {
+				defer closer.Close()
+			}
 			fmt.Println("devstack-installer: Unpacking installer assets...")
 			if err := extractZip(payloadReader, size, stageDir); err != nil {
 				fmt.Fprintf(os.Stderr, "devstack-installer: extraction failed: %v\n", err)
@@ -161,6 +171,8 @@ Options:
   --dry-run             Simulate installation without making system changes
   --upgrade             Upgrade existing devstack installation
   --uninstall           Uninstall devstack and remove system services
+  --purge-distro        Unregister and remove the managed WSL distro (with --uninstall)
+  --purge-data          Delete DPAPI secrets and remove installation directory (with --uninstall)
   -y, --unattended      Non-interactive unattended mode; do not prompt on completion
   --zip <path>          Path to external release ZIP archive
   -h, --help            Show this help message`)

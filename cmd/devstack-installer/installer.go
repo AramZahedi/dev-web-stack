@@ -24,6 +24,8 @@ type InstallerOptions struct {
 	Unattended  bool
 	ZipPath     string
 	Help        bool
+	PurgeDistro bool
+	PurgeData   bool
 }
 
 func parseFlags(args []string) (InstallerOptions, error) {
@@ -41,6 +43,8 @@ func parseFlags(args []string) (InstallerOptions, error) {
 	fs.StringVar(&opts.ZipPath, "zip", "", "Path to external release ZIP archive if not using embedded payload")
 	fs.BoolVar(&opts.Help, "h", false, "Show help message")
 	fs.BoolVar(&opts.Help, "help", false, "Show help message")
+	fs.BoolVar(&opts.PurgeDistro, "purge-distro", false, "Unregister and remove the managed WSL distro 'devstack' (used with --uninstall)")
+	fs.BoolVar(&opts.PurgeData, "purge-data", false, "Delete DPAPI secrets and remove installation directory (used with --uninstall)")
 
 	if err := fs.Parse(args); err != nil {
 		return opts, err
@@ -54,13 +58,31 @@ func extractZip(reader io.ReaderAt, size int64, destDir string) error {
 		return fmt.Errorf("read zip archive: %w", err)
 	}
 
+	cleanDest := filepath.Clean(destDir)
+
 	for _, file := range zr.File {
-		cleanName := filepath.Clean(file.Name)
-		if strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) {
+		// Reject symlinks and special files to prevent arbitrary file overwrites via link traversal
+		if file.Mode()&os.ModeType != 0 && !file.FileInfo().IsDir() {
+			return fmt.Errorf("zip entry is not a regular file or directory: %q", file.Name)
+		}
+
+		// Normalize entry name
+		name := strings.TrimPrefix(filepath.ToSlash(file.Name), "/")
+		cleanName := filepath.Clean(filepath.FromSlash(name))
+
+		// Check for path traversal, absolute paths, or Windows drive/volume specifications
+		if strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) || filepath.VolumeName(cleanName) != "" {
 			return fmt.Errorf("zip entry escapes destination: %q", file.Name)
 		}
 
-		targetPath := filepath.Join(destDir, cleanName)
+		targetPath := filepath.Join(cleanDest, cleanName)
+
+		// Verify targetPath is strictly inside cleanDest
+		rel, err := filepath.Rel(cleanDest, targetPath)
+		if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			return fmt.Errorf("zip entry escapes destination: %q", file.Name)
+		}
+
 		if file.FileInfo().IsDir() {
 			if err := os.MkdirAll(targetPath, 0o755); err != nil {
 				return err
@@ -100,7 +122,7 @@ func buildPowerShellArgs(opts InstallerOptions, scriptPath string) []string {
 		"-File", scriptPath,
 	}
 
-	if opts.InstallDir != "" && !opts.Uninstall {
+	if opts.InstallDir != "" {
 		args = append(args, "-InstallDir", opts.InstallDir)
 	}
 	if opts.RootFSPath != "" && !opts.Uninstall {
@@ -118,6 +140,12 @@ func buildPowerShellArgs(opts InstallerOptions, scriptPath string) []string {
 	if opts.Upgrade && !opts.Uninstall {
 		args = append(args, "-Upgrade")
 	}
+	if opts.PurgeDistro && opts.Uninstall {
+		args = append(args, "-PurgeDistro")
+	}
+	if opts.PurgeData && opts.Uninstall {
+		args = append(args, "-PurgeData")
+	}
 	return args
 }
 
@@ -131,6 +159,16 @@ func findPowerShell() (string, error) {
 }
 
 func locatePayload(opts InstallerOptions) (io.ReaderAt, int64, error) {
+	// 0. Environment variable override (e.g. for release packaging validation or testing)
+	if envPath := os.Getenv("DEVSTACK_PAYLOAD_ZIP"); envPath != "" {
+		if fi, err := os.Stat(envPath); err == nil && fi.Size() > 22 {
+			f, err := os.Open(envPath)
+			if err == nil {
+				return f, fi.Size(), nil
+			}
+		}
+	}
+
 	// 1. Embedded payload
 	if len(embeddedPayload) > 22 {
 		return bytes.NewReader(embeddedPayload), int64(len(embeddedPayload)), nil
