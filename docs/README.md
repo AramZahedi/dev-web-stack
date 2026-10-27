@@ -69,30 +69,31 @@ machine, and the design/plan for the next milestone.
 
 ## User guides
 
-The M1 user documentation remains authoritative for the released native product:
+The M1 user documentation covers the released Linux product, and the Windows documentation covers the Windows 10/11 and WSL2 environment:
 
-| Guide | Contents |
-|---|---|
-| [Install](install.md) | prerequisites, installer, release archives, systemd, config, logs, uninstall |
-| [Upgrade](upgrade.md) | preflight, stop/install/start, database backup, protocol mismatch, verification, rollback limits |
-| [Release](release.md) | tags, archive/checksums, GoReleaser workflow, release checklist, PHP catalog gate |
-| [Sites](sites.md) | first static site, Node sites, lifecycle commands, limitations |
-| [PHP](php.md) | PHP builds, sites, ini and extensions, migration, FPM ports, troubleshooting |
-| [Vhosts](vhosts.md) | native nginx/Apache serving, PHP FastCGI prerequisites, mode switching, TLS custody |
-| [TLS and trust](tls.md) | local CA, browser trust, repair, curl/Node usage |
+| Guide | Platform | Contents |
+|---|---|---|
+| [Linux Install](install.md) | Linux | Prerequisites, installer, release archives, systemd, config, logs, uninstall |
+| [Windows Install](install-windows.md) | Windows | Prerequisites, `install.ps1`, layout, verification, upgrades, `uninstall.ps1` |
+| [WSL Managed Distro](wsl.md) | Windows/WSL | Managed Debian 12 distro, systemd, Docker Engine, agent, token/TLS security |
+| [Windows Paths & Tooling](windows-paths.md) | Windows/WSL | Dual source modes (NTFS vs ext4), UNC paths, translation, `.cmd` shims, no-dot policy |
+| [Windows Networking](windows-networking.md) | Windows/WSL | Loopback proxy, ports, WSL ingress, firewall scoping, trusted HTTPS |
+| [Troubleshooting](troubleshooting.md) | All | Error codes, doctor diagnoses, port conflicts, automated repair |
+| [Upgrade](upgrade.md) | Linux | Preflight, stop/install/start, database backup, protocol mismatch, verification, rollback limits |
+| [Release](release.md) | All | Tags, archives/checksums, GoReleaser workflow, Windows release packager, release checklist |
+| [Sites](sites.md) | All | First static site, Node sites, lifecycle commands, limitations |
+| [PHP](php.md) | All | PHP builds, sites, ini and extensions, migration, FPM ports, troubleshooting |
+| [Vhosts](vhosts.md) | Linux | Native nginx/Apache serving, PHP FastCGI prerequisites, mode switching, TLS custody |
+| [TLS and trust](tls.md) | All | Local CA, browser trust, repair, curl/Node usage |
 
 ## Implementation status in one sentence
 
-The Linux M1 native application is implemented and released as `v0.1.0`. The old
-standalone devstack-in-Docker image was retired on 2026-10-25. Waves 0–2 and the next
-service-platform batch are implemented: Docker nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis,
-phpMyAdmin, credentials/rotation, global PHP/Composer, site shell/exec, static builds,
-service configuration editing, performance preview/apply/reset/benchmarks, site-scoped
-terminal, editable listener ports, and the dashboard surfaces. Remaining work is
-external-site Docker mounts, real root host-tuning acceptance, and live benchmark
-evidence. Per-site PHP-FPM pool sizing is persisted and applied to live masters.
-ImageMagick CLI is descoped. Windows 11 + WSL2 has a revised design and
-five-lane implementation plan (2026-10-27) with resolved networking, storage,
-backend, path, protocol, and tooling contracts, but no Windows implementation
-has started. Automatic GitHub CI is disabled; workflows are manual-dispatch
-only.
+The Linux M1 native application is implemented and released as `v0.1.0`. Service
+platform Waves 0–2 are implemented on Linux. Windows 10 22H2+ / Windows 11
+platform parity is implemented across Wave 2 (Lanes F, G, H, I, J) with native
+Windows helper and user daemon, managed Debian 12 WSL2 agent, dedicated Docker
+Engine, dual source modes, `.cmd` tooling shims, release packaging
+(`build/release-windows.sh`), and the vertical slice acceptance suite
+(`test/windows/vertical_slice.ps1`). Full multi-machine acceptance evidence is
+pending before declaring Windows general availability. Automatic GitHub CI is
+disabled; workflows are manual-dispatch only.

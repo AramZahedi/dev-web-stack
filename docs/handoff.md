@@ -1,11 +1,11 @@
 # Project handoff
 
 - **Date:** 2026-10-26
-- **Revised:** 2026-10-27 (Windows/WSL plan review resolution; no implementation started)
+- **Revised:** 2026-10-27 (Windows/WSL Wave 0, Wave 1, and Wave 2 Lanes F, G, H, I, J implemented; integration acceptance in progress)
 - **Repository:** `https://github.com/AramZahedi/dev-web-stack`
 - **Handoff commit:** the commit containing this file; run `git rev-parse HEAD` for the exact SHA.
 - **Branch:** `master`
-- **Product status:** Linux M1 released as `v0.1.0`; Waves 0–1, Wave 2, and the next service-platform batch are merged. The next batch added service configuration editing, performance apply/reset/host tuning/benchmarks with dashboard, a site-scoped PTY terminal, editable listener ports, and the Settings cleanup. See [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md). ImageMagick CLI is descoped. Automatic GitHub Actions are disabled; workflows are manual-dispatch only.
+- **Product status:** Linux M1 released as `v0.1.0`; Waves 0–1, Wave 2, and the next service-platform batch are merged on Linux. Windows 10 22H2+ / Windows 11 platform parity has delivered Wave 0 foundation, Wave 1 baseline, Lane G installer/distro provisioning, and Wave 2 parallel lanes (Lane F: PHP/Node/terminal/tooling, Lane H: Docker services & private web serving, Lane I: Performance/ports/config/UI, Lane J: Release packaging, CI workflow, acceptance tests, and comprehensive documentation). Full multi-machine acceptance evidence remains the gate before declaring Windows general availability. Automatic GitHub Actions are disabled; workflows are manual-dispatch only.
 - **Wave 0 Merge SHA:** `04d1a2d5f111b33995961a90b19cf8df6abaa489`
 - **Wave 0 CI run:** `https://github.com/AramZahedi/dev-web-stack/actions/runs/40200118349` (green)
 - **Wave 1 merge SHA:** `b4be089429b3f63cb7ec94d5c6bf484a4db34da2`
@@ -106,18 +106,19 @@ The next batch is implemented. Remaining work is tracked in
 
 **Do not claim the remaining host gates are passed until they are run.**
 
-### Windows/WSL planning
+### Windows/WSL implementation status
 
-The approved architecture and revised five-lane execution plan are written but
-not implemented. The 2026-10-27 revision resolved the public-entry/WSL ingress,
-backend/port/route/PHP-path, canonical storage, source-copy, agent TLS/token,
-helper/daemon pipe security, no-dot, tooling, Linux layout, and artifact
-contracts:
+Windows 10 22H2+ / Windows 11 platform parity has delivered:
+- Wave 0 foundation (T0.1–T0.10) frozen foundation;
+- Wave 1 baseline infrastructure (helper service, daemon, named pipe ACLs, DPAPI secrets, agent TLS/token);
+- Lane G installer (`install.ps1`, `uninstall.ps1`) and managed Debian 12 WSL2 distro provisioning;
+- Wave 2 Lane F (WSL PHP/Node/FPM runtimes, PTY terminal, `.cmd` tooling shims);
+- Wave 2 Lane H (WSL Docker Engine services, Compose engine, private-port web serving);
+- Wave 2 Lane I (Windows resource metrics, public benchmarks, config manager, port manager, UI);
+- Wave 2 Lane J (Windows release archive packager `build/release-windows.sh`, CI workflow matrix, comprehensive documentation suite: `docs/install-windows.md`, `docs/wsl.md`, `docs/windows-paths.md`, `docs/windows-networking.md`, `docs/troubleshooting.md`, and acceptance suite `test/windows/vertical_slice.ps1`).
 
-- [Windows plan review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md)
-- [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)
-- [Windows/WSL implementation plan](superpowers/plans/2026-10-26-windows-wsl.md)
-- [Windows/WSL knowledge handoff](superpowers/status/2026-10-26-windows-wsl-handoff.md)
+Integration testing and multi-machine Windows acceptance evidence on clean
+Windows 10 and Windows 11 machines are required before declaring Windows general availability.
 - [Next agent on Windows](superpowers/status/2026-10-26-windows-next-agent.md)
 
 Do not start Wave 0 or create lane worktrees until the human partner approves
