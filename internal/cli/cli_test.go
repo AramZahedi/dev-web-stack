@@ -1345,7 +1345,11 @@ func TestCLIUninstall(t *testing.T) {
 	if result.Status != "complete" {
 		t.Fatalf("status = %q, want complete", result.Status)
 	}
-	if !strings.Contains(result.Command, "sudo") {
+	wantElevated := "sudo"
+	if runtime.GOOS == "windows" {
+		wantElevated = "uninstall.ps1"
+	}
+	if !strings.Contains(result.Command, wantElevated) {
 		t.Fatalf("elevated command = %q", result.Command)
 	}
 	if result.ProjectFilesRemoved {
@@ -1405,7 +1409,11 @@ func TestCLIUninstallHelperUnavailable(t *testing.T) {
 	if !stopped {
 		t.Fatal("daemon was not stopped before the helper failure")
 	}
-	for _, want := range []string{"Uninstall incomplete.", "To remove the helper unit", "sudo", "Checklist:", "Project files were left untouched", home} {
+	wantElevated := "sudo"
+	if runtime.GOOS == "windows" {
+		wantElevated = "uninstall.ps1"
+	}
+	for _, want := range []string{"Uninstall incomplete.", "To remove the helper unit", wantElevated, "Checklist:", "Project files were left untouched", home} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, missing %q", stdout, want)
 		}
@@ -1445,7 +1453,11 @@ func TestCLIUninstallHelperError(t *testing.T) {
 	if result.Status != "incomplete" || result.Uninstalled {
 		t.Fatalf("result = %+v, want incomplete and not uninstalled", result)
 	}
-	if !strings.Contains(result.Command, "sudo") || !containsFold(result.Checklist, home) {
+	wantElevated := "sudo"
+	if runtime.GOOS == "windows" {
+		wantElevated = "uninstall.ps1"
+	}
+	if !strings.Contains(result.Command, wantElevated) || !containsFold(result.Checklist, home) {
 		t.Fatalf("instructions = %+v", result)
 	}
 	for _, want := range []string{"INTERNAL", "uninstall blew up", `"remediation"`} {
@@ -1476,7 +1488,11 @@ func TestCLIUninstallDaemonStopFailureStillPrintsInstructions(t *testing.T) {
 	if code == 0 {
 		t.Fatal("want non-zero exit")
 	}
-	for _, want := range []string{"Uninstall incomplete.", "Daemon: stop failed", "sudo", "Checklist:", "Project files were left untouched", home} {
+	wantElevated := "sudo"
+	if runtime.GOOS == "windows" {
+		wantElevated = "uninstall.ps1"
+	}
+	for _, want := range []string{"Uninstall incomplete.", "Daemon: stop failed", wantElevated, "Checklist:", "Project files were left untouched", home} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, missing %q", stdout, want)
 		}
@@ -1486,6 +1502,16 @@ func TestCLIUninstallDaemonStopFailureStillPrintsInstructions(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "daemon is wedged") {
 		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestCLIUninstallWindowsElevatedCommand(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
+	want := `powershell.exe -ExecutionPolicy Bypass -File C:\devstack\uninstall.ps1`
+	if elevatedRemovalCommand != want {
+		t.Fatalf("elevatedRemovalCommand = %q, want %q", elevatedRemovalCommand, want)
 	}
 }
 
@@ -1911,6 +1937,7 @@ func startFakeHelper(t *testing.T) (*fakeHelper, string) {
 	var listener net.Listener
 	var socket string
 	if runtime.GOOS == "windows" {
+		setupFakeWSLForCLITests(t)
 		socket = fmt.Sprintf(`\\.\pipe\devstack-test-helper-%d-%d`, os.Getpid(), time.Now().UnixNano())
 		ln, err := ipc.Listen(ipc.NamedPipeEndpoint(socket))
 		if err != nil {

@@ -100,11 +100,19 @@ func (a *App) runInit(cmd *cobra.Command) error {
 		targets = []trust.Target{}
 	}
 
+	pctx, err := initPlatformPreDaemon(ctx, home, cfg, ca)
+	if err != nil {
+		return err
+	}
+
 	// Publish the dashboard host before the daemon starts so it can answer at
 	// devstack.test immediately, then replace the block with the full set after
 	// existing sites are discovered.
 	if err := helper.SyncHosts(ctx, []string{"devstack.test"}); err != nil {
 		return helperCallError(err, socket)
+	}
+	if err := initPlatformSyncHosts(ctx, pctx, []string{"devstack.test"}); err != nil {
+		return err
 	}
 
 	if err := ensureRunning(ctx, daemon.Options{Home: home, HelperSocket: socket}); err != nil {
@@ -123,6 +131,9 @@ func (a *App) runInit(cmd *cobra.Command) error {
 	if err := helper.SyncHosts(ctx, domains); err != nil {
 		return helperCallError(err, socket)
 	}
+	if err := initPlatformSyncHosts(ctx, pctx, domains); err != nil {
+		return err
+	}
 	if cfg.ServingMode != config.ServingModeBuiltin {
 		// The daemon reconciles the helper during startup; syncing once more
 		// here surfaces a broken vhost set to init instead of leaving it hidden
@@ -130,6 +141,9 @@ func (a *App) runInit(cmd *cobra.Command) error {
 		if _, err := c.SyncVhosts(ctx); err != nil {
 			return err
 		}
+	}
+	if err := initPlatformPostDaemon(ctx, pctx, cfg); err != nil {
+		return err
 	}
 	report, err := c.Doctor(ctx)
 	if err != nil {

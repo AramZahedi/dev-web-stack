@@ -44,18 +44,18 @@
 - Exit codes: 0 (Success), 1 (General error), 2 (Elevation / prerequisite missing), 3010 (Reboot required)
 - Manifest file: `C:\devstack\system\install-manifest.json` tracking prerequisite check states.
 
-- [ ] **Step 1:** Write failing tests in `test/windows/installer_test.ps1` covering elevation check, OS build validation (<19045 rejected, ≥19045 accepted), virtualization check, manifest creation, and dry-run output.
-- [ ] **Step 2:** Run `pwsh test/windows/installer_test.ps1` and verify RED.
-- [ ] **Step 3:** Implement elevation validation and self-elevation logic in `install.ps1`.
-- [ ] **Step 4:** Implement Windows build (≥ 19045 x64) and hardware virtualization detection.
-- [ ] **Step 5:** Implement Windows optional feature enablement (`Microsoft-Windows-Subsystem-Linux`, `VirtualMachinePlatform`) with DISM/Enable-WindowsOptionalFeature, reboot requirement detection (exit code 3010 / RestartNeeded), and resume scheduling with `-AllowReboot`.
-- [ ] **Step 6:** Implement `C:\devstack` layout creation: `C:\devstack\bin`, `C:\devstack\system`, `C:\devstack\wsl\devstack` with protected DACL (SYSTEM + Administrators FullControl; Users ReadAndExecute).
-- [ ] **Step 7:** Implement binary staging (`devstack.exe`, `devstack-helper.exe` to `C:\devstack\bin`) and add `C:\devstack\bin` to System PATH.
-- [ ] **Step 8:** Implement helper service installation (`devstack-helper service install --config C:\devstack\system\helper.yaml`) and service startup via Windows Service Controller.
-- [ ] **Step 9:** Implement inbound Windows Firewall rule for proxy ports 8080 and 8443 (TCP) scoped to WSL subnet.
-- [ ] **Step 10:** Update `build/windows/devstack-daemon-task.ps1` to reference `C:\devstack\bin\devstack.exe` and register user logon task.
-- [ ] **Step 11:** Run `pwsh test/windows/installer_test.ps1` and verify GREEN.
-- [ ] **Step 12:** Commit `feat(installer): add Windows system phase and prerequisite orchestrator`.
+- [x] **Step 1:** Write failing tests in `test/windows/installer_test.ps1` covering elevation check, OS build validation (<19045 rejected, ≥19045 accepted), virtualization check, manifest creation, and dry-run output.
+- [x] **Step 2:** Run `pwsh test/windows/installer_test.ps1` and verify RED.
+- [x] **Step 3:** Implement elevation validation and self-elevation logic in `install.ps1`.
+- [x] **Step 4:** Implement Windows build (≥ 19045 x64) and hardware virtualization detection.
+- [x] **Step 5:** Implement Windows optional feature enablement (`Microsoft-Windows-Subsystem-Linux`, `VirtualMachinePlatform`) with DISM/Enable-WindowsOptionalFeature, reboot requirement detection (exit code 3010 / RestartNeeded), and resume scheduling with `-AllowReboot`.
+- [x] **Step 6:** Implement `C:\devstack` layout creation: `C:\devstack\bin`, `C:\devstack\system`, `C:\devstack\wsl\devstack` with protected DACL (SYSTEM + Administrators FullControl; Users ReadAndExecute).
+- [x] **Step 7:** Implement binary staging (`devstack.exe`, `devstack-helper.exe` to `C:\devstack\bin`) and add `C:\devstack\bin` to System PATH.
+- [x] **Step 8:** Implement helper service installation (`devstack-helper service install --config C:\devstack\system\helper.yaml`) and service startup via Windows Service Controller.
+- [x] **Step 9:** Implement inbound Windows Firewall rule for proxy ports 8080 and 8443 (TCP) scoped to WSL subnet.
+- [x] **Step 10:** Update `build/windows/devstack-daemon-task.ps1` to reference `C:\devstack\bin\devstack.exe` and register user logon task.
+- [x] **Step 11:** Run `pwsh test/windows/installer_test.ps1` and verify GREEN.
+- [x] **Step 12:** Commit `feat(installer): add Windows system phase and prerequisite orchestrator`.
 
 ---
 
@@ -73,18 +73,18 @@
 - Systemd: PID 1 verification.
 - Services: Docker Engine with `--data-root /data/devstack/docker` and `devstack-agent.service`.
 
-- [ ] **Step 1:** Write failing tests in `test/windows/installer_test.ps1` for WSL version check (≥ 2.0.0), `.wslconfig` NAT validation, rootfs checksum verification against `versions.lock`, distro import, and systemd validation.
-- [ ] **Step 2:** Run `pwsh test/windows/installer_test.ps1` and verify RED.
-- [ ] **Step 3:** Implement WSL version verification (`wsl.exe --version` ≥ 2.0.0) and automated update via `wsl.exe --update`.
-- [ ] **Step 4:** Implement `.wslconfig` inspection enforcing NAT networking (rejecting mirrored mode).
-- [ ] **Step 5:** Implement rootfs archive acquisition/verification (SHA-256 matching `build/wsl/versions.lock`).
-- [ ] **Step 6:** Implement managed distro import (`wsl.exe --import devstack C:\devstack\wsl\devstack <rootfs.tar.gz> --version 2`).
-- [ ] **Step 7:** Configure `/etc/wsl.conf` with `[boot] systemd=true` and initialize `/data/devstack/managed.json`.
-- [ ] **Step 8:** Implement Docker Engine setup inside the distro with data-root `/data/devstack/docker` using `build/wsl/install-docker.sh`.
-- [ ] **Step 9:** Stage Linux `devstack-agent` binary and install systemd unit `build/wsl/agent.service` at `/etc/systemd/system/devstack-agent.service`.
-- [ ] **Step 10:** Update `C:\devstack\system\install-manifest.json` with recorded versions of WSL, Debian, systemd, Docker, and agent.
-- [ ] **Step 11:** Run `pwsh test/windows/installer_test.ps1` and verify GREEN.
-- [ ] **Step 12:** Commit `feat(installer): add WSL distro import and agent service provisioning`.
+- [x] **Step 1:** Write failing tests in `test/windows/installer_test.ps1` for WSL version check (≥ 2.0.0), `.wslconfig` NAT validation, rootfs checksum verification against `versions.lock`, distro import, and systemd validation.
+- [x] **Step 2:** Run `pwsh test/windows/installer_test.ps1` and verify RED.
+- [x] **Step 3:** Implement WSL version verification (`wsl.exe --version` ≥ 2.0.0) and automated update via `wsl.exe --update`.
+- [x] **Step 4:** Implement `.wslconfig` inspection enforcing NAT networking (rejecting mirrored mode).
+- [x] **Step 5:** Implement rootfs archive acquisition/verification (SHA-256 matching `build/wsl/versions.lock`).
+- [x] **Step 6:** Implement managed distro import (`wsl.exe --import devstack C:\devstack\wsl\devstack <rootfs.tar.gz> --version 2`).
+- [x] **Step 7:** Configure `/etc/wsl.conf` with `[boot] systemd=true` and initialize `/data/devstack/managed.json`.
+- [x] **Step 8:** Implement Docker Engine setup inside the distro with data-root `/data/devstack/docker` using `build/wsl/install-docker.sh`.
+- [x] **Step 9:** Stage Linux `devstack-agent` binary and install systemd unit `build/wsl/agent.service` at `/etc/systemd/system/devstack-agent.service`.
+- [x] **Step 10:** Update `C:\devstack\system\install-manifest.json` with recorded versions of WSL, Debian, systemd, Docker, and agent.
+- [x] **Step 11:** Run `pwsh test/windows/installer_test.ps1` and verify GREEN.
+- [x] **Step 12:** Commit `feat(installer): add WSL distro import and agent service provisioning`.
 
 ---
 
@@ -109,13 +109,13 @@
   9. Starts Windows daemon (`ensureRunning`).
   10. Verifies localhost forwarding probe and doctor health.
 
-- [ ] **Step 1:** Write failing tests in `internal/cli/init_windows_test.go` mocking helper, securestore, WSL runner, and agent client to verify the complete sequence.
-- [ ] **Step 2:** Run `go test ./internal/cli -run TestWindowsInit` and verify RED.
-- [ ] **Step 3:** Implement Windows-specific init helper in `internal/cli/init_windows.go` to handle agent credentials generation, DPAPI storage, and WSL filesystem transfer.
-- [ ] **Step 4:** Wire CA bundle installation to WSL agent and dual-hosts synchronization (`helper.SyncHosts` for Windows and agent `POST /v1/hosts` for WSL).
-- [ ] **Step 5:** Wire localhost forwarding probe (`wsl.ProbeLocalhostForwarding`) and daemon readiness verification into `init.go`.
-- [ ] **Step 6:** Run `go test ./internal/cli` natively on Windows and verify GREEN.
-- [ ] **Step 7:** Commit `feat(cli): wire devstack init user phase for Windows and WSL`.
+- [x] **Step 1:** Write failing tests in `internal/cli/init_windows_test.go` mocking helper, securestore, WSL runner, and agent client to verify the complete sequence.
+- [x] **Step 2:** Run `go test ./internal/cli -run TestWindowsInit` and verify RED.
+- [x] **Step 3:** Implement Windows-specific init helper in `internal/cli/init_windows.go` to handle agent credentials generation, DPAPI storage, and WSL filesystem transfer.
+- [x] **Step 4:** Wire CA bundle installation to WSL agent and dual-hosts synchronization (`helper.SyncHosts` for Windows and agent `POST /v1/hosts` for WSL).
+- [x] **Step 5:** Wire localhost forwarding probe (`wsl.ProbeLocalhostForwarding`) and daemon readiness verification into `init.go`.
+- [x] **Step 6:** Run `go test ./internal/cli` natively on Windows and verify GREEN.
+- [x] **Step 7:** Commit `feat(cli): wire devstack init user phase for Windows and WSL`.
 
 ---
 
@@ -132,10 +132,10 @@
 - `uninstall.ps1 [-PurgeDistro] [-PurgeData] [-Force]`
 - `devstack uninstall` on Windows.
 
-- [ ] **Step 1:** Write failing tests in `test/windows/lifecycle_test.ps1` testing upgrade transactional rollback (simulating agent failure), clean uninstall, and distro retention.
-- [ ] **Step 2:** Run `pwsh test/windows/lifecycle_test.ps1` and verify RED.
-- [ ] **Step 3:** Implement upgrade flow in `install.ps1 -Upgrade`: backup `/data/devstack`, stage new binaries, replace agent/distro, verify health, and rollback on error.
-- [ ] **Step 4:** Implement `uninstall.ps1`:
+- [x] **Step 1:** Write failing tests in `test/windows/lifecycle_test.ps1` testing upgrade transactional rollback (simulating agent failure), clean uninstall, and distro retention.
+- [x] **Step 2:** Run `pwsh test/windows/lifecycle_test.ps1` and verify RED.
+- [x] **Step 3:** Implement upgrade flow in `install.ps1 -Upgrade`: backup `/data/devstack`, stage new binaries, replace agent/distro, verify health, and rollback on error.
+- [x] **Step 4:** Implement `uninstall.ps1`:
   - Remove trust from Windows root store via `devstack-helper`.
   - Remove hosts entries.
   - Remove Windows Firewall rules (`devstack-daemon-proxy`).
@@ -143,9 +143,9 @@
   - Remove scheduled task `devstack-daemon`.
   - Distro cleanup: keep WSL distro and user data by default; remove only if `-PurgeDistro` is specified.
   - Remove `C:\devstack\bin` from System PATH.
-- [ ] **Step 5:** Wire `devstack uninstall` CLI command on Windows to execute equivalent cleanup.
-- [ ] **Step 6:** Run `pwsh test/windows/lifecycle_test.ps1` and verify GREEN.
-- [ ] **Step 7:** Commit `feat(installer): add upgrade, rollback, and uninstall lifecycle`.
+- [x] **Step 5:** Wire `devstack uninstall` CLI command on Windows to execute equivalent cleanup.
+- [x] **Step 6:** Run `pwsh test/windows/lifecycle_test.ps1` and verify GREEN.
+- [x] **Step 7:** Commit `feat(installer): add upgrade, rollback, and uninstall lifecycle`.
 
 ---
 
@@ -160,12 +160,12 @@
 - Support `/data/devstack` roots and root-only `system` layout while preserving legacy `~/.devstack` and `/etc/devstack` installs (Decision S69).
 - `test/release/installer_test.sh` passes 100%.
 
-- [ ] **Step 1:** Write failing test in `test/release/installer_test.sh` asserting new installs use `/data/devstack` for root layout while legacy installs are preserved.
-- [ ] **Step 2:** Run `bash test/release/installer_test.sh` in WSL and verify RED.
-- [ ] **Step 3:** Update `install.sh` and `build/systemd/devstack-helper.service` with `/data/devstack` default and legacy migration logic.
-- [ ] **Step 4:** Run `bash test/release/installer_test.sh` in WSL and verify GREEN.
-- [ ] **Step 5:** Run full Windows native suite (`go test ./...`) and Linux regression suite in WSL.
-- [ ] **Step 6:** Commit `feat(installer): update Linux install.sh for /data/devstack layout and test parity`.
+- [x] **Step 1:** Write failing test in `test/release/installer_test.sh` asserting new installs use `/data/devstack` for root layout while legacy installs are preserved.
+- [x] **Step 2:** Run `bash test/release/installer_test.sh` in WSL and verify RED.
+- [x] **Step 3:** Update `install.sh` and `build/systemd/devstack-helper.service` with `/data/devstack` default and legacy migration logic.
+- [x] **Step 4:** Run `bash test/release/installer_test.sh` in WSL and verify GREEN.
+- [x] **Step 5:** Run full Windows native suite (`go test ./...`) and Linux regression suite in WSL.
+- [x] **Step 6:** Commit `feat(installer): update Linux install.sh for /data/devstack layout and test parity`.
 
 ---
 
