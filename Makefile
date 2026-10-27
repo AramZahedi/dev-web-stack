@@ -20,7 +20,7 @@ CATALOG           ?=
 PHP_ARTIFACTS_DIR ?= artifacts
 PHP_CATALOG_CHECK ?= 0
 
-.PHONY: build build-windows build-agent test test-linux test-windows-cross lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test acceptance
+.PHONY: build build-windows build-agent test test-linux test-windows-cross lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test release-windows release-windows-test acceptance
 
 # Cross-build the Windows daemon and helper. The output stays in dist/ so the
 # same artifacts feed packaging and the manual Windows CI dispatch.
@@ -84,6 +84,13 @@ release:
 
 release-test:
 	bash test/release/release_test.sh
+
+# Build the local Windows amd64 release archive with checksums, rootfs, and SBOM.
+release-windows:
+	bash build/release-windows.sh --version "$(VERSION)"
+
+release-windows-test:
+	bash test/release/release_windows_test.sh
 
 # PHP artifacts are built and published by the php.yml CI workflow. These
 # targets are for contributors who have the build dependencies from

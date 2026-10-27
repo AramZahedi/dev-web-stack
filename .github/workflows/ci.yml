@@ -10,6 +10,11 @@ on:
         required: false
         default: false
         type: boolean
+      windows_native:
+        description: 'Run the Windows runner test matrix and packaging'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -79,14 +84,15 @@ jobs:
       - name: Release, installer, and workflow tests
         run: |
           bash test/release/release_test.sh
+          bash test/release/release_windows_test.sh
           bash test/release/installer_test.sh
           bash test/release/workflow_test.sh
 
       - name: Shell, installer, and unit checks
         run: |
-          bash -n install.sh test/e2e/linux.sh build/release.sh test/release/*.sh
+          bash -n install.sh test/e2e/linux.sh build/release.sh build/release-windows.sh test/release/*.sh
           if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck --severity=error install.sh test/e2e/linux.sh build/release.sh test/release/*.sh
+            shellcheck --severity=error install.sh test/e2e/linux.sh build/release.sh build/release-windows.sh test/release/*.sh
           else
             echo "shellcheck is unavailable; skipping (bash -n already passed)"
           fi
@@ -109,12 +115,10 @@ jobs:
       - name: Linux installer and daemon E2E
         run: E2E_SKIP_BUILD=1 bash test/e2e/linux.sh
 
-  # Manual Windows matrix. This runs on Linux and only cross-compiles; real
-  # Windows host tests are dispatched on a Windows runner or recorded from the
-  # controller's Windows acceptance evidence.
+  # Manual Windows cross-build job on Linux.
   windows-cross:
     name: Windows cross-build
-    if: ${{ inputs.windows }}
+    if: ${{ inputs.windows || inputs.windows_native }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -131,9 +135,13 @@ jobs:
         run: |
           GOOS=windows GOARCH=amd64 go build ./...
           make build-windows
+          make build-agent
 
       - name: Windows test compilation
         run: make test-windows-cross
+
+      - name: Windows release packaging test
+        run: make release-windows-test
 
       - name: Upload Windows binaries
         uses: actions/upload-artifact@v4
@@ -142,3 +150,66 @@ jobs:
           path: |
             dist/devstack.exe
             dist/devstack-helper.exe
+            dist/devstack-agent
+
+  # Manual Windows test matrix on native Windows runners.
+  windows-matrix:
+    name: Windows native matrix (${{ matrix.os }})
+    if: ${{ inputs.windows_native }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022]
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet and compile
+        shell: pwsh
+        run: |
+          go vet ./...
+          go build ./...
+
+      - name: Run Windows unit tests
+        shell: pwsh
+        run: go test ./...
+
+      - name: Build Windows release binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $env:CGO_ENABLED = "0"; $env:GOARCH = "amd64"
+          $env:GOOS = "windows"
+          go build -trimpath -o dist/devstack.exe ./cmd/devstack
+          go build -trimpath -o dist/devstack-helper.exe ./cmd/devstack-helper
+          $env:GOOS = "linux"
+          go build -trimpath -o dist/devstack-agent ./cmd/devstack-agent
+          Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+
+      - name: Run Windows installer tests
+        shell: pwsh
+        run: pwsh -File test/windows/installer_test.ps1
+
+      - name: Run Windows lifecycle tests
+        shell: pwsh
+        run: pwsh -File test/windows/lifecycle_test.ps1
+
+      - name: Build Windows release archive
+        shell: pwsh
+        run: pwsh -File build/release-windows.ps1 -Version 0.1.0 -SkipUI
+
+      - name: Upload Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: devstack-windows-release-${{ matrix.os }}
+          path: |
+            dist/release/devstack_*_windows_amd64.zip
+            dist/release/checksums.txt
