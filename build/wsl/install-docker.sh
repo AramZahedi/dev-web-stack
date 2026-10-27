@@ -4,7 +4,7 @@ set -euo pipefail
 readonly DOCKER_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 readonly DOCKER_VERSION='5:27.5.1-1~debian.12~bookworm'
 readonly CONTAINERD_VERSION='1.7.25-1'
-readonly BUILDX_VERSION='0.20.1-1~debian.12~bookworm'
+readonly BUILDX_VERSION='0.20.0-1~debian.12~bookworm'
 readonly COMPOSE_VERSION='2.32.4-1~debian.12~bookworm'
 readonly CONFIG_SOURCE=/data/devstack/bin/docker-daemon.json
 
