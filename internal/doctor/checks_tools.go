@@ -39,20 +39,25 @@ func (s *Service) checkTools() Check {
 	}
 	var problems []string
 	checked := 0
+	stalePATHSession := false
 	for _, name := range []string{"php", "composer"} {
 		managed := targets[name]
 		wrapper := filepath.Join(binDir, name)
-		if runtime.GOOS == "windows" {
-			if !regularExecutable(managed) && regularExecutable(managed+".cmd") {
-				managed += ".cmd"
-			}
-			if !regularExecutable(wrapper) && regularExecutable(wrapper+".cmd") {
-				wrapper += ".cmd"
-			}
+		if !regularExecutable(managed) && regularExecutable(managed+".cmd") {
+			managed += ".cmd"
+		}
+		if !regularExecutable(wrapper) && regularExecutable(wrapper+".cmd") {
+			wrapper += ".cmd"
 		}
 		managedExists := regularExecutable(managed)
 		resolved, err := lookPath(name)
 		if err != nil || strings.TrimSpace(resolved) == "" {
+			cmdShim := filepath.Join(binDir, name+".cmd")
+			if regularExecutable(cmdShim) && s.persistedPathContains(binDir) {
+				stalePATHSession = true
+				checked++
+				continue
+			}
 			problems = append(problems, fmt.Sprintf("`%s` does not resolve on PATH; managed shim is %s", name, wrapper))
 			continue
 		}
@@ -74,7 +79,11 @@ func (s *Service) checkTools() Check {
 		return check
 	}
 	check.Status = StatusOK
-	check.Detail = fmt.Sprintf("php and composer resolve to the managed shims in %s", binDir)
+	if stalePATHSession {
+		check.Detail = fmt.Sprintf("managed shims exist in %s (note: a new shell session is required if the current daemon process inherited a stale PATH)", binDir)
+	} else {
+		check.Detail = fmt.Sprintf("php and composer resolve to the managed shims in %s", binDir)
+	}
 	return check
 }
 
@@ -83,10 +92,22 @@ func regularExecutable(path string) bool {
 	if err != nil || !info.Mode().IsRegular() {
 		return false
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || isWindowsExt(path) {
 		return true
 	}
 	return info.Mode().Perm()&0o111 != 0
+}
+
+func isWindowsExt(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".cmd" || ext == ".bat" || ext == ".exe"
+}
+
+func (s *Service) persistedPathContains(dir string) bool {
+	if s.deps.PersistedPathContains != nil {
+		return s.deps.PersistedPathContains(dir)
+	}
+	return persistentPathContains(dir)
 }
 
 func sameFile(a, b string) bool {

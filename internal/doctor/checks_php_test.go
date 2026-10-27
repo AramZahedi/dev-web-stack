@@ -441,6 +441,91 @@ func TestDoctorPHPBuildDirectExtensionModules(t *testing.T) {
 	}
 }
 
+func TestDoctorPHPBuildWSLBackendValidatesExtensions(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	site := fakes.addPHPSite(t, "php@8.4.4-r1", "8.4.4")
+	buildRoot := filepath.Join(fakes.dir, "runtimes", "php@8.4.4-r1")
+	build := model.RuntimeBuild{
+		ID:          "php@8.4.4-r1",
+		Kind:        "php",
+		Version:     "8.4.4",
+		Backend:     model.BackendWSL,
+		Path:        buildRoot,
+		InstalledAt: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC),
+	}
+	if err := fakes.store.UpsertRuntime(context.Background(), build); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCheck(rep, "php-builds", StatusOK) {
+		t.Fatalf("php-builds for WSL build with valid extensions should pass: %+v", rep.Checks)
+	}
+
+	// Remove extension module and verify it fails
+	extDir := filepath.Join(buildRoot, "lib", "php", "extensions")
+	_ = os.RemoveAll(extDir)
+	_ = os.MkdirAll(extDir, 0o755)
+
+	rep, err = svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "php-builds")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("php-builds for WSL build without extensions must fail: %+v", check)
+	}
+	if !strings.Contains(check.Detail, "lib/php/extensions") {
+		t.Fatalf("php-builds detail = %q, want lib/php/extensions error", check.Detail)
+	}
+	_ = site
+}
+
+func TestDoctorPHPBuildWarnsWhenCompiledExtensionDirPointsToTmpWithoutCompensation(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	fakes.addPHPSite(t, "php@8.4.4-r1", "8.4.4")
+	buildRoot := filepath.Join(fakes.dir, "runtimes", "php@8.4.4-r1")
+
+	// Create php-config with compiled-in extension_dir in nonexistent /tmp path
+	phpConfigPath := filepath.Join(buildRoot, "bin", "php-config")
+	nonexistentTmp := "/tmp/devstack-nonexistent-build-dir-xyz/lib/php/extensions"
+	script := fmt.Sprintf("#!/bin/sh\nextension_dir='%s'\n", nonexistentTmp)
+	if err := os.WriteFile(phpConfigPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Base etc/php.ini does not configure extension_dir
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "php-builds")
+	if !ok || check.Status != StatusWarn {
+		t.Fatalf("php-builds should warn about compiled-in /tmp without compensation: %+v", check)
+	}
+	if !strings.Contains(check.Detail, "/tmp") || !strings.Contains(check.Detail, "without compensation") {
+		t.Fatalf("php-builds detail = %q", check.Detail)
+	}
+
+	// Now add compensation to etc/php.ini
+	validExtDir := filepath.Join(buildRoot, "lib", "php", "extensions")
+	iniContent := fmt.Sprintf("; base ini with compensation\nextension_dir = %q\n", validExtDir)
+	if err := os.WriteFile(filepath.Join(buildRoot, "etc", "php.ini"), []byte(iniContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err = svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCheck(rep, "php-builds", StatusOK) {
+		t.Fatalf("php-builds should pass when compensated in etc/php.ini: %+v", rep.Checks)
+	}
+}
+
 func TestDoctorPHPSkipsPortsAndMasterForStoppedSites(t *testing.T) {
 	svc, fakes := newTestDoctor(t)
 	site := fakes.addPHPSite(t, "php@8.4.4-r1", "8.4.4")

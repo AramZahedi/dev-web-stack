@@ -70,7 +70,10 @@ type Deps struct {
 	ToolBinDir string
 	// LookPath resolves a bare command. Nil uses exec.LookPath.
 	LookPath func(string) (string, error)
-	Windows  WindowsDiagnostics
+	// PersistedPathContains checks if a directory is in persistent Machine/User PATH.
+	// Nil checks the Windows registry and standard install dir.
+	PersistedPathContains func(string) bool
+	Windows               WindowsDiagnostics
 }
 
 // WindowsDiagnostics describes the Windows/WSL dependencies without granting

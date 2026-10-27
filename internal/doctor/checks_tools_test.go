@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -91,9 +90,6 @@ func TestCheckToolsOKWhenManagedShimsWin(t *testing.T) {
 }
 
 func TestCheckToolsRecognizesWindowsCmdShimsWithoutExecuteBits(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows-specific .cmd shim resolution test")
-	}
 	home := t.TempDir()
 	paths := config.NewPaths(home)
 	binDir := filepath.Join(t.TempDir(), "bin")
@@ -130,5 +126,47 @@ func TestCheckToolsRecognizesWindowsCmdShimsWithoutExecuteBits(t *testing.T) {
 	check := svc.checkTools()
 	if check.Status != StatusOK {
 		t.Fatalf("status = %q detail=%q", check.Status, check.Detail)
+	}
+}
+
+func TestCheckToolsRecognizesPersistedRegistryPathWhenLookPathFails(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	phpTarget := filepath.Join(tooling.ShimDir(paths), "php.cmd")
+	composerTarget := filepath.Join(home, "tools", "composer", "bin", "composer.cmd")
+	for _, path := range []string{phpTarget, composerTarget} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"php.cmd", "composer.cmd"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("@echo off\r\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := &Service{deps: Deps{
+		Config:     config.Config{Home: home},
+		ToolBinDir: binDir,
+		LookPath: func(name string) (string, error) {
+			return "", errors.New("command not found on current PATH")
+		},
+		PersistedPathContains: func(dir string) bool {
+			return dir == binDir
+		},
+	}}
+	check := svc.checkTools()
+	if check.Status != StatusOK {
+		t.Fatalf("status = %q detail=%q", check.Status, check.Detail)
+	}
+	if !strings.Contains(check.Detail, "stale PATH") {
+		t.Fatalf("detail missing stale PATH note: %q", check.Detail)
 	}
 }

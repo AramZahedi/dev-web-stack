@@ -58,6 +58,18 @@ func TestWindowsChecksReportAgentDockerForwardingAndWSLPorts(t *testing.T) {
 	if diagnostics.distro != "devstack" || diagnostics.forwardingPort != 8080 {
 		t.Fatalf("diagnostic target distro=%q forwarding port=%d", diagnostics.distro, diagnostics.forwardingPort)
 	}
+
+	// Verify custom configured HTTPPort is passed to forwarding probe instead of hardcoded default
+	customDiag := &fakeWindowsDiagnostics{}
+	customSvc := NewService(Deps{
+		Platform: "windows",
+		Config:   config.Config{WSLDistro: "devstack", HTTPPort: 8088},
+		Windows:  customDiag,
+	})
+	customSvc.windowsChecks(context.Background())
+	if customDiag.forwardingPort != 8088 {
+		t.Fatalf("expected custom forwarding port 8088, got %d", customDiag.forwardingPort)
+	}
 }
 
 func TestWindowsForwardingFailureHasTypedRemediation(t *testing.T) {

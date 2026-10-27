@@ -404,6 +404,15 @@ func TestPortChecks(t *testing.T) {
 			want:           StatusWarn,
 			detailContains: "could not probe port 8080",
 		},
+		{
+			name: "windows socket in use probe error is ok",
+			mutate: func(ports *fakePorts) {
+				ports.errs[":80"] = errors.New("bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.")
+				ports.errs[":443"] = errors.New("bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.")
+			},
+			want:           StatusOK,
+			detailContains: "expected services",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

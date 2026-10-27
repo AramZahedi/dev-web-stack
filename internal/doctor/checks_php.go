@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,7 +86,8 @@ func (s *Service) checkPHP(ctx context.Context) []Check {
 		)
 	}
 
-	checks[0] = checkPHPBuilds(phpSites, phpBuilds, buildErr)
+	distro := strings.TrimSpace(s.deps.Config.WSLDistro)
+	checks[0] = checkPHPBuilds(phpSites, phpBuilds, buildErr, distro)
 	checks[1] = checkPHPConfig(ctx, s.deps.PHP, phpSites)
 	checks[2] = checkPHPPorts(phpSites)
 	checks[3] = checkPHPMasters(ctx, phpSites)
@@ -92,7 +96,7 @@ func (s *Service) checkPHP(ctx context.Context) []Check {
 
 // checkPHPBuilds verifies that every installed PHP build has the binaries and
 // extension directory a working FPM installation needs.
-func checkPHPBuilds(sites []model.Site, builds []model.RuntimeBuild, listErr error) Check {
+func checkPHPBuilds(sites []model.Site, builds []model.RuntimeBuild, listErr error, distro ...string) Check {
 	check := Check{ID: "php-builds", Title: "PHP builds"}
 	if listErr != nil {
 		check.Status = StatusFail
@@ -121,10 +125,13 @@ func checkPHPBuilds(sites []model.Site, builds []model.RuntimeBuild, listErr err
 	}
 
 	var problems, badIDs []string
+	var warnings []string
 	for _, build := range builds {
 		if err := verifyPHPBuild(build); err != nil {
 			problems = append(problems, fmt.Sprintf("%s (%s): %v", build.ID, build.Version, err))
 			badIDs = append(badIDs, build.ID)
+		} else if warn := checkCompiledExtensionDir(build); warn != "" {
+			warnings = append(warnings, fmt.Sprintf("%s (%s): %s", build.ID, build.Version, warn))
 		}
 	}
 	if len(problems) != 0 {
@@ -134,6 +141,12 @@ func checkPHPBuilds(sites []model.Site, builds []model.RuntimeBuild, listErr err
 			"Run `devstack runtime install %s` to reinstall the affected build, then rerun `devstack doctor`.",
 			badIDs[0],
 		)
+		return check
+	}
+	if len(warnings) != 0 {
+		check.Status = StatusWarn
+		check.Detail = "installed PHP builds have configuration warnings: " + strings.Join(warnings, "; ")
+		check.Remediation = "Configure `extension_dir` in the build's etc/php.ini or rebuild the PHP runtime."
 		return check
 	}
 
@@ -146,22 +159,49 @@ func checkPHPBuilds(sites []model.Site, builds []model.RuntimeBuild, listErr err
 	return check
 }
 
+// resolvePHPBuildPath locates the build path locally or via WSL network share if on Windows.
+func resolvePHPBuildPath(build model.RuntimeBuild, distro ...string) string {
+	p := strings.TrimSpace(build.Path)
+	if p == "" {
+		return ""
+	}
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if runtime.GOOS == "windows" && strings.HasPrefix(p, "/") {
+		distros := []string{"devstack"}
+		if len(distro) > 0 && strings.TrimSpace(distro[0]) != "" && !strings.EqualFold(distro[0], "devstack") {
+			distros = append([]string{strings.TrimSpace(distro[0])}, distros...)
+		}
+		for _, d := range distros {
+			for _, prefix := range []string{`\\wsl.localhost\` + d, `\\wsl$\` + d} {
+				candidate := filepath.Join(prefix, filepath.FromSlash(p))
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate
+				}
+			}
+		}
+	}
+	return p
+}
+
 // verifyPHPBuild checks the layout produced by the runtime installer. A build
 // needs bin/php, sbin/php-fpm, and extension modules either directly under
 // lib/php/extensions or in one architecture subdirectory.
-func verifyPHPBuild(build model.RuntimeBuild) error {
-	if build.Backend == model.BackendWSL {
-		return nil
-	}
-	if strings.TrimSpace(build.Path) == "" {
+func verifyPHPBuild(build model.RuntimeBuild, distro ...string) error {
+	buildPath := resolvePHPBuildPath(build, distro...)
+	if strings.TrimSpace(buildPath) == "" {
 		return errors.New("build path is empty")
 	}
 	for _, rel := range []string{
 		filepath.Join("bin", "php"),
 		filepath.Join("sbin", "php-fpm"),
 	} {
-		info, err := os.Stat(filepath.Join(build.Path, rel))
+		info, err := os.Stat(filepath.Join(buildPath, rel))
 		if err != nil {
+			if build.Backend == model.BackendWSL && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return fmt.Errorf("%s: %w", rel, err)
 		}
 		if !info.Mode().IsRegular() {
@@ -169,7 +209,7 @@ func verifyPHPBuild(build model.RuntimeBuild) error {
 		}
 	}
 
-	extDir := filepath.Join(build.Path, "lib", "php", "extensions")
+	extDir := filepath.Join(buildPath, "lib", "php", "extensions")
 	entries, err := os.ReadDir(extDir)
 	if err != nil {
 		return fmt.Errorf("%s: %w", filepath.Join("lib", "php", "extensions"), err)
@@ -178,6 +218,84 @@ func verifyPHPBuild(build model.RuntimeBuild) error {
 		return errors.New("lib/php/extensions has no PHP extension modules")
 	}
 	return nil
+}
+
+// checkCompiledExtensionDir warns if a PHP build's compiled-in extension_dir points to
+// a nonexistent /tmp path without compensation in its etc/php.ini.
+func checkCompiledExtensionDir(build model.RuntimeBuild, distro ...string) string {
+	buildPath := resolvePHPBuildPath(build, distro...)
+	if buildPath == "" {
+		return ""
+	}
+	extDir := compiledExtensionDir(buildPath)
+	if extDir == "" {
+		return ""
+	}
+	isTmp := strings.HasPrefix(extDir, "/tmp/") || strings.HasPrefix(extDir, "/tmp") ||
+		strings.HasPrefix(extDir, `\tmp\`) || strings.HasPrefix(strings.ToLower(extDir), `c:\tmp\`)
+	if !isTmp {
+		return ""
+	}
+	if _, err := os.Stat(extDir); err == nil {
+		return ""
+	}
+	if hasCompensatingExtensionDir(buildPath) {
+		return ""
+	}
+	return fmt.Sprintf("compiled-in extension_dir %q points to a nonexistent /tmp path without compensation", extDir)
+}
+
+func compiledExtensionDir(buildRoot string) string {
+	phpConfigPath := filepath.Join(buildRoot, "bin", "php-config")
+	if data, err := os.ReadFile(phpConfigPath); err == nil {
+		content := string(data)
+		re := regexp.MustCompile(`(?i)(?:^|\n)\s*(?:extension_dir|EXTENSION_DIR)=['"]?([^'"\r\n]+)['"]?`)
+		if m := re.FindStringSubmatch(content); len(m) > 1 {
+			return strings.TrimSpace(m[1])
+		}
+	}
+
+	phpBin := filepath.Join(buildRoot, "bin", "php")
+	if info, err := os.Stat(phpBin); err == nil && info.Mode().IsRegular() {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, phpBin, "-n", "-r", "echo ini_get('extension_dir');")
+		if out, err := cmd.Output(); err == nil && len(out) > 0 {
+			dir := strings.TrimSpace(string(out))
+			if dir != "" {
+				return dir
+			}
+		}
+		if data, err := os.ReadFile(phpBin); err == nil {
+			re := regexp.MustCompile(`/tmp/[^\s\x00\r\n'"]+/lib/php/extensions[^\s\x00\r\n'"]*`)
+			if m := re.FindString(string(data)); m != "" {
+				return m
+			}
+		}
+	}
+	return ""
+}
+
+func hasCompensatingExtensionDir(buildRoot string) bool {
+	iniPath := filepath.Join(buildRoot, "etc", "php.ini")
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		return false
+	}
+	re := regexp.MustCompile(`(?i)^\s*extension_dir\s*=\s*['"]?([^'"\r\n;]+)['"]?`)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if m := re.FindStringSubmatch(line); len(m) > 1 {
+			val := strings.TrimSpace(m[1])
+			if val != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func phpExtensionsPresent(dir string, entries []os.DirEntry) bool {

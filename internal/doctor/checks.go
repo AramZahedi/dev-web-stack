@@ -2,9 +2,13 @@ package doctor
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -196,6 +200,9 @@ func (s *Service) hostsPath() string {
 	path := s.deps.HostsPath
 	if strings.TrimSpace(path) == "" {
 		if runtime.GOOS == "windows" || s.deps.Platform == "windows" {
+			if root := os.Getenv("SystemRoot"); root != "" {
+				return filepath.Join(root, "System32", "drivers", "etc", "hosts")
+			}
 			return `C:\Windows\System32\drivers\etc\hosts`
 		}
 		return defaultHostsPath
@@ -358,7 +365,7 @@ func (s *Service) checkPorts() Check {
 			switch {
 			case err == nil:
 				free = append(free, strconv.Itoa(spec.port))
-			case isAddrInUse(err):
+			case isAddrInUse(err) || s.isPortResponding(spec.port):
 				warnings = append(warnings, fmt.Sprintf("port %d is in use; external mode expects the built-in proxy ports to be free", spec.port))
 			case isProbePermission(err):
 				warnings = append(warnings, fmt.Sprintf("cannot probe port %d as this user; external mode expects it to be free", spec.port))
@@ -367,10 +374,10 @@ func (s *Service) checkPorts() Check {
 			}
 		case err == nil:
 			warnings = append(warnings, fmt.Sprintf("port %d is free; expected owner is %s", spec.port, spec.owner))
-		case isAddrInUse(err):
-			owned = append(owned, fmt.Sprintf("%d (%s)", spec.port, spec.owner))
 		case isProbePermission(err):
 			warnings = append(warnings, fmt.Sprintf("cannot probe port %d as this user; expected owner is %s", spec.port, spec.owner))
+		case isAddrInUse(err) || s.isPortInUseByDevstack(spec, err):
+			owned = append(owned, fmt.Sprintf("%d (%s)", spec.port, spec.owner))
 		default:
 			warnings = append(warnings, fmt.Sprintf("could not probe port %d (%v); expected owner is %s", spec.port, err, spec.owner))
 		}
@@ -526,11 +533,15 @@ func (s *Service) windowsChecks(ctx context.Context) []Check {
 			skippedWindowsCheck("wsl-ports", "WSL backend ports", "agent port diagnostics are unavailable"),
 		}
 	}
+	forwardPort := s.deps.Config.HTTPPort
+	if forwardPort <= 0 {
+		forwardPort = defaultHTTPPort
+	}
 	return []Check{
 		windowsDiagnosticCheck("wsl", "Managed WSL distro", "WSL_UNAVAILABLE", "Start or repair the managed WSL distro, then rerun `devstack doctor`.", s.deps.Windows.CheckWSL(ctx, distro), "managed WSL distro "+distro+" is available"),
 		windowsDiagnosticCheck("agent", "WSL agent", "AGENT_UNAUTHENTICATED", "Run `devstack init` to restore the authenticated WSL agent connection.", s.deps.Windows.CheckAgent(ctx, distro), "the WSL agent is authenticated and responding"),
 		windowsDiagnosticCheck("docker", "WSL Docker Engine", "DOCKER_UNAVAILABLE", "Start or repair Docker Engine inside the managed WSL distro.", s.deps.Windows.CheckDocker(ctx, distro), "Docker Engine is responding inside WSL"),
-		windowsDiagnosticCheck("wsl-localhost-forwarding", "WSL localhost forwarding", "WSL_LOCALHOST_FORWARDING_UNAVAILABLE", "Enable WSL localhost forwarding in `%UserProfile%\\.wslconfig`, then run `wsl --shutdown`.", s.deps.Windows.CheckLocalhostForwarding(ctx, distro, defaultHTTPPort), "WSL localhost forwarding reaches the Windows daemon proxy"),
+		windowsDiagnosticCheck("wsl-localhost-forwarding", "WSL localhost forwarding", "WSL_LOCALHOST_FORWARDING_UNAVAILABLE", "Enable WSL localhost forwarding in `%UserProfile%\\.wslconfig`, then run `wsl --shutdown`.", s.deps.Windows.CheckLocalhostForwarding(ctx, distro, forwardPort), "WSL localhost forwarding reaches the Windows daemon proxy"),
 		windowsDiagnosticCheck("wsl-ports", "WSL backend ports", "WSL_PORTS_UNAVAILABLE", "Stop the conflicting WSL listener or restart the site agent to release stale backend ports.", s.deps.Windows.CheckPorts(ctx, distro), "the WSL agent can allocate site backend ports"),
 	}
 }
@@ -552,17 +563,68 @@ func windowsDiagnosticCheck(id, title, code, remediation string, err error, okDe
 	return check
 }
 
+func (s *Service) isPortResponding(port int) bool {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	conn, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		return true
+	}
+	client := &http.Client{
+		Timeout: 200 * time.Millisecond,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	if resp, err := client.Get("http://" + addr); err == nil {
+		_ = resp.Body.Close()
+		return true
+	}
+	if resp, err := client.Get("https://" + addr); err == nil {
+		_ = resp.Body.Close()
+		return true
+	}
+	return false
+}
+
+func (s *Service) isPortInUseByDevstack(spec portSpec, probeErr error) bool {
+	if spec.free {
+		return false
+	}
+	switch spec.port {
+	case 80, 443, 7070, 8080, 8443, s.deps.Config.UIPort, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort:
+	default:
+		return false
+	}
+	if isAddrInUse(probeErr) {
+		return true
+	}
+	if s.isPortResponding(spec.port) {
+		return true
+	}
+	return false
+}
+
 // isAddrInUse recognises bind failures caused by an existing listener. The
 // proxy owns 8080/8443, so this is normal while the daemon is running.
 func isAddrInUse(err error) bool {
 	if err == nil {
 		return false
 	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		if errno == 10048 || errno == syscall.EADDRINUSE {
+			return true
+		}
+	}
 	if errors.Is(err, syscall.EADDRINUSE) {
 		return true
 	}
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "address already in use") || strings.Contains(message, "eaddrinuse")
+	return strings.Contains(message, "address already in use") ||
+		strings.Contains(message, "eaddrinuse") ||
+		strings.Contains(message, "only one usage of each socket address") ||
+		strings.Contains(message, "wsaeaddrinuse")
 }
 
 // isProbePermission recognises probes that this user is not allowed to perform.
