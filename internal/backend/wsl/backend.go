@@ -5,25 +5,19 @@ package wslbackend
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"path"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentclient"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
-	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 var (
 	ErrNilClient = errors.New("backend/wsl: agent client is nil")
-	// ErrCAInstallUnsupported marks the missing frozen-agent operation for
-	// installing the Windows daemon's public CA into WSL trust bundles.
-	ErrCAInstallUnsupported = errors.New("backend/wsl: frozen agent API has no install-CA operation")
 )
 
 // Backend implements the daemon backend contract using the pinned-HTTPS
@@ -123,7 +117,12 @@ func (b *Backend) RemoveRuntime(ctx context.Context, buildID string) error {
 	return b.Client.RemoveRuntime(ctx, agentproto.RuntimeRequest{BuildID: buildID})
 }
 
-func (b *Backend) InstallCA(context.Context, []byte) error { return ErrCAInstallUnsupported }
+func (b *Backend) InstallCA(ctx context.Context, pem []byte) error {
+	if err := b.check(); err != nil {
+		return err
+	}
+	return b.Client.InstallCA(ctx, pem)
+}
 
 func (b *Backend) Health(ctx context.Context) error {
 	if err := b.check(); err != nil {
@@ -191,7 +190,7 @@ func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 		mode = string(model.SourceWindows)
 	}
 	return agentproto.SiteSpec{
-		ID: spec.ID, Kind: spec.Kind, HostPath: spec.HostPath, BackendPath: spec.BackendPath,
+		ID: spec.ID, Kind: spec.Kind, Domain: spec.Domain, HostPath: spec.HostPath, BackendPath: spec.BackendPath,
 		DocumentRoot: backendDocumentRoot, ProxyDocumentRoot: proxyRoot, SourceMode: mode,
 		Command: spec.Command, Env: cloneMap(spec.Env), HTTPPort: spec.HTTPPort, FastCGIPort: spec.FastCGIPort,
 		SPAFallback: spec.SPAFallback, FrontController: spec.FrontController, RuntimeVersion: spec.RuntimeVersion,
@@ -242,122 +241,3 @@ func cloneMap(src map[string]string) map[string]string {
 
 var _ backend.Backend = (*Backend)(nil)
 var _ backend.PHPStager = (*Backend)(nil)
-
-// PortProvider delegates allocation to the WSL agent and caches an allocation
-// per site/kind so repeated prepare paths reuse the persisted WSL socket.
-type PortProvider struct {
-	client agentclient.API
-	mu     sync.Mutex
-	ports  map[string]map[domain.PortKind]int
-}
-
-func NewPortProvider(client agentclient.API) *PortProvider {
-	return &PortProvider{client: client, ports: make(map[string]map[domain.PortKind]int)}
-}
-
-func (p *PortProvider) Allocate(ctx context.Context, siteID string, kind domain.PortKind) (int, error) {
-	if p == nil || p.client == nil {
-		return 0, ErrNilClient
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if byKind := p.ports[siteID]; byKind != nil {
-		if port := byKind[kind]; port != 0 {
-			return port, nil
-		}
-	}
-	resp, err := p.client.AllocatePorts(ctx, portRequest(siteID, kind, 0))
-	if err != nil {
-		return 0, err
-	}
-	port := responsePort(resp, kind)
-	if !validAgentPort(port, kind) {
-		return 0, fmt.Errorf("backend/wsl: agent returned invalid %s port %d", kind, port)
-	}
-	if p.ports[siteID] == nil {
-		p.ports[siteID] = make(map[domain.PortKind]int)
-	}
-	p.ports[siteID][kind] = port
-	return port, nil
-}
-
-func (p *PortProvider) Reserve(ctx context.Context, siteID string, port int) error {
-	if p == nil || p.client == nil {
-		return ErrNilClient
-	}
-	kind := domain.PortHTTP
-	if port >= 43000 && port <= 43999 {
-		kind = domain.PortFastCGI
-	}
-	if !validAgentPort(port, kind) {
-		return fmt.Errorf("backend/wsl: port %d is outside the %s allocation range", port, kind)
-	}
-	resp, err := p.client.AllocatePorts(ctx, portRequest(siteID, kind, port))
-	if err != nil {
-		return err
-	}
-	if got := responsePort(resp, kind); got != port {
-		return fmt.Errorf("backend/wsl: agent restored port %d as %d", port, got)
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.ports[siteID] == nil {
-		p.ports[siteID] = make(map[domain.PortKind]int)
-	}
-	p.ports[siteID][kind] = port
-	return nil
-}
-
-func (p *PortProvider) Release(ctx context.Context, siteID string, port int) {
-	if p == nil || p.client == nil || port == 0 {
-		return
-	}
-	kind := domain.PortHTTP
-	if port >= 43000 && port <= 43999 {
-		kind = domain.PortFastCGI
-	}
-	p.mu.Lock()
-	if p.ports[siteID][kind] == port {
-		delete(p.ports[siteID], kind)
-	}
-	p.mu.Unlock()
-	req := agentproto.PortRequest{SiteID: siteID, Kind: kind.String()}
-	if kind == domain.PortFastCGI {
-		req.FastCGIPort = port
-	} else {
-		req.HTTPPort = port
-	}
-	_ = p.client.ReleasePorts(ctx, req)
-}
-
-func portRequest(siteID string, kind domain.PortKind, requested int) agentproto.PortRequest {
-	req := agentproto.PortRequest{SiteID: siteID, Kind: kind.String()}
-	if requested > 0 {
-		if kind == domain.PortHTTP {
-			req.RequestedHTTP = requested
-		} else {
-			req.RequestedFastCGI = requested
-		}
-	}
-	return req
-}
-
-func responsePort(resp agentproto.PortResponse, kind domain.PortKind) int {
-	if kind == domain.PortFastCGI {
-		return resp.FastCGIPort
-	}
-	return resp.HTTPPort
-}
-
-func validAgentPort(port int, kind domain.PortKind) bool {
-	if kind == domain.PortFastCGI {
-		return port >= 43000 && port <= 43999
-	}
-	return kind == domain.PortHTTP && port >= 41000 && port <= 42999
-}
-
-var _ interface {
-	Allocate(context.Context, string, domain.PortKind) (int, error)
-	Release(context.Context, string, int)
-	Reserve(context.Context, string, int) error
-} = (*PortProvider)(nil)

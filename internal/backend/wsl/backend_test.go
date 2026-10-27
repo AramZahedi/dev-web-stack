@@ -10,7 +10,6 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentclient"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
-	"github.com/AramZahedi/dev-web-stack/internal/domain"
 )
 
 type fakeAgent struct {
@@ -18,9 +17,7 @@ type fakeAgent struct {
 	prepareRequest agentproto.SitePrepareRequest
 	prepareResult  agentproto.SitePrepareResponse
 	prepareError   error
-	allocated      []agentproto.PortRequest
-	released       []agentproto.PortRequest
-	portResult     agentproto.PortResponse
+	caInstall      []byte
 	started        []string
 	stopped        []string
 	status         agentproto.SiteStatusResponse
@@ -32,14 +29,6 @@ type fakeAgent struct {
 func (f *fakeAgent) PrepareSite(_ context.Context, req agentproto.SitePrepareRequest) (agentproto.SitePrepareResponse, error) {
 	f.prepareRequest = req
 	return f.prepareResult, f.prepareError
-}
-func (f *fakeAgent) AllocatePorts(_ context.Context, req agentproto.PortRequest) (agentproto.PortResponse, error) {
-	f.allocated = append(f.allocated, req)
-	return f.portResult, nil
-}
-func (f *fakeAgent) ReleasePorts(_ context.Context, req agentproto.PortRequest) error {
-	f.released = append(f.released, req)
-	return nil
 }
 func (f *fakeAgent) StartSite(_ context.Context, id string, _ agentproto.SiteActionRequest) (agentproto.SiteActionResponse, error) {
 	f.started = append(f.started, id)
@@ -59,6 +48,10 @@ func (f *fakeAgent) ExecSite(_ context.Context, _ string, req agentproto.SiteExe
 	f.execRequest = req
 	return f.execResult, nil
 }
+func (f *fakeAgent) InstallCA(_ context.Context, certPEM []byte) error {
+	f.caInstall = append([]byte(nil), certPEM...)
+	return nil
+}
 
 func TestPrepareMapsBackendAndWindowsProxyDocumentRoots(t *testing.T) {
 	agent := &fakeAgent{prepareResult: agentproto.SitePrepareResponse{
@@ -66,7 +59,7 @@ func TestPrepareMapsBackendAndWindowsProxyDocumentRoots(t *testing.T) {
 	}}
 	backendClient := New(agent)
 	prepared, err := backendClient.Prepare(context.Background(), backend.SiteSpec{
-		ID: "site-id", Kind: "php", HostPath: `C:\devstack\projects\shop`,
+		ID: "site-id", Kind: "php", Domain: "shop.test", HostPath: `C:\devstack\projects\shop`,
 		BackendPath: "/mnt/c/devstack/projects/shop", DocumentRoot: "public",
 		HTTPPort: 41812, FastCGIPort: 43101, FrontController: true,
 		PHPVersion: "8.3", PHPBuild: "php-8.3-test", PHPBuildPath: "/data/devstack/runtimes/php/test",
@@ -87,6 +80,20 @@ func TestPrepareMapsBackendAndWindowsProxyDocumentRoots(t *testing.T) {
 	}
 	if site.FastCGIPort != 43101 || site.PHPBuildPath == "" || !site.FrontController {
 		t.Fatalf("agent site spec lost PHP configuration: %+v", site)
+	}
+	if site.Domain != "shop.test" {
+		t.Fatalf("agent site domain = %q, want shop.test", site.Domain)
+	}
+}
+
+func TestInstallCAForwardsDaemonCertificateToAgent(t *testing.T) {
+	pem := []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
+	agent := &fakeAgent{}
+	if err := New(agent).InstallCA(context.Background(), pem); err != nil {
+		t.Fatalf("InstallCA: %v", err)
+	}
+	if string(agent.caInstall) != string(pem) {
+		t.Fatalf("installed CA = %q, want %q", agent.caInstall, pem)
 	}
 }
 
@@ -126,28 +133,5 @@ func TestLifecycleStatusLogsAndExecUseAgent(t *testing.T) {
 	result, err := b.Exec(context.Background(), "site", []string{"php", "-v"}, map[string]string{"A": "B"})
 	if err != nil || result.ExitCode != 3 || result.Stdout != "out" || result.Stderr != "err" || agent.execRequest.Env["A"] != "B" {
 		t.Fatalf("Exec = %+v, %v; request=%+v", result, err, agent.execRequest)
-	}
-}
-
-func TestPortProviderAllocatesAndReleasesThroughAgentAndReusesSitePort(t *testing.T) {
-	agent := &fakeAgent{portResult: agentproto.PortResponse{HTTPPort: 41812, Reused: true}}
-	provider := NewPortProvider(agent)
-	first, err := provider.Allocate(context.Background(), "site", domain.PortHTTP)
-	if err != nil || first != 41812 {
-		t.Fatalf("first Allocate = %d, %v", first, err)
-	}
-	second, err := provider.Allocate(context.Background(), "site", domain.PortHTTP)
-	if err != nil || second != first {
-		t.Fatalf("reused Allocate = %d, %v", second, err)
-	}
-	if len(agent.allocated) != 1 {
-		t.Fatalf("agent allocations = %d, want one cached allocation", len(agent.allocated))
-	}
-	if agent.allocated[0].Kind != "http" || agent.allocated[0].SiteID != "site" {
-		t.Fatalf("allocation request = %+v", agent.allocated[0])
-	}
-	provider.Release(context.Background(), "site", first)
-	if len(agent.released) != 1 || agent.released[0].HTTPPort != first || agent.released[0].RequestedHTTP != 0 {
-		t.Fatalf("agent release requests = %+v, want allocated HTTPPort %d", agent.released, first)
 	}
 }
