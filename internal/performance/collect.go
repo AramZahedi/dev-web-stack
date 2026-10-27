@@ -27,6 +27,9 @@ type CollectOptions struct {
 
 // Collect measures the host resources used by the performance engine.
 func Collect() (Resources, error) {
+	if runtime.GOOS == "windows" {
+		return collectWindows()
+	}
 	return CollectFrom(CollectOptions{})
 }
 

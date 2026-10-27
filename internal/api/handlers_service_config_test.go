@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/serviceconfig"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -288,5 +289,135 @@ func TestServiceConfigErrorMapping(t *testing.T) {
 				t.Fatalf("code = %q, want %q", payload.Code, tc.code)
 			}
 		})
+	}
+}
+
+type fakeAgentForAPITest struct {
+	listing agentproto.ServiceConfigResponse
+	content agentproto.ServiceContentResponse
+	writes  []agentproto.ServiceConfigRequest
+	resets  []agentproto.ServiceConfigRequest
+}
+
+func (f *fakeAgentForAPITest) ServiceConfig(_ context.Context, _ string) (agentproto.ServiceConfigResponse, error) {
+	return f.listing, nil
+}
+
+func (f *fakeAgentForAPITest) ServiceContent(_ context.Context, _ agentproto.ServiceConfigRequest) (agentproto.ServiceContentResponse, error) {
+	return f.content, nil
+}
+
+func (f *fakeAgentForAPITest) ServiceApply(_ context.Context, req agentproto.ServiceConfigRequest) (agentproto.ServiceContentResponse, error) {
+	f.writes = append(f.writes, req)
+	return agentproto.ServiceContentResponse{
+		Path:    req.Rel,
+		Content: req.Content,
+		Hash:    "new-hash",
+	}, nil
+}
+
+func (f *fakeAgentForAPITest) ServiceReset(_ context.Context, req agentproto.ServiceConfigRequest) error {
+	f.resets = append(f.resets, req)
+	return nil
+}
+
+func TestServiceConfigWithAgentBackend(t *testing.T) {
+	root := t.TempDir()
+	agent := &fakeAgentForAPITest{
+		listing: agentproto.ServiceConfigResponse{
+			Files: []agentproto.ServiceConfigFile{
+				{Path: "my.cnf", Class: "custom", Hash: "initial-hash"},
+			},
+		},
+		content: agentproto.ServiceContentResponse{
+			Path:    "my.cnf",
+			Content: "[mysqld]\nmax_connections=100\n",
+			Hash:    "initial-hash",
+		},
+	}
+
+	cfgSvc, err := servicecontrol.NewConfigService(servicecontrol.ConfigDeps{
+		Root:    root,
+		Catalog: services.DefaultCatalog(),
+		Agent:   agent,
+	})
+	if err != nil {
+		t.Fatalf("NewConfigService: %v", err)
+	}
+
+	fx := newFixture(t, Config{ServiceConfig: cfgSvc})
+
+	// 1. GET /api/v1/services/mysql/config
+	rec := fx.request(t, http.MethodGet, "/api/v1/services/mysql/config", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET config list status = %d, want 200", rec.Code)
+	}
+	var listing servicecontrol.ConfigListing
+	if err := json.NewDecoder(rec.Body).Decode(&listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Files) != 1 || listing.Files[0].Path != "my.cnf" {
+		t.Fatalf("unexpected listing: %+v", listing)
+	}
+
+	// 2. GET /api/v1/services/mysql/config/content?path=my.cnf
+	rec = fx.request(t, http.MethodGet, "/api/v1/services/mysql/config/content?path=my.cnf", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET config content status = %d, want 200", rec.Code)
+	}
+	var content servicecontrol.ConfigContent
+	if err := json.NewDecoder(rec.Body).Decode(&content); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content.Content, "max_connections=100") {
+		t.Fatalf("unexpected content: %s", content.Content)
+	}
+
+	// 3. POST /api/v1/services/mysql/config/diff
+	diffBody := `{"path":"my.cnf","content":"[mysqld]\nmax_connections=200\n"}`
+	rec = fx.request(t, http.MethodPost, "/api/v1/services/mysql/config/diff", strings.NewReader(diffBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST diff status = %d, want 200", rec.Code)
+	}
+	var diff servicecontrol.ConfigDiff
+	if err := json.NewDecoder(rec.Body).Decode(&diff); err != nil {
+		t.Fatal(err)
+	}
+	if diff.Path != "my.cnf" || diff.Diff == "" {
+		t.Fatalf("unexpected diff response: %+v", diff)
+	}
+
+	// 4. POST /api/v1/services/mysql/config/apply
+	applyBody := `{"path":"my.cnf","content":"[mysqld]\nmax_connections=200\n"}`
+	rec = fx.request(t, http.MethodPost, "/api/v1/services/mysql/config/apply", strings.NewReader(applyBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST apply status = %d, want 200", rec.Code)
+	}
+	var applyRes servicecontrol.ConfigApplyResult
+	if err := json.NewDecoder(rec.Body).Decode(&applyRes); err != nil {
+		t.Fatal(err)
+	}
+	if applyRes.Path != "my.cnf" || !applyRes.Changed {
+		t.Fatalf("unexpected apply result: %+v", applyRes)
+	}
+	if len(agent.writes) != 1 {
+		t.Fatalf("expected 1 write to agent, got %d", len(agent.writes))
+	}
+
+	// 5. POST /api/v1/services/mysql/config/reset
+	resetBody := `{"path":"my.cnf"}`
+	rec = fx.request(t, http.MethodPost, "/api/v1/services/mysql/config/reset", strings.NewReader(resetBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST reset status = %d, want 200", rec.Code)
+	}
+	var resetRes servicecontrol.ConfigApplyResult
+	if err := json.NewDecoder(rec.Body).Decode(&resetRes); err != nil {
+		t.Fatal(err)
+	}
+	if resetRes.Path != "my.cnf" || !resetRes.Changed {
+		t.Fatalf("unexpected reset result: %+v", resetRes)
+	}
+	if len(agent.resets) != 1 {
+		t.Fatalf("expected 1 reset to agent, got %d", len(agent.resets))
 	}
 }

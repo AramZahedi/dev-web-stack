@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatRelative, checksumPrefix, daysUntil, siteUrl, isAbsolutePath } from './format';
+import { formatBytes, formatRelative, checksumPrefix, daysUntil, siteUrl, isAbsolutePath, sourceModeLabel } from './format';
 
 describe('format helpers', () => {
   it('accepts only Linux, C-drive, and WSL UNC absolute project paths', () => {
@@ -47,5 +47,12 @@ describe('format helpers', () => {
     expect(siteUrl({ domain: 'blog.test', tls: true }, { http: '80', https: '443' })).toBe(
       'https://blog.test',
     );
+  });
+
+  it('formats source mode labels for display', () => {
+    expect(sourceModeLabel('windows')).toBe('Windows drive');
+    expect(sourceModeLabel('wsl')).toBe('WSL distro');
+    expect(sourceModeLabel('local')).toBe('Local');
+    expect(sourceModeLabel(undefined)).toBe('');
   });
 });

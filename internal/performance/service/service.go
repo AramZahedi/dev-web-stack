@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,9 +62,10 @@ type ServiceConfig struct {
 	// HTTPPort and HTTPSPort are the builtin loopback proxy ports. When a
 	// catalog web server is active (or serving_mode names a native nginx/Apache),
 	// benchmarks target its public 80/443.
-	HTTPPort    int
-	HTTPSPort   int
-	ServingMode string
+	HTTPPort           int
+	HTTPSPort          int
+	ServingMode        string
+	DisableHostTuning  bool
 
 	Now       func() time.Time
 	Resources func() (Resources, error)
@@ -124,7 +126,9 @@ func (s *Service) statusLocked(ctx context.Context) (Status, error) {
 	}
 	active, _, warnings := s.activeServerLocked(ctx)
 	host := s.hostStatusLocked(ctx, applied)
-	if host.Error != "" {
+	if s.isHostTuningDisabled() {
+		warnings = append(warnings, host.Error)
+	} else if host.Error != "" {
 		warnings = append(warnings, "host tuning status is unavailable: "+host.Error)
 	}
 	return Status{
@@ -290,7 +294,12 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 		warnings = append(warnings, "no active nginx/Apache catalog service; web-server includes are skipped (database-only or native serving)")
 	}
 	hostRequested := req.HostTuning && active != ""
-	if req.HostTuning && active == "" {
+	if s.isHostTuningDisabled() {
+		if req.HostTuning {
+			warnings = append(warnings, "host tuning skipped: host sysctl and limits tuning are disabled on Windows")
+		}
+		hostRequested = false
+	} else if req.HostTuning && active == "" {
 		warnings = append(warnings, "host tuning skipped: no active nginx/Apache web server")
 	}
 	if warning := s.baseIncludeWarningLocked(active); warning != "" {
@@ -416,6 +425,8 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 			step("host:"+helperStep.Name, helperStep.Status, helperStep.Detail)
 		}
 		step("host-tuning", "ok", "fixed sysctl/limits paths verified by helper")
+	} else if s.isHostTuningDisabled() {
+		step("host-tuning", "skipped", "host sysctl and limits tuning are disabled on Windows")
 	} else if !req.HostTuning {
 		step("host-tuning", "skipped", "host tuning is opt-in (host_tuning:true)")
 	}
@@ -968,7 +979,34 @@ func (s *Service) loadAppliedLocked(ctx context.Context) (*AppliedState, error) 
 	return &applied, nil
 }
 
+func (s *Service) isHostTuningDisabled() bool {
+	if s.cfg.DisableHostTuning {
+		return true
+	}
+	if runtime.GOOS == "windows" && s.cfg.Helper == nil {
+		return true
+	}
+	return false
+}
+
 func (s *Service) hostStatusLocked(ctx context.Context, applied *AppliedState) HostTuningStatus {
+	if s.isHostTuningDisabled() {
+		status := HostTuningStatus{
+			Available:  false,
+			Managed:    false,
+			Applied:    false,
+			SysctlPath: "",
+			LimitsPath: "",
+			Error:      "Host sysctl and limits tuning are disabled on Windows.",
+		}
+		if applied != nil {
+			status.Applied = applied.HostTuning
+			status.BackupDir = applied.BackupDir
+			status.AppliedAt = &applied.AppliedAt
+			status.Profile = applied.Profile
+		}
+		return status
+	}
 	status := HostTuningStatus{
 		SysctlPath: SysctlTarget,
 		LimitsPath: LimitsTarget,
@@ -1010,6 +1048,13 @@ func (s *Service) hostStatusLocked(ctx context.Context, applied *AppliedState) H
 }
 
 func (s *Service) hostPreviewLocked(ctx context.Context, values Values) (HostPreview, []string) {
+	if s.isHostTuningDisabled() {
+		msg := "Host sysctl and limits tuning are disabled on Windows."
+		return HostPreview{
+			OptIn:    false,
+			Warnings: []string{msg},
+		}, []string{msg}
+	}
 	preview := HostPreview{
 		OptIn:    true,
 		Warnings: []string{"Host tuning is applied only when apply includes host_tuning:true."},
@@ -1295,6 +1340,10 @@ func includeWarning(base string, wants []string) string {
 func (s *Service) benchmarkTargetLocked(ctx context.Context, site model.Site) (string, bool, error) {
 	if strings.TrimSpace(site.Domain) == "" {
 		return "", false, fmt.Errorf("%w: site %q has no domain", ErrInvalid, site.Name)
+	}
+	if runtime.GOOS == "windows" {
+		target := PublicRouteURL(site.Domain)
+		return target, true, nil
 	}
 	active, _, _ := s.activeServerLocked(ctx)
 	httpsPort := s.cfg.HTTPSPort

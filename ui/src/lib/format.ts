@@ -151,3 +151,16 @@ export function isAbsolutePath(value: string): boolean {
       !wslPath[2].split('\\').some((part) => part === '.' || part === '..' || part.includes(':')),
   );
 }
+
+export function sourceModeLabel(mode?: string): string {
+  switch (mode) {
+    case 'windows':
+      return 'Windows drive';
+    case 'wsl':
+      return 'WSL distro';
+    case 'local':
+      return 'Local';
+    default:
+      return '';
+  }
+}

@@ -18,7 +18,7 @@
   } from 'lucide-svelte';
   import * as api from '../lib/api';
   import { describeError } from '../lib/errors';
-  import { runtimeLabel, siteUrl } from '../lib/format';
+  import { runtimeLabel, siteUrl, sourceModeLabel } from '../lib/format';
   import { addToast, toastError } from '../lib/stores';
   import type { RuntimeBuild, Site, SiteKind } from '../lib/types';
   import Badge from '../lib/components/Badge.svelte';
@@ -370,6 +370,9 @@
               </td>
               <td class="col-kind">
                 <Badge icon={KindIcon}>{site.kind}</Badge>
+                {#if site.source_mode}
+                  <Badge variant="neutral">{sourceModeLabel(site.source_mode)}</Badge>
+                {/if}
               </td>
               <td class="col-runtime mono runtime">{runtimeLabel(site)}</td>
               <td class="col-url">
@@ -447,6 +450,9 @@
           </div>
           <div class="card-meta">
             <Badge icon={KindIcon}>{site.kind}</Badge>
+            {#if site.source_mode}
+              <Badge variant="neutral">{sourceModeLabel(site.source_mode)}</Badge>
+            {/if}
             <span class="mono runtime">{runtimeLabel(site)}</span>
           </div>
           <a

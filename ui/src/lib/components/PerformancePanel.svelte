@@ -412,11 +412,23 @@
           <ShieldAlert size={14} strokeWidth={1.9} aria-hidden="true" />
           <div>
             <span>Host tuning</span>
-            <strong>{hostTuningState.applied ? 'Applied' : 'Not applied'}</strong>
-            <small>{appliedAt ? `Last apply ${timestamp(appliedAt)}` : 'Explicit opt-in'}</small>
+            {#if !hostTuningAvailable}
+              <strong>Disabled</strong>
+              <small>{performance?.host_tuning?.error || 'Unavailable on Windows'}</small>
+            {:else}
+              <strong>{hostTuningState.applied ? 'Applied' : 'Not applied'}</strong>
+              <small>{appliedAt ? `Last apply ${timestamp(appliedAt)}` : 'Explicit opt-in'}</small>
+            {/if}
           </div>
         </div>
       </div>
+
+      {#if !hostTuningAvailable}
+        <div class="host-tuning-banner" role="status">
+          <TriangleAlert size={14} strokeWidth={2} aria-hidden="true" />
+          <span>{performance?.host_tuning?.error || 'Host sysctl and limits tuning are disabled on Windows.'}</span>
+        </div>
+      {/if}
 
       <div class="profile-row" role="group" aria-label="Performance profile">
         {#each profiles as profile (profile.value)}
@@ -777,7 +789,7 @@
         <span>
           {hostTuningAvailable
             ? 'Also apply host-wide sysctl and limits tuning through the privileged helper.'
-            : 'Host tuning is unavailable because the privileged helper is not available.'}
+            : (performance?.host_tuning?.error || 'Host tuning is unavailable on Windows or because the privileged helper is not available.')}
           <small>
             {hostTuningAvailable
               ? 'This affects the whole machine and can be reset later.'
@@ -904,6 +916,24 @@
     color: var(--muted);
     font-size: 9.5px;
     line-height: 1.35;
+  }
+
+  .host-tuning-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    background: var(--warning-bg, rgba(234, 179, 8, 0.08));
+    border: 1px solid var(--warning-border, rgba(234, 179, 8, 0.25));
+    color: var(--warning-fg, #b45309);
+    font-size: 11.5px;
+    line-height: 1.4;
+    margin-top: 10px;
+  }
+
+  .host-tuning-banner :global(svg) {
+    flex-shrink: 0;
   }
 
   .profile-row {
