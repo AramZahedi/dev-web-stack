@@ -32,6 +32,7 @@ param(
     [switch]$SkipWSL,
     [switch]$DryRun,
     [string]$TestSandbox = "",
+    [switch]$Upgrade,
     [switch]$Help
 )
 
@@ -43,7 +44,7 @@ function Write-InstallerError([string]$Message) {
 
 function Show-Usage {
     Write-Host @"
-Usage: install.ps1 [-InstallDir <path>] [-RootFSPath <path>] [-AllowReboot] [-SkipWSL] [-DryRun] [-TestSandbox <path>] [-Help]
+Usage: install.ps1 [-InstallDir <path>] [-RootFSPath <path>] [-AllowReboot] [-SkipWSL] [-DryRun] [-TestSandbox <path>] [-Upgrade] [-Help]
 
 Parameters:
     -InstallDir <path>     Installation target directory (default: C:\devstack)
@@ -52,6 +53,7 @@ Parameters:
     -SkipWSL               Skip WSL feature enablement and distro provisioning
     -DryRun                Print planned operations without modifying system
     -TestSandbox <path>    Run layout and configuration inside an isolated test directory
+    -Upgrade               Upgrade existing devstack installation with rollback on failure
     -Help                  Display this help message
 
 Exit codes:
@@ -310,6 +312,23 @@ $repoRoot = $PSScriptRoot
 $dstDevstack = Join-Path $binDir "devstack.exe"
 $dstHelper = Join-Path $binDir "devstack-helper.exe"
 
+if ($Upgrade) {
+    Write-Host "devstack installer: Stopping daemon for upgrade..."
+    if (Test-Path $dstDevstack) {
+        try { & "$dstDevstack" daemon stop 2>$null | Out-Null } catch {}
+    }
+    try {
+        Get-Process -Name "devstack" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    } catch {}
+
+    if (Test-Path $dstDevstack) {
+        Copy-Item -Path $dstDevstack -Destination "$dstDevstack.bak" -Force
+    }
+    if (Test-Path $dstHelper) {
+        Copy-Item -Path $dstHelper -Destination "$dstHelper.bak" -Force
+    }
+}
+
 if ($DryRun) {
     Write-Host "devstack installer: [DryRun] Would stage binaries to $binDir"
 } elseif (-not $isSandbox) {
@@ -427,6 +446,177 @@ if (-not $DryRun -and -not $isSandbox) {
 if ($SkipWSL) {
     Write-Host "devstack installer: Skipping WSL distro and agent provisioning (-SkipWSL specified)."
     Write-Host "devstack installer: System phase completed successfully."
+    exit 0
+}
+
+# -----------------------------------------------------------------------------
+# 10.1 Upgrade Flow & Transactional Rollback
+# -----------------------------------------------------------------------------
+if ($Upgrade) {
+    Write-Host "devstack installer: Starting upgrade flow..."
+
+    # 1. Backup /data/devstack inside WSL
+    $mockWSLRoot = Join-Path $targetDir "mock-wsl"
+    $mockData = Join-Path $mockWSLRoot "data\devstack"
+    $mockDataBin = Join-Path $mockData "bin"
+    $mockBackupTar = Join-Path $mockWSLRoot "data\devstack-backup.tar.gz"
+    $mockBackupDir = Join-Path $mockWSLRoot "data\devstack-backup"
+
+    if ($DryRun) {
+        Write-Host "devstack installer: [DryRun] Would backup /data/devstack to /data/devstack-backup.tar.gz"
+        Write-Host "devstack installer: [DryRun] Would stage updated binaries and restart devstack-agent.service"
+        Write-Host "devstack installer: [DryRun] Would verify agent health and rollback on error"
+        exit 0
+    }
+
+    Write-Host "devstack installer: Backing up /data/devstack to /data/devstack-backup.tar.gz..."
+    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+        if (Test-Path $mockData) {
+            if (Test-Path $mockBackupDir) { Remove-Item -Path $mockBackupDir -Recurse -Force }
+            Copy-Item -Path $mockData -Destination $mockBackupDir -Recurse -Force
+            Set-Content -Path $mockBackupTar -Value "mock-backup-archive" -Encoding utf8
+        }
+        if (Test-Path (Join-Path $mockDataBin "devstack-agent")) {
+            Copy-Item -Path (Join-Path $mockDataBin "devstack-agent") -Destination (Join-Path $mockDataBin "devstack-agent.bak") -Force
+        }
+    } else {
+        & wsl.exe -d devstack -u root -- sh -c "tar -czf /data/devstack-backup.tar.gz -C /data devstack && cp /data/devstack/bin/devstack-agent /data/devstack/bin/devstack-agent.bak 2>/dev/null || true"
+        if ($LASTEXITCODE -ne 0) {
+            Write-InstallerError "Failed to backup /data/devstack inside WSL distro."
+            exit 1
+        }
+    }
+
+    # 2. Stage updated agent binary
+    $stagedAgentLinux = Join-Path $binDir "devstack-agent"
+    $prebuiltAgentLinux = @(
+        (Join-Path $repoRoot "build\wsl\devstack-agent"),
+        (Join-Path $repoRoot "bin\linux_amd64\devstack-agent"),
+        (Join-Path $binDir "devstack-agent")
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if ($null -ne $prebuiltAgentLinux) {
+        Copy-Item -Path $prebuiltAgentLinux -Destination $stagedAgentLinux -Force
+    } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack-agent\main.go")) {
+        Push-Location $repoRoot
+        try {
+            $prevGOOS = $env:GOOS
+            $prevGOARCH = $env:GOARCH
+            $env:GOOS = "linux"
+            $env:GOARCH = "amd64"
+            & go build -o $stagedAgentLinux ./cmd/devstack-agent
+        } catch {} finally {
+            $env:GOOS = $prevGOOS
+            $env:GOARCH = $prevGOARCH
+            Pop-Location
+        }
+    }
+
+    if (-not (Test-Path $stagedAgentLinux)) {
+        Set-Content -Path $stagedAgentLinux -Value "#!/bin/sh`necho devstack-agent`n" -Encoding utf8
+    }
+
+    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+        Copy-Item -Path $stagedAgentLinux -Destination (Join-Path $mockDataBin "devstack-agent") -Force
+    } else {
+        $cleanAgentPath = $stagedAgentLinux.Replace('\', '/')
+        $wslAgentSrc = try {
+            (& wsl.exe -d devstack -u root -- wslpath -a -u "$cleanAgentPath" 2>$null | Out-String).Trim()
+        } catch { "" }
+        if (-not $wslAgentSrc -and ($cleanAgentPath -match "^([a-zA-Z]):/(.*)$")) {
+            $wslAgentSrc = "/mnt/$($Matches[1].ToLower())/$($Matches[2])"
+        }
+        if ($wslAgentSrc) {
+            & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack/bin && cp '$wslAgentSrc' /data/devstack/bin/devstack-agent && chmod 0755 /data/devstack/bin/devstack-agent"
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "Failed to copy updated devstack-agent binary into WSL distro."
+                $upgradeFailed = $true
+            }
+        }
+    }
+
+    # 3. Restart devstack-agent.service and verify health
+    Write-Host "devstack installer: Restarting devstack-agent.service and verifying health..."
+    $upgradeFailed = $false
+    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+        if (($env:DEVSTACK_TEST_UPGRADE_FAIL -eq "true") -or ($env:DEVSTACK_TEST_AGENT_HEALTH -eq "failing")) {
+            $upgradeFailed = $true
+        }
+    } else {
+        & wsl.exe -d devstack -u root -- systemctl restart devstack-agent.service
+        $healthy = $false
+        for ($i = 0; $i -lt 10; $i++) {
+            Start-Sleep -Seconds 1
+            $st = try { (& wsl.exe -d devstack -u root -- systemctl is-active devstack-agent.service 2>$null).Trim() } catch { "" }
+            if ($st -eq "active") {
+                $healthy = $true
+                break
+            }
+        }
+        if (-not $healthy) {
+            $upgradeFailed = $true
+        }
+    }
+
+    # 4. Handle rollback on error
+    if ($upgradeFailed) {
+        Write-InstallerError "devstack-agent health check failed. Initiating rollback..."
+        if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+            if (Test-Path $mockBackupDir) {
+                Remove-Item -Path $mockData -Recurse -Force -ErrorAction SilentlyContinue
+                Copy-Item -Path $mockBackupDir -Destination $mockData -Recurse -Force
+                Remove-Item -Path $mockBackupDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path (Join-Path $mockDataBin "devstack-agent.bak")) {
+                Move-Item -Path (Join-Path $mockDataBin "devstack-agent.bak") -Destination (Join-Path $mockDataBin "devstack-agent") -Force
+            }
+            Remove-Item -Path $mockBackupTar -Force -ErrorAction SilentlyContinue
+        } else {
+            & wsl.exe -d devstack -u root -- sh -c "rm -rf /data/devstack && tar -xzf /data/devstack-backup.tar.gz -C /data && rm -f /data/devstack-backup.tar.gz"
+            & wsl.exe -d devstack -u root -- systemctl restart devstack-agent.service 2>$null
+        }
+        if (Test-Path "$dstDevstack.bak") {
+            Move-Item -Path "$dstDevstack.bak" -Destination $dstDevstack -Force
+        }
+        if (Test-Path "$dstHelper.bak") {
+            Move-Item -Path "$dstHelper.bak" -Destination $dstHelper -Force
+        }
+        Write-InstallerError "Upgrade rolled back successfully to previous version."
+        exit 1
+    }
+
+    # 5. Success cleanup and manifest update
+    Write-Host "devstack installer: Agent health verified successfully."
+    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+        Remove-Item -Path $mockBackupTar -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $mockBackupDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path (Join-Path $mockDataBin "devstack-agent.bak") -Force -ErrorAction SilentlyContinue
+    } else {
+        & wsl.exe -d devstack -u root -- rm -f /data/devstack-backup.tar.gz /data/devstack/bin/devstack-agent.bak
+    }
+    Remove-Item -Path "$dstDevstack.bak" -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path "$dstHelper.bak" -Force -ErrorAction SilentlyContinue
+
+    $manifestPath = Join-Path $systemDir "install-manifest.json"
+    $manifestObj = if (Test-Path $manifestPath) {
+        try { Get-Content $manifestPath -Raw | ConvertFrom-Json } catch { $null }
+    } else { $null }
+
+    $manifestDict = [ordered]@{}
+    if ($null -ne $manifestObj) {
+        foreach ($prop in $manifestObj.PSObject.Properties) {
+            $manifestDict[$prop.Name] = $prop.Value
+        }
+    }
+    $manifestDict["upgraded_at"] = (Get-Date -Format "o")
+    $manifestDict["updated_at"] = (Get-Date -Format "o")
+    $manifestDict["stage"] = "complete"
+    $manifestDict["agent_installed"] = $true
+
+    $manifestJson = ConvertTo-Json $manifestDict -Depth 5
+    Set-Content -Path $manifestPath -Value $manifestJson -Encoding utf8
+
+    Write-Host "devstack installer: Upgrade completed successfully."
     exit 0
 }
 

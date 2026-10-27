@@ -132,10 +132,10 @@
 - `uninstall.ps1 [-PurgeDistro] [-PurgeData] [-Force]`
 - `devstack uninstall` on Windows.
 
-- [ ] **Step 1:** Write failing tests in `test/windows/lifecycle_test.ps1` testing upgrade transactional rollback (simulating agent failure), clean uninstall, and distro retention.
-- [ ] **Step 2:** Run `pwsh test/windows/lifecycle_test.ps1` and verify RED.
-- [ ] **Step 3:** Implement upgrade flow in `install.ps1 -Upgrade`: backup `/data/devstack`, stage new binaries, replace agent/distro, verify health, and rollback on error.
-- [ ] **Step 4:** Implement `uninstall.ps1`:
+- [x] **Step 1:** Write failing tests in `test/windows/lifecycle_test.ps1` testing upgrade transactional rollback (simulating agent failure), clean uninstall, and distro retention.
+- [x] **Step 2:** Run `pwsh test/windows/lifecycle_test.ps1` and verify RED.
+- [x] **Step 3:** Implement upgrade flow in `install.ps1 -Upgrade`: backup `/data/devstack`, stage new binaries, replace agent/distro, verify health, and rollback on error.
+- [x] **Step 4:** Implement `uninstall.ps1`:
   - Remove trust from Windows root store via `devstack-helper`.
   - Remove hosts entries.
   - Remove Windows Firewall rules (`devstack-daemon-proxy`).
@@ -143,9 +143,9 @@
   - Remove scheduled task `devstack-daemon`.
   - Distro cleanup: keep WSL distro and user data by default; remove only if `-PurgeDistro` is specified.
   - Remove `C:\devstack\bin` from System PATH.
-- [ ] **Step 5:** Wire `devstack uninstall` CLI command on Windows to execute equivalent cleanup.
-- [ ] **Step 6:** Run `pwsh test/windows/lifecycle_test.ps1` and verify GREEN.
-- [ ] **Step 7:** Commit `feat(installer): add upgrade, rollback, and uninstall lifecycle`.
+- [x] **Step 5:** Wire `devstack uninstall` CLI command on Windows to execute equivalent cleanup.
+- [x] **Step 6:** Run `pwsh test/windows/lifecycle_test.ps1` and verify GREEN.
+- [x] **Step 7:** Commit `feat(installer): add upgrade, rollback, and uninstall lifecycle`.
 
 ---
 
