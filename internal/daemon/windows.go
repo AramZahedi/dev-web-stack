@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,14 +15,26 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/agentclient"
+	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/api"
+	wslbackend "github.com/AramZahedi/dev-web-stack/internal/backend/wsl"
+	"github.com/AramZahedi/dev-web-stack/internal/catalog"
+	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
+	"github.com/AramZahedi/dev-web-stack/internal/ports"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
+	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
+	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -31,8 +44,8 @@ const (
 )
 
 // Run owns the Windows daemon's per-user SQLite state and local control
-// endpoints. WSL agent/bootstrap and public listeners are added by the
-// platform wiring that composes on top of this lifecycle.
+// endpoints. WSL agent/bootstrap and public listeners are composed through
+// bootstrapWindows.
 func Run(ctx context.Context, opts Options) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -59,6 +72,10 @@ func Run(ctx context.Context, opts Options) error {
 	if err := prepareWindowsLayout(cfg.Home); err != nil {
 		return err
 	}
+	if os.Getenv("DEVSTACK_HOME") == "" {
+		_ = os.Setenv("DEVSTACK_HOME", cfg.Home)
+	}
+
 	lock, err := acquireLifetimeLock(cfg.Home)
 	if err != nil {
 		if errors.Is(err, ErrAlreadyRunning) {
@@ -96,62 +113,230 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
-	apiServer := api.NewServer(st, nil, nil, nil, nil, nil, api.Config{
+	logStore, err := logs.New(paths.Logs, cfg.LogMaxMB, cfg.LogKeep)
+	if err != nil {
+		return fmt.Errorf("daemon: open logs: %w", err)
+	}
+
+	phpManifest, err := catalog.LoadPHP()
+	if err != nil {
+		return fmt.Errorf("daemon: load PHP catalog: %w", err)
+	}
+
+	var helper *helperclient.Client
+	var agentClient *agentclient.Client
+	var rootPEM []byte
+	defer func() {
+		if helper != nil {
+			_ = helper.Close()
+		}
+		if agentClient != nil {
+			_ = agentClient.Close()
+		}
+	}()
+
+	adapter := &helperAdapter{}
+	wslBackend := wslbackend.New(nil)
+	agentPorts := ports.NewAgentProvider(nil)
+
+	router, publicProxy, err := newWindowsProxy(cfg, logger)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = publicProxy.Stop(context.Background()) }()
+
+	certManager := certs.NewManager(st, adapter, paths.PKI, nil)
+
+	siteService := sites.NewService(sites.Deps{
+		Store:        st,
+		Backend:      wslBackend,
+		Helper:       adapter,
+		Certs:        certManager,
+		Vhosts:       adapter,
+		Proxy:        publicProxy,
+		Forwarders:   adapter,
+		Router:       router,
+		Ports:        domain.NewPortAllocator(),
+		PortProvider: agentPorts,
+		Config:       cfg,
+		Logs:         logStore,
+		PHP:          sites.NewPHPCommands(),
+		PHPBackend:   wslBackend,
+		PHPManifest:  &phpManifest,
+	})
+
+	apiServer := api.NewServer(st, siteService, nil, nil, logStore, adapter, api.Config{
 		UserHome:     cfg.Home,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
 		Listeners:    api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},
+		Vhosts:       siteService,
 		Logger:       logger,
 	})
+
 	tcpLn, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(cfg.UIPort)))
 	if err != nil {
 		return fmt.Errorf("daemon: listen on dashboard port %d: %w", cfg.UIPort, err)
 	}
+
 	pipeLn, err := listenControlPipe(cfg.Home)
 	if err != nil {
 		_ = tcpLn.Close()
 		return err
 	}
+
+	stopChan := make(chan struct{}, 1)
+	controlHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && (r.URL.Path == "/control/stop" || r.URL.Path == "/api/v1/daemon/stop") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"stopped":true}` + "\n"))
+			go func() {
+				time.Sleep(25 * time.Millisecond)
+				select {
+				case stopChan <- struct{}{}:
+				default:
+				}
+			}()
+			return
+		}
+		if r.Method == http.MethodGet && (r.URL.Path == "/control/status" || r.URL.Path == "/api/v1/daemon/status") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"running":true,"pid":%d}`+"\n", os.Getpid())))
+			return
+		}
+		api.WithSocketAuth(apiServer.Handler()).ServeHTTP(w, r)
+	})
+
 	servers := []*http.Server{
 		{Handler: apiServer.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute},
-		{Handler: api.WithSocketAuth(apiServer.Handler()), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute},
+		{Handler: controlHandler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute},
 	}
 	serveErr := make(chan error, len(servers))
 	go serveWindows(servers[0], tcpLn, "dashboard", serveErr)
 	go serveWindows(servers[1], pipeLn, "control pipe", serveErr)
-	router, publicProxy, err := newWindowsProxy(cfg, logger)
-	if err != nil {
-		shutdownWindowsServers(servers)
-		return err
-	}
-	_ = router
-	if err := startWindowsPublicEntry(ctx,
-		func() error { return publicProxy.Start(ctx) },
-		func(ctx context.Context) error {
-			return updateWindowsProxyTargets(ctx, opts.HelperSocket, cfg.HTTPPort, cfg.HTTPSPort)
+
+	steps := windowsBootstrapSteps{
+		Helper: func(ctx context.Context) error {
+			helperSocket := opts.HelperSocket
+			if strings.TrimSpace(helperSocket) == "" {
+				helperSocket = DefaultHelperSocket
+			}
+			client, err := helperclient.Dial(helperSocket)
+			if err != nil {
+				logger.Warn("daemon: helper service not available or not yet started; continuing without privileged helper", "error", err)
+				return nil
+			}
+			statusCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			_, err = client.Status(statusCtx)
+			cancel()
+			if err != nil {
+				_ = client.Close()
+				logger.Warn("daemon: helper service ping failed; continuing without privileged helper", "error", err)
+				return nil
+			}
+			adapter.set(client)
+			helper = client
+
+			if err := updateWindowsProxyTargets(ctx, helperSocket, cfg.HTTPPort, cfg.HTTPSPort); err != nil {
+				logger.Warn("daemon: update helper proxy targets", "error", err)
+			}
+
+			ca, err := client.EnsureCA(ctx)
+			if err != nil {
+				logger.Warn("daemon: ensure helper CA", "error", err)
+			} else {
+				rootPEM = ca.RootPEM
+				if len(rootPEM) == 0 {
+					rootPEM = client.RootPEM()
+				}
+				if len(rootPEM) > 0 && wslBackend.Client != nil {
+					if err := wslBackend.InstallCA(ctx, rootPEM); err != nil {
+						logger.Warn("daemon: install CA bundle into WSL agent", "error", err)
+					}
+				}
+			}
+			return nil
 		},
-		func(context.Context) error { return nil },
-	); err != nil {
-		_ = publicProxy.Stop(context.Background())
+		Agent: func(ctx context.Context) error {
+			baseURL := fmt.Sprintf("https://127.0.0.1:%d", cfg.AgentPort)
+			client, err := loadWindowsAgentClient(cfg.Home, baseURL)
+			if err != nil {
+				logger.Debug("daemon: WSL agent client credentials not loaded", "error", err)
+				return nil
+			}
+			agentClient = client
+			wslBackend.Client = client
+			agentPorts.Client = client
+
+			healthCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			health, err := client.Health(healthCtx)
+			cancel()
+			if err != nil {
+				logger.Warn("daemon: WSL agent health check failed", "error", err)
+				if errors.Is(err, agentproto.ErrUnauthenticated) || errors.Is(err, agentproto.ErrCertPinMismatch) {
+					return err
+				}
+			} else {
+				logger.Info("daemon: WSL agent connected", "version", health.Version, "distro", health.Distro)
+				if len(rootPEM) > 0 {
+					if err := wslBackend.InstallCA(ctx, rootPEM); err != nil {
+						logger.Warn("daemon: install CA bundle into WSL agent", "error", err)
+					}
+				}
+			}
+			return nil
+		},
+		Proxy: func(ctx context.Context) error {
+			_ = wireDashboardTLS(ctx, router, certManager, cfg, logger)
+			if err := publicProxy.Start(ctx); err != nil {
+				return fmt.Errorf("daemon: start Windows public proxy: %w", err)
+			}
+			return nil
+		},
+		Reconcile: func(ctx context.Context) error {
+			if err := siteService.ReconcileServingMode(ctx); err != nil {
+				logger.Warn("daemon: reconcile Windows serving mode", "error", err)
+			}
+			if err := siteService.RebuildRoutes(ctx); err != nil {
+				logger.Warn("daemon: rebuild routes", "error", err)
+			}
+			return nil
+		},
+	}
+
+	if err := bootstrapWindows(ctx, steps); err != nil {
 		shutdownWindowsServers(servers)
 		return err
 	}
-	defer func() { _ = publicProxy.Stop(context.Background()) }()
+
+	pidPath := PidPath(cfg.Home)
+	if err := writePID(cfg.Home, os.Getpid()); err != nil {
+		logger.Warn("daemon: write pid file", "error", err)
+	}
+	defer func() { _ = os.Remove(pidPath) }()
+
 	if err := writeWindowsReady(readyPath, os.Getpid()); err != nil {
 		shutdownWindowsServers(servers)
 		return err
 	}
+	defer func() {
+		if err := os.Remove(readyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("daemon: remove readiness marker", "error", err)
+		}
+	}()
+
 	logger.Info("Windows daemon ready", "home", cfg.Home, "dashboard_port", cfg.UIPort, "pipe", SocketPath(cfg.Home))
 
 	select {
 	case <-ctx.Done():
+	case <-stopChan:
+		logger.Info("Windows daemon stopping on control pipe request")
 	case err := <-serveErr:
 		if err != nil {
 			shutdownWindowsServers(servers)
 			return err
 		}
-	}
-	if err := os.Remove(readyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		logger.Warn("daemon: remove readiness marker", "error", err)
 	}
 	shutdownWindowsServers(servers)
 	return nil
@@ -380,13 +565,200 @@ func updateWindowsProxyTargets(ctx context.Context, socket string, httpPort, htt
 	if strings.TrimSpace(socket) == "" {
 		socket = DefaultHelperSocket
 	}
-	helper, err := helperclient.Dial(socket)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		helper, err := helperclient.Dial(socket)
+		if err == nil {
+			defer helper.Close()
+			_, err = helper.UpdateProxyTargets(ctx, httpPort, httpsPort)
+			return err
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return lastErr
+}
+
+type helperAdapter struct {
+	mu     sync.RWMutex
+	client *helperclient.Client
+}
+
+func (h *helperAdapter) set(c *helperclient.Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.client = c
+}
+
+func (h *helperAdapter) get() *helperclient.Client {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.client
+}
+
+func (h *helperAdapter) SignCertificate(ctx context.Context, csrPEM []byte, domains []string) (helperproto.SignResponse, error) {
+	c := h.get()
+	if c == nil {
+		return helperproto.SignResponse{}, errors.New("helper not connected")
+	}
+	return c.SignCertificate(ctx, csrPEM, domains)
+}
+
+func (h *helperAdapter) RootPEM() []byte {
+	c := h.get()
+	if c == nil {
+		return nil
+	}
+	return c.RootPEM()
+}
+
+func (h *helperAdapter) SyncHosts(ctx context.Context, domains []string) error {
+	c := h.get()
+	if c == nil {
+		return nil
+	}
+	return c.SyncHosts(ctx, domains)
+}
+
+func (h *helperAdapter) InstallTrust(ctx context.Context, userHome string) ([]trust.Target, error) {
+	c := h.get()
+	if c == nil {
+		return nil, errors.New("helper not connected")
+	}
+	return c.InstallTrust(ctx, userHome)
+}
+
+func (h *helperAdapter) RemoveTrust(ctx context.Context, userHome string) ([]trust.Target, error) {
+	c := h.get()
+	if c == nil {
+		return nil, errors.New("helper not connected")
+	}
+	return c.RemoveTrust(ctx, userHome)
+}
+
+func (h *helperAdapter) TrustStatus(ctx context.Context, userHome string) ([]trust.Target, error) {
+	c := h.get()
+	if c == nil {
+		return nil, errors.New("helper not connected")
+	}
+	return c.TrustStatus(ctx, userHome)
+}
+
+func (h *helperAdapter) Status(ctx context.Context) (helperproto.StatusResponse, error) {
+	c := h.get()
+	if c == nil {
+		return helperproto.StatusResponse{}, errors.New("helper not connected")
+	}
+	return c.Status(ctx)
+}
+
+func (h *helperAdapter) VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error) {
+	c := h.get()
+	if c == nil {
+		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin}, nil
+	}
+	return c.VhostStatus(ctx)
+}
+
+func (h *helperAdapter) SyncVhosts(ctx context.Context, req helperproto.VHostSyncRequest) error {
+	c := h.get()
+	if c == nil {
+		return nil
+	}
+	return c.SyncVhosts(ctx, req)
+}
+
+func (h *helperAdapter) SetServingMode(ctx context.Context, mode string, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error) {
+	c := h.get()
+	if c == nil {
+		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin}, nil
+	}
+	return c.SetServingMode(ctx, mode, req)
+}
+
+func (h *helperAdapter) RemoveVhosts(ctx context.Context) error {
+	c := h.get()
+	if c == nil {
+		return nil
+	}
+	return c.RemoveVhosts(ctx)
+}
+
+func (h *helperAdapter) SetForwarders(ctx context.Context, httpPort, httpsPort int, enable bool) error {
+	c := h.get()
+	if c == nil {
+		return nil
+	}
+	return c.SetForwarders(ctx, httpPort, httpsPort, enable)
+}
+
+func (h *helperAdapter) UpdateProxyTargets(ctx context.Context, httpPort, httpsPort int) (helperproto.ProxyTargetsResponse, error) {
+	c := h.get()
+	if c == nil {
+		return helperproto.ProxyTargetsResponse{}, errors.New("helper not connected")
+	}
+	return c.UpdateProxyTargets(ctx, httpPort, httpsPort)
+}
+
+func (h *helperAdapter) EnsureCA(ctx context.Context) (helperproto.EnsureCAResponse, error) {
+	c := h.get()
+	if c == nil {
+		return helperproto.EnsureCAResponse{}, errors.New("helper not connected")
+	}
+	return c.EnsureCA(ctx)
+}
+
+func writePID(home string, pid int) error {
+	path := PidPath(home)
+	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("daemon: write pid file %s: %w", path, err)
+	}
+	return nil
+}
+
+func wireDashboardTLS(ctx context.Context, router *proxy.Router, certManager *certs.Manager, cfg config.Config, logger *slog.Logger) error {
+	if router == nil || certManager == nil {
+		return nil
+	}
+	dashboardRecord, err := certManager.Ensure(ctx, certs.DashboardOwner, []string{"devstack.test"})
 	if err != nil {
+		if logger != nil {
+			logger.Warn("daemon: ensure dashboard certificate", "error", err)
+		}
 		return err
 	}
-	defer helper.Close()
-	_, err = helper.UpdateProxyTargets(ctx, httpPort, httpsPort)
-	return err
+	dashboardCert, err := certManager.Load(dashboardRecord)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("daemon: load dashboard certificate", "error", err)
+		}
+		return err
+	}
+	upstreamPort := cfg.UIPort
+	if upstreamPort == 0 {
+		upstreamPort = 7070
+	}
+	router.Replace(proxy.Snapshot{
+		Routes: map[string]proxy.Route{
+			"devstack.test": {
+				SiteID:   certs.DashboardOwner,
+				Host:     "devstack.test",
+				Kind:     proxy.KindStatic,
+				Upstream: net.JoinHostPort("127.0.0.1", strconv.Itoa(upstreamPort)),
+				TLS:      true,
+			},
+		},
+		Certs:       map[string]*tls.Certificate{"devstack.test": dashboardCert},
+		DefaultCert: dashboardCert,
+	})
+	return nil
 }
 
 func waitWindowsReady(ctx context.Context, home string, timeout time.Duration) error {
