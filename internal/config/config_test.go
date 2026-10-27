@@ -32,7 +32,7 @@ func TestValidateRejectsDuplicatePorts(t *testing.T) {
 
 func TestDefaultValues(t *testing.T) {
 	cfg := Default()
-	if cfg.HTTPPort != 8080 || cfg.HTTPSPort != 8443 || cfg.UIPort != 7070 {
+	if cfg.HTTPPort != 8080 || cfg.HTTPSPort != 8443 || cfg.UIPort != 7070 || cfg.AgentPort != 7443 {
 		t.Fatalf("ports = %+v", cfg)
 	}
 	if cfg.ServingMode != ServingModeBuiltin {

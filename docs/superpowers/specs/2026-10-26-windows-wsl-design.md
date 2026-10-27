@@ -1,10 +1,10 @@
-# Windows 11 + WSL2 Support Design
+# Windows 10/11 + WSL2 Support Design
 
 - **Date:** 2026-10-26
 - **Revised:** 2026-10-27 after the in-depth plan review
 - **Status:** Revised and internally consistent; implementation **not started**
 - **Approval:** Architecture approved; revised plan awaits execution approval
-- **Scope:** Windows 11 22H2+ x86_64, managed Debian 12 WSL2 distro, native Windows daemon/helper, native Linux PHP/Node inside WSL, Docker service containers
+- **Scope:** Windows 10 22H2 (build 19045) x86_64 and Windows 11 x86_64, managed Debian 12 WSL2 distro, native Windows daemon/helper, native Linux PHP/Node inside WSL, Docker service containers
 - **Supersedes:** the Windows/WSL sections of the 2026-10-22 M1 design. That document remains historical for the released Linux product.
 - **Implementation plan:** [Windows/WSL implementation plan](../plans/2026-10-26-windows-wsl.md)
 - **Review resolution record:** [Windows plan review resolution](../status/2026-10-27-windows-plan-review-resolution.md)
@@ -107,7 +107,7 @@ pair and the same data layout, without the WSL agent.
 
 ## 2. Non-goals
 
-- Windows 10, Windows arm64, macOS, or Linux arm64.
+- Windows arm64, macOS, or Linux arm64.
 - Native Windows PHP, PHP-FPM, nginx, or Apache.
 - Docker-based PHP.
 - WSL mirrored networking mode.
@@ -819,7 +819,7 @@ owns separate agent Docker/relay/web packages implementing the frozen
 A→B→C→D→E merge order is a module-mounting dependency, not a serialized
 development order.
 
-### Manual Windows acceptance on a fresh Windows 11 machine
+### Manual Windows acceptance on fresh Windows 10 and Windows 11 machines
 
 1. Install with only the documented Windows/WSL prerequisites; no manual WSL
    setup beyond prerequisites.

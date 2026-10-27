@@ -1558,6 +1558,7 @@ func backendSpec(site model.Site) backend.SiteSpec {
 	return backend.SiteSpec{
 		ID:              site.ID,
 		Kind:            string(site.Kind),
+		Domain:          site.Domain,
 		HostPath:        site.HostPath,
 		BackendPath:     site.BackendPath,
 		DocumentRoot:    site.DocumentRoot,

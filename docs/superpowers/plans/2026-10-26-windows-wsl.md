@@ -1,4 +1,4 @@
-# Windows 11 + WSL2 Implementation Plan
+# Windows 10/11 + WSL2 Implementation Plan
 
 > **Status:** Revised 2026-10-27 after the in-depth plan review. Implementation
 > has **not** started. This plan supersedes the 2026-10-26 version.
@@ -8,7 +8,7 @@
 > follow the equivalent process written in this document rather than stopping.
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a first-class Windows 11 development platform with a native
+**Goal:** Add a first-class Windows 10 and Windows 11 development platform with a native
 Windows daemon/helper, a managed WSL2 Linux agent for PHP/Node/static, and
 Docker service containers, while preserving the existing Linux product.
 
@@ -231,7 +231,7 @@ versioning, auth, limits, and timeout behavior. T0.5 is the only owner of
 The controller is the main OpenCode session. It dispatches implementers and
 reviewers with the OpenCode `subagent` tool, `agent: "general"`. The controller
 alone merges branches, pushes, and runs the final gate. Implementation is
-expected on a Windows 11 host with WSL2 and Docker; Linux regressions run in
+expected on a Windows 10 22H2 or Windows 11 host with WSL2 and Docker; Linux regressions run in
 WSL ext4 or a Linux checkout using the same worktree layout.
 
 ### Environment prerequisites (do these before T0.1)
@@ -1257,7 +1257,7 @@ the modules.
     inside WSL;
   - verifies the WSL ingress target and helper forwarder;
   - verifies `devstack doctor` reports localhost forwarding.
-- [ ] Run on a fresh Windows 11 + WSL2 machine.
+- [ ] Run on a fresh Windows 10 22H2 and a fresh Windows 11 machine.
 - [ ] Fix only integration defects; commit `test: add windows vertical slice`.
 - [ ] **Gate:** If either source mode or either Windows/WSL client path cannot
       serve trusted `.test` HTTPS, stop and do not start Wave 2.
@@ -1298,11 +1298,17 @@ prose-only brief.
 `build/systemd/devstack-helper.service`, tests.
 
 - [ ] `install.ps1` system phase: elevation, fixed `C:\devstack`, protected
-      `system` ACL, helper service, firewall, per-user task, PATH, WSL
-      2.0.0/systemd/localhost-forwarding preflight that never enables
-      features or reboots.
+      `system` ACL, helper service, firewall, per-user task, PATH, and a
+      complete prerequisite manifest for Windows 10 22H2/Windows 11.
+- [ ] Install prerequisites in advance: Windows build/virtualization check,
+      WSL optional feature, `wsl --install`/`--update`, WSL 2.0.0+, systemd,
+      and disk space. Reboot-required feature changes use `-AllowReboot` or a
+      prompt, schedule a resume, and never reboot silently.
+- [ ] WSL prerequisite phase: distro import, systemd enablement, Docker Engine
+      and Compose, CA/build packages, agent, and pinned PHP/Node dependencies.
+      Record installed/verified versions in the resumable manifest.
 - [ ] `devstack init` user phase: WSL import, agent token/TLS provisioning,
-      CA bundle, hosts, startup.
+      CA bundle, hosts, startup, and localhost-forwarding verification.
 - [ ] Update `install.sh` and the systemd helper unit for new
       `/data/devstack` roots and the root-only `system` layout while
       preserving legacy installs.
@@ -1423,7 +1429,7 @@ release workflow/docs.
 - [ ] `make` available, or PowerShell equivalents documented and tested.
 - [ ] Node 22 selected for the UI/CI baseline.
 - [ ] Go module downloads work; `go test ./...` runs on Linux/WSL.
-- [ ] WSL 2.0.0+ with systemd; separate dev distro available.
+- [ ] Windows 10 22H2 or Windows 11; WSL 2.0.0+ with systemd; separate dev\n      distro available.
 - [ ] Docker Engine inside WSL available for controller-serialized tests.
 - [ ] Administrator access for helper/service/ACL/80/443 tests.
 - [ ] The reviewed contracts C1–C6 are frozen before lane dispatch.
