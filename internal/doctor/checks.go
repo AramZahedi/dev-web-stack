@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -497,15 +498,55 @@ func (s *Service) checkDisk() Check {
 	return check
 }
 
-// checkWSL reports the Windows backend as skipped until Plan 3 ships it.
-func (s *Service) checkWSL() Check {
-	return Check{
-		ID:          "wsl",
-		Title:       "WSL backend",
-		Status:      StatusSkipped,
-		Detail:      "WSL support is not part of this release; it is checked when the Windows backend ships.",
-		Remediation: "No action is required.",
+func (s *Service) windowsChecks(ctx context.Context) []Check {
+	platform := strings.TrimSpace(s.deps.Platform)
+	if platform == "" {
+		platform = runtime.GOOS
 	}
+	if platform != "windows" {
+		return []Check{{
+			ID: "wsl", Title: "WSL backend", Status: StatusSkipped,
+			Detail:      "WSL diagnostics apply only to the Windows host; native Linux sites continue to use the local backend.",
+			Remediation: "No action is required.",
+		}}
+	}
+	distro := strings.TrimSpace(s.deps.Config.WSLDistro)
+	if distro == "" {
+		distro = "devstack"
+	}
+	if s.deps.Windows == nil {
+		return []Check{
+			skippedWindowsCheck("wsl", "Managed WSL distro", "the Windows diagnostics provider is not configured"),
+			skippedWindowsCheck("agent", "WSL agent", "agent diagnostics are unavailable"),
+			skippedWindowsCheck("docker", "WSL Docker Engine", "Docker diagnostics are unavailable"),
+			skippedWindowsCheck("wsl-localhost-forwarding", "WSL localhost forwarding", "the forwarding probe is unavailable"),
+			skippedWindowsCheck("wsl-ports", "WSL backend ports", "agent port diagnostics are unavailable"),
+		}
+	}
+	return []Check{
+		windowsDiagnosticCheck("wsl", "Managed WSL distro", "WSL_UNAVAILABLE", "Start or repair the managed WSL distro, then rerun `devstack doctor`.", s.deps.Windows.CheckWSL(ctx, distro), "managed WSL distro "+distro+" is available"),
+		windowsDiagnosticCheck("agent", "WSL agent", "AGENT_UNAUTHENTICATED", "Run `devstack init` to restore the authenticated WSL agent connection.", s.deps.Windows.CheckAgent(ctx, distro), "the WSL agent is authenticated and responding"),
+		windowsDiagnosticCheck("docker", "WSL Docker Engine", "DOCKER_UNAVAILABLE", "Start or repair Docker Engine inside the managed WSL distro.", s.deps.Windows.CheckDocker(ctx, distro), "Docker Engine is responding inside WSL"),
+		windowsDiagnosticCheck("wsl-localhost-forwarding", "WSL localhost forwarding", "WSL_LOCALHOST_FORWARDING_UNAVAILABLE", "Enable WSL localhost forwarding in `%UserProfile%\\.wslconfig`, then run `wsl --shutdown`.", s.deps.Windows.CheckLocalhostForwarding(ctx, distro, defaultHTTPPort), "WSL localhost forwarding reaches the Windows daemon proxy"),
+		windowsDiagnosticCheck("wsl-ports", "WSL backend ports", "WSL_PORTS_UNAVAILABLE", "Stop the conflicting WSL listener or restart the site agent to release stale backend ports.", s.deps.Windows.CheckPorts(ctx, distro), "the WSL agent can allocate site backend ports"),
+	}
+}
+
+func skippedWindowsCheck(id, title, detail string) Check {
+	return Check{ID: id, Title: title, Status: StatusSkipped, Detail: detail, Remediation: "No action is available until Windows diagnostics are configured."}
+}
+
+func windowsDiagnosticCheck(id, title, code, remediation string, err error, okDetail string) Check {
+	check := Check{ID: id, Title: title, Remediation: remediation}
+	if err != nil {
+		check.Status = StatusFail
+		check.Detail = code + ": " + errorDetail(err)
+		return check
+	}
+	check.Status = StatusOK
+	check.Detail = okDetail
+	check.Remediation = ""
+	return check
 }
 
 // isAddrInUse recognises bind failures caused by an existing listener. The

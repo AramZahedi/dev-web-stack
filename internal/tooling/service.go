@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -30,6 +31,7 @@ type Helper interface {
 type Deps struct {
 	Store          *store.Store
 	Paths          config.Paths
+	WSLDistro      string
 	Helper         Helper
 	HTTPClient     *http.Client
 	ComposerSource *composerSource
@@ -128,6 +130,9 @@ func (s *Service) SetPHPDefault(ctx context.Context, value string, force bool) (
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
 		return PHPDefaultStatus{}, err
 	}
+	if err := s.ensureWindowsToolShims(); err != nil {
+		return PHPDefaultStatus{}, err
+	}
 	if err := s.helperInstall(ctx, helperproto.ToolPHPDefault, force); err != nil {
 		return PHPDefaultStatus{}, err
 	}
@@ -159,6 +164,9 @@ func (s *Service) ClearPHPDefault(ctx context.Context) (PHPDefaultStatus, error)
 		if _, err := s.helperRemove(ctx, helperproto.ToolPHPDefault); err != nil && !errors.Is(err, helperproto.ErrNotImplemented) {
 			return PHPDefaultStatus{}, err
 		}
+		if err := s.ensureWindowsToolShims(); err != nil {
+			return PHPDefaultStatus{}, err
+		}
 		return s.PHPDefault(ctx)
 	}
 
@@ -170,6 +178,9 @@ func (s *Service) ClearPHPDefault(ctx context.Context) (PHPDefaultStatus, error)
 		return PHPDefaultStatus{}, err
 	}
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
+		return PHPDefaultStatus{}, err
+	}
+	if err := s.ensureWindowsToolShims(); err != nil {
 		return PHPDefaultStatus{}, err
 	}
 	if err := s.helperInstall(ctx, helperproto.ToolPHPDefault, false); err != nil {
@@ -250,6 +261,9 @@ func (s *Service) InstallTool(ctx context.Context, id string, force bool) (helpe
 		if _, err := installComposer(ctx, s.deps.HTTPClient, s.deps.Paths, source); err != nil {
 			return helperproto.ToolStatus{}, err
 		}
+		if err := s.ensureWindowsToolShims(); err != nil {
+			return helperproto.ToolStatus{}, err
+		}
 		return s.helperInstallStatus(ctx, id, force)
 	default:
 		return helperproto.ToolStatus{}, fmt.Errorf("%w: %q", ErrUnsupportedTool, id)
@@ -270,6 +284,9 @@ func (s *Service) setPHPDefaultLocked(ctx context.Context, _ bool, force bool) (
 		return helperproto.ToolStatus{}, err
 	}
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
+		return helperproto.ToolStatus{}, err
+	}
+	if err := s.ensureWindowsToolShims(); err != nil {
 		return helperproto.ToolStatus{}, err
 	}
 	return s.helperInstallStatus(ctx, helperproto.ToolPHPDefault, force)
@@ -309,8 +326,17 @@ func (s *Service) ensureGlobalPHP(ctx context.Context) error {
 	if err := EnsureGlobalIni(build, GlobalIniPath(s.deps.Paths)); err != nil {
 		return err
 	}
-	_, err = EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths))
-	return err
+	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
+		return err
+	}
+	return s.ensureWindowsToolShims()
+}
+
+func (s *Service) ensureWindowsToolShims() error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return EnsureGlobalWindowsToolShims(s.deps.Paths.Home, s.deps.WSLDistro)
 }
 
 // preflight rejects a foreign system wrapper before any artifact is written.

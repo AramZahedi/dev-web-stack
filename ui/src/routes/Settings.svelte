@@ -103,6 +103,7 @@
     settings?.pid_path ?? (settings ? `${settings.home}/devstack.pid` : '—'),
   );
   const version = $derived(settings?.version ?? $daemon.version ?? '0.1.0');
+  const isWindowsHost = $derived(Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)));
   const failingTargets = $derived(trust.filter((target) => !target.ok).length);
   const activeMode = $derived(vhostStatus?.mode ?? settings?.serving_mode ?? 'builtin');
   const activeModeLabel = $derived(modeLabel(activeMode));
@@ -753,6 +754,20 @@
           <dd class="mono">{settings.wsl_distro || '—'}</dd>
         </div>
       </dl>
+
+      {#if isWindowsHost}
+        <section class="windows-wsl-note" aria-labelledby="windows-wsl-heading">
+          <div class="windows-wsl-copy">
+            <p class="eyebrow">Execution environment</p>
+            <h3 id="windows-wsl-heading">Windows + WSL</h3>
+            <p>Site backends and PHP/Node runtimes run in WSL. Windows-drive static projects are read through <code>/mnt/c</code> and can be slower for file watching.</p>
+          </div>
+          <div class="windows-wsl-distro">
+            <span>Managed distro</span>
+            <strong class="mono">{settings.wsl_distro || '—'}</strong>
+          </div>
+        </section>
+      {/if}
 
       <form
         class="port-form"
@@ -1762,6 +1777,65 @@
     border-radius: var(--radius-lg);
     background: var(--border);
     overflow: hidden;
+  }
+
+  .windows-wsl-note {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    margin-top: 12px;
+    padding: 13px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+  }
+
+  .windows-wsl-copy {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .windows-wsl-copy .eyebrow {
+    margin: 0;
+    color: var(--muted-2);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .windows-wsl-copy h3 {
+    margin: 0;
+    color: var(--fg);
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .windows-wsl-copy p:last-child {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .windows-wsl-copy code {
+    color: var(--fg);
+    font-family: var(--font-mono);
+  }
+
+  .windows-wsl-distro {
+    display: grid;
+    flex: none;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+
+  .windows-wsl-distro strong {
+    color: var(--fg);
+    font-size: 11px;
   }
 
   .config-item {
