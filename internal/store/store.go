@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -67,7 +68,13 @@ func Open(path string) (*Store, error) {
 		_ = os.Chmod(abs+suffix, 0o600)
 	}
 
-	dsn := url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
+	// A Windows drive path must be a URI path component (/C:/...), not a URI
+	// authority. Otherwise SQLite parses "C:" as the host and rejects the DSN.
+	dsnPath := filepath.ToSlash(abs)
+	if runtime.GOOS == "windows" && len(dsnPath) >= 2 && dsnPath[1] == ':' {
+		dsnPath = "/" + dsnPath
+	}
+	dsn := url.URL{Scheme: "file", Path: dsnPath}
 	query := dsn.Query()
 	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "foreign_keys(1)")
