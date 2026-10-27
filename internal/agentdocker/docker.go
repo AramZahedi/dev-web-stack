@@ -5,12 +5,15 @@ package agentdocker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -27,6 +30,9 @@ const (
 	projectName    = "devstack"
 	privateWebPort = 18080
 	maxRequestBody = 1 << 20
+	// DockerDataRoot is the canonical data-root configured by the managed WSL
+	// Docker Engine; it never points into an NTFS mount.
+	DockerDataRoot = "/data/devstack/docker"
 )
 
 var serviceIDs = []string{"apache", "mariadb", "mysql", "nginx", "phpmyadmin", "postgres", "redis"}
@@ -105,6 +111,14 @@ func fixedCatalog(input services.Catalog) services.Catalog {
 	copyCatalog := services.Catalog{Services: make([]services.Service, 0, len(input.Services))}
 	for _, service := range input.Services {
 		service.ID = canonicalID(service.ID)
+		for i := range service.Config {
+			mount := &service.Config[i]
+			if mount.Area != services.MountSecrets {
+				continue
+			}
+			mount.Area = services.MountService
+			mount.HostSubdir = path.Join("secrets", filepath.Base(mount.HostSubdir))
+		}
 		if service.ID == services.IDNginx || service.ID == services.IDApache {
 			service.Ports = []services.Port{{Host: privateWebPort, Container: privateWebPort, Protocol: "http"}}
 		}
@@ -124,6 +138,16 @@ func canonicalID(id services.ID) services.ID {
 // AllowedServiceIDs returns a copy of the only IDs accepted by this module.
 func AllowedServiceIDs() []string { return append([]string(nil), serviceIDs...) }
 
+// RenderCompose returns the fixed WSL service catalog for root without writing
+// files or invoking Docker. It is also used by rootfs contract tests.
+func RenderCompose(root string) ([]byte, error) {
+	module, err := New(Config{Root: root})
+	if err != nil {
+		return nil, err
+	}
+	return services.RenderCompose(module.catalog, module.root)
+}
+
 // ProjectName is fixed for the managed WSL Engine. User input cannot select a
 // project that could control unrelated containers.
 func (d *Docker) ProjectName() string { return projectName }
@@ -136,6 +160,11 @@ func (d *Docker) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/services/{id}/action", d.handleAction)
 	mux.HandleFunc("GET /v1/services/{id}/status", d.handleStatus)
 	mux.HandleFunc("POST /v1/services/{id}/logs", d.handleLogs)
+	mux.HandleFunc("GET /v1/services/{id}/config", d.handleServiceConfig)
+	mux.HandleFunc("POST /v1/services/{id}/content", d.handleServiceContent)
+	mux.HandleFunc("POST /v1/services/{id}/apply", d.handleServiceApply)
+	mux.HandleFunc("POST /v1/services/{id}/reset", d.handleServiceReset)
+	mux.HandleFunc("POST /v1/services/{id}/credential", d.handleServiceCredential)
 	return mux
 }
 
@@ -203,6 +232,17 @@ func (d *Docker) Action(ctx context.Context, req agentproto.ServiceRequest) (age
 	if err := d.ensureCompose(); err != nil {
 		return agentproto.ServiceResponse{}, err
 	}
+	if req.Action != "activate" && req.Action != "deactivate" && req.Action != "restart" && req.Action != "uninstall" {
+		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: unsupported action %q", req.Action)
+	}
+	deleteData := req.Action == "uninstall" && req.Config["confirm_delete"] == "true"
+	backupPath := ""
+	if deleteData {
+		backupPath, err = d.backupServiceData(service.ID)
+		if err != nil {
+			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: back up %s before deletion: %w", service.ID, err)
+		}
+	}
 	var args []string
 	switch req.Action {
 	case "activate":
@@ -227,11 +267,14 @@ func (d *Docker) Action(ctx context.Context, req agentproto.ServiceRequest) (age
 		if _, err := d.compose(ctx, "rm", "-f", string(service.ID)); err != nil {
 			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: remove %s: %w", service.ID, err)
 		}
-		if req.Config["confirm_delete"] == "true" {
-			return agentproto.ServiceResponse{}, errors.New("agentdocker: data deletion requires the verified backup workflow")
+		if deleteData {
+			serviceRoot := filepath.Join(d.root, "services", string(service.ID))
+			if err := os.RemoveAll(serviceRoot); err != nil {
+				return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: delete %s after backup: %w", service.ID, err)
+			}
 		}
 	}
-	return agentproto.ServiceResponse{ID: string(service.ID), State: state}, nil
+	return agentproto.ServiceResponse{ID: string(service.ID), State: state, Message: backupPath}, nil
 }
 
 // Status returns the fixed service's current Compose state.
@@ -370,8 +413,8 @@ func (d *Docker) ensureCompose() error {
 	if err != nil {
 		return fmt.Errorf("agentdocker: render fixed Compose project: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(d.composePath), 0o755); err != nil {
-		return fmt.Errorf("agentdocker: create Compose directory: %w", err)
+	if err := ensureRealDirectory(filepath.Dir(d.composePath), 0o755); err != nil {
+		return fmt.Errorf("agentdocker: validate Compose directory: %w", err)
 	}
 	if existing, err := os.ReadFile(d.composePath); err == nil && string(existing) == string(data) {
 		return nil
@@ -404,17 +447,114 @@ func (d *Docker) ensureCompose() error {
 }
 
 func (d *Docker) scaffold(id services.ID) error {
+	servicesRoot := filepath.Join(d.root, "services")
+	if err := ensureRealDirectory(servicesRoot, 0o755); err != nil {
+		return fmt.Errorf("agentdocker: validate services root: %w", err)
+	}
 	serviceRoot := filepath.Join(d.root, "services", string(id))
+	if err := ensureRealDirectory(serviceRoot, 0o755); err != nil {
+		return fmt.Errorf("agentdocker: validate %s root: %w", id, err)
+	}
 	for _, name := range []string{"config", "data", "logs", "secrets"} {
 		mode := os.FileMode(0o755)
 		if name == "secrets" {
 			mode = 0o700
 		}
-		if err := os.MkdirAll(filepath.Join(serviceRoot, name), mode); err != nil {
-			return fmt.Errorf("agentdocker: create %s/%s: %w", id, name, err)
+		if err := ensureRealDirectory(filepath.Join(serviceRoot, name), mode); err != nil {
+			return fmt.Errorf("agentdocker: create or secure %s/%s: %w", id, name, err)
 		}
-		if err := os.Chmod(filepath.Join(serviceRoot, name), mode); err != nil {
-			return fmt.Errorf("agentdocker: set %s/%s permissions: %w", id, name, err)
+	}
+	return d.ensureSecrets(id)
+}
+
+func ensureRealDirectory(name string, mode os.FileMode) error {
+	return ensureDirectoryTree(filepath.Clean(name), mode, true)
+}
+
+func ensureDirectoryTree(name string, mode os.FileMode, setMode bool) error {
+	info, err := os.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		parent := filepath.Dir(name)
+		if parent != name {
+			if err := ensureDirectoryTree(parent, 0o755, false); err != nil {
+				return err
+			}
+		}
+		if err := os.Mkdir(name, mode); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		info, err = os.Lstat(name)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("path is not a real directory")
+	}
+	if setMode {
+		return os.Chmod(name, mode)
+	}
+	return nil
+}
+
+func (d *Docker) ensureSecrets(id services.ID) error {
+	names := map[services.ID][]string{
+		services.IDMySQL:   {"root_password", "devstack_password"},
+		services.IDMariaDB: {"root_password", "devstack_password"},
+		"postgres":         {"postgres_password", "devstack_password"},
+	}
+	secretNames := names[id]
+	if len(secretNames) == 0 {
+		return nil
+	}
+	dir := filepath.Join(d.root, "services", string(id), "secrets")
+	if err := ensureRealDirectory(dir, 0o700); err != nil {
+		return fmt.Errorf("agentdocker: secure %s secrets: %w", id, err)
+	}
+	for _, name := range secretNames {
+		file := filepath.Join(dir, name)
+		info, err := os.Lstat(file)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return fmt.Errorf("agentdocker: refusing unsafe secret file %s", name)
+			}
+			if err := os.Chmod(file, 0o600); err != nil {
+				return fmt.Errorf("agentdocker: secure secret %s: %w", name, err)
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("agentdocker: inspect secret %s: %w", name, err)
+		}
+		random := make([]byte, 32)
+		if _, err := rand.Read(random); err != nil {
+			return fmt.Errorf("agentdocker: generate secret %s: %w", name, err)
+		}
+		value := []byte(base64.RawURLEncoding.EncodeToString(random) + "\n")
+		secret, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("agentdocker: create secret %s: %w", name, err)
+		}
+		if _, err := secret.Write(value); err != nil {
+			_ = secret.Close()
+			_ = os.Remove(file)
+			return fmt.Errorf("agentdocker: write secret %s: %w", name, err)
+		}
+		if err := secret.Chmod(0o600); err != nil {
+			_ = secret.Close()
+			_ = os.Remove(file)
+			return fmt.Errorf("agentdocker: set secret %s mode: %w", name, err)
+		}
+		if err := secret.Sync(); err != nil {
+			_ = secret.Close()
+			_ = os.Remove(file)
+			return fmt.Errorf("agentdocker: sync secret %s: %w", name, err)
+		}
+		if err := secret.Close(); err != nil {
+			return fmt.Errorf("agentdocker: close secret %s: %w", name, err)
 		}
 	}
 	return nil

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -56,7 +57,7 @@ func TestComposeUsesFixedProjectDigestImagesAndWSLStorage(t *testing.T) {
 	if err := module.Install(context.Background(), "mysql"); err != nil {
 		t.Fatal(err)
 	}
-	compose, err := services.RenderCompose(services.DefaultCatalog(), root)
+	compose, err := os.ReadFile(filepath.Join(root, "services", "compose.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,12 +65,20 @@ func TestComposeUsesFixedProjectDigestImagesAndWSLStorage(t *testing.T) {
 	if strings.Contains(text, "C:\\") || strings.Contains(text, "\\wsl.localhost") {
 		t.Fatalf("Compose embeds a Windows/UNC bind mount:\n%s", text)
 	}
+	if !strings.Contains(text, "services/postgres/data") || strings.Contains(text, "services/postgresql/data") {
+		t.Fatalf("Compose does not use the fixed postgres service ID and WSL data path:\n%s", text)
+	}
+	if !strings.Contains(text, "services/mysql/secrets/root_password") || strings.Contains(text, "secrets/mysql/root_password") {
+		t.Fatalf("Compose secrets are not stored below the per-service ext4 tree:\n%s", text)
+	}
 	for _, service := range services.DefaultCatalog().Services {
 		if !strings.Contains(service.Image, "@sha256:") {
 			t.Errorf("service %q image is not digest pinned: %q", service.ID, service.Image)
 		}
 	}
-	if len(runner.calls) != 1 || !containsSequence(runner.calls[0], []string{"compose", "-p", "devstack", "pull", "mysql"}) {
+	if len(runner.calls) != 1 || len(runner.calls[0]) < 8 ||
+		runner.calls[0][1] != "compose" || runner.calls[0][2] != "--project-name" || runner.calls[0][3] != "devstack" ||
+		runner.calls[0][4] != "--file" || runner.calls[0][len(runner.calls[0])-2] != "pull" || runner.calls[0][len(runner.calls[0])-1] != "mysql" {
 		t.Fatalf("Docker calls = %v, want fixed Compose project pull", runner.calls)
 	}
 	for _, id := range []string{"mysql", "nginx"} {
