@@ -21,3 +21,17 @@ func TestOpenWindowsDrivePath(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestOpenWindowsPathWithSpaces verifies that SQLite DSN encoding properly
+// preserves directories with spaces and punctuation on Windows.
+func TestOpenWindowsPathWithSpaces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "My Sites & Projects (x86)", "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(%q): %v", path, err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.SetSetting(context.Background(), "dsn", "ok"); err != nil {
+		t.Fatal(err)
+	}
+}

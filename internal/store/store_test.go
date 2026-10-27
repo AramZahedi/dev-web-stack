@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -862,5 +864,115 @@ func TestSiteSourceModeRoundTrip(t *testing.T) {
 	}
 	if updated.SourceMode != model.SourceWSL {
 		t.Fatalf("updated source mode = %q", updated.SourceMode)
+	}
+}
+
+func TestStoreConcurrentAccess(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+
+	const workers = 8
+	const iterations = 25
+	errCh := make(chan error, workers*iterations*2)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				key := fmt.Sprintf("worker-%d-key-%d", workerID, j)
+				val := fmt.Sprintf("val-%d", j)
+				if err := s.SetSetting(ctx, key, val); err != nil {
+					errCh <- fmt.Errorf("SetSetting(%s): %w", key, err)
+					return
+				}
+				if got, err := s.GetSetting(ctx, key); err != nil || got != val {
+					errCh <- fmt.Errorf("GetSetting(%s) = %q, want %q (err: %v)", key, got, val, err)
+					return
+				}
+				if err := s.AddEvent(ctx, model.Event{
+					SiteID:  fmt.Sprintf("site-%d", workerID),
+					Type:    "heartbeat",
+					Message: fmt.Sprintf("tick %d", j),
+				}); err != nil {
+					errCh <- fmt.Errorf("AddEvent: %w", err)
+					return
+				}
+			}
+		}(i)
+
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				if _, err := s.ListSites(ctx); err != nil {
+					errCh <- fmt.Errorf("ListSites: %w", err)
+					return
+				}
+				if _, err := s.ListEvents(ctx, 10); err != nil {
+					errCh <- fmt.Errorf("ListEvents: %w", err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatal(err)
+	}
+}
+
+func TestStoreMultiHandleConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+
+	s1, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open s1: %v", err)
+	}
+	defer s1.Close()
+
+	s2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open s2: %v", err)
+	}
+	defer s2.Close()
+
+	ctx := context.Background()
+	const iterations = 20
+	errCh := make(chan error, iterations*2)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if err := s1.SetSetting(ctx, fmt.Sprintf("s1-key-%d", i), fmt.Sprintf("val-%d", i)); err != nil {
+				errCh <- fmt.Errorf("s1 write: %w", err)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if err := s2.SetSetting(ctx, fmt.Sprintf("s2-key-%d", i), fmt.Sprintf("val-%d", i)); err != nil {
+				errCh <- fmt.Errorf("s2 write: %w", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatal(err)
 	}
 }

@@ -77,3 +77,19 @@ func TestLoadRejectsCorruptCiphertext(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptySecretHandling(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("DEVSTACK_HOME", home)
+	dir := filepath.Join(home, "system", "secrets")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Zero-length file
+	if err := os.WriteFile(filepath.Join(dir, "empty-file"), []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load("empty-file"); err == nil {
+		t.Fatal("expected error reading empty DPAPI secret file, got nil")
+	}
+}
