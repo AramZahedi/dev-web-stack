@@ -174,6 +174,9 @@ func shellFixture(t *testing.T) (*fakeClient, string, model.Site) {
 }
 
 func TestShellInitAndExec(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-init export tests are Linux-only; Windows uses WSL exec")
+	}
 	useTestSeams(t)
 	fake, home, site := shellFixture(t)
 
@@ -225,6 +228,9 @@ func TestShellInitAndExec(t *testing.T) {
 }
 
 func TestShellAndExecResolveByCWD(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-init CWD export resolution is Linux-only; Windows uses WSL exec")
+	}
 	useTestSeams(t)
 	fake, home, site := shellFixture(t)
 	sub := filepath.Join(site.HostPath, "src", "pages")
