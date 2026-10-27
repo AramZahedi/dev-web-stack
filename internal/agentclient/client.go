@@ -66,6 +66,7 @@ type API interface {
 	SyncHosts(context.Context, agentproto.HostsRequest) (agentproto.HostsResponse, error)
 	EnsureCert(context.Context, agentproto.CertRequest) (agentproto.CertResponse, error)
 	CA(context.Context) (agentproto.CAResponse, error)
+	InstallCA(context.Context, []byte) error
 	ValidatePath(context.Context, agentproto.PathValidateRequest) (agentproto.PathValidateResponse, error)
 	CopySource(context.Context, agentproto.SourceCopyRequest) (agentproto.SourceCopyResponse, error)
 }
@@ -473,6 +474,11 @@ func (c *Client) CA(ctx context.Context) (agentproto.CAResponse, error) {
 	var out agentproto.CAResponse
 	err := c.do(ctx, http.MethodGet, agentproto.PathCA, nil, &out)
 	return out, err
+}
+
+// InstallCA installs the daemon root certificate as the WSL trust anchor.
+func (c *Client) InstallCA(ctx context.Context, certPEM []byte) error {
+	return c.do(ctx, http.MethodPost, agentproto.PathCAInstall, agentproto.CAInstallRequest{CertPEM: certPEM}, nil)
 }
 
 // ValidatePath translates and checks one source path.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -105,7 +106,7 @@ func TestPendingMigrationBackupBeforeApply(t *testing.T) {
 	if info.Size() == 0 {
 		t.Fatal("backup is empty")
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("backup mode = %o, want 600", got)
 	}
 	if !strings.Contains(filepath.Base(backup), "state.db.pre-migrate-") {
@@ -270,7 +271,7 @@ func TestBackupCommitSets0600AndRemovesTemp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat target: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("target mode = %o, want 600", got)
 	}
 	content, err := os.ReadFile(target)
