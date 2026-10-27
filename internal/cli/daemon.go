@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
+	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 )
 
 const daemonStopTimeout = 10 * time.Second
@@ -226,9 +226,11 @@ func (a *App) newDaemonStopCmd() *cobra.Command {
 }
 
 func readDaemonStatus(home string) daemonStatus {
-	socket := daemon.SocketPath(home)
-	status := daemonStatus{Socket: socket}
-	conn, err := net.DialTimeout("unix", socket, time.Second)
+	endpoint := daemon.Endpoint(home)
+	status := daemonStatus{Socket: endpoint.Address}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := ipc.Dial(ctx, endpoint, time.Second)
 	if err != nil {
 		return status
 	}
