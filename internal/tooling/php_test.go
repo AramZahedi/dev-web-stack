@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -170,17 +171,23 @@ func TestGlobalIniPathAndEnsure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o644 {
-		t.Fatalf("mode = %04o, want 0644", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o644 {
+			t.Fatalf("mode = %04o, want 0644", perm)
+		}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
+	wantExtensionDir := filepath.Join(build.Path, "lib", "php", "extensions")
+	if runtime.GOOS == "windows" {
+		wantExtensionDir = strings.ReplaceAll(wantExtensionDir, `\`, `\\`)
+	}
 	for _, want := range []string{
 		"memory_limit = 128M",
-		"extension_dir = \"" + filepath.Join(build.Path, "lib", "php", "extensions") + "\"",
+		"extension_dir = \"" + wantExtensionDir + "\"",
 		"extension=phar.so",
 		"extension=openssl.so",
 		"extension=mbstring.so",
@@ -236,8 +243,10 @@ func TestEnsurePHPShimsUsesAbsoluteBuildAndGlobalIni(t *testing.T) {
 		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		}
-		if perm := info.Mode().Perm(); perm != 0o755 {
-			t.Fatalf("%s mode = %04o, want 0755", name, perm)
+		if runtime.GOOS != "windows" {
+			if perm := info.Mode().Perm(); perm != 0o755 {
+				t.Fatalf("%s mode = %04o, want 0755", name, perm)
+			}
 		}
 		data, err := os.ReadFile(wrapper)
 		if err != nil {
@@ -285,8 +294,10 @@ func TestComposerInstallVerifiesChecksumSizeAndWrapper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("phar mode = %04o, want 0600", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("phar mode = %04o, want 0600", perm)
+		}
 	}
 	got, err := os.ReadFile(phar)
 	if err != nil {
@@ -300,8 +311,10 @@ func TestComposerInstallVerifiesChecksumSizeAndWrapper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o755 {
-		t.Fatalf("wrapper mode = %04o, want 0755", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o755 {
+			t.Fatalf("wrapper mode = %04o, want 0755", perm)
+		}
 	}
 	script, err := os.ReadFile(wrapper)
 	if err != nil {
@@ -443,6 +456,10 @@ func TestPHPShimExecutesAbsoluteBinaryWithGlobalIni(t *testing.T) {
 	}
 	if _, err := EnsurePHPShims(build, paths, iniPath); err != nil {
 		t.Fatal(err)
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell script shims is not supported on Windows")
 	}
 
 	command := exec.Command(filepath.Join(ShimDir(paths), "php"), "-v")

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -158,13 +159,21 @@ func validatePath(field, value string) error {
 	if err := validateText(field, value); err != nil {
 		return err
 	}
-	if !filepath.IsAbs(value) {
+	isAbs, isClean := isAbsPOSIXPath(value)
+	if !isAbs {
 		return invalid(field, "%q is not an absolute path", value)
 	}
-	if filepath.Clean(value) != value {
+	if !isClean {
 		return invalid(field, "%q is not a clean path", value)
 	}
 	return nil
+}
+
+func isAbsPOSIXPath(p string) (isAbs, isClean bool) {
+	if strings.HasPrefix(p, "/") {
+		return true, path.Clean(p) == p
+	}
+	return filepath.IsAbs(p), filepath.Clean(p) == p
 }
 
 func validateAccount(field, value string) error {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -311,7 +312,7 @@ func (s SiteSpec) certOwner() string {
 
 func (s SiteSpec) certificatePaths(certsDir string) (string, string) {
 	owner := s.certOwner()
-	return filepath.Join(certsDir, owner+".crt"), filepath.Join(certsDir, owner+".key")
+	return path.Join(certsDir, owner+".crt"), path.Join(certsDir, owner+".key")
 }
 
 func frontControllerMode(value string) (string, error) {
@@ -353,6 +354,13 @@ func cleanAbsolutePath(name, value string) (string, error) {
 	if strings.ContainsRune(value, '#') {
 		return "", fmt.Errorf("dockerweb: %s contains '#', which cannot be represented in an Apache regex", name)
 	}
+	if strings.HasPrefix(value, "/") {
+		clean := path.Clean(value)
+		if clean != value {
+			return "", fmt.Errorf("dockerweb: %s %q must be a clean path", name, value)
+		}
+		return clean, nil
+	}
 	if !filepath.IsAbs(value) {
 		return "", fmt.Errorf("dockerweb: %s %q must be absolute", name, value)
 	}
@@ -370,7 +378,7 @@ func cleanRelativeFile(name, value string) (string, error) {
 	if strings.ContainsAny(value, "\n\r") {
 		return "", fmt.Errorf("dockerweb: %s contains a newline", name)
 	}
-	if filepath.IsAbs(value) {
+	if strings.HasPrefix(value, "/") || filepath.IsAbs(value) {
 		return "", fmt.Errorf("dockerweb: %s %q must be relative to the document root", name, value)
 	}
 	clean := filepath.ToSlash(filepath.Clean(value))
@@ -1025,7 +1033,7 @@ func renderNginxDashboard(d DashboardSpec, certsDir string, maxBody int64, ports
 	fmt.Fprintf(&b, "    listen %d ssl;\n", ports.https)
 	b.WriteString("    http2 on;\n")
 	fmt.Fprintf(&b, "    server_name %s;\n", d.Domain)
-	cert, key := filepath.Join(certsDir, dashboardOwner+".crt"), filepath.Join(certsDir, dashboardOwner+".key")
+	cert, key := path.Join(certsDir, dashboardOwner+".crt"), path.Join(certsDir, dashboardOwner+".key")
 	fmt.Fprintf(&b, "    ssl_certificate     %s;\n", nginxValue(cert))
 	fmt.Fprintf(&b, "    ssl_certificate_key %s;\n", nginxValue(key))
 	b.WriteString("    ssl_protocols TLSv1.2 TLSv1.3;\n\n")
@@ -1058,7 +1066,7 @@ func renderApacheDashboard(d DashboardSpec, certsDir string, maxBody int64, port
 	b.WriteString("</VirtualHost>\n\n")
 	fmt.Fprintf(&b, "<VirtualHost *:%d>\n", ports.https)
 	fmt.Fprintf(&b, "    ServerName %s\n", d.Domain)
-	cert, key := filepath.Join(certsDir, dashboardOwner+".crt"), filepath.Join(certsDir, dashboardOwner+".key")
+	cert, key := path.Join(certsDir, dashboardOwner+".crt"), path.Join(certsDir, dashboardOwner+".key")
 	b.WriteString("    SSLEngine on\n")
 	fmt.Fprintf(&b, "    SSLCertificateFile %s\n", apacheQuote(cert))
 	fmt.Fprintf(&b, "    SSLCertificateKeyFile %s\n", apacheQuote(key))
@@ -1092,7 +1100,7 @@ func renderNginxDefault(certsDir string, ports listenPorts) []byte {
 	fmt.Fprintf(&b, "    listen %d ssl default_server;\n", ports.https)
 	b.WriteString("    http2 on;\n")
 	b.WriteString("    server_name _;\n")
-	cert, key := filepath.Join(certsDir, dashboardOwner+".crt"), filepath.Join(certsDir, dashboardOwner+".key")
+	cert, key := path.Join(certsDir, dashboardOwner+".crt"), path.Join(certsDir, dashboardOwner+".key")
 	fmt.Fprintf(&b, "    ssl_certificate     %s;\n", nginxValue(cert))
 	fmt.Fprintf(&b, "    ssl_certificate_key %s;\n", nginxValue(key))
 	b.WriteString("    ssl_protocols TLSv1.2 TLSv1.3;\n")
@@ -1109,7 +1117,7 @@ func renderApacheDefault(certsDir string, ports listenPorts) []byte {
 		fmt.Fprintf(&b, "\n<VirtualHost *:%d>\n", apacheVHostPort(ports, tls))
 		b.WriteString("    ServerName devstack.invalid\n")
 		if tls {
-			cert, key := filepath.Join(certsDir, dashboardOwner+".crt"), filepath.Join(certsDir, dashboardOwner+".key")
+			cert, key := path.Join(certsDir, dashboardOwner+".crt"), path.Join(certsDir, dashboardOwner+".key")
 			b.WriteString("    SSLEngine on\n")
 			fmt.Fprintf(&b, "    SSLCertificateFile %s\n", apacheQuote(cert))
 			fmt.Fprintf(&b, "    SSLCertificateKeyFile %s\n", apacheQuote(key))

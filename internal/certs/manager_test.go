@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -396,14 +397,14 @@ func TestEnsureWritesSecureKeyAndVerifiesChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("key mode = %v, want 0600", info.Mode().Perm())
 	}
 	certInfo, err := os.Stat(rec.CertPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if certInfo.Mode().Perm() != 0o644 {
+	if runtime.GOOS != "windows" && certInfo.Mode().Perm() != 0o644 {
 		t.Fatalf("cert mode = %v, want 0644", certInfo.Mode().Perm())
 	}
 
@@ -514,25 +515,29 @@ func TestEnsureReusesValidCertificateAndReissuesOnChanges(t *testing.T) {
 		t.Fatalf("reissued domains = %v", changed.Domains)
 	}
 
-	// A loosened key mode must be repaired by reissuing, not reused.
-	if err := os.Chmod(changed.KeyPath, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	repaired, err := m.Ensure(ctx, "site1", []string{"blog.test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repaired.Serial == changed.Serial {
-		t.Fatal("certificate with a loose key was reused")
-	}
-	if signer.callCount() != 3 {
-		t.Fatalf("signer calls after loose key = %d, want 3", signer.callCount())
+	repaired := changed
+	if runtime.GOOS != "windows" {
+		// A loosened key mode must be repaired by reissuing, not reused.
+		if err := os.Chmod(changed.KeyPath, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		repaired, err = m.Ensure(ctx, "site1", []string{"blog.test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if repaired.Serial == changed.Serial {
+			t.Fatal("certificate with a loose key was reused")
+		}
+		if signer.callCount() != 3 {
+			t.Fatalf("signer calls after loose key = %d, want 3", signer.callCount())
+		}
 	}
 	info, err := os.Stat(repaired.KeyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("repaired key mode = %v, want 0600", info.Mode().Perm())
 	}
 
@@ -543,8 +548,12 @@ func TestEnsureReusesValidCertificateAndReissuesOnChanges(t *testing.T) {
 	if _, err := m.Ensure(ctx, "site1", []string{"blog.test"}); err != nil {
 		t.Fatal(err)
 	}
-	if signer.callCount() != 4 {
-		t.Fatalf("signer calls after missing cert = %d, want 4", signer.callCount())
+	wantCalls := 4
+	if runtime.GOOS == "windows" {
+		wantCalls = 3
+	}
+	if signer.callCount() != wantCalls {
+		t.Fatalf("signer calls after missing cert = %d, want %d", signer.callCount(), wantCalls)
 	}
 }
 
@@ -851,17 +860,19 @@ func TestLoadRejectsExpiredWrongSANAndLooseKey(t *testing.T) {
 		t.Fatal("wrong SAN accepted")
 	}
 
-	if err := os.Chmod(good.KeyPath, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Load(good); err == nil {
-		t.Fatal("loose key mode accepted")
-	}
-	if err := os.Chmod(good.KeyPath, 0o400); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Load(good); err == nil {
-		t.Fatal("read-only key mode accepted")
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(good.KeyPath, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.Load(good); err == nil {
+			t.Fatal("loose key mode accepted")
+		}
+		if err := os.Chmod(good.KeyPath, 0o400); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.Load(good); err == nil {
+			t.Fatal("read-only key mode accepted")
+		}
 	}
 	if err := os.Chmod(good.KeyPath, 0o600); err != nil {
 		t.Fatal(err)

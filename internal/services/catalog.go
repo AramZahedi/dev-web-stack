@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -307,10 +308,10 @@ func validateMountFields(s Service, m Mount) error {
 	if strings.TrimSpace(m.ContainerPath) == "" {
 		return fmt.Errorf("service %q: mount container path cannot be empty", s.ID)
 	}
-	if !filepath.IsAbs(m.ContainerPath) {
+	if !strings.HasPrefix(m.ContainerPath, "/") && !filepath.IsAbs(m.ContainerPath) {
 		return fmt.Errorf("service %q: mount container path %q must be absolute", s.ID, m.ContainerPath)
 	}
-	cleanContainer := filepath.Clean(m.ContainerPath)
+	cleanContainer := path.Clean(m.ContainerPath)
 	if isDockerSocket(cleanContainer) {
 		return fmt.Errorf("service %q: mounting docker socket is forbidden", s.ID)
 	}
@@ -325,7 +326,7 @@ func validateMountFields(s Service, m Mount) error {
 		if m.HostPath != "" {
 			return fmt.Errorf("service %q: host path must be empty for %s mounts", s.ID, area)
 		}
-		if filepath.IsAbs(m.HostSubdir) {
+		if strings.HasPrefix(m.HostSubdir, "/") || filepath.IsAbs(m.HostSubdir) {
 			return fmt.Errorf("service %q: mount host subdir %q must be relative", s.ID, m.HostSubdir)
 		}
 		cleanSub := filepath.Clean(m.HostSubdir)
@@ -342,10 +343,10 @@ func validateMountFields(s Service, m Mount) error {
 		if strings.TrimSpace(m.HostPath) == "" {
 			return fmt.Errorf("service %q: absolute mount host path cannot be empty", s.ID)
 		}
-		if !filepath.IsAbs(m.HostPath) {
+		if !strings.HasPrefix(m.HostPath, "/") && !filepath.IsAbs(m.HostPath) {
 			return fmt.Errorf("service %q: absolute mount host path %q must be absolute", s.ID, m.HostPath)
 		}
-		cleanHost := filepath.Clean(m.HostPath)
+		cleanHost := filepath.ToSlash(filepath.Clean(m.HostPath))
 		if isDangerousAbsoluteMount(cleanHost) {
 			return fmt.Errorf("service %q: absolute mount host path %q is not allowed", s.ID, cleanHost)
 		}

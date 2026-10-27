@@ -25,6 +25,8 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
 
+var ctx = context.Background()
+
 // testFakes groups the simulated edges of the service with the real store,
 // router, and allocator used by the tests.
 type testFakes struct {
@@ -1038,4 +1040,17 @@ func (f *fakeBackend) phpEventList() []fakePHPOperation {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]fakePHPOperation(nil), f.phpEvents...)
+}
+
+func useServingMode(svc *Service, fakes *testFakes, mode string) {
+	svc.deps.Config.ServingMode = mode
+	fakes.vhosts.status.Mode = mode
+}
+
+func persistServingMode(t *testing.T, svc *Service, mode string) {
+	t.Helper()
+	svc.deps.Config.ServingMode = mode
+	if err := svc.deps.Config.Save(); err != nil {
+		t.Fatal(err)
+	}
 }
