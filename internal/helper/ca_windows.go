@@ -248,6 +248,25 @@ func newWindowsAuthority(dir string, cert *x509.Certificate, key *ecdsa.PrivateK
 	}
 }
 
+// ReadRootThumbprint reads a PEM root certificate from certPath and computes
+// its hex-encoded SHA-1 thumbprint for Windows certificate store operations.
+func ReadRootThumbprint(certPath string) (string, error) {
+	data, err := os.ReadFile(certPath)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", errors.New("helper: root certificate is not valid PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	thumb := sha1.Sum(cert.Raw)
+	return hex.EncodeToString(thumb[:]), nil
+}
+
 func normalizeWindowsDomains(domains []string) ([]string, error) {
 	if len(domains) == 0 {
 		return nil, errors.New("helper: at least one DNS name is required")

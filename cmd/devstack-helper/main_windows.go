@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helper"
 )
@@ -83,7 +84,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "devstack-helper:", err)
 		os.Exit(1)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := server.Start(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "devstack-helper:", err)

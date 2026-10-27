@@ -32,6 +32,7 @@ type Config struct {
 	AllowSID         string
 	SystemDir        string
 	CADir            string
+	RootCertPath     string
 	HostsPath        string
 	ConfigPath       string
 	ProxyHTTPPort    int

@@ -80,6 +80,9 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.HostsPath == "" {
 		cfg.HostsPath = DefaultWindowsHostsPath
 	}
+	if cfg.RootCertPath == "" {
+		cfg.RootCertPath = DefaultWindowsRootCert
+	}
 	if cfg.ConfigPath == "" {
 		cfg.ConfigPath = DefaultWindowsConfigPath
 	}
@@ -140,11 +143,17 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 	if err := s.setForwarders(ctx, helperproto.ForwardersRequest{Enable: true, HTTPPort: s.cfg.ProxyHTTPPort, HTTPSPort: s.cfg.ProxyHTTPSPort}); err != nil {
+		if s.cfg.WSLSubnet != "" {
+			_ = s.firewall.Remove(context.Background())
+		}
 		return fmt.Errorf("helper: start Windows public forwarders: %w", err)
 	}
 	listener, err := ipc.Listen(ipc.NamedPipeEndpoint(s.cfg.PipeName), ipc.WithAllowSID(s.cfg.AllowSID), ipc.WithAdministrators(true))
 	if err != nil {
 		_ = s.setForwarders(context.Background(), helperproto.ForwardersRequest{Enable: false})
+		if s.cfg.WSLSubnet != "" {
+			_ = s.firewall.Remove(context.Background())
+		}
 		return fmt.Errorf("helper: listen on %s: %w", s.cfg.PipeName, err)
 	}
 	srv := &http.Server{
@@ -187,7 +196,7 @@ func (s *Server) Close() error {
 		srv, listener, done := s.http, s.listener, s.done
 		s.mu.Unlock()
 		if srv != nil {
-			s.closeErr = srv.Close()
+			s.closeErr = errors.Join(s.closeErr, srv.Close())
 		}
 		if listener != nil {
 			_ = listener.Close()
@@ -351,14 +360,18 @@ func (s *Server) handleTrustStatus(w http.ResponseWriter, r *http.Request) {
 		writeWindowsError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
 		return
 	}
-	if s.authority == nil {
+	authority, err := s.ensureAuthority(r.Context())
+	if err != nil && s.authority != nil {
+		authority = s.authority
+	}
+	if authority == nil {
 		writeWindowsJSON(w, http.StatusOK, helperproto.TrustResponse{Targets: []trust.Target{
 			{Name: "Windows machine root store", OK: false, Detail: "CA not initialized"},
 			{Name: "Firefox enterprise policy", OK: false, Detail: "CA not initialized"},
 		}})
 		return
 	}
-	root, rootErr := s.trust.RootStatus(r.Context(), s.authority.Thumbprint())
+	root, rootErr := s.trust.RootStatus(r.Context(), authority.Thumbprint())
 	firefox, firefoxErr := s.trust.FirefoxPolicyStatus(r.Context())
 	if rootErr != nil {
 		root.Detail = rootErr.Error()
@@ -419,8 +432,14 @@ func (s *Server) handleUninstall(w http.ResponseWriter, r *http.Request) {
 	if err := s.trust.RemoveFirefoxPolicy(r.Context()); err != nil {
 		failures = append(failures, "Firefox policy: "+err.Error())
 	}
+	var thumbprint string
 	if s.authority != nil {
-		if err := s.trust.RemoveRoot(r.Context(), s.authority.Thumbprint()); err != nil {
+		thumbprint = s.authority.Thumbprint()
+	} else {
+		thumbprint, _ = ReadRootThumbprint(s.cfg.RootCertPath)
+	}
+	if thumbprint != "" {
+		if err := s.trust.RemoveRoot(r.Context(), thumbprint); err != nil {
 			failures = append(failures, "root trust: "+err.Error())
 		}
 	}

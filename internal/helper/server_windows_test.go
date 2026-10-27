@@ -145,3 +145,77 @@ func TestHelperPipeSDDLGrantsOnlyRequiredPrincipals(t *testing.T) {
 		}
 	}
 }
+
+type failingForwarders struct {
+	stopErr error
+}
+
+func (f *failingForwarders) Start(context.Context) error { return nil }
+func (f *failingForwarders) Stop(context.Context) error  { return f.stopErr }
+
+func TestWindowsServerClosePreservesForwarderStopError(t *testing.T) {
+	expectedErr := errors.New("simulated forwarder stop error")
+	server, err := NewServer(Config{
+		AllowSID: testHelperSID,
+		forwarderFactory: func(httpListen, httpsListen, httpTarget, httpsTarget string) (windowsForwarders, error) {
+			return &failingForwarders{stopErr: expectedErr}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.forwarders = &failingForwarders{stopErr: expectedErr}
+	server.forwardersKey = "active"
+
+	closeErr := server.Close()
+	if closeErr == nil {
+		t.Fatal("expected error from server.Close(), got nil")
+	}
+	if !errors.Is(closeErr, expectedErr) && !strings.Contains(closeErr.Error(), expectedErr.Error()) {
+		t.Fatalf("server.Close() error = %v, want to contain %v", closeErr, expectedErr)
+	}
+}
+
+func TestWindowsServerUninstallRemovesRootWithUncachedAuthority(t *testing.T) {
+	tempDir := t.TempDir()
+	authority, err := LoadOrCreateAuthority(tempDir, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootCertPath := filepath.Join(tempDir, rootCertFile)
+
+	runner := &helperTrustRunner{}
+	server, err := NewServer(Config{
+		AllowSID:     testHelperSID,
+		RootCertPath: rootCertPath,
+		TrustManager: wintrust.NewManagerWithStatePath(runner, nil, filepath.Join(tempDir, "firefox-policy-managed")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// server.authority is nil initially
+	if server.authority != nil {
+		t.Fatal("server.authority expected to be nil before EnsureAuthority")
+	}
+
+	request := httptest.NewRequest(http.MethodPost, helperproto.PathUninstall, strings.NewReader(`{}`))
+	request.Header.Set(helperproto.ProtocolHeader, helperproto.Version)
+	request = request.WithContext(context.WithValue(request.Context(), peerSIDKey{}, testHelperSID))
+	response := httptest.NewRecorder()
+	server.handler().ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("uninstall response = %d: %s", response.Code, response.Body.String())
+	}
+	// Verify certutil was called with the authority's thumbprint to remove the root
+	expectedCall := "certutil.exe -delstore Root " + strings.ToUpper(authority.Thumbprint())
+	removedCert := false
+	for _, call := range runner.calls {
+		if strings.Contains(call, expectedCall) {
+			removedCert = true
+			break
+		}
+	}
+	if !removedCert {
+		t.Fatalf("uninstall did not invoke certutil to remove root certificate with thumbprint %s; calls = %v", authority.Thumbprint(), runner.calls)
+	}
+}
