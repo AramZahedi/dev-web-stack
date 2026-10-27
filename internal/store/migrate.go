@@ -174,7 +174,9 @@ func commitBackupRename(temporary, target string, rename func(string, string) er
 		discard()
 		return fmt.Errorf("restrict backup %s: %w", temporary, err)
 	}
-	file, err := os.Open(temporary)
+	// Windows rejects FlushFileBuffers on a read-only handle. Open read-write
+	// so Sync works on both platforms; the file is already private.
+	file, err := os.OpenFile(temporary, os.O_RDWR, 0)
 	if err != nil {
 		discard()
 		return fmt.Errorf("open backup %s for sync: %w", temporary, err)
