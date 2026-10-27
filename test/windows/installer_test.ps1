@@ -254,6 +254,232 @@ if (Test-Path $daemonTaskScript) {
 }
 
 # -------------------------------------------------------------------------
+# Test 10: WSL version check (>= 2.0.0 required)
+# -------------------------------------------------------------------------
+Step "Testing WSL version check"
+$tempWSLVerSandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-wslver-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempWSLVerSandbox | Out-Null
+try {
+    # Test outdated WSL (< 2.0.0) fails with exit code 2
+    $env:DEVSTACK_TEST_WSL_VERSION = "1.2.5"
+    $res = Invoke-Installer @("-TestSandbox", $tempWSLVerSandbox)
+    Require ($res.ExitCode -eq 2) "Outdated WSL version (1.2.5) rejected with exit code 2 (got $($res.ExitCode))"
+    Require ($res.Output -match "2\.0\.0" -or $res.Output -match "WSL") "Rejection message specifies required WSL 2.0.0+"
+
+    # Test missing WSL fails with exit code 2
+    $env:DEVSTACK_TEST_WSL_VERSION = "missing"
+    $res = Invoke-Installer @("-TestSandbox", $tempWSLVerSandbox)
+    Require ($res.ExitCode -eq 2) "Missing WSL runtime rejected with exit code 2 (got $($res.ExitCode))"
+
+    # Test valid WSL (>= 2.0.0) passes check
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $res = Invoke-Installer @("-TestSandbox", $tempWSLVerSandbox, "-SkipWSL")
+    Require ($res.ExitCode -eq 0) "WSL version 2.3.26 accepted (got $($res.ExitCode))"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempWSLVerSandbox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 11: .wslconfig check (verifying NAT networking, rejecting non-NAT)
+# -------------------------------------------------------------------------
+Step "Testing .wslconfig networkingMode validation"
+$tempWSLCfgDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-wslcfg-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempWSLCfgDir | Out-Null
+$mockWSLConfig = Join-Path $tempWSLCfgDir ".wslconfig"
+try {
+    # 1. networkingMode=mirrored must be rejected with exit code 2
+    @"
+[wsl2]
+networkingMode=mirrored
+"@ | Set-Content -Path $mockWSLConfig -Encoding utf8
+
+    $env:DEVSTACK_TEST_WSLCONFIG = $mockWSLConfig
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $res = Invoke-Installer @("-TestSandbox", $tempWSLCfgDir)
+    Require ($res.ExitCode -eq 2) "networkingMode=mirrored rejected with exit code 2 (got $($res.ExitCode))"
+    Require ($res.Output -match "NAT" -or $res.Output -match "networkingMode") "Rejection mentions NAT requirement or networkingMode"
+
+    # 2. networkingMode=nat must be accepted
+    @"
+[wsl2]
+networkingMode=nat
+"@ | Set-Content -Path $mockWSLConfig -Encoding utf8
+
+    $res = Invoke-Installer @("-TestSandbox", $tempWSLCfgDir, "-SkipWSL")
+    Require ($res.ExitCode -eq 0) "networkingMode=nat accepted with exit code 0 (got $($res.ExitCode))"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSLCONFIG -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempWSLCfgDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 12: Rootfs SHA256 verification against versions.lock
+# -------------------------------------------------------------------------
+Step "Testing rootfs SHA256 checksum verification"
+$tempRootFSDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-rootfs-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempRootFSDir | Out-Null
+$fakeRootFS = Join-Path $tempRootFSDir "test-rootfs.tar.gz"
+Set-Content -Path $fakeRootFS -Value "mock rootfs tar archive content" -Encoding utf8
+$fakeHash = (Get-FileHash -Path $fakeRootFS -Algorithm SHA256).Hash.ToLower()
+
+try {
+    # Hash mismatch should fail with exit code 2
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $env:DEVSTACK_TEST_ROOTFS_SHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    $res = Invoke-Installer @("-TestSandbox", $tempRootFSDir, "-RootFSPath", $fakeRootFS)
+    Require ($res.ExitCode -eq 2) "Rootfs SHA256 mismatch rejected with exit code 2 (got $($res.ExitCode))"
+    Require ($res.Output -match "checksum" -or $res.Output -match "SHA256" -or $res.Output -match "mismatch") "Checksum mismatch error message displayed"
+
+    # Hash match should succeed
+    $env:DEVSTACK_TEST_ROOTFS_SHA256 = $fakeHash
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $res = Invoke-Installer @("-TestSandbox", $tempRootFSDir, "-RootFSPath", $fakeRootFS)
+    Require ($res.ExitCode -eq 0) "Rootfs SHA256 match accepted with exit code 0 (got $($res.ExitCode))"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_ROOTFS_SHA256 -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempRootFSDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 13: Unmanaged distro rejection
+# -------------------------------------------------------------------------
+Step "Testing unmanaged distro rejection"
+$tempUnmanagedDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-unmanaged-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempUnmanagedDir | Out-Null
+try {
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $env:DEVSTACK_TEST_DISTRO_EXISTS = "unmanaged"
+    $res = Invoke-Installer @("-TestSandbox", $tempUnmanagedDir)
+    Require ($res.ExitCode -eq 2) "Existing unmanaged distro 'devstack' rejected with exit code 2 (got $($res.ExitCode))"
+    Require ($res.Output -match "unmanaged" -or $res.Output -match "managed\.json") "Rejection message mentions unmanaged distro / managed marker"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_DISTRO_EXISTS -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempUnmanagedDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 14: Distro import command generation in DryRun mode
+# -------------------------------------------------------------------------
+Step "Testing distro import command generation in DryRun"
+$tempDryWSLDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-drywsl-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempDryWSLDir | Out-Null
+try {
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $res = Invoke-Installer @("-DryRun", "-TestSandbox", $tempDryWSLDir)
+    Require ($res.ExitCode -eq 0) "DryRun with WSL phase exits with code 0 (got $($res.ExitCode))"
+    Require ($res.Output -match "--import" -and $res.Output -match "devstack" -and $res.Output -match "--version 2") "DryRun outputs wsl --import devstack ... --version 2"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempDryWSLDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 15: Full WSL provisioning flow in TestSandbox
+# -------------------------------------------------------------------------
+Step "Testing WSL provisioning in TestSandbox (/etc/wsl.conf, managed.json, docker, agent, manifest)"
+$tempFullWSLDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-fullwsl-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempFullWSLDir | Out-Null
+try {
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $env:DEVSTACK_TEST_SYSTEMD_PID1 = "systemd"
+    $res = Invoke-Installer @("-TestSandbox", $tempFullWSLDir)
+    Require ($res.ExitCode -eq 0) "Installer completes WSL provisioning in TestSandbox with exit code 0 (got $($res.ExitCode))"
+
+    # Verify /etc/wsl.conf simulated content
+    $wslConfPath = Join-Path $tempFullWSLDir "mock-wsl\etc\wsl.conf"
+    Require (Test-Path $wslConfPath) "Distro /etc/wsl.conf created"
+    if (Test-Path $wslConfPath) {
+        $wslConf = Get-Content -Raw -Path $wslConfPath
+        Require ($wslConf -match "\[boot\]" -and $wslConf -match "systemd=true") "/etc/wsl.conf enables systemd"
+        Require ($wslConf -match "generateHosts=false" -and $wslConf -match "generateResolvConf=true") "/etc/wsl.conf configures network flags"
+    }
+
+    # Verify /data/devstack/managed.json simulated content
+    $managedJsonPath = Join-Path $tempFullWSLDir "mock-wsl\data\devstack\managed.json"
+    Require (Test-Path $managedJsonPath) "Distro /data/devstack/managed.json created"
+    if (Test-Path $managedJsonPath) {
+        $managedData = Get-Content -Raw -Path $managedJsonPath | ConvertFrom-Json
+        Require ($managedData.managed_by -eq "devstack") "managed.json has managed_by: devstack"
+        Require (-not [string]::IsNullOrEmpty($managedData.install_id)) "managed.json has valid install_id"
+    }
+
+    # Verify staged devstack-agent
+    $agentBinPath = Join-Path $tempFullWSLDir "mock-wsl\data\devstack\bin\devstack-agent"
+    Require (Test-Path $agentBinPath) "Linux devstack-agent staged to /data/devstack/bin/devstack-agent"
+
+    # Verify systemd service unit
+    $servicePath = Join-Path $tempFullWSLDir "mock-wsl\etc\systemd\system\devstack-agent.service"
+    Require (Test-Path $servicePath) "devstack-agent.service installed to /etc/systemd/system"
+
+    # Verify install-manifest.json updated with WSL metadata
+    $manifestPath = Join-Path $tempFullWSLDir "system\install-manifest.json"
+    Require (Test-Path $manifestPath) "install-manifest.json exists"
+    if (Test-Path $manifestPath) {
+        $manifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json
+        Require ($manifest.wsl_version -eq "2.3.26") "Manifest records wsl_version: 2.3.26"
+        Require ($manifest.debian_version -match "12|bookworm") "Manifest records debian_version"
+        Require ($manifest.systemd_verified -eq $true) "Manifest records systemd_verified: true"
+        Require (-not [string]::IsNullOrEmpty($manifest.docker_version)) "Manifest records docker_version"
+        Require ($manifest.agent_installed -eq $true) "Manifest records agent_installed: true"
+        Require ($manifest.stage -eq "complete" -or $manifest.stage -eq "wsl-phase-complete") "Manifest records completed stage"
+    }
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_SYSTEMD_PID1 -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempFullWSLDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 16: Systemd PID 1 validation failure
+# -------------------------------------------------------------------------
+Step "Testing systemd PID 1 validation failure"
+$tempPID1Dir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-pid1-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempPID1Dir | Out-Null
+try {
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $env:DEVSTACK_TEST_SYSTEMD_PID1 = "init"
+    $res = Invoke-Installer @("-TestSandbox", $tempPID1Dir)
+    Require ($res.ExitCode -eq 2) "Non-systemd PID 1 exits with code 2 (got $($res.ExitCode))"
+    Require ($res.Output -match "systemd" -or $res.Output -match "PID 1") "Error output mentions systemd or PID 1"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_SYSTEMD_PID1 -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempPID1Dir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 17: build/wsl/install-agent.sh existence and validation
+# -------------------------------------------------------------------------
+Step "Testing build/wsl/install-agent.sh script"
+$installAgentScript = Join-Path $repoRoot "build\wsl\install-agent.sh"
+Require (Test-Path $installAgentScript) "build/wsl/install-agent.sh exists"
+if (Test-Path $installAgentScript) {
+    $shContent = Get-Content -Raw -Path $installAgentScript
+    Require ($shContent -match "devstack-agent\.service") "install-agent.sh references devstack-agent.service"
+    Require ($shContent -match "systemctl") "install-agent.sh uses systemctl"
+    Require ($shContent -match "EUID" -or $shContent -match "id -u") "install-agent.sh checks root privileges"
+}
+
+# -------------------------------------------------------------------------
+# Test 18: Task G1 Review Observations Verification
+# -------------------------------------------------------------------------
+Step "Testing dynamic PowerShell resolution and go build directory safety"
+$installerContent = Get-Content -Raw -Path $installerScript
+Require ($installerContent -match 'Get-Process -Id \$PID' -or $installerContent -match '\$PID') "install.ps1 dynamically resolves PowerShell executable"
+Require ($installerContent -match 'Push-Location') "install.ps1 uses Push-Location for go build"
+
+# -------------------------------------------------------------------------
 # Test Summary
 # -------------------------------------------------------------------------
 Write-Host "`ninstaller-test: Completed $script:TestsRun checks with $script:Failures failure(s)."

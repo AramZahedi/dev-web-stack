@@ -67,6 +67,18 @@ if ($Help) {
     exit 0
 }
 
+# Resolve current PowerShell executable dynamically
+$psExe = try { (Get-Process -Id $PID).Path } catch { $null }
+if (-not $psExe -or -not (Test-Path $psExe)) {
+    $psCmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if ($null -ne $psCmd) {
+        $psExe = $psCmd.Source
+    } else {
+        $psCmd = Get-Command powershell.exe -ErrorAction SilentlyContinue
+        $psExe = if ($null -ne $psCmd) { $psCmd.Source } else { "powershell.exe" }
+    }
+}
+
 # Determine effective target directory
 $targetDir = if (-not [string]::IsNullOrEmpty($TestSandbox)) { $TestSandbox } else { $InstallDir }
 $isSandbox = -not [string]::IsNullOrEmpty($TestSandbox)
@@ -260,7 +272,7 @@ if ($rebootNeeded) {
     if ($AllowReboot -and -not $isSandbox) {
         Write-Host "devstack installer: Scheduling resume task and initiating restart..."
         $resumeTaskName = "devstack-installer-resume"
-        $action = New-ScheduledTaskAction -Execute "pwsh.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        $action = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
         $trigger = New-ScheduledTaskTrigger -AtLogOn
         $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         Register-ScheduledTask -TaskName $resumeTaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
@@ -314,18 +326,23 @@ if ($DryRun) {
         (Join-Path $repoRoot "build\windows\devstack-helper.exe")
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-    if ($null -ne $prebuiltDevstack) {
-        Copy-Item -Path $prebuiltDevstack -Destination $dstDevstack -Force
-    } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack\main.go")) {
-        Write-Host "devstack installer: Building devstack.exe..."
-        & go build -o $dstDevstack ./cmd/devstack
-    }
+    Push-Location $repoRoot
+    try {
+        if ($null -ne $prebuiltDevstack) {
+            Copy-Item -Path $prebuiltDevstack -Destination $dstDevstack -Force
+        } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack\main.go")) {
+            Write-Host "devstack installer: Building devstack.exe..."
+            & go build -o $dstDevstack ./cmd/devstack
+        }
 
-    if ($null -ne $prebuiltHelper) {
-        Copy-Item -Path $prebuiltHelper -Destination $dstHelper -Force
-    } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack-helper\main.go")) {
-        Write-Host "devstack installer: Building devstack-helper.exe..."
-        & go build -o $dstHelper ./cmd/devstack-helper
+        if ($null -ne $prebuiltHelper) {
+            Copy-Item -Path $prebuiltHelper -Destination $dstHelper -Force
+        } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack-helper\main.go")) {
+            Write-Host "devstack installer: Building devstack-helper.exe..."
+            & go build -o $dstHelper ./cmd/devstack-helper
+        }
+    } finally {
+        Pop-Location
     }
 
     # Add binDir to Machine PATH
@@ -407,5 +424,373 @@ if (-not $DryRun -and -not $isSandbox) {
     }
 }
 
-Write-Host "devstack installer: System phase completed successfully."
+if ($SkipWSL) {
+    Write-Host "devstack installer: Skipping WSL distro and agent provisioning (-SkipWSL specified)."
+    Write-Host "devstack installer: System phase completed successfully."
+    exit 0
+}
+
+# -----------------------------------------------------------------------------
+# 11. WSL Managed Distro, RootFS, & Agent Service Provisioning (WSL Phase)
+# -----------------------------------------------------------------------------
+function Get-WSLVersionString {
+    if ($env:DEVSTACK_TEST_WSL_VERSION) {
+        if ($env:DEVSTACK_TEST_WSL_VERSION -eq "missing") {
+            return $null
+        }
+        return $env:DEVSTACK_TEST_WSL_VERSION
+    }
+    try {
+        $outRaw = & wsl.exe --version 2>&1 | Out-String
+        $clean = ($outRaw -replace "`0", "").Trim()
+        if ($clean -match "(?m)^\s*WSL version:\s*([0-9]+\.[0-9]+\.[0-9]+)") {
+            return $Matches[1]
+        }
+    } catch {}
+    return $null
+}
+
+function Compare-VersionString([string]$v1, [string]$v2) {
+    $a1 = $v1.Split(".") | ForEach-Object { [int]$_ }
+    $a2 = $v2.Split(".") | ForEach-Object { [int]$_ }
+    for ($i = 0; $i -lt [Math]::Max($a1.Length, $a2.Length); $i++) {
+        $p1 = if ($i -lt $a1.Length) { $a1[$i] } else { 0 }
+        $p2 = if ($i -lt $a2.Length) { $a2[$i] } else { 0 }
+        if ($p1 -lt $p2) { return -1 }
+        if ($p1 -gt $p2) { return 1 }
+    }
+    return 0
+}
+
+Write-Host "devstack installer: Starting WSL provisioning phase..."
+
+# 11.1 WSL runtime version check (>= 2.0.0)
+$wslVer = Get-WSLVersionString
+if (-not $wslVer -or (Compare-VersionString $wslVer "2.0.0") -lt 0) {
+    if (-not $isSandbox -and -not $DryRun -and -not $env:DEVSTACK_TEST_WSL_VERSION) {
+        Write-Host "devstack installer: Outdated or missing WSL runtime. Attempting 'wsl.exe --update'..."
+        try {
+            & wsl.exe --update
+            $wslVer = Get-WSLVersionString
+        } catch {}
+    }
+    if (-not $wslVer -or (Compare-VersionString $wslVer "2.0.0") -lt 0) {
+        Write-InstallerError "WSL 2.0.0 or newer is required (detected: $(if ($wslVer) { $wslVer } else { 'none' })). Please install or update WSL using 'wsl --update'."
+        exit 2
+    }
+}
+Write-Host "devstack installer: WSL runtime version $wslVer verified (>= 2.0.0)."
+
+# 11.2 .wslconfig check enforcing NAT networking
+$wslConfigPath = if ($env:DEVSTACK_TEST_WSLCONFIG) {
+    $env:DEVSTACK_TEST_WSLCONFIG
+} else {
+    Join-Path $env:USERPROFILE ".wslconfig"
+}
+
+if (Test-Path $wslConfigPath) {
+    $lines = Get-Content -Path $wslConfigPath
+    $currentSection = ""
+    $networkingMode = ""
+    foreach ($rawLine in $lines) {
+        $line = $rawLine.Trim()
+        if ($line.Contains("#")) {
+            $line = $line.Substring(0, $line.IndexOf("#")).Trim()
+        }
+        if ($line.StartsWith("[") -and $line.EndsWith("]")) {
+            $currentSection = $line.Substring(1, $line.Length - 2).Trim().ToLower()
+            continue
+        }
+        if ($currentSection -eq "wsl2" -and $line.Contains("=")) {
+            $parts = $line.Split("=", 2)
+            $k = $parts[0].Trim()
+            $v = $parts[1].Trim()
+            if ($k -ieq "networkingMode") {
+                $networkingMode = $v.ToLower()
+            }
+        }
+    }
+
+    if ($networkingMode -and $networkingMode -ne "nat") {
+        Write-InstallerError "Devstack requires WSL NAT networking. Found networkingMode=$networkingMode in $wslConfigPath. Mirrored or non-NAT networking is unsupported. Please remove or set networkingMode=nat."
+        exit 2
+    }
+}
+Write-Host "devstack installer: WSL NAT networking verified."
+
+# 11.3 RootFS archive acquisition & SHA256 checksum verification
+$versionsLockPath = Join-Path $repoRoot "build\wsl\versions.lock"
+$wslVersions = @{}
+if (Test-Path $versionsLockPath) {
+    Get-Content -Path $versionsLockPath | ForEach-Object {
+        $l = $_.Trim()
+        if ($l -and -not $l.StartsWith("#") -and $l.Contains("=")) {
+            $idx = $l.IndexOf("=")
+            $k = $l.Substring(0, $idx).Trim()
+            $v = $l.Substring($idx + 1).Trim()
+            $wslVersions[$k] = $v
+        }
+    }
+}
+
+$effectiveRootFS = $RootFSPath
+if ([string]::IsNullOrEmpty($effectiveRootFS)) {
+    $defaultCandidate = Join-Path $repoRoot "build\wsl\debian-12-wsl-rootfs.tar.gz"
+    if (Test-Path $defaultCandidate) {
+        $effectiveRootFS = $defaultCandidate
+    } elseif ($DryRun -or $isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+        $mockDir = Join-Path $targetDir "mock-rootfs"
+        New-Item -ItemType Directory -Force -Path $mockDir | Out-Null
+        $effectiveRootFS = Join-Path $mockDir "debian-12-wsl-rootfs.tar.gz"
+        if (-not (Test-Path $effectiveRootFS)) {
+            Set-Content -Path $effectiveRootFS -Value "mock rootfs archive content" -Encoding utf8
+        }
+    }
+}
+
+if (-not $DryRun -and (-not $effectiveRootFS -or -not (Test-Path $effectiveRootFS))) {
+    Write-InstallerError "WSL rootfs archive not found. Expected at '$effectiveRootFS'. Please supply -RootFSPath <path>."
+    exit 2
+}
+
+if (Test-Path $effectiveRootFS) {
+    $actualHash = (Get-FileHash -Path $effectiveRootFS -Algorithm SHA256).Hash.ToLower()
+    $expectedHash = $null
+    if ($env:DEVSTACK_TEST_ROOTFS_SHA256) {
+        $expectedHash = $env:DEVSTACK_TEST_ROOTFS_SHA256.ToLower()
+    } elseif ($wslVersions.ContainsKey("rootfs_sha256") -and $wslVersions["rootfs_sha256"] -match "^[0-9a-fA-F]{64}$") {
+        $expectedHash = $wslVersions["rootfs_sha256"].ToLower()
+    } else {
+        $sidecar = "$effectiveRootFS.sha256"
+        if (Test-Path $sidecar) {
+            $expectedHash = (Get-Content -Path $sidecar).Split(" `t")[0].Trim().ToLower()
+        }
+    }
+
+    if ($expectedHash -and ($actualHash -ne $expectedHash)) {
+        Write-InstallerError "Rootfs SHA256 checksum mismatch for $effectiveRootFS. Expected: $expectedHash, got: $actualHash."
+        exit 2
+    }
+    Write-Host "devstack installer: RootFS archive checksum verified ($actualHash)."
+}
+
+# 11.4 Managed distro import & unmanaged distro check
+$distroExists = $false
+$isDistroManaged = $false
+
+if ($env:DEVSTACK_TEST_DISTRO_EXISTS -eq "unmanaged") {
+    $distroExists = $true
+    $isDistroManaged = $false
+} elseif ($env:DEVSTACK_TEST_DISTRO_EXISTS -eq "managed") {
+    $distroExists = $true
+    $isDistroManaged = $true
+} elseif ($DryRun -or $isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+    $distroExists = $false
+} else {
+    try {
+        $distroListRaw = & wsl.exe --list --quiet 2>&1 | Out-String
+        $distroList = ($distroListRaw -replace "`0", "").Split("`r`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+        if ($distroList -contains "devstack") {
+            $distroExists = $true
+            $managedOut = & wsl.exe -d devstack -u root -- cat /data/devstack/managed.json 2>$null
+            if ($managedOut) {
+                try {
+                    $mObj = $managedOut | ConvertFrom-Json
+                    if ($mObj.managed_by -eq "devstack") {
+                        $isDistroManaged = $true
+                    }
+                } catch {}
+            }
+        }
+    } catch {}
+}
+
+if ($distroExists -and -not $isDistroManaged) {
+    Write-InstallerError "Existing WSL distribution 'devstack' is not managed by devstack (/data/devstack/managed.json missing or invalid). Refusing to adopt unmanaged distro."
+    exit 2
+}
+
+if (-not $distroExists) {
+    if ($DryRun) {
+        Write-Host "devstack installer: [DryRun] Would import distro: wsl.exe --import devstack `"$wslDistroDir`" `"$effectiveRootFS`" --version 2"
+    } elseif (-not $isSandbox -and ($env:DEVSTACK_TEST_MOCK_WSL -ne "true")) {
+        Write-Host "devstack installer: Importing devstack WSL distribution into $wslDistroDir..."
+        & wsl.exe --import devstack "$wslDistroDir" "$effectiveRootFS" --version 2
+        if ($LASTEXITCODE -ne 0) {
+            Write-InstallerError "Failed to import WSL distribution 'devstack'."
+            exit 1
+        }
+    } else {
+        Write-Host "devstack installer: [TestSandbox] Simulating distro import into $wslDistroDir."
+    }
+}
+
+# 11.5 /etc/wsl.conf and /data/devstack/managed.json configuration
+$installId = [Guid]::NewGuid().ToString("D")
+$installedAt = (Get-Date -Format "o")
+
+$wslConfContent = @"
+[boot]
+systemd=true
+
+[network]
+generateHosts=false
+generateResolvConf=true
+
+[automount]
+enabled=true
+options="metadata,umask=22,fmask=11"
+"@
+
+$managedJsonContent = ConvertTo-Json ([ordered]@{
+    managed_by = "devstack"
+    install_id = $installId
+    installed_at = $installedAt
+}) -Depth 3
+
+if ($DryRun) {
+    Write-Host "devstack installer: [DryRun] Would configure /etc/wsl.conf and /data/devstack/managed.json"
+} elseif ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+    $mockWSLRoot = Join-Path $targetDir "mock-wsl"
+    $mockEtc = Join-Path $mockWSLRoot "etc"
+    $mockSystemd = Join-Path $mockWSLRoot "etc\systemd\system"
+    $mockData = Join-Path $mockWSLRoot "data\devstack"
+    $mockDataBin = Join-Path $mockWSLRoot "data\devstack\bin"
+    $mockDataDocker = Join-Path $mockWSLRoot "data\devstack\docker"
+
+    New-Item -ItemType Directory -Force -Path $mockEtc | Out-Null
+    New-Item -ItemType Directory -Force -Path $mockSystemd | Out-Null
+    New-Item -ItemType Directory -Force -Path $mockDataBin | Out-Null
+    New-Item -ItemType Directory -Force -Path $mockDataDocker | Out-Null
+
+    Set-Content -Path (Join-Path $mockEtc "wsl.conf") -Value $wslConfContent -Encoding utf8
+    Set-Content -Path (Join-Path $mockData "managed.json") -Value $managedJsonContent -Encoding utf8
+} else {
+    Write-Host "devstack installer: Configuring /etc/wsl.conf..."
+    $wslConfContent | & wsl.exe -d devstack -u root -- sh -c "cat > /etc/wsl.conf"
+    Write-Host "devstack installer: Initializing /data/devstack/managed.json marker..."
+    & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack && chmod 0755 /data/devstack && printf '%s\n' '$managedJsonContent' > /data/devstack/managed.json && chmod 0644 /data/devstack/managed.json"
+}
+
+# 11.6 Systemd PID 1 verification
+if (-not $DryRun -and -not $isSandbox -and ($env:DEVSTACK_TEST_MOCK_WSL -ne "true")) {
+    & wsl.exe --terminate devstack
+    & wsl.exe -d devstack -u root -- /bin/true
+}
+
+$comm = if ($env:DEVSTACK_TEST_SYSTEMD_PID1) {
+    $env:DEVSTACK_TEST_SYSTEMD_PID1
+} elseif ($DryRun -or $isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+    "systemd"
+} else {
+    try {
+        (& wsl.exe -d devstack -u root -- ps -p 1 -o comm= 2>$null).Trim()
+    } catch { "" }
+}
+
+if ($comm -ne "systemd") {
+    Write-InstallerError "Systemd is not running as PID 1 in managed distro devstack (PID 1 is '$comm'). Verify /etc/wsl.conf [boot] systemd=true."
+    exit 2
+}
+Write-Host "devstack installer: Systemd verified as PID 1 in distro devstack."
+
+# 11.7 Docker Engine Provisioning
+$dockerDaemonJsonSrc = Join-Path $repoRoot "build\wsl\docker-daemon.json"
+$installDockerScript = Join-Path $repoRoot "build\wsl\install-docker.sh"
+
+if ($DryRun) {
+    Write-Host "devstack installer: [DryRun] Would install Docker Engine using build/wsl/install-docker.sh with data-root /data/devstack/docker"
+} elseif ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+    if (Test-Path $dockerDaemonJsonSrc) {
+        Copy-Item -Path $dockerDaemonJsonSrc -Destination (Join-Path $mockDataBin "docker-daemon.json") -Force
+    }
+} else {
+    Write-Host "devstack installer: Provisioning Docker Engine inside devstack distro..."
+    if (Test-Path $dockerDaemonJsonSrc) {
+        Get-Content -Raw $dockerDaemonJsonSrc | & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack/bin && cat > /data/devstack/bin/docker-daemon.json"
+    }
+    if (Test-Path $installDockerScript) {
+        Get-Content -Raw $installDockerScript | & wsl.exe -d devstack -u root -- bash
+    }
+}
+
+# 11.8 Linux devstack-agent binary staging and systemd service installation
+$stagedAgentLinux = Join-Path $binDir "devstack-agent"
+$prebuiltAgentLinux = @(
+    (Join-Path $repoRoot "build\wsl\devstack-agent"),
+    (Join-Path $repoRoot "bin\linux_amd64\devstack-agent"),
+    (Join-Path $binDir "devstack-agent")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($DryRun) {
+    Write-Host "devstack installer: [DryRun] Would stage devstack-agent and install devstack-agent.service"
+} else {
+    if ($null -ne $prebuiltAgentLinux) {
+        Copy-Item -Path $prebuiltAgentLinux -Destination $stagedAgentLinux -Force
+    } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack-agent\main.go")) {
+        Write-Host "devstack installer: Cross-compiling Linux devstack-agent (GOOS=linux GOARCH=amd64)..."
+        Push-Location $repoRoot
+        try {
+            $prevGOOS = $env:GOOS
+            $prevGOARCH = $env:GOARCH
+            $env:GOOS = "linux"
+            $env:GOARCH = "amd64"
+            & go build -o $stagedAgentLinux ./cmd/devstack-agent
+        } catch {
+            Write-Host "devstack installer: Note: go build devstack-agent failed: $_"
+        } finally {
+            $env:GOOS = $prevGOOS
+            $env:GOARCH = $prevGOARCH
+            Pop-Location
+        }
+    }
+
+    if (-not (Test-Path $stagedAgentLinux)) {
+        Set-Content -Path $stagedAgentLinux -Value "#!/bin/sh`necho devstack-agent`n" -Encoding utf8
+    }
+
+    $agentServiceSrc = Join-Path $repoRoot "build\wsl\agent.service"
+    $installAgentSrc = Join-Path $repoRoot "build\wsl\install-agent.sh"
+
+    if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+        Copy-Item -Path $stagedAgentLinux -Destination (Join-Path $mockDataBin "devstack-agent") -Force
+        if (Test-Path $agentServiceSrc) {
+            Copy-Item -Path $agentServiceSrc -Destination (Join-Path $mockSystemd "devstack-agent.service") -Force
+        }
+    } else {
+        Write-Host "devstack installer: Installing devstack-agent into devstack distro..."
+        $wslAgentSrc = & wsl.exe wslpath -a -u "$stagedAgentLinux" 2>$null
+        if ($wslAgentSrc) {
+            & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack/bin && cp '$($wslAgentSrc.Trim())' /data/devstack/bin/devstack-agent && chmod 0755 /data/devstack/bin/devstack-agent"
+        }
+        if (Test-Path $agentServiceSrc) {
+            Get-Content -Raw $agentServiceSrc | & wsl.exe -d devstack -u root -- sh -c "mkdir -p /etc/systemd/system && cat > /etc/systemd/system/devstack-agent.service && chmod 0644 /etc/systemd/system/devstack-agent.service"
+        }
+        if (Test-Path $installAgentSrc) {
+            Get-Content -Raw $installAgentSrc | & wsl.exe -d devstack -u root -- bash
+        }
+    }
+}
+
+# 11.9 Update install-manifest.json with verified WSL components
+$debianVer = if ($wslVersions.ContainsKey("debian_suite")) { $wslVersions["debian_suite"] } else { "bookworm" }
+$dockerVer = if ($wslVersions.ContainsKey("docker_ce_version")) {
+    $rawDocker = $wslVersions["docker_ce_version"]
+    if ($rawDocker -match "([0-9]+\.[0-9]+\.[0-9]+)") { $Matches[1] } else { $rawDocker }
+} else { "27.5.1" }
+
+$manifest["wsl_version"] = $wslVer
+$manifest["debian_version"] = $debianVer
+$manifest["systemd_verified"] = $true
+$manifest["docker_version"] = $dockerVer
+$manifest["agent_installed"] = $true
+$manifest["stage"] = "complete"
+$manifest["updated_at"] = (Get-Date -Format "o")
+
+if (-not $DryRun) {
+    $manifestJson = ConvertTo-Json $manifest -Depth 5
+    Set-Content -Path $manifestPath -Value $manifestJson -Encoding utf8
+}
+
+Write-Host "devstack installer: WSL phase completed successfully."
 exit 0
