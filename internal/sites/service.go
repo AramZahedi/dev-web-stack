@@ -149,6 +149,7 @@ type Deps struct {
 	PHP          PHPCommands
 	PHPBackend   backend.PHPStager
 	PHPManifest  *catalog.PHPManifest
+	SourceCopier SourceCopier
 	Now          func() time.Time
 	NewID        func() string
 }
@@ -774,7 +775,7 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 	if err := pathmode.ValidateSourceMode(sourceMode, runtime.GOOS); err != nil {
 		return model.Site{}, fmt.Errorf("sites: %w", err)
 	}
-	hostPath, backendPath, err := pathmode.TranslateSource(sourceMode, req.Path)
+	hostPath, backendPath, err := pathmode.TranslateSourceForDistro(sourceMode, req.Path, s.deps.Config.WSLDistro)
 	if err != nil {
 		return model.Site{}, fmt.Errorf("sites: %w", err)
 	}

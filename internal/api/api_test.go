@@ -1220,10 +1220,27 @@ func TestOpenAPIDocumentParsesAndDocumentsRoutes(t *testing.T) {
 		"apache_allow_override",
 		"spa_fallback_file",
 		"build",
+		"source_mode",
 	} {
 		if _, ok := createSite.Properties[field]; !ok {
 			t.Fatalf("openapi CreateSiteRequest missing field %q", field)
 		}
+	}
+
+	siteSchema, ok := doc.Components.Schemas["Site"]
+	if !ok {
+		t.Fatal("openapi missing Site schema")
+	}
+	if _, ok := siteSchema.Properties["source_mode"]; !ok {
+		t.Fatal("openapi Site missing field source_mode")
+	}
+
+	if _, ok := doc.Components.Schemas["SourceMode"]; !ok {
+		t.Fatal("openapi missing SourceMode schema")
+	}
+
+	if _, ok := doc.Components.Schemas["ChangeSiteSourceRequest"]; !ok {
+		t.Fatal("openapi missing ChangeSiteSourceRequest schema")
 	}
 }
 
@@ -1298,11 +1315,17 @@ func concretePath(pattern string) string {
 // --- fakes -----------------------------------------------------------------
 
 type fakeSiteService struct {
-	mu      sync.Mutex
-	sites   map[string]model.Site
-	nextID  int
-	created []sites.CreateRequest
-	updates []sites.UpdateRequest
+	mu           sync.Mutex
+	sites        map[string]model.Site
+	nextID       int
+	created      []sites.CreateRequest
+	updates      []sites.UpdateRequest
+	sourceChange struct {
+		ref         string
+		mode        model.SourceMode
+		destination string
+		remove      bool
+	}
 	actions []string
 	err     error
 
@@ -1320,6 +1343,34 @@ type fakeSiteService struct {
 	phpExecErr      error
 	phpArgv         []string
 	checkRemovalErr error
+}
+
+func (f *fakeSiteService) ChangeSourceMode(_ context.Context, ref string, mode model.SourceMode, destination string, remove bool) (model.Site, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sourceChange.ref = ref
+	f.sourceChange.mode = mode
+	f.sourceChange.destination = destination
+	f.sourceChange.remove = remove
+	return model.Site{ID: "s1", Name: "blog", SourceMode: mode, HostPath: destination}, nil
+}
+
+func TestChangeSiteSourceModeUsesVerifiedCopyEndpoint(t *testing.T) {
+	fakeSites := &fakeSiteService{sites: make(map[string]model.Site)}
+	server := &Server{sites: fakeSites}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sites/s1/source", strings.NewReader(`{"mode":"wsl","path":"\\\\wsl.localhost\\Ubuntu\\home\\aram\\blog"}`))
+	request.SetPathValue("ref", "s1")
+	response := httptest.NewRecorder()
+	server.handleChangeSiteSourceMode(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	fakeSites.mu.Lock()
+	got := fakeSites.sourceChange
+	fakeSites.mu.Unlock()
+	if got.ref != "s1" || got.mode != model.SourceWSL || got.destination != `\\wsl.localhost\Ubuntu\home\aram\blog` || got.remove {
+		t.Fatalf("source change = %+v", got)
+	}
 }
 
 func (f *fakeSiteService) Create(_ context.Context, req sites.CreateRequest) (model.Site, error) {

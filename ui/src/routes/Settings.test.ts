@@ -136,6 +136,23 @@ afterEach(() => {
 });
 
 describe('Settings tooling', () => {
+  it('presents Windows and WSL runtime guidance for a Windows installation', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\devstack',
+      user_home: 'C:\\Users\\Aram',
+      wsl_distro: 'devstack',
+    });
+    render(Settings);
+
+    const card = await screen.findByRole('heading', { name: 'Windows + WSL' });
+    expect(card).toBeTruthy();
+    const detail = card.closest('section')?.textContent ?? '';
+    expect(detail).toMatch(/Site backends and PHP\/Node runtimes run in WSL/);
+    expect(detail).toMatch(/Windows-drive static projects are read through \/mnt\/c/);
+    expect(detail).toContain('devstack');
+  });
+
   it('shows the global PHP default, shim status, editable ini and Composer tools', async () => {
     render(Settings);
 

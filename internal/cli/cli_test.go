@@ -41,10 +41,16 @@ import (
 
 // fakeClient implements Client for CLI tests. It never touches a daemon.
 type fakeClient struct {
-	sites     []model.Site
-	site      model.Site
-	addReq    sites.CreateRequest
-	updateReq sites.UpdateRequest
+	sites        []model.Site
+	site         model.Site
+	addReq       sites.CreateRequest
+	updateReq    sites.UpdateRequest
+	sourceChange struct {
+		ref         string
+		mode        model.SourceMode
+		destination string
+		remove      bool
+	}
 	action    string
 	actionRef string
 	deleted   string
@@ -120,6 +126,14 @@ type fakeClient struct {
 	configActionPath string
 	configActionBody string
 	configResolution string
+}
+
+func (f *fakeClient) ChangeSourceMode(_ context.Context, ref string, mode model.SourceMode, destination string, remove bool) (model.Site, error) {
+	f.sourceChange.ref = ref
+	f.sourceChange.mode = mode
+	f.sourceChange.destination = destination
+	f.sourceChange.remove = remove
+	return model.Site{ID: "site-1", Name: ref, SourceMode: mode}, nil
 }
 
 func (f *fakeClient) maybeErr() error { return f.err }
@@ -632,6 +646,18 @@ func TestCLIAddAndList(t *testing.T) {
 	out := runCLI(t, fake, "site", "list")
 	if !strings.Contains(out, "blog") || !strings.Contains(out, "https://blog.test") {
 		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestCLISiteSourceChangeUsesExplicitTargetAndPath(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExit(t, fake, "site", "source", "blog", "--mode", "wsl", "--path", `\\wsl.localhost\Ubuntu\home\aram\blog`)
+	if code != 0 {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if fake.sourceChange.ref != "blog" || fake.sourceChange.mode != model.SourceWSL || fake.sourceChange.destination != `\\wsl.localhost\Ubuntu\home\aram\blog` || fake.sourceChange.remove {
+		t.Fatalf("source change = %+v", fake.sourceChange)
 	}
 }
 

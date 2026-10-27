@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -75,6 +76,104 @@ func TranslateSource(mode model.SourceMode, input string) (hostPath, backendPath
 	}
 }
 
+// TranslateSourceForDistro applies the managed-distro boundary in addition to
+// the lexical source path validation. The legacy alias is canonicalized to the
+// localhost UNC form only after its distro matches.
+func TranslateSourceForDistro(mode model.SourceMode, input, configuredDistro string) (string, string, error) {
+	host, backend, err := TranslateSource(mode, input)
+	if err != nil {
+		return "", "", err
+	}
+	if mode != model.SourceWSL {
+		return host, backend, nil
+	}
+	configuredDistro = strings.TrimSpace(configuredDistro)
+	if configuredDistro == "" {
+		return "", "", fmt.Errorf("%w: managed WSL distro is not configured", ErrInvalidPath)
+	}
+	const prefix = `\\wsl.localhost\`
+	if !strings.HasPrefix(strings.ToLower(host), strings.ToLower(prefix)) {
+		return "", "", fmt.Errorf("%w: source is not in the managed WSL distro", ErrInvalidPath)
+	}
+	distro := strings.SplitN(host[len(prefix):], `\`, 2)[0]
+	if !strings.EqualFold(distro, configuredDistro) {
+		return "", "", fmt.Errorf("%w: WSL distro %q does not match configured distro %q", ErrInvalidPath, distro, configuredDistro)
+	}
+	return host, backend, nil
+}
+
+// ValidateCreatedPath rejects dot-prefixed basenames for directories created by
+// devstack. Dot files inside an existing project tree remain unaffected.
+func ValidateCreatedPath(value string) error {
+	value = strings.TrimRight(strings.ReplaceAll(strings.TrimSpace(value), `\`, "/"), "/")
+	if value == "" || hasParentComponent(value) {
+		return fmt.Errorf("%w: invalid destination path", ErrInvalidPath)
+	}
+	base := value[strings.LastIndex(value, "/")+1:]
+	if base == "" || strings.HasPrefix(base, ".") {
+		return fmt.Errorf("%w: created directory basename must not start with a dot", ErrInvalidPath)
+	}
+	return nil
+}
+
+// ContainsPath reports whether target is root or a descendant of root. Windows
+// paths use case-insensitive comparison and a component boundary.
+func ContainsPath(root, target string, windows bool) bool {
+	clean := func(value string) string {
+		value = strings.ReplaceAll(strings.TrimSpace(value), `\`, "/")
+		value = path.Clean(value)
+		if windows {
+			value = strings.ToLower(value)
+		}
+		return strings.TrimRight(value, "/")
+	}
+	r, t := clean(root), clean(target)
+	if r == "" || t == "" || r == "." || t == "." {
+		return false
+	}
+	return t == r || strings.HasPrefix(t, r+"/")
+}
+
+// ValidateContainedPath confirms lexical containment and resolves symlinks or
+// Windows reparse-point ancestors before allowing an operation on a path.
+func ValidateContainedPath(root, target string, windows bool) error {
+	if !ContainsPath(root, target, windows) {
+		return fmt.Errorf("%w: %q is outside %q", ErrInvalidPath, target, root)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("%w: resolve root %q: %v", ErrInvalidPath, root, err)
+	}
+	resolvedTarget, err := resolveExistingPrefix(target)
+	if err != nil {
+		return fmt.Errorf("%w: resolve target %q: %v", ErrInvalidPath, target, err)
+	}
+	if !ContainsPath(resolvedRoot, resolvedTarget, windows) {
+		return fmt.Errorf("%w: resolved path %q escapes %q", ErrInvalidPath, target, root)
+	}
+	return nil
+}
+
+func resolveExistingPrefix(value string) (string, error) {
+	current := value
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
 func translateWindows(input string) (string, string, error) {
 	slashed := strings.ReplaceAll(input, "/", `\`)
 	if strings.HasPrefix(slashed, `\\`) || strings.HasPrefix(slashed, `\Device\`) {
@@ -86,6 +185,9 @@ func translateWindows(input string) (string, string, error) {
 	drive := slashed[0]
 	if !((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) {
 		return "", "", fmt.Errorf("%w: %q has no drive letter", ErrInvalidPath, input)
+	}
+	if drive != 'C' && drive != 'c' {
+		return "", "", fmt.Errorf("%w: only the C: drive is supported, got %q", ErrInvalidPath, drive)
 	}
 	rest := strings.TrimPrefix(slashed[3:], `\`)
 	rest = strings.TrimRight(rest, `\`)

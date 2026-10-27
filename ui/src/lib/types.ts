@@ -1,4 +1,5 @@
 export type SiteKind = 'static' | 'php' | 'node';
+export type SourceMode = 'local' | 'windows' | 'wsl';
 export type BackendKind = 'local' | 'wsl';
 export type DesiredState = 'running' | 'stopped';
 export type SiteStatus =
@@ -71,6 +72,7 @@ export interface Site {
   domain: string;
   www: boolean;
   backend: BackendKind;
+  source_mode?: SourceMode;
   host_path: string;
   backend_path: string;
   kind: SiteKind;
@@ -111,6 +113,7 @@ export interface CreateSiteRequest {
   name: string;
   path: string;
   kind: SiteKind;
+  source_mode?: SourceMode;
   node_version?: string;
   command?: string;
   document_root?: string;

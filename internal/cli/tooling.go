@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,14 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
+
+var runWSL = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	command := exec.CommandContext(ctx, "wsl.exe", args...)
+	command.Stdin = stdin
+	command.Stdout = stdout
+	command.Stderr = stderr
+	return exitStatus(command.Run())
+}
 
 // ExitError carries the exact exit status of a shell or exec command.
 type ExitError struct {
@@ -282,6 +291,13 @@ func (a *App) siteShellContext(ctx context.Context, c Client, ref string) (model
 	if err != nil {
 		return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SITE_NOT_FOUND", "Run `devstack site list`, then pass `--site <name>`.")
 	}
+	if runtime.GOOS == "windows" {
+		if !strings.HasPrefix(site.BackendPath, "/") {
+			return model.Site{}, tooling.SiteEnvironment{}, "", &Error{Code: "WSL_PATH_INVALID", Message: "site has no absolute WSL backend path", Remediation: "Recreate the site with a validated Windows or WSL source path."}
+		}
+		env := tooling.SiteEnvironment{Site: site, Values: tooling.WindowsSiteEnvironment(site)}
+		return site, env, home, nil
+	}
 	builds, err := c.Runtimes(ctx)
 	if err != nil {
 		return model.Site{}, tooling.SiteEnvironment{}, "", err
@@ -322,11 +338,17 @@ func (a *App) newShellCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resolved, env, _, err := a.siteShellContext(ctx, c, site)
+			_, env, home, err := a.siteShellContext(ctx, c, site)
 			if err != nil {
 				return err
 			}
-			_ = resolved
+			if runtime.GOOS == "windows" {
+				distro, err := tooling.ReadWSLDistro(home)
+				if err != nil {
+					return err
+				}
+				return execWSLSite(ctx, distro, env.Site, env.Values, nil, true, os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			}
 			shell := strings.TrimSpace(os.Getenv("SHELL"))
 			if shell == "" {
 				shell = "/bin/sh"
@@ -367,9 +389,16 @@ func (a *App) newExecCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, env, _, err := a.siteShellContext(ctx, c, site)
+			_, env, home, err := a.siteShellContext(ctx, c, site)
 			if err != nil {
 				return err
+			}
+			if runtime.GOOS == "windows" {
+				distro, err := tooling.ReadWSLDistro(home)
+				if err != nil {
+					return err
+				}
+				return execWSLSite(ctx, distro, env.Site, env.Values, args, false, os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
 			}
 			path, err := lookPathIn(env.PATH, args[0], env.Site.HostPath)
 			if err != nil {
@@ -386,6 +415,14 @@ func (a *App) newExecCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&site, "site", "", "site name (defaults to the site owning the current directory)")
 	return cmd
+}
+
+func execWSLSite(ctx context.Context, distro string, site model.Site, env map[string]string, argv []string, interactive bool, stdin io.Reader, stdout, stderr io.Writer) error {
+	args, err := tooling.BuildWSLExecArgs(distro, site.BackendPath, env, argv, interactive)
+	if err != nil {
+		return wrapError(err, "WSL_SITE_ENV_FAILED", "Check the site's backend path and runtime environment, then retry.")
+	}
+	return runWSL(ctx, args, stdin, stdout, stderr)
 }
 
 // newShellInitCmd prints the exports for direnv-style opt-in shells.

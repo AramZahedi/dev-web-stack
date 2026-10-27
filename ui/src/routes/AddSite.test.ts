@@ -103,6 +103,47 @@ async function fillProject(): Promise<void> {
 }
 
 describe('AddSite Wave 2 fields', () => {
+  it('defaults Windows static sources to NTFS and PHP/Node sources to WSL', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\devstack',
+      user_home: 'C:\\Users\\Aram',
+      wsl_distro: 'devstack',
+    });
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+
+    const windowsMode = await screen.findByRole('radio', { name: /Windows drive/ });
+    expect((windowsMode as HTMLInputElement).checked).toBe(true);
+    await fireEvent.click(screen.getByRole('radio', { name: /PHP/ }));
+    expect((screen.getByRole('radio', { name: /WSL distro/ }) as HTMLInputElement).checked).toBe(true);
+    await fireEvent.click(screen.getByRole('radio', { name: /Node/ }));
+    expect((screen.getByRole('radio', { name: /WSL distro/ }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('submits the selected Windows source mode when creating a static site', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\devstack',
+      user_home: 'C:\\Users\\Aram',
+      wsl_distro: 'devstack',
+    });
+    render(AddSite);
+    await screen.findByRole('radio', { name: /Windows drive/ });
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'winstatic' } });
+    await fireEvent.input(screen.getByLabelText(/Project folder/), {
+      target: { value: 'C:\\devstack\\projects\\winstatic' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    expect(mockApi.createSite).toHaveBeenCalledWith(
+      expect.objectContaining({ source_mode: 'windows', path: 'C:\\devstack\\projects\\winstatic' }),
+    );
+  });
+
   it('submits front controller file/mode and Apache AllowOverride for PHP', async () => {
     render(AddSite);
     await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
