@@ -105,6 +105,20 @@ func (r *Router) servePHP(w http.ResponseWriter, req *http.Request, route Route)
 // servePHPStatic serves a resolved file with conditional-request and range
 // support. Directories are never served as files and never listed.
 func (r *Router) servePHPStatic(w http.ResponseWriter, req *http.Request, route Route, target phpTarget) {
+	// Defense-in-depth: static serving must never serve executable PHP scripts
+	// or backup files under any circumstance.
+	if isPHPScriptName(target.staticPath) || isPHPScriptName(target.staticName) || isPHPScriptName(filepath.Base(target.staticPath)) {
+		writePHPNotFound(w, req, route)
+		return
+	}
+	for _, suffix := range phpBackupSuffixes {
+		if strings.HasSuffix(strings.ToLower(target.staticName), suffix) ||
+			strings.HasSuffix(strings.ToLower(target.staticPath), suffix) {
+			writePHPNotFound(w, req, route)
+			return
+		}
+	}
+
 	root, err := os.OpenRoot(target.documentRoot)
 	if err != nil {
 		writePHPNotFound(w, req, route)
@@ -139,6 +153,12 @@ func (r *Router) servePHPStatic(w http.ResponseWriter, req *http.Request, route 
 // response. Errors before headers become the branded 502 page; errors after
 // headers are logged because the response can no longer be replaced.
 func (r *Router) serveFastCGI(w http.ResponseWriter, req *http.Request, route Route, target phpTarget) {
+	if target.scriptPath == "" || !isPHPScriptName(target.scriptPath) {
+		r.logProxyError(route, fmt.Errorf("proxy: invalid or non-PHP FastCGI script %q", target.scriptPath))
+		writePHPNotFound(w, req, route)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(req.Context(), phpRequestTimeout)
 	defer cancel()
 
@@ -211,7 +231,13 @@ func writeFastCGIResponse(w http.ResponseWriter, req *http.Request, route Route,
 		if strings.EqualFold(canonical, "Status") || strings.EqualFold(canonical, "Strict-Transport-Security") {
 			continue
 		}
+		if strings.ContainsAny(canonical, "\r\n\x00") {
+			continue
+		}
 		for _, value := range values {
+			if strings.ContainsAny(value, "\r\n\x00") {
+				continue
+			}
 			header.Add(canonical, value)
 		}
 	}
@@ -260,8 +286,11 @@ func phpCGIParams(req *http.Request, route Route, target phpTarget) map[string]s
 		params["REMOTE_ADDR"] = remoteHost
 		params["REMOTE_PORT"] = remotePort
 		params["HTTP_X_FORWARDED_FOR"] = remoteHost
+	} else if req.RemoteAddr != "" {
+		params["REMOTE_ADDR"] = strings.TrimSpace(req.RemoteAddr)
+		params["HTTP_X_FORWARDED_FOR"] = strings.TrimSpace(req.RemoteAddr)
 	}
-	if value := req.Header.Get("Content-Type"); value != "" {
+	if value := req.Header.Get("Content-Type"); value != "" && !strings.ContainsRune(value, 0) {
 		params["CONTENT_TYPE"] = value
 	}
 	if req.ContentLength >= 0 {
@@ -274,6 +303,9 @@ func phpCGIParams(req *http.Request, route Route, target phpTarget) map[string]s
 		if canonical == "" || hopByHop[canonical] {
 			continue
 		}
+		if strings.ContainsAny(canonical, "\r\n\x00") {
+			continue
+		}
 		switch canonical {
 		case "Content-Type", "Content-Length", "Host":
 			continue
@@ -282,7 +314,13 @@ func phpCGIParams(req *http.Request, route Route, target phpTarget) map[string]s
 			continue
 		}
 		key := "HTTP_" + strings.ReplaceAll(strings.ToUpper(canonical), "-", "_")
-		params[key] = strings.Join(values, ", ")
+		safeValues := make([]string, 0, len(values))
+		for _, v := range values {
+			if !strings.ContainsRune(v, 0) {
+				safeValues = append(safeValues, v)
+			}
+		}
+		params[key] = strings.Join(safeValues, ", ")
 	}
 	return params
 }
@@ -371,6 +409,20 @@ func resolvePHPTarget(route Route, requestPath string) (phpTarget, bool) {
 		if strings.HasPrefix(segment, ".") {
 			return phpTarget{}, false
 		}
+		// Deny NTFS Alternate Data Streams, trailing dots, trailing spaces,
+		// control characters, or invalid filename characters.
+		if strings.Contains(segment, ":") ||
+			strings.HasSuffix(segment, ".") ||
+			strings.HasSuffix(segment, " ") ||
+			strings.HasSuffix(segment, "\t") ||
+			strings.ContainsAny(segment, "*?\"<>|\r\n\t") {
+			return phpTarget{}, false
+		}
+		for i := 0; i < len(segment); i++ {
+			if segment[i] < 0x20 || segment[i] == 0x7f {
+				return phpTarget{}, false
+			}
+		}
 		lowered := strings.ToLower(segment)
 		for _, suffix := range phpBackupSuffixes {
 			if strings.HasSuffix(lowered, suffix) {
@@ -449,9 +501,9 @@ func fastCGIScriptPath(route Route, target phpTarget) string {
 		return target.scriptPath
 	}
 	if strings.HasPrefix(backendRoot, "/") {
-		return path.Join(backendRoot, strings.ReplaceAll(rel, `\`, "/"))
+		return path.Clean(path.Join(backendRoot, strings.ReplaceAll(rel, `\`, "/")))
 	}
-	return filepath.Join(backendRoot, rel)
+	return filepath.Clean(filepath.Join(backendRoot, rel))
 }
 
 // resolvePHPCandidate tries the complete requested path, preferring index.php
@@ -565,6 +617,45 @@ func evalPHPPath(root, candidate string) (string, os.FileInfo, phpLookup) {
 	}
 	if !phpPathWithin(root, resolved) {
 		return "", nil, phpDenied
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return "", nil, phpDenied
+	}
+	if rel != "." {
+		for _, segment := range strings.Split(filepath.ToSlash(rel), "/") {
+			if segment == "" || segment == "." {
+				continue
+			}
+			if strings.HasPrefix(segment, ".") ||
+				strings.Contains(segment, ":") ||
+				strings.HasSuffix(segment, ".") ||
+				strings.HasSuffix(segment, " ") ||
+				strings.HasSuffix(segment, "\t") {
+				return "", nil, phpDenied
+			}
+			lowered := strings.ToLower(segment)
+			for _, suffix := range phpBackupSuffixes {
+				if strings.HasSuffix(lowered, suffix) {
+					return "", nil, phpDenied
+				}
+			}
+		}
+
+		base := filepath.Base(resolved)
+		if strings.HasPrefix(base, ".") ||
+			strings.Contains(base, ":") ||
+			strings.HasSuffix(base, ".") ||
+			strings.HasSuffix(base, " ") ||
+			strings.HasSuffix(base, "\t") {
+			return "", nil, phpDenied
+		}
+		loweredBase := strings.ToLower(base)
+		for _, suffix := range phpBackupSuffixes {
+			if strings.HasSuffix(loweredBase, suffix) {
+				return "", nil, phpDenied
+			}
+		}
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {

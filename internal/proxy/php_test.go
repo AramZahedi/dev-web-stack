@@ -418,6 +418,69 @@ func TestPHPProxyRejectsTraversalAndSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestPHPProxyRejectsShortNameAliases(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "index.php", "<?php echo 'front';")
+	writeTestFile(t, root, ".env", "TOPSECRET_ENV=secret_token_123")
+	writeTestFile(t, root, ".git/config", "TOPSECRET_GIT=git_config_content")
+	writeTestFile(t, root, "app.php~", "TOPSECRET_BACKUP_TILDE=tilde_backup")
+	writeTestFile(t, root, "app.php.bak", "TOPSECRET_BACKUP_BAK=bak_backup")
+	writeTestFile(t, root, "sub/.env", "TOPSECRET_SUB_ENV=sub_secret_token")
+
+	// On systems without NTFS 8.3 short-name aliases (such as Linux or macOS),
+	// create symlinks with 8.3 alias names so the test exercises the same
+	// resolution and denial path across all platforms.
+	aliases := map[string]string{
+		"ENV~1":        ".env",
+		"GIT~1":        ".git",
+		"APP~1.PHP":    "app.php~",
+		"APPPHP~1.BAK": "app.php.bak",
+		"sub/ENV~1":    "sub/.env",
+	}
+	for alias, target := range aliases {
+		aliasPath := filepath.Join(root, filepath.FromSlash(alias))
+		if _, err := os.Stat(aliasPath); os.IsNotExist(err) {
+			_ = os.Symlink(filepath.Join(root, filepath.FromSlash(target)), aliasPath)
+		}
+	}
+
+	targets := []string{
+		"/ENV~1",
+		"/GIT~1",
+		"/GIT~1/config",
+		"/APP~1.PHP",
+		"/APP~1.PHP/extra",
+		"/APPPHP~1.BAK",
+		"/sub/ENV~1",
+	}
+
+	for _, fc := range []bool{true, false} {
+		r, client := newPHPRoute(t, root, fc, false)
+		for _, target := range targets {
+			testName := target
+			if fc {
+				testName += "/front_controller"
+			} else {
+				testName += "/no_front_controller"
+			}
+			t.Run(testName, func(t *testing.T) {
+				client.reset()
+				req := httptest.NewRequest(http.MethodGet, "http://blog.test"+target, nil)
+				rec := servePHPTest(r, req)
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("status = %d, want 404", rec.Code)
+				}
+				if strings.Contains(rec.Body.String(), "TOPSECRET") {
+					t.Fatalf("response disclosed hidden file: %q", rec.Body.String())
+				}
+				if n := client.count(); n != 0 {
+					t.Fatalf("denied short-name alias used FastCGI: %d calls", n)
+				}
+			})
+		}
+	}
+}
+
 func TestPHPProxyNeverServesPHPSource(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, root, "app.PHP", "<?php SECRET_UPPER_PHP")
@@ -771,5 +834,55 @@ func TestPHPDirectoryRedirectEscapesLocation(t *testing.T) {
 	}
 	if got := rec.Header().Get("Location"); got != "/a%3Fb/" {
 		t.Fatalf("Location = %q, want /a%%3Fb/", got)
+	}
+}
+
+func TestPHPProxyRejectsNTFSAlternateDataStreamsAndTrailingPunctuation(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "app.php", "<?php TOPSECRET_SOURCE_DISCLOSURE=true;")
+	writeTestFile(t, root, "sub/app.php", "<?php TOPSECRET_SUB_SOURCE=true;")
+	writeTestFile(t, root, "index.php", "<?php TOPSECRET_FRONT=true;")
+
+	ntfsAttacks := []string{
+		"/app.php::$DATA",
+		"/app.php:stream",
+		"/app.php.",
+		"/app.php..",
+		"/app.php%20",
+		"/sub/app.php::$DATA",
+		"/sub/app.php:hidden",
+		"/sub/app.php.",
+		"/sub/app.php%20",
+		"/index.php::$DATA",
+		"/index.php.",
+		"/index.php%20",
+	}
+
+	for _, fc := range []bool{true, false} {
+		r, client := newPHPRoute(t, root, fc, false)
+		client.body = "should-not-run"
+		for _, attack := range ntfsAttacks {
+			testName := attack
+			if fc {
+				testName += "/front_controller"
+			} else {
+				testName += "/no_front_controller"
+			}
+			t.Run(testName, func(t *testing.T) {
+				client.reset()
+				req := httptest.NewRequest(http.MethodGet, "http://blog.test"+attack, nil)
+				rec := servePHPTest(r, req)
+
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("status = %d, want 404 for %s", rec.Code, attack)
+				}
+				if strings.Contains(rec.Body.String(), "TOPSECRET") {
+					t.Fatalf("PHP source code disclosed via NTFS attack %s: %s", attack, rec.Body.String())
+				}
+				if n := client.count(); n != 0 {
+					t.Fatalf("FastCGI was invoked for invalid NTFS path %s: %d calls", attack, n)
+				}
+			})
+		}
 	}
 }
