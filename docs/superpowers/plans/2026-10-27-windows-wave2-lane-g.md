@@ -109,13 +109,13 @@
   9. Starts Windows daemon (`ensureRunning`).
   10. Verifies localhost forwarding probe and doctor health.
 
-- [ ] **Step 1:** Write failing tests in `internal/cli/init_windows_test.go` mocking helper, securestore, WSL runner, and agent client to verify the complete sequence.
-- [ ] **Step 2:** Run `go test ./internal/cli -run TestWindowsInit` and verify RED.
-- [ ] **Step 3:** Implement Windows-specific init helper in `internal/cli/init_windows.go` to handle agent credentials generation, DPAPI storage, and WSL filesystem transfer.
-- [ ] **Step 4:** Wire CA bundle installation to WSL agent and dual-hosts synchronization (`helper.SyncHosts` for Windows and agent `POST /v1/hosts` for WSL).
-- [ ] **Step 5:** Wire localhost forwarding probe (`wsl.ProbeLocalhostForwarding`) and daemon readiness verification into `init.go`.
-- [ ] **Step 6:** Run `go test ./internal/cli` natively on Windows and verify GREEN.
-- [ ] **Step 7:** Commit `feat(cli): wire devstack init user phase for Windows and WSL`.
+- [x] **Step 1:** Write failing tests in `internal/cli/init_windows_test.go` mocking helper, securestore, WSL runner, and agent client to verify the complete sequence.
+- [x] **Step 2:** Run `go test ./internal/cli -run TestWindowsInit` and verify RED.
+- [x] **Step 3:** Implement Windows-specific init helper in `internal/cli/init_windows.go` to handle agent credentials generation, DPAPI storage, and WSL filesystem transfer.
+- [x] **Step 4:** Wire CA bundle installation to WSL agent and dual-hosts synchronization (`helper.SyncHosts` for Windows and agent `POST /v1/hosts` for WSL).
+- [x] **Step 5:** Wire localhost forwarding probe (`wsl.ProbeLocalhostForwarding`) and daemon readiness verification into `init.go`.
+- [x] **Step 6:** Run `go test ./internal/cli` natively on Windows and verify GREEN.
+- [x] **Step 7:** Commit `feat(cli): wire devstack init user phase for Windows and WSL`.
 
 ---
 

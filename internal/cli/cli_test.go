@@ -1911,6 +1911,7 @@ func startFakeHelper(t *testing.T) (*fakeHelper, string) {
 	var listener net.Listener
 	var socket string
 	if runtime.GOOS == "windows" {
+		setupFakeWSLForCLITests(t)
 		socket = fmt.Sprintf(`\\.\pipe\devstack-test-helper-%d-%d`, os.Getpid(), time.Now().UnixNano())
 		ln, err := ipc.Listen(ipc.NamedPipeEndpoint(socket))
 		if err != nil {
