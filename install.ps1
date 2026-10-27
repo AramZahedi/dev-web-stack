@@ -498,6 +498,7 @@ if ($Upgrade) {
     # 2. Stage updated agent binary
     $stagedAgentLinux = Join-Path $binDir "devstack-agent"
     $prebuiltAgentLinux = @(
+        (Join-Path $repoRoot "devstack-agent"),
         (Join-Path $repoRoot "build\wsl\devstack-agent"),
         (Join-Path $repoRoot "bin\linux_amd64\devstack-agent"),
         (Join-Path $binDir "devstack-agent")
@@ -733,7 +734,7 @@ if (Test-Path $versionsLockPath) {
 
 $effectiveRootFS = $RootFSPath
 if ([string]::IsNullOrEmpty($effectiveRootFS)) {
-    $defaultCandidate = Join-Path $repoRoot "build\wsl\debian-12-wsl-rootfs.tar.gz"
+    $defaultCandidate = @((Join-Path $repoRoot "debian-12-wsl-rootfs.tar.gz"), (Join-Path $repoRoot "build\wsl\debian-12-wsl-rootfs.tar.gz")) | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (Test-Path $defaultCandidate) {
         $effectiveRootFS = $defaultCandidate
     } elseif ($DryRun -or $isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
@@ -926,6 +927,7 @@ if ($DryRun) {
 # 11.8 Linux devstack-agent binary staging and systemd service installation
 $stagedAgentLinux = Join-Path $binDir "devstack-agent"
 $prebuiltAgentLinux = @(
+    (Join-Path $repoRoot "devstack-agent"),
     (Join-Path $repoRoot "build\wsl\devstack-agent"),
     (Join-Path $repoRoot "bin\linux_amd64\devstack-agent"),
     (Join-Path $binDir "devstack-agent")
