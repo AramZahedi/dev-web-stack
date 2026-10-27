@@ -3,6 +3,7 @@ package dockerweb_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
@@ -55,7 +56,7 @@ func (a *fakeWebAgent) SyncWeb(_ context.Context, request agentproto.WebTargetsR
 
 type fakeTargetSource struct{ targets []agentproto.WebTarget }
 
-func (s fakeTargetSource) PrivateWebTargets(context.Context, dockerweb.Server) ([]agentproto.WebTarget, error) {
+func (s fakeTargetSource) PrivateWebTargets(context.Context, string) ([]agentproto.WebTarget, error) {
 	return append([]agentproto.WebTarget(nil), s.targets...), nil
 }
 
@@ -144,5 +145,47 @@ func TestAgentWindowsPrivateSyncerUsesTypedAgentTargets(t *testing.T) {
 	}
 	if err := syncer.SyncPrivate(context.Background(), dockerweb.Server("arbitrary")); err == nil {
 		t.Fatal("unsupported server was accepted by the Windows agent adapter")
+	}
+}
+
+type fakeRouterUpdater struct {
+	calls []string
+	err   error
+}
+
+func (r *fakeRouterUpdater) UpdateDockerWebRoutes(_ context.Context, active bool, host string, port int) error {
+	r.calls = append(r.calls, fmt.Sprintf("%t:%s:%d", active, host, port))
+	return r.err
+}
+
+func TestWindowsProviderUpdatesProxyRouterTargetsOnCommitAndStop(t *testing.T) {
+	state := &windowsState{mode: "builtin", provider: "native"}
+	syncer := &privateSyncer{}
+	services := &windowsServices{}
+	router := &fakeRouterUpdater{}
+	provider, err := dockerweb.NewWindowsProvider(dockerweb.WindowsProviderConfig{
+		State:    state,
+		Syncer:   syncer,
+		Services: services,
+		Router:   router,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Prepare(context.Background(), "nginx"); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Commit(context.Background(), "nginx"); err != nil {
+		t.Fatal(err)
+	}
+	if len(router.calls) != 1 || router.calls[0] != "true:127.0.0.1:18080" {
+		t.Fatalf("router calls after commit = %v, want [true:127.0.0.1:18080]", router.calls)
+	}
+
+	if err := provider.StopActiveServer(context.Background(), "nginx"); err != nil {
+		t.Fatal(err)
+	}
+	if len(router.calls) != 2 || router.calls[1] != "false::0" {
+		t.Fatalf("router calls after stop = %v, want second call false::0", router.calls)
 	}
 }

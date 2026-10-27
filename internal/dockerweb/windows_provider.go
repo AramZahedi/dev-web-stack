@@ -26,7 +26,7 @@ type privateWebAgent interface {
 // WindowsTargetSource builds the typed WSL backend target set for one active
 // Docker web server. Site data and certificates are still agent-owned.
 type WindowsTargetSource interface {
-	PrivateWebTargets(ctx context.Context, server Server) ([]agentproto.WebTarget, error)
+	PrivateWebTargets(ctx context.Context, server string) ([]agentproto.WebTarget, error)
 }
 
 // AgentWindowsPrivateSyncer bridges the Windows provider to the typed agent
@@ -53,7 +53,7 @@ func (s *AgentWindowsPrivateSyncer) SyncPrivate(ctx context.Context, server Serv
 	if err := server.Validate(); err != nil {
 		return err
 	}
-	targets, err := s.targets.PrivateWebTargets(ctx, server)
+	targets, err := s.targets.PrivateWebTargets(ctx, string(server))
 	if err != nil {
 		return fmt.Errorf("dockerweb: build private %s targets: %w", server, err)
 	}
@@ -63,11 +63,17 @@ func (s *AgentWindowsPrivateSyncer) SyncPrivate(ctx context.Context, server Serv
 	return nil
 }
 
+// ProxyRouterTargetUpdater updates proxy router targets when Docker web services start or stop.
+type ProxyRouterTargetUpdater interface {
+	UpdateDockerWebRoutes(ctx context.Context, active bool, host string, port int) error
+}
+
 // WindowsProviderConfig wires the Windows/WSL private-HTTP serving adapter.
 type WindowsProviderConfig struct {
 	State    ServingState
 	Syncer   WindowsPrivateSyncer
 	Services ServiceControl
+	Router   ProxyRouterTargetUpdater
 }
 
 // WindowsProvider switches only the private WSL web service. The daemon stays
@@ -76,6 +82,7 @@ type WindowsProvider struct {
 	state    ServingState
 	syncer   WindowsPrivateSyncer
 	services ServiceControl
+	router   ProxyRouterTargetUpdater
 
 	mu           sync.Mutex
 	prepared     bool
@@ -89,7 +96,12 @@ func NewWindowsProvider(cfg WindowsProviderConfig) (*WindowsProvider, error) {
 	if cfg.State == nil || cfg.Syncer == nil || cfg.Services == nil {
 		return nil, errors.New("dockerweb: Windows provider requires state, private syncer, and service control")
 	}
-	return &WindowsProvider{state: cfg.State, syncer: cfg.Syncer, services: cfg.Services}, nil
+	return &WindowsProvider{
+		state:    cfg.State,
+		syncer:   cfg.Syncer,
+		services: cfg.Services,
+		router:   cfg.Router,
+	}, nil
 }
 
 // EnsureBase scaffolds private configuration in WSL.
@@ -155,6 +167,11 @@ func (p *WindowsProvider) Commit(ctx context.Context, serverName string) error {
 	if err := p.services.Reload(ctx, string(server)); err != nil {
 		return errors.Join(fmt.Errorf("dockerweb: reload WSL %s: %w", server, err), p.Rollback(ctx))
 	}
+	if p.router != nil {
+		if err := p.router.UpdateDockerWebRoutes(ctx, true, "127.0.0.1", windowsPrivateHTTPPort); err != nil {
+			return errors.Join(fmt.Errorf("dockerweb: update router targets for %s: %w", server, err), p.Rollback(ctx))
+		}
+	}
 	if err := p.state.SaveServingState(ctx, string(server), "docker"); err != nil {
 		return errors.Join(fmt.Errorf("dockerweb: save Windows Docker serving state: %w", err), p.Rollback(ctx))
 	}
@@ -182,10 +199,50 @@ func (p *WindowsProvider) Rollback(ctx context.Context) error {
 	if err := p.services.Deactivate(ctx, string(server)); err != nil {
 		errs = append(errs, fmt.Errorf("dockerweb: stop failed WSL %s: %w", server, err))
 	}
+	if p.router != nil {
+		if err := p.router.UpdateDockerWebRoutes(ctx, false, "", 0); err != nil {
+			errs = append(errs, fmt.Errorf("dockerweb: restore router targets: %w", err))
+		}
+	}
 	if err := p.state.SaveServingState(ctx, mode, provider); err != nil {
 		errs = append(errs, fmt.Errorf("dockerweb: restore Windows serving state: %w", err))
 	}
 	return errors.Join(errs...)
+}
+
+// StopActiveServer stops the active Docker web server and restores the router targets.
+func (p *WindowsProvider) StopActiveServer(ctx context.Context, serverName string) error {
+	server, err := parseServer(serverName)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	if err := p.services.Deactivate(ctx, string(server)); err != nil {
+		errs = append(errs, fmt.Errorf("dockerweb: stop %s: %w", server, err))
+	}
+	if p.router != nil {
+		if err := p.router.UpdateDockerWebRoutes(ctx, false, "", 0); err != nil {
+			errs = append(errs, fmt.Errorf("dockerweb: restore router targets after stop: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// StartActiveServer starts the Docker web server and updates the router targets.
+func (p *WindowsProvider) StartActiveServer(ctx context.Context, serverName string) error {
+	server, err := parseServer(serverName)
+	if err != nil {
+		return err
+	}
+	if err := p.services.Activate(ctx, string(server)); err != nil {
+		return fmt.Errorf("dockerweb: start %s: %w", server, err)
+	}
+	if p.router != nil {
+		if err := p.router.UpdateDockerWebRoutes(ctx, true, "127.0.0.1", windowsPrivateHTTPPort); err != nil {
+			return fmt.Errorf("dockerweb: update router targets after start: %w", err)
+		}
+	}
+	return nil
 }
 
 // PrivateBackend describes the HTTP-only endpoint that the Windows daemon

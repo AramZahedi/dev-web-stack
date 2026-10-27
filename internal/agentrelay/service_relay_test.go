@@ -46,7 +46,7 @@ func TestServiceRelayModuleContract(t *testing.T) {
 }
 
 func TestPortAllowlist(t *testing.T) {
-	allowedPorts := []int{3306, 5432, 6379, 8080}
+	allowedPorts := []int{3306, 5432, 6379, 8080, 8082}
 	for _, port := range allowedPorts {
 		if !agentrelay.IsAllowedPort(port) {
 			t.Errorf("IsAllowedPort(%d) = false, want true", port)

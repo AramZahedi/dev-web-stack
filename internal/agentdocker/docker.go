@@ -4,9 +4,8 @@
 package agentdocker
 
 import (
+	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,9 +19,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentapi"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
+	"github.com/AramZahedi/dev-web-stack/internal/credentials"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
 
@@ -43,10 +44,25 @@ type Runner interface {
 	Run(context.Context, string, ...string) ([]byte, error)
 }
 
+// InputRunner is an optional runner extension for commands that take input on stdin.
+type InputRunner interface {
+	RunInput(ctx context.Context, input []byte, name string, args ...string) ([]byte, error)
+}
+
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
+	}
+	return output, nil
+}
+
+func (execRunner) RunInput(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = bytes.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
@@ -226,6 +242,9 @@ func (d *Docker) Action(ctx context.Context, req agentproto.ServiceRequest) (age
 			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: %s %s: %w", req.Action, service.ID, err)
 		}
 		return agentproto.ServiceResponse{ID: string(service.ID), State: "active"}, nil
+	}
+	if req.Action == "rotate-credentials" {
+		return d.rotateCredentials(ctx, service.ID)
 	}
 	d.opMu.Lock()
 	defer d.opMu.Unlock()
@@ -526,11 +545,11 @@ func (d *Docker) ensureSecrets(id services.ID) error {
 		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("agentdocker: inspect secret %s: %w", name, err)
 		}
-		random := make([]byte, 32)
-		if _, err := rand.Read(random); err != nil {
+		secretVal, err := credentials.NewSecret()
+		if err != nil {
 			return fmt.Errorf("agentdocker: generate secret %s: %w", name, err)
 		}
-		value := []byte(base64.RawURLEncoding.EncodeToString(random) + "\n")
+		value := []byte(secretVal + "\n")
 		secret, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, os.ErrExist) {
 			continue
@@ -573,6 +592,106 @@ func (d *Docker) compose(ctx context.Context, args ...string) ([]byte, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+func (d *Docker) composeInput(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+	all := []string{"compose", "--project-name", projectName, "--file", d.composePath}
+	all = append(all, args...)
+	if inRunner, ok := d.runner.(InputRunner); ok {
+		return inRunner.RunInput(ctx, input, "docker", all...)
+	}
+	return d.runner.Run(ctx, "docker", all...)
+}
+
+func (d *Docker) rotateCredentials(ctx context.Context, id services.ID) (agentproto.ServiceResponse, error) {
+	if id != services.IDMySQL && id != services.IDMariaDB && id != services.IDPostgreSQL && id != "postgres" {
+		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: service %q does not support credential rotation", id)
+	}
+	status, err := d.Status(ctx, string(id))
+	if err != nil {
+		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: check %s status: %w", id, err)
+	}
+	if status.State != "active" {
+		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: service %q must be active to rotate credentials", id)
+	}
+
+	secretDir := filepath.Join(d.root, "services", string(id), "secrets")
+	secretFile := filepath.Join(secretDir, "devstack_password")
+	data, err := os.ReadFile(secretFile)
+	if err != nil {
+		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: read %s old credential: %w", id, err)
+	}
+	oldPassword := strings.TrimSpace(string(data))
+
+	newPassword, err := credentials.NewSecret()
+	if err != nil {
+		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: generate new %s secret: %w", id, err)
+	}
+
+	newSQL, err := rotationSQL(id, newPassword)
+	if err != nil {
+		return agentproto.ServiceResponse{}, err
+	}
+	oldSQL, err := rotationSQL(id, oldPassword)
+	if err != nil {
+		return agentproto.ServiceResponse{}, err
+	}
+	args, err := rotationCommand(id)
+	if err != nil {
+		return agentproto.ServiceResponse{}, err
+	}
+
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+
+	if _, err := d.composeInput(ctx, []byte(newSQL), args...); err != nil {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, _ = d.composeInput(rollbackCtx, []byte(oldSQL), args...)
+		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: rotate %s account: %w", id, err)
+	}
+
+	if err := writeAtomic(secretFile, []byte(newPassword+"\n"), 0o600); err != nil {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, _ = d.composeInput(rollbackCtx, []byte(oldSQL), args...)
+		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: write %s new secret: %w", id, err)
+	}
+
+	return agentproto.ServiceResponse{ID: string(id), State: "active"}, nil
+}
+
+func rotationSQL(id services.ID, password string) (string, error) {
+	switch id {
+	case services.IDMySQL, services.IDMariaDB:
+		return fmt.Sprintf("ALTER USER 'devstack'@'%%' IDENTIFIED BY '%s';\n", password), nil
+	case services.IDPostgreSQL, "postgres":
+		return fmt.Sprintf("ALTER ROLE devstack WITH PASSWORD '%s';\n", password), nil
+	default:
+		return "", fmt.Errorf("agentdocker: service %q does not support credential rotation", id)
+	}
+}
+
+func rotationCommand(id services.ID) ([]string, error) {
+	switch id {
+	case services.IDMySQL:
+		return []string{
+			"exec", "-T", string(id), "sh", "-c",
+			`set -eu; MYSQL_PWD="$(cat /run/secrets/mysql_root_password)"; export MYSQL_PWD; exec mysql --user=root --batch --skip-column-names`,
+		}, nil
+	case services.IDMariaDB:
+		return []string{
+			"exec", "-T", string(id), "sh", "-c",
+			`set -eu; MYSQL_PWD="$(cat /run/secrets/mariadb_root_password)"; export MYSQL_PWD; exec mariadb --user=root --batch --skip-column-names`,
+		}, nil
+	case services.IDPostgreSQL, "postgres":
+		return []string{
+			"exec", "-T", string(id), "psql", "--no-psqlrc", "--set=ON_ERROR_STOP=1",
+			"--username=postgres", "--dbname=postgres",
+		}, nil
+	default:
+		return nil, fmt.Errorf("agentdocker: service %q does not support credential rotation", id)
+	}
 }
 
 func contains(values []string, value string) bool {
