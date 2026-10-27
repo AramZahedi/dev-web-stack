@@ -159,7 +159,10 @@ func ExtractSiteSection(generated []byte) (string, error) {
 	if begin < 0 || end < 0 {
 		return "", fmt.Errorf("%w: site section markers not found", ErrInvalidConfig)
 	}
-	return strings.Join(lines[begin+1:end], ""), nil
+	extracted := strings.Join(lines[begin+1:end], "")
+	extracted = strings.ReplaceAll(extracted, "\r\n", "\n")
+	extracted = strings.ReplaceAll(extracted, "\r", "\n")
+	return extracted, nil
 }
 
 // Parse returns the last value of each directive in data. Blank lines,

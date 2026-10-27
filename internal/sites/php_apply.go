@@ -548,7 +548,7 @@ func (s *Service) mergePHPChangeLocked(ctx context.Context, current model.Site, 
 		next.PHPIni = cloneStringMap(change.Ini)
 	}
 	if change.IniRaw != nil {
-		next.PHPIniRaw = *change.IniRaw
+		next.PHPIniRaw = strings.ReplaceAll(strings.ReplaceAll(*change.IniRaw, "\r\n", "\n"), "\r", "\n")
 	}
 	if change.FPM != nil {
 		if err := change.FPM.Validate(); err != nil {

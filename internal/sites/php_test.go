@@ -353,6 +353,32 @@ func TestCreatePHPComposesIniFPMAndStoresSnapshot(t *testing.T) {
 	}
 }
 
+func TestCreatePHPWithCRLFIniRaw(t *testing.T) {
+	svc, fakes := newTestService(t)
+	build := fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site, err := svc.Create(ctx, CreateRequest{
+		Name: "crlfblog", Path: fakes.root, Kind: "php", PHPVersion: "8.4", PHPBuild: build.ID,
+		DocumentRoot: ".",
+		PHPIniRaw:    "display_errors = On\r\nerror_reporting = E_ALL\r\n",
+	})
+	if err != nil {
+		t.Fatalf("Create with CRLF PHPIniRaw failed: %v", err)
+	}
+	if strings.Contains(site.PHPIniRaw, "\r") {
+		t.Fatalf("site.PHPIniRaw should have normalized \\r, got %q", site.PHPIniRaw)
+	}
+
+	// Also verify ApplyPHP with CRLF raw
+	crlfRaw := "display_errors = Off\r\nerror_reporting = 0\r\n"
+	updated, err := svc.ApplyPHP(ctx, site.ID, PHPChange{IniRaw: &crlfRaw})
+	if err != nil {
+		t.Fatalf("ApplyPHP with CRLF IniRaw failed: %v", err)
+	}
+	if strings.Contains(updated.PHPIniRaw, "\r") {
+		t.Fatalf("updated.PHPIniRaw should have normalized \\r, got %q", updated.PHPIniRaw)
+	}
+}
+
 func TestCreatePHPUsesEditedVersionDefaultsAndDependencyOrder(t *testing.T) {
 	svc, fakes := newTestService(t)
 	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")

@@ -272,6 +272,19 @@ func TestExtractSiteSectionRoundTrip(t *testing.T) {
 	if err != nil || !strings.Contains(string(again), "custom.foo = bar") {
 		t.Fatalf("%v", err)
 	}
+
+	// Test CRLF preservation and round-trip normalization for Windows line endings
+	crlfGenerated := []byte(strings.ReplaceAll(string(generated), "\n", "\r\n"))
+	crlfRaw, err := ExtractSiteSection(crlfGenerated)
+	if err != nil {
+		t.Fatalf("ExtractSiteSection with CRLF: %v", err)
+	}
+	if strings.Contains(crlfRaw, "\r") {
+		t.Fatalf("extracted raw should have normalized \\r, got %q", crlfRaw)
+	}
+	if _, err := Compose(Config{Raw: crlfRaw}); err != nil {
+		t.Fatalf("Compose with extracted CRLF raw failed: %v", err)
+	}
 }
 
 func TestExtractSiteSectionRejectsMissingMarkers(t *testing.T) {

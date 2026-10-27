@@ -891,7 +891,7 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		}
 		site.PHPExtensions = cloneBoolMap(req.PHPExtensions)
 		site.PHPIni = cloneStringMap(req.PHPIni)
-		site.PHPIniRaw = req.PHPIniRaw
+		site.PHPIniRaw = strings.ReplaceAll(strings.ReplaceAll(req.PHPIniRaw, "\r\n", "\n"), "\r", "\n")
 		site.FrontController = req.FrontController
 		site.DocumentRoot, err = resolveSiteDocumentRoot(site, req.DocumentRoot)
 		if err != nil {
