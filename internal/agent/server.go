@@ -23,6 +23,7 @@ type Server struct {
 	handler   http.Handler
 	tlsConfig *tls.Config
 	docker    *DockerEngine
+	hosts     *HostsManager
 }
 
 // NewServer creates the authenticated API handler and TLS configuration.
@@ -49,11 +50,13 @@ func NewServerWithRuntimeAndDocker(config Config, token string, identity TLSIden
 	if err != nil {
 		return nil, fmt.Errorf("agent: load HTTPS identity: %w", err)
 	}
-	server := &Server{config: config, docker: docker, tlsConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}}
+	server := &Server{config: config, docker: docker, hosts: NewHostsManager("/etc/hosts", "/etc/wsl.conf"), tlsConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}}
 	mux := http.NewServeMux()
 	mux.HandleFunc(agentproto.PathHealth, server.handleHealth)
 	mux.HandleFunc(agentproto.PathVersion, server.handleVersion)
 	mux.HandleFunc(agentproto.PathCapabilities, server.handleCapabilities)
+	mux.HandleFunc(agentproto.PathHosts, server.handleHosts)
+	mux.HandleFunc(agentproto.PathCA, server.handleCA)
 	if runtime != nil {
 		server.mountRuntime(mux, runtime)
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agent"
 )
@@ -34,6 +35,25 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ingress := agent.NewIngress()
+	if err := ingress.Start(ctx); err != nil {
+		log.Fatalf("devstack-agent: start fixed ingress: %v", err)
+	}
+	defer ingress.Stop()
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := ingress.Refresh(ctx); err != nil {
+					log.Printf("devstack-agent: refresh ingress gateway: %v", err)
+				}
+			}
+		}
+	}()
 	if err := server.ListenAndServe(ctx); err != nil {
 		log.Fatalf("devstack-agent: %v", err)
 	}

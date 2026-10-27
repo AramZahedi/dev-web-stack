@@ -258,3 +258,18 @@ func TestRuntimeReleasePortsForgetsPreparedSite(t *testing.T) {
 		t.Fatalf("released site remained in persisted runtime state: %v", err)
 	}
 }
+
+func TestStaticRuntimeInjectsInstalledCABundleIntoSiteEnvironment(t *testing.T) {
+	runtime, _, spec := newStaticTestRuntime(t)
+	caPath, err := InstallCABundle(runtime.root, testCABundle(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	prepared := runtime.sites[spec.ID].spec.Env
+	if prepared["SSL_CERT_FILE"] != caPath || prepared["NODE_EXTRA_CA_CERTS"] != caPath || !strings.Contains(prepared["PHP_INI_SCAN_DIR"], "php-conf.d") {
+		t.Fatalf("site CA environment = %#v", prepared)
+	}
+}

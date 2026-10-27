@@ -4,6 +4,8 @@ package agent
 
 import "os"
 
+func isRootProcess() bool { return false }
+
 // Agent credentials are used only in the WSL service, where Unix ownership
 // and mode checks are enforced. Windows host files are protected by the
 // installer ACL contract rather than POSIX mode bits.

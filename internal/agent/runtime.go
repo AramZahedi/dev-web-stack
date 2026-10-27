@@ -107,6 +107,10 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
 	}
+	spec.Env, err = r.Environment(spec.Env)
+	if err != nil {
+		return agentproto.SitePrepareResponse{}, err
+	}
 	port, _, err := r.ports.Allocate(spec.ID, "http", spec.HTTPPort)
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
@@ -126,6 +130,22 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 	}
 	r.mu.Unlock()
 	return agentproto.SitePrepareResponse{BackendHost: "127.0.0.1", HTTPPort: port, FastCGIPort: spec.FastCGIPort}, nil
+}
+
+// Environment adds the managed CA bundle to site or terminal environments
+// when provisioned, preserving caller values unrelated to certificate trust.
+func (r *Runtime) Environment(base map[string]string) (map[string]string, error) {
+	path := filepath.Join(r.root, "certs", "ca-bundle.crt")
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		env := make(map[string]string, len(base))
+		for key, value := range base {
+			env[key] = value
+		}
+		return env, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("agent: inspect CA bundle: %w", err)
+	}
+	return CAEnvironment(r.root, base)
 }
 
 // Reconcile restarts every site whose persisted desired state is running.

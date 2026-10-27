@@ -8,6 +8,8 @@ import (
 	"syscall"
 )
 
+func isRootProcess() bool { return os.Geteuid() == 0 }
+
 func requirePrivateFile(path string, mode os.FileMode) error {
 	info, err := os.Lstat(path)
 	if err != nil {
