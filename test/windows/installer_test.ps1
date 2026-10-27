@@ -159,6 +159,7 @@ try {
     Require (Test-Path $binDir -PathType Container) "bin directory created: $binDir"
     Require (Test-Path $systemDir -PathType Container) "system directory created: $systemDir"
     Require (Test-Path $wslDir -PathType Container) "wsl\devstack directory created: $wslDir"
+    Require (Test-Path (Join-Path $tempSandbox "uninstall.ps1")) "uninstall.ps1 staged to install directory"
 
     # Verify protected DACL on system directory
     $acl = Get-Acl -Path $systemDir

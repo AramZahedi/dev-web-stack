@@ -82,6 +82,7 @@ if (-not $psExe -or -not (Test-Path $psExe)) {
 }
 
 # Determine effective target directory
+$repoRoot = $PSScriptRoot
 $targetDir = if (-not [string]::IsNullOrEmpty($TestSandbox)) { $TestSandbox } else { $InstallDir }
 $isSandbox = -not [string]::IsNullOrEmpty($TestSandbox)
 
@@ -184,6 +185,13 @@ if ($DryRun) {
     New-Item -ItemType Directory -Force -Path $binDir | Out-Null
     New-Item -ItemType Directory -Force -Path $systemDir | Out-Null
     New-Item -ItemType Directory -Force -Path $wslDistroDir | Out-Null
+
+    # Stage uninstaller to install root directory
+    $srcUninstall = Join-Path $repoRoot "uninstall.ps1"
+    $dstUninstall = Join-Path $targetDir "uninstall.ps1"
+    if (Test-Path $srcUninstall) {
+        Copy-Item -Path $srcUninstall -Destination $dstUninstall -Force
+    }
 
     # Apply protected DACL to system directory
     $acl = Get-Acl -Path $systemDir

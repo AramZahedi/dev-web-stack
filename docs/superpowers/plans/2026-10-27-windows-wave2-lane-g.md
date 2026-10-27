@@ -73,18 +73,18 @@
 - Systemd: PID 1 verification.
 - Services: Docker Engine with `--data-root /data/devstack/docker` and `devstack-agent.service`.
 
-- [ ] **Step 1:** Write failing tests in `test/windows/installer_test.ps1` for WSL version check (≥ 2.0.0), `.wslconfig` NAT validation, rootfs checksum verification against `versions.lock`, distro import, and systemd validation.
-- [ ] **Step 2:** Run `pwsh test/windows/installer_test.ps1` and verify RED.
-- [ ] **Step 3:** Implement WSL version verification (`wsl.exe --version` ≥ 2.0.0) and automated update via `wsl.exe --update`.
-- [ ] **Step 4:** Implement `.wslconfig` inspection enforcing NAT networking (rejecting mirrored mode).
-- [ ] **Step 5:** Implement rootfs archive acquisition/verification (SHA-256 matching `build/wsl/versions.lock`).
-- [ ] **Step 6:** Implement managed distro import (`wsl.exe --import devstack C:\devstack\wsl\devstack <rootfs.tar.gz> --version 2`).
-- [ ] **Step 7:** Configure `/etc/wsl.conf` with `[boot] systemd=true` and initialize `/data/devstack/managed.json`.
-- [ ] **Step 8:** Implement Docker Engine setup inside the distro with data-root `/data/devstack/docker` using `build/wsl/install-docker.sh`.
-- [ ] **Step 9:** Stage Linux `devstack-agent` binary and install systemd unit `build/wsl/agent.service` at `/etc/systemd/system/devstack-agent.service`.
-- [ ] **Step 10:** Update `C:\devstack\system\install-manifest.json` with recorded versions of WSL, Debian, systemd, Docker, and agent.
-- [ ] **Step 11:** Run `pwsh test/windows/installer_test.ps1` and verify GREEN.
-- [ ] **Step 12:** Commit `feat(installer): add WSL distro import and agent service provisioning`.
+- [x] **Step 1:** Write failing tests in `test/windows/installer_test.ps1` for WSL version check (≥ 2.0.0), `.wslconfig` NAT validation, rootfs checksum verification against `versions.lock`, distro import, and systemd validation.
+- [x] **Step 2:** Run `pwsh test/windows/installer_test.ps1` and verify RED.
+- [x] **Step 3:** Implement WSL version verification (`wsl.exe --version` ≥ 2.0.0) and automated update via `wsl.exe --update`.
+- [x] **Step 4:** Implement `.wslconfig` inspection enforcing NAT networking (rejecting mirrored mode).
+- [x] **Step 5:** Implement rootfs archive acquisition/verification (SHA-256 matching `build/wsl/versions.lock`).
+- [x] **Step 6:** Implement managed distro import (`wsl.exe --import devstack C:\devstack\wsl\devstack <rootfs.tar.gz> --version 2`).
+- [x] **Step 7:** Configure `/etc/wsl.conf` with `[boot] systemd=true` and initialize `/data/devstack/managed.json`.
+- [x] **Step 8:** Implement Docker Engine setup inside the distro with data-root `/data/devstack/docker` using `build/wsl/install-docker.sh`.
+- [x] **Step 9:** Stage Linux `devstack-agent` binary and install systemd unit `build/wsl/agent.service` at `/etc/systemd/system/devstack-agent.service`.
+- [x] **Step 10:** Update `C:\devstack\system\install-manifest.json` with recorded versions of WSL, Debian, systemd, Docker, and agent.
+- [x] **Step 11:** Run `pwsh test/windows/installer_test.ps1` and verify GREEN.
+- [x] **Step 12:** Commit `feat(installer): add WSL distro import and agent service provisioning`.
 
 ---
 
