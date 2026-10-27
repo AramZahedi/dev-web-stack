@@ -88,6 +88,26 @@ Inside the managed WSL distribution (`\\wsl.localhost\devstack` or `/data/devsta
 > [!IMPORTANT]
 > devstack never creates dot-prefixed basenames on Windows (Decision S70). Internal files use explicit names like `config.yaml`, `install-manifest.json`, and `devstack.db`.
 
+### WSL Root Execution Model & Project File Permissions
+
+devstack enforces an explicit execution and permission model across the Windows-WSL boundary:
+
+1. **Root User Execution Inside the Managed Distro:**
+   - The managed WSL2 distribution (`devstack`) is imported without a default unprivileged Linux user. All internal automation, systemd units, Docker Engine (`dockerd`), and the Linux agent (`devstack-agent.service`) execute under the `root` account (`UID 0`).
+   - Root execution is required inside the distro to manage system services (PHP-FPM pools, Docker containers, database daemons), bind internal ports, manipulate `/etc/hosts`, and configure systemd without interactive password prompts.
+   - Interactive shell sessions spawned via `wsl.exe -d devstack` run as `root` by default, giving developers full administrative control over the Linux guest environment.
+
+2. **Runtime Worker Privilege Separation:**
+   - Although the daemon agent and supervisors run as root, web execution workers operate under dedicated unprivileged service accounts.
+   - PHP-FPM site pools execute worker processes under the `www-data` account (`UID 33`, `GID 33`).
+   - Script execution (PHP scripts, Node processes) cannot write to protected agent state (`/data/devstack/system/` is restricted to mode `0600` owned by `root`).
+
+3. **Project File Permissions Across Storage Models:**
+   - **WSL-Mode Projects (ext4 container at `/data/devstack/projects/`):**
+     Recommended for maximum I/O performance. Files reside on the native ext4 virtual disk (`ext4.vhdx`). Standard POSIX file permissions (`chmod`, `chown`) and symbolic links are fully respected. When Windows IDEs (PhpStorm, VS Code) or Git for Windows access these projects through the network UNC share (`\\wsl.localhost\devstack\data\devstack\projects\<site>`), the WSL 9P / virtio-fs translation layer maps the Windows user to Linux permissions seamlessly.
+   - **Windows-Mode Projects (NTFS filesystem at `C:\devstack\projects\` or `/mnt/c/...`):**
+     When projects reside on the Windows host filesystem and are mounted into WSL under `/mnt/c/`, the distro's `/etc/wsl.conf` configures automount with `metadata,umask=22,fmask=11`. The `metadata` option stores Linux file ownership and permission bits in NTFS extended attributes, ensuring `chmod +x` and POSIX file mode changes persist correctly across both Windows and WSL without altering Windows ACLs. The `fmask=11` mask ensures regular files do not accidentally inherit world-executable bits.
+
 ---
 
 ## 3. Installation
@@ -247,12 +267,14 @@ cd .\upgrade-pack
 ```
 
 The upgrade workflow:
-1. Stops the running daemon and backs up `devstack.exe` and `devstack-helper.exe` to `.bak`.
-2. Backs up `/data/devstack` inside WSL to a temporary archive.
-3. Stages updated Windows binaries and restarts the helper service.
-4. Stages the new `devstack-agent` into the WSL distribution and restarts `devstack-agent.service`.
-5. Performs a health probe against the agent HTTPS API.
-6. If the probe fails, the installer immediately initiates an automatic rollback to previous binaries and state.
+1. Stops the running daemon.
+2. Backs up `/data/devstack` inside WSL to a verified temporary archive (`/data/devstack-backup.tar.gz`) before touching any binaries.
+3. Stops the `DevstackHelper` Windows service and backs up `devstack.exe` and `devstack-helper.exe` to `.bak`.
+4. Stages updated Windows binaries and restarts the `DevstackHelper` service.
+5. Stages the new `devstack-agent` into the WSL distribution and restarts `devstack-agent.service`.
+6. Performs a health probe against the agent HTTPS API.
+7. Restarts the user daemon.
+8. If any health or staging step fails, immediately initiates automatic rollback to previous binaries and verified WSL state without data loss.
 
 ---
 

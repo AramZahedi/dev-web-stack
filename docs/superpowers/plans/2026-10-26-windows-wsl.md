@@ -1,7 +1,6 @@
 # Windows 10/11 + WSL2 Implementation Plan
 
-> **Status:** Revised 2026-10-27 after the in-depth plan review. Implementation
-> has **not** started. This plan supersedes the 2026-10-26 version.
+> **Status:** Implemented across Waves 0–2 and released in v0.2.0; remediated on 2026-10-28 per [Audit Remediation Plan](2026-10-28-audit-remediation.md).
 >
 > **For agentic workers:** use the available OpenCode subagent/test-driven
 > workflow. If a named `superpowers:*` skill is unavailable in the environment,

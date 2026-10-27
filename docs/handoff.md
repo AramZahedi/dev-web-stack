@@ -15,7 +15,8 @@
 - **Post-Wave-2 code:** `cbc1605` (action colors, install-scaffold status, compose side-effect, duplicate-badge fixes).
 - **Next-batch code:** `5386c22`.
 - **Next-batch merge SHA:** `3c0ddc7` ([completion record](superpowers/status/2026-10-26-next-batch-completion.md)).
-- **Next step:** read [Continuation State](superpowers/status/2026-10-26-continuation.md), [Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md), and the [Windows plan review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md). The approved Windows/WSL architecture and revised plan are specified in the [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md) and [implementation plan](superpowers/plans/2026-10-26-windows-wsl.md); implementation has **not** started. The revised plan supersedes the 2026-10-26 version. See also the
+- **Windows & WSL2 status:** Windows 10 (Build 19045+) and Windows 11 + WSL2 support is implemented across Waves 0–2 and release v0.2.0. The post-completion audit remediation is tracked in [Audit Findings](superpowers/audits/2026-10-28-windows-review-findings.md) and [Audit Remediation Plan](superpowers/plans/2026-10-28-audit-remediation.md).
+- **Core specifications:** Read the [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md) and [implementation plan](superpowers/plans/2026-10-26-windows-wsl.md). See also the
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
   [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
@@ -261,9 +262,7 @@ Waves 0–2 and the next batch are complete and merged. Do not re-run their kick
 - Random per-engine DB credentials; phpMyAdmin cookie login.
 - Resource-aware performance, host tuning with backup/reset.
 - Existing native external mode retained; no automatic root migration.
-- Linux is the implemented platform; Windows/WSL is planned but not implemented.
-  The revised 2026-10-27 design/plan resolves the networking, storage, backend,
-  path, protocol, security, tooling, and Linux-layout contracts.
+- Linux and Windows/WSL2 are both implemented platforms. Windows features a native helper service, user daemon, proxy forwarders, and managed Debian 12 WSL2 distro. The 2026-10-28 post-completion audit remediation addresses hardening, security boundaries, and lifecycle edge cases.
 
 ## 7. Data and secrets policy
 
@@ -322,9 +321,6 @@ make release-test
   benchmark evidence.
 - Keep automatic CI disabled; run the local gate manually.
 - Run the manual Linux M1/Wave 3 gates if claiming full acceptance.
-- Windows/WSL is planned but not implemented. Read the revised
-  [design](superpowers/specs/2026-10-26-windows-wsl-design.md),
-  [plan](superpowers/plans/2026-10-26-windows-wsl.md), and
-  [review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md);
-  wait for explicit approval before starting Wave 0 T0.1. Do not start arm64, signed packages, auto-update, or M4 work.
+- Windows/WSL2 cross-platform implementation is complete and released in v0.2.0; follow [Audit Remediation Plan](superpowers/plans/2026-10-28-audit-remediation.md) for current remediation tasks.
+- Keep automatic CI disabled; run local verification gates manually.
 - Do not recreate the old standalone Docker image.

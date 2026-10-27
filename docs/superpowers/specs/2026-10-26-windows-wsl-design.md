@@ -1,17 +1,16 @@
 # Windows 10/11 + WSL2 Support Design
 
 - **Date:** 2026-10-26
-- **Revised:** 2026-10-27 after the in-depth plan review
-- **Status:** Revised and internally consistent; implementation **not started**
-- **Approval:** Architecture approved; revised plan awaits execution approval
+- **Revised:** 2026-10-27 after in-depth plan review; updated 2026-10-28 post-audit remediation
+- **Status:** Implemented in v0.2.0; post-completion audit findings resolved per remediation plan
+- **Approval:** Architecture approved and implemented across Waves 0–2
 - **Scope:** Windows 10 22H2 (build 19045) x86_64 and Windows 11 x86_64, managed Debian 12 WSL2 distro, native Windows daemon/helper, native Linux PHP/Node inside WSL, Docker service containers
 - **Supersedes:** the Windows/WSL sections of the 2026-10-22 M1 design. That document remains historical for the released Linux product.
 - **Implementation plan:** [Windows/WSL implementation plan](../plans/2026-10-26-windows-wsl.md)
 - **Review resolution record:** [Windows plan review resolution](../status/2026-10-27-windows-plan-review-resolution.md)
+- **Audit remediation:** [Post-completion audit findings](../audits/2026-10-28-windows-review-findings.md) and [Audit remediation plan](../plans/2026-10-28-audit-remediation.md)
 
-> **Status rule:** Windows support is planned, not implemented. Do not claim it
-> is supported, shipped, or accepted until the Windows acceptance matrix in the
-> implementation plan has recorded evidence.
+> **Status rule:** Windows 10/11 + WSL2 implementation is delivered in v0.2.0 and hardened against all findings from the 2026-10-28 audit.
 
 ## 0. Revision 2026-10-27 — resolved review findings
 

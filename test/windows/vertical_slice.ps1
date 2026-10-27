@@ -250,18 +250,24 @@ Require ($dashWslResult -match "ok") "WSL curl https://devstack.test/ succeeds"
 Step "Checking Windows .cmd tooling shims"
 
 $phpShim = "C:\devstack\bin\php.cmd"
-if (Test-Path $phpShim) {
-    Pass "php.cmd shim exists at $phpShim"
-    $phpShimOut = & "$phpShim" -v 2>&1 | Out-String
-    Require ($phpShimOut -match "PHP 8\.") "php.cmd -v reports active PHP version"
-} else {
-    Pass "php.cmd shim not yet staged to C:\devstack\bin (optional before full tooling install)"
+Require (Test-Path $phpShim) "php.cmd shim exists at $phpShim"
+$phpShimOut = & "$phpShim" -v 2>&1 | Out-String
+Require ($phpShimOut -match "PHP 8\.") "php.cmd -v reports active PHP version"
+
+# Verify Windows-to-WSL path translation in php.cmd
+$tempPhpScript = Join-Path $env:TEMP "devstack_shim_test.php"
+Set-Content -Path $tempPhpScript -Value '<?php echo "shim_path_ok\n";' -Encoding ascii
+try {
+    $shimTestOut = & "$phpShim" "$tempPhpScript" 2>&1 | Out-String
+    Require ($shimTestOut -match "shim_path_ok") "php.cmd translates Windows paths to WSL paths successfully"
+} finally {
+    Remove-Item -Path $tempPhpScript -Force -ErrorAction SilentlyContinue
 }
 
 $composerShim = "C:\devstack\bin\composer.cmd"
-if (Test-Path $composerShim) {
-    Pass "composer.cmd shim exists at $composerShim"
-}
+Require (Test-Path $composerShim) "composer.cmd shim exists at $composerShim"
+$composerShimOut = & "$composerShim" --version 2>&1 | Out-String
+Require ($composerShimOut -match "Composer version [0-9]") "composer.cmd --version reports Composer version"
 
 # -----------------------------------------------------------------------------
 # 7. Doctor Diagnostic Verification
