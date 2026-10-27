@@ -64,9 +64,21 @@ func testProvisioner(t *testing.T, runner Runner) *Provisioner {
 			InstallDir:       filepath.Join(t.TempDir(), "wsl", "devstack"),
 			RootFSPath:       rootfs,
 			RootFSSHA256:     hex.EncodeToString(sum[:]),
+			WSLConfigPath:    filepath.Join(t.TempDir(), ".wslconfig"),
 			MinimumDiskBytes: 1,
 		},
 		FreeDiskBytes: func(string) (uint64, error) { return 1 << 30, nil },
+	}
+}
+
+func TestProvisionRejectsMirroredWSLNetworking(t *testing.T) {
+	runner := &provisionRunner{version: "WSL version: 2.0.0.0\n"}
+	p := testProvisioner(t, runner)
+	if err := os.WriteFile(p.Config.WSLConfigPath, []byte("[wsl2]\nnetworkingMode=mirrored\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Preflight(context.Background()); !errors.Is(err, ErrUnsupportedNetworkingMode) {
+		t.Fatalf("Preflight error = %v, want ErrUnsupportedNetworkingMode", err)
 	}
 }
 

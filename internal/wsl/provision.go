@@ -24,10 +24,11 @@ const (
 )
 
 var (
-	ErrUnmanagedDistro      = errors.New("wsl: refusing to adopt an unmarked distro")
-	ErrConfirmationRequired = errors.New("wsl: unregister requires explicit confirmation")
-	ErrWSLVersion           = errors.New("wsl: WSL 2.0.0 or newer is required")
-	ErrSystemdRequired      = errors.New("wsl: managed distro must run systemd as PID 1")
+	ErrUnmanagedDistro           = errors.New("wsl: refusing to adopt an unmarked distro")
+	ErrConfirmationRequired      = errors.New("wsl: unregister requires explicit confirmation")
+	ErrWSLVersion                = errors.New("wsl: WSL 2.0.0 or newer is required")
+	ErrSystemdRequired           = errors.New("wsl: managed distro must run systemd as PID 1")
+	ErrUnsupportedNetworkingMode = errors.New("wsl: NAT networking is required; mirrored or non-NAT mode is unsupported")
 )
 
 var distroNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -43,6 +44,7 @@ type ProvisionConfig struct {
 	MinimumDiskBytes uint64
 	ForwardingPort   int
 	InstallID        string
+	WSLConfigPath    string
 }
 
 // ManagedDistro reports the validated state of the managed distribution.
@@ -89,6 +91,48 @@ func (p *Provisioner) Preflight(ctx context.Context) error {
 	match := wslVersionPattern.FindSubmatch(out)
 	if len(match) != 2 || compareVersion(string(match[1]), minimumWSLVersion) < 0 {
 		return fmt.Errorf("%w: output %q", ErrWSLVersion, strings.TrimSpace(string(out)))
+	}
+	if err := CheckWSLNetworkingMode(p.Config.WSLConfigPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CheckWSLNetworkingMode rejects non-NAT networking in the current user's
+// .wslconfig. An absent file or setting uses WSL's NAT default.
+func CheckWSLNetworkingMode(path string) error {
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("wsl: resolve home for .wslconfig: %w", err)
+		}
+		path = filepath.Join(home, ".wslconfig")
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("wsl: read .wslconfig: %w", err)
+	}
+	section := ""
+	mode := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
+			continue
+		}
+		if section != "wsl2" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "networkingMode") {
+			mode = strings.ToLower(strings.TrimSpace(value))
+		}
+	}
+	if mode != "" && mode != "nat" {
+		return fmt.Errorf("%w: networkingMode=%s", ErrUnsupportedNetworkingMode, mode)
 	}
 	return nil
 }
