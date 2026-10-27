@@ -64,6 +64,7 @@ func TestResourcesValidate(t *testing.T) {
 		}, true},
 		{"control character in hostname", func(r *Resources) { r.Hostname = "bad\nhost" }, true},
 		{"invalid limits user", func(r *Resources) { r.User = "bad user" }, true},
+		{"domain user", func(r *Resources) { r.User = "DOMAIN\\user" }, false},
 		{"invalid limits group", func(r *Resources) { r.Group = "bad/group" }, true},
 		{"available above total is capped", func(r *Resources) { r.MemoryAvailableBytes = r.MemoryTotalBytes + 1 }, false},
 	}

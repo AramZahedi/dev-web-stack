@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -213,11 +214,11 @@ func cgroupV2Path(procRoot string) string {
 		if len(fields) != 3 || fields[0] != "0" || fields[1] != "" {
 			continue
 		}
-		rel := filepath.Clean("/" + fields[2])
-		if rel == "/" {
+		rel := path.Clean("/" + strings.TrimSpace(fields[2]))
+		if rel == "/" || rel == "." {
 			return ""
 		}
-		return strings.TrimPrefix(rel, "/")
+		return filepath.FromSlash(strings.TrimPrefix(rel, "/"))
 	}
 	return ""
 }

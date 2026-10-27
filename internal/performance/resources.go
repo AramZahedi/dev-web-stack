@@ -140,6 +140,7 @@ func validateAccount(field, value string) error {
 		case r >= 'A' && r <= 'Z':
 		case r >= '0' && r <= '9':
 		case r == '_', r == '.', r == '-':
+		case r == '\\', r == '@':
 		default:
 			return invalid(field, "%q contains an invalid character", value)
 		}
