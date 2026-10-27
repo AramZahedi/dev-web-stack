@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -758,6 +759,9 @@ func TestPHPProxyFlushesStreamingResponse(t *testing.T) {
 }
 
 func TestPHPDirectoryRedirectEscapesLocation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not allow '?' in directory names")
+	}
 	root := t.TempDir()
 	writeTestFile(t, root, "a?b/index.html", "index")
 	r, _ := newPHPRoute(t, root, false, false)

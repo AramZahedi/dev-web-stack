@@ -1,3 +1,5 @@
+//go:build !windows
+
 package sites
 
 import (
@@ -14,19 +16,6 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
-
-func useServingMode(svc *Service, fakes *testFakes, mode string) {
-	svc.deps.Config.ServingMode = mode
-	fakes.vhosts.status.Mode = mode
-}
-
-func persistServingMode(t *testing.T, svc *Service, mode string) {
-	t.Helper()
-	svc.deps.Config.ServingMode = mode
-	if err := svc.deps.Config.Save(); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func TestExternalStaticCreateSkipsBackendAndPort(t *testing.T) {
 	svc, fakes := newTestService(t)

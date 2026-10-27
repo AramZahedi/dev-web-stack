@@ -19,6 +19,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -257,7 +258,7 @@ func (m *Manager) PEM(rec model.CertRecord) (certPEM, keyPEM []byte, err error) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("certs: inspect key for %q: %w", rec.SiteID, err)
 	}
-	if info.Mode().Perm() != keyFileMode {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != keyFileMode {
 		return nil, nil, fmt.Errorf("certs: key for %q has mode %04o; want 0600", rec.SiteID, info.Mode().Perm())
 	}
 	certPEM, err = readRegularFile(certPath)
@@ -735,7 +736,7 @@ func readPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode().Perm() != keyFileMode {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != keyFileMode {
 		return nil, fmt.Errorf("key mode is %04o; want 0600", info.Mode().Perm())
 	}
 

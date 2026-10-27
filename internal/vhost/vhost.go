@@ -7,6 +7,7 @@ package vhost
 import (
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -287,16 +288,15 @@ func validateDocumentRoot(root string) error {
 	if strings.ContainsRune(root, '$') {
 		return errors.New("document root contains '$', which nginx treats as a variable reference")
 	}
-	if !filepath.IsAbs(root) {
+	isAbs, isClean, hasDotDot := isAbsPOSIXPath(root)
+	if !isAbs {
 		return fmt.Errorf("document root %q must be absolute", root)
 	}
-	if filepath.Clean(root) != root {
+	if !isClean {
 		return fmt.Errorf("document root %q must be a clean path", root)
 	}
-	for _, element := range strings.Split(root, "/") {
-		if element == ".." {
-			return fmt.Errorf("document root %q must not contain ..", root)
-		}
+	if hasDotDot {
+		return fmt.Errorf("document root %q must not contain ..", root)
 	}
 	return nil
 }
@@ -481,18 +481,30 @@ func validateTLSDir(dir string) error {
 	if strings.ContainsRune(dir, '$') {
 		return errors.New("vhost: TLS directory contains an nginx variable marker")
 	}
-	if !filepath.IsAbs(dir) {
+	isAbs, isClean, hasDotDot := isAbsPOSIXPath(dir)
+	if !isAbs {
 		return fmt.Errorf("vhost: TLS directory %q must be absolute", dir)
 	}
-	if filepath.Clean(dir) != dir {
+	if !isClean {
 		return fmt.Errorf("vhost: TLS directory %q must be a clean path", dir)
 	}
-	for _, element := range strings.Split(dir, "/") {
-		if element == ".." {
-			return fmt.Errorf("vhost: TLS directory %q must not contain ..", dir)
-		}
+	if hasDotDot {
+		return fmt.Errorf("vhost: TLS directory %q must not contain ..", dir)
 	}
 	return nil
+}
+
+func isAbsPOSIXPath(p string) (isAbs, isClean, hasDotDot bool) {
+	for _, element := range strings.Split(p, "/") {
+		if element == ".." {
+			hasDotDot = true
+			break
+		}
+	}
+	if strings.HasPrefix(p, "/") {
+		return true, path.Clean(p) == p, hasDotDot
+	}
+	return filepath.IsAbs(p), filepath.Clean(p) == p, hasDotDot
 }
 
 func maintenanceFile() []byte {

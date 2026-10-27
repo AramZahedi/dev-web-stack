@@ -3,6 +3,7 @@ package domain
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -216,7 +217,7 @@ func TestValidateProjectPathRejects(t *testing.T) {
 		{"missing", filepath.Join(dir, "missing")},
 		{"file", file},
 	}
-	if os.Geteuid() != 0 {
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
 		tests = append(tests, struct {
 			name string
 			path string

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -187,6 +188,10 @@ func TestShellInitAndExec(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("shell-init missing %q:\n%s", want, out)
 		}
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("executing shell scripts without Windows shim is not supported on Windows")
 	}
 
 	script := filepath.Join(t.TempDir(), "print-env")

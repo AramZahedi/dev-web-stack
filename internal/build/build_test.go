@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,9 @@ import (
 
 func newBuildFixture(t *testing.T) (*Service, *store.Store, string, model.RuntimeBuild) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("executing /bin/sh fixtures is not supported on native Windows; builds run in WSL")
+	}
 	home := t.TempDir()
 	st, err := store.Open(filepath.Join(home, "state.db"))
 	if err != nil {

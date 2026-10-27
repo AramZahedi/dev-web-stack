@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -754,8 +755,8 @@ func TestArtifactContractRejectsBadArtifacts(t *testing.T) {
 }
 
 func TestUnreadableArtifactRejected(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root can read a mode-000 artifact")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("root or Windows can read a mode-000 artifact")
 	}
 	dir := tempDir(t)
 	currentPath := filepath.Join(dir, "current.json")

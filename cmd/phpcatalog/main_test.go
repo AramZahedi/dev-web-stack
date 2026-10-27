@@ -195,11 +195,6 @@ func TestGenerateRejectsUnwritableOutput(t *testing.T) {
 
 func TestGenerateRejectsProductionCatalogOutput(t *testing.T) {
 	opts := validOptions(t)
-	cwd := filepath.Join(t.TempDir(), "cwd")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(cwd)
 	for _, output := range []string{
 		"internal/catalog/catalog.json",
 		"./internal/catalog/catalog.json",
