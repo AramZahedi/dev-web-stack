@@ -16,6 +16,7 @@ import (
 type SiteSpec struct {
 	ID              string
 	Kind            string
+	Domain          string
 	HostPath        string
 	BackendPath     string
 	DocumentRoot    string
