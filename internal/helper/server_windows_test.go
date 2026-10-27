@@ -3,10 +3,22 @@
 package helper
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/ipc"
+	"github.com/AramZahedi/dev-web-stack/internal/winhosts"
+	"github.com/AramZahedi/dev-web-stack/internal/wintrust"
 )
 
 const testHelperSID = "S-1-5-21-123456789-123456789-123456789-1001"
@@ -17,6 +29,93 @@ func TestNewWindowsServerRequiresAllowedSID(t *testing.T) {
 	}
 	if _, err := NewServer(Config{AllowSID: testHelperSID}); err != nil {
 		t.Fatalf("NewServer rejected valid SID: %v", err)
+	}
+}
+
+type helperTrustRunner struct {
+	calls  []string
+	policy bool
+}
+
+func (r *helperTrustRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, name+" "+strings.Join(args, " "))
+	if name == "reg.exe" {
+		switch args[0] {
+		case "query":
+			if r.policy {
+				return []byte("ImportEnterpriseRoots REG_DWORD 0x1"), nil
+			}
+			return []byte("ERROR: The system was unable to find the specified registry value."), errors.New("missing value")
+		case "add":
+			r.policy = true
+		}
+	}
+	return nil, nil
+}
+
+func TestWindowsHelperTrustInstallUsesFixedMachineRootAndFirefoxPolicy(t *testing.T) {
+	authority, err := LoadOrCreateAuthority(t.TempDir(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &helperTrustRunner{}
+	server, err := NewServer(Config{
+		AllowSID:     testHelperSID,
+		Authority:    authority,
+		TrustManager: wintrust.NewManagerWithStatePath(runner, nil, filepath.Join(t.TempDir(), "firefox-policy-managed")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, helperproto.PathTrustInstall, strings.NewReader(`{"user_home":"C:\\Users\\not-accepted-as-a-path"}`))
+	request.Header.Set(helperproto.ProtocolHeader, helperproto.Version)
+	request = request.WithContext(context.WithValue(request.Context(), peerSIDKey{}, testHelperSID))
+	response := httptest.NewRecorder()
+	server.handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("trust install status = %d; body=%s", response.Code, response.Body.String())
+	}
+	if len(runner.calls) != 3 || !strings.Contains(runner.calls[0], "certutil.exe -addstore -f Root "+DefaultWindowsRootCert) || !strings.Contains(runner.calls[1], "reg.exe query HKLM") || !strings.Contains(runner.calls[2], "reg.exe add HKLM") {
+		t.Fatalf("trust commands = %v", runner.calls)
+	}
+}
+
+func TestWindowsHelperHostsSyncUsesManagedBlockAndRejectsOtherOperations(t *testing.T) {
+	hostsPath := filepath.Join(t.TempDir(), "hosts")
+	if err := os.WriteFile(hostsPath, []byte("127.0.0.1 localhost\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(Config{AllowSID: testHelperSID, HostsManager: winhosts.NewManager(hostsPath)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestBody, err := json.Marshal(helperproto.HostsSyncRequest{Domains: []string{"site.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, helperproto.PathHostsSync, bytes.NewReader(requestBody))
+	request.Header.Set(helperproto.ProtocolHeader, helperproto.Version)
+	request = request.WithContext(context.WithValue(request.Context(), peerSIDKey{}, testHelperSID))
+	response := httptest.NewRecorder()
+	server.handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("hosts sync status = %d; body=%s", response.Code, response.Body.String())
+	}
+	data, err := os.ReadFile(hostsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("127.0.0.1 site.test")) || !bytes.Contains(data, []byte("127.0.0.1 localhost")) {
+		t.Fatalf("hosts file = %q", data)
+	}
+
+	forbidden := httptest.NewRequest(http.MethodGet, "/v1/services/status", nil)
+	forbidden.Header.Set(helperproto.ProtocolHeader, helperproto.Version)
+	forbidden = forbidden.WithContext(context.WithValue(forbidden.Context(), peerSIDKey{}, testHelperSID))
+	response = httptest.NewRecorder()
+	server.handler().ServeHTTP(response, forbidden)
+	if response.Code != http.StatusNotFound && response.Code != http.StatusNotImplemented {
+		t.Fatalf("service RPC status = %d, want rejected", response.Code)
 	}
 }
 
