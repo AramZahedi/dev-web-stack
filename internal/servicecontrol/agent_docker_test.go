@@ -146,3 +146,29 @@ func TestAgentDockerErrorsPreserveAgentCause(t *testing.T) {
 		t.Fatalf("Activate error = %v, want wrapped agent error", err)
 	}
 }
+
+func TestAgentDockerRotateCredentialsDelegatesToAgentAction(t *testing.T) {
+	api := &fakeAgentServiceAPI{
+		credentials: map[string]agentproto.ServiceCredentialResponse{
+			"mysql": {ID: "mysql", User: "devstack", Value: "new-rotated-secret"},
+		},
+	}
+	adapter, err := servicecontrol.NewAgentDocker(api, "/data/devstack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := adapter.RotateCredentials(context.Background(), "mysql")
+	if err != nil {
+		t.Fatalf("RotateCredentials(mysql) failed: %v", err)
+	}
+	if cred.Password != "new-rotated-secret" || cred.Port != 3306 {
+		t.Fatalf("rotated credentials = %+v, want new-rotated-secret on 3306", cred)
+	}
+	if len(api.actions) != 1 || api.actions[0].ID != "mysql" || api.actions[0].Action != "rotate-credentials" {
+		t.Fatalf("agent actions = %+v, want rotate-credentials on mysql", api.actions)
+	}
+
+	if _, err := adapter.RotateCredentials(context.Background(), "redis"); !errors.Is(err, servicecontrol.ErrCredentialsUnsupported) {
+		t.Fatalf("RotateCredentials(redis) = %v, want ErrCredentialsUnsupported", err)
+	}
+}

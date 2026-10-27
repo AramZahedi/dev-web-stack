@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -81,7 +82,8 @@ var emptySnapshot = &Snapshot{}
 // Router serves the current snapshot through an atomic pointer. Replacing a
 // snapshot is safe while requests are in flight.
 type Router struct {
-	snapshot atomic.Pointer[Snapshot]
+	snapshot       atomic.Pointer[Snapshot]
+	backupSnapshot atomic.Pointer[Snapshot]
 
 	staticTransport *http.Transport
 	nodeTransport   *http.Transport
@@ -127,6 +129,39 @@ func (r *Router) Replace(s Snapshot) {
 		Certs:       certs,
 		DefaultCert: s.DefaultCert,
 	})
+}
+
+// UpdateDockerWebRoutes redirects all non-dashboard routes to the private Docker
+// web server (e.g. 127.0.0.1:18080) when active is true, and restores original
+// routes when active is false.
+func (r *Router) UpdateDockerWebRoutes(ctx context.Context, active bool, host string, port int) error {
+	current := r.load()
+	if active {
+		newRoutes := make(map[string]Route, len(current.Routes))
+		upstream := net.JoinHostPort(host, strconv.Itoa(port))
+		for h, route := range current.Routes {
+			if route.Host == "devstack.test" || route.SiteID == "__dashboard__" {
+				newRoutes[h] = route
+				continue
+			}
+			newRoute := route
+			newRoute.Upstream = upstream
+			newRoute.Kind = KindNode
+			newRoutes[h] = newRoute
+		}
+		r.backupSnapshot.Store(current)
+		r.snapshot.Store(&Snapshot{
+			Routes:      newRoutes,
+			Certs:       current.Certs,
+			DefaultCert: current.DefaultCert,
+		})
+		return nil
+	}
+
+	if backup := r.backupSnapshot.Swap(nil); backup != nil {
+		r.snapshot.Store(backup)
+	}
+	return nil
 }
 
 // Lookup returns the route for host. Matching is exact after lowercasing,
