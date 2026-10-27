@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -296,10 +297,26 @@ func (s *Service) SetServingMode(ctx context.Context, mode string) error {
 		if mode == current && mode == config.ServingModeBuiltin {
 			return nil
 		}
+		if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin {
+			return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
+		}
 		return errors.New("sites: vhost helper is not configured")
 	}
 	if strings.TrimSpace(s.deps.Config.Home) == "" {
 		return errors.New("sites: config home is not set")
+	}
+
+	if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin {
+		status, err := s.deps.Vhosts.VhostStatus(ctx)
+		if err != nil {
+			if errors.Is(err, helperproto.ErrNotImplemented) {
+				return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
+			}
+			return fmt.Errorf("sites: read vhost status: %w", err)
+		}
+		if status.Mode == "" && !status.ConfigOK {
+			return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
+		}
 	}
 
 	// config.yaml is not trustworthy on its own: the helper may have been
@@ -374,6 +391,9 @@ func (s *Service) switchBuiltinToExternal(ctx context.Context, mode string, req 
 
 	if _, err := s.deps.Vhosts.SetServingMode(ctx, mode, req); err != nil {
 		restore := s.restoreBuiltinRuntimeLocked(ctx)
+		if runtime.GOOS == "windows" && (errors.Is(err, helperproto.ErrNotImplemented) || strings.Contains(err.Error(), "not supported on Windows")) {
+			return errors.Join(errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active"), restore)
+		}
 		return errors.Join(fmt.Errorf("sites: switch helper to %q: %w", mode, err), restore)
 	}
 
@@ -519,6 +539,14 @@ func (s *Service) SaveServingState(ctx context.Context, mode, provider string) e
 	if provider == config.ServingProviderDocker && mode == config.ServingModeBuiltin {
 		return errors.New("sites: serving_provider docker requires serving_mode nginx or apache")
 	}
+	if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin {
+		if s.deps.Vhosts == nil {
+			return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
+		}
+		if _, err := s.deps.Vhosts.VhostStatus(ctx); err != nil && errors.Is(err, helperproto.ErrNotImplemented) {
+			return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -526,6 +554,14 @@ func (s *Service) SaveServingState(ctx context.Context, mode, provider string) e
 }
 
 func (s *Service) saveServingStateLocked(ctx context.Context, mode, provider string) error {
+	if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin {
+		if s.deps.Vhosts == nil {
+			return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
+		}
+		if _, err := s.deps.Vhosts.VhostStatus(ctx); err != nil && errors.Is(err, helperproto.ErrNotImplemented) {
+			return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
+		}
+	}
 	cfg := s.deps.Config
 	previousMode := cfg.ServingMode
 	previousProvider := cfg.ServingProvider

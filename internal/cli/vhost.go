@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -25,8 +27,9 @@ const (
 
 func (a *App) newVhostCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "vhost",
-		Short: "Manage native nginx and Apache vhosts",
+		Use:     "vhost",
+		Aliases: []string{"serving"},
+		Short:   "Manage native nginx and Apache vhosts",
 	}
 	cmd.AddCommand(
 		a.newVhostStatusCmd(),
@@ -104,6 +107,20 @@ func (a *App) newVhostUseCmd() *cobra.Command {
 			}
 			status, err := c.SetServingMode(ctx, mode)
 			if err != nil {
+				if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin {
+					if errors.Is(err, helperproto.ErrNotImplemented) ||
+						errors.Is(err, helperproto.ErrServingModeUnavailable) ||
+						strings.Contains(err.Error(), "not supported") ||
+						strings.Contains(err.Error(), "NOT_IMPLEMENTED") ||
+						strings.Contains(err.Error(), "HELPER_UNAVAILABLE") {
+						return &Error{
+							Code:        "NOT_SUPPORTED",
+							Message:     "external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active",
+							Remediation: "Use `devstack vhost use builtin`.",
+							cause:       err,
+						}
+					}
+				}
 				return err
 			}
 			return a.printVhostStatus(cmd, status)
@@ -124,6 +141,20 @@ func (a *App) newVhostSyncCmd() *cobra.Command {
 			}
 			status, err := c.SyncVhosts(ctx)
 			if err != nil {
+				if runtime.GOOS == "windows" {
+					if errors.Is(err, helperproto.ErrNotImplemented) ||
+						errors.Is(err, helperproto.ErrServingModeUnavailable) ||
+						strings.Contains(err.Error(), "not supported") ||
+						strings.Contains(err.Error(), "NOT_IMPLEMENTED") ||
+						strings.Contains(err.Error(), "HELPER_UNAVAILABLE") {
+						return &Error{
+							Code:        "NOT_SUPPORTED",
+							Message:     "external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active",
+							Remediation: "Use `devstack vhost use builtin`.",
+							cause:       err,
+						}
+					}
+				}
 				return err
 			}
 			return a.printVhostStatus(cmd, status)
