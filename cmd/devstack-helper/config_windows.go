@@ -24,6 +24,13 @@ type windowsFileConfig struct {
 
 func loadWindowsFileConfig(path string) (windowsFileConfig, error) {
 	var cfg windowsFileConfig
+	info, err := os.Lstat(path)
+	if err != nil {
+		return cfg, fmt.Errorf("read helper config %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return cfg, fmt.Errorf("read helper config %s: Windows helper config must be a regular non-symlink file", path)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, fmt.Errorf("read helper config %s: %w", path, err)
@@ -180,6 +187,9 @@ func setWindowsConfigInt(root *yaml.Node, key string, value int) {
 
 func writeWindowsOptionsFile(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create helper config directory: %w", err)
+	}
 	file, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create helper config temporary file: %w", err)

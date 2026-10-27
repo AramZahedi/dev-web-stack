@@ -68,3 +68,51 @@ func TestWindowsConfigPersistencePreservesExistingComments(t *testing.T) {
 		t.Fatalf("config comment was dropped: %s", data)
 	}
 }
+
+func TestWindowsConfigPersistCreatesDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "system", "helper.yaml")
+	opts := windowsOptions{configPath: path, allowSID: allowedHelperSID, pipe: `\\.\pipe\devstack-helper`, proxyHTTPPort: 8080, proxyHTTPSPort: 8443}
+	if err := persistWindowsOptions(opts); err != nil {
+		t.Fatalf("persist in nested directory: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), allowedHelperSID) {
+		t.Fatalf("persisted content = %s", string(data))
+	}
+}
+
+func TestWindowsConfigRejectsSymlinks(t *testing.T) {
+	tempDir := t.TempDir()
+	target := filepath.Join(tempDir, "real_helper.yaml")
+	if err := os.WriteFile(target, []byte("allow_sid: "+allowedHelperSID+"\nproxy_http_port: 8080\nproxy_https_port: 8443\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(tempDir, "symlink_helper.yaml")
+	if err := os.Symlink(target, symlink); err != nil {
+		t.Skip("symlinks not supported without elevated privileges")
+	}
+	if _, err := loadWindowsFileConfig(symlink); err == nil {
+		t.Fatal("loadWindowsFileConfig accepted a symlink")
+	}
+	opts := windowsOptions{configPath: symlink, allowSID: allowedHelperSID, pipe: `\\.\pipe\devstack-helper`, proxyHTTPPort: 8080, proxyHTTPSPort: 8443}
+	if err := persistWindowsOptions(opts); err == nil {
+		t.Fatal("persistWindowsOptions accepted a symlink")
+	}
+}
+
+func TestWindowsConfigRejectsInvalidPersistOptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "helper.yaml")
+	for _, bad := range []windowsOptions{
+		{configPath: "", allowSID: allowedHelperSID, proxyHTTPPort: 8080, proxyHTTPSPort: 8443},
+		{configPath: path, allowSID: "", proxyHTTPPort: 8080, proxyHTTPSPort: 8443},
+		{configPath: path, allowSID: allowedHelperSID, proxyHTTPPort: 9080, proxyHTTPSPort: 8443},
+		{configPath: path, allowSID: allowedHelperSID, proxyHTTPPort: 8080, proxyHTTPSPort: 9443},
+	} {
+		if err := persistWindowsOptions(bad); err == nil {
+			t.Errorf("persistWindowsOptions accepted invalid options: %+v", bad)
+		}
+	}
+}

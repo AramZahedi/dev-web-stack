@@ -174,6 +174,9 @@ func setWindowsConfigInt(root *yaml.Node, key string, value int) {
 
 func writeWindowsHelperConfig(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create helper config directory: %w", err)
+	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create helper config temporary file: %w", err)

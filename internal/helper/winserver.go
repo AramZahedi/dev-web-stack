@@ -224,6 +224,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST "+helperproto.PathTrustInstall, s.handleTrustInstall)
 	mux.HandleFunc("POST "+helperproto.PathTrustRemove, s.handleTrustRemove)
 	mux.HandleFunc("POST "+helperproto.PathTrustStatus, s.handleTrustStatus)
+	mux.HandleFunc("POST "+helperproto.PathForwarders, s.handleForwarders)
+	mux.HandleFunc("POST "+helperproto.PathProxyTargets, s.handleProxyTargets)
 	mux.HandleFunc("POST "+helperproto.PathUninstall, s.handleUninstall)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		peerSID, _ := r.Context().Value(peerSIDKey{}).(string)
@@ -367,12 +369,50 @@ func (s *Server) handleTrustStatus(w http.ResponseWriter, r *http.Request) {
 	writeWindowsJSON(w, http.StatusOK, helperproto.TrustResponse{Targets: []trust.Target{root, firefox}})
 }
 
+func (s *Server) handleForwarders(w http.ResponseWriter, r *http.Request) {
+	var request helperproto.ForwardersRequest
+	if err := decodeWindowsJSON(w, r, &request); err != nil {
+		writeWindowsError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if err := s.setForwarders(r.Context(), request); err != nil {
+		if errors.Is(err, helperproto.ErrInvalidRequest) {
+			writeWindowsError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+			return
+		}
+		writeWindowsError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleProxyTargets(w http.ResponseWriter, r *http.Request) {
+	var request helperproto.ProxyTargetsRequest
+	if err := decodeWindowsJSON(w, r, &request); err != nil {
+		writeWindowsError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	response, err := s.updateProxyTargets(r.Context(), request)
+	if err != nil {
+		if errors.Is(err, helperproto.ErrInvalidRequest) {
+			writeWindowsError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+			return
+		}
+		writeWindowsError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
+		return
+	}
+	writeWindowsJSON(w, http.StatusOK, response)
+}
+
 func (s *Server) handleUninstall(w http.ResponseWriter, r *http.Request) {
 	if _, err := decodeWindowsJSONOptional(w, r); err != nil {
 		writeWindowsError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
 		return
 	}
 	var failures []string
+	if err := s.setForwarders(r.Context(), helperproto.ForwardersRequest{Enable: false}); err != nil {
+		failures = append(failures, "forwarders: "+err.Error())
+	}
 	if _, err := s.hosts.Sync(nil); err != nil {
 		failures = append(failures, "hosts: "+err.Error())
 	}
