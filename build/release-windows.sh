@@ -110,6 +110,16 @@ BUILD_DIR="$(cd -- "${BUILD_DIR}" && pwd)"
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/devstack-win-release-stage.XXXXXX")"
 cleanup() {
 	rm -rf "${STAGE}"
+	if [ -n "${INSTALLER_STAGE:-}" ]; then
+		rm -rf "${INSTALLER_STAGE}"
+	fi
+	TRACKED_PAYLOAD="${REPO_ROOT}/cmd/devstack-installer/payload.zip"
+	if [ -f "${TRACKED_PAYLOAD}" ]; then
+		tracked_size=$(wc -c <"${TRACKED_PAYLOAD}" | tr -d ' ')
+		if [ "${tracked_size}" -ne 22 ]; then
+			printf '\x50\x4b\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' >"${TRACKED_PAYLOAD}"
+		fi
+	fi
 }
 trap cleanup EXIT
 
@@ -189,6 +199,10 @@ cp "${REPO_ROOT}/install.ps1" "${STAGE}/install.ps1"
 chmod 0755 "${STAGE}/install.ps1"
 cp "${REPO_ROOT}/uninstall.ps1" "${STAGE}/uninstall.ps1"
 chmod 0755 "${STAGE}/uninstall.ps1"
+if [ -f "${REPO_ROOT}/build/windows/devstack-daemon-task.ps1" ]; then
+	cp "${REPO_ROOT}/build/windows/devstack-daemon-task.ps1" "${STAGE}/devstack-daemon-task.ps1"
+	chmod 0644 "${STAGE}/devstack-daemon-task.ps1"
+fi
 cp "${REPO_ROOT}/README.md" "${STAGE}/README.md"
 chmod 0644 "${STAGE}/README.md"
 if [ -f "${REPO_ROOT}/LICENSE" ]; then
@@ -198,15 +212,24 @@ fi
 
 # Acquire or generate WSL rootfs
 TARGET_ROOTFS="${STAGE}/debian-12-wsl-rootfs.tar.gz"
-if [ -n "${ROOTFS_PATH}" ] && [ -f "${ROOTFS_PATH}" ]; then
+ROOTFS_MIN_BYTES=1073741824
+if [ -f "${REPO_ROOT}/build/wsl/versions.lock" ]; then
+	parsed_min=$(grep -E '^rootfs_minimum_bytes=' "${REPO_ROOT}/build/wsl/versions.lock" | cut -d'=' -f2 | tr -d ' \r\n')
+	if [[ "${parsed_min}" =~ ^[0-9]+$ ]]; then
+		ROOTFS_MIN_BYTES="${parsed_min}"
+	fi
+fi
+
+if [ -n "${ROOTFS_PATH}" ]; then
+	[ -f "${ROOTFS_PATH}" ] || die "specified --rootfs ${ROOTFS_PATH} not found"
 	cp "${ROOTFS_PATH}" "${TARGET_ROOTFS}"
 elif [ -f "${REPO_ROOT}/build/wsl/debian-12-wsl-rootfs.tar.gz" ]; then
 	cp "${REPO_ROOT}/build/wsl/debian-12-wsl-rootfs.tar.gz" "${TARGET_ROOTFS}"
 elif [ -f "${REPO_ROOT}/dist/wsl/debian-12-wsl-rootfs.tar.gz" ]; then
 	cp "${REPO_ROOT}/dist/wsl/debian-12-wsl-rootfs.tar.gz" "${TARGET_ROOTFS}"
-else
+elif [ "${MOCK_ROOTFS}" -eq 1 ]; then
 	# Create minimal valid rootfs archive
-	printf 'release-windows: creating minimal WSL rootfs archive\n'
+	printf 'release-windows: creating minimal WSL rootfs archive (--mock-rootfs)\n'
 	mock_rootfs_dir="$(mktemp -d)"
 	mkdir -p "${mock_rootfs_dir}/etc" "${mock_rootfs_dir}/data/devstack"
 	cat >"${mock_rootfs_dir}/etc/wsl.conf" <<'EOF'
@@ -217,6 +240,15 @@ generateHosts=false
 EOF
 	tar -czf "${TARGET_ROOTFS}" -C "${mock_rootfs_dir}" .
 	rm -rf "${mock_rootfs_dir}"
+else
+	die "WSL rootfs archive not found. Expected build/wsl/debian-12-wsl-rootfs.tar.gz or --rootfs <path>. Real release builds require a real rootfs archive (>= 1GB). To create a mock rootfs for development/testing, pass --mock-rootfs."
+fi
+
+if [ "${MOCK_ROOTFS}" -eq 0 ]; then
+	rootfs_size=$(wc -c <"${TARGET_ROOTFS}" | tr -d ' ')
+	if [ "${rootfs_size}" -lt "${ROOTFS_MIN_BYTES}" ]; then
+		die "WSL rootfs archive size (${rootfs_size} bytes) is below minimum required ${ROOTFS_MIN_BYTES} bytes (1GB). Use --mock-rootfs for testing."
+	fi
 fi
 
 # Generate rootfs SHA256 sidecar
@@ -350,6 +382,7 @@ printf 'release-windows: generating internal checksums manifest\n'
 		debian-12-wsl-rootfs.tar.gz.sha256 \
 		install.ps1 \
 		uninstall.ps1 \
+		$( [ -f devstack-daemon-task.ps1 ] && echo "devstack-daemon-task.ps1" ) \
 		README.md \
 		$( [ -f LICENSE ] && echo "LICENSE" ) \
 		devstack.spdx.json >checksums.txt
@@ -404,17 +437,19 @@ TAR_MTIME="${SOURCE_DATE_EPOCH:-0}"
 )
 
 # Build standalone binary installer executable (devstack-installer.exe)
-PAYLOAD_DEST="${REPO_ROOT}/cmd/devstack-installer/payload.zip"
-EMPTY_ZIP_BYTES='\x50\x4b\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-cp -f "${ARCHIVE_ZIP}" "${PAYLOAD_DEST}"
+INSTALLER_STAGE="${BUILD_DIR}/.installer-stage-$$"
+mkdir -p "${INSTALLER_STAGE}"
+cp "${REPO_ROOT}/cmd/devstack-installer/"*.go "${INSTALLER_STAGE}/"
+cp -f "${ARCHIVE_ZIP}" "${INSTALLER_STAGE}/payload.zip"
+
 printf 'release-windows: building standalone devstack-installer.exe\n'
 (
 	cd "${REPO_ROOT}"
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
-		go build -trimpath -ldflags "${LDFLAGS[*]}" -o "${OUTPUT_DIR}/devstack-installer.exe" ./cmd/devstack-installer
+		go build -trimpath -ldflags "${LDFLAGS[*]}" -o "${OUTPUT_DIR}/devstack-installer.exe" "${INSTALLER_STAGE}"
 	cp -f "${OUTPUT_DIR}/devstack-installer.exe" "${OUTPUT_DIR}/devstack-setup.exe"
 )
-printf "${EMPTY_ZIP_BYTES}" >"${PAYLOAD_DEST}"
+rm -rf "${INSTALLER_STAGE}"
 
 # Write outer checksums.txt in output directory
 (

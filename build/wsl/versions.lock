@@ -4,8 +4,10 @@ debian_snapshot=20251027T000000Z
 debian_mirror=https://snapshot.debian.org/archive/debian/20251027T000000Z/
 debian_security_mirror=https://snapshot.debian.org/archive/debian-security/20251027T000000Z/
 rootfs_artifact=debian-12-wsl-rootfs.tar.gz
-rootfs_sha256=release-manifest
+# Pinned SHA-256 digest of the reproducible debian-12-wsl-rootfs.tar.gz artifact.
+rootfs_sha256=d232cfe678881b7f1293b6951c2c885a683f6fddbf50f309197fffc1ef0b1ae2
 rootfs_arch=amd64
+# Minimum host disk space required for importing the WSL distro (1GB = 1073741824 bytes).
 rootfs_minimum_bytes=1073741824
 docker_ce_version=5:27.5.1-1~debian.12~bookworm
 containerd_version=1.7.25-1

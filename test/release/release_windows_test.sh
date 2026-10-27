@@ -31,8 +31,14 @@ OUT="${TMP}/out"
 BUILD="${TMP}/build"
 mkdir -p "${OUT}" "${BUILD}"
 
-log "building Windows release ${VERSION} into ${OUT}"
-bash "${RELEASE_SCRIPT}" --version "${VERSION}" --skip-ui --output "${OUT}" --build-dir "${BUILD}"
+log "asserting fail-closed release: missing rootfs without --mock-rootfs must fail"
+if (cd "${REPO_ROOT}" && bash "${RELEASE_SCRIPT}" --version "${VERSION}" --skip-ui --rootfs /nonexistent/rootfs.tar.gz --output "${OUT}" --build-dir "${BUILD}" 2>/dev/null); then
+	fail "expected release-windows.sh to fail with nonexistent rootfs"
+fi
+pass "release-windows.sh fails closed on missing rootfs without --mock-rootfs"
+
+log "building Windows release ${VERSION} into ${OUT} using --mock-rootfs"
+bash "${RELEASE_SCRIPT}" --version "${VERSION}" --skip-ui --mock-rootfs --output "${OUT}" --build-dir "${BUILD}"
 
 ARCHIVE="${OUT}/${ARCHIVE_ZIP}"
 CHECKSUMS="${OUT}/checksums.txt"

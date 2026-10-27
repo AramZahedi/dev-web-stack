@@ -29,11 +29,8 @@ fi
 systemctl daemon-reload
 systemctl enable devstack-agent.service
 
-# If agent.yaml and agent.token exist, start/restart the service
+# If agent.yaml and agent.token exist, restart the service without masking errors
 if [[ -r /data/devstack/agent.yaml && -r /data/devstack/agent.token ]]; then
   systemctl restart devstack-agent.service
-else
-  # Credentials are provisioned during user phase (devstack init); attempt start or leave enabled
-  systemctl start devstack-agent.service 2>/dev/null || true
 fi
 exit 0
