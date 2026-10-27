@@ -493,3 +493,26 @@ Required evidence before claiming Windows support:
   ext4.
 - Public entry is helper 80/443 → daemon 8080/8443; WSL ingress is fixed 80/443
   → host gateway.
+
+---
+
+## 11. Wave 2 Acceptance & Live Verification Evidence
+
+Recorded at 2026-10-28T00:25:00+03:30 on branch `feature/windows-wsl` (Commit `dcb49b6`).
+
+### Verification Outcomes:
+1. **Windows Unit & Vet Suite:**
+   - `go test ./...` across all packages: **PASS (Exit 0, 100% green)**
+   - `go vet ./...` across all packages: **PASS (Exit 0, clean)**
+2. **Linux Regression Suite (WSL / Linux):**
+   - `internal/agent`, `internal/proxy`, `internal/sites`: **PASS (Exit 0, 100% green)**
+3. **Live Vertical Slice Acceptance Suite (`test/windows/vertical_slice.ps1`):**
+   - **Prerequisites Gate:** PASS (Windows 11 build 26200, WSL 2.0.0+, managed `devstack` distro, systemd PID 1, Docker Engine healthy, port 8443 gateway reachable).
+   - **Product Services & Security Gate:** PASS (DevstackHelper Windows service active, daemon active, DPAPI agent token & pin verified, Decision S70 No-Dot policy verified).
+   - **Site Provisioning Gate:** PASS (Windows static site `win-slice`, WSL static site `wsl-slice`, Linux PHP-FPM site `php-slice`).
+   - **Windows Host Trusted HTTPS Gate:** PASS (`https://win-slice.test/` HTTP 200, `https://wsl-slice.test/` HTTP 200, `https://php-slice.test/` HTTP 200 with status `ok` and Linux `fpm-fcgi` SAPI confirmed, dashboard `https://devstack.test/` HTTP 200).
+   - **WSL Trusted In-Distro Ingress Gate:** PASS (WSL `curl` reaches `win-slice.test`, `wsl-slice.test`, `php-slice.test`, and `devstack.test` with trusted Root CA without insecure flags).
+   - **Tooling Shims Gate:** PASS (`C:\devstack\bin\php.cmd` and `C:\devstack\bin\composer.cmd` execute active WSL runtimes).
+   - **Doctor Diagnostics Gate:** PASS (`devstack doctor` validates localhost forwarding, WSL agent, helper service, and Root CA trust).
+   - **Final Verdict:** `vertical-slice: ALL ACCEPTANCE GATES PASSED (100% GREEN)`.
+
