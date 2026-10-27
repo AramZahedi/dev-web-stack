@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -82,7 +83,9 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 	}
 
 	cleanRoot := filepath.Clean(root)
-	if abs, err := filepath.Abs(cleanRoot); err == nil {
+	if strings.HasPrefix(root, "/") {
+		cleanRoot = path.Clean(root)
+	} else if abs, err := filepath.Abs(cleanRoot); err == nil {
 		cleanRoot = abs
 	}
 
@@ -137,18 +140,31 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 
 			vol := composeVolume{
 				Type:     "bind",
-				Target:   filepath.Clean(m.ContainerPath),
+				Target:   filepath.ToSlash(filepath.Clean(m.ContainerPath)),
 				ReadOnly: m.ReadOnly,
 			}
 
 			if area == MountAbsolute {
-				vol.Source = filepath.Clean(m.HostPath)
+				if strings.HasPrefix(root, "/") && strings.HasPrefix(m.HostPath, "/") {
+					vol.Source = path.Clean(m.HostPath)
+				} else {
+					vol.Source = filepath.Clean(m.HostPath)
+				}
 			} else {
 				areaRoot := mountAreaRoot(cleanRoot, idStr, area)
-				vol.Source = filepath.Join(areaRoot, filepath.Clean(m.HostSubdir))
-				rel, err := filepath.Rel(areaRoot, vol.Source)
-				if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					return fmt.Errorf("service %q: mount path %q escapes %s area", s.ID, vol.Source, area)
+				if strings.HasPrefix(root, "/") {
+					cleanSub := path.Clean("/" + strings.ReplaceAll(m.HostSubdir, "\\", "/"))
+					cleanSub = strings.TrimPrefix(cleanSub, "/")
+					vol.Source = path.Join(areaRoot, cleanSub)
+					if cleanSub == ".." || strings.HasPrefix(cleanSub, "../") {
+						return fmt.Errorf("service %q: mount path %q escapes %s area", s.ID, vol.Source, area)
+					}
+				} else {
+					vol.Source = filepath.Join(areaRoot, filepath.Clean(m.HostSubdir))
+					rel, err := filepath.Rel(areaRoot, vol.Source)
+					if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+						return fmt.Errorf("service %q: mount path %q escapes %s area", s.ID, vol.Source, area)
+					}
 				}
 			}
 
@@ -251,15 +267,19 @@ func durationString(d time.Duration) string {
 }
 
 func mountAreaRoot(root, id string, area MountArea) string {
+	join := filepath.Join
+	if strings.HasPrefix(root, "/") {
+		join = path.Join
+	}
 	switch area {
 	case MountService:
-		return filepath.Join(root, "services", id)
+		return join(root, "services", id)
 	case MountSecrets:
-		return filepath.Join(root, "secrets")
+		return join(root, "secrets")
 	case MountCerts:
-		return filepath.Join(root, "certs")
+		return join(root, "certs")
 	case MountProjects:
-		return filepath.Join(root, "projects")
+		return join(root, "projects")
 	default:
 		return root
 	}

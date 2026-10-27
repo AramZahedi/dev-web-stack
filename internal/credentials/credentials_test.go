@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ func testStore(t *testing.T) (*Store, string) {
 
 func requireMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat %s: %v", path, err)
@@ -166,8 +170,8 @@ func TestEnsureAllowsEmptyDataDirectoryAfterInstall(t *testing.T) {
 }
 
 func TestEnsureTreatsUnreadableDataDirectoryAsInitialized(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root can read a mode-000 directory")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("root or Windows can read a mode-000 directory")
 	}
 	store, root := testStore(t)
 	dataDir := filepath.Join(root, "services", "postgresql", "data")

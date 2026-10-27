@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -314,6 +315,21 @@ func currentFromRelease(release, server string) (string, bool) {
 	release = strings.TrimSpace(release)
 	if release == "" {
 		return "", false
+	}
+	if strings.HasPrefix(release, "/") {
+		clean := path.Clean(release)
+		releasesDir := path.Dir(clean)
+		if path.Base(releasesDir) != "releases" {
+			return "", false
+		}
+		serverDir := path.Dir(releasesDir)
+		if server != "" && path.Base(serverDir) != server {
+			return "", false
+		}
+		if serverDir == "." || serverDir == "/" {
+			return "", false
+		}
+		return path.Join(serverDir, "current"), true
 	}
 	clean := filepath.Clean(release)
 	releasesDir := filepath.Dir(clean)

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package terminal
 
 import (
@@ -5,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +153,9 @@ func TestPrepareRejectsMissingProjectDirectory(t *testing.T) {
 }
 
 func TestManagerRefusesRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not use POSIX root UID 0 checks")
+	}
 	home := t.TempDir()
 	paths, site, build, info := testPHPFixture(t, home)
 	deps := testDeps(paths)
