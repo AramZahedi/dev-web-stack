@@ -403,13 +403,27 @@ TAR_MTIME="${SOURCE_DATE_EPOCH:-0}"
 		-czf "${ARCHIVE_TAR}" *
 )
 
+# Build standalone binary installer executable (devstack-installer.exe)
+PAYLOAD_DEST="${REPO_ROOT}/cmd/devstack-installer/payload.zip"
+EMPTY_ZIP_BYTES='\x50\x4b\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+cp -f "${ARCHIVE_ZIP}" "${PAYLOAD_DEST}"
+printf 'release-windows: building standalone devstack-installer.exe\n'
+(
+	cd "${REPO_ROOT}"
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+		go build -trimpath -ldflags "${LDFLAGS[*]}" -o "${OUTPUT_DIR}/devstack-installer.exe" ./cmd/devstack-installer
+	cp -f "${OUTPUT_DIR}/devstack-installer.exe" "${OUTPUT_DIR}/devstack-setup.exe"
+)
+printf "${EMPTY_ZIP_BYTES}" >"${PAYLOAD_DEST}"
+
 # Write outer checksums.txt in output directory
 (
 	cd "${OUTPUT_DIR}"
-	sha256sum "${ARCHIVE_ZIP_NAME}" "${ARCHIVE_TAR_NAME}" >checksums.txt
+	sha256sum "${ARCHIVE_ZIP_NAME}" "${ARCHIVE_TAR_NAME}" devstack-installer.exe devstack-setup.exe >checksums.txt
 )
 
 printf 'release-windows: archive created successfully:\n'
-printf '  zip:    %s\n' "${ARCHIVE_ZIP}"
-printf '  tar.gz: %s\n' "${ARCHIVE_TAR}"
-printf '  sha256: %s\n' "$(cut -d' ' -f1 <"${OUTPUT_DIR}/checksums.txt" | head -1)"
+printf '  zip:       %s\n' "${ARCHIVE_ZIP}"
+printf '  tar.gz:    %s\n' "${ARCHIVE_TAR}"
+printf '  installer: %s/devstack-installer.exe\n' "${OUTPUT_DIR}"
+printf '  sha256:    %s\n' "$(cut -d' ' -f1 <"${OUTPUT_DIR}/checksums.txt" | head -1)"

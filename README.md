@@ -1,84 +1,66 @@
 # dev-web-stack
 
-A local web development stack for Linux: static, Node, and PHP sites served at
+A local web development stack for Linux and Windows: static, Node, and PHP sites served at
 trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 
-> **Status:** the Linux M1 release is published as `v0.1.0`. Plan 1
-> (foundation), Plan 2 (PHP), and Plan 4 (packaging/release) automated
-> acceptance pass; the final Linux run is **19 PASS, 0 FAIL, 1 SKIP,
-> 1 BLOCKED**. The skip is the manual browser/root/UI set; the block was
-> Windows/WSL at the time of the M1 Linux release. The installer's public
-> `--release 0.1.0` path, the runtime downloads, Apache HTTPS, and in-flight PHP
-> continuity were exercised. See the
-> [Plan 4 acceptance report](docs/superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md)
-> and the [M1 handoff](docs/superpowers/status/2026-10-24-m1-handoff.md).
+> **Status:** The cross-platform Linux and Windows/WSL2 release is published as `v0.2.0`.
 >
-> **Windows/WSL is planned but not implemented.** There is no Windows
-> artifact, `devstack-agent`, named-pipe helper, WSL ingress, or `install.ps1`
-> yet. The Windows/WSL design and plan were revised on 2026-10-27; see the
-> [Windows design](docs/superpowers/specs/2026-10-26-windows-wsl-design.md),
-> [implementation plan](docs/superpowers/plans/2026-10-26-windows-wsl.md), and
-> [review resolution](docs/superpowers/status/2026-10-27-windows-plan-review-resolution.md).
-> Signed packages/installers, diagnostics bundles, auto-update, remote catalogs,
-> arm64, and log aggregation are M4 work.
+> - **Windows 11 / 10 22H2 (Build 19045+) + WSL2:** Fully implemented and supported. Features a standalone binary installer (`devstack-installer.exe`), native Windows helper service (`devstack-helper.exe`), user daemon (`devstack.exe`), DPAPI token management, host-to-WSL proxying, and a dedicated managed Debian 12 WSL2 distribution with rootless Docker and Linux runtimes.
+> - **Linux (x86_64 systemd):** Foundation, PHP runtimes, managed services, and release packaging pass acceptance.
+> - **PHP 8.2–8.5:** Installable from the shipped catalog with side-by-side execution and Composer integration.
+> - **Service platform:** Managed Docker nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis, phpMyAdmin, credentials rotation, and performance benchmarking.
 >
-> **PHP 8.2–8.5 are installable from the shipped catalog.** The app release
-> embeds `php@8.2.35-r1`, `8.3.36-r1`, `8.4.27-r1`, and `8.5.12-r1`; the
-> `php-runtimes-2026-10-25` release provides checksummed archives and SPDX
-> SBOMs. The real 8.2/8.5 side-by-side gate passes. See [PHP](docs/php.md).
->
-> **Support surface:** `devstack doctor --json` is the diagnostic snapshot to
-> attach to a bug report. M1 does not create a diagnostics zip/bundle, and it
-> never checks for or installs updates automatically.
->
-> **Service platform:** Waves 0–2 and the next service-platform batch are
-> implemented: managed Docker nginx/Apache, MySQL/MariaDB/PostgreSQL/Redis,
-> phpMyAdmin, credentials/rotation, global PHP/Composer, site shell/exec,
-> builds, service configuration editing, performance apply/reset/benchmarks,
-> site terminal, and editable listener ports. Remaining Linux host gates are
-> listed in [known issues](docs/known-issues.md).
->
-> **Next milestone:** first-class Windows 11 + WSL2 support. The architecture
-> and plan are written and revised; implementation has not started. Start with
-> the [documentation index](docs/README.md) and the [handoff](docs/handoff.md).
+> See the [Documentation Index](docs/README.md), [Linux Installation Guide](docs/install.md), and [Windows Installation Guide](docs/install-windows.md).
 
 ## Quick start
 
-Requirements: Linux x86_64 with systemd, Go 1.26+, and Node.js 22/npm 10 for the
-dashboard build. The helper's privileged forwarders need ports 80 and 443.
+### Windows Installation
 
+**Prerequisites:** Windows 10 (Build 19045+) or Windows 11 x64 with WSL 2.0.0+ (`wsl --version`) and hardware virtualization enabled in BIOS.
+
+#### Option 1: Standalone Installer Executable (Recommended)
+
+1. Download **[`devstack-installer.exe`](https://github.com/AramZahedi/dev-web-stack/releases/download/v0.2.0/devstack-installer.exe)** (or `devstack-setup.exe`) from the [v0.2.0 Release](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.2.0).
+2. **Double-click** `devstack-installer.exe` (or run `./devstack-installer.exe` from PowerShell / Command Prompt).
+   - Prompts for Administrator elevation via standard Windows UAC.
+   - Extracts all embedded components, configures `C:\devstack`, installs the `DevstackHelper` Windows service, imports the Debian 12 WSL2 distribution, and provisions Docker and runtimes.
+3. Open a new PowerShell terminal and verify:
+   ```powershell
+   devstack version
+   devstack doctor
+   ```
+4. Start the daemon and access the dashboard:
+   ```powershell
+   devstack daemon start
+   ```
+   Open <https://devstack.test> in your browser.
+
+#### Option 2: Release Zip Archive
+Download `devstack_0.2.0_windows_amd64.zip` and `checksums.txt`, extract, and run `.\install.ps1` from an elevated PowerShell terminal. See [Windows Installation Guide](docs/install-windows.md) for details.
+
+---
+
+### Linux Installation
+
+**Requirements:** Linux x86_64 with systemd as PID 1. Ports 80 and 443 must be free.
+
+#### Option 1: Install Published Release
+```sh
+./install.sh --release 0.2.0
+devstack init
+```
+
+#### Option 2: Build from Source
+Requirements: Go 1.26+, Node.js 22/npm 10.
 ```sh
 make build
 ./install.sh
 devstack init
 ```
 
-To install a published release instead of building, pass `--release`; the
-installer downloads a SHA-256-verified archive over HTTPS:
+`install.sh` runs as your normal user and uses `sudo` for the privileged helper service and forwarders. `devstack init` registers the local CA in the OS and browser trust stores, writes the managed `.test` hosts block, and starts the daemon. Then open <https://devstack.test>.
 
-```sh
-./install.sh --release 0.1.0
-devstack init
-```
-
-A downloaded archive can be installed with
-`--archive devstack_0.1.0_linux_amd64.tar.gz --checksums checksums.txt`.
-
-`v0.1.0` is published and `./install.sh --release 0.1.0` downloads and verifies
-the public archive. For local development, use the source install above or a
-local archive produced with `make release VERSION=<semver>`. The release path is
-documented in [Release](docs/release.md).
-
-`install.sh` runs as your normal user and uses `sudo` for the helper binary,
-configuration, and system unit. It does not install packages. `devstack init`
-installs the local CA in the OS/browser trust stores, writes the hosts block,
-starts the helper forwarders and daemon, and runs diagnostics. The helper's
-`auto_forward` setting restores ports 80/443 whenever the service restarts.
-Then open <https://devstack.test>.
-
-Full instructions: [docs/install.md](docs/install.md). To upgrade an existing
-install, keep the helper config and run `./install.sh --upgrade`, then
-`devstack init`; see the [upgrade guide](docs/upgrade.md).
+Full Linux instructions: [docs/install.md](docs/install.md). Upgrade guide: [docs/upgrade.md](docs/upgrade.md).
 
 > **Docker support is being replaced.** The standalone devstack-in-Docker image
 > was retired on 2026-10-25. Docker remains supported for the planned optional

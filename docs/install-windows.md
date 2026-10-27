@@ -92,11 +92,55 @@ Inside the managed WSL distribution (`\\wsl.localhost\devstack` or `/data/devsta
 
 ## 3. Installation
 
-Installation is performed via `install.ps1` from an elevated PowerShell terminal.
+You can install devstack on Windows using the standalone installer executable (recommended), a release zip archive, or by building from source.
 
-### Option A: From a Downloaded Release Archive
+### Option A: Standalone Binary Installer (Recommended)
 
-1. Download the latest `devstack_<version>_windows_amd64.zip` and `checksums.txt`.
+The standalone binary installer executable (`devstack-installer.exe` or `devstack-setup.exe`) embeds the entire release payload—including Windows CLI binaries, the privileged helper service, the Linux agent, and the Debian 12 WSL root filesystem. It requires zero external downloads and circumvents PowerShell execution policy restrictions.
+
+1. **Download:**
+   Download **`devstack-installer.exe`** (or `devstack-setup.exe`) and `checksums.txt` from the [Releases](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.2.0) page.
+
+2. **Verify Checksum (Optional but recommended):**
+   ```powershell
+   $expected = (Get-Content checksums.txt | Select-String "devstack-installer.exe").Line.Split(" ")[0]
+   $actual = (Get-FileHash .\devstack-installer.exe -Algorithm SHA256).Hash.ToLower()
+   if ($actual -ne $expected) { throw "Checksum mismatch!" }
+   ```
+
+3. **Run the Installer:**
+   - **Double-click:** You can simply double-click `devstack-installer.exe` from Windows Explorer. Windows will prompt for Administrator elevation via UAC. A console window will show installation progress in real-time and pause when complete so you can review the results.
+   - **From Terminal (PowerShell / Command Prompt):**
+     ```powershell
+     # Interactive run (elevates via UAC if not already elevated):
+     .\devstack-installer.exe
+
+     # Unattended / non-interactive run:
+     .\devstack-installer.exe -y
+
+     # Dry-run validation:
+     .\devstack-installer.exe --dry-run -y
+     ```
+
+#### Installer Executable Command-Line Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `-y`, `--unattended` | `false` | Run without interactive prompts or pause on exit. |
+| `-dir <path>` | `C:\devstack` | Custom installation directory. |
+| `--dry-run` | `false` | Validate environment and simulate installation without making system changes. |
+| `--allow-reboot` | `false` | Allow automatic reboot scheduling if optional Windows features require a restart. |
+| `--skip-wsl` | `false` | Skip WSL distro import and agent provisioning (host CLI and helper only). |
+| `--upgrade` | `false` | Perform in-place upgrade of existing binaries with rollback safety. |
+| `--uninstall` | `false` | Launch uninstallation of the stack. |
+
+---
+
+### Option B: From a Downloaded Release Archive (.zip)
+
+If you prefer manual control or run in constrained environments where custom executables are restricted:
+
+1. Download `devstack_<version>_windows_amd64.zip` and `checksums.txt`.
 2. Verify the archive checksum:
    ```powershell
    $expected = (Get-Content checksums.txt | Select-String "devstack_.*_windows_amd64.zip").Line.Split(" ")[0]
@@ -114,7 +158,9 @@ Installation is performed via `install.ps1` from an elevated PowerShell terminal
    .\install.ps1
    ```
 
-### Option B: Building and Installing from Source
+---
+
+### Option C: Building and Installing from Source
 
 Requires Go 1.24+, Node 22 LTS, and Git:
 
@@ -130,9 +176,9 @@ make build-agent
 .\install.ps1
 ```
 
-### Installer Parameters
+### PowerShell Script Parameters (`install.ps1`)
 
-`install.ps1` supports the following flags:
+When using `install.ps1` directly, the following flags are supported:
 
 | Parameter | Default | Description |
 |---|---|---|

@@ -4,11 +4,10 @@ devstack is a local web development stack for Linux. It serves static, Node, and
 PHP sites at trusted `https://<name>.test` URLs and manages the daemon, helper,
 hosts entries, and local certificate authority.
 
-This document covers the Linux install. External nginx/Apache serving is
-available. PHP 8.2–8.5 builds are published in the `v0.1.0` catalog (see
-[PHP](php.md)). M1 is Linux-only today. Windows 11 + WSL2 is planned but not
-implemented; see [the Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md).
-No Windows installer or artifact exists yet. Release archives are unsigned and checksum-verified. See
+This document covers the Linux install. For Windows 10/11 with WSL2, see the dedicated [Windows Installation Guide](install-windows.md).
+External nginx/Apache serving is
+available. PHP 8.2–8.5 builds are published in the catalog (see
+[PHP](php.md)). Release archives are unsigned and checksum-verified. See
 [Sites](sites.md), [Vhosts](vhosts.md), and
 [TLS and trust](tls.md) for day-to-day use, and [Release](release.md) for the
 packaging and publication path.
@@ -79,13 +78,13 @@ archive, and a release downloaded from GitHub.
 ./install.sh
 
 # From a published release (downloads over HTTPS):
-./install.sh --release 0.1.0
+./install.sh --release 0.2.0
 
 # From a release archive you already downloaded:
-./install.sh --archive devstack_0.1.0_linux_amd64.tar.gz --checksums checksums.txt
+./install.sh --archive devstack_0.2.0_linux_amd64.tar.gz --checksums checksums.txt
 
 # From a mirror or CI artifact host (HTTPS only):
-./install.sh --release 0.1.0 --base-url https://artifacts.example.test/devstack
+./install.sh --release 0.2.0 --base-url https://artifacts.example.test/devstack
 ```
 
 `--release` downloads `devstack_<version>_linux_amd64.tar.gz` and
@@ -95,7 +94,7 @@ archive, and a release downloaded from GitHub.
 plain-HTTP fallback. `--archive` and `--checksums` must be supplied together and
 cannot be combined with `--release`.
 
-`v0.1.0` is published, so `--release 0.1.0` downloads and verifies the public
+`v0.2.0` is published, so `--release 0.2.0` downloads and verifies the public
 archive. For local development you can still use the source install or a local
 archive produced with `make release VERSION=<semver>`. Release archives are
 **unsigned**; the SHA-256 manifest detects corruption and tampering in transit,

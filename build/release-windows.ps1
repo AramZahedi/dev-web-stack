@@ -221,7 +221,27 @@ try {
     Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -Force
 
     $zipHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
-    Set-Content -Path (Join-Path $outDir "checksums.txt") -Value "$zipHash  $zipName`n" -Encoding ascii
+    # Build standalone binary installer executable (devstack-installer.exe)
+    Write-Host "release-windows: Building standalone devstack-installer.exe..."
+    $payloadDest = Join-Path $repoRoot "cmd\devstack-installer\payload.zip"
+    $emptyZipBytes = [byte[]]@(0x50, 0x4B, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    try {
+        Copy-Item -Path $zipPath -Destination $payloadDest -Force
+        $installerExe = Join-Path $outDir "devstack-installer.exe"
+        $env:GOOS = "windows"; $env:GOARCH = "amd64"; $env:CGO_ENABLED = "0"
+        & go build -trimpath -ldflags $ldflags -o $installerExe (Join-Path $repoRoot "cmd\devstack-installer")
+        if ($LASTEXITCODE -ne 0) { throw "go build devstack-installer failed" }
+        Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+
+        Copy-Item -Path $installerExe -Destination (Join-Path $outDir "devstack-setup.exe") -Force
+        $instHash = (Get-FileHash -Path $installerExe -Algorithm SHA256).Hash.ToLower()
+        Write-Host "release-windows: Created $installerExe ($instHash)"
+    } finally {
+        [System.IO.File]::WriteAllBytes($payloadDest, $emptyZipBytes)
+    }
+
+    $manifestContent = "$zipHash  $zipName`n$instHash  devstack-installer.exe`n$instHash  devstack-setup.exe`n"
+    Set-Content -Path (Join-Path $outDir "checksums.txt") -Value $manifestContent -Encoding ascii
 
     Write-Host "release-windows: Created $zipPath ($zipHash)"
 } finally {
