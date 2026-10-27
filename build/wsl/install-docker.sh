@@ -57,3 +57,4 @@ systemctl enable docker.service
 systemctl restart docker.service
 docker info --format '{{.DockerRootDir}}' | grep -Fx /data/devstack/docker
 docker compose version --short
+exit 0

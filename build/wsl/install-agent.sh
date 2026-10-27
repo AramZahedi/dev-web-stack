@@ -36,3 +36,4 @@ else
   # Credentials are provisioned during user phase (devstack init); attempt start or leave enabled
   systemctl start devstack-agent.service 2>/dev/null || true
 fi
+exit 0
