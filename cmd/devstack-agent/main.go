@@ -10,6 +10,10 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agent"
+	"github.com/AramZahedi/dev-web-stack/internal/agentapi"
+	"github.com/AramZahedi/dev-web-stack/internal/agentdocker"
+	"github.com/AramZahedi/dev-web-stack/internal/agentrelay"
+	"github.com/AramZahedi/dev-web-stack/internal/agentweb"
 )
 
 var version = "dev"
@@ -29,7 +33,22 @@ func main() {
 	if err != nil {
 		log.Fatalf("devstack-agent: %v", err)
 	}
-	server, err := agent.NewServerFromFilesWithRuntimeAndDocker(*configPath, nil, runtime, docker)
+
+	dockerModule, err := agentdocker.New(agentdocker.Config{Root: agent.DefaultAgentRoot})
+	if err != nil {
+		log.Fatalf("devstack-agent: docker module: %v", err)
+	}
+	webModule, err := agentweb.New(agentweb.Config{Root: agent.DefaultAgentRoot})
+	if err != nil {
+		log.Fatalf("devstack-agent: web module: %v", err)
+	}
+	relayModule, err := agentrelay.New(agentrelay.Config{})
+	if err != nil {
+		log.Fatalf("devstack-agent: relay module: %v", err)
+	}
+	modules := []agentapi.Module{dockerModule, webModule, relayModule}
+
+	server, err := agent.NewServerFromFilesWithRuntimeAndDocker(*configPath, modules, runtime, docker)
 	if err != nil {
 		log.Fatalf("devstack-agent: %v", err)
 	}
