@@ -11,6 +11,11 @@ import (
 // probeProcess checks process existence with a query-only handle. Windows has
 // no signal 0; an inaccessible or missing process maps to ESRCH so the caller's
 // existing error classification stays correct.
+// processRunning reports whether the Windows process is still active.
+func processRunning(pid int) bool {
+	return probeProcess(pid) == nil
+}
+
 func probeProcess(pid int) error {
 	if pid <= 0 {
 		return syscall.ESRCH

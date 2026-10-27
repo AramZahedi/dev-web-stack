@@ -65,6 +65,7 @@ type Config struct {
 	HTTPPort  int `yaml:"http_port"`
 	HTTPSPort int `yaml:"https_port"`
 	UIPort    int `yaml:"ui_port"`
+	AgentPort int `yaml:"agent_port"`
 
 	WSLDistro       string `yaml:"wsl_distro"`
 	ProjectsRoot    string `yaml:"projects_root"`
@@ -85,6 +86,7 @@ func Default() Config {
 		HTTPPort:            8080,
 		HTTPSPort:           8443,
 		UIPort:              7070,
+		AgentPort:           7443,
 		WSLDistro:           "devstack",
 		AutoStartSites:      true,
 		ServingMode:         ServingModeBuiltin,
@@ -150,6 +152,7 @@ func (c Config) Validate() error {
 		{"http_port", c.HTTPPort},
 		{"https_port", c.HTTPSPort},
 		{"ui_port", c.UIPort},
+		{"agent_port", c.AgentPort},
 	}
 	seen := make(map[int]string, len(ports))
 	for _, p := range ports {
