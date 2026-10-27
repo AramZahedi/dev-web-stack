@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -32,6 +33,9 @@ func TestRenderRejectsBadDomains(t *testing.T) {
 }
 
 func TestWriteAtomicPreservesMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes are not supported on Windows")
+	}
 	p := filepath.Join(t.TempDir(), "hosts")
 	if err := os.WriteFile(p, []byte("old"), 0o640); err != nil {
 		t.Fatal(err)
@@ -56,6 +60,9 @@ func TestWriteAtomicPreservesMode(t *testing.T) {
 }
 
 func TestWriteAtomicDefaultsTo0644(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes are not supported on Windows")
+	}
 	p := filepath.Join(t.TempDir(), "hosts")
 	if err := WriteAtomic(p, []byte("new"), 0); err != nil {
 		t.Fatal(err)
@@ -70,6 +77,9 @@ func TestWriteAtomicDefaultsTo0644(t *testing.T) {
 }
 
 func TestWriteAtomicFallsBackWhenDirectoryIsReadOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions and file modes are not supported on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root can create files in a read-only mode directory")
 	}

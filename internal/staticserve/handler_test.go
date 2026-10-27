@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -71,22 +72,32 @@ func TestStaticHandlerServesDirectoryIndexWithoutListing(t *testing.T) {
 	writeFile(t, filepath.Join(root, "index.html"), "root index")
 	writeFile(t, filepath.Join(root, "docs", "index.html"), "docs index")
 	writeFile(t, filepath.Join(root, "attacker.com", "index.html"), "not a redirect")
-	writeFile(t, filepath.Join(root, "a?b", "index.html"), "escaped redirect")
+	if runtime.GOOS != "windows" {
+		writeFile(t, filepath.Join(root, "a?b", "index.html"), "escaped redirect")
+	}
 	writeFile(t, filepath.Join(root, "assets", "app.js"), "console.log(1)")
 
 	h := newTestHandler(t, root, false)
 
-	for _, tc := range []struct {
+	cases := []struct {
 		path     string
 		wantLoc  string
 		wantBody string
 	}{
 		{"/docs", "/docs/", ""},
 		{"//attacker.com", "/attacker.com/", ""},
-		{"/a%3Fb", "/a%3Fb/", ""},
 		{"/docs?x=1", "/docs/?x=1", ""},
 		{"/docs/", "", "docs index"},
-	} {
+	}
+	if runtime.GOOS != "windows" {
+		cases = append(cases, struct {
+			path     string
+			wantLoc  string
+			wantBody string
+		}{"/a%3Fb", "/a%3Fb/", ""})
+	}
+
+	for _, tc := range cases {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", tc.path, nil))
 		if tc.wantLoc != "" {
