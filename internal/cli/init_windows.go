@@ -45,24 +45,21 @@ type platformInitContext struct {
 	distro      string
 }
 
-const transferScript = `set -eu
+const transferScript = `# devstack-transfer
+set -eu
 mkdir -p /data/devstack/agent-tls
 chmod 0700 /data/devstack/agent-tls
 chown root:root /data/devstack/agent-tls
-
-printf '%s' "$1" | base64 -d > /data/devstack/agent.token
+printf '%%s' '%s' | base64 -d > /data/devstack/agent.token
 chmod 0600 /data/devstack/agent.token
 chown root:root /data/devstack/agent.token
-
-printf '%s' "$2" | base64 -d > /data/devstack/agent-tls/agent.crt
+printf '%%s' '%s' | base64 -d > /data/devstack/agent-tls/agent.crt
 chmod 0644 /data/devstack/agent-tls/agent.crt
 chown root:root /data/devstack/agent-tls/agent.crt
-
-printf '%s' "$3" | base64 -d > /data/devstack/agent-tls/agent.key
+printf '%%s' '%s' | base64 -d > /data/devstack/agent-tls/agent.key
 chmod 0600 /data/devstack/agent-tls/agent.key
 chown root:root /data/devstack/agent-tls/agent.key
-
-printf '%s' "$4" | base64 -d > /data/devstack/agent.yaml
+printf '%%s' '%s' | base64 -d > /data/devstack/agent.yaml
 chmod 0600 /data/devstack/agent.yaml
 chown root:root /data/devstack/agent.yaml
 `
@@ -255,7 +252,8 @@ func ensureAgentCredentials(ctx context.Context, runner wsl.Runner, distroName, 
 	b64Key := base64.StdEncoding.EncodeToString(identity.KeyPEM)
 	b64YAML := base64.StdEncoding.EncodeToString(agentYAML)
 
-	if _, err := runner.Run(ctx, "-d", distroName, "--user", "root", "--", "bash", "-lc", transferScript, "devstack-transfer", b64Token, b64Cert, b64Key, b64YAML); err != nil {
+	transferCmd := fmt.Sprintf(transferScript, b64Token, b64Cert, b64Key, b64YAML)
+	if _, err := runner.Run(ctx, "-d", distroName, "--user", "root", "--", "sh", "-c", transferCmd); err != nil {
 		return "", "", fmt.Errorf("transfer agent credentials to WSL: %w", err)
 	}
 
