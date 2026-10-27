@@ -282,3 +282,44 @@ func TestWindowsWireDashboardTLS(t *testing.T) {
 		t.Fatalf("CommonName = %q, want devstack.test", resp.TLS.PeerCertificates[0].Subject.CommonName)
 	}
 }
+
+type fakeDiagnosticWSLRunner struct {
+	output []byte
+	err    error
+}
+
+func (r *fakeDiagnosticWSLRunner) Run(context.Context, ...string) ([]byte, error) {
+	return r.output, r.err
+}
+
+func TestWindowsDiagnosticsAndDoctorServices(t *testing.T) {
+	runner := &fakeDiagnosticWSLRunner{output: []byte("ok\n")}
+	diag := &windowsDiagnostics{
+		runner: runner,
+	}
+	ctx := context.Background()
+	if err := diag.CheckWSL(ctx, "devstack"); err != nil {
+		t.Fatalf("CheckWSL: %v", err)
+	}
+	if err := diag.CheckDocker(ctx, "devstack"); err != nil {
+		t.Fatalf("CheckDocker: %v", err)
+	}
+	if err := diag.CheckLocalhostForwarding(ctx, "devstack", 8080); err != nil {
+		t.Fatalf("CheckLocalhostForwarding: %v", err)
+	}
+
+	disk := windowsDiskChecker{}
+	free, err := disk.FreeBytes(t.TempDir())
+	if err != nil {
+		t.Fatalf("FreeBytes: %v", err)
+	}
+	if free == 0 {
+		t.Fatal("FreeBytes returned 0 for tempdir")
+	}
+
+	probe := portProbe{}
+	port := freeTCPPort(t)
+	if err := probe.Listenable(net.JoinHostPort("127.0.0.1", fmt.Sprint(port))); err != nil {
+		t.Fatalf("Listenable: %v", err)
+	}
+}

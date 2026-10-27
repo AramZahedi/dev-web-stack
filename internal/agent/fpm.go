@@ -7,8 +7,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,14 +31,30 @@ type fpmProcess struct {
 	stopped    bool
 }
 
+func toPOSIXPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" || strings.HasPrefix(p, "/") {
+		return p
+	}
+	if len(p) >= 2 && p[1] == ':' {
+		drive := strings.ToLower(string(p[0]))
+		rest := strings.ReplaceAll(p[2:], `\`, "/")
+		if !strings.HasPrefix(rest, "/") {
+			rest = "/" + rest
+		}
+		return "/mnt/" + drive + rest
+	}
+	return strings.ReplaceAll(p, `\`, "/")
+}
+
 // generateFPMConfig renders the canonical per-site FPM configuration for WSL.
 func generateFPMConfig(root string, site agentproto.SiteSpec, docroot string) ([]byte, string, error) {
 	siteDir := filepath.Clean(filepath.Join(root, "sites", site.ID))
 	fpmPath := filepath.Clean(filepath.Join(siteDir, "fpm.conf"))
-	pidPath := filepath.Clean(filepath.Join(root, "run", site.ID+"-fpm.pid"))
-	logPath := filepath.Clean(filepath.Join(root, "logs", site.ID+".log"))
+	pidPath := toPOSIXPath(filepath.Join(root, "run", site.ID+"-fpm.pid"))
+	logPath := toPOSIXPath(filepath.Join(root, "logs", site.ID+".log"))
 
-	buildRoot := site.PHPBuildPath
+	buildRoot := toPOSIXPath(site.PHPBuildPath)
 	if buildRoot == "" {
 		if site.PHPBuild != "" {
 			buildRoot = filepath.Join(root, "runtimes", site.PHPBuild)
@@ -46,13 +64,13 @@ func generateFPMConfig(root string, site agentproto.SiteSpec, docroot string) ([
 			buildRoot = filepath.Join(root, "runtimes", "php")
 		}
 	}
-	buildRoot = filepath.Clean(buildRoot)
+	buildRoot = path.Clean(toPOSIXPath(buildRoot))
 
-	phpIni := site.PHPIniPath
+	phpIni := toPOSIXPath(site.PHPIniPath)
 	if phpIni == "" {
 		phpIni = filepath.Join(siteDir, "php.ini")
 	}
-	phpIni = filepath.Clean(phpIni)
+	phpIni = path.Clean(toPOSIXPath(phpIni))
 
 	cfg := phpfpm.Config{
 		SiteID:       site.ID,
@@ -60,9 +78,9 @@ func generateFPMConfig(root string, site agentproto.SiteSpec, docroot string) ([
 		PHPIni:       phpIni,
 		ListenHost:   "127.0.0.1",
 		ListenPort:   site.FastCGIPort,
-		DocumentRoot: filepath.Clean(docroot),
-		ErrorLog:     logPath,
-		PIDFile:      pidPath,
+		DocumentRoot: path.Clean(toPOSIXPath(docroot)),
+		ErrorLog:     path.Clean(logPath),
+		PIDFile:      path.Clean(pidPath),
 		Env:          site.Env,
 	}
 
@@ -79,6 +97,10 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 		return nil, errors.New("agent: invalid FastCGI port for FPM process")
 	}
 
+	buildPath = toPOSIXPath(buildPath)
+	fpmPath = toPOSIXPath(fpmPath)
+	iniPath = toPOSIXPath(iniPath)
+
 	fpmBin := filepath.Join(buildPath, "sbin", "php-fpm")
 	proc := &fpmProcess{
 		siteID:     siteID,
@@ -91,10 +113,15 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 
 	// If a real php-fpm binary is available, execute it.
 	if info, err := os.Stat(fpmBin); err == nil && !info.IsDir() {
-		proc.cmd = exec.CommandContext(ctx, fpmBin, "--nodaemonize", "--fpm-config", fpmPath)
-		if iniPath != "" {
-			proc.cmd.Args = append(proc.cmd.Args, "-c", iniPath)
+		args := []string{"--nodaemonize"}
+		if os.Geteuid() == 0 {
+			args = append(args, "-R")
 		}
+		args = append(args, "--fpm-config", fpmPath)
+		if iniPath != "" {
+			args = append(args, "-c", iniPath)
+		}
+		proc.cmd = exec.CommandContext(ctx, fpmBin, args...)
 		if err := proc.cmd.Start(); err != nil {
 			proc.cancel()
 			return nil, fmt.Errorf("agent: start php-fpm: %w", err)

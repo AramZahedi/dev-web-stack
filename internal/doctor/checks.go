@@ -195,6 +195,9 @@ func parseManagedHosts(content string) ([]string, error) {
 func (s *Service) hostsPath() string {
 	path := s.deps.HostsPath
 	if strings.TrimSpace(path) == "" {
+		if runtime.GOOS == "windows" || s.deps.Platform == "windows" {
+			return `C:\Windows\System32\drivers\etc\hosts`
+		}
 		return defaultHostsPath
 	}
 	return path

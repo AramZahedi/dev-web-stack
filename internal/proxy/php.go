@@ -428,6 +428,9 @@ func resolvePHPTarget(route Route, requestPath string) (phpTarget, bool) {
 // path.
 func fastCGIRoot(route Route, target phpTarget) string {
 	if root := strings.TrimSpace(route.DocumentRoot); root != "" {
+		if strings.HasPrefix(root, "/") {
+			return strings.ReplaceAll(root, `\`, "/")
+		}
 		return root
 	}
 	return target.documentRoot
@@ -444,6 +447,9 @@ func fastCGIScriptPath(route Route, target phpTarget) string {
 	rel, err := filepath.Rel(proxyRoot, target.scriptPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return target.scriptPath
+	}
+	if strings.HasPrefix(backendRoot, "/") {
+		return path.Join(backendRoot, strings.ReplaceAll(rel, `\`, "/"))
 	}
 	return filepath.Join(backendRoot, rel)
 }

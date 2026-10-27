@@ -91,7 +91,11 @@ func (s *Service) PHPDefault(ctx context.Context) (PHPDefaultStatus, error) {
 	default:
 		return PHPDefaultStatus{}, err
 	}
-	if info, err := os.Stat(filepath.Join(ShimDir(s.deps.Paths), "php")); err == nil && info.Mode().IsRegular() {
+	shimCheckPath := filepath.Join(ShimDir(s.deps.Paths), "php")
+	if runtime.GOOS == "windows" {
+		shimCheckPath = filepath.Join(s.deps.Paths.Home, "bin", "php.cmd")
+	}
+	if info, err := os.Stat(shimCheckPath); err == nil && info.Mode().IsRegular() {
 		status.ShimInstalled = true
 	}
 	return status, nil
@@ -164,8 +168,8 @@ func (s *Service) ClearPHPDefault(ctx context.Context) (PHPDefaultStatus, error)
 		if _, err := s.helperRemove(ctx, helperproto.ToolPHPDefault); err != nil && !errors.Is(err, helperproto.ErrNotImplemented) {
 			return PHPDefaultStatus{}, err
 		}
-		if err := s.ensureWindowsToolShims(); err != nil {
-			return PHPDefaultStatus{}, err
+		if runtime.GOOS == "windows" {
+			_ = os.Remove(filepath.Join(s.deps.Paths.Home, "bin", "php.cmd"))
 		}
 		return s.PHPDefault(ctx)
 	}

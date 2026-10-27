@@ -26,6 +26,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (Test-Path "C:\devstack\bin") {
+    $env:PATH = "C:\devstack\bin;$env:PATH"
+}
 $script:Failures = 0
 
 function Show-Usage {
@@ -92,7 +95,8 @@ Require ($systemd -match "systemd") "Managed distro runs systemd as PID 1"
 $docker = (& wsl.exe -d devstack -- bash -lc "docker info >/dev/null 2>&1 && echo ok" 2>&1 | Out-String)
 Require ($docker -match "ok") "Docker Engine is healthy inside WSL"
 
-$forwarding = (& wsl.exe -d devstack -- bash -lc "timeout 3 bash -c 'exec 3<>/dev/tcp/`$(ip route show default | awk '\''{print `$3; exit}'\'')/8443' && echo ok" 2>&1 | Out-String)
+$probeB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('set -eu; gw=$(ip route show default 2>/dev/null | awk "{print \$3; exit}"); [ -n "$gw" ] || gw=$(awk "/^nameserver/{print \$2; exit}" /etc/resolv.conf); timeout 3 bash -c "exec 3<>/dev/tcp/$gw/8443" && echo ok'))
+$forwarding = (& wsl.exe -d devstack -- sh -c "echo $probeB64 | base64 -d | bash" 2>&1 | Out-String)
 Require ($forwarding -match "ok") "WSL can reach Windows host gateway on port 8443"
 
 # -----------------------------------------------------------------------------
@@ -154,9 +158,9 @@ echo json_encode([
 Set-Content -Path (Join-Path $phpRoot "index.php") -Value $phpIndexContent -NoNewline
 
 # Register sites
-& devstack site remove $WinSite --force 2>$null | Out-Null
-& devstack site remove $WslSite --force 2>$null | Out-Null
-& devstack site remove $PhpSite --force 2>$null | Out-Null
+& devstack site remove $WinSite --yes 2>&1 | Out-Null
+& devstack site remove $WslSite --yes 2>&1 | Out-Null
+& devstack site remove $PhpSite --yes 2>&1 | Out-Null
 
 Invoke-Devstack @("site", "add", "--name", $WinSite, "--path", $winRoot, "--kind", "static", "--source-mode", "windows") | Out-Null
 Pass "Added Windows static site: $WinSite"
@@ -177,26 +181,43 @@ try {
 Step "Verifying trusted HTTPS from Windows"
 
 # Static Sites
+Start-Sleep -Milliseconds 500
 foreach ($site in @($WinSite, $WslSite)) {
     $url = "https://$site.test/"
-    try {
-        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
+    $response = $null
+    for ($i = 0; $i -lt 5; $i++) {
+        try {
+            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
+            if ($response.StatusCode -eq 200) { break }
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    if ($null -ne $response) {
         Require ($response.StatusCode -eq 200) "Windows trusted HTTPS $url (HTTP 200)"
         Require ($response.Content -match "source ok") "Windows content for $url contains expected text"
-    } catch {
-        Fail "Windows trusted HTTPS $url failed: $_"
+    } else {
+        Fail "Windows trusted HTTPS $url failed after retries"
     }
 }
 
 # PHP Site (Assert live Linux FPM SAPI execution)
 $phpUrl = "https://$PhpSite.test/"
-try {
-    $phpResponse = Invoke-WebRequest -Uri $phpUrl -UseBasicParsing -TimeoutSec 20
+$phpResponse = $null
+for ($i = 0; $i -lt 5; $i++) {
+    try {
+        $phpResponse = Invoke-WebRequest -Uri $phpUrl -UseBasicParsing -TimeoutSec 20
+        if ($phpResponse.StatusCode -eq 200) { break }
+    } catch {
+        Start-Sleep -Milliseconds 500
+    }
+}
+if ($null -ne $phpResponse) {
     Require ($phpResponse.StatusCode -eq 200) "Windows trusted HTTPS $phpUrl (HTTP 200)"
     Require ($phpResponse.Content -match '"status":"ok"') "PHP response status is 'ok'"
     Require ($phpResponse.Content -match '"sapi":"fpm-fcgi"') "PHP execution runs via Linux 'fpm-fcgi' SAPI"
-} catch {
-    Fail "Windows trusted HTTPS for PHP site $phpUrl failed: $_"
+} else {
+    Fail "Windows trusted HTTPS for PHP site $phpUrl failed after retries"
 }
 
 # Dashboard
@@ -213,14 +234,14 @@ try {
 Step "Verifying .test routing and trusted TLS from inside WSL"
 
 foreach ($site in @($WinSite, $WslSite)) {
-    $result = & wsl.exe -d devstack -- bash -lc "curl -fsS --max-time 20 https://$site.test/ | grep -q 'source ok' && echo ok"
+    $result = (& wsl.exe -d devstack -- bash -lc "curl -fsS --max-time 20 https://$site.test/ | grep -q 'source ok' && echo ok" 2>&1 | Out-String)
     Require ($result -match "ok") "WSL curl https://$site.test/ succeeds with trusted certificate"
 }
 
-$phpWslResult = & wsl.exe -d devstack -- bash -lc "curl -fsS --max-time 20 https://$PhpSite.test/ | grep -q 'fpm-fcgi' && echo ok"
+$phpWslResult = (& wsl.exe -d devstack -- bash -lc "curl -fsS --max-time 20 https://$PhpSite.test/ | grep -q 'fpm-fcgi' && echo ok" 2>&1 | Out-String)
 Require ($phpWslResult -match "ok") "WSL curl https://$PhpSite.test/ succeeds and reports fpm-fcgi"
 
-$dashWslResult = & wsl.exe -d devstack -- bash -lc "curl -fsS --max-time 20 https://devstack.test/ >/dev/null && echo ok"
+$dashWslResult = (& wsl.exe -d devstack -- bash -lc "curl -fsS --max-time 20 https://devstack.test/ >/dev/null && echo ok" 2>&1 | Out-String)
 Require ($dashWslResult -match "ok") "WSL curl https://devstack.test/ succeeds"
 
 # -----------------------------------------------------------------------------
@@ -250,20 +271,21 @@ Step "Checking comprehensive doctor diagnostics"
 $doctor = Invoke-Devstack @("doctor", "--json") | ConvertFrom-Json
 $checks = @($doctor.checks)
 
-$forwardingCheck = $checks | Where-Object { $_.id -match "localhost|forward" }
+$forwardingCheck = $checks | Where-Object { $_.id -eq "wsl-localhost-forwarding" }
 Require ($null -ne $forwardingCheck -and $forwardingCheck.status -ne "fail") "Doctor: localhost forwarding is operational"
 
-$agentCheck = $checks | Where-Object { $_.id -match "agent" }
+$agentCheck = $checks | Where-Object { $_.id -eq "agent" }
 Require ($null -ne $agentCheck -and $agentCheck.status -ne "fail") "Doctor: WSL agent is healthy"
 
-$helperCheck = $checks | Where-Object { $_.id -match "helper" }
+$helperCheck = $checks | Where-Object { $_.id -eq "helper" }
 if ($null -ne $helperCheck) {
     Require ($helperCheck.status -ne "fail") "Doctor: helper service is operational"
 }
 
-$caCheck = $checks | Where-Object { $_.id -match "ca|trust" }
-if ($null -ne $caCheck) {
-    Require ($caCheck.status -ne "fail") "Doctor: Root CA trust is verified"
+$caCheck = @($checks | Where-Object { $_.id -match "^(ca|trust)$" })
+if ($caCheck.Count -gt 0) {
+    $caFailing = @($caCheck | Where-Object { $_.status -eq "fail" })
+    Require ($caFailing.Count -eq 0) "Doctor: Root CA trust is verified"
 }
 
 # -----------------------------------------------------------------------------
@@ -271,9 +293,9 @@ if ($null -ne $caCheck) {
 # -----------------------------------------------------------------------------
 if (-not $KeepFixtures) {
     Step "Cleaning up fixture sites"
-    & devstack site remove $WinSite --force 2>$null | Out-Null
-    & devstack site remove $WslSite --force 2>$null | Out-Null
-    & devstack site remove $PhpSite --force 2>$null | Out-Null
+    & devstack site remove $WinSite --yes 2>&1 | Out-Null
+    & devstack site remove $WslSite --yes 2>&1 | Out-Null
+    & devstack site remove $PhpSite --yes 2>&1 | Out-Null
     Remove-Item -Recurse -Force -Path $TestRoot -ErrorAction SilentlyContinue
     & wsl.exe -d devstack -- bash -lc "rm -rf '$wslRoot'" 2>$null | Out-Null
     Pass "Cleaned up test sites and scratch files"

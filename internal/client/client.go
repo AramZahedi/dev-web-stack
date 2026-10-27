@@ -172,6 +172,7 @@ func (c *Client) AddSite(ctx context.Context, req sites.CreateRequest) (model.Si
 		Name:                req.Name,
 		Path:                req.Path,
 		Kind:                req.Kind,
+		SourceMode:          req.SourceMode,
 		NodeVersion:         req.NodeVersion,
 		Command:             req.Command,
 		DocumentRoot:        req.DocumentRoot,
@@ -757,6 +758,7 @@ type createSitePayload struct {
 	Name                string              `json:"name"`
 	Path                string              `json:"path"`
 	Kind                string              `json:"kind"`
+	SourceMode          string              `json:"source_mode,omitempty"`
 	NodeVersion         string              `json:"node_version,omitempty"`
 	Command             string              `json:"command,omitempty"`
 	DocumentRoot        string              `json:"document_root,omitempty"`

@@ -186,10 +186,10 @@ func ensureAgentCredentials(ctx context.Context, runner wsl.Runner, distroName, 
 
 	hasWSLFiles := false
 	if hasSecurestore {
-		// Check if required files exist in WSL
-		_, errT := runner.Run(ctx, "-d", distroName, "--user", "root", "--", "test", "-r", "/data/devstack/agent.token")
-		_, errK := runner.Run(ctx, "-d", distroName, "--user", "root", "--", "test", "-r", "/data/devstack/agent-tls/agent.key")
-		_, errY := runner.Run(ctx, "-d", distroName, "--user", "root", "--", "test", "-r", "/data/devstack/agent.yaml")
+		// Check if required files exist in WSL and are non-empty
+		_, errT := runner.Run(ctx, "-d", distroName, "--user", "root", "--", "test", "-s", "/data/devstack/agent.token")
+		_, errK := runner.Run(ctx, "-d", distroName, "--user", "root", "--", "test", "-s", "/data/devstack/agent-tls/agent.key")
+		_, errY := runner.Run(ctx, "-d", distroName, "--user", "root", "--", "test", "-s", "/data/devstack/agent.yaml")
 		if errT == nil && errK == nil && errY == nil {
 			hasWSLFiles = true
 		}

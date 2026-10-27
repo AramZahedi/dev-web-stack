@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1128,6 +1129,20 @@ func proxyDocumentRoot(site model.Site) string {
 
 func absoluteDocumentRoot(site model.Site) string {
 	root := strings.TrimSpace(site.DocumentRoot)
+	if site.Backend == model.BackendWSL || site.SourceMode == model.SourceWindows || site.SourceMode == model.SourceWSL || strings.HasPrefix(site.BackendPath, "/") {
+		slashBackend := strings.ReplaceAll(site.BackendPath, `\`, "/")
+		slashRoot := strings.ReplaceAll(root, `\`, "/")
+		if slashRoot == "" || slashRoot == "." {
+			if site.Kind == model.SiteStatic || site.Kind == model.SitePHP {
+				return path.Clean(slashBackend)
+			}
+			return ""
+		}
+		if path.IsAbs(slashRoot) {
+			return path.Clean(slashRoot)
+		}
+		return path.Clean(path.Join(slashBackend, slashRoot))
+	}
 	if root == "" || root == "." {
 		if site.Kind == model.SiteStatic || site.Kind == model.SitePHP {
 			return filepath.Clean(site.BackendPath)

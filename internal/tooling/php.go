@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -128,6 +129,13 @@ func ResolveDefault(ctx context.Context, st *store.Store) (model.RuntimeBuild, e
 	return build, nil
 }
 
+func isCompatibleBackend(b model.BackendKind) bool {
+	if runtime.GOOS == "windows" {
+		return b == model.BackendWSL || b == model.BackendLocal || b == ""
+	}
+	return b == model.BackendLocal || b == ""
+}
+
 // installedPHPBuilds returns installed PHP builds, newest first.
 func installedPHPBuilds(ctx context.Context, st *store.Store) ([]model.RuntimeBuild, error) {
 	builds, err := st.ListRuntimes(ctx)
@@ -136,7 +144,7 @@ func installedPHPBuilds(ctx context.Context, st *store.Store) ([]model.RuntimeBu
 	}
 	php := make([]model.RuntimeBuild, 0, len(builds))
 	for _, build := range builds {
-		if build.Kind == "php" && build.Backend == model.BackendLocal {
+		if build.Kind == "php" && isCompatibleBackend(build.Backend) {
 			php = append(php, build)
 		}
 	}
@@ -180,7 +188,7 @@ func ResolvePHPBuild(builds []model.RuntimeBuild, buildID, version string) (mode
 	buildID = strings.TrimSpace(buildID)
 	if buildID != "" {
 		for _, build := range builds {
-			if build.Kind == "php" && build.ID == buildID && (build.Backend == "" || build.Backend == model.BackendLocal) {
+			if build.Kind == "php" && build.ID == buildID && isCompatibleBackend(build.Backend) {
 				return build, nil
 			}
 		}
@@ -193,7 +201,7 @@ func ResolvePHPBuild(builds []model.RuntimeBuild, buildID, version string) (mode
 	var best model.RuntimeBuild
 	found := false
 	for _, build := range builds {
-		if build.Kind != "php" || catalog.LineOf(build.Version) != line || (build.Backend != "" && build.Backend != model.BackendLocal) {
+		if build.Kind != "php" || catalog.LineOf(build.Version) != line || !isCompatibleBackend(build.Backend) {
 			continue
 		}
 		if !found || compareVersions(build.Version, best.Version) > 0 {
@@ -217,7 +225,7 @@ func ResolveNodeBuild(builds []model.RuntimeBuild, requested string) (model.Runt
 	var best model.RuntimeBuild
 	found := false
 	for _, build := range builds {
-		if build.Kind != "node" || (build.Backend != "" && build.Backend != model.BackendLocal) {
+		if build.Kind != "node" || !isCompatibleBackend(build.Backend) {
 			continue
 		}
 		match := build.Version == requested ||
@@ -398,6 +406,9 @@ func extensionDir(buildPath string) string {
 // selected build provides each binary. The php wrapper executes the absolute
 // build binary with the global ini; it never resolves back to the shim.
 func EnsurePHPShims(build model.RuntimeBuild, paths config.Paths, iniPath string) ([]string, error) {
+	if build.Backend == model.BackendWSL {
+		return nil, nil
+	}
 	if strings.TrimSpace(build.Path) == "" {
 		return nil, errors.New("tooling: PHP build path is empty")
 	}

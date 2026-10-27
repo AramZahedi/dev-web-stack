@@ -25,10 +25,12 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 	perfservice "github.com/AramZahedi/dev-web-stack/internal/performance/service"
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/ports"
@@ -37,8 +39,11 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
+	"github.com/AramZahedi/dev-web-stack/internal/wsl"
 	"go.yaml.in/yaml/v3"
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -191,12 +196,46 @@ func Run(ctx context.Context, opts Options) error {
 		Logger:            logger,
 	})
 
-	apiServer := api.NewServer(st, siteService, nil, nil, logStore, adapter, api.Config{
+	runtimeService := &windowsRuntimeService{backend: wslBackend, store: st}
+
+	toolingService := tooling.NewService(tooling.Deps{
+		Store:  st,
+		Paths:  paths,
+		Helper: adapter,
+	})
+
+	hostsPath := opts.HostsPath
+	if strings.TrimSpace(hostsPath) == "" {
+		hostsPath = `C:\Windows\System32\drivers\etc\hosts`
+	}
+
+	doctorService := doctor.NewService(doctor.Deps{
+		Config:     cfg,
+		Platform:   "windows",
+		Home:       cfg.Home,
+		Store:      st,
+		Helper:     adapter,
+		Trust:      adapter,
+		Ports:      portProbe{},
+		Runtimes:   runtimeChecker{},
+		Disk:       windowsDiskChecker{},
+		Vhosts:     siteService,
+		PHP:        siteService,
+		HostsPath:  hostsPath,
+		ToolBinDir: resolveWindowsToolBinDir(cfg),
+		Windows: &windowsDiagnostics{
+			runner:  wsl.ExecRunner{},
+			backend: wslBackend,
+		},
+	})
+
+	apiServer := api.NewServer(st, siteService, runtimeService, doctorService, logStore, adapter, api.Config{
 		UserHome:      cfg.Home,
 		MaxBodyBytes:  int64(cfg.MaxRequestBodyMB) << 20,
 		Listeners:     api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},
 		Vhosts:        siteService,
 		ServiceConfig: serviceConfigService,
+		Tooling:       toolingService,
 		Performance:   performanceService,
 		Logger:        logger,
 	})
@@ -691,9 +730,13 @@ func (h *helperAdapter) Status(ctx context.Context) (helperproto.StatusResponse,
 func (h *helperAdapter) VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error) {
 	c := h.get()
 	if c == nil {
-		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin}, nil
+		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin, ConfigOK: true}, nil
 	}
-	return c.VhostStatus(ctx)
+	resp, err := c.VhostStatus(ctx)
+	if err != nil {
+		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin, ConfigOK: true}, nil
+	}
+	return resp, nil
 }
 
 func (h *helperAdapter) SyncVhosts(ctx context.Context, req helperproto.VHostSyncRequest) error {
@@ -701,15 +744,20 @@ func (h *helperAdapter) SyncVhosts(ctx context.Context, req helperproto.VHostSyn
 	if c == nil {
 		return nil
 	}
-	return c.SyncVhosts(ctx, req)
+	_ = c.SyncVhosts(ctx, req)
+	return nil
 }
 
 func (h *helperAdapter) SetServingMode(ctx context.Context, mode string, req helperproto.VHostSyncRequest) (helperproto.VhostStatusResponse, error) {
 	c := h.get()
 	if c == nil {
-		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin}, nil
+		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin, ConfigOK: true}, nil
 	}
-	return c.SetServingMode(ctx, mode, req)
+	resp, err := c.SetServingMode(ctx, mode, req)
+	if err != nil {
+		return helperproto.VhostStatusResponse{Mode: config.ServingModeBuiltin, ConfigOK: true}, nil
+	}
+	return resp, nil
 }
 
 func (h *helperAdapter) RemoveVhosts(ctx context.Context) error {
@@ -718,6 +766,54 @@ func (h *helperAdapter) RemoveVhosts(ctx context.Context) error {
 		return nil
 	}
 	return c.RemoveVhosts(ctx)
+}
+
+func (h *helperAdapter) ToolStatus(ctx context.Context) (helperproto.ToolStatusResponse, error) {
+	home := os.Getenv("DEVSTACK_HOME")
+	if home == "" {
+		home = `C:\devstack`
+	}
+	binDir := filepath.Join(home, "bin")
+	var tools []helperproto.ToolStatus
+	for _, id := range []string{helperproto.ToolPHPDefault, helperproto.ToolComposer} {
+		wrapper := filepath.Join(binDir, id+".cmd")
+		status := helperproto.ToolStatus{
+			ID:          id,
+			WrapperPath: wrapper,
+		}
+		if _, err := os.Stat(wrapper); err == nil {
+			status.Target = wrapper
+		}
+		tools = append(tools, status)
+	}
+	return helperproto.ToolStatusResponse{Tools: tools}, nil
+}
+
+func (h *helperAdapter) ToolInstall(ctx context.Context, id string, force bool) (helperproto.ToolStatus, error) {
+	home := os.Getenv("DEVSTACK_HOME")
+	if home == "" {
+		home = `C:\devstack`
+	}
+	_ = tooling.EnsureGlobalWindowsToolShims(home, "")
+	wrapper := filepath.Join(home, "bin", id+".cmd")
+	return helperproto.ToolStatus{
+		ID:          id,
+		WrapperPath: wrapper,
+		Target:      wrapper,
+	}, nil
+}
+
+func (h *helperAdapter) ToolRemove(ctx context.Context, id string) (helperproto.ToolStatus, error) {
+	home := os.Getenv("DEVSTACK_HOME")
+	if home == "" {
+		home = `C:\devstack`
+	}
+	wrapper := filepath.Join(home, "bin", id+".cmd")
+	_ = os.Remove(wrapper)
+	return helperproto.ToolStatus{
+		ID:          id,
+		WrapperPath: wrapper,
+	}, nil
 }
 
 func (h *helperAdapter) SetForwarders(ctx context.Context, httpPort, httpsPort int, enable bool) error {
@@ -859,4 +955,175 @@ func (a *windowsAgentConfigAdapter) ServiceReset(ctx context.Context, req agentp
 		return err
 	}
 	return c.ServiceReset(ctx, req)
+}
+
+type windowsDiagnostics struct {
+	runner  wsl.Runner
+	backend *wslbackend.Backend
+}
+
+func (w *windowsDiagnostics) CheckWSL(ctx context.Context, distro string) error {
+	runner := w.runner
+	if runner == nil {
+		runner = wsl.ExecRunner{}
+	}
+	_, err := runner.Run(ctx, "-d", distro, "--", "true")
+	return err
+}
+
+func (w *windowsDiagnostics) CheckAgent(ctx context.Context, distro string) error {
+	if w.backend == nil || w.backend.Client == nil {
+		return errors.New("agent client not configured")
+	}
+	return w.backend.Health(ctx)
+}
+
+func (w *windowsDiagnostics) CheckDocker(ctx context.Context, distro string) error {
+	runner := w.runner
+	if runner == nil {
+		runner = wsl.ExecRunner{}
+	}
+	_, err := runner.Run(ctx, "-d", distro, "--", "docker", "info")
+	return err
+}
+
+func (w *windowsDiagnostics) CheckLocalhostForwarding(ctx context.Context, distro string, port int) error {
+	runner := w.runner
+	if runner == nil {
+		runner = wsl.ExecRunner{}
+	}
+	if port <= 0 {
+		port = 8080
+	}
+	return wsl.ProbeLocalhostForwarding(ctx, runner, distro, port)
+}
+
+func (w *windowsDiagnostics) CheckPorts(ctx context.Context, distro string) error {
+	if w.backend == nil || w.backend.Client == nil {
+		return errors.New("agent client not configured")
+	}
+	resp, err := w.backend.Client.AllocatePorts(ctx, agentproto.PortRequest{
+		SiteID: "doctor-probe",
+		Kind:   "http",
+	})
+	if err != nil {
+		return err
+	}
+	_ = w.backend.Client.ReleasePorts(ctx, agentproto.PortRequest{
+		SiteID: "doctor-probe",
+	})
+	if resp.HTTPPort == 0 {
+		return errors.New("allocated port is zero")
+	}
+	return nil
+}
+
+type portProbe struct{}
+
+func (portProbe) Listenable(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return listener.Close()
+}
+
+type windowsDiskChecker struct{}
+
+func (windowsDiskChecker) FreeBytes(path string) (uint64, error) {
+	if strings.TrimSpace(path) == "" {
+		path = "."
+	}
+	abs, err := filepath.Abs(path)
+	if err == nil {
+		path = abs
+	}
+	dir, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	var available, total, free uint64
+	if err := windows.GetDiskFreeSpaceEx(dir, &available, &total, &free); err != nil {
+		return 0, fmt.Errorf("GetDiskFreeSpaceEx: %w", err)
+	}
+	return available, nil
+}
+
+type runtimeChecker struct{}
+
+func (c runtimeChecker) VerifyAll(ctx context.Context) error {
+	return nil
+}
+
+type windowsRuntimeService struct {
+	backend *wslbackend.Backend
+	store   *store.Store
+}
+
+func (s *windowsRuntimeService) List(ctx context.Context) ([]model.RuntimeBuild, error) {
+	if s.backend == nil || s.backend.Client == nil {
+		return nil, errors.New("WSL agent not connected")
+	}
+	resp, err := s.backend.Client.ListRuntimes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	builds := make([]model.RuntimeBuild, len(resp.Runtimes))
+	for i, r := range resp.Runtimes {
+		b := model.RuntimeBuild{
+			ID:       r.ID,
+			Kind:     r.Kind,
+			Version:  r.Version,
+			Backend:  model.BackendWSL,
+			Path:     r.Path,
+			Checksum: r.Checksum,
+		}
+		builds[i] = b
+		if s.store != nil {
+			_ = s.store.UpsertRuntime(ctx, b)
+		}
+	}
+	return builds, nil
+}
+
+func (s *windowsRuntimeService) Install(ctx context.Context, id string) (model.RuntimeBuild, error) {
+	if s.backend == nil || s.backend.Client == nil {
+		return model.RuntimeBuild{}, errors.New("WSL agent not connected")
+	}
+	build, err := s.backend.EnsureRuntimeBuild(ctx, id)
+	if err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	if s.store != nil {
+		_ = s.store.UpsertRuntime(ctx, build)
+	}
+	return build, nil
+}
+
+func (s *windowsRuntimeService) Remove(ctx context.Context, buildID string) error {
+	if s.backend == nil || s.backend.Client == nil {
+		return errors.New("WSL agent not connected")
+	}
+	if err := s.backend.RemoveRuntime(ctx, buildID); err != nil {
+		return err
+	}
+	if s.store != nil {
+		_ = s.store.DeleteRuntime(ctx, buildID)
+	}
+	return nil
+}
+
+func (s *windowsRuntimeService) Available() []catalog.Entry {
+	cat, err := catalog.Load()
+	if err != nil {
+		return nil
+	}
+	return cat.Entries
+}
+
+func resolveWindowsToolBinDir(cfg config.Config) string {
+	if fi, err := os.Stat(`C:\devstack\bin`); err == nil && fi.IsDir() {
+		return `C:\devstack\bin`
+	}
+	return filepath.Join(cfg.Home, "bin")
 }

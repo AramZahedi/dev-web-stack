@@ -33,7 +33,7 @@ func EnsureWindowsToolShims(binDir, distro string) error {
 	}
 	for _, tool := range []string{"php", "composer"} {
 		path := filepath.Join(binDir, tool+".cmd")
-		content := fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d \"%s\" --exec %s %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, tool)
+		content := fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s --exec %s %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, tool)
 		temporary := path + ".tmp"
 		if err := os.WriteFile(temporary, []byte(content), 0o600); err != nil {
 			return fmt.Errorf("tooling: write %s: %w", temporary, err)
@@ -80,10 +80,10 @@ func EnsureWindowsSiteShims(binDir, distro string, site model.Site) error {
 	}
 
 	shims := map[string]string{
-		"php.cmd":      fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d \"%s\" -- bash -lc \"%s && exec php \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
-		"composer.cmd": fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d \"%s\" -- bash -lc \"%s && exec composer \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
-		"shell.cmd":    fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d \"%s\" -- bash -lc \"%s && exec \\\"${SHELL:-/bin/bash}\\\" -i\"\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
-		"exec.cmd":     fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d \"%s\" -- bash -lc \"%s && exec \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
+		"php.cmd":      fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && exec php \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
+		"composer.cmd": fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && exec composer \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
+		"shell.cmd":    fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && exec \\\"${SHELL:-/bin/bash}\\\" -i\"\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
+		"exec.cmd":     fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s -- bash -lc \"%s && exec \\\"$@\\\"\" -- %%*\r\nexit /b %%ERRORLEVEL%%\r\n", distro, baseScript.String()),
 	}
 
 	for tool, content := range shims {

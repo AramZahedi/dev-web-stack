@@ -56,7 +56,7 @@ func (m *mockWSLRunner) Run(_ context.Context, args ...string) ([]byte, error) {
 			return nil, m.initProcErr
 		}
 		return []byte(m.initProc), nil
-	case strings.Contains(cmdStr, "test -r"):
+	case strings.Contains(cmdStr, "test -s") || strings.Contains(cmdStr, "test -r"):
 		if m.testRErr != nil {
 			return nil, m.testRErr
 		}

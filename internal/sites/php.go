@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -274,6 +275,12 @@ func validatePHPBuildRow(build model.RuntimeBuild, line string) error {
 	path := strings.TrimSpace(build.Path)
 	if path == "" {
 		return fmt.Errorf("build %q has no install path", build.ID)
+	}
+	if build.Backend == model.BackendWSL || runtime.GOOS == "windows" {
+		if !strings.HasPrefix(path, "/") {
+			return fmt.Errorf("build %q has invalid install path %q", build.ID, build.Path)
+		}
+		return nil
 	}
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return fmt.Errorf("build %q has invalid install path %q", build.ID, build.Path)

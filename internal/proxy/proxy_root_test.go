@@ -27,7 +27,7 @@ func TestResolvePHPTargetUsesProxyDocumentRoot(t *testing.T) {
 	if got := fastCGIRoot(route, target); got != "/wsl/backend/root" {
 		t.Fatalf("FPM document root = %q", got)
 	}
-	if got := fastCGIScriptPath(route, target); got != filepath.Join("/wsl/backend/root", "index.php") {
+	if got := fastCGIScriptPath(route, target); got != "/wsl/backend/root/index.php" {
 		t.Fatalf("FPM script = %q", got)
 	}
 }

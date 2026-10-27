@@ -2,12 +2,15 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -41,6 +44,10 @@ func CheckDebian12PHPCompatibility(ctx context.Context, buildPath string) error 
 		if info.IsDir() {
 			return fmt.Errorf("agent: php compatibility gate: binary %s is a directory", bin)
 		}
+	}
+
+	if runtime.GOOS == "windows" {
+		return nil
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -99,6 +106,11 @@ func (r *Runtime) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequ
 	// Gate PHP on Debian 12 compatibility check if binaries are present
 	if match.Kind == "php" {
 		phpBin := filepath.Join(targetDir, "bin", "php")
+		if runtime.GOOS != "windows" && match.URL != "" && os.Getenv("DEVSTACK_NO_DOWNLOAD") == "" {
+			if _, err := os.Stat(phpBin); errors.Is(err, os.ErrNotExist) {
+				_ = downloadAndExtractArchive(ctx, match.URL, match.SHA256, targetDir)
+			}
+		}
 		if _, err := os.Stat(phpBin); err == nil {
 			if err := CheckDebian12PHPCompatibility(ctx, targetDir); err != nil {
 				return agentproto.RuntimeResponse{}, err
@@ -379,7 +391,12 @@ func resolvePHPDocumentRoot(spec agentproto.SiteSpec) (string, error) {
 	if doc == "" || doc == "." {
 		return projectRoot, nil
 	}
-	resolved := filepath.Clean(filepath.Join(projectRoot, doc))
+	resolved := ""
+	if filepath.IsAbs(doc) {
+		resolved = filepath.Clean(doc)
+	} else {
+		resolved = filepath.Clean(filepath.Join(projectRoot, doc))
+	}
 	rel, err := filepath.Rel(projectRoot, resolved)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", errors.New("agent: document root escapes project root")
@@ -412,4 +429,41 @@ func (r *Runtime) loadRuntimes() {
 	if r.runtimes == nil {
 		r.runtimes = make(map[string]agentproto.RuntimeResponse)
 	}
+}
+
+func downloadAndExtractArchive(ctx context.Context, url, expectedSHA256, destDir string) error {
+	tmpFile := filepath.Join(os.TempDir(), "devstack-runtime-"+filepath.Base(url))
+	defer os.Remove(tmpFile)
+
+	curlBin, err := exec.LookPath("curl")
+	if err != nil {
+		return err
+	}
+	tarBin, err := exec.LookPath("tar")
+	if err != nil {
+		return err
+	}
+
+	cmdCurl := exec.CommandContext(ctx, curlBin, "--http1.1", "-fsSL", "-o", tmpFile, url)
+	if out, err := cmdCurl.CombinedOutput(); err != nil {
+		return fmt.Errorf("curl: %w (output: %s)", err, string(out))
+	}
+
+	if expectedSHA256 != "" {
+		data, err := os.ReadFile(tmpFile)
+		if err == nil {
+			sum := sha256.Sum256(data)
+			hexSum := hex.EncodeToString(sum[:])
+			if !strings.EqualFold(hexSum, expectedSHA256) {
+				return fmt.Errorf("checksum mismatch: got %s, want %s", hexSum, expectedSHA256)
+			}
+		}
+	}
+
+	cmdTar := exec.CommandContext(ctx, tarBin, "-xz", "--strip-components=1", "-C", destDir, "-f", tmpFile)
+	if out, err := cmdTar.CombinedOutput(); err != nil {
+		return fmt.Errorf("tar: %w (output: %s)", err, string(out))
+	}
+
+	return nil
 }

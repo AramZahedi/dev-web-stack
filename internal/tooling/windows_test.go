@@ -19,7 +19,7 @@ func TestEnsureWindowsToolShimsWritesNonDotCmdFiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if strings.HasPrefix(name, ".") || !strings.Contains(string(content), `wsl.exe -d "devstack" --exec`) {
+		if strings.HasPrefix(name, ".") || !strings.Contains(string(content), `wsl.exe -d devstack --exec`) {
 			t.Fatalf("unexpected %s shim: %q", name, content)
 		}
 	}
@@ -35,7 +35,7 @@ func TestEnsureWindowsToolShimsPathWithSpaces(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if !strings.Contains(string(content), `wsl.exe -d "devstack" --exec`) {
+		if !strings.Contains(string(content), `wsl.exe -d devstack --exec`) {
 			t.Fatalf("unexpected %s content: %s", name, content)
 		}
 	}
@@ -53,7 +53,7 @@ func TestEnsureGlobalWindowsToolShimsUsesConfiguredDistro(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(content), `wsl.exe -d "Ubuntu-Dev"`) {
+	if !strings.Contains(string(content), `wsl.exe -d Ubuntu-Dev`) {
 		t.Fatalf("shim ignored configured distro: %s", content)
 	}
 }
@@ -142,7 +142,7 @@ func TestEnsureWindowsSiteShimsWritesExpectedCmdFiles(t *testing.T) {
 			t.Fatalf("read %s: %v", name, err)
 		}
 		text := string(content)
-		if strings.HasPrefix(name, ".") || !strings.Contains(text, `wsl.exe -d "devstack"`) {
+		if strings.HasPrefix(name, ".") || !strings.Contains(text, `wsl.exe -d devstack`) {
 			t.Fatalf("unexpected %s content: %s", name, text)
 		}
 		if !strings.Contains(text, "cd -- '/mnt/c/Users/Aram/Projects/my site'") {

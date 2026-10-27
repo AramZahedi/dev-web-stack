@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -275,7 +276,18 @@ func InstallCABundle(root string, bundle []byte) (string, error) {
 	if _, err := os.Stat("/etc/profile.d"); err == nil {
 		_ = writePrivateFile("/etc/profile.d/devstack-ca.sh", []byte(profileScript), 0o644)
 	}
+	if caDir := "/usr/local/share/ca-certificates"; isDirectory(caDir) {
+		_ = writePrivateFile(filepath.Join(caDir, "devstack.crt"), bundle, 0o644)
+		if bin, err := exec.LookPath("update-ca-certificates"); err == nil {
+			_ = exec.Command(bin).Run()
+		}
+	}
 	return path, nil
+}
+
+func isDirectory(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 // CAEnvironment injects certificate trust into curl, Node, and PHP without

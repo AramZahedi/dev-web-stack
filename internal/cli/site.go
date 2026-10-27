@@ -96,6 +96,7 @@ type siteAddOptions struct {
 	name            string
 	path            string
 	kind            string
+	sourceMode      string
 	node            string
 	php             string
 	phpBuild        string
@@ -123,6 +124,7 @@ func (a *App) newSiteAddCmd() *cobra.Command {
 	flags.StringVar(&opts.name, "name", "", "site name (the domain becomes <name>.test)")
 	flags.StringVar(&opts.path, "path", "", "project directory")
 	flags.StringVar(&opts.kind, "kind", "static", "site kind: static, php, or node")
+	flags.StringVar(&opts.sourceMode, "source-mode", "", "project source mode: local, windows, or wsl")
 	flags.StringVar(&opts.node, "node", "", "Node version (for example 22 or 24)")
 	flags.StringVar(&opts.php, "php", "", "PHP version line (for example 8.4)")
 	flags.StringVar(&opts.phpBuild, "php-build", "", "exact PHP build id (for example php@8.4.4-r1)")
@@ -163,8 +165,17 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 		return &Error{Code: "INVALID_FLAGS", Message: "--no-https and --force-https cannot be used together", Remediation: "Choose one TLS mode."}
 	}
 	if kind == string(model.SitePHP) {
-		if strings.TrimSpace(opts.php) == "" {
-			return &Error{Code: "INVALID_ARGUMENT", Message: "PHP sites require --php", Remediation: "Pass `--php 8.4` (or another supported line)."}
+		if strings.TrimSpace(opts.php) == "" && strings.TrimSpace(opts.phpBuild) == "" {
+			c, _, err := a.clientReady(cmd.Context())
+			if err == nil {
+				if def, err := c.PHPDefault(cmd.Context()); err == nil && def.Build != nil {
+					opts.php = catalog.LineOf(def.Build.Version)
+					opts.phpBuild = def.Build.ID
+				}
+			}
+			if strings.TrimSpace(opts.php) == "" {
+				return &Error{Code: "INVALID_ARGUMENT", Message: "PHP sites require --php", Remediation: "Pass `--php 8.4` (or another supported line)."}
+			}
 		}
 		if strings.TrimSpace(opts.node) != "" || strings.TrimSpace(opts.command) != "" || opts.spa {
 			return &Error{Code: "INVALID_FLAGS", Message: "--node, --command, and --spa are only valid for node sites", Remediation: "Remove the Node flags, or use `--kind node`."}
@@ -216,6 +227,7 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 		Name:            name,
 		Path:            path,
 		Kind:            kind,
+		SourceMode:      strings.TrimSpace(opts.sourceMode),
 		NodeVersion:     nodeVersion,
 		Command:         strings.TrimSpace(opts.command),
 		DocumentRoot:    strings.TrimSpace(opts.documentRoot),

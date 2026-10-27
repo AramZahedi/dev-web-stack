@@ -6,6 +6,7 @@ package wsl
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -146,10 +147,9 @@ func ValidateWSLPath(ctx context.Context, runner Runner, distro, path string) (V
 	return ValidatedPath{Path: validated, Exists: true}, nil
 }
 
-const probeScript = `# devstack-probe
-set -eu
+const probeScript = `set -eu
 port=%d
-gw=$(ip route show default 2>/dev/null | awk '{print $3; exit}')
+gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
 [ -n "$gw" ] || gw=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf)
 [ -n "$gw" ] || exit 1
 timeout 3 bash -c "exec 3<>/dev/tcp/$gw/$port" || exit 2
@@ -167,7 +167,9 @@ func ProbeLocalhostForwarding(ctx context.Context, runner Runner, distro string,
 		return fmt.Errorf("wsl: invalid port %d", port)
 	}
 	script := fmt.Sprintf(probeScript, port)
-	out, err := runner.Run(ctx, "-d", distro, "--", "bash", "-lc", script)
+	b64 := base64.StdEncoding.EncodeToString([]byte(script))
+	cmd := fmt.Sprintf("echo %s | base64 -d | bash", b64)
+	out, err := runner.Run(ctx, "-d", distro, "--", "sh", "-c", cmd, "devstack-probe")
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrLocalhostForwarding, err)
 	}

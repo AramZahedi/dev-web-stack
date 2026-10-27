@@ -172,6 +172,29 @@ func (b *Backend) check() error {
 	return nil
 }
 
+func toWSLPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" || strings.HasPrefix(p, "/") {
+		return p
+	}
+	if strings.HasPrefix(strings.ToLower(p), `\\wsl.localhost\`) || strings.HasPrefix(strings.ToLower(p), `\\wsl$\`) {
+		slash := strings.ReplaceAll(p, `\`, "/")
+		parts := strings.Split(strings.TrimPrefix(slash, "//"), "/")
+		if len(parts) >= 2 {
+			return "/" + strings.Join(parts[2:], "/")
+		}
+	}
+	if len(p) >= 2 && p[1] == ':' {
+		drive := strings.ToLower(string(p[0]))
+		rest := strings.ReplaceAll(p[2:], `\`, "/")
+		if !strings.HasPrefix(rest, "/") {
+			rest = "/" + rest
+		}
+		return "/mnt/" + drive + rest
+	}
+	return strings.ReplaceAll(p, `\`, "/")
+}
+
 func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 	documentRoot := strings.TrimSpace(spec.DocumentRoot)
 	backendDocumentRoot := strings.TrimSpace(spec.BackendPath)
@@ -190,12 +213,12 @@ func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 		mode = string(model.SourceWindows)
 	}
 	return agentproto.SiteSpec{
-		ID: spec.ID, Kind: spec.Kind, Domain: spec.Domain, HostPath: spec.HostPath, BackendPath: spec.BackendPath,
-		DocumentRoot: backendDocumentRoot, ProxyDocumentRoot: proxyRoot, SourceMode: mode,
+		ID: spec.ID, Kind: spec.Kind, Domain: spec.Domain, HostPath: spec.HostPath, BackendPath: toWSLPath(spec.BackendPath),
+		DocumentRoot: toWSLPath(backendDocumentRoot), ProxyDocumentRoot: proxyRoot, SourceMode: mode,
 		Command: spec.Command, Env: cloneMap(spec.Env), HTTPPort: spec.HTTPPort, FastCGIPort: spec.FastCGIPort,
 		SPAFallback: spec.SPAFallback, FrontController: spec.FrontController, RuntimeVersion: spec.RuntimeVersion,
-		PHPVersion: spec.PHPVersion, PHPBuild: spec.PHPBuild, PHPBuildPath: spec.PHPBuildPath,
-		PHPIniPath: spec.PHPIniPath, FPMConfigPath: spec.FPMConfigPath, PHPHealthScript: spec.PHPHealthScript,
+		PHPVersion: spec.PHPVersion, PHPBuild: spec.PHPBuild, PHPBuildPath: toWSLPath(spec.PHPBuildPath),
+		PHPIniPath: toWSLPath(spec.PHPIniPath), FPMConfigPath: toWSLPath(spec.FPMConfigPath), PHPHealthScript: toWSLPath(spec.PHPHealthScript),
 	}
 }
 
