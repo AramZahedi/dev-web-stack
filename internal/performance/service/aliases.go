@@ -77,6 +77,7 @@ var (
 	ResetManagedFiles       = performance.ResetManagedFiles
 	RunLoad                 = performance.RunLoad
 	Collect                 = performance.Collect
+	PublicRouteURL          = performance.PublicRouteURL
 )
 
 func invalid(field, format string, args ...any) error {

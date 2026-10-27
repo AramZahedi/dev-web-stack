@@ -98,9 +98,19 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 		SampleLimit: loadSampleLimit,
 	}
 
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err == nil && strings.HasSuffix(strings.ToLower(host), ".test") {
+				if ips, lookupErr := net.LookupIP(host); lookupErr == nil && len(ips) > 0 {
+					return dialer.DialContext(ctx, network, addr)
+				}
+				return dialer.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
 		MaxIdleConns:          opts.Connections,
 		MaxIdleConnsPerHost:   opts.Connections,
 		MaxConnsPerHost:       opts.Connections,
@@ -248,11 +258,7 @@ func validateLoadOptions(opts LoadOptions) error {
 }
 
 func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return IsLocalOrTestHost(host)
 }
 
 func percentile(sorted []float64, p float64) float64 {

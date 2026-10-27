@@ -18,6 +18,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/serviceconfig"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -237,6 +238,14 @@ type ConfigEventStore interface {
 	AddEvent(ctx context.Context, event model.Event) error
 }
 
+// AgentConfigAPI defines the agent client subset for service config operations.
+type AgentConfigAPI interface {
+	ServiceConfig(ctx context.Context, id string) (agentproto.ServiceConfigResponse, error)
+	ServiceContent(ctx context.Context, req agentproto.ServiceConfigRequest) (agentproto.ServiceContentResponse, error)
+	ServiceApply(ctx context.Context, req agentproto.ServiceConfigRequest) (agentproto.ServiceContentResponse, error)
+	ServiceReset(ctx context.Context, req agentproto.ServiceConfigRequest) error
+}
+
 // ConfigDeps configures the service config service.
 type ConfigDeps struct {
 	Root      string
@@ -244,6 +253,7 @@ type ConfigDeps struct {
 	Services  ConfigLifecycle
 	Validator ConfigValidator
 	Events    ConfigEventStore
+	Agent     AgentConfigAPI
 	Logger    *slog.Logger
 }
 
@@ -256,6 +266,7 @@ type ConfigService struct {
 	services  ConfigLifecycle
 	validator ConfigValidator
 	events    ConfigEventStore
+	agent     AgentConfigAPI
 	logger    *slog.Logger
 
 	writeMu sync.Mutex
@@ -284,6 +295,7 @@ func NewConfigService(deps ConfigDeps) (*ConfigService, error) {
 		services:  deps.Services,
 		validator: deps.Validator,
 		events:    deps.Events,
+		agent:     deps.Agent,
 		logger:    logger,
 	}, nil
 }
@@ -293,6 +305,28 @@ func NewConfigService(deps ConfigDeps) (*ConfigService, error) {
 func (s *ConfigService) List(ctx context.Context, id services.ID) (ConfigListing, error) {
 	if err := ctx.Err(); err != nil {
 		return ConfigListing{}, err
+	}
+	if s.agent != nil {
+		resp, err := s.agent.ServiceConfig(ctx, string(id))
+		if err != nil {
+			return ConfigListing{}, err
+		}
+		files := make([]ConfigStatus, 0, len(resp.Files))
+		for _, f := range resp.Files {
+			files = append(files, ConfigStatus{
+				Path:     f.Path,
+				Class:    serviceconfig.Class(f.Class),
+				Hash:     f.Hash,
+				Modified: f.Modified,
+				Detached: f.Detached,
+				Conflict: ConfigConflictSummary{
+					Active:             false,
+					ResolutionRequired: false,
+				},
+			})
+		}
+		sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+		return ConfigListing{Service: string(id), Files: files}, nil
 	}
 	_, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {
@@ -365,6 +399,27 @@ func (s *ConfigService) Content(ctx context.Context, id services.ID, rel string)
 	if err := ctx.Err(); err != nil {
 		return ConfigContent{}, err
 	}
+	if s.agent != nil {
+		clean, err := cleanConfigRel(rel)
+		if err != nil {
+			return ConfigContent{}, err
+		}
+		resp, err := s.agent.ServiceContent(ctx, agentproto.ServiceConfigRequest{
+			ID:  string(id),
+			Rel: clean,
+		})
+		if err != nil {
+			return ConfigContent{}, err
+		}
+		return ConfigContent{
+			ConfigStatus: ConfigStatus{
+				Path: resp.Path,
+				Hash: resp.Hash,
+				Size: int64(len(resp.Content)),
+			},
+			Content: resp.Content,
+		}, nil
+	}
 	_, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {
 		return ConfigContent{}, err
@@ -389,6 +444,37 @@ func (s *ConfigService) Content(ctx context.Context, id services.ID, rel string)
 func (s *ConfigService) Diff(ctx context.Context, id services.ID, rel, content string) (ConfigDiff, error) {
 	if err := ctx.Err(); err != nil {
 		return ConfigDiff{}, err
+	}
+	if s.agent != nil {
+		if err := validateConfigContent(content); err != nil {
+			return ConfigDiff{}, err
+		}
+		clean, err := cleanConfigRel(rel)
+		if err != nil {
+			return ConfigDiff{}, err
+		}
+		var current []byte
+		resp, err := s.agent.ServiceContent(ctx, agentproto.ServiceConfigRequest{
+			ID:  string(id),
+			Rel: clean,
+		})
+		if err == nil {
+			current = []byte(resp.Content)
+		}
+		proposed := []byte(content)
+		return ConfigDiff{
+			Path:         clean,
+			Diff:         serviceconfig.UnifiedDiff(clean, current, proposed),
+			CurrentHash:  configHash(current),
+			ProposedHash: configHash(proposed),
+			CurrentSize:  int64(len(current)),
+			ProposedSize: int64(len(proposed)),
+			Status: ConfigStatus{
+				Path: clean,
+				Hash: configHash(current),
+				Size: int64(len(current)),
+			},
+		}, nil
 	}
 	svc, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {
@@ -448,6 +534,34 @@ func (s *ConfigService) Apply(ctx context.Context, id services.ID, req ConfigApp
 
 	if err := ctx.Err(); err != nil {
 		return ConfigApplyResult{}, err
+	}
+	if s.agent != nil {
+		if err := validateConfigContent(req.Content); err != nil {
+			return ConfigApplyResult{}, err
+		}
+		clean, err := cleanConfigRel(req.Path)
+		if err != nil {
+			return ConfigApplyResult{}, err
+		}
+		resp, err := s.agent.ServiceApply(ctx, agentproto.ServiceConfigRequest{
+			ID:      string(id),
+			Rel:     clean,
+			Content: req.Content,
+		})
+		if err != nil {
+			s.audit(ctx, "config_apply", id, clean, false, err.Error())
+			return ConfigApplyResult{}, err
+		}
+		s.audit(ctx, "config_apply", id, clean, true, "applied config through agent")
+		return ConfigApplyResult{
+			Service: string(id),
+			Path:    resp.Path,
+			Action:  "edit",
+			Changed: true,
+			Hash:    resp.Hash,
+			Size:    int64(len(resp.Content)),
+			Live:    true,
+		}, nil
 	}
 	svc, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {
@@ -606,6 +720,27 @@ func (s *ConfigService) Reset(ctx context.Context, id services.ID, rel string) (
 
 	if err := ctx.Err(); err != nil {
 		return ConfigApplyResult{}, err
+	}
+	if s.agent != nil {
+		clean, err := cleanConfigRel(rel)
+		if err != nil {
+			return ConfigApplyResult{}, err
+		}
+		err = s.agent.ServiceReset(ctx, agentproto.ServiceConfigRequest{
+			ID:  string(id),
+			Rel: clean,
+		})
+		if err != nil {
+			s.audit(ctx, "config_reset", id, clean, false, err.Error())
+			return ConfigApplyResult{}, err
+		}
+		s.audit(ctx, "config_reset", id, clean, true, "reset config through agent")
+		return ConfigApplyResult{
+			Service: string(id),
+			Path:    clean,
+			Action:  "reset",
+			Changed: true,
+		}, nil
 	}
 	svc, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {

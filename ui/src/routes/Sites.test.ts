@@ -52,4 +52,31 @@ describe('Sites', () => {
       expect(container.querySelector('.loading-state')).toBeNull();
     });
   });
+
+  it('displays source mode badge when present', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/api/v1/sites')) {
+          return jsonResponse([
+            {
+              id: 'mysite',
+              name: 'My Site',
+              domain: 'mysite.test',
+              status: 'running',
+              kind: 'php',
+              host_path: 'C:\\Projects\\mysite',
+              source_mode: 'windows',
+            },
+          ]);
+        }
+        return jsonResponse([]);
+      }),
+    );
+
+    render(Sites);
+    const badges = await screen.findAllByText('Windows drive');
+    expect(badges.length).toBeGreaterThan(0);
+  });
 });

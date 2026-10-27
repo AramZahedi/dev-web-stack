@@ -29,9 +29,12 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
+	perfservice "github.com/AramZahedi/dev-web-stack/internal/performance/service"
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/ports"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
@@ -165,12 +168,37 @@ func Run(ctx context.Context, opts Options) error {
 		PHPManifest:  &phpManifest,
 	})
 
+	agentConfig := &windowsAgentConfigAdapter{}
+	serviceConfigService, err := servicecontrol.NewConfigService(servicecontrol.ConfigDeps{
+		Root:    cfg.Home,
+		Catalog: services.DefaultCatalog(),
+		Events:  st,
+		Agent:   agentConfig,
+		Logger:  logger,
+	})
+	if err != nil {
+		logger.Warn("daemon: service config manager init", "error", err)
+	}
+
+	performanceService := perfservice.NewService(perfservice.ServiceConfig{
+		Root:              cfg.Home,
+		Store:             st,
+		Sites:             siteService,
+		HTTPPort:          cfg.HTTPPort,
+		HTTPSPort:         cfg.HTTPSPort,
+		ServingMode:       cfg.ServingMode,
+		DisableHostTuning: true,
+		Logger:            logger,
+	})
+
 	apiServer := api.NewServer(st, siteService, nil, nil, logStore, adapter, api.Config{
-		UserHome:     cfg.Home,
-		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
-		Listeners:    api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},
-		Vhosts:       siteService,
-		Logger:       logger,
+		UserHome:      cfg.Home,
+		MaxBodyBytes:  int64(cfg.MaxRequestBodyMB) << 20,
+		Listeners:     api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},
+		Vhosts:        siteService,
+		ServiceConfig: serviceConfigService,
+		Performance:   performanceService,
+		Logger:        logger,
 	})
 
 	tcpLn, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(cfg.UIPort)))
@@ -266,6 +294,7 @@ func Run(ctx context.Context, opts Options) error {
 				return nil
 			}
 			agentClient = client
+			agentConfig.set(client)
 			wslBackend.Client = client
 			agentPorts.Client = client
 
@@ -778,4 +807,56 @@ func waitWindowsReady(ctx context.Context, home string, timeout time.Duration) e
 		case <-ticker.C:
 		}
 	}
+}
+
+type windowsAgentConfigAdapter struct {
+	mu     sync.RWMutex
+	client *agentclient.Client
+}
+
+func (a *windowsAgentConfigAdapter) set(client *agentclient.Client) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.client = client
+}
+
+func (a *windowsAgentConfigAdapter) get() (*agentclient.Client, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.client == nil {
+		return nil, errors.New("WSL agent is not connected")
+	}
+	return a.client, nil
+}
+
+func (a *windowsAgentConfigAdapter) ServiceConfig(ctx context.Context, id string) (agentproto.ServiceConfigResponse, error) {
+	c, err := a.get()
+	if err != nil {
+		return agentproto.ServiceConfigResponse{}, err
+	}
+	return c.ServiceConfig(ctx, id)
+}
+
+func (a *windowsAgentConfigAdapter) ServiceContent(ctx context.Context, req agentproto.ServiceConfigRequest) (agentproto.ServiceContentResponse, error) {
+	c, err := a.get()
+	if err != nil {
+		return agentproto.ServiceContentResponse{}, err
+	}
+	return c.ServiceContent(ctx, req)
+}
+
+func (a *windowsAgentConfigAdapter) ServiceApply(ctx context.Context, req agentproto.ServiceConfigRequest) (agentproto.ServiceContentResponse, error) {
+	c, err := a.get()
+	if err != nil {
+		return agentproto.ServiceContentResponse{}, err
+	}
+	return c.ServiceApply(ctx, req)
+}
+
+func (a *windowsAgentConfigAdapter) ServiceReset(ctx context.Context, req agentproto.ServiceConfigRequest) error {
+	c, err := a.get()
+	if err != nil {
+		return err
+	}
+	return c.ServiceReset(ctx, req)
 }
