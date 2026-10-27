@@ -78,10 +78,12 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 Require ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) "Running with Administrator privileges"
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 2 }
 
-$wslVersion = (& wsl.exe --version 2>&1 | Out-String)
-Require ($wslVersion -match "2\.") "WSL 2.0.0+ is installed"
+$wslRaw = (& wsl.exe --version 2>&1 | Out-String)
+$wslVersion = ($wslRaw -replace "`0", "").Trim()
+Require ($wslVersion -match "(?m)WSL version:\s*([2-9]|\d{2,})\.") "WSL 2.0.0+ is installed"
 
-$distros = (& wsl.exe -l -q 2>&1 | Out-String)
+$distrosRaw = (& wsl.exe -l -q 2>&1 | Out-String)
+$distros = ($distrosRaw -replace "`0", "").Trim()
 Require ($distros -match "devstack") "Managed 'devstack' WSL distro exists"
 
 $systemd = (& wsl.exe -d devstack -- bash -lc "ps -p 1 -o comm= 2>/dev/null || true" 2>&1 | Out-String).Trim()

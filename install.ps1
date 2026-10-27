@@ -761,7 +761,7 @@ if (Test-Path $effectiveRootFS) {
     } else {
         $sidecar = "$effectiveRootFS.sha256"
         if (Test-Path $sidecar) {
-            $expectedHash = (Get-Content -Path $sidecar).Split(" `t")[0].Trim().ToLower()
+            $expectedHash = ((Get-Content -Path $sidecar -Raw) -split '\s+')[0].Trim().ToLower()
         }
     }
 
