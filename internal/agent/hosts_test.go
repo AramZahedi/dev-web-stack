@@ -98,11 +98,11 @@ func TestInstallCABundleWritesPublicCertAndEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env["SSL_CERT_FILE"] != path || env["NODE_EXTRA_CA_CERTS"] != path || !strings.Contains(env["PHP_INI_SCAN_DIR"], "php-conf.d") || env["PATH"] != "/usr/bin" {
+	if env["SSL_CERT_FILE"] != path || env["CURL_CA_BUNDLE"] != path || env["NODE_EXTRA_CA_CERTS"] != path || !strings.Contains(env["PHP_INI_SCAN_DIR"], "php-conf.d") || env["PATH"] != "/usr/bin" {
 		t.Fatalf("CA environment = %#v", env)
 	}
 	phpIni, err := os.ReadFile(filepath.Join(root, "certs", "php-conf.d", "99-devstack-ca.ini"))
-	if err != nil || !strings.Contains(string(phpIni), "openssl.cafile="+path) {
+	if err != nil || !strings.Contains(string(phpIni), "openssl.cafile="+path) || !strings.Contains(string(phpIni), "curl.cainfo="+path) {
 		t.Fatalf("PHP CA ini = %q, %v", phpIni, err)
 	}
 	if runtime.GOOS != "windows" {

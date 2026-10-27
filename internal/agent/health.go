@@ -89,6 +89,39 @@ func (s *Server) handleCA(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *Server) handleCAInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "POST required")
+		return
+	}
+	var request agentproto.CAInstallRequest
+	if err := decodeAgentJSON(w, r, &request); err != nil {
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if len(request.CertPEM) == 0 {
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, "CA certificate bundle is empty")
+		return
+	}
+	if _, err := InstallCABundle(s.config.Root, request.CertPEM); err != nil {
+		status := http.StatusBadRequest
+		code := agentproto.CodeInvalidRequest
+		if errors.Is(err, ErrInvalidCABundle) {
+			status = http.StatusBadRequest
+			code = agentproto.CodeInvalidRequest
+		} else if os.IsPermission(err) {
+			status = http.StatusForbidden
+			code = agentproto.CodeForbidden
+		} else {
+			status = http.StatusInternalServerError
+			code = agentproto.CodeInternal
+		}
+		writeAgentError(w, status, code, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

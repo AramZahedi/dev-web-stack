@@ -266,9 +266,14 @@ func InstallCABundle(root string, bundle []byte) (string, error) {
 	if err := os.MkdirAll(phpDir, 0o755); err != nil {
 		return "", fmt.Errorf("agent: create PHP CA configuration directory: %w", err)
 	}
-	phpConfig := []byte("openssl.cafile=" + path + "\n")
+	phpConfig := []byte("openssl.cafile=" + path + "\ncurl.cainfo=" + path + "\n")
 	if err := writePrivateFile(filepath.Join(phpDir, "99-devstack-ca.ini"), phpConfig, 0o644); err != nil {
 		return "", err
+	}
+	profileScript := fmt.Sprintf("# Managed by devstack agent\nexport SSL_CERT_FILE=%q\nexport CURL_CA_BUNDLE=%q\nexport NODE_EXTRA_CA_CERTS=%q\nif [ -z \"${PHP_INI_SCAN_DIR:-}\" ]; then\n    export PHP_INI_SCAN_DIR=\":%s\"\nelse\n    case \":$PHP_INI_SCAN_DIR:\" in\n        *\":%s:\"*) ;;\n        *) export PHP_INI_SCAN_DIR=\"$PHP_INI_SCAN_DIR:%s\" ;;\n    esac\nfi\n", path, path, path, phpDir, phpDir, phpDir)
+	_ = writePrivateFile(filepath.Join(certDir, "ca-env.sh"), []byte(profileScript), 0o644)
+	if _, err := os.Stat("/etc/profile.d"); err == nil {
+		_ = writePrivateFile("/etc/profile.d/devstack-ca.sh", []byte(profileScript), 0o644)
 	}
 	return path, nil
 }
@@ -287,11 +292,12 @@ func CAEnvironment(root string, base map[string]string) (map[string]string, erro
 	if err := validateCABundleFile(path); err != nil {
 		return nil, err
 	}
-	env := make(map[string]string, len(base)+3)
+	env := make(map[string]string, len(base)+4)
 	for key, value := range base {
 		env[key] = value
 	}
 	env["SSL_CERT_FILE"] = path
+	env["CURL_CA_BUNDLE"] = path
 	env["NODE_EXTRA_CA_CERTS"] = path
 	phpDir := filepath.Join(root, "certs", "php-conf.d")
 	if current := env["PHP_INI_SCAN_DIR"]; current != "" {

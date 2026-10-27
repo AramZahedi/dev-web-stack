@@ -269,7 +269,7 @@ func TestStaticRuntimeInjectsInstalledCABundleIntoSiteEnvironment(t *testing.T) 
 		t.Fatal(err)
 	}
 	prepared := runtime.sites[spec.ID].spec.Env
-	if prepared["SSL_CERT_FILE"] != caPath || prepared["NODE_EXTRA_CA_CERTS"] != caPath || !strings.Contains(prepared["PHP_INI_SCAN_DIR"], "php-conf.d") {
+	if prepared["SSL_CERT_FILE"] != caPath || prepared["CURL_CA_BUNDLE"] != caPath || prepared["NODE_EXTRA_CA_CERTS"] != caPath || !strings.Contains(prepared["PHP_INI_SCAN_DIR"], "php-conf.d") {
 		t.Fatalf("site CA environment = %#v", prepared)
 	}
 }
