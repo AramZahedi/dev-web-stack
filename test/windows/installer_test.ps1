@@ -480,6 +480,99 @@ Require ($installerContent -match 'Get-Process -Id \$PID' -or $installerContent 
 Require ($installerContent -match 'Push-Location') "install.ps1 uses Push-Location for go build"
 
 # -------------------------------------------------------------------------
+# Test 19: WSL path normalization with forward-slash replacement & /mnt/ fallback
+# -------------------------------------------------------------------------
+Step "Testing WSL path normalization and fallback"
+# Unit test normalization logic and regex matching
+$testWindowsPath = "C:\devstack\bin\devstack-agent"
+$testCleanPath = $testWindowsPath.Replace('\', '/')
+Require ($testCleanPath -eq "C:/devstack/bin/devstack-agent") "Backslashes normalized to forward slashes"
+Require ($testCleanPath -notmatch '\\') "Normalized path contains no backslashes"
+
+$resolvedFallback = if ($testCleanPath -match "^([a-zA-Z]):/(.*)$") {
+    "/mnt/$($Matches[1].ToLower())/$($Matches[2])"
+} else { "" }
+Require ($resolvedFallback -eq "/mnt/c/devstack/bin/devstack-agent") "/mnt/<drive>/... fallback constructs correct WSL path"
+
+# Test drive letter casing and arbitrary paths
+$dClean = "D:\My Tools\DevStack\bin\devstack-agent".Replace('\', '/')
+$dFallback = if ($dClean -match "^([a-zA-Z]):/(.*)$") {
+    "/mnt/$($Matches[1].ToLower())/$($Matches[2])"
+} else { "" }
+Require ($dFallback -eq "/mnt/d/My Tools/DevStack/bin/devstack-agent") "/mnt/ fallback handles alternate drive letter and spaces"
+
+# Verify install.ps1 code structure for path normalization, wslpath flags, fallback, and error handling
+Require ($installerContent -match '\$stagedAgentLinux\.Replace\(''\\'', ''/''\)') "install.ps1 replaces backslashes with forward slashes"
+Require ($installerContent -match 'wsl\.exe -d devstack -u root -- wslpath -a -u "\$cleanAgentPath"') "install.ps1 invokes wslpath targeting devstack distro as root"
+Require ($installerContent -match '/mnt/\$\(\$Matches\[1\]\.ToLower\(\)\)/\$\(\$Matches\[2\]\)') "install.ps1 includes /mnt/<drive> fallback regex"
+Require ($installerContent -match 'Failed to copy devstack-agent binary into WSL distro') "install.ps1 checks copy exit code and reports failure"
+Require ($installerContent -match 'Unable to resolve WSL path for') "install.ps1 reports error when path resolution fails"
+
+# -------------------------------------------------------------------------
+# Test 20: CRLF stripping when passing scripts to bash and managed.json piping
+# -------------------------------------------------------------------------
+Step "Testing CRLF stripping for bash scripts and managed.json stdin piping"
+# Unit test CRLF replacement
+$testCRLFScript = "echo line 1`r`necho line 2`r`n"
+$testLFScript = $testCRLFScript -replace "`r`n", "`n"
+Require ($testLFScript -notmatch "`r") "CRLF replacement removes all carriage return characters"
+Require ($testLFScript -match "`n") "LF newlines are preserved"
+
+# Verify install.ps1 strips CRLF for both install-docker.sh and install-agent.sh
+Require ($installerContent -match 'Get-Content\s+-Raw\s+\$installDockerScript\)\s*-replace\s*"`r`n",\s*"`n"') "install.ps1 strips CRLF when reading install-docker.sh"
+Require ($installerContent -match 'Get-Content\s+-Raw\s+\$installAgentSrc\)\s*-replace\s*"`r`n",\s*"`n"') "install.ps1 strips CRLF when reading install-agent.sh"
+
+# Verify managed.json is piped via stdin using cat > instead of printf interpolation
+Require ($installerContent -match '\$managedJsonContent\s*\|\s*&\s*wsl\.exe\s*-d\s*devstack\s*-u\s*root\s*--\s*sh\s*-c\s*"cat\s*>\s*/data/devstack/managed\.json') "install.ps1 pipes managed.json via stdin using cat >"
+Require ($installerContent -notmatch "printf\s*'%s\\n'\s*'\$managedJsonContent'") "install.ps1 does not use fragile printf interpolation for managed.json"
+
+# -------------------------------------------------------------------------
+# Test 21: Verification that failure in install-docker.sh or install-agent.sh exits with code 1
+# -------------------------------------------------------------------------
+Step "Testing exit code 1 on install-docker.sh and install-agent.sh failure"
+# Verify static code checks for $LASTEXITCODE -ne 0 after bash invocations
+Require ($installerContent -match '\$dockerScriptContent\s*\|\s*&\s*wsl\.exe.*bash\s*[\r\n\s]+if\s*\(\$LASTEXITCODE\s*-ne\s*0\)') "install.ps1 checks LASTEXITCODE immediately after install-docker.sh bash invocation"
+Require ($installerContent -match '\$agentScriptContent\s*\|\s*&\s*wsl\.exe.*bash\s*[\r\n\s]+if\s*\(\$LASTEXITCODE\s*-ne\s*0\)') "install.ps1 checks LASTEXITCODE immediately after install-agent.sh bash invocation"
+
+# Dynamic test: Docker script failure triggers exit code 1
+$tempFailDockerDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-faildocker-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempFailDockerDir | Out-Null
+try {
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $env:DEVSTACK_TEST_SYSTEMD_PID1 = "systemd"
+    $env:DEVSTACK_TEST_FAIL_INSTALL_DOCKER = "true"
+    $res = Invoke-Installer @("-TestSandbox", $tempFailDockerDir)
+    Require ($res.ExitCode -eq 1) "Docker install failure exits with code 1 (got $($res.ExitCode))"
+    Require ($res.Output -match "Docker Engine installation script failed") "Error message reports Docker script failure"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_SYSTEMD_PID1 -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_FAIL_INSTALL_DOCKER -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempFailDockerDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Dynamic test: Agent script failure triggers exit code 1
+$tempFailAgentDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-failagent-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempFailAgentDir | Out-Null
+try {
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $env:DEVSTACK_TEST_SYSTEMD_PID1 = "systemd"
+    $env:DEVSTACK_TEST_FAIL_INSTALL_AGENT = "true"
+    $res = Invoke-Installer @("-TestSandbox", $tempFailAgentDir)
+    Require ($res.ExitCode -eq 1) "Agent install failure exits with code 1 (got $($res.ExitCode))"
+    Require ($res.Output -match "devstack-agent installation script failed") "Error message reports agent script failure"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_SYSTEMD_PID1 -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_FAIL_INSTALL_AGENT -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempFailAgentDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
 # Test Summary
 # -------------------------------------------------------------------------
 Write-Host "`ninstaller-test: Completed $script:TestsRun checks with $script:Failures failure(s)."

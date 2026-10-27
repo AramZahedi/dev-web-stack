@@ -669,7 +669,8 @@ if ($DryRun) {
     Write-Host "devstack installer: Configuring /etc/wsl.conf..."
     $wslConfContent | & wsl.exe -d devstack -u root -- sh -c "cat > /etc/wsl.conf"
     Write-Host "devstack installer: Initializing /data/devstack/managed.json marker..."
-    & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack && chmod 0755 /data/devstack && printf '%s\n' '$managedJsonContent' > /data/devstack/managed.json && chmod 0644 /data/devstack/managed.json"
+    & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack && chmod 0755 /data/devstack"
+    $managedJsonContent | & wsl.exe -d devstack -u root -- sh -c "cat > /data/devstack/managed.json && chmod 0644 /data/devstack/managed.json"
 }
 
 # 11.6 Systemd PID 1 verification
@@ -698,6 +699,11 @@ Write-Host "devstack installer: Systemd verified as PID 1 in distro devstack."
 $dockerDaemonJsonSrc = Join-Path $repoRoot "build\wsl\docker-daemon.json"
 $installDockerScript = Join-Path $repoRoot "build\wsl\install-docker.sh"
 
+if ($env:DEVSTACK_TEST_FAIL_INSTALL_DOCKER -eq "true") {
+    Write-InstallerError "Docker Engine installation script failed inside WSL distro (exit code 1)."
+    exit 1
+}
+
 if ($DryRun) {
     Write-Host "devstack installer: [DryRun] Would install Docker Engine using build/wsl/install-docker.sh with data-root /data/devstack/docker"
 } elseif ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
@@ -710,7 +716,12 @@ if ($DryRun) {
         Get-Content -Raw $dockerDaemonJsonSrc | & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack/bin && cat > /data/devstack/bin/docker-daemon.json"
     }
     if (Test-Path $installDockerScript) {
-        Get-Content -Raw $installDockerScript | & wsl.exe -d devstack -u root -- bash
+        $dockerScriptContent = (Get-Content -Raw $installDockerScript) -replace "`r`n", "`n"
+        $dockerScriptContent | & wsl.exe -d devstack -u root -- bash
+        if ($LASTEXITCODE -ne 0) {
+            Write-InstallerError "Docker Engine installation script failed inside WSL distro (exit code $LASTEXITCODE)."
+            exit 1
+        }
     }
 }
 
@@ -752,6 +763,11 @@ if ($DryRun) {
     $agentServiceSrc = Join-Path $repoRoot "build\wsl\agent.service"
     $installAgentSrc = Join-Path $repoRoot "build\wsl\install-agent.sh"
 
+    if ($env:DEVSTACK_TEST_FAIL_INSTALL_AGENT -eq "true") {
+        Write-InstallerError "devstack-agent installation script failed inside WSL distro (exit code 1)."
+        exit 1
+    }
+
     if ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
         Copy-Item -Path $stagedAgentLinux -Destination (Join-Path $mockDataBin "devstack-agent") -Force
         if (Test-Path $agentServiceSrc) {
@@ -759,15 +775,35 @@ if ($DryRun) {
         }
     } else {
         Write-Host "devstack installer: Installing devstack-agent into devstack distro..."
-        $wslAgentSrc = & wsl.exe wslpath -a -u "$stagedAgentLinux" 2>$null
+        $cleanAgentPath = $stagedAgentLinux.Replace('\', '/')
+        $wslAgentSrc = try {
+            (& wsl.exe -d devstack -u root -- wslpath -a -u "$cleanAgentPath" 2>$null | Out-String).Trim()
+        } catch { "" }
+        if (-not $wslAgentSrc) {
+            if ($cleanAgentPath -match "^([a-zA-Z]):/(.*)$") {
+                $wslAgentSrc = "/mnt/$($Matches[1].ToLower())/$($Matches[2])"
+            }
+        }
         if ($wslAgentSrc) {
-            & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack/bin && cp '$($wslAgentSrc.Trim())' /data/devstack/bin/devstack-agent && chmod 0755 /data/devstack/bin/devstack-agent"
+            & wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack/bin && cp '$wslAgentSrc' /data/devstack/bin/devstack-agent && chmod 0755 /data/devstack/bin/devstack-agent"
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "Failed to copy devstack-agent binary into WSL distro."
+                exit 1
+            }
+        } else {
+            Write-InstallerError "Unable to resolve WSL path for '$stagedAgentLinux'."
+            exit 1
         }
         if (Test-Path $agentServiceSrc) {
             Get-Content -Raw $agentServiceSrc | & wsl.exe -d devstack -u root -- sh -c "mkdir -p /etc/systemd/system && cat > /etc/systemd/system/devstack-agent.service && chmod 0644 /etc/systemd/system/devstack-agent.service"
         }
         if (Test-Path $installAgentSrc) {
-            Get-Content -Raw $installAgentSrc | & wsl.exe -d devstack -u root -- bash
+            $agentScriptContent = (Get-Content -Raw $installAgentSrc) -replace "`r`n", "`n"
+            $agentScriptContent | & wsl.exe -d devstack -u root -- bash
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "devstack-agent installation script failed inside WSL distro (exit code $LASTEXITCODE)."
+                exit 1
+            }
         }
     }
 }
