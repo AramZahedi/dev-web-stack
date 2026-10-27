@@ -160,12 +160,12 @@
 - Support `/data/devstack` roots and root-only `system` layout while preserving legacy `~/.devstack` and `/etc/devstack` installs (Decision S69).
 - `test/release/installer_test.sh` passes 100%.
 
-- [ ] **Step 1:** Write failing test in `test/release/installer_test.sh` asserting new installs use `/data/devstack` for root layout while legacy installs are preserved.
-- [ ] **Step 2:** Run `bash test/release/installer_test.sh` in WSL and verify RED.
-- [ ] **Step 3:** Update `install.sh` and `build/systemd/devstack-helper.service` with `/data/devstack` default and legacy migration logic.
-- [ ] **Step 4:** Run `bash test/release/installer_test.sh` in WSL and verify GREEN.
-- [ ] **Step 5:** Run full Windows native suite (`go test ./...`) and Linux regression suite in WSL.
-- [ ] **Step 6:** Commit `feat(installer): update Linux install.sh for /data/devstack layout and test parity`.
+- [x] **Step 1:** Write failing test in `test/release/installer_test.sh` asserting new installs use `/data/devstack` for root layout while legacy installs are preserved.
+- [x] **Step 2:** Run `bash test/release/installer_test.sh` in WSL and verify RED.
+- [x] **Step 3:** Update `install.sh` and `build/systemd/devstack-helper.service` with `/data/devstack` default and legacy migration logic.
+- [x] **Step 4:** Run `bash test/release/installer_test.sh` in WSL and verify GREEN.
+- [x] **Step 5:** Run full Windows native suite (`go test ./...`) and Linux regression suite in WSL.
+- [x] **Step 6:** Commit `feat(installer): update Linux install.sh for /data/devstack layout and test parity`.
 
 ---
 

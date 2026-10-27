@@ -94,16 +94,26 @@ if [ "\${1:-}" = systemctl ]; then
 	fi
 	exit 0
 fi
+if [ "\${1:-}" = cat ]; then
+	shift
+	target="\$1"
+	case "\${target}" in
+	/usr/local/lib/devstack* | /etc/devstack* | /etc/systemd/system/* | /data/devstack*)
+		target="${FAKE_ROOT}\${target}"
+		;;
+	esac
+	exec cat "\${target}"
+fi
 if [ "\${1:-}" != install ]; then
 	printf 'fake sudo: refusing unexpected command: %s\n' "\$*" >&2
 	exit 1
 fi
 shift
-mkdir -p "${FAKE_ROOT}/etc/systemd/system" "${FAKE_ROOT}/etc/devstack" "${FAKE_ROOT}/usr/local/lib/devstack"
+mkdir -p "${FAKE_ROOT}/etc/systemd/system" "${FAKE_ROOT}/etc/devstack" "${FAKE_ROOT}/usr/local/lib/devstack" "${FAKE_ROOT}/data/devstack"
 args=()
 for arg in "\$@"; do
 	case "\${arg}" in
-	/usr/local/lib/devstack* | /etc/devstack* | /etc/systemd/system/*)
+	/usr/local/lib/devstack* | /etc/devstack* | /etc/systemd/system/* | /data/devstack*)
 		arg="${FAKE_ROOT}\${arg}"
 		;;
 	esac
@@ -189,10 +199,16 @@ invoke() {
 	: >"${COMMAND_LOG}"
 	: >"${CURL_LOG}"
 	set +e
-	INVOKE_OUT="$(PATH="${TOOLS}:${PATH}" HOME="${FAKE_HOME}" \
-		XDG_CONFIG_HOME="${FAKE_HOME}/.config" \
-		DEVSTACK_HOME="${FAKE_HOME}/.devstack" \
-		"$binary" "$@" 2>&1)"
+	local env_args=(
+		"PATH=${TOOLS}:${PATH}"
+		"HOME=${FAKE_HOME}"
+		"XDG_CONFIG_HOME=${FAKE_HOME}/.config"
+		"DEVSTACK_LEGACY_CONFIG=${FAKE_ROOT}/etc/devstack/helper.yaml"
+	)
+	if [ "${UNSET_DEVSTACK_HOME:-0}" -ne 1 ]; then
+		env_args+=("DEVSTACK_HOME=${TEST_DEVSTACK_HOME:-${FAKE_HOME}/.devstack}")
+	fi
+	INVOKE_OUT="$(env "${env_args[@]}" "$binary" "$@" 2>&1)"
 	INVOKE_STATUS=$?
 	set -e
 }
@@ -572,6 +588,137 @@ else
 		log "systemd-analyze is unavailable; unit syntax parse check skipped"
 	fi
 	pass "packaged install.sh installs binaries/config and a parseable unit for the real home"
+
+	# -------------------------------------------------------------------------
+	# Fresh install: no legacy install exists (~/.devstack or /etc/devstack/helper.yaml),
+	# no explicit DEVSTACK_HOME or --home provided. Must default to /data/devstack.
+	# -------------------------------------------------------------------------
+	rm -rf "${FAKE_HOME}/.devstack" "${FAKE_HOME}/.local/bin" "${FAKE_HOME}/.config" "${FAKE_ROOT:?}/"*
+	mkdir -p "${FAKE_ROOT}"
+	export UNSET_DEVSTACK_HOME=1
+	export FAKE_UNIT_ACTIVE=0
+	export FAKE_SYSTEMD_SESSION=1
+	invoke "${STANDALONE}/install.sh" --force-config \
+		--archive "${GOOD_ARCHIVE}" --checksums "${GOOD_CHECKSUMS}"
+	expect_success
+	[ -x "${FAKE_HOME}/.local/bin/devstack" ] || fail "fresh install did not install the CLI"
+	[ -x "${FAKE_ROOT}/usr/local/lib/devstack/devstack-helper" ] ||
+		fail "fresh install did not install the helper binary"
+	[ -d "${FAKE_ROOT}/data/devstack" ] || fail "fresh install did not create /data/devstack"
+	[ -d "${FAKE_ROOT}/data/devstack/bin" ] || fail "fresh install did not create /data/devstack/bin"
+	[ -d "${FAKE_ROOT}/data/devstack/system" ] || fail "fresh install did not create /data/devstack/system"
+	[ -f "${FAKE_ROOT}/data/devstack/system/helper.yaml" ] ||
+		fail "fresh install did not create /data/devstack/system/helper.yaml"
+	grep -Fq "allow_uid: ${TEST_UID}" "${FAKE_ROOT}/data/devstack/system/helper.yaml" ||
+		fail "fresh install helper config does not record the installing UID"
+	grep -Fq 'service_root: "/data/devstack"' "${FAKE_ROOT}/data/devstack/system/helper.yaml" ||
+		fail "fresh install helper config does not record service_root: /data/devstack"
+	HELPER_UNIT_FILE="${FAKE_ROOT}/etc/systemd/system/devstack-helper.service"
+	DAEMON_UNIT_FILE="${FAKE_HOME}/.config/systemd/user/devstack-daemon.service"
+	[ -f "${HELPER_UNIT_FILE}" ] || fail "fresh install helper unit was not installed"
+	[ -f "${DAEMON_UNIT_FILE}" ] || fail "fresh install daemon unit was not installed"
+	grep -Fq -- "ExecStart=/usr/local/lib/devstack/devstack-helper --config /data/devstack/system/helper.yaml" \
+		"${HELPER_UNIT_FILE}" ||
+		fail "fresh install helper unit does not point to /data/devstack/system/helper.yaml: $(cat "${HELPER_UNIT_FILE}")"
+	grep -Fq -- "-/data/devstack/system" "${HELPER_UNIT_FILE}" ||
+		fail "fresh install helper unit ReadWritePaths does not include -/data/devstack/system: $(cat "${HELPER_UNIT_FILE}")"
+	grep -Fq -- "Environment=DEVSTACK_HOME=/data/devstack" "${DAEMON_UNIT_FILE}" ||
+		fail "fresh install daemon unit does not set DEVSTACK_HOME=/data/devstack: $(cat "${DAEMON_UNIT_FILE}")"
+	[ ! -e "${FAKE_ROOT}/etc/devstack/helper.yaml" ] ||
+		fail "fresh install should not create /etc/devstack/helper.yaml"
+	[ ! -e "${FAKE_HOME}/.devstack" ] ||
+		fail "fresh install should not create ~/.devstack"
+	pass "fresh install uses /data/devstack layout and /data/devstack/system/helper.yaml"
+
+	# -------------------------------------------------------------------------
+	# Upgrade of existing legacy install (~/.devstack & /etc/devstack/helper.yaml):
+	# Must preserve legacy ~/.devstack and /etc/devstack paths.
+	# -------------------------------------------------------------------------
+	rm -rf "${FAKE_HOME}/.devstack" "${FAKE_HOME}/.local/bin" "${FAKE_HOME}/.config" "${FAKE_ROOT:?}/"*
+	mkdir -p "${FAKE_ROOT}" "${FAKE_HOME}/.devstack" "${FAKE_ROOT}/etc/devstack"
+	# Pre-populate legacy helper config (simulating v0.1.0 without service_root)
+	cat >"${FAKE_ROOT}/etc/devstack/helper.yaml" <<EOF
+socket: /run/devstack-helper/helper.sock
+state_dir: /var/lib/devstack-helper
+hosts: /etc/hosts
+allow_uid: ${TEST_UID}
+forward_http_port: 80
+forward_https_port: 443
+proxy_http_port: 8080
+proxy_https_port: 8443
+EOF
+	# Pre-populate legacy devstack CLI & state.db
+	mkdir -p "${FAKE_HOME}/.local/bin"
+	cp "${GOOD}/stage/devstack" "${FAKE_HOME}/.local/bin/devstack"
+	printf 'legacy db\n' >"${FAKE_HOME}/.devstack/state.db"
+	export UNSET_DEVSTACK_HOME=1
+	export FAKE_UNIT_ACTIVE=0
+	export FAKE_SYSTEMD_SESSION=1
+	invoke "${STANDALONE}/install.sh" --upgrade \
+		--archive "${GOOD_ARCHIVE}" --checksums "${GOOD_CHECKSUMS}"
+	expect_success
+	[ -f "${FAKE_ROOT}/etc/devstack/helper.yaml" ] ||
+		fail "upgrade did not preserve /etc/devstack/helper.yaml"
+	grep -Fq 'service_root: "'"${FAKE_HOME}"'/.devstack"' "${FAKE_ROOT}/etc/devstack/helper.yaml" ||
+		fail "upgrade did not append service_root for legacy install: $(cat "${FAKE_ROOT}/etc/devstack/helper.yaml")"
+	[ ! -e "${FAKE_ROOT}/data/devstack/system/helper.yaml" ] ||
+		fail "upgrade should not create /data/devstack/system/helper.yaml for legacy install"
+	HELPER_UNIT_FILE="${FAKE_ROOT}/etc/systemd/system/devstack-helper.service"
+	DAEMON_UNIT_FILE="${FAKE_HOME}/.config/systemd/user/devstack-daemon.service"
+	grep -Fq -- "ExecStart=/usr/local/lib/devstack/devstack-helper --config /etc/devstack/helper.yaml" \
+		"${HELPER_UNIT_FILE}" ||
+		fail "upgrade helper unit does not point to legacy /etc/devstack/helper.yaml: $(cat "${HELPER_UNIT_FILE}")"
+	grep -Fq -- "Environment=DEVSTACK_HOME=${FAKE_HOME}/.devstack" "${DAEMON_UNIT_FILE}" ||
+		fail "upgrade daemon unit does not preserve DEVSTACK_HOME=~/.devstack: $(cat "${DAEMON_UNIT_FILE}")"
+	pass "upgrade of legacy install preserves ~/.devstack and /etc/devstack paths"
+
+	# -------------------------------------------------------------------------
+	# Explicit --home flag: must override default /data/devstack and legacy ~/.devstack
+	# -------------------------------------------------------------------------
+	CUSTOM_HOME="${TMP}/custom-home"
+	rm -rf "${CUSTOM_HOME}" "${FAKE_HOME}/.devstack" "${FAKE_ROOT:?}/"*
+	mkdir -p "${FAKE_ROOT}"
+	export UNSET_DEVSTACK_HOME=1
+	invoke "${STANDALONE}/install.sh" --home "${CUSTOM_HOME}" --force-config \
+		--archive "${GOOD_ARCHIVE}" --checksums "${GOOD_CHECKSUMS}"
+	expect_success
+	[ -d "${CUSTOM_HOME}" ] || fail "explicit --home was not created: ${CUSTOM_HOME}"
+	[ -f "${CUSTOM_HOME}/system/helper.yaml" ] ||
+		fail "helper config was not created at ${CUSTOM_HOME}/system/helper.yaml"
+	DAEMON_UNIT_FILE="${FAKE_HOME}/.config/systemd/user/devstack-daemon.service"
+	grep -Fq -- "Environment=DEVSTACK_HOME=${CUSTOM_HOME}" "${DAEMON_UNIT_FILE}" ||
+		fail "daemon unit did not set DEVSTACK_HOME to explicit --home: $(cat "${DAEMON_UNIT_FILE}")"
+	pass "explicit --home flag wins and creates custom home layout"
+
+	# -------------------------------------------------------------------------
+	# Legacy detected via /etc/devstack/helper.yaml without ~/.devstack:
+	# Must preserve legacy /etc/devstack and ~/.devstack layout.
+	# -------------------------------------------------------------------------
+	rm -rf "${FAKE_HOME}/.devstack" "${FAKE_HOME}/.local/bin" "${FAKE_HOME}/.config" "${FAKE_ROOT:?}/"*
+	mkdir -p "${FAKE_ROOT}/etc/devstack"
+	cat >"${FAKE_ROOT}/etc/devstack/helper.yaml" <<EOF
+socket: /run/devstack-helper/helper.sock
+state_dir: /var/lib/devstack-helper
+hosts: /etc/hosts
+allow_uid: ${TEST_UID}
+EOF
+	export UNSET_DEVSTACK_HOME=1
+	invoke "${STANDALONE}/install.sh" --keep-config \
+		--archive "${GOOD_ARCHIVE}" --checksums "${GOOD_CHECKSUMS}"
+	expect_success
+	[ -f "${FAKE_ROOT}/etc/devstack/helper.yaml" ] ||
+		fail "legacy install should keep /etc/devstack/helper.yaml"
+	[ ! -e "${FAKE_ROOT}/data/devstack/system/helper.yaml" ] ||
+		fail "legacy install should not create /data/devstack/system/helper.yaml"
+	HELPER_UNIT_FILE="${FAKE_ROOT}/etc/systemd/system/devstack-helper.service"
+	DAEMON_UNIT_FILE="${FAKE_HOME}/.config/systemd/user/devstack-daemon.service"
+	grep -Fq -- "ExecStart=/usr/local/lib/devstack/devstack-helper --config /etc/devstack/helper.yaml" \
+		"${HELPER_UNIT_FILE}" ||
+		fail "helper unit does not point to /etc/devstack/helper.yaml: $(cat "${HELPER_UNIT_FILE}")"
+	grep -Fq -- "Environment=DEVSTACK_HOME=${FAKE_HOME}/.devstack" "${DAEMON_UNIT_FILE}" ||
+		fail "daemon unit does not set DEVSTACK_HOME=~/.devstack: $(cat "${DAEMON_UNIT_FILE}")"
+	pass "legacy install detected via /etc/devstack/helper.yaml preserves legacy paths"
+	export UNSET_DEVSTACK_HOME=0
 fi
 export FAKE_UNIT_ACTIVE=0
 export FAKE_SYSTEMD_SESSION=1
