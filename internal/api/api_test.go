@@ -68,7 +68,23 @@ type sessionInjector struct {
 	session string
 }
 
+type testLoopbackHandler struct {
+	next http.Handler
+}
+
+func (h testLoopbackHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.RemoteAddr == "" || r.RemoteAddr == "192.0.2.1:1234" {
+		r = r.Clone(r.Context())
+		r.RemoteAddr = "127.0.0.1:54321"
+	}
+	h.next.ServeHTTP(w, r)
+}
+
 func (h sessionInjector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.RemoteAddr == "" || r.RemoteAddr == "192.0.2.1:1234" {
+		r = r.Clone(r.Context())
+		r.RemoteAddr = "127.0.0.1:54321"
+	}
 	if _, err := r.Cookie(sessionCookieName); err != nil {
 		r = r.Clone(r.Context())
 		r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: h.session})
@@ -156,7 +172,7 @@ func newFixture(t *testing.T, cfg Config) *apiFixture {
 
 	return &apiFixture{
 		server:   srv,
-		raw:      srv.Handler(),
+		raw:      testLoopbackHandler{next: srv.Handler()},
 		sites:    fakeSites,
 		runtimes: fakeRuntimes,
 		doctor:   fakeDoctor,
@@ -178,6 +194,7 @@ func (fx *apiFixture) authedHandler() http.Handler {
 func (fx *apiFixture) request(t *testing.T, method, path string, body io.Reader) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, "http://127.0.0.1"+path, body)
+	req.RemoteAddr = "127.0.0.1:54321"
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: fx.session})
 	if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions {
 		req.Header.Set("X-CSRF-Token", fx.server.csrfFor(fx.session))

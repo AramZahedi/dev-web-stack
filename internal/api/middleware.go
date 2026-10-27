@@ -59,6 +59,10 @@ func (s *Server) hostGuard(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, codeForbidden, "request host is not allowed", nil)
 			return
 		}
+		if isAPIPath(r.URL.Path) && !isLoopbackRequest(r) {
+			writeError(w, http.StatusForbidden, codeForbidden, "access denied: control API is loopback only", nil)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -119,14 +123,20 @@ func normalizeAllowedHosts(configured []string) map[string]struct{} {
 
 // authenticate enforces the mutation session and CSRF rules for API routes.
 //
-// Posture: the API is loopback-only and every request has already passed the
-// Host allowlist, so read-only API requests (including the SSE endpoints) are
-// allowed without a session cookie. Mutations require the session cookie and
-// the exact CSRF HMAC for that session. Socket-authenticated CLI requests
-// bypass the cookie/CSRF checks but still receive the Host guard. Health,
-// session, and UI hosting are exempt.
+// Posture: the control API is loopback-only and every request has already
+// passed the Host allowlist. Non-loopback callers are rejected with 403.
+// Read-only API requests (including the SSE endpoints) are allowed without a
+// session cookie. Mutations require the session cookie and the exact CSRF HMAC
+// for that session. Socket-authenticated CLI requests bypass the cookie/CSRF
+// checks but still receive the Host guard. Health, session, and UI hosting are
+// exempt from the session cookie, but API routes still require loopback access.
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPIPath(r.URL.Path) && !isLoopbackRequest(r) {
+			writeError(w, http.StatusForbidden, codeForbidden, "access denied: control API is loopback only", nil)
+			return
+		}
+
 		if !isAPIPath(r.URL.Path) || socketAuthenticated(r.Context()) || isAuthExempt(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
@@ -265,4 +275,52 @@ func isMutation(method string) bool {
 	default:
 		return true
 	}
+}
+
+// isLoopbackRequest reports whether r originated from a local loopback interface
+// or was authenticated over the local Unix socket / Windows named pipe.
+func isLoopbackRequest(r *http.Request) bool {
+	if socketAuthenticated(r.Context()) {
+		return true
+	}
+	if !isLoopbackAddress(r.RemoteAddr) {
+		return false
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		for _, part := range strings.Split(xff, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" && !isLoopbackAddress(part) {
+				return false
+			}
+		}
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		if !isLoopbackAddress(xri) {
+			return false
+		}
+	}
+	return true
+}
+
+// isLoopbackAddress reports whether addr (host:port or bare IP) resolves to
+// IPv4 127.0.0.0/8, IPv6 ::1, or "localhost".
+func isLoopbackAddress(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	host := addr
+	if parsedHost, _, err := net.SplitHostPort(addr); err == nil {
+		host = parsedHost
+	}
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }

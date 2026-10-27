@@ -21,6 +21,15 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 	host := normalizeHost(req.Host)
 	route, ok := r.Lookup(host)
 	if !ok {
+		// Even if not configured in the routing table, devstack.test must not be accessible externally.
+		if host == "devstack.test" && !isLoopbackAddress(req.RemoteAddr) {
+			writeBrandedPage(w, req, brandedPage{
+				Status:  http.StatusForbidden,
+				Title:   "Access forbidden",
+				Message: "The devstack dashboard is only accessible from local loopback connections.",
+			})
+			return
+		}
 		display := host
 		if display == "" {
 			display = "an empty Host header"
@@ -30,6 +39,17 @@ func (r *Router) serveHTTP(w http.ResponseWriter, req *http.Request) {
 			Title:   "Site not found",
 			Message: fmt.Sprintf("No devstack site is configured for %s.", display),
 			Command: "devstack site list",
+		})
+		return
+	}
+
+	// Security boundary: the dashboard (devstack.test) is strictly loopback-only.
+	// Reject any non-loopback request attempting to reach devstack.test.
+	if isDashboardRoute(route, host) && !isLoopbackAddress(req.RemoteAddr) {
+		writeBrandedPage(w, req, brandedPage{
+			Status:  http.StatusForbidden,
+			Title:   "Access forbidden",
+			Message: "The devstack dashboard is only accessible from local loopback connections.",
 		})
 		return
 	}
@@ -333,4 +353,30 @@ func writeBrandedPage(w http.ResponseWriter, req *http.Request, page brandedPage
 	if req == nil || req.Method != http.MethodHead {
 		_, _ = w.Write(body.Bytes())
 	}
+}
+
+func isDashboardRoute(route Route, host string) bool {
+	return route.SiteID == "__dashboard__" || route.Host == "devstack.test" || host == "devstack.test"
+}
+
+// isLoopbackAddress reports whether addr (host:port or bare IP) is an IPv4 or IPv6 loopback address.
+func isLoopbackAddress(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	host := addr
+	if parsedHost, _, err := net.SplitHostPort(addr); err == nil {
+		host = parsedHost
+	}
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }

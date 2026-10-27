@@ -515,6 +515,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	if !isLoopbackRequest(r) {
+		writeError(w, http.StatusForbidden, codeForbidden, "access denied: session endpoint is loopback only", nil)
+		return
+	}
+	if s.isTLSExpected(r) && !secureRequest(r) {
+		writeError(w, http.StatusForbidden, codeForbidden, "HTTPS is required for dashboard session", nil)
+		return
+	}
 	session := ""
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		session = strings.TrimSpace(cookie.Value)
@@ -693,9 +701,24 @@ func (s *Server) validCSRF(session, token string) bool {
 	return hmac.Equal([]byte(s.csrfFor(session)), []byte(token))
 }
 
+// isTLSExpected reports whether TLS is expected for this request's host.
+func (s *Server) isTLSExpected(r *http.Request) bool {
+	host, ok := requestHost(r.Host)
+	if !ok {
+		return false
+	}
+	if host == "devstack.test" && s.cfg.Listeners.HTTPSPort > 0 {
+		return true
+	}
+	return false
+}
+
 // secureRequest reports whether cookies must carry the Secure attribute.
 func secureRequest(r *http.Request) bool {
 	if r.TLS != nil {
+		return true
+	}
+	if r.URL != nil && strings.EqualFold(r.URL.Scheme, "https") {
 		return true
 	}
 	proto := r.Header.Get("X-Forwarded-Proto")
