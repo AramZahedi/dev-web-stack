@@ -1,17 +1,17 @@
 # Register the devstack daemon to start at user logon without elevation.
 # Run from a normal PowerShell prompt; it never elevates.
 param(
-    [string]$Home = "$env:USERPROFILE\.devstack",
+    [string]$HomeDir = "$env:USERPROFILE\.devstack",
     [string]$Binary = "C:\devstack\bin\devstack.exe",
     [string]$UserId = "$env:USERDOMAIN\$env:USERNAME"
 )
 
 $ErrorActionPreference = "Stop"
 $taskName = "devstack-daemon"
-if (-not (Test-Path $Home)) {
-    New-Item -ItemType Directory -Force -Path $Home | Out-Null
+if (-not (Test-Path $HomeDir)) {
+    New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
 }
-$action = New-ScheduledTaskAction -Execute $Binary -Argument "daemon run" -WorkingDirectory $Home
+$action = New-ScheduledTaskAction -Execute $Binary -Argument "daemon run" -WorkingDirectory $HomeDir
 $trigger = try {
     New-ScheduledTaskTrigger -AtLogOn -User $UserId
 } catch {
