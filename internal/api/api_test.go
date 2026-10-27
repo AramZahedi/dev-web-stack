@@ -1220,10 +1220,27 @@ func TestOpenAPIDocumentParsesAndDocumentsRoutes(t *testing.T) {
 		"apache_allow_override",
 		"spa_fallback_file",
 		"build",
+		"source_mode",
 	} {
 		if _, ok := createSite.Properties[field]; !ok {
 			t.Fatalf("openapi CreateSiteRequest missing field %q", field)
 		}
+	}
+
+	siteSchema, ok := doc.Components.Schemas["Site"]
+	if !ok {
+		t.Fatal("openapi missing Site schema")
+	}
+	if _, ok := siteSchema.Properties["source_mode"]; !ok {
+		t.Fatal("openapi Site missing field source_mode")
+	}
+
+	if _, ok := doc.Components.Schemas["SourceMode"]; !ok {
+		t.Fatal("openapi missing SourceMode schema")
+	}
+
+	if _, ok := doc.Components.Schemas["ChangeSiteSourceRequest"]; !ok {
+		t.Fatal("openapi missing ChangeSiteSourceRequest schema")
 	}
 }
 

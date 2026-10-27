@@ -3,7 +3,6 @@
 package sites
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"net"

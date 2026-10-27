@@ -3,6 +3,7 @@ package sites
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
@@ -23,6 +24,9 @@ func (f *fakeSourceCopier) CopySource(_ context.Context, req agentproto.SourceCo
 }
 
 func TestChangeSourceModeCopiesBeforeUpdatingAndKeepsSource(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("source copy requires Windows source modes")
+	}
 	svc, fakes := newTestService(t)
 	copier := &fakeSourceCopier{response: agentproto.SourceCopyResponse{Files: 3, Bytes: 42, SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
 	svc.deps.SourceCopier = copier
@@ -59,6 +63,9 @@ func TestChangeSourceModeCopiesBeforeUpdatingAndKeepsSource(t *testing.T) {
 }
 
 func TestChangeSourceModeRequiresStoppedSiteBeforeCopy(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("source copy requires Windows source modes")
+	}
 	svc, fakes := newTestService(t)
 	copier := &fakeSourceCopier{response: agentproto.SourceCopyResponse{SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
 	svc.deps.SourceCopier = copier
@@ -80,6 +87,9 @@ func TestChangeSourceModeRequiresStoppedSiteBeforeCopy(t *testing.T) {
 }
 
 func TestChangeSourceModeCopyFailureLeavesSiteUnchanged(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("source copy requires Windows source modes")
+	}
 	svc, fakes := newTestService(t)
 	copier := &fakeSourceCopier{err: errors.New("agent copy failed")}
 	svc.deps.SourceCopier = copier
@@ -101,5 +111,23 @@ func TestChangeSourceModeCopyFailureLeavesSiteUnchanged(t *testing.T) {
 	}
 	if stored.SourceMode != model.SourceWindows || stored.HostPath != site.HostPath || stored.BackendPath != site.BackendPath {
 		t.Fatalf("site changed after failed copy: %+v", stored)
+	}
+}
+
+func TestChangeSourceModeRejectsNonLocalOnLinux(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux-specific source mode rejection test")
+	}
+	svc, fakes := newTestService(t)
+	site := model.Site{
+		ID: "site", Name: "blog", Domain: "blog.test", Kind: model.SiteStatic,
+		SourceMode: model.SourceLocal, HostPath: "/home/aram/blog", BackendPath: "/home/aram/blog",
+		Status: model.StatusStopped, DesiredState: model.DesiredStopped,
+	}
+	if err := fakes.store.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ChangeSourceMode(ctx, "blog", model.SourceWSL, "/home/aram/blog", false); err == nil {
+		t.Fatal("ChangeSourceMode should reject non-local source mode on Linux")
 	}
 }

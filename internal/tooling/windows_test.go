@@ -23,6 +23,22 @@ func TestEnsureWindowsToolShimsWritesNonDotCmdFiles(t *testing.T) {
 	}
 }
 
+func TestEnsureWindowsToolShimsPathWithSpaces(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "devstack tools bin")
+	if err := EnsureWindowsToolShims(bin, "devstack"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"php.cmd", "composer.cmd"} {
+		content, err := os.ReadFile(filepath.Join(bin, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if !strings.Contains(string(content), `wsl.exe -d "devstack" --exec`) {
+			t.Fatalf("unexpected %s content: %s", name, content)
+		}
+	}
+}
+
 func TestEnsureGlobalWindowsToolShimsUsesConfiguredDistro(t *testing.T) {
 	home := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("wsl_distro: Ubuntu-Dev\n"), 0o600); err != nil {

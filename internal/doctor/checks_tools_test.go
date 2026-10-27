@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -81,6 +82,49 @@ func TestCheckToolsOKWhenManagedShimsWin(t *testing.T) {
 		ToolBinDir: binDir,
 		LookPath: func(name string) (string, error) {
 			return filepath.Join(binDir, name), nil
+		},
+	}}
+	check := svc.checkTools()
+	if check.Status != StatusOK {
+		t.Fatalf("status = %q detail=%q", check.Status, check.Detail)
+	}
+}
+
+func TestCheckToolsRecognizesWindowsCmdShimsWithoutExecuteBits(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific .cmd shim resolution test")
+	}
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// On Windows, shims have .cmd extension and lack execute bits (mode 0644).
+	phpTarget := filepath.Join(tooling.ShimDir(paths), "php.cmd")
+	composerTarget := filepath.Join(home, "tools", "composer", "bin", "composer.cmd")
+	for _, path := range []string{phpTarget, composerTarget} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Create wrapper shims in binDir with 0644 mode as well.
+	phpWrapper := filepath.Join(binDir, "php.cmd")
+	composerWrapper := filepath.Join(binDir, "composer.cmd")
+	for _, path := range []string{phpWrapper, composerWrapper} {
+		if err := os.WriteFile(path, []byte("@echo off\r\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc := &Service{deps: Deps{
+		Config:     config.Config{Home: home},
+		ToolBinDir: binDir,
+		LookPath: func(name string) (string, error) {
+			return filepath.Join(binDir, name+".cmd"), nil
 		},
 	}}
 	check := svc.checkTools()
