@@ -20,7 +20,58 @@ func (s *Server) mountRuntime(mux *http.ServeMux, runtime *Runtime) {
 	mux.HandleFunc(agentproto.PathPortsAllocate, func(w http.ResponseWriter, r *http.Request) { handlePortAllocate(w, r, runtime) })
 	mux.HandleFunc(agentproto.PathPortsRelease, func(w http.ResponseWriter, r *http.Request) { handlePortRelease(w, r, runtime) })
 	mux.HandleFunc(agentproto.PathPortsValidate, func(w http.ResponseWriter, r *http.Request) { handlePortValidate(w, r, runtime) })
+	mux.HandleFunc(agentproto.PathRuntimes, func(w http.ResponseWriter, r *http.Request) { handleRuntimes(w, r, runtime) })
+	mux.HandleFunc(agentproto.PathRuntimesRemove, func(w http.ResponseWriter, r *http.Request) { handleRuntimesRemove(w, r, runtime) })
+	mux.HandleFunc(agentproto.PathRuntimesList, func(w http.ResponseWriter, r *http.Request) { handleRuntimesList(w, r, runtime) })
 	mux.HandleFunc("/v1/sites/", func(w http.ResponseWriter, r *http.Request) { handleSite(w, r, runtime) })
+}
+
+func handleRuntimes(w http.ResponseWriter, r *http.Request, runtime *Runtime) {
+	if r.Method != http.MethodPost {
+		writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "POST required")
+		return
+	}
+	var req agentproto.RuntimeRequest
+	if err := decodeAgentJSON(w, r, &req); err != nil {
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	resp, err := runtime.InstallRuntime(r.Context(), req)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func handleRuntimesRemove(w http.ResponseWriter, r *http.Request, runtime *Runtime) {
+	if r.Method != http.MethodPost {
+		writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "POST required")
+		return
+	}
+	var req agentproto.RuntimeRequest
+	if err := decodeAgentJSON(w, r, &req); err != nil {
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if err := runtime.RemoveRuntime(r.Context(), req); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleRuntimesList(w http.ResponseWriter, r *http.Request, runtime *Runtime) {
+	if r.Method != http.MethodGet {
+		writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "GET required")
+		return
+	}
+	resp, err := runtime.ListRuntimes(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handlePortAllocate(w http.ResponseWriter, r *http.Request, runtime *Runtime) {
@@ -110,7 +161,7 @@ func handlePortValidate(w http.ResponseWriter, r *http.Request, runtime *Runtime
 func handleSite(w http.ResponseWriter, r *http.Request, runtime *Runtime) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/sites/")
 	parts := strings.Split(path, "/")
-	if len(parts) != 2 {
+	if len(parts) < 2 || len(parts) > 3 {
 		writeAgentError(w, http.StatusNotFound, agentproto.CodeNotFound, "site endpoint not found")
 		return
 	}
@@ -119,6 +170,61 @@ func handleSite(w http.ResponseWriter, r *http.Request, runtime *Runtime) {
 		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, "invalid site ID")
 		return
 	}
+
+	if len(parts) == 3 {
+		if parts[1] != "php" {
+			writeAgentError(w, http.StatusNotFound, agentproto.CodeNotFound, "site endpoint not found")
+			return
+		}
+		switch parts[2] {
+		case "prepare":
+			if r.Method != http.MethodPost {
+				writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "POST required")
+				return
+			}
+			var request agentproto.PHPPrepareRequest
+			if err := decodeAgentJSON(w, r, &request); err != nil {
+				writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+				return
+			}
+			response, err := runtime.PreparePHP(r.Context(), id, request)
+			if err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, response)
+		case "start":
+			if r.Method != http.MethodPost {
+				writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "POST required")
+				return
+			}
+			var request agentproto.PHPActionRequest
+			_ = decodeAgentJSON(w, r, &request)
+			response, err := runtime.StartPHP(r.Context(), id, request)
+			if err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, response)
+		case "stop":
+			if r.Method != http.MethodPost {
+				writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "POST required")
+				return
+			}
+			var request agentproto.PHPActionRequest
+			_ = decodeAgentJSON(w, r, &request)
+			response, err := runtime.StopPHP(r.Context(), id, request)
+			if err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, response)
+		default:
+			writeAgentError(w, http.StatusNotFound, agentproto.CodeNotFound, "site endpoint not found")
+		}
+		return
+	}
+
 	action := parts[1]
 	switch action {
 	case "prepare":
@@ -196,6 +302,55 @@ func handleSite(w http.ResponseWriter, r *http.Request, runtime *Runtime) {
 		if _, err := io.Copy(w, stream); err != nil {
 			return
 		}
+	case "exec":
+		if r.Method != http.MethodPost {
+			writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "POST required")
+			return
+		}
+		var request agentproto.SiteExecRequest
+		if err := decodeAgentJSON(w, r, &request); err != nil {
+			writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+			return
+		}
+		response, err := runtime.ExecSite(r.Context(), id, request)
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
+	case "build":
+		if r.Method != http.MethodPost {
+			writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "POST required")
+			return
+		}
+		var request agentproto.BuildRequest
+		if err := decodeAgentJSON(w, r, &request); err != nil {
+			writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+			return
+		}
+		response, err := runtime.BuildSite(r.Context(), id, request)
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
+	case "terminal":
+		if r.Method == http.MethodPost {
+			var request agentproto.TerminalTicketRequest
+			_ = decodeAgentJSON(w, r, &request)
+			response, err := runtime.IssueTerminalTicket(id, request)
+			if err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, response)
+			return
+		}
+		if r.Method == http.MethodGet {
+			runtime.HandleTerminalWebSocket(w, r, id)
+			return
+		}
+		writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "GET or POST required")
 	default:
 		writeAgentError(w, http.StatusNotFound, agentproto.CodeNotFound, "site endpoint not found")
 	}

@@ -57,6 +57,16 @@ func ShimDir(paths config.Paths) string {
 	return filepath.Join(paths.Tools, "php-default", "bin")
 }
 
+// WindowsShimDir returns the directory holding public Windows command shims.
+func WindowsShimDir(paths config.Paths) string {
+	return filepath.Join(paths.Home, "bin")
+}
+
+// WindowsPHPShimPath returns the public Windows php.cmd shim path.
+func WindowsPHPShimPath(paths config.Paths) string {
+	return filepath.Join(WindowsShimDir(paths), "php.cmd")
+}
+
 // SiteShimDir returns the per-site shim directory prepended to a project
 // shell's PATH. The component is the validated site name, matching
 // DEVSTACK_SITE and the Composer wrapper's site-shim check.

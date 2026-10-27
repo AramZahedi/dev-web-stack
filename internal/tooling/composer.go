@@ -41,6 +41,11 @@ type ComposerStatus struct {
 	Wrapper   string `json:"wrapper_path"`
 }
 
+// WindowsComposerShimPath returns the public Windows composer.cmd shim path.
+func WindowsComposerShimPath(paths config.Paths) string {
+	return filepath.Join(paths.Home, "bin", "composer.cmd")
+}
+
 // installComposer downloads, verifies, and installs the pinned PHAR and its
 // wrapper. Existing valid artifacts are reused without a network request.
 func installComposer(ctx context.Context, client *http.Client, paths config.Paths, source composerSource) (ComposerStatus, error) {
