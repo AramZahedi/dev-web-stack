@@ -22,6 +22,7 @@ SHA recorded by the controller immediately before creating lane worktrees.
 | Gate | Command | Result |
 | --- | --- | --- |
 | Linux tests | `go test ./...` in WSL ext4 (`/data/devstack/src`) | pass, 55 packages |
+| Native Windows tests | `go test ./...` on Windows | pass, all packages (T0.11) |
 | Windows packages | `GOOS=windows GOARCH=amd64 go build ./...` | pass |
 | Windows test compile | `go test -run '^$' ./...` on Windows | pass |
 | Vet | `go vet ./...` on Windows | pass |
