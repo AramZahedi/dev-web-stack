@@ -286,11 +286,13 @@ export async function removeRuntime(buildID: string): Promise<void> {
 // Older daemons omit the container runtime fields. Normalize them so the
 // dashboard can rely on the ServiceView contract without optional guards.
 function normalizeService(service: ServiceView): ServiceView {
+  const state = service.state === 'not-installed' ? 'not_installed' : service.state;
   return {
     ...service,
+    state,
     health: service.health ?? '',
     container_id: service.container_id ?? '',
-    installed: service.installed ?? service.state !== 'not_installed',
+    installed: service.installed ?? (state !== 'not_installed'),
   };
 }
 

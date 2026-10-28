@@ -122,7 +122,8 @@
   }
 
   function showStateBadge(state: string): boolean {
-    return state !== 'active' && state !== 'installed' && state !== 'not_installed';
+    const s = (state || '').replace(/-/g, '_');
+    return s !== 'active' && s !== 'installed' && s !== 'not_installed' && s !== 'inactive';
   }
 
   function stateVariant(

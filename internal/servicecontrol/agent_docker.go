@@ -57,7 +57,7 @@ func (a *AgentDocker) Status(ctx context.Context) ([]helperproto.ServiceStatus, 
 		}
 		service, _ := services.DefaultCatalog().Get(agentCatalogID(id))
 		state := remote.State
-		if state == "" {
+		if state == "" || state == "not-installed" {
 			state = string(services.StateNotInstalled)
 		}
 		status := helperproto.ServiceStatus{

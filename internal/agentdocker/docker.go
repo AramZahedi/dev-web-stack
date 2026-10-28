@@ -326,7 +326,7 @@ func (d *Docker) Status(ctx context.Context, id string) (agentproto.ServiceRespo
 			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: decode Compose status: %w", err)
 		}
 	}
-	state := "not-installed"
+	state := string(services.StateNotInstalled)
 	if d.scaffoldPresent(service.ID) {
 		state = "installed"
 	}
