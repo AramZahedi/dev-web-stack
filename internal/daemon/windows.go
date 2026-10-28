@@ -424,6 +424,16 @@ func Run(ctx context.Context, opts Options) error {
 		},
 	}
 
+	distro := cfg.WSLDistro
+	if strings.TrimSpace(distro) == "" {
+		distro = "devstack"
+	}
+	keepaliveCmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "-u", "root", "--", "sleep", "infinity")
+	platform.ConfigureProcess(keepaliveCmd)
+	if err := keepaliveCmd.Start(); err != nil {
+		logger.Warn("daemon: start WSL keepalive", "error", err)
+	}
+
 	if err := bootstrapWindows(ctx, steps); err != nil {
 		shutdownWindowsServers(servers)
 		return err
@@ -1338,10 +1348,20 @@ func (s *windowsRuntimeService) ensureClient() {
 func (s *windowsRuntimeService) List(ctx context.Context) ([]model.RuntimeBuild, error) {
 	s.ensureClient()
 	if s.backend == nil || s.backend.Client == nil {
+		if s.store != nil {
+			if builds, err := s.store.ListRuntimes(ctx); err == nil && len(builds) > 0 {
+				return builds, nil
+			}
+		}
 		return nil, errors.New("WSL agent not connected")
 	}
 	resp, err := s.backend.Client.ListRuntimes(ctx)
 	if err != nil {
+		if s.store != nil {
+			if builds, storeErr := s.store.ListRuntimes(ctx); storeErr == nil && len(builds) > 0 {
+				return builds, nil
+			}
+		}
 		return nil, err
 	}
 	builds := make([]model.RuntimeBuild, len(resp.Runtimes))
