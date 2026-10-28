@@ -87,7 +87,7 @@ func (s *Service) PHPDefault(ctx context.Context) (PHPDefaultStatus, error) {
 	switch {
 	case err == nil:
 		status.Build = &build
-	case errors.Is(err, ErrNoPHPInstalled):
+	case errors.Is(err, ErrNoPHPInstalled), errors.Is(err, ErrPHPDefaultNotInstalled):
 	default:
 		return PHPDefaultStatus{}, err
 	}

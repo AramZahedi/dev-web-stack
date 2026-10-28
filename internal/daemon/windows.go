@@ -182,7 +182,12 @@ func Run(ctx context.Context, opts Options) error {
 	})
 
 	agentBaseURL := fmt.Sprintf("https://127.0.0.1:%d", cfg.AgentPort)
-	agentServices := &windowsAgentServiceAdapter{home: cfg.Home, baseURL: agentBaseURL}
+	agentServices := &windowsAgentServiceAdapter{
+		home:    cfg.Home,
+		baseURL: agentBaseURL,
+		distro:  cfg.WSLDistro,
+		logger:  logger,
+	}
 	agentDocker, err := servicecontrol.NewAgentDocker(agentServices, "/data/devstack")
 	if err != nil {
 		return fmt.Errorf("daemon: init agent docker: %w", err)
@@ -203,7 +208,12 @@ func Run(ctx context.Context, opts Options) error {
 		preparers,
 	)
 
-	agentConfig := &windowsAgentConfigAdapter{home: cfg.Home, baseURL: agentBaseURL}
+	agentConfig := &windowsAgentConfigAdapter{
+		home:    cfg.Home,
+		baseURL: agentBaseURL,
+		distro:  cfg.WSLDistro,
+		logger:  logger,
+	}
 	serviceConfigService, err := servicecontrol.NewConfigService(servicecontrol.ConfigDeps{
 		Root:     cfg.Home,
 		Catalog:  serviceCatalog,
@@ -391,6 +401,16 @@ func Run(ctx context.Context, opts Options) error {
 			healthCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			health, err := client.Health(healthCtx)
 			cancel()
+			if err != nil && isConnectionRefused(err) {
+				distro := cfg.WSLDistro
+				if strings.TrimSpace(distro) == "" {
+					distro = "devstack"
+				}
+				wakeWSL(ctx, distro, logger)
+				retryCtx, retryCancel := context.WithTimeout(ctx, 5*time.Second)
+				health, err = client.Health(retryCtx)
+				retryCancel()
+			}
 			if err != nil {
 				logger.Warn("daemon: WSL agent health check failed", "error", err)
 				if errors.Is(err, agentproto.ErrUnauthenticated) || errors.Is(err, agentproto.ErrCertPinMismatch) {
@@ -428,11 +448,7 @@ func Run(ctx context.Context, opts Options) error {
 	if strings.TrimSpace(distro) == "" {
 		distro = "devstack"
 	}
-	keepaliveCmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "-u", "root", "--", "sleep", "infinity")
-	platform.ConfigureProcess(keepaliveCmd)
-	if err := keepaliveCmd.Start(); err != nil {
-		logger.Warn("daemon: start WSL keepalive", "error", err)
-	}
+	go runWSLKeepalive(ctx, distro, logger)
 
 	if err := bootstrapWindows(ctx, steps); err != nil {
 		shutdownWindowsServers(servers)
@@ -1074,10 +1090,88 @@ func tailWindowsLog(path string) string {
 	return trimmed
 }
 
+func isConnectionRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "actively refused") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connectex") ||
+		strings.Contains(msg, "WSL agent is not connected") ||
+		strings.Contains(msg, "WSL agent not connected")
+}
+
+func wakeWSL(ctx context.Context, distro string, logger *slog.Logger) {
+	if strings.TrimSpace(distro) == "" {
+		distro = "devstack"
+	}
+	if logger != nil {
+		logger.Info("daemon: waking WSL distro", "distro", distro)
+	}
+	wakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(wakeCtx, "wsl.exe", "-d", distro, "-u", "root", "--exec", "/bin/true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
+	cmd.Stdin = nil
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	_ = cmd.Run()
+}
+
+func runWSLKeepalive(ctx context.Context, distro string, logger *slog.Logger) {
+	if strings.TrimSpace(distro) == "" {
+		distro = "devstack"
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "-u", "root", "--exec", "/bin/sleep", "infinity")
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+		}
+		cmd.Stdin = nil
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		if err := cmd.Start(); err != nil {
+			if logger != nil {
+				logger.Warn("daemon: start WSL keepalive", "distro", distro, "error", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+				continue
+			}
+		}
+
+		_ = cmd.Wait()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(1 * time.Second):
+			if logger != nil {
+				logger.Debug("daemon: WSL keepalive exited; restarting", "distro", distro)
+			}
+		}
+	}
+}
+
 type windowsAgentConfigAdapter struct {
 	mu      sync.RWMutex
 	home    string
 	baseURL string
+	distro  string
+	logger  *slog.Logger
 	client  *agentclient.Client
 }
 
@@ -1109,34 +1203,106 @@ func (a *windowsAgentConfigAdapter) get() (*agentclient.Client, error) {
 	return nil, errors.New("WSL agent is not connected")
 }
 
+func (a *windowsAgentConfigAdapter) ensureAwake(ctx context.Context) (*agentclient.Client, error) {
+	c, err := a.get()
+	if err == nil {
+		healthCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		_, healthErr := c.Health(healthCtx)
+		cancel()
+		if healthErr == nil {
+			return c, nil
+		}
+	}
+	wakeWSL(ctx, a.distro, a.logger)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+		c, err = a.get()
+		if err != nil {
+			continue
+		}
+		healthCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		_, healthErr := c.Health(healthCtx)
+		cancel()
+		if healthErr == nil {
+			return c, nil
+		}
+	}
+	return a.get()
+}
+
 func (a *windowsAgentConfigAdapter) ServiceConfig(ctx context.Context, id string) (agentproto.ServiceConfigResponse, error) {
 	c, err := a.get()
-	if err != nil {
-		return agentproto.ServiceConfigResponse{}, err
+	if err == nil {
+		resp, cfgErr := c.ServiceConfig(ctx, id)
+		if cfgErr == nil {
+			return resp, nil
+		}
+		if !isConnectionRefused(cfgErr) {
+			return resp, cfgErr
+		}
+	}
+	c, wakeErr := a.ensureAwake(ctx)
+	if wakeErr != nil {
+		return agentproto.ServiceConfigResponse{}, wakeErr
 	}
 	return c.ServiceConfig(ctx, id)
 }
 
 func (a *windowsAgentConfigAdapter) ServiceContent(ctx context.Context, req agentproto.ServiceConfigRequest) (agentproto.ServiceContentResponse, error) {
 	c, err := a.get()
-	if err != nil {
-		return agentproto.ServiceContentResponse{}, err
+	if err == nil {
+		resp, contentErr := c.ServiceContent(ctx, req)
+		if contentErr == nil {
+			return resp, nil
+		}
+		if !isConnectionRefused(contentErr) {
+			return resp, contentErr
+		}
+	}
+	c, wakeErr := a.ensureAwake(ctx)
+	if wakeErr != nil {
+		return agentproto.ServiceContentResponse{}, wakeErr
 	}
 	return c.ServiceContent(ctx, req)
 }
 
 func (a *windowsAgentConfigAdapter) ServiceApply(ctx context.Context, req agentproto.ServiceConfigRequest) (agentproto.ServiceContentResponse, error) {
 	c, err := a.get()
-	if err != nil {
-		return agentproto.ServiceContentResponse{}, err
+	if err == nil {
+		resp, applyErr := c.ServiceApply(ctx, req)
+		if applyErr == nil {
+			return resp, nil
+		}
+		if !isConnectionRefused(applyErr) {
+			return resp, applyErr
+		}
+	}
+	c, wakeErr := a.ensureAwake(ctx)
+	if wakeErr != nil {
+		return agentproto.ServiceContentResponse{}, wakeErr
 	}
 	return c.ServiceApply(ctx, req)
 }
 
 func (a *windowsAgentConfigAdapter) ServiceReset(ctx context.Context, req agentproto.ServiceConfigRequest) error {
 	c, err := a.get()
-	if err != nil {
-		return err
+	if err == nil {
+		resetErr := c.ServiceReset(ctx, req)
+		if resetErr == nil {
+			return nil
+		}
+		if !isConnectionRefused(resetErr) {
+			return resetErr
+		}
+	}
+	c, wakeErr := a.ensureAwake(ctx)
+	if wakeErr != nil {
+		return wakeErr
 	}
 	return c.ServiceReset(ctx, req)
 }
@@ -1145,6 +1311,8 @@ type windowsAgentServiceAdapter struct {
 	mu      sync.RWMutex
 	home    string
 	baseURL string
+	distro  string
+	logger  *slog.Logger
 	client  *agentclient.Client
 }
 
@@ -1176,34 +1344,116 @@ func (a *windowsAgentServiceAdapter) get() (*agentclient.Client, error) {
 	return nil, errors.New("WSL agent is not connected")
 }
 
+func (a *windowsAgentServiceAdapter) ensureAwake(ctx context.Context) (*agentclient.Client, error) {
+	c, err := a.get()
+	if err == nil {
+		healthCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		_, healthErr := c.Health(healthCtx)
+		cancel()
+		if healthErr == nil {
+			return c, nil
+		}
+	}
+	wakeWSL(ctx, a.distro, a.logger)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+		c, err = a.get()
+		if err != nil {
+			continue
+		}
+		healthCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		_, healthErr := c.Health(healthCtx)
+		cancel()
+		if healthErr == nil {
+			return c, nil
+		}
+	}
+	return a.get()
+}
+
 func (a *windowsAgentServiceAdapter) ServiceAction(ctx context.Context, req agentproto.ServiceRequest) (agentproto.ServiceResponse, error) {
 	c, err := a.get()
-	if err != nil {
-		return agentproto.ServiceResponse{}, err
+	if err == nil {
+		resp, actionErr := c.ServiceAction(ctx, req)
+		if actionErr == nil {
+			return resp, nil
+		}
+		if !isConnectionRefused(actionErr) {
+			return resp, actionErr
+		}
+	}
+	c, wakeErr := a.ensureAwake(ctx)
+	if wakeErr != nil {
+		return agentproto.ServiceResponse{}, wakeErr
 	}
 	return c.ServiceAction(ctx, req)
 }
 
 func (a *windowsAgentServiceAdapter) ServiceStatus(ctx context.Context, id string) (agentproto.ServiceResponse, error) {
 	c, err := a.get()
-	if err != nil {
-		return agentproto.ServiceResponse{}, err
+	if err == nil {
+		resp, statusErr := c.ServiceStatus(ctx, id)
+		if statusErr == nil {
+			return resp, nil
+		}
+		if !isConnectionRefused(statusErr) {
+			return resp, statusErr
+		}
 	}
-	return c.ServiceStatus(ctx, id)
+	c, wakeErr := a.ensureAwake(ctx)
+	if wakeErr == nil && c != nil {
+		resp, statusErr := c.ServiceStatus(ctx, id)
+		if statusErr == nil {
+			return resp, nil
+		}
+		if !isConnectionRefused(statusErr) {
+			return resp, statusErr
+		}
+	}
+	// Fallback to stopped state so dashboard does not return 500 error.
+	return agentproto.ServiceResponse{
+		ID:    id,
+		State: string(services.StateNotInstalled),
+	}, nil
 }
 
 func (a *windowsAgentServiceAdapter) ServiceLogs(ctx context.Context, id string, req agentproto.ServiceLogsRequest) (agentproto.ServiceLogsResponse, error) {
 	c, err := a.get()
-	if err != nil {
-		return agentproto.ServiceLogsResponse{}, err
+	if err == nil {
+		resp, logsErr := c.ServiceLogs(ctx, id, req)
+		if logsErr == nil {
+			return resp, nil
+		}
+		if !isConnectionRefused(logsErr) {
+			return resp, logsErr
+		}
+	}
+	c, wakeErr := a.ensureAwake(ctx)
+	if wakeErr != nil {
+		return agentproto.ServiceLogsResponse{}, wakeErr
 	}
 	return c.ServiceLogs(ctx, id, req)
 }
 
 func (a *windowsAgentServiceAdapter) ServiceCredential(ctx context.Context, req agentproto.ServiceCredentialRequest) (agentproto.ServiceCredentialResponse, error) {
 	c, err := a.get()
-	if err != nil {
-		return agentproto.ServiceCredentialResponse{}, err
+	if err == nil {
+		resp, credErr := c.ServiceCredential(ctx, req)
+		if credErr == nil {
+			return resp, nil
+		}
+		if !isConnectionRefused(credErr) {
+			return resp, credErr
+		}
+	}
+	c, wakeErr := a.ensureAwake(ctx)
+	if wakeErr != nil {
+		return agentproto.ServiceCredentialResponse{}, wakeErr
 	}
 	return c.ServiceCredential(ctx, req)
 }
@@ -1347,39 +1597,58 @@ func (s *windowsRuntimeService) ensureClient() {
 
 func (s *windowsRuntimeService) List(ctx context.Context) ([]model.RuntimeBuild, error) {
 	s.ensureClient()
-	if s.backend == nil || s.backend.Client == nil {
-		if s.store != nil {
-			if builds, err := s.store.ListRuntimes(ctx); err == nil && len(builds) > 0 {
+	if s.backend != nil && s.backend.Client != nil {
+		resp, err := s.backend.Client.ListRuntimes(ctx)
+		if err == nil {
+			builds := make([]model.RuntimeBuild, len(resp.Runtimes))
+			for i, r := range resp.Runtimes {
+				b := model.RuntimeBuild{
+					ID:       r.ID,
+					Kind:     r.Kind,
+					Version:  r.Version,
+					Backend:  model.BackendWSL,
+					Path:     r.Path,
+					Checksum: r.Checksum,
+				}
+				builds[i] = b
+				if s.store != nil {
+					_ = s.store.UpsertRuntime(ctx, b)
+				}
+			}
+			return builds, nil
+		}
+	}
+	if s.agent != nil {
+		if c, err := s.agent.ensureAwake(ctx); err == nil && c != nil {
+			if s.backend != nil {
+				s.backend.Client = c
+			}
+			if resp, err := c.ListRuntimes(ctx); err == nil {
+				builds := make([]model.RuntimeBuild, len(resp.Runtimes))
+				for i, r := range resp.Runtimes {
+					b := model.RuntimeBuild{
+						ID:       r.ID,
+						Kind:     r.Kind,
+						Version:  r.Version,
+						Backend:  model.BackendWSL,
+						Path:     r.Path,
+						Checksum: r.Checksum,
+					}
+					builds[i] = b
+					if s.store != nil {
+						_ = s.store.UpsertRuntime(ctx, b)
+					}
+				}
 				return builds, nil
 			}
 		}
-		return nil, errors.New("WSL agent not connected")
 	}
-	resp, err := s.backend.Client.ListRuntimes(ctx)
-	if err != nil {
-		if s.store != nil {
-			if builds, storeErr := s.store.ListRuntimes(ctx); storeErr == nil && len(builds) > 0 {
-				return builds, nil
-			}
-		}
-		return nil, err
-	}
-	builds := make([]model.RuntimeBuild, len(resp.Runtimes))
-	for i, r := range resp.Runtimes {
-		b := model.RuntimeBuild{
-			ID:       r.ID,
-			Kind:     r.Kind,
-			Version:  r.Version,
-			Backend:  model.BackendWSL,
-			Path:     r.Path,
-			Checksum: r.Checksum,
-		}
-		builds[i] = b
-		if s.store != nil {
-			_ = s.store.UpsertRuntime(ctx, b)
+	if s.store != nil {
+		if builds, storeErr := s.store.ListRuntimes(ctx); storeErr == nil && len(builds) > 0 {
+			return builds, nil
 		}
 	}
-	return builds, nil
+	return nil, errors.New("WSL agent not connected")
 }
 
 func (s *windowsRuntimeService) Install(ctx context.Context, id string) (model.RuntimeBuild, error) {

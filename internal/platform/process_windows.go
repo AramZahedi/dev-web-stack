@@ -14,6 +14,6 @@ func ConfigureProcess(cmd *exec.Cmd) {
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
-		CreationFlags: 0x08000000 | 0x00000008, // CREATE_NO_WINDOW | DETACHED_PROCESS
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
 	}
 }

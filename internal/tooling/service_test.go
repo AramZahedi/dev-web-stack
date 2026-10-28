@@ -142,6 +142,24 @@ func TestServiceSetPHPDefaultMissingBuild(t *testing.T) {
 	}
 }
 
+func TestServicePHPDefaultConfiguredBuildNotInstalledReturnsNoError(t *testing.T) {
+	svc, st, _, _, _ := newToolService(t)
+	ctx := context.Background()
+	if err := st.SetSetting(ctx, DefaultPHPSettingKey, "8.9"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := svc.PHPDefault(ctx)
+	if err != nil {
+		t.Fatalf("PHPDefault returned error when configured build is missing: %v", err)
+	}
+	if status.Configured != "8.9" {
+		t.Fatalf("status.Configured = %q, want 8.9", status.Configured)
+	}
+	if status.Build != nil {
+		t.Fatalf("status.Build = %+v, want nil", status.Build)
+	}
+}
+
 func TestServiceClearPHPDefaultFallsBackToNewestInstalled(t *testing.T) {
 	svc, st, paths, _, helper := newToolService(t)
 	ctx := context.Background()

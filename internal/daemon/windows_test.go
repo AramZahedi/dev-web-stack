@@ -29,6 +29,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
 
@@ -528,5 +529,44 @@ func TestWindowsLogTail(t *testing.T) {
 	}
 	if got := tailWindowsLog(logPath); got != content {
 		t.Errorf("log tail = %q, want %q", got, content)
+	}
+}
+
+func TestWindowsAgentServiceAdapterFallbackOnUnreachable(t *testing.T) {
+	adapter := &windowsAgentServiceAdapter{
+		home:    t.TempDir(),
+		baseURL: "https://127.0.0.1:9",
+		distro:  "invalid-test-distro",
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	resp, err := adapter.ServiceStatus(ctx, "nginx")
+	if err != nil {
+		t.Fatalf("ServiceStatus returned error: %v", err)
+	}
+	if resp.ID != "nginx" {
+		t.Errorf("resp.ID = %q, want nginx", resp.ID)
+	}
+	if resp.State != string(services.StateNotInstalled) {
+		t.Errorf("resp.State = %q, want %q", resp.State, services.StateNotInstalled)
+	}
+}
+
+func TestIsConnectionRefused(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("connectex: No connection could be made because the target machine actively refused it."), true},
+		{errors.New("dial tcp 127.0.0.1:7443: connect: connection refused"), true},
+		{errors.New("WSL agent is not connected"), true},
+		{errors.New("file not found"), false},
+	}
+	for _, c := range cases {
+		if got := isConnectionRefused(c.err); got != c.want {
+			t.Errorf("isConnectionRefused(%v) = %v, want %v", c.err, got, c.want)
+		}
 	}
 }
