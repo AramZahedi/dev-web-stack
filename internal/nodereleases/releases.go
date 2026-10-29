@@ -1,5 +1,6 @@
-// Package nodereleases parses the official Node.js release index and resolves
-// version selections against the eligible Linux x64 releases.
+// Package nodereleases discovers official Node.js releases. It strictly parses
+// the release index, caches it privately, resolves version selections, and
+// preflights installs against the official per-release checksum file.
 package nodereleases
 
 import (
