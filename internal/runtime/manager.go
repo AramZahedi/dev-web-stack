@@ -205,6 +205,14 @@ func (m *Manager) InstallFile(ctx context.Context, id, source string) (model.Run
 	return m.installEntry(ctx, entry, source)
 }
 
+// InstallEntry installs a fully pinned catalog entry supplied by the caller.
+// Discovery and preflight happen above this layer, so the entry need not be
+// part of the embedded catalog. The install still passes through the same
+// size, checksum, extraction, and smoke gates as Install.
+func (m *Manager) InstallEntry(ctx context.Context, entry catalog.Entry) (model.RuntimeBuild, error) {
+	return m.installEntry(ctx, entry, "")
+}
+
 func (m *Manager) entryByID(id string) (catalog.Entry, error) {
 	if m.catalogErr != nil {
 		return catalog.Entry{}, fmt.Errorf("runtime: load catalog: %w", m.catalogErr)
@@ -346,6 +354,15 @@ func (m *Manager) installEntry(ctx context.Context, entry catalog.Entry, source 
 
 	if err := ctx.Err(); err != nil {
 		return model.RuntimeBuild{}, err
+	}
+
+	// A Node build is only registered after its own binary reports the pinned
+	// version. The check runs against the complete temporary tree, so a failure
+	// removes the temp directory and leaves no runtime row.
+	if entry.Kind == "node" {
+		if err := nodeSmoke(tempDir, entry.Version); err != nil {
+			return model.RuntimeBuild{}, fmt.Errorf("runtime: node smoke test %q: %w", entry.ID, err)
+		}
 	}
 
 	// A PHP build is only registered after its own FPM master has started and

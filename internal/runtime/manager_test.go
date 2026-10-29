@@ -99,6 +99,84 @@ func TestInstallVerifiesChecksumAndExtractsSafely(t *testing.T) {
 	assertNoPartialOrTempFiles(t, home)
 }
 
+func TestInstallEntryUsesPinnedArchive(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newFixtureServer(t, archive)
+	entry := entryFor(t, archive, srv.URL+"/"+testArchive)
+
+	// A pinned entry discovered at runtime is absent from the embedded
+	// catalog, so InstallEntry must install the caller's entry directly.
+	m, st, home, _ := newManagerWithCatalogFor(t, catalog.Catalog{}, srv.Client())
+
+	build, err := m.InstallEntry(context.Background(), entry)
+	if err != nil {
+		t.Fatalf("InstallEntry: %v", err)
+	}
+
+	wantPath := filepath.Join(home, "runtimes", "node", testVersion+"-"+testBuild)
+	if build.Path != wantPath {
+		t.Errorf("build.Path = %q, want %q", build.Path, wantPath)
+	}
+	if build.ID != testID || build.Kind != "node" || build.Version != testVersion {
+		t.Errorf("unexpected build identity: %+v", build)
+	}
+	if build.Backend != model.BackendLocal {
+		t.Errorf("build.Backend = %q, want local", build.Backend)
+	}
+	if build.Checksum != entry.SHA256 {
+		t.Errorf("build.Checksum = %q, want %q", build.Checksum, entry.SHA256)
+	}
+
+	got, err := st.GetRuntime(context.Background(), testID)
+	if err != nil {
+		t.Fatalf("GetRuntime: %v", err)
+	}
+	if got.Path != build.Path || got.Checksum != entry.SHA256 {
+		t.Errorf("stored build = %+v, want path %q and checksum %q", got, build.Path, entry.SHA256)
+	}
+	if requests := srv.requests.Load(); requests != 1 {
+		t.Errorf("archive requests = %d, want 1", requests)
+	}
+	if err := m.Verify(context.Background(), testID); err != nil {
+		t.Fatalf("Verify after InstallEntry: %v", err)
+	}
+	assertNoPartialOrTempFiles(t, home)
+}
+
+func TestInstallEntryVerifiesNodeVersionBeforeRegistration(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newAnyFixtureServer(t, archive)
+	// The fixture's bin/node prints v24.99.0. Pin a different version so the
+	// smoke test must reject the archive after extraction.
+	entry := entryFor(t, archive, srv.URL+"/node-v24.99.1-linux-x64.tar.gz")
+	entry.ID = "node@24.99.1"
+	entry.Version = "24.99.1"
+	m, _, home, _ := newManagerWithCatalogFor(t, catalog.Catalog{}, srv.Client())
+
+	_, err := m.InstallEntry(context.Background(), entry)
+	if err == nil {
+		t.Fatal("InstallEntry registered a build whose bin/node reports the wrong version")
+	}
+	for _, want := range []string{testVersion, entry.Version} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("InstallEntry error = %v, want it to mention %q", err, want)
+		}
+	}
+
+	builds, listErr := m.List(context.Background())
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
+	}
+	if len(builds) != 0 {
+		t.Fatalf("runtime registered after smoke failure: %+v", builds)
+	}
+	target := filepath.Join(home, "runtimes", "node", "24.99.1-"+testBuild)
+	if _, statErr := os.Stat(target); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("target directory exists after smoke failure: %v", statErr)
+	}
+	assertNoPartialOrTempFiles(t, home)
+}
+
 func TestChecksumMismatchLeavesNoRuntime(t *testing.T) {
 	archive := fixtureData(t, "valid.tar.gz")
 	corrupt := append([]byte(nil), archive...)
