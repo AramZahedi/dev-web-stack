@@ -164,6 +164,7 @@ func TestProxyDocumentRoot(t *testing.T) {
 		{"wsl", model.Site{SourceMode: model.SourceWSL, HostPath: `\\wsl.localhost\Ubuntu\home\a\app`, DocumentRoot: "public"}, `\\wsl.localhost\Ubuntu\home\a\app\public`, false},
 		{"local", model.Site{SourceMode: model.SourceLocal, HostPath: "/home/a/app", DocumentRoot: "public"}, "/home/a/app/public", false},
 		{"empty root", model.Site{SourceMode: model.SourceWindows, HostPath: `C:\app`}, `C:\app`, false},
+		{"dot root", model.Site{SourceMode: model.SourceWindows, HostPath: `C:\app`, DocumentRoot: "."}, `C:\app`, false},
 		{"absolute", model.Site{SourceMode: model.SourceWindows, HostPath: `C:\app`, DocumentRoot: `C:\other`}, "", true},
 		{"escape", model.Site{SourceMode: model.SourceWindows, HostPath: `C:\app`, DocumentRoot: `../other`}, "", true},
 	}

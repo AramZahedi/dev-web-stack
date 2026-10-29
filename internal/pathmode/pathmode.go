@@ -281,7 +281,7 @@ func ProxyDocumentRoot(site model.Site) (string, error) {
 		return "", fmt.Errorf("%w: host path is empty", ErrInvalidPath)
 	}
 	root := strings.TrimSpace(site.DocumentRoot)
-	if root == "" {
+	if root == "" || root == "." {
 		return site.HostPath, nil
 	}
 	slashed := strings.ReplaceAll(root, `\`, "/")
