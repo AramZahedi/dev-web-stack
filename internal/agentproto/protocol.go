@@ -317,11 +317,27 @@ type TerminalTicketResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// RuntimeRequest installs or removes a runtime build.
+// RuntimeArtifact pins one downloadable runtime archive. The agent treats every
+// field as untrusted and revalidates it before downloading; the checksum and
+// size are checked again against the bytes that actually arrive.
+type RuntimeArtifact struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Version string `json:"version"`
+	Build   string `json:"build"`
+	URL     string `json:"url"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+}
+
+// RuntimeRequest installs or removes a runtime build. Artifact, when set,
+// pins a release discovered outside the embedded catalog and takes precedence
+// over the catalog selector fields.
 type RuntimeRequest struct {
-	Kind    string `json:"kind,omitempty"`
-	Version string `json:"version,omitempty"`
-	BuildID string `json:"build_id,omitempty"`
+	Kind     string           `json:"kind,omitempty"`
+	Version  string           `json:"version,omitempty"`
+	BuildID  string           `json:"build_id,omitempty"`
+	Artifact *RuntimeArtifact `json:"artifact,omitempty"`
 }
 
 // RuntimeResponse describes one installed runtime.
