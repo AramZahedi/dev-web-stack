@@ -291,6 +291,8 @@ export interface Settings {
   log_max_mb: number;
   log_keep: number;
   restart_required?: boolean;
+  /** Windows fixes the helper/firewall target ports at 8080/8443. */
+  public_ports_fixed?: boolean;
   version?: string;
   socket_path?: string;
   pid_path?: string;

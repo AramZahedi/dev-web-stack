@@ -295,16 +295,20 @@ type Config struct {
 	// Listeners records the ports the running daemon actually bound. Settings
 	// patches compare against these, not against config.yaml, so a saved but
 	// not-yet-applied port change keeps restart_required set.
-	Listeners     ListenerPorts
-	Vhosts        VhostService
-	Services      ServiceService
-	ServiceConfig ServiceConfigService
-	Tooling       ToolService
-	Build         BuildService
-	Terminal      TerminalService
-	Performance   PerformanceService
-	WSLFS         WSLFSBrowser
-	Logger        *slog.Logger
+	Listeners ListenerPorts
+	// PublicPortsFixed rejects HTTP/HTTPS port changes. The Windows helper
+	// forwarders and the installer firewall rule target the fixed 8080/8443
+	// loopback ports; saving another value would strand 80/443.
+	PublicPortsFixed bool
+	Vhosts           VhostService
+	Services         ServiceService
+	ServiceConfig    ServiceConfigService
+	Tooling          ToolService
+	Build            BuildService
+	Terminal         TerminalService
+	Performance      PerformanceService
+	WSLFS            WSLFSBrowser
+	Logger           *slog.Logger
 }
 
 // Server owns the HTTP API and dashboard handler.
@@ -628,6 +632,7 @@ type settingsResponse struct {
 	LogMaxMB            int    `json:"log_max_mb"`
 	LogKeep             int    `json:"log_keep"`
 	RestartRequired     bool   `json:"restart_required"`
+	PublicPortsFixed    bool   `json:"public_ports_fixed"`
 }
 
 // handleSettings reports the machine configuration. Defaults come from
@@ -655,6 +660,7 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 		MaxRequestBodyMB:    defaults.MaxRequestBodyMB,
 		LogMaxMB:            defaults.LogMaxMB,
 		LogKeep:             defaults.LogKeep,
+		PublicPortsFixed:    s.cfg.PublicPortsFixed,
 	}
 	out.Home = s.devstackHome(ctx, out.UserHome)
 	if s.store == nil {

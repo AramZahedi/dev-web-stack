@@ -438,9 +438,12 @@ paths:
         Upgrades an authenticated request to a WebSocket-backed PTY. The ticket
         is the capability and must be fresh (<= 30 s) and unused. Origin must be
         an allowed loopback dashboard host; a missing, `null`, or foreign Origin
-        is rejected with 403. The socket runs the installing user's shell in the
-        site project root with the site's PHP/Node shims, PHPRC, and site
-        environment, never as root or through sudo.
+        is rejected with 403. On Linux the socket runs the installing user's
+        shell in the site project root with the site's PHP/Node shims, PHPRC, and
+        site environment, never as root or through sudo. On Windows the session
+        is hosted by the WSL agent's PTY, which runs inside the managed distro;
+        that agent currently runs as root, so Windows terminal sessions are
+        root shells within the distro.
 
         Text frames are JSON:
 
@@ -3155,6 +3158,12 @@ components:
           description: |
             True when config.yaml contains listener ports that the running
             daemon has not bound yet. Cleared on daemon startup.
+        public_ports_fixed:
+          type: boolean
+          description: |
+            True on Windows. The helper forwarders and firewall rule target
+            fixed 8080/8443 loopback ports, so PATCH rejects changes to
+            http_port and https_port; ui_port remains editable.
 
     SettingsUpdateRequest:
       type: object

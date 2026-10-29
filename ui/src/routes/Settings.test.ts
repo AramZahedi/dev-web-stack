@@ -142,6 +142,7 @@ describe('Settings tooling', () => {
       home: 'C:\\devstack',
       user_home: 'C:\\Users\\Aram',
       wsl_distro: 'devstack',
+      public_ports_fixed: true,
     });
     render(Settings);
 
@@ -151,6 +152,24 @@ describe('Settings tooling', () => {
     expect(detail).toMatch(/Site backends and PHP\/Node runtimes run in WSL/);
     expect(detail).toMatch(/Windows-drive static projects are read through \/mnt\/c/);
     expect(detail).toContain('devstack');
+
+    const http = (await screen.findByLabelText('HTTP proxy port')) as HTMLInputElement;
+    const https = screen.getByLabelText('HTTPS proxy port') as HTMLInputElement;
+    const ui = screen.getByLabelText('Dashboard/API port') as HTMLInputElement;
+    expect(http.disabled).toBe(true);
+    expect(https.disabled).toBe(true);
+    expect(ui.disabled).toBe(false);
+  });
+
+  it('keeps local settings visible when the helper trust status is unavailable', async () => {
+    mockApi.getTrust.mockRejectedValue(
+      new ApiError('HELPER_UNAVAILABLE', 'devstack-helper is not running', 502),
+    );
+    render(Settings);
+
+    expect(await screen.findByRole('heading', { name: 'Trust' })).toBeTruthy();
+    expect(await screen.findByText('Could not read trust status')).toBeTruthy();
+    expect(screen.getByLabelText('HTTP proxy port')).toBeTruthy();
   });
 
   it('shows the global PHP default, shim status, editable ini and Composer tools', async () => {

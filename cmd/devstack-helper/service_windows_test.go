@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/AramZahedi/dev-web-stack/internal/helper"
 )
 
 type recordedCommand struct {
@@ -32,15 +34,25 @@ func (f *fakeServiceRunner) Run(_ context.Context, name string, args ...string) 
 }
 
 func TestBuildWindowsServiceInstallCommandUsesLocalSystem(t *testing.T) {
-	args, err := windowsServiceInstallArgs(`C:\Program Files\Devstack\devstack-helper.exe`, allowedHelperSID)
+	customConfig := `D:\custom install\system\helper.yaml`
+	args, err := windowsServiceInstallArgs(`C:\Program Files\Devstack\devstack-helper.exe`, customConfig, allowedHelperSID)
 	if err != nil {
 		t.Fatalf("install args: %v", err)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"create", "binPath=", "start=", "auto", "obj=", "LocalSystem", "--allow-sid", allowedHelperSID} {
+	for _, want := range []string{"create", "binPath=", "start=", "auto", "obj=", "LocalSystem", "--allow-sid", allowedHelperSID, customConfig} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("install args %q do not contain %q", joined, want)
 		}
+	}
+	if strings.Contains(joined, helper.DefaultWindowsConfigPath) {
+		t.Fatalf("install args use the profile default config instead of --config: %q", joined)
+	}
+}
+
+func TestBuildWindowsServiceInstallCommandRejectsRelativeConfig(t *testing.T) {
+	if _, err := windowsServiceInstallArgs(`C:\devstack\devstack-helper.exe`, `system\helper.yaml`, allowedHelperSID); err == nil {
+		t.Fatal("relative helper config path accepted")
 	}
 }
 
@@ -55,7 +67,7 @@ func TestWindowsServiceCommandDispatch(t *testing.T) {
 
 func TestInstallWindowsServiceDeniesNonAdmin(t *testing.T) {
 	runner := &fakeServiceRunner{}
-	if err := installWindowsService(context.Background(), runner, false, `C:\devstack\devstack-helper.exe`, allowedHelperSID); err == nil {
+	if err := installWindowsService(context.Background(), runner, false, `C:\devstack\devstack-helper.exe`, `C:\devstack\system\helper.yaml`, allowedHelperSID); err == nil {
 		t.Fatal("non-administrator service install succeeded")
 	}
 	if len(runner.commands) != 0 {

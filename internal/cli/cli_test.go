@@ -637,6 +637,9 @@ func runCLIExitInput(t *testing.T, fake *fakeClient, input string, args ...strin
 	err := root.Execute()
 	if err != nil {
 		PrintError(root, err)
+		if code := ExitCode(err); code > 0 {
+			return code, stdout.String(), stderr.String()
+		}
 		return 1, stdout.String(), stderr.String()
 	}
 	return 0, stdout.String(), stderr.String()
@@ -1511,9 +1514,12 @@ func TestCLIUninstallWindowsElevatedCommand(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-specific test")
 	}
-	want := `powershell.exe -ExecutionPolicy Bypass -File C:\devstack\uninstall.ps1`
-	if elevatedRemovalCommand != want {
-		t.Fatalf("elevatedRemovalCommand = %q, want %q", elevatedRemovalCommand, want)
+	want := `powershell.exe -ExecutionPolicy Bypass -File "C:\Users\me\.devstack\uninstall.ps1"`
+	if got := elevatedRemovalCommand(`C:\Users\me\.devstack`); got != want {
+		t.Fatalf("elevatedRemovalCommand = %q, want %q", got, want)
+	}
+	if got := elevatedRemovalCommand(`D:\custom install`); !strings.Contains(got, `D:\custom install\uninstall.ps1`) {
+		t.Fatalf("custom install command = %q", got)
 	}
 }
 
@@ -2553,8 +2559,8 @@ func TestCLIPHPExecPassesArgsAfterDash(t *testing.T) {
 
 	failing := &fakeClient{phpResult: backend.Result{ExitCode: 2, Stderr: "parse error\n"}}
 	code, stdout, stderr := runCLIExit(t, failing, "php", "--site", "blog", "--", "-r", "bad")
-	if code == 0 {
-		t.Fatal("want non-zero exit for a non-zero PHP exit")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want the PHP exit status 2", code)
 	}
 	if !strings.Contains(stderr, "parse error") || !strings.Contains(stderr, "PHP_EXEC_FAILED") {
 		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)

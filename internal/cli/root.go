@@ -365,6 +365,11 @@ func resolveHome(home string) (string, error) {
 		home = os.Getenv("DEVSTACK_HOME")
 	}
 	if home == "" {
+		if legacy, ok := daemon.LegacyWindowsHome(); ok {
+			home = legacy
+		}
+	}
+	if home == "" {
 		home = platform.DefaultRoot(goruntime.GOOS)
 	}
 	abs, err := filepath.Abs(home)

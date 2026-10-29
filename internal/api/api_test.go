@@ -966,6 +966,15 @@ func TestSPAFallbackAndAssetMIME(t *testing.T) {
 
 	rec = fx.request(t, "GET", "/api/v1/does-not-exist", nil)
 	assertError(t, rec, http.StatusNotFound, codeNotFound)
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		rec = fx.request(t, method, "/api/v1/does-not-exist", strings.NewReader(`{}`))
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s unknown API path = %d body=%s", method, rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+			t.Fatalf("%s unknown API path content-type = %q", method, ct)
+		}
+	}
 }
 
 // TestEmbeddedDashboardServesBuiltDist exercises the real //go:embed archive

@@ -58,7 +58,7 @@ func (m *Manager) Enable(ctx context.Context, wslSubnet string) error {
 	for i, rule := range rules {
 		newSettings := []string{
 			"dir=in", "action=allow", "protocol=TCP", fmt.Sprintf("localport=%d", rule.port),
-			"remoteip=" + canonicalSubnet, "profile=private", "enable=yes",
+			"remoteip=" + canonicalSubnet, "profile=private,domain", "enable=yes",
 		}
 		setArgs := append([]string{"advfirewall", "firewall", "set", "rule", "name=" + rule.name, "new"}, newSettings...)
 		_, err := m.runner.Run(ctx, "netsh.exe", setArgs...)

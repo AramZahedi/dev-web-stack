@@ -26,6 +26,7 @@ func TestSecurityBoundaryRejectsNonLoopbackControlAPI(t *testing.T) {
 		path   string
 	}{
 		{"GET", "/api/v1/session"},
+		{"POST", "/api/v1/auth"},
 		{"GET", "/api/v1/sites"},
 		{"GET", "/api/v1/health"},
 		{"POST", "/api/v1/sites"},
@@ -143,6 +144,58 @@ func TestAuthTokenGateProtectsDashboardAPI(t *testing.T) {
 	handler.ServeHTTP(socketRec, req)
 	if socketRec.Code != http.StatusOK {
 		t.Fatalf("socket-authenticated sites = %d body=%s", socketRec.Code, socketRec.Body.String())
+	}
+}
+
+func TestEveryAPIRouteRequiresTheInstallToken(t *testing.T) {
+	const token = "install-token-route-coverage-0123456789abcdef"
+	fx := newFixture(t, Config{UserHome: t.TempDir(), AuthToken: token})
+	handler := fx.server.Handler()
+	replace := strings.NewReplacer("{ref}", "probe", "{id}", "probe", "{version}", "8.4")
+
+	for _, route := range fx.server.apiRoutes() {
+		path := replace.Replace(route.pattern)
+		req := httptest.NewRequest(route.method, "http://127.0.0.1"+path, nil)
+		req.RemoteAddr = "127.0.0.1:54321"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if route.pattern == "/api/v1/health" {
+			if rec.Code != http.StatusOK {
+				t.Errorf("%s %s = %d, want health to stay reachable", route.method, path, rec.Code)
+			}
+			continue
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s without token = %d, want 403", route.method, path, rec.Code)
+		}
+	}
+
+	// The token is only accepted as the header or the HttpOnly cookie, never a
+	// query parameter that would leak into logs and Referer headers.
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/sites?token="+token, nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("query-string token = %d, want 403", rec.Code)
+	}
+
+	// The WebSocket route is a GET, but it is still behind the install-token
+	// gate; a ticket alone is not enough to reach the upgrade handler.
+	req = httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/sites/probe/terminal?ticket=one", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("Origin", "http://127.0.0.1:7070")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("terminal WebSocket without token = %d, want 403", rec.Code)
+	}
+	req.Header.Set(authTokenHeader, token)
+	req.URL.RawQuery = ""
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("terminal WebSocket with token and no ticket = %d, want 400 (body %s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -334,7 +387,7 @@ func TestAPISessionFixationProtection(t *testing.T) {
 		"short",
 		"attacker_chosen_session_id",
 		"0123456789abcdef", // too short (16 hex chars)
-		"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", // 64 chars, but non-hex 'z'
+		"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",  // 64 chars, but non-hex 'z'
 		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ", // trailing space
 		"../escaped/session",
 	}

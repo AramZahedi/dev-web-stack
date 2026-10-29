@@ -56,7 +56,7 @@ func (a *App) runUninstall(cmd *cobra.Command) error {
 		Status:        "complete",
 		Uninstalled:   true,
 		DaemonStopped: stopped,
-		Command:       elevatedRemovalCommand,
+		Command:       elevatedRemovalCommand(home),
 		Checklist: []string{
 			userDaemonRemovalChecklistItem(userUnitRemoved),
 			"Run the elevated command above to remove the devstack-helper unit and system binaries.",
@@ -159,11 +159,10 @@ func removeDefaultUserDaemonUnit(ctx context.Context, home string) bool {
 	return true
 }
 
-var elevatedRemovalCommand = defaultElevatedRemovalCommand()
-
-func defaultElevatedRemovalCommand() string {
+func elevatedRemovalCommand(home string) string {
 	if runtime.GOOS == "windows" {
-		return `powershell.exe -ExecutionPolicy Bypass -File C:\devstack\uninstall.ps1`
+		script := filepath.Join(home, "uninstall.ps1")
+		return fmt.Sprintf(`powershell.exe -ExecutionPolicy Bypass -File "%s"`, script)
 	}
 	return "sudo systemctl disable --now devstack-helper && sudo rm -f /etc/systemd/system/devstack-helper.service && sudo rm -rf /usr/local/lib/devstack /var/lib/devstack-helper /etc/devstack && sudo systemctl daemon-reload"
 }

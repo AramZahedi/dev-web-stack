@@ -6,7 +6,9 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -77,6 +79,43 @@ func TestWindowsCLIStatusAndStopOverNamedPipe(t *testing.T) {
 	stAfter := readDaemonStatus(home)
 	if stAfter.Running {
 		t.Fatalf("readDaemonStatus after stop reported running, want stopped")
+	}
+}
+
+func TestWindowsDaemonStopDoesNotKillAnUnrelatedStalePID(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "run"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	victim := exec.Command("ping.exe", "-n", "60", "127.0.0.1")
+	if err := victim.Start(); err != nil {
+		t.Skipf("cannot start a victim process: %v", err)
+	}
+	victimPID := victim.Process.Pid
+	t.Cleanup(func() {
+		if processRunning(victimPID) {
+			_ = victim.Process.Kill()
+		}
+		_ = victim.Wait()
+	})
+	if err := os.WriteFile(daemon.PidPath(home), []byte(strconv.Itoa(victimPID)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stopped, err := stopDaemonPlatform(ctx, home)
+	if err != nil {
+		t.Fatalf("stopDaemonPlatform: %v", err)
+	}
+	if stopped {
+		t.Fatal("stopDaemonPlatform claimed to stop a daemon for an unrelated stale PID")
+	}
+	if !processRunning(victimPID) {
+		t.Fatal("stopDaemonPlatform killed an unrelated process named by a stale pid file")
+	}
+	if _, err := os.Stat(daemon.PidPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("stale pid file was not removed: %v", err)
 	}
 }
 

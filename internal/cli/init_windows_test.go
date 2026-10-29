@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentclient"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
+	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
@@ -268,6 +270,30 @@ func setupWindowsInitTestEnv(t *testing.T) (*mockWSLRunner, *mockAgentClient, *f
 	return runner, agentClient, fake, home, socket
 }
 
+func TestEnsureAgentCredentialsUsesResolvedHomeNotEnvironment(t *testing.T) {
+	home := t.TempDir()
+	other := t.TempDir()
+	t.Setenv("DEVSTACK_HOME", other)
+	runner := &mockWSLRunner{testRErr: errors.New("not found")}
+	token, pin, err := ensureAgentCredentials(context.Background(), runner, "devstack", home, config.Config{})
+	if err != nil {
+		t.Fatalf("ensureAgentCredentials: %v", err)
+	}
+	if len(token) != 64 || len(pin) != 64 {
+		t.Fatalf("token/pin lengths = %d/%d", len(token), len(pin))
+	}
+	storedToken, err := securestore.LoadAt(home, "agent-token")
+	if err != nil {
+		t.Fatalf("agent-token was not stored under the resolved home: %v", err)
+	}
+	if string(storedToken) != token {
+		t.Fatal("stored token does not match the generated token")
+	}
+	if _, err := securestore.LoadAt(other, "agent-token"); !os.IsNotExist(err) {
+		t.Fatalf("agent-token leaked into DEVSTACK_HOME instead of --home: %v", err)
+	}
+}
+
 func TestWindowsInitSuccess(t *testing.T) {
 	runner, agentClient, helper, home, socket := setupWindowsInitTestEnv(t)
 
@@ -483,8 +509,8 @@ func TestWindowsInitDistroQueryFailed(t *testing.T) {
 	t.Cleanup(func() { wslRunnerFactory = prevRunner })
 	wslRunnerFactory = func() wsl.Runner {
 		return &mockWSLRunner{
-			calls: [][]string{},
-			distros: []string{},
+			calls:    [][]string{},
+			distros:  []string{},
 			probeErr: errors.New("cannot list"),
 		}
 	}

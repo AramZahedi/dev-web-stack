@@ -183,7 +183,11 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, codeInvalidRequest, "tail must be a non-negative integer", nil)
 			return
 		}
+		const maxBuildLogTail = 1000
 		tail = parsed
+		if tail > maxBuildLogTail {
+			tail = maxBuildLogTail
+		}
 	}
 	site, err := s.sites.Get(r.Context(), r.PathValue("ref"))
 	if err != nil {

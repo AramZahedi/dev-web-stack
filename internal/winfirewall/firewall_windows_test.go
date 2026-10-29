@@ -53,7 +53,7 @@ func TestFirewallCreatesFixedProxyRulesForValidatedWSLSubnet(t *testing.T) {
 		t.Fatalf("calls = %+v; want update/creation for HTTP and HTTPS rules", runner.calls)
 	}
 	joined := strings.Join(runner.calls[1].args, " ") + " " + strings.Join(runner.calls[3].args, " ")
-	for _, value := range []string{"8080", "8443", "172.28.64.0/20", "enable=yes", "action=allow", "dir=in"} {
+	for _, value := range []string{"8080", "8443", "172.28.64.0/20", "enable=yes", "action=allow", "dir=in", "profile=private,domain"} {
 		if !strings.Contains(joined, value) {
 			t.Errorf("firewall rules lack %q: %s", value, joined)
 		}

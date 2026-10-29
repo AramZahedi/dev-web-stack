@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helper"
@@ -35,22 +36,26 @@ func isWindowsServiceCommand(args []string) bool {
 	return len(args) > 0 && args[0] == "service"
 }
 
-func windowsServiceInstallArgs(executable, allowSID string) ([]string, error) {
+func windowsServiceInstallArgs(executable, configPath, allowSID string) ([]string, error) {
 	if executable == "" {
 		return nil, errors.New("service executable path is empty")
+	}
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" || !filepath.IsAbs(configPath) {
+		return nil, errors.New("helper config path must be absolute")
 	}
 	if _, err := helper.NewServer(helper.Config{AllowSID: allowSID}); err != nil {
 		return nil, err
 	}
-	command := windows.EscapeArg(executable) + " service run --config " + windows.EscapeArg(helper.DefaultWindowsConfigPath) + " --allow-sid " + windows.EscapeArg(allowSID)
+	command := windows.EscapeArg(executable) + " service run --config " + windows.EscapeArg(configPath) + " --allow-sid " + windows.EscapeArg(allowSID)
 	return []string{"create", windowsServiceName, "binPath=", command, "start=", "auto", "obj=", "LocalSystem", "DisplayName=", "Devstack Helper"}, nil
 }
 
-func installWindowsService(ctx context.Context, runner windowsCommandRunner, isAdmin bool, executable, allowSID string) error {
+func installWindowsService(ctx context.Context, runner windowsCommandRunner, isAdmin bool, executable, configPath, allowSID string) error {
 	if !isAdmin {
 		return errors.New("installing the Windows helper service requires an elevated administrator")
 	}
-	args, err := windowsServiceInstallArgs(executable, allowSID)
+	args, err := windowsServiceInstallArgs(executable, configPath, allowSID)
 	if err != nil {
 		return err
 	}
@@ -170,7 +175,7 @@ func serviceCommand(args []string) error {
 		if err != nil {
 			return fmt.Errorf("resolve helper executable: %w", err)
 		}
-		return installWindowsService(ctx, runner, admin, exe, opts.allowSID)
+		return installWindowsService(ctx, runner, admin, exe, opts.configPath, opts.allowSID)
 	case "uninstall":
 		admin, err := currentProcessIsAdmin()
 		if err != nil {

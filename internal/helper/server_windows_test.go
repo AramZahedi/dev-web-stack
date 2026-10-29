@@ -80,6 +80,38 @@ func TestWindowsHelperTrustInstallUsesFixedMachineRootAndFirefoxPolicy(t *testin
 	}
 }
 
+func TestWindowsHelperTrustInstallUsesConfiguredRootCert(t *testing.T) {
+	root := t.TempDir()
+	systemDir := filepath.Join(root, "system")
+	caDir := filepath.Join(systemDir, "pki")
+	if err := os.MkdirAll(systemDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &helperTrustRunner{}
+	manager := wintrust.NewManagerWithStatePath(runner, func(string, string) error { return nil }, filepath.Join(root, "firefox-policy-managed"))
+	server, err := NewServer(Config{
+		AllowSID:     testHelperSID,
+		SystemDir:    systemDir,
+		CADir:        caDir,
+		RootCertPath: filepath.Join(caDir, "root.crt"),
+		TrustManager: manager,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, helperproto.PathTrustInstall, strings.NewReader(`{}`))
+	request.Header.Set(helperproto.ProtocolHeader, helperproto.Version)
+	request = request.WithContext(context.WithValue(request.Context(), peerSIDKey{}, testHelperSID))
+	response := httptest.NewRecorder()
+	server.handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("trust install status = %d; body=%s", response.Code, response.Body.String())
+	}
+	if len(runner.calls) < 1 || !strings.Contains(runner.calls[0], "certutil.exe -addstore -f Root "+filepath.Join(caDir, "root.crt")) {
+		t.Fatalf("trust commands = %v", runner.calls)
+	}
+}
+
 func TestWindowsHelperDerivesSystemAndCAPathsFromConfigPath(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "custom", "system", "helper.yaml")
 	server, err := NewServer(Config{AllowSID: testHelperSID, ConfigPath: configPath})
