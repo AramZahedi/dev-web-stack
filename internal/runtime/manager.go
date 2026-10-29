@@ -360,7 +360,7 @@ func (m *Manager) installEntry(ctx context.Context, entry catalog.Entry, source 
 	// version. The check runs against the complete temporary tree, so a failure
 	// removes the temp directory and leaves no runtime row.
 	if entry.Kind == "node" {
-		if err := nodeSmoke(tempDir, entry.Version); err != nil {
+		if err := nodeSmokeContext(ctx, tempDir, entry.Version); err != nil {
 			return model.RuntimeBuild{}, fmt.Errorf("runtime: node smoke test %q: %w", entry.ID, err)
 		}
 	}
@@ -376,6 +376,10 @@ func (m *Manager) installEntry(ctx context.Context, entry catalog.Entry, source 
 
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return model.RuntimeBuild{}, fmt.Errorf("runtime: create %s: %w", filepath.Dir(target), err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return model.RuntimeBuild{}, err
 	}
 
 	// The rename is atomic: readers see either the complete extracted tree or

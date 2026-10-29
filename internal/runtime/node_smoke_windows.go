@@ -2,11 +2,18 @@
 
 package runtime
 
-// nodeSmoke is skipped on Windows. Node runtime archives are Linux ELF
+import "context"
+
+// nodeSmokeContext is skipped on Windows. Node runtime archives are Linux ELF
 // binaries and cannot execute on the Windows host; production Windows installs
 // run inside the WSL agent, which uses the Linux implementation of this check.
 // Keeping the skip in a build-tagged file leaves the non-Windows smoke
 // mandatory and cannot silently weaken it.
-func nodeSmoke(buildRoot, expectedVersion string) error {
+var nodeSmokeContext = func(context.Context, string, string) error {
 	return nil
+}
+
+// nodeSmoke is the signature-mandated wrapper for callers without a context.
+func nodeSmoke(buildRoot, expectedVersion string) error {
+	return nodeSmokeContext(context.Background(), buildRoot, expectedVersion)
 }

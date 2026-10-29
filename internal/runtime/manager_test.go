@@ -177,6 +177,43 @@ func TestInstallEntryVerifiesNodeVersionBeforeRegistration(t *testing.T) {
 	assertNoPartialOrTempFiles(t, home)
 }
 
+func TestInstallEntryCancellationBeforeRegistration(t *testing.T) {
+	archive := fixtureData(t, "valid.tar.gz")
+	srv := newFixtureServer(t, archive)
+	entry := entryFor(t, archive, srv.URL+"/"+testArchive)
+	m, _, home, _ := newManagerWithCatalogFor(t, catalog.Catalog{}, srv.Client())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancel after the smoke has finished but before the build is published.
+	// installEntry must re-check the context at the registration boundary.
+	old := nodeSmokeContext
+	nodeSmokeContext = func(context.Context, string, string) error {
+		cancel()
+		return nil
+	}
+	t.Cleanup(func() { nodeSmokeContext = old })
+
+	_, err := m.InstallEntry(ctx, entry)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("InstallEntry error = %v, want context.Canceled", err)
+	}
+
+	builds, listErr := m.List(context.Background())
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
+	}
+	if len(builds) != 0 {
+		t.Fatalf("runtime registered after cancellation: %+v", builds)
+	}
+	target := filepath.Join(home, "runtimes", "node", testVersion+"-"+testBuild)
+	if _, statErr := os.Stat(target); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("target directory exists after cancellation: %v", statErr)
+	}
+	assertNoPartialOrTempFiles(t, home)
+}
+
 func TestChecksumMismatchLeavesNoRuntime(t *testing.T) {
 	archive := fixtureData(t, "valid.tar.gz")
 	corrupt := append([]byte(nil), archive...)
