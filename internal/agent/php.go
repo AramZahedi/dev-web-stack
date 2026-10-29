@@ -299,8 +299,25 @@ func (r *Runtime) StartPHP(ctx context.Context, id string, req agentproto.PHPAct
 	}
 	targetGen := site.phpGenerations[gen]
 	if targetGen == nil {
-		r.mu.Unlock()
-		return agentproto.SiteActionResponse{}, fmt.Errorf("agent: generation %q not prepared for site %q", gen, id)
+		fpmPath := filepath.Join(r.root, "sites", id, "fpm.conf")
+		if gen != "default" {
+			fpmPath = filepath.Join(r.root, "sites", id, gen, "php-fpm.conf")
+		}
+		if _, err := os.Stat(fpmPath); err == nil && site.spec.FastCGIPort > 0 {
+			targetGen = &phpGeneration{
+				spec:         cloneAgentSiteSpec(site.spec),
+				documentRoot: site.documentRoot,
+				fpmPath:      fpmPath,
+				port:         site.spec.FastCGIPort,
+			}
+			if site.phpGenerations == nil {
+				site.phpGenerations = make(map[string]*phpGeneration)
+			}
+			site.phpGenerations[gen] = targetGen
+		} else {
+			r.mu.Unlock()
+			return agentproto.SiteActionResponse{}, fmt.Errorf("agent: generation %q not prepared for site %q", gen, id)
+		}
 	}
 	oldGenName := site.activeGen
 	var oldProcess *fpmProcess

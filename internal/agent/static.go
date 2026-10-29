@@ -126,6 +126,25 @@ func (r *Runtime) SiteStatus(id string) (agentproto.SiteStatusResponse, error) {
 	if site == nil {
 		return agentproto.SiteStatusResponse{}, fmt.Errorf("%w: %s", ErrSiteNotFound, id)
 	}
+	if site.spec.Kind == "php" {
+		gen := site.activeGen
+		if gen == "" {
+			gen = "default"
+		}
+		targetGen := site.phpGenerations[gen]
+		if targetGen != nil && targetGen.process != nil && targetGen.process.running() {
+			site.status = "running"
+			return agentproto.SiteStatusResponse{
+				Status:      "running",
+				PID:         targetGen.process.pid,
+				FastCGIPort: targetGen.port,
+			}, nil
+		}
+		site.status = "stopped"
+		return agentproto.SiteStatusResponse{
+			Status: "stopped",
+		}, nil
+	}
 	status := site.status
 	if site.server == nil && status == "running" {
 		status = "stopped"

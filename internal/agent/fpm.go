@@ -198,6 +198,24 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 	}
 }
 
+func (p *fpmProcess) running() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	stopped := p.stopped
+	p.mu.Unlock()
+	if stopped {
+		return false
+	}
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
+}
+
 func (p *fpmProcess) stop() {
 	if p == nil {
 		return

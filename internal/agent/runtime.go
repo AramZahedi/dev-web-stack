@@ -106,7 +106,7 @@ func NewRuntime(root string) (*Runtime, error) {
 				return nil, err
 			}
 		}
-		runtime.sites[item.Spec.ID] = &runtimeSite{
+		site := &runtimeSite{
 			spec:           cloneAgentSiteSpec(item.Spec),
 			documentRoot:   item.DocumentRoot,
 			desiredRunning: item.DesiredRunning,
@@ -114,6 +114,23 @@ func NewRuntime(root string) (*Runtime, error) {
 			activeGen:      item.ActiveGen,
 			phpGenerations: make(map[string]*phpGeneration),
 		}
+		if item.Spec.Kind == "php" && item.Spec.FastCGIPort > 0 {
+			gen := item.ActiveGen
+			if gen == "" {
+				gen = "default"
+			}
+			fpmPath := filepath.Join(root, "sites", item.Spec.ID, "fpm.conf")
+			if gen != "default" {
+				fpmPath = filepath.Join(root, "sites", item.Spec.ID, gen, "php-fpm.conf")
+			}
+			site.phpGenerations[gen] = &phpGeneration{
+				spec:         cloneAgentSiteSpec(item.Spec),
+				documentRoot: item.DocumentRoot,
+				fpmPath:      fpmPath,
+				port:         item.Spec.FastCGIPort,
+			}
+		}
+		runtime.sites[item.Spec.ID] = site
 	}
 	return runtime, nil
 }
@@ -204,11 +221,21 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 
 		if kind == "php" {
 			if _, err := r.StartPHP(ctx, id, agentproto.PHPActionRequest{Generation: gen}); err != nil {
-				return fmt.Errorf("agent: reconcile site %q: %w", id, err)
+				r.logs.append(id, fmt.Sprintf("reconcile failed: %v", err))
+				r.mu.Lock()
+				if s := r.sites[id]; s != nil {
+					s.status = "error"
+				}
+				r.mu.Unlock()
 			}
 		} else {
 			if _, err := r.StartSite(ctx, id); err != nil {
-				return fmt.Errorf("agent: reconcile site %q: %w", id, err)
+				r.logs.append(id, fmt.Sprintf("reconcile failed: %v", err))
+				r.mu.Lock()
+				if s := r.sites[id]; s != nil {
+					s.status = "error"
+				}
+				r.mu.Unlock()
 			}
 		}
 	}

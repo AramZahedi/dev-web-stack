@@ -169,11 +169,56 @@ func TestStaticRuntimeReconcilesPreviouslyRunningSiteAfterRestart(t *testing.T) 
 	if err := restarted.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	logsRc, _ := restarted.SiteLogs(context.Background(), spec.ID, false, 20)
+	logsBytes, _ := io.ReadAll(logsRc)
+	_ = logsRc.Close()
+	t.Logf("site logs: %s", string(logsBytes))
 	status, err := restarted.SiteStatus(spec.ID)
 	if err != nil || status.Status != "running" || status.HTTPPort != prepared.HTTPPort {
 		t.Fatalf("reconciled status = %+v, %v; wanted port %d", status, err, prepared.HTTPPort)
 	}
 	_ = restarted.StopSite(context.Background(), spec.ID, false)
+}
+
+func TestPHPRuntimeReconcilesPreviouslyRunningSiteAfterRestart(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	spec := agentproto.SiteSpec{
+		ID:          "reconcile-php",
+		Kind:        "php",
+		BackendPath: root,
+		FastCGIPort: 43050,
+		PHPVersion:  "8.4",
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "default", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "default"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Model process restart: stop previous listener without clearing desired-running state.
+	runtime.mu.Lock()
+	if gen := runtime.sites[spec.ID].phpGenerations["default"]; gen != nil && gen.process != nil {
+		gen.process.stop()
+	}
+	runtime.mu.Unlock()
+
+	restarted, err := NewRuntime(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	logsRc, _ := restarted.SiteLogs(context.Background(), spec.ID, false, 20)
+	logsBytes, _ := io.ReadAll(logsRc)
+	_ = logsRc.Close()
+	t.Logf("site logs: %s", string(logsBytes))
+	status, err := restarted.SiteStatus(spec.ID)
+	if err != nil || status.Status != "running" {
+		t.Fatalf("reconciled php status = %+v, %v", status, err)
+	}
+	_, _ = restarted.StopPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "default"})
 }
 
 func TestAgentRuntimeRoutesAreBehindAuth(t *testing.T) {
@@ -379,6 +424,10 @@ func TestAgentPHPStartStopAndSwapGenerations(t *testing.T) {
 	if startResp.Status != "running" {
 		t.Fatalf("start status = %q", startResp.Status)
 	}
+	status1, err := runtime.SiteStatus(spec.ID)
+	if err != nil || status1.Status != "running" {
+		t.Fatalf("SiteStatus after StartPHP = %+v, %v", status1, err)
+	}
 	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-2", Site: spec}); err != nil {
 		t.Fatal(err)
 	}
@@ -389,12 +438,20 @@ func TestAgentPHPStartStopAndSwapGenerations(t *testing.T) {
 	if swapResp.Status != "running" {
 		t.Fatalf("swap status = %q", swapResp.Status)
 	}
+	status2, err := runtime.SiteStatus(spec.ID)
+	if err != nil || status2.Status != "running" {
+		t.Fatalf("SiteStatus after swap = %+v, %v", status2, err)
+	}
 	stopResp, err := runtime.StopPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "gen-2"})
 	if err != nil {
 		t.Fatalf("StopPHP = %v", err)
 	}
 	if stopResp.Status != "stopped" {
 		t.Fatalf("stop status = %q", stopResp.Status)
+	}
+	status3, err := runtime.SiteStatus(spec.ID)
+	if err != nil || status3.Status != "stopped" {
+		t.Fatalf("SiteStatus after StopPHP = %+v, %v", status3, err)
 	}
 }
 
