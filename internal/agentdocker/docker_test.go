@@ -270,3 +270,56 @@ func TestCredentialRotationRejectsUnsupportedServicesAndStoppedState(t *testing.
 		t.Fatal("expected error rotating stopped mysql service")
 	}
 }
+
+func TestScaffoldSeedsBaseConfigs(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data", "devstack")
+	runner := &fakeRunner{}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, svc := range []struct {
+		id       string
+		fileRel  string
+		expected string
+	}{
+		{"redis", filepath.Join("config", "redis.conf"), "appendonly yes"},
+		{"mysql", filepath.Join("config", "my.cnf"), "[mysqld]"},
+		{"mariadb", filepath.Join("config", "my.cnf"), "[mysqld]"},
+		{"postgres", filepath.Join("config", "postgresql.conf"), "listen_addresses = '*'"},
+		{"phpmyadmin", filepath.Join("config", "config.user.inc.php"), "$cfg['UploadDir']"},
+	} {
+		if _, err := module.Action(context.Background(), agentproto.ServiceRequest{ID: svc.id, Action: "install"}); err != nil {
+			t.Fatalf("install %s: %v", svc.id, err)
+		}
+		path := filepath.Join(root, "services", svc.id, svc.fileRel)
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("missing seeded config for %s at %s: %v", svc.id, path, err)
+		}
+		if !strings.Contains(string(content), svc.expected) {
+			t.Fatalf("config for %s does not contain %q:\n%s", svc.id, svc.expected, string(content))
+		}
+	}
+}
+
+func TestStatusDecodesArrayObjectAndNDJSON(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data", "devstack")
+	runner := &fakeInputRunner{
+		output: map[string][]byte{
+			"compose --project-name devstack --file": []byte(`{"State":"running","Health":"healthy"}`),
+		},
+	}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := module.Status(context.Background(), "redis")
+	if err != nil {
+		t.Fatalf("Status(redis) = %v", err)
+	}
+	if resp.State != "active" {
+		t.Fatalf("State = %q, want active", resp.State)
+	}
+}
