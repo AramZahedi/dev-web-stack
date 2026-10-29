@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -67,6 +68,74 @@ func TestAgentInstallRuntimeAcceptsPinnedArtifact(t *testing.T) {
 	list, err := agentRuntime.ListRuntimes(context.Background())
 	if err != nil || len(list.Runtimes) != 1 || list.Runtimes[0].ID != artifact.ID {
 		t.Fatalf("ListRuntimes = %+v, %v", list, err)
+	}
+}
+
+func TestRuntimeArtifactEntryPreservesPinnedFields(t *testing.T) {
+	artifact := validPinnedNodeArtifact()
+	entry, err := runtimeArtifactEntry(artifact)
+	if err != nil {
+		t.Fatalf("runtimeArtifactEntry = %v", err)
+	}
+	if entry.ID != artifact.ID || entry.Kind != artifact.Kind || entry.Version != artifact.Version {
+		t.Fatalf("identity fields = %+v, want %+v", entry, artifact)
+	}
+	if entry.Build != "linux-x64" {
+		t.Fatalf("build = %q", entry.Build)
+	}
+	if entry.URL != artifact.URL || entry.SHA256 != artifact.SHA256 || entry.Size != artifact.Size {
+		t.Fatalf("pinned fields = %+v, want url=%q sha256=%q size=%d", entry, artifact.URL, artifact.SHA256, artifact.Size)
+	}
+}
+
+func TestAgentInstallRuntimePassesPinnedArtifactToDownloader(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("runtime downloads are disabled on native Windows")
+	}
+	t.Setenv("DEVSTACK_NO_DOWNLOAD", "")
+	agentRuntime, root := newTestRuntimeOnly(t)
+	artifact := validPinnedNodeArtifact()
+	// Use an id outside the embedded catalog to prove the artifact path, not
+	// a catalog lookup, drives the download.
+	artifact.ID = "node@99.1.2"
+	artifact.Version = "99.1.2"
+	artifact.URL = "https://nodejs.org/dist/v99.1.2/node-v99.1.2-linux-x64.tar.gz"
+	artifact.SHA256 = strings.Repeat("b", 64)
+	artifact.Size = 123_456
+
+	type downloadCall struct {
+		url, sha256, dest string
+		size              int64
+	}
+	var calls []downloadCall
+	sentinel := errors.New("stub download failed")
+	previous := downloadRuntimeArchive
+	downloadRuntimeArchive = func(ctx context.Context, rawURL, sha256 string, size int64, dest string) error {
+		calls = append(calls, downloadCall{url: rawURL, sha256: sha256, size: size, dest: dest})
+		return sentinel
+	}
+	t.Cleanup(func() { downloadRuntimeArchive = previous })
+
+	_, err := agentRuntime.InstallRuntime(context.Background(), agentproto.RuntimeRequest{Artifact: &artifact})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("InstallRuntime error = %v, want downloader error", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("downloader calls = %d, want 1", len(calls))
+	}
+	got := calls[0]
+	if got.url != artifact.URL || got.sha256 != artifact.SHA256 || got.size != artifact.Size {
+		t.Fatalf("downloader args = %+v, want url=%q sha256=%q size=%d", got, artifact.URL, artifact.SHA256, artifact.Size)
+	}
+	if got.dest != filepath.Join(root, "runtimes", artifact.ID) {
+		t.Fatalf("downloader destination = %q", got.dest)
+	}
+	list, err := agentRuntime.ListRuntimes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Runtimes) != 0 {
+		t.Fatalf("failed download registered runtimes: %+v", list.Runtimes)
 	}
 }
 

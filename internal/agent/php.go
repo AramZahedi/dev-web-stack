@@ -173,6 +173,10 @@ func runtimeArtifactEntry(artifact agentproto.RuntimeArtifact) (catalog.Entry, e
 	}, nil
 }
 
+// downloadRuntimeArchive is a test seam for the verified download/extraction
+// step, mirroring removeRuntimePath below.
+var downloadRuntimeArchive = downloadAndExtractArchive
+
 // InstallRuntime downloads/registers an installed runtime build from the catalog
 // or from a daemon-supplied pinned artifact.
 func (r *Runtime) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequest) (agentproto.RuntimeResponse, error) {
@@ -241,7 +245,7 @@ func (r *Runtime) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequ
 			// A failed download or checksum mismatch must fail the install.
 			// The previous code discarded this error and returned a successful
 			// response for a runtime that does not exist.
-			if err := downloadAndExtractArchive(ctx, match.URL, match.SHA256, match.Size, targetDir); err != nil {
+			if err := downloadRuntimeArchive(ctx, match.URL, match.SHA256, match.Size, targetDir); err != nil {
 				return agentproto.RuntimeResponse{}, fmt.Errorf("agent: install runtime %q: %w", match.ID, err)
 			}
 		}
