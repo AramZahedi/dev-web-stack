@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -52,6 +53,37 @@ func Join(goos string, parts ...string) string {
 		return strings.Join(clean, `\`)
 	}
 	return path.Join(clean...)
+}
+
+// LegacyWindowsRoot returns the pre-profile C:\devstack installation when it
+// is still the authoritative install. The new default home always wins when it
+// contains a completed install manifest.
+func LegacyWindowsRoot() (string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", false
+	}
+	return legacyWindowsRoot(DefaultRoot("windows"), `C:\devstack`)
+}
+
+func legacyWindowsRoot(defaultRoot, legacyRoot string) (string, bool) {
+	if InstallManifestExists(defaultRoot) {
+		return "", false
+	}
+	if InstallManifestExists(legacyRoot) {
+		return legacyRoot, true
+	}
+	return "", false
+}
+
+// InstallManifestExists reports whether dir contains a completed installer
+// manifest at system\install-manifest.json.
+func InstallManifestExists(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(dir, "system", "install-manifest.json"))
+	return err == nil && !info.IsDir()
 }
 
 // DefaultProjectsRoot returns the default projects directory below root.

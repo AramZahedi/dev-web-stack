@@ -24,6 +24,11 @@ func storeDirAt(home string) (string, error) {
 		home = strings.TrimSpace(os.Getenv("DEVSTACK_HOME"))
 	}
 	if home == "" {
+		if legacy, ok := platform.LegacyWindowsRoot(); ok {
+			home = legacy
+		}
+	}
+	if home == "" {
 		userHome, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("securestore: resolve home: %w", err)

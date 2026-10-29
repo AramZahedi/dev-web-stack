@@ -29,8 +29,8 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/ipc"
-	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
@@ -118,6 +118,11 @@ func New(home string) (*Client, error) {
 func resolveHome(home string) (string, error) {
 	if home == "" {
 		home = os.Getenv("DEVSTACK_HOME")
+	}
+	if home == "" {
+		if legacy, ok := platform.LegacyWindowsRoot(); ok {
+			home = legacy
+		}
 	}
 	if home == "" {
 		home = platform.DefaultRoot(runtime.GOOS)

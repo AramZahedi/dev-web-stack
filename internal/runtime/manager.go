@@ -280,8 +280,22 @@ func (m *Manager) installEntry(ctx context.Context, entry catalog.Entry, source 
 			_ = os.Remove(partial)
 		}()
 		source = partial
-	} else if err := verifyArchiveFile(source, entry); err != nil {
-		return model.RuntimeBuild{}, err
+	} else {
+		// Verify and use one private copy, not the caller's path twice. A local
+		// writer could otherwise swap the archive between verification and
+		// extraction.
+		if err := os.MkdirAll(m.cacheDir, 0o755); err != nil {
+			return model.RuntimeBuild{}, fmt.Errorf("runtime: create %s: %w", m.cacheDir, err)
+		}
+		partial = filepath.Join(m.cacheDir, "file-"+safeTempName(entry.ID)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".part")
+		if err := stageArchiveFile(source, partial, entry); err != nil {
+			_ = os.Remove(partial)
+			return model.RuntimeBuild{}, err
+		}
+		defer func() {
+			_ = os.Remove(partial)
+		}()
+		source = partial
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -762,9 +776,10 @@ func (m *Manager) checkManagedPath(p string) error {
 	return nil
 }
 
-// verifyArchiveFile checks a caller-supplied tarball against the pinned size
-// and SHA-256.
-func verifyArchiveFile(source string, entry catalog.Entry) error {
+// stageArchiveFile copies a caller-supplied archive into a private cache path
+// while hashing it. The copy is the only file extraction and scanning use, so
+// replacing the original path after verification cannot swap the bytes.
+func stageArchiveFile(source, dest string, entry catalog.Entry) error {
 	file, err := os.Open(source)
 	if err != nil {
 		return fmt.Errorf("runtime: open archive %s: %w", source, err)
@@ -780,15 +795,22 @@ func verifyArchiveFile(source string, entry catalog.Entry) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("runtime: archive %s is not a regular file", source)
 	}
-	if info.Size() != entry.Size {
-		return fmt.Errorf("runtime: archive %s size %d, want %d: %w",
-			source, info.Size(), entry.Size, ErrChecksumMismatch)
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("runtime: create staged archive: %w", err)
 	}
+	ok := false
+	defer func() {
+		_ = out.Close()
+		if !ok {
+			_ = os.Remove(dest)
+		}
+	}()
 
 	hash := sha256.New()
-	written, err := io.Copy(hash, file)
+	written, err := io.Copy(io.MultiWriter(out, hash), file)
 	if err != nil {
-		return fmt.Errorf("runtime: hash archive %s: %w", source, err)
+		return fmt.Errorf("runtime: stage archive %s: %w", source, err)
 	}
 	if written != entry.Size {
 		return fmt.Errorf("runtime: archive %s read %d bytes, want %d: %w",
@@ -799,6 +821,13 @@ func verifyArchiveFile(source string, entry catalog.Entry) error {
 		return fmt.Errorf("runtime: archive %s sha256 %s, want %s: %w",
 			source, got, entry.SHA256, ErrChecksumMismatch)
 	}
+	if err := out.Sync(); err != nil {
+		return fmt.Errorf("runtime: sync staged archive: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("runtime: close staged archive: %w", err)
+	}
+	ok = true
 	return nil
 }
 

@@ -1,11 +1,6 @@
 package daemon
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
-	"strings"
-
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
 )
 
@@ -16,25 +11,10 @@ import (
 // in the new-default home always wins; otherwise an existing legacy manifest is
 // adopted.
 func LegacyWindowsHome() (string, bool) {
-	if runtime.GOOS != "windows" {
-		return "", false
-	}
-	defaultHome := platform.DefaultRoot("windows")
-	if installManifestExists(defaultHome) {
-		return "", false
-	}
-	const legacy = `C:\devstack`
-	if installManifestExists(legacy) {
-		return legacy, true
-	}
-	return "", false
+	return platform.LegacyWindowsRoot()
 }
 
+// installManifestExists is kept as a package-local seam for daemon tests.
 func installManifestExists(dir string) bool {
-	dir = strings.TrimSpace(dir)
-	if dir == "" {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(dir, "system", "install-manifest.json"))
-	return err == nil && !info.IsDir()
+	return platform.InstallManifestExists(dir)
 }

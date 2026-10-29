@@ -34,6 +34,33 @@ func TestDefaultProjectsRoot(t *testing.T) {
 	}
 }
 
+func TestLegacyWindowsRootDetection(t *testing.T) {
+	defaultRoot := t.TempDir()
+	legacyRoot := t.TempDir()
+	if _, ok := legacyWindowsRoot(defaultRoot, legacyRoot); ok {
+		t.Fatal("empty roots were treated as a legacy install")
+	}
+	if err := os.MkdirAll(filepath.Join(legacyRoot, "system"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyRoot, "system", "install-manifest.json"), []byte(`{"stage":"complete"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := legacyWindowsRoot(defaultRoot, legacyRoot)
+	if !ok || got != legacyRoot {
+		t.Fatalf("legacyWindowsRoot = %q, %v; want %q, true", got, ok, legacyRoot)
+	}
+	if err := os.MkdirAll(filepath.Join(defaultRoot, "system"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultRoot, "system", "install-manifest.json"), []byte(`{"stage":"complete"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := legacyWindowsRoot(defaultRoot, legacyRoot); ok || got != "" {
+		t.Fatalf("legacyWindowsRoot with completed default = %q, %v; want no legacy", got, ok)
+	}
+}
+
 func TestValidateDevstackName(t *testing.T) {
 	for _, name := range []string{"config.yaml", "state.db", "config-manifest.json", "serving-provider", "devstack-tool-php"} {
 		if err := ValidateDevstackName(name); err != nil {

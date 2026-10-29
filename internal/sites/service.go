@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -73,6 +74,22 @@ type UpdateRequest struct {
 	Command             string
 	DocumentRoot        string
 	Env                 map[string]string
+}
+
+// siteEnvNamePattern matches names that can be exported safely by the site
+// shims and shell-init renderer.
+var siteEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func validateSiteEnvironment(env map[string]string) error {
+	for key, value := range env {
+		if !siteEnvNamePattern.MatchString(key) {
+			return fmt.Errorf("invalid environment variable name %q", key)
+		}
+		if strings.ContainsRune(value, 0) {
+			return fmt.Errorf("environment variable %q contains a NUL byte", key)
+		}
+	}
+	return nil
 }
 
 // Hosts synchronizes the helper-managed hosts block.
@@ -839,6 +856,9 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 	if err := validateBuildProfile(req.Build); err != nil {
 		return model.Site{}, err
 	}
+	if err := validateSiteEnvironment(req.Env); err != nil {
+		return model.Site{}, fmt.Errorf("sites: %w", err)
+	}
 
 	site := model.Site{
 		Name:                name,
@@ -1070,6 +1090,9 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 		}
 	}
 	if req.Env != nil {
+		if err := validateSiteEnvironment(req.Env); err != nil {
+			return model.Site{}, fmt.Errorf("sites: %w", err)
+		}
 		updated.Env = cloneEnv(req.Env)
 	}
 

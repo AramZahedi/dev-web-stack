@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -181,8 +182,11 @@ func TestExtractZipRejectsEscapingPaths(t *testing.T) {
 	escapingPaths := []string{
 		"../outside.txt",
 		"nested/../../outside.txt",
-		"C:drive-relative.txt",
-		"C:/absolute-drive.txt",
+	}
+	if runtime.GOOS == "windows" {
+		// Drive-relative and drive-absolute names are Windows volume syntax;
+		// filepath.VolumeName intentionally returns empty on other hosts.
+		escapingPaths = append(escapingPaths, "C:drive-relative.txt", "C:/absolute-drive.txt")
 	}
 
 	for _, p := range escapingPaths {

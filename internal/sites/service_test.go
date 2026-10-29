@@ -634,6 +634,49 @@ func TestCreateRejectsInvalidAndDuplicateSites(t *testing.T) {
 	})
 }
 
+func TestCreateAndUpdateRejectUnsafeEnvironmentNames(t *testing.T) {
+	svc, fakes := newTestService(t)
+	for _, env := range []map[string]string{
+		{"BAD NAME": "x"},
+		{"X;id": "x"},
+		{"NUL": "a\x00b"},
+	} {
+		if _, err := svc.Create(ctx, CreateRequest{Name: "envbad", Path: fakes.root, Kind: "static", Env: env}); err == nil {
+			t.Fatalf("Create accepted environment %v", env)
+		}
+	}
+	sites, err := svc.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 0 {
+		t.Fatalf("invalid environment persisted a site: %+v", sites)
+	}
+
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "envsite", Path: fakes.root, Kind: "static"})
+	for _, env := range []map[string]string{
+		{"BAD NAME": "x"},
+		{"X;id": "x"},
+		{"NUL": "a\x00b"},
+	} {
+		if _, err := svc.Update(ctx, site.ID, UpdateRequest{Env: env}); err == nil {
+			t.Fatalf("Update accepted environment %v", env)
+		}
+	}
+	got := mustGet(t, svc, site.ID)
+	if len(got.Env) != 0 {
+		t.Fatalf("invalid update changed environment: %+v", got.Env)
+	}
+
+	good := mustCreate(t, svc, fakes, CreateRequest{
+		Name: "envgood", Path: fakes.root, Kind: "static",
+		Env: map[string]string{"APP_ENV": "dev"},
+	})
+	if good.Env["APP_ENV"] != "dev" {
+		t.Fatalf("valid environment = %+v", good.Env)
+	}
+}
+
 func TestCreateNodeSiteEnsuresRuntime(t *testing.T) {
 	svc, fakes := newTestService(t)
 	site := mustCreate(t, svc, fakes, CreateRequest{

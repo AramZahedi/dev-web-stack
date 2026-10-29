@@ -186,6 +186,9 @@ func (r *Runtime) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequ
 // RemoveRuntime deletes a registered runtime. The request ID is used only as a
 // map key; the path recorded at install time is the only path ever removed.
 // Unknown IDs are an idempotent no-op.
+// removeRuntimePath is a test seam for the two-phase runtime delete.
+var removeRuntimePath = os.RemoveAll
+
 func (r *Runtime) RemoveRuntime(ctx context.Context, req agentproto.RuntimeRequest) error {
 	if err := ctxErr(ctx); err != nil {
 		return err
@@ -218,13 +221,15 @@ func (r *Runtime) RemoveRuntime(ctx context.Context, req agentproto.RuntimeReque
 		r.mu.Unlock()
 		return fmt.Errorf("agent: remove runtime %q: %w", id, err)
 	}
+	// Delete the files before forgetting the row; a failed delete must remain
+	// retryable instead of leaving an unreachable directory.
+	if err := removeRuntimePath(targetDir); err != nil {
+		r.mu.Unlock()
+		return fmt.Errorf("agent: remove runtime %q files: %w", id, err)
+	}
 	delete(r.runtimes, id)
 	_ = r.saveRuntimesLocked()
 	r.mu.Unlock()
-
-	if err := os.RemoveAll(targetDir); err != nil {
-		return fmt.Errorf("agent: remove runtime %q files: %w", id, err)
-	}
 	return nil
 }
 

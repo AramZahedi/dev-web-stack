@@ -565,6 +565,31 @@ func TestAgentCopySourceRejectsRelativeOrUnknownPaths(t *testing.T) {
 	}
 }
 
+func TestRemoveRuntimeKeepsRegistrationWhenFilesCannotBeRemoved(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	const id = "php@8.4.27-r1"
+	registered := filepath.Join(root, "runtimes", id)
+	if err := os.MkdirAll(registered, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime.mu.Lock()
+	runtime.runtimes[id] = agentproto.RuntimeResponse{ID: id, Path: registered}
+	runtime.mu.Unlock()
+
+	previous := removeRuntimePath
+	removeRuntimePath = func(string) error { return errors.New("in use") }
+	t.Cleanup(func() { removeRuntimePath = previous })
+	if err := runtime.RemoveRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: id}); err == nil {
+		t.Fatal("RemoveRuntime reported success after a failed delete")
+	}
+	runtime.mu.Lock()
+	_, stillRegistered := runtime.runtimes[id]
+	runtime.mu.Unlock()
+	if !stillRegistered {
+		t.Fatal("failed removal forgot the runtime row")
+	}
+}
+
 func TestDebian12PHPCatalogCompatibilityGate(t *testing.T) {
 	tempDir := t.TempDir()
 	if err := CheckDebian12PHPCompatibility(context.Background(), tempDir); err == nil {

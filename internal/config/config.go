@@ -265,6 +265,11 @@ func (c Config) Save() error {
 // explicit home, DEVSTACK_HOME, a detected legacy ~/.devstack, then the
 // platform default. Legacy Linux installs are never moved.
 func resolveHome(home string) (string, error) {
+	if strings.TrimSpace(home) == "" && strings.TrimSpace(os.Getenv("DEVSTACK_HOME")) == "" {
+		if legacy, ok := platform.LegacyWindowsRoot(); ok {
+			home = legacy
+		}
+	}
 	userHome, _ := os.UserHomeDir()
 	return resolveHomeFrom(home, os.Getenv("DEVSTACK_HOME"), userHome, func(candidate string) bool {
 		info, err := os.Stat(candidate)
