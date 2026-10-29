@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1009,6 +1010,9 @@ func TestClientNewResolvesEnvironmentHome(t *testing.T) {
 }
 
 func TestClientNewResolvesUserHomeDefault(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the non-Windows default root is /data/devstack, not $HOME/.devstack")
+	}
 	userHome := t.TempDir()
 	t.Setenv("DEVSTACK_HOME", "")
 	t.Setenv("HOME", userHome)

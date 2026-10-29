@@ -27,9 +27,8 @@ func TestDefaultProjectsRoot(t *testing.T) {
 	if got := DefaultProjectsRoot("/data/devstack", "linux"); got != "/data/devstack/projects" {
 		t.Fatalf("linux projects = %q", got)
 	}
-	userHome, _ := os.UserHomeDir()
-	winRoot := filepath.Join(userHome, ".devstack")
-	expectedProjects := filepath.Join(winRoot, "projects")
+	winRoot := `C:\Users\Test\.devstack`
+	expectedProjects := `C:\Users\Test\.devstack\projects`
 	if got := DefaultProjectsRoot(winRoot, "windows"); got != expectedProjects {
 		t.Fatalf("windows projects = %q, want %q", got, expectedProjects)
 	}

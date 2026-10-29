@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -27,6 +28,9 @@ func TestCLIServingStatusAlias(t *testing.T) {
 }
 
 func TestCLIVhostUseWindowsUnsupported(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("external serving modes are rejected only by the Windows daemon")
+	}
 	useTestSeams(t)
 
 	t.Run("vhost use nginx fails with clear message", func(t *testing.T) {

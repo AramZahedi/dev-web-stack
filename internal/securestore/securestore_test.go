@@ -131,7 +131,11 @@ func TestEmptySecretHandling(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "empty-file"), []byte{}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load("empty-file"); err == nil {
-		t.Fatal("expected error reading empty DPAPI secret file, got nil")
+	if data, err := Load("empty-file"); runtime.GOOS == "windows" {
+		if err == nil {
+			t.Fatal("expected error reading empty DPAPI secret file, got nil")
+		}
+	} else if err != nil || len(data) != 0 {
+		t.Fatalf("empty plaintext secret = %q, %v", data, err)
 	}
 }

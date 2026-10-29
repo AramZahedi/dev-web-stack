@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -844,18 +843,15 @@ func TestPHPProxyFlushesStreamingResponse(t *testing.T) {
 }
 
 func TestPHPDirectoryRedirectEscapesLocation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows does not allow '?' in directory names")
-	}
 	root := t.TempDir()
-	writeTestFile(t, root, "a?b/index.html", "index")
+	writeTestFile(t, root, "a#b/index.html", "index")
 	r, _ := newPHPRoute(t, root, false, false)
-	rec := servePHPTest(r, httptest.NewRequest(http.MethodGet, "http://blog.test/a%3Fb", nil))
+	rec := servePHPTest(r, httptest.NewRequest(http.MethodGet, "http://blog.test/a%23b", nil))
 	if rec.Code != http.StatusMovedPermanently {
 		t.Fatalf("code = %d, want 301", rec.Code)
 	}
-	if got := rec.Header().Get("Location"); got != "/a%3Fb/" {
-		t.Fatalf("Location = %q, want /a%%3Fb/", got)
+	if got := rec.Header().Get("Location"); got != "/a%23b/" {
+		t.Fatalf("Location = %q, want /a%%23b/", got)
 	}
 }
 
