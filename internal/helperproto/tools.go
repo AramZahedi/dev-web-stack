@@ -12,8 +12,9 @@ const (
 // Managed tool ids. Requests carry an id from this fixed set only; they never
 // carry host paths or commands.
 const (
-	ToolPHPDefault = "php-default"
-	ToolComposer   = "composer"
+	ToolPHPDefault  = "php-default"
+	ToolComposer    = "composer"
+	ToolNodeDefault = "node-default"
 )
 
 // CodeToolConflict reports an existing foreign file that would be replaced or
@@ -36,7 +37,7 @@ type ToolStatus struct {
 	Backup      string `json:"backup,omitempty"`
 }
 
-// ToolStatusResponse lists both managed tools.
+// ToolStatusResponse lists the managed tools.
 type ToolStatusResponse struct {
 	Tools []ToolStatus `json:"tools"`
 }
