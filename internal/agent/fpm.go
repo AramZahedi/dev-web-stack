@@ -138,6 +138,7 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 			args = append(args, "-c", iniPath)
 		}
 		proc.cmd = exec.CommandContext(ctx, fpmBin, args...)
+		configureFPMCmd(proc.cmd)
 		if err := proc.cmd.Start(); err != nil {
 			proc.cancel()
 			return nil, fmt.Errorf("agent: start php-fpm: %w", err)
@@ -234,9 +235,7 @@ func (p *fpmProcess) stop() {
 	if p.listener != nil {
 		_ = p.listener.Close()
 	}
-	if p.cmd != nil && p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-	}
+	killFPMProcess(p.cmd, p.pid)
 	select {
 	case <-p.done:
 	case <-time.After(1 * time.Second):
