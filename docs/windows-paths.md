@@ -15,7 +15,7 @@ devstack provides two distinct source modes when adding a site:
 
 | Source Mode | Physical Location | Path Syntax | Recommended For | Performance Characteristics |
 |---|---|---|---|---|
-| **Windows Mode** (`windows`) | Windows NTFS drive | `C:\devstack\projects\mysite` or `C:\Users\Aram\...\mysite` | Projects edited with Windows tools that require native NTFS file events / watchers. | Fastest IDE indexing; slightly slower runtime I/O via 9P (`/mnt/c/`). |
+| **Windows Mode** (`windows`) | Windows NTFS drive | `%USERPROFILE%\.devstack\projects\mysite` or `C:\Users\Aram\...\mysite` | Projects edited with Windows tools that require native NTFS file events / watchers. | Fastest IDE indexing; slightly slower runtime I/O via 9P (`/mnt/c/`). |
 | **WSL Mode** (`wsl`) | WSL2 Linux ext4 disk | `\\wsl.localhost\devstack\data\devstack\projects\mysite` | Heavy PHP/Node applications (Laravel, Symfony, Nuxt, Next) with large `vendor/` and `node_modules/`. | Maximum execution speed on native Linux ext4; IDE connects via WSL remote or UNC. |
 
 ### Selecting Source Mode
@@ -90,14 +90,14 @@ When switching a site between `windows` and `wsl` modes:
 
 ## 4. Windows Tooling Shims (`.cmd` Wrappers)
 
-To provide developers with a seamless command-line experience without needing native Windows PHP or Node installations, devstack installs global wrapper scripts into `C:\devstack\bin\`:
+To provide developers with a seamless command-line experience without needing native Windows PHP or Node installations, devstack installs global wrapper scripts into `%USERPROFILE%\.devstack\bin\`:
 
 ```
-C:\devstack\bin\php.cmd
-C:\devstack\bin\composer.cmd
+%USERPROFILE%\.devstack\bin\php.cmd
+%USERPROFILE%\.devstack\bin\composer.cmd
 ```
 
-Because `C:\devstack\bin` is registered in the Machine `PATH`, you can invoke `php` or `composer` directly in PowerShell, Command Prompt, or within IDE terminals (PhpStorm, VS Code).
+Because `%USERPROFILE%\.devstack\bin` is registered in the user or system `PATH`, you can invoke `php` or `composer` directly in PowerShell, Command Prompt, or within IDE terminals (PhpStorm, VS Code).
 
 ### How the Shims Work
 

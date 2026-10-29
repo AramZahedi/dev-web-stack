@@ -22,7 +22,7 @@ devstack requires:
 | **Hardware Virtualization** | Enabled in BIOS/UEFI (Intel VT-x or AMD-V / SVM) | Required for WSL2 Hyper-V hypervisor platform. |
 | **WSL Version** | WSL 2.0.0 or higher (`wsl --version`) | Features systemd and localhost forwarding support. |
 | **WSL Networking Mode** | NAT (default) | `networkingMode=mirrored` is not supported due to port proxying requirements. |
-| **Available Disk Space** | 10 GB free on `C:\` | For `C:\devstack` layout, Windows binaries, and WSL ext4 virtual disk (`ext4.vhdx`). |
+| **Available Disk Space** | 10 GB free | For `%USERPROFILE%\.devstack` layout, Windows binaries, and WSL ext4 virtual disk (`ext4.vhdx`). |
 | **Privileges** | Local Administrator rights | Elevation is required during installation to register the helper service, configure firewall rules, and provision the root CA. Day-to-day commands do not require elevation. |
 | **Port Availability** | Ports 80 and 443 | Must be free on `127.0.0.1` for public HTTP/HTTPS forwarders. IIS (`W3SVC`) must be disabled or reassigned. |
 
@@ -49,18 +49,16 @@ wsl --update
 devstack maintains strict separation between Windows host concerns and WSL Linux execution:
 
 ```
-C:\devstack\
-├── bin\                     # Executables added to Machine PATH
+%USERPROFILE%\.devstack\
+├── bin\                     # Executables added to User/System PATH
 │   ├── devstack.exe         # User CLI, daemon, embedded UI, proxy router
 │   ├── devstack-helper.exe  # Privileged Windows system service
 │   ├── php.cmd              # Windows shim forwarding to WSL PHP CLI
 │   └── composer.cmd         # Windows shim forwarding to WSL Composer
-├── config\                  # User-editable daemon configuration
-│   └── config.yaml          # Port overrides, defaults, and runtime preferences
-├── data\                    # Machine-local operational data
-│   ├── devstack.db          # SQLite database (NTFS-exclusive flock; no dot prefix)
-│   ├── certs\               # Root CA cert/key, generated site leaf certs
-│   └── logs\                # Windows daemon and helper log files
+├── config.yaml              # User-editable daemon configuration
+├── state.db                 # SQLite database (NTFS-exclusive flock)
+├── certs\                   # Root CA cert/key, generated site leaf certs
+├── logs\                    # Windows daemon and helper log files
 ├── system\                  # Protected system state (SYSTEM & Admin only)
 │   ├── helper.yaml          # Helper service configuration and proxy targets
 │   ├── install-manifest.json# Checksummed installation receipt and stage flags
@@ -105,7 +103,7 @@ devstack enforces an explicit execution and permission model across the Windows-
 3. **Project File Permissions Across Storage Models:**
    - **WSL-Mode Projects (ext4 container at `/data/devstack/projects/`):**
      Recommended for maximum I/O performance. Files reside on the native ext4 virtual disk (`ext4.vhdx`). Standard POSIX file permissions (`chmod`, `chown`) and symbolic links are fully respected. When Windows IDEs (PhpStorm, VS Code) or Git for Windows access these projects through the network UNC share (`\\wsl.localhost\devstack\data\devstack\projects\<site>`), the WSL 9P / virtio-fs translation layer maps the Windows user to Linux permissions seamlessly.
-   - **Windows-Mode Projects (NTFS filesystem at `C:\devstack\projects\` or `/mnt/c/...`):**
+   - **Windows-Mode Projects (NTFS filesystem at `%USERPROFILE%\.devstack\projects\` or `/mnt/c/...`):**
      When projects reside on the Windows host filesystem and are mounted into WSL under `/mnt/c/`, the distro's `/etc/wsl.conf` configures automount with `metadata,umask=22,fmask=11`. The `metadata` option stores Linux file ownership and permission bits in NTFS extended attributes, ensuring `chmod +x` and POSIX file mode changes persist correctly across both Windows and WSL without altering Windows ACLs. The `fmask=11` mask ensures regular files do not accidentally inherit world-executable bits.
 
 ---
@@ -147,7 +145,7 @@ The standalone binary installer executable (`devstack-installer.exe` or `devstac
 | Flag | Default | Description |
 |---|---|---|
 | `-y`, `--unattended` | `false` | Run without interactive prompts or pause on exit. |
-| `-dir <path>` | `C:\devstack` | Custom installation directory. |
+| `-dir <path>` | `%USERPROFILE%\.devstack` | Custom installation directory. |
 | `--dry-run` | `false` | Validate environment and simulate installation without making system changes. |
 | `--allow-reboot` | `false` | Allow automatic reboot scheduling if optional Windows features require a restart. |
 | `--skip-wsl` | `false` | Skip WSL distro import and agent provisioning (host CLI and helper only). |
@@ -202,7 +200,7 @@ When using `install.ps1` directly, the following flags are supported:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `-InstallDir <path>` | `C:\devstack` | Target root installation directory on Windows. |
+| `-InstallDir <path>` | `%USERPROFILE%\.devstack` | Target root installation directory on Windows. |
 | `-RootFSPath <path>` | auto-detected | Path to `debian-12-wsl-rootfs.tar.gz`. |
 | `-AllowReboot` | `$false` | Allows the installer to schedule a resume task and reboot if optional Windows features were enabled. |
 | `-SkipWSL` | `$false` | Skips WSL distro import and agent provisioning (host layout and helper only). |
@@ -283,7 +281,7 @@ The upgrade workflow:
 Uninstallation is performed using `uninstall.ps1` from an elevated prompt:
 
 ```powershell
-cd C:\devstack
+cd "$env:USERPROFILE\.devstack"
 .\uninstall.ps1
 ```
 
@@ -293,7 +291,7 @@ By default, uninstallation:
 - Cleans the managed `.test` block from `C:\Windows\System32\drivers\etc\hosts`.
 - Removes the devstack local CA from the Windows Root certificate store.
 - Removes the inbound `devstack-daemon-proxy` Windows Firewall rule.
-- Removes `C:\devstack\bin` from the Machine `PATH`.
+- Removes `%USERPROFILE%\.devstack\bin` from `PATH`.
 - **Preserves** all user projects, SQLite state, and the managed WSL distribution (`ext4.vhdx`).
 
 ### Purge Options
@@ -304,6 +302,6 @@ To permanently remove user state or the WSL distro:
 # Remove the managed WSL distro and its ext4 disk:
 .\uninstall.ps1 -PurgeDistro
 
-# Remove DPAPI secrets, SQLite database, and the C:\devstack directory:
+# Remove DPAPI secrets, SQLite database, and the .devstack directory:
 .\uninstall.ps1 -PurgeData -Force
 ```

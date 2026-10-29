@@ -212,25 +212,19 @@ no WSL dependency. Existing installs are detected and preserved.
 
 | Role | Linux / WSL | Windows |
 |---|---|---|
-| Application/data root | `/data/devstack` | `C:\devstack` |
-| Default project root | `/data/devstack/projects` | `C:\devstack\projects` |
+| Application/data root | `/data/devstack` | `%USERPROFILE%\.devstack` (`$USER_ROOT/.devstack`) |
+| Default project root | `/data/devstack/projects` | `%USERPROFILE%\.devstack\projects` |
 
-`C:\devstack` is fixed. `/data/devstack` is fixed for new Linux installs;
-`--home` and `DEVSTACK_HOME` remain supported for tests, CI, and existing
-installs.
+On Windows, the root path defaults directly to the user profile (`%USERPROFILE%\.devstack`), skipping `C:\` completely. `/data/devstack` is fixed for new Linux installs; `--home` and `DEVSTACK_HOME` remain supported for tests, CI, and custom layouts.
 
 ### Root precedence and legacy detection
 
 1. An explicit `--home` wins.
 2. `DEVSTACK_HOME` wins when set.
-3. If `${HOME}/.devstack/config.yaml` or `${HOME}/.devstack/state.db` exists,
-   use `${HOME}/.devstack` and preserve it. Do not move or rewrite it.
-4. On Linux, otherwise use `/data/devstack`.
-5. On Windows, otherwise use `C:\devstack`.
+3. On Linux: if `${HOME}/.devstack/config.yaml` or `${HOME}/.devstack/state.db` exists, use `${HOME}/.devstack` and preserve it. Do not move or rewrite it. Otherwise use `/data/devstack`.
+4. On Windows: use `%USERPROFILE%\.devstack` (`$USER_ROOT/.devstack`). `C:\` is skipped entirely.
 
-A root must be writable by the daemon user. If `/data/devstack` exists but is
-not writable, startup fails with remediation (`DEVSTACK_HOME` or a fresh
-install) rather than silently falling back.
+A root must be writable by the daemon user. If the root directory exists but is not writable, startup fails with remediation (`DEVSTACK_HOME` or a fresh install) rather than silently falling back.
 
 ### Ownership and protection
 
@@ -242,14 +236,28 @@ install) rather than silently falling back.
 - `/data/devstack/system` is root:root, mode 0750. The installer creates it
   before the helper starts. The helper binary remains outside the
   user-writable tree (`/usr/local/lib/devstack/devstack-helper` on native
-  Linux, `C:\devstack\system\bin\devstack-helper.exe` on Windows, and
+  Linux, `%USERPROFILE%\.devstack\system\bin\devstack-helper.exe` on Windows, and
   `/data/devstack/bin/devstack-agent` on WSL).
 - A user must not be able to rename or replace `system` by owning its parent.
   The installer sets the parent ownership/mode accordingly.
-- `C:\devstack` is user-accessible for the user-facing tree, but
-  `C:\devstack\system` gives the user no write, delete, or ownership change.
-- No devstack-created Windows basename starts with a dot. Project-owned
+- `%USERPROFILE%\.devstack` is user-accessible for the user-facing tree, while
+  `system` DACLs give the unprivileged user no write, delete, or ownership change.
+- No devstack-created Windows basename starts with a dot except the root directory `.devstack`. Project-owned
   `.git`, `.idea`, `.env`, and `.htaccess` are unaffected.
+
+### Segregated Filesystem Browsing
+
+For site creation, directory browsing is strictly partitioned by project source mode:
+- When `source_mode` is `wsl`: `GET /api/v1/fs` routes to the WSL agent (`/v1/fs`), defaulting to `/data/devstack/projects`. Only Linux ext4 directories are listed and viewable; Windows drive paths are never shown.
+- When `source_mode` is `windows`: `GET /api/v1/fs` queries the Windows host filesystem, defaulting to `%USERPROFILE%\.devstack\projects`. Only Windows drive paths are listed and viewable; WSL paths are never shown.
+- In the dashboard Add Site view, entering or editing the site name automatically slugifies the name and prefills the project directory: `/data/devstack/projects/<slug>` for WSL mode, and `%USERPROFILE%\.devstack\projects\<slug>` for Windows mode, while preserving manual path edits.
+
+### Windows Tooling and Composer Provisioning
+
+Managed command shims (`php.cmd`, `composer.cmd`) are installed under `%USERPROFILE%\.devstack\bin` and exposed on the user or system PATH. For Composer:
+- Installation provisions Composer inside the WSL Linux environment under `/data/devstack/tools/composer/composer.phar` and `/data/devstack/bin/composer` (linked to `/usr/local/bin/composer`).
+- The Windows shim `%USERPROFILE%\.devstack\bin\composer.cmd` invokes Composer inside WSL with full path argument translation.
+- Tool status reporting accurately reflects `installed: true` and `managed: true` on Windows once the shims and binaries are prepared.
 
 ### Per-site project source
 
