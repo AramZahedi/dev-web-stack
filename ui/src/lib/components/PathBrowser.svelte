@@ -18,11 +18,12 @@
   interface Props {
     open: boolean;
     initialPath?: string;
+    mode?: 'wsl' | 'windows' | 'local';
     onselect: (path: string) => void;
     onclose: () => void;
   }
 
-  let { open, initialPath = '/', onselect, onclose }: Props = $props();
+  let { open, initialPath = '/', mode, onselect, onclose }: Props = $props();
 
   let listing = $state<FsListing | null>(null);
   let loading = $state(false);
@@ -31,13 +32,23 @@
   let previousOpen = false;
   let requestSeq = 0;
 
+  const isWindows = $derived(mode === 'windows' || Boolean(listing?.path && /^[a-zA-Z]:[\\/]/.test(listing.path)));
+  const rootPath = $derived(isWindows ? (listing?.path && /^[a-zA-Z]:/i.test(listing.path) ? listing.path.slice(0, 2) + '\\' : 'C:\\') : '/');
+
+  function isAtRoot(p?: string): boolean {
+    if (!p) return true;
+    if (p === '/') return true;
+    if (/^[a-zA-Z]:[\\/]?$/i.test(p)) return true;
+    return false;
+  }
+
   async function browse(path: string): Promise<void> {
     const seq = ++requestSeq;
     loading = true;
     requestedPath = path;
     error = null;
     try {
-      const next = await browseFs(path);
+      const next = await browseFs(path, mode);
       if (seq !== requestSeq) return;
       listing = next;
     } catch (caught) {
@@ -54,7 +65,7 @@
       previousOpen = true;
       listing = null;
       error = null;
-      void browse(initialPath || '/');
+      void browse(initialPath || rootPath);
     }
     if (!open) previousOpen = false;
   });
@@ -62,6 +73,16 @@
   const crumbs = $derived.by(() => {
     const current = listing?.path;
     if (!current) return [];
+    if (/^[a-zA-Z]:[\\/]/i.test(current)) {
+      const drive = current.slice(0, 2);
+      const rest = current.slice(2).replace(/^[\\/]+/, '');
+      const parts = rest.split(/[\\/]+/).filter(Boolean);
+      let accumulated = `${drive}\\`;
+      return parts.map((part) => {
+        accumulated += (accumulated.endsWith('\\') ? '' : '\\') + part;
+        return { label: part, path: accumulated };
+      });
+    }
     const parts = current.split('/').filter(Boolean);
     let accumulated = '';
     return parts.map((part) => {
@@ -71,6 +92,13 @@
   });
 
   function parentPath(path: string): string {
+    if (/^[a-zA-Z]:[\\/]?$/i.test(path)) return path.slice(0, 2) + '\\';
+    if (/^[a-zA-Z]:[\\/]/i.test(path)) {
+      const trimmed = path.replace(/[\\/]+$/, '');
+      const lastIndex = Math.max(trimmed.lastIndexOf('\\'), trimmed.lastIndexOf('/'));
+      if (lastIndex <= 2) return path.slice(0, 2) + '\\';
+      return trimmed.slice(0, lastIndex);
+    }
     if (path === '/') return '/';
     const trimmed = path.replace(/\/+$/, '');
     const index = trimmed.lastIndexOf('/');
@@ -98,14 +126,14 @@
         class="up"
         aria-label="Go up one level"
         title="Go up one level"
-        disabled={!listing || listing.path === '/' || loading}
+        disabled={!listing || isAtRoot(listing.path) || loading}
         data-autofocus
         onclick={() => listing && browse(parentPath(listing.path))}
       >
         <CornerLeftUp size={15} strokeWidth={2} aria-hidden="true" />
       </button>
       <div class="crumbs" aria-label="Current directory">
-        <button type="button" class="crumb" onclick={() => browse('/')} title="Root">
+        <button type="button" class="crumb" onclick={() => browse(rootPath)} title="Root">
           <House size={13} strokeWidth={2} aria-hidden="true" />
           <span class="sr-only">Root</span>
         </button>

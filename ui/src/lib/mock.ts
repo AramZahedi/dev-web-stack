@@ -2037,7 +2037,7 @@ export const mockApi = {
     return clone(trustTargets);
   },
 
-  async browseFs(path: string): Promise<FsListing> {
+  async browseFs(path: string, _mode?: 'wsl' | 'windows' | 'local'): Promise<FsListing> {
     await wait(120, 260);
     let normalized = path.trim();
     if (!normalized) {

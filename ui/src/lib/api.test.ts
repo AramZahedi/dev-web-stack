@@ -710,6 +710,17 @@ describe('filesystem browser session', () => {
     expect((fetchMock.mock.calls[2] as [string])[0]).toBe('/api/v1/session');
     expect((fetchMock.mock.calls[3] as [string])[0]).toContain('/api/v1/fs?path=');
   });
+
+  it('passes mode to the filesystem browser endpoint', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'token-1' }))
+      .mockResolvedValueOnce(jsonResponse({ path: '/data/devstack/projects', entries: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(browseFs('/data/devstack/projects', 'wsl')).resolves.toMatchObject({ path: '/data/devstack/projects' });
+    expect((fetchMock.mock.calls[1] as [string])[0]).toContain('mode=wsl');
+  });
 });
 
 describe('api client CSRF recovery', () => {

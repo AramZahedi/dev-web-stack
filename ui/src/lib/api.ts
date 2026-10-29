@@ -504,19 +504,23 @@ export async function removeTrust(): Promise<TrustTarget[]> {
   return request<TrustTarget[]>('/trust', { method: 'DELETE' });
 }
 
-export async function browseFs(path: string): Promise<FsListing> {
-  if (isMockMode) return mockApi.browseFs(path);
+export async function browseFs(path: string, mode?: 'wsl' | 'windows' | 'local'): Promise<FsListing> {
+  if (isMockMode) return mockApi.browseFs(path, mode);
   // /fs is session-gated even though it is a GET. Ensure the session cookie is
   // present, and recover once if the daemon restarted between calls.
   await fetchSession();
+  const query = new URLSearchParams();
+  if (path) query.set('path', path);
+  if (mode && mode !== 'local') query.set('mode', mode);
+  const endpoint = `/fs?${query.toString()}`;
   try {
-    return await request<FsListing>(`/fs?path=${encodeURIComponent(path)}`);
+    return await request<FsListing>(endpoint);
   } catch (error) {
     if (!(error instanceof ApiError) || error.status !== 403) throw error;
     csrfToken = null;
     sessionRequest = null;
     await fetchSession();
-    return request<FsListing>(`/fs?path=${encodeURIComponent(path)}`);
+    return request<FsListing>(endpoint);
   }
 }
 

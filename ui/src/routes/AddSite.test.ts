@@ -306,4 +306,32 @@ describe('AddSite Wave 2 fields', () => {
       }),
     );
   });
+
+  it('auto-slugifies the site name and prefills the project directory based on source mode', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\Users\\Aram\\.devstack',
+      user_home: 'C:\\Users\\Aram',
+      wsl_distro: 'devstack',
+    });
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+
+    const nameInput = screen.getByLabelText(/Site name/);
+    const pathInput = screen.getByLabelText(/Project folder/) as HTMLInputElement;
+
+    // Type a name with uppercase and spaces
+    await fireEvent.input(nameInput, { target: { value: 'My Awesome Blog' } });
+    await fireEvent.blur(nameInput);
+
+    // Verify name was auto-slugified
+    expect((nameInput as HTMLInputElement).value).toBe('my-awesome-blog');
+
+    // By default static on Windows starts in Windows mode:
+    expect(pathInput.value).toBe('C:\\Users\\Aram\\.devstack\\projects\\my-awesome-blog');
+
+    // Switch to PHP (which switches to WSL mode on Windows)
+    await fireEvent.click(screen.getByRole('radio', { name: /PHP/ }));
+    expect(pathInput.value).toBe('/data/devstack/projects/my-awesome-blog');
+  });
 });

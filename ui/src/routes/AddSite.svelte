@@ -52,6 +52,7 @@
   let step = $state(1);
   let name = $state('');
   let path = $state('');
+  let pathTouched = $state(false);
   let kind = $state<Kind>('static');
   let sourceMode = $state<SourceMode>('local');
   let sourceModeTouched = $state(false);
@@ -137,13 +138,42 @@
           ? `Node ${nodeVersion}`
           : 'Node — not selected',
   );
-  const initialBrowsePath = $derived(settings?.user_home ?? '/');
+  function slugify(val: string): string {
+    return val
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  function defaultPathFor(slug: string, mode: SourceMode): string {
+    if (!slug) return '';
+    if (mode === 'wsl') {
+      return `/data/devstack/projects/${slug}`;
+    }
+    if (mode === 'windows') {
+      const base = settings?.home ? `${settings.home}\\projects` : 'C:\\Users\\User\\.devstack\\projects';
+      return `${base}\\${slug}`;
+    }
+    const base = settings?.user_home ? `${settings.user_home}/projects` : '/home/projects';
+    return `${base}/${slug}`;
+  }
+
   const isWindowsHost = $derived(Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)));
+  const initialBrowsePath = $derived(
+    path
+      ? path
+      : sourceMode === 'wsl'
+        ? '/data/devstack/projects'
+        : sourceMode === 'windows'
+          ? (settings?.home ? `${settings.home}\\projects` : (settings?.user_home ? `${settings.user_home}\\.devstack\\projects` : 'C:\\'))
+          : (settings?.user_home ? `${settings.user_home}/projects` : '/')
+  );
   const pathPlaceholder = $derived(
     sourceMode === 'windows'
-      ? 'C:\\devstack\\projects\\my-app'
+      ? `${settings?.home ?? 'C:\\Users\\you\\.devstack'}\\projects\\my-app`
       : sourceMode === 'wsl'
-        ? '\\\\wsl.localhost\\devstack\\data\\devstack\\projects\\my-app'
+        ? '/data/devstack/projects/my-app'
         : '/home/you/projects/my-app',
   );
 
@@ -494,7 +524,12 @@
 
   function setKind(value: Kind): void {
     kind = value;
-    if (!sourceModeTouched) sourceMode = defaultSourceMode(value, isWindowsHost);
+    if (!sourceModeTouched) {
+      sourceMode = defaultSourceMode(value, isWindowsHost);
+      if (!pathTouched) {
+        path = defaultPathFor(slugify(name), sourceMode);
+      }
+    }
     const next = { ...errors };
     delete next.kind;
     delete next.node_version;
@@ -669,8 +704,23 @@
                     bind:value={name}
                     aria-invalid={Boolean(errors.name)}
                     aria-describedby={errors.name ? 'site-name-error' : 'site-name-hint'}
-                    oninput={() => clearError('name')}
-                    onblur={() => validateField('name')}
+                    oninput={() => {
+                      clearError('name');
+                      if (!pathTouched) {
+                        path = defaultPathFor(slugify(name), sourceMode);
+                        clearError('path');
+                      }
+                    }}
+                    onblur={() => {
+                      const slug = slugify(name);
+                      if (slug && slug !== name) {
+                        name = slug;
+                        if (!pathTouched) {
+                          path = defaultPathFor(slug, sourceMode);
+                        }
+                      }
+                      validateField('name');
+                    }}
                   />
                   <span class="suffix mono" aria-hidden="true">.test</span>
                 </div>
@@ -681,7 +731,7 @@
                 label="Project folder"
                 required
                 hint={isWindowsHost
-                  ? 'Choose a C: drive folder or a folder in the configured WSL distro. devstack never writes to your source files.'
+                  ? 'Choose a Windows drive folder or a folder in the configured WSL distro. devstack never writes to your source files.'
                   : 'An existing absolute path. devstack never writes to your project files.'}
                 error={errors.path}
               >
@@ -696,7 +746,10 @@
                     bind:value={path}
                     aria-invalid={Boolean(errors.path)}
                     aria-describedby={errors.path ? 'site-path-error' : 'site-path-hint'}
-                    oninput={() => clearError('path')}
+                    oninput={() => {
+                      pathTouched = true;
+                      clearError('path');
+                    }}
                     onblur={() => validateField('path')}
                   />
                   <Button variant="secondary" onclick={() => (pathOpen = true)} disabled={runtimesLoading}>
@@ -769,6 +822,9 @@
                 onmodechange={(value) => {
                   sourceMode = value;
                   sourceModeTouched = isWindowsHost;
+                  if (!pathTouched) {
+                    path = defaultPathFor(slugify(name), value);
+                  }
                 }}
               />
             </div>
@@ -1458,8 +1514,10 @@
 <PathBrowser
   open={pathOpen}
   initialPath={initialBrowsePath}
+  mode={sourceMode}
   onselect={(selected) => {
     path = selected;
+    pathTouched = true;
     clearError('path');
     validateField('path');
   }}
