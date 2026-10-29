@@ -10,6 +10,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentclient"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 type fakeAgent struct {
@@ -21,6 +22,7 @@ type fakeAgent struct {
 	started        []string
 	stopped        []string
 	status         agentproto.SiteStatusResponse
+	statusErr      error
 	logs           io.ReadCloser
 	execRequest    agentproto.SiteExecRequest
 	execResult     agentproto.SiteExecResponse
@@ -39,7 +41,7 @@ func (f *fakeAgent) StopSite(_ context.Context, id string, _ agentproto.SiteActi
 	return agentproto.SiteActionResponse{Status: "stopped"}, nil
 }
 func (f *fakeAgent) SiteStatus(context.Context, string) (agentproto.SiteStatusResponse, error) {
-	return f.status, nil
+	return f.status, f.statusErr
 }
 func (f *fakeAgent) SiteLogs(context.Context, string, agentproto.SiteLogsRequest) (io.ReadCloser, error) {
 	return f.logs, nil
@@ -133,6 +135,31 @@ func TestLifecycleStatusLogsAndExecUseAgent(t *testing.T) {
 	result, err := b.Exec(context.Background(), "site", []string{"php", "-v"}, map[string]string{"A": "B"})
 	if err != nil || result.ExitCode != 3 || result.Stdout != "out" || result.Stderr != "err" || agent.execRequest.Env["A"] != "B" {
 		t.Fatalf("Exec = %+v, %v; request=%+v", result, err, agent.execRequest)
+	}
+	_, err = b.Exec(context.Background(), "site", []string{`C:\Users\Aram\.devstack\sites\s\php.ini`, "-c"}, nil)
+	if err != nil {
+		t.Fatalf("Exec windows path: %v", err)
+	}
+	if got, want := agent.execRequest.Argv[0], "/mnt/c/Users/Aram/.devstack/sites/s/php.ini"; got != want {
+		t.Fatalf("Exec translated argv[0] = %q, want %q", got, want)
+	}
+	if agent.execRequest.Argv[1] != "-c" {
+		t.Fatalf("Exec changed a flag: %+v", agent.execRequest.Argv)
+	}
+}
+
+func TestStatusTreatsAnUnknownAgentSiteAsStopped(t *testing.T) {
+	agent := &fakeAgent{statusErr: &agentproto.Error{Code: agentproto.CodeNotFound, Message: "agent: site not found", Status: 404}}
+	status, err := New(agent).Status(context.Background(), "unprepared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != model.StatusStopped {
+		t.Fatalf("status = %+v, want stopped", status)
+	}
+	agent.statusErr = errors.New("agent offline")
+	if _, err := New(agent).Status(context.Background(), "unprepared"); err == nil {
+		t.Fatal("Status swallowed a non-not-found error")
 	}
 }
 

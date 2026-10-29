@@ -357,6 +357,42 @@ func TestLogsSnapshotFollowFalse(t *testing.T) {
 	}
 }
 
+func TestLogsSnapshotUsesBackendProviderWhenAvailable(t *testing.T) {
+	h, fake := newTestAPIWithFakes(t)
+	fake.sites.mu.Lock()
+	fake.sites.sites["s1"] = model.Site{ID: "s1", Name: "blog", Domain: "blog.test"}
+	fake.sites.mu.Unlock()
+	fake.server.sites = &backendLogSiteService{
+		fakeSiteService: fake.sites,
+		content:         "agent one\nagent two\n",
+	}
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/v1/sites/s1/logs/stream?follow=false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `"agent one"`) || !strings.Contains(text, `"agent two"`) {
+		t.Fatalf("backend snapshot = %q", text)
+	}
+}
+
+type backendLogSiteService struct {
+	*fakeSiteService
+	content string
+}
+
+func (s *backendLogSiteService) Logs(context.Context, string, bool) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(s.content)), nil
+}
+
 func TestLogsStreamRejectsInvalidFollow(t *testing.T) {
 	h, _ := newTestAPIWithFakes(t)
 	rec := httptest.NewRecorder()

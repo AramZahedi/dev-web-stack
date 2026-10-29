@@ -25,11 +25,11 @@ import (
 // Allowed database, cache, and admin service ports.
 // Only catalog-defined loopback service ports are permitted.
 const (
-	PortMySQL      = 3306
-	PortMariaDB    = 3306
-	PortPostgres   = 5432
-	PortRedis      = 6379
-	PortPhpMyAdmin = 8080
+	PortMySQL         = 3306
+	PortMariaDB       = 3306
+	PortPostgres      = 5432
+	PortRedis         = 6379
+	PortPhpMyAdmin    = 8080
 	PortPhpMyAdminAlt = 8082
 )
 
@@ -46,7 +46,7 @@ var serviceDefaultPorts = map[string]int{
 	string(services.IDMariaDB):    PortMariaDB,
 	string(services.IDPostgreSQL): PortPostgres,
 	"postgres":                    PortPostgres,
-	string(services.IDRedis):       PortRedis,
+	string(services.IDRedis):      PortRedis,
 	string(services.IDPHPMyAdmin): PortPhpMyAdmin,
 }
 

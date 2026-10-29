@@ -38,20 +38,20 @@ type TLSIdentity struct {
 // into WSL as root-owned files.
 //
 // Design Decision (M6 - 10-Year Certificate Validity & Exact Leaf Pinning):
-// 1. 10-Year Validity: The agent is a host-local service operating strictly across
-//    the Windows host to WSL2 boundary via loopback/virtual network. It does not
-//    rely on an external CA, public PKI, or ACME renewal daemon inside WSL.
-//    A 10-year validity window avoids arbitrary expiration outages on long-lived
-//    development machines, hibernated environments, and offline developer setups.
-// 2. Exact Leaf Fingerprint Pinning: Rather than relying on CA trust chains or
-//    hostname/EKU checks (which can be vulnerable to rogue local roots or loopback
-//    spoofing), the daemon uses InsecureSkipVerify: true paired with a strict
-//    VerifyPeerCertificate hook that checks the SHA-256 digest of the exact leaf
-//    certificate. This enforces a Trust-On-First-Use (TOFU) / provisioned secret model
-//    where only the exact certificate provisioned into the distro is accepted.
-// 3. Diagnostics: VerifyPeerCertificate explicitly validates the certificate validity
-//    window (NotBefore/NotAfter) and returns descriptive errors if the clock is skewed,
-//    the certificate has expired, or the leaf pin has changed (e.g. due to manual rotation).
+//  1. 10-Year Validity: The agent is a host-local service operating strictly across
+//     the Windows host to WSL2 boundary via loopback/virtual network. It does not
+//     rely on an external CA, public PKI, or ACME renewal daemon inside WSL.
+//     A 10-year validity window avoids arbitrary expiration outages on long-lived
+//     development machines, hibernated environments, and offline developer setups.
+//  2. Exact Leaf Fingerprint Pinning: Rather than relying on CA trust chains or
+//     hostname/EKU checks (which can be vulnerable to rogue local roots or loopback
+//     spoofing), the daemon uses InsecureSkipVerify: true paired with a strict
+//     VerifyPeerCertificate hook that checks the SHA-256 digest of the exact leaf
+//     certificate. This enforces a Trust-On-First-Use (TOFU) / provisioned secret model
+//     where only the exact certificate provisioned into the distro is accepted.
+//  3. Diagnostics: VerifyPeerCertificate explicitly validates the certificate validity
+//     window (NotBefore/NotAfter) and returns descriptive errors if the clock is skewed,
+//     the certificate has expired, or the leaf pin has changed (e.g. due to manual rotation).
 func GenerateTLSIdentity(dir string) (TLSIdentity, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return TLSIdentity{}, fmt.Errorf("agent: create TLS directory %s: %w", dir, err)

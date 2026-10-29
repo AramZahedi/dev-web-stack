@@ -1724,3 +1724,51 @@ Gates run after remediation:
 - `test/release/release_windows_test.sh`: PASS, including the staged WSL assets.
 
 Known residual: the managed distro still runs the agent/PHP execution as root (R2-M12). The install-token gate now prevents other local users from reaching it, but privilege separation inside the distro is still a hardening item for the Round-5 audit.
+
+---
+
+# Final 100% E2E pass and gate evidence (2026-10-29)
+
+The full dashboard/CLI E2E pass is recorded in
+[`2026-10-29-e2e-report.md`](2026-10-29-e2e-report.md). It exercised every
+dashboard action and CLI command/option against a dedicated test home, then
+restored the live integration with `devstack init`.
+
+Fresh final gates on the tree after this pass:
+
+- `gofmt -l .`, `go build ./...`, `go vet ./...`, native `go test ./...`: PASS.
+- WSL `go test ./...` as an unprivileged user (default parallel package mode):
+  PASS.
+- `npm --prefix ui test -- --run`: 128/128 PASS; `svelte-check`: 0 errors/0
+  warnings; production build: PASS.
+- `test/windows/installer_test.ps1`: 241 checks, 0 failures on PowerShell 7
+  and Windows PowerShell 5.1.
+- `test/windows/lifecycle_test.ps1`: 41 tests, 0 failures on both engines.
+- `test/release/release_windows_ps_test.ps1`: 41 checks, 0 failures.
+- `test/release/release_windows_test.sh`, `release_test.sh`, `workflow_test.sh`:
+  PASS. The Linux `installer_test.sh` passes as a non-root user from an
+  executable copy; it skips when run as root by design.
+
+Additional defects found and fixed during the E2E pass:
+
+1. Agent terminal/`ExecSite` did not prepend the site's PHP/Node runtime bins to
+   `PATH`; added `Runtime.sitePathEnv` plus a regression test.
+2. The dashboard had no site source-mode change action; added the stopped-site
+   gated UI, client, mock, and tests. Windows↔WSL copies were verified live by
+   SHA-256.
+3. Service installs failed when the registry was unreachable even with the
+   exact digest-pinned image local; `agentdocker.Install` now accepts a verified
+   local image, with a regression test.
+4. Windows CLI `exec`/`shell`/`shell-init` pointed at a shim directory that is
+   never created; `WindowsSiteEnvironment` now includes the exact PHP/Node
+   runtime bins, with a regression test.
+5. Agent backend ports overlap the Linux ephemeral range; the static listener
+   now retries `EADDRINUSE` briefly, removing the intermittent WSL suite flake.
+
+Remaining residuals (see the E2E report for detail): native `go test -race`
+requires CGO; no clean-machine/reboot/populated upgrade/Windows 10/multi-user
+test; root execution inside the distro (R2-M12/R4-H1); A-2 provider-switch
+interleaving; WSL `/api/v1/fs` is not confined to project/home roots; Node
+in-use remediation text says PHP; doctor `extension_dir` warning; service
+config reset JSON hash/size; and a one-request WSL localhost-forwarding race
+immediately after a new backend port starts.

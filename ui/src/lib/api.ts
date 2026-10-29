@@ -48,6 +48,7 @@ import type {
   SettingsUpdateResult,
   ServingMode,
   Site,
+  SourceMode,
   ToolsResponse,
   ToolStatus,
   TrustTarget,
@@ -276,6 +277,19 @@ export async function createSite(body: CreateSiteRequest): Promise<Site> {
 export async function updateSite(ref: string, body: UpdateSiteRequest): Promise<Site> {
   if (isMockMode) return mockApi.updateSite(ref, body);
   return request<Site>(sitePath(ref), { method: 'PATCH', body });
+}
+
+/** changeSiteSource copies a stopped site into another source mode. */
+export async function changeSiteSource(
+  ref: string,
+  mode: SourceMode,
+  path: string,
+): Promise<Site> {
+  if (isMockMode) return mockApi.changeSiteSource(ref, mode, path);
+  return request<Site>(`${sitePath(ref)}/source`, {
+    method: 'POST',
+    body: { mode, path },
+  });
 }
 
 export async function deleteSite(ref: string): Promise<void> {

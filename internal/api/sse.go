@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
@@ -29,7 +32,8 @@ func sseHeaders(w http.ResponseWriter) {
 // the response headers are flushed, so a client that observes the stream is
 // guaranteed to receive every line written afterwards.
 func (s *Server) handleLogsStream(w http.ResponseWriter, r *http.Request) {
-	if s.logs == nil {
+	provider, hasProvider := s.sites.(siteLogProvider)
+	if !hasProvider && s.logs == nil {
 		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "log store is not available", nil)
 		return
 	}
@@ -65,6 +69,10 @@ func (s *Server) handleLogsStream(w http.ResponseWriter, r *http.Request) {
 	if !known {
 		sseHeaders(w)
 		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if hasProvider {
+		s.streamSiteLogs(w, r, provider, streamID, follow)
 		return
 	}
 
@@ -123,6 +131,107 @@ func (s *Server) handleLogsStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
+		}
+	}
+}
+
+// siteLogProvider is implemented by site services that can read the backend's
+// own log stream. The Windows daemon uses this to surface WSL agent logs
+// instead of the (empty) local log store.
+type siteLogProvider interface {
+	Logs(ctx context.Context, ref string, follow bool) (io.ReadCloser, error)
+}
+
+// providerLogLine turns one backend log line into the dashboard/CLI shape. The
+// agent prefixes every line with an RFC3339 timestamp; split it so the UI can
+// show the time column and the message separately.
+func providerLogLine(raw string) logs.Line {
+	if stamp, text, ok := strings.Cut(strings.TrimSpace(raw), " "); ok {
+		if parsed, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+			return logs.Line{Time: parsed, Text: text}
+		}
+	}
+	return logs.Line{Text: raw}
+}
+
+func (s *Server) streamSiteLogs(w http.ResponseWriter, r *http.Request, provider siteLogProvider, siteID string, follow bool) {
+	sseHeaders(w)
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	if !follow {
+		reader, err := provider.Logs(r.Context(), siteID, false)
+		if err != nil {
+			return
+		}
+		defer func() { _ = reader.Close() }()
+		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 4096), 1<<20)
+		for lines := 0; lines < logSnapshotLines && scanner.Scan(); lines++ {
+			data, err := json.Marshal(providerLogLine(scanner.Text()))
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return
+			}
+		}
+		return
+	}
+
+	// Poll finite snapshots instead of relying on the backend's live log
+	// stream. This works identically for the local supervisor and the WSL
+	// agent, and keeps the SSE response open even when the backend writes no
+	// new data for a while.
+	seen := make(map[string]bool)
+	emit := func() {
+		reader, err := provider.Logs(r.Context(), siteID, false)
+		if err != nil {
+			return
+		}
+		defer func() { _ = reader.Close() }()
+		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 4096), 1<<20)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if seen[line] {
+				continue
+			}
+			seen[line] = true
+			data, err := json.Marshal(providerLogLine(line))
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return
+			}
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	emit()
+
+	poll := time.NewTicker(time.Second)
+	defer poll.Stop()
+	keepAlive := time.NewTicker(tickerInterval(s.keepAliveInterval, defaultKeepAlive))
+	defer keepAlive.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-poll.C:
+			emit()
+		case <-keepAlive.C:
+			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 	}
 }

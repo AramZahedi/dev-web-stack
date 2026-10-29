@@ -677,6 +677,25 @@ func TestCreateAndUpdateRejectUnsafeEnvironmentNames(t *testing.T) {
 	}
 }
 
+func TestStartRunningStaticSiteIsIdempotentWithoutReprepare(t *testing.T) {
+	svc, fakes := newTestService(t)
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"})
+
+	fakes.backend.mu.Lock()
+	before := fakes.backend.genericPrepareCalls
+	fakes.backend.prepareErr = errors.New("agent: stop the site before changing its prepared configuration")
+	fakes.backend.mu.Unlock()
+
+	if err := svc.Start(ctx, site.ID); err != nil {
+		t.Fatalf("Start on a running site: %v", err)
+	}
+	fakes.backend.mu.Lock()
+	defer fakes.backend.mu.Unlock()
+	if fakes.backend.genericPrepareCalls != before {
+		t.Fatalf("Start re-prepared a running site (%d -> %d)", before, fakes.backend.genericPrepareCalls)
+	}
+}
+
 func TestCreateNodeSiteEnsuresRuntime(t *testing.T) {
 	svc, fakes := newTestService(t)
 	site := mustCreate(t, svc, fakes, CreateRequest{

@@ -17,6 +17,7 @@ vi.mock('../lib/api', () => ({
   getVhostStatus: vi.fn(),
   previewVhost: vi.fn(),
   updateSite: vi.fn(),
+  changeSiteSource: vi.fn(),
   buildSite: vi.fn(),
   getBuildLogs: vi.fn(),
   openLogStream: vi.fn(() => () => undefined),
@@ -305,5 +306,45 @@ describe('SiteDetail configuration and builds', () => {
     await renderSite();
     expect(await screen.findByText('Source mode')).toBeTruthy();
     expect(screen.getByText('Windows drive')).toBeTruthy();
+  });
+
+  it('copies a stopped site into the selected source mode', async () => {
+    mockApi.getSite.mockResolvedValue({
+      ...STATIC_SITE,
+      source_mode: 'windows',
+      status: 'stopped',
+      desired_state: 'stopped',
+    });
+    mockApi.changeSiteSource.mockResolvedValue({
+      ...STATIC_SITE,
+      source_mode: 'wsl',
+      status: 'stopped',
+      desired_state: 'stopped',
+    });
+    await renderSite();
+
+    const change = await screen.findByRole('button', { name: 'Change source' });
+    expect((change as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(change);
+
+    const path = (await screen.findByLabelText(/Destination path/)) as HTMLInputElement;
+    expect(path.value).toBe('/data/devstack/projects/blog');
+    await fireEvent.click(screen.getByRole('button', { name: 'Copy and switch' }));
+
+    await waitFor(() =>
+      expect(mockApi.changeSiteSource).toHaveBeenCalledWith(
+        's_blog',
+        'wsl',
+        '/data/devstack/projects/blog',
+      ),
+    );
+  });
+
+  it('requires a stopped site before changing source mode', async () => {
+    mockApi.getSite.mockResolvedValue({ ...STATIC_SITE, source_mode: 'windows' });
+    await renderSite();
+    const change = await screen.findByRole('button', { name: 'Change source' });
+    expect((change as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Stop the site before changing source modes.')).toBeTruthy();
   });
 });

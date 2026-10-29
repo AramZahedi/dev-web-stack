@@ -68,9 +68,11 @@ func (s *windowsBuildService) Build(ctx context.Context, site model.Site) (build
 	result.OutputPath = output
 	started := time.Now()
 	resp, err := agent.BuildSite(ctx, site.ID, agentproto.BuildRequest{
-		Command:   command,
-		Env:       site.Build.Env,
-		TimeoutMS: int((5 * time.Minute) / time.Millisecond),
+		Command:        command,
+		Env:            site.Build.Env,
+		TimeoutMS:      int((5 * time.Minute) / time.Millisecond),
+		BackendPath:    site.BackendPath,
+		RuntimeVersion: strings.TrimSpace(site.Build.NodeVersion),
 	})
 	result.DurationMS = time.Since(started).Milliseconds()
 	if err != nil {

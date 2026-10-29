@@ -290,9 +290,11 @@ type PHPActionRequest struct {
 
 // BuildRequest runs the site build command in WSL.
 type BuildRequest struct {
-	Command   string            `json:"command"`
-	Env       map[string]string `json:"env,omitempty"`
-	TimeoutMS int               `json:"timeout_ms,omitempty"`
+	Command        string            `json:"command"`
+	Env            map[string]string `json:"env,omitempty"`
+	TimeoutMS      int               `json:"timeout_ms,omitempty"`
+	BackendPath    string            `json:"backend_path,omitempty"`
+	RuntimeVersion string            `json:"runtime_version,omitempty"`
 }
 
 // BuildResponse is the build result.

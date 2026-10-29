@@ -127,6 +127,100 @@ func TestCommandTimeoutClampsToCeiling(t *testing.T) {
 	}
 }
 
+func TestBuildSiteAllowsAnUnpreparedSite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentRuntime, err := NewRuntime(filepath.Join(root, "agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agentRuntime.BuildSite(context.Background(), "unprepared", agentproto.BuildRequest{
+		Command:     "printf built",
+		BackendPath: project,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 0 || result.Stdout != "built" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestBuildSiteResolvesNodeVersionLine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentRuntime, err := NewRuntime(filepath.Join(root, "agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(agentRuntime.root, "runtimes", "node@24.1.0", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "node"), []byte("#!/bin/sh\nprintf node-ok\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result, err := agentRuntime.BuildSite(context.Background(), "unprepared", agentproto.BuildRequest{
+		Command:        "node --version",
+		BackendPath:    project,
+		RuntimeVersion: "24",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 0 || result.Stdout != "node-ok" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestBuildSiteUsesRequestNodeVersionForPreparedSite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentRuntime, err := NewRuntime(filepath.Join(root, "agent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(agentRuntime.root, "runtimes", "node@24.1.0", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "node"), []byte("#!/bin/sh\nprintf node-ok\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{ID: "build-site", Kind: "static", BackendPath: project}
+	if _, err := agentRuntime.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	result, err := agentRuntime.BuildSite(context.Background(), spec.ID, agentproto.BuildRequest{
+		Command:        "node --version",
+		RuntimeVersion: "24",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 0 || result.Stdout != "node-ok" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 func TestExecSiteTruncatesRunawayOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")

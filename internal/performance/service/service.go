@@ -62,10 +62,10 @@ type ServiceConfig struct {
 	// HTTPPort and HTTPSPort are the builtin loopback proxy ports. When a
 	// catalog web server is active (or serving_mode names a native nginx/Apache),
 	// benchmarks target its public 80/443.
-	HTTPPort           int
-	HTTPSPort          int
-	ServingMode        string
-	DisableHostTuning  bool
+	HTTPPort          int
+	HTTPSPort         int
+	ServingMode       string
+	DisableHostTuning bool
 
 	Now       func() time.Time
 	Resources func() (Resources, error)
@@ -1342,8 +1342,10 @@ func (s *Service) benchmarkTargetLocked(ctx context.Context, site model.Site) (s
 		return "", false, fmt.Errorf("%w: site %q has no domain", ErrInvalid, site.Name)
 	}
 	if runtime.GOOS == "windows" {
-		target := PublicRouteURL(site.Domain)
-		return target, true, nil
+		if site.TLS {
+			return PublicRouteURL(site.Domain), true, nil
+		}
+		return "http://" + strings.TrimSpace(site.Domain) + "/", false, nil
 	}
 	active, _, _ := s.activeServerLocked(ctx)
 	httpsPort := s.cfg.HTTPSPort

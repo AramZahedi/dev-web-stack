@@ -390,5 +390,3 @@ func TestLaneDModulesCoexist(t *testing.T) {
 		t.Errorf("GET /v1/relay/allowlist code = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
-
-

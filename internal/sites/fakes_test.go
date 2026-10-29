@@ -155,37 +155,38 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 type fakeBackend struct {
 	mu sync.Mutex
 
-	prepared       []backend.SiteSpec
-	started        map[string]bool
-	stopped        map[string]bool
-	status         map[string]model.SiteStatus
-	runtimeCalls   []string
-	buildCalls     []string
-	execCalls      []fakeExecCall
-	startedGens    map[string]bool
-	phpSpecs       map[string]backend.SiteSpec
-	phpSequences   map[string]int
-	phpActive      map[string]string
-	phpEvents      []fakePHPOperation
-	phpPrepareErrs map[string]error
-	phpStartErrs   map[string]error
-	phpStopErrs    map[string]error
-	phpStartSeq    int
-	phpStartHook   func()
-	order          *[]string
-	startCalls     int
-	stopCalls      int
-	prepareErr     error
-	startErr       error
-	startPHPErr    error
-	preparePHPErr  error
-	stopPHPErr     error
-	stopErr        error
-	statusErr      error
-	ensureRTError  error
-	ensureBuildErr error
-	execResult     backend.Result
-	execErr        error
+	prepared            []backend.SiteSpec
+	started             map[string]bool
+	stopped             map[string]bool
+	status              map[string]model.SiteStatus
+	runtimeCalls        []string
+	buildCalls          []string
+	execCalls           []fakeExecCall
+	startedGens         map[string]bool
+	phpSpecs            map[string]backend.SiteSpec
+	phpSequences        map[string]int
+	phpActive           map[string]string
+	phpEvents           []fakePHPOperation
+	phpPrepareErrs      map[string]error
+	phpStartErrs        map[string]error
+	phpStopErrs         map[string]error
+	phpStartSeq         int
+	phpStartHook        func()
+	genericPrepareCalls int
+	order               *[]string
+	startCalls          int
+	stopCalls           int
+	prepareErr          error
+	startErr            error
+	startPHPErr         error
+	preparePHPErr       error
+	stopPHPErr          error
+	stopErr             error
+	statusErr           error
+	ensureRTError       error
+	ensureBuildErr      error
+	execResult          backend.Result
+	execErr             error
 }
 
 // fakePHPOperation records one PHP staging transition. Sequence is the
@@ -213,6 +214,7 @@ var (
 func (f *fakeBackend) Prepare(_ context.Context, spec backend.SiteSpec) (backend.PreparedSite, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.genericPrepareCalls++
 	f.prepared = append(f.prepared, spec)
 	if f.prepareErr != nil {
 		return backend.PreparedSite{}, f.prepareErr

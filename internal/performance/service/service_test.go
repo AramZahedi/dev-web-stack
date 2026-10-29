@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -502,6 +503,27 @@ func TestServiceBenchmarkStoresMeasuredResults(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.Measured, result.Measured) {
 		t.Fatalf("loaded benchmark = %+v", loaded.Measured)
+	}
+}
+
+func TestWindowsBenchmarkUsesHTTPForNonTLSSite(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the Windows public route is selected only on Windows")
+	}
+	ctx := context.Background()
+	svc, _, _, servicesFake, sitesFake, _ := newPerformanceTestService(t)
+	servicesFake.views = nil
+	sitesFake.sites = []model.Site{{ID: "site1", Name: "build", Domain: "build.test", Kind: model.SiteStatic, Status: model.StatusRunning}}
+	var target string
+	svc.cfg.LoadRun = func(_ context.Context, opts LoadOptions) (LoadResult, []byte, error) {
+		target = opts.URL
+		return LoadResult{Tool: LoadToolName, Version: LoadToolVersion, Requests: 1, RPS: 1, Duration: time.Second}, []byte("raw"), nil
+	}
+	if _, err := svc.RunBenchmark(ctx, BenchmarkRequest{Site: "build", DurationSeconds: 1, Connections: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(target, "http://build.test/") {
+		t.Fatalf("benchmark target = %q, want the HTTP route", target)
 	}
 }
 

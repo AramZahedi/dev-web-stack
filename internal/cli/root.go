@@ -29,8 +29,8 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
-	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/securestore"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -50,6 +50,7 @@ type Client interface {
 	GetSite(ctx context.Context, ref string) (model.Site, error)
 	AddSite(ctx context.Context, req sites.CreateRequest) (model.Site, error)
 	UpdateSite(ctx context.Context, ref string, req sites.UpdateRequest) (model.Site, error)
+	ChangeSourceMode(ctx context.Context, ref string, mode model.SourceMode, destination string, remove bool) (model.Site, error)
 	SiteAction(ctx context.Context, ref, action string) error
 	DeleteSite(ctx context.Context, ref string) error
 	Logs(ctx context.Context, ref string, follow bool) (io.ReadCloser, error)

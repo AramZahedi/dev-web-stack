@@ -49,6 +49,7 @@ import type {
   TerminalSession,
   Site,
   SiteStatus,
+  SourceMode,
   ToolStatus,
   TrustTarget,
   UpdateSiteRequest,
@@ -1504,6 +1505,26 @@ export const mockApi = {
     const site = findSite(ref);
     Object.assign(site, request, { updated_at: new Date().toISOString() });
     emitEvent('site.updated', site.id, `${site.name} was updated`);
+    return clone(site);
+  },
+
+  async changeSiteSource(ref: string, mode: SourceMode, path: string): Promise<Site> {
+    await wait();
+    const site = findSite(ref);
+    if (site.status === 'running') {
+      throw new ApiError('CONFLICT', 'Stop the site before changing source modes.', 409);
+    }
+    if (!path.trim()) {
+      throw new ApiError('INVALID_REQUEST', 'Destination path is required.', 400);
+    }
+    site.source_mode = mode;
+    if (mode === 'wsl') {
+      site.backend_path = path.trim();
+    } else if (mode === 'windows') {
+      site.host_path = path.trim();
+    }
+    site.updated_at = new Date().toISOString();
+    emitEvent('site.updated', site.id, `${site.name} source mode changed`);
     return clone(site);
   },
 

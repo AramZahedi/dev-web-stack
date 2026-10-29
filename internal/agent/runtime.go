@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,6 +24,9 @@ type runtimeSite struct {
 	desiredRunning bool
 	status         string
 	server         *http.Server
+	nodeCmd        *exec.Cmd
+	nodePID        int
+	nodeDone       chan struct{}
 	activeGen      string
 	phpGenerations map[string]*phpGeneration
 }
@@ -136,13 +140,13 @@ func NewRuntime(root string) (*Runtime, error) {
 	return runtime, nil
 }
 
-// PrepareSite validates and stages a static site without starting it.
+// PrepareSite validates and stages a static or Node site without starting it.
 func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (agentproto.SitePrepareResponse, error) {
 	if err := ctxErr(ctx); err != nil {
 		return agentproto.SitePrepareResponse{}, err
 	}
-	if spec.Kind != "static" {
-		return agentproto.SitePrepareResponse{}, fmt.Errorf("agent: static runtime does not support kind %q", spec.Kind)
+	if spec.Kind != "static" && spec.Kind != "node" {
+		return agentproto.SitePrepareResponse{}, fmt.Errorf("agent: site runtime does not support kind %q", spec.Kind)
 	}
 	if err := validateSiteID(spec.ID); err != nil {
 		return agentproto.SitePrepareResponse{}, err
@@ -150,21 +154,36 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 	if spec.FrontController {
 		return agentproto.SitePrepareResponse{}, errors.New("agent: front controller is only supported for PHP sites")
 	}
-	docroot, err := resolveStaticDocumentRoot(spec)
+	var docroot string
+	if spec.Kind == "node" {
+		if strings.TrimSpace(spec.Command) == "" {
+			return agentproto.SitePrepareResponse{}, fmt.Errorf("agent: node site %q requires a command", spec.ID)
+		}
+		if strings.TrimSpace(spec.RuntimeVersion) == "" {
+			return agentproto.SitePrepareResponse{}, fmt.Errorf("agent: node site %q requires a runtime version", spec.ID)
+		}
+		if strings.TrimSpace(spec.BackendPath) == "" || !filepath.IsAbs(spec.BackendPath) {
+			return agentproto.SitePrepareResponse{}, errors.New("agent: node site backend_path must be an absolute WSL path")
+		}
+	} else {
+		var err error
+		docroot, err = resolveStaticDocumentRoot(spec)
+		if err != nil {
+			return agentproto.SitePrepareResponse{}, err
+		}
+	}
+	env, err := r.Environment(spec.Env)
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
 	}
-	spec.Env, err = r.Environment(spec.Env)
-	if err != nil {
-		return agentproto.SitePrepareResponse{}, err
-	}
+	spec.Env = env
 	port, _, err := r.ports.Allocate(spec.ID, "http", spec.HTTPPort)
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
 	}
 	spec.HTTPPort = port
 	r.mu.Lock()
-	if current := r.sites[spec.ID]; current != nil && current.server != nil {
+	if current := r.sites[spec.ID]; current != nil && (current.server != nil || current.nodeCmd != nil) {
 		r.mu.Unlock()
 		return agentproto.SitePrepareResponse{}, errors.New("agent: stop the site before changing its prepared configuration")
 	}
@@ -278,7 +297,7 @@ func (r *Runtime) site(id string) (*runtimeSite, error) {
 func (r *Runtime) ReleasePorts(siteID string, port int) error {
 	r.mu.Lock()
 	site := r.sites[siteID]
-	if site != nil && site.server != nil && (port == 0 || port == site.spec.HTTPPort) {
+	if site != nil && (site.server != nil || site.nodeCmd != nil) && (port == 0 || port == site.spec.HTTPPort) {
 		r.mu.Unlock()
 		return errors.New("agent: stop site before releasing its HTTP port")
 	}
@@ -309,6 +328,106 @@ func validateSiteID(id string) error {
 		}
 	}
 	return nil
+}
+
+// nodeRuntimePathLocked resolves a configured Node version line or exact
+// version to an installed runtime build. The caller must hold r.mu.
+func (r *Runtime) nodeRuntimePathLocked(version string) (string, error) {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "node@")
+	if version == "" {
+		return "", errors.New("agent: node site requires a runtime version")
+	}
+	type candidate struct {
+		version string
+		path    string
+	}
+	var candidates []candidate
+	for id, registered := range r.runtimes {
+		if registered.Kind != "node" {
+			continue
+		}
+		if registered.Version != version && !strings.HasPrefix(registered.Version, version+".") && id != "node@"+version {
+			continue
+		}
+		installPath := strings.TrimSpace(registered.Path)
+		if installPath == "" {
+			installPath = filepath.Join(r.root, "runtimes", id)
+		}
+		candidates = append(candidates, candidate{version: registered.Version, path: installPath})
+	}
+	if len(candidates) == 0 {
+		// Runtime state can be missing after an upgrade even though the build
+		// directory is intact. Fall back to the canonical runtime directory.
+		entries, _ := os.ReadDir(filepath.Join(r.root, "runtimes"))
+		for _, entry := range entries {
+			name := entry.Name()
+			if !entry.IsDir() || !strings.HasPrefix(name, "node@") {
+				continue
+			}
+			found := strings.TrimPrefix(name, "node@")
+			if found != version && !strings.HasPrefix(found, version+".") {
+				continue
+			}
+			candidates = append(candidates, candidate{version: found, path: filepath.Join(r.root, "runtimes", name)})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].version > candidates[j].version })
+	for _, candidate := range candidates {
+		if err := validateRuntimePath(r.root, candidate.path); err != nil {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(candidate.path, "bin", "node"))
+		if err == nil && !info.IsDir() {
+			return candidate.path, nil
+		}
+	}
+	return "", fmt.Errorf("agent: no installed Node runtime matches version %q", version)
+}
+
+// sitePathEnv prepends the site's PHP and Node runtime bins to PATH so
+// terminal and exec sessions resolve the exact builds the site serves with.
+// The managed distro ships an empty /etc/environment, so an unset site PATH
+// falls back to the agent's inherited PATH.
+func (r *Runtime) sitePathEnv(spec agentproto.SiteSpec, existing string) string {
+	if strings.TrimSpace(existing) == "" {
+		existing = os.Getenv("PATH")
+	}
+	var dirs []string
+	addExecutableDir := func(dir, marker string) {
+		if strings.TrimSpace(dir) == "" {
+			return
+		}
+		info, err := os.Stat(filepath.Join(dir, marker))
+		if err != nil || info.IsDir() {
+			return
+		}
+		dirs = append(dirs, dir)
+	}
+	if spec.RuntimeVersion != "" {
+		r.mu.Lock()
+		nodeRoot, err := r.nodeRuntimePathLocked(spec.RuntimeVersion)
+		r.mu.Unlock()
+		if err == nil {
+			addExecutableDir(filepath.Join(nodeRoot, "bin"), "node")
+		}
+	}
+	if spec.PHPBuild != "" {
+		addExecutableDir(filepath.Join(r.root, "runtimes", spec.PHPBuild, "bin"), "php")
+	}
+	addExecutableDir(filepath.Join(r.root, "tools", "php-default", "bin"), "php")
+
+	seen := make(map[string]bool, len(dirs))
+	list := make([]string, 0, len(dirs)+1)
+	for _, dir := range dirs {
+		if !seen[dir] {
+			seen[dir] = true
+			list = append(list, dir)
+		}
+	}
+	if strings.TrimSpace(existing) != "" {
+		list = append(list, existing)
+	}
+	return strings.Join(list, ":")
 }
 
 func cloneAgentSiteSpec(spec agentproto.SiteSpec) agentproto.SiteSpec {

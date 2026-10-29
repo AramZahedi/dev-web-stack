@@ -49,7 +49,7 @@ func (f fakeWebServices) Reload(context.Context, services.ID) error   { return n
 type fakeSitesService struct{}
 
 func (f fakeSitesService) List(context.Context) ([]model.Site, error) {
-	return []model.Site{{ID: "site-1", Name: "blog", Domain: "blog.test", Kind: model.SitePHP, Status: model.StatusRunning}}, nil
+	return []model.Site{{ID: "site-1", Name: "blog", Domain: "blog.test", Kind: model.SitePHP, Status: model.StatusRunning, TLS: true}}, nil
 }
 func (f fakeSitesService) ApplyPHP(context.Context, string, sites.PHPChange) (model.Site, error) {
 	return model.Site{}, nil
@@ -152,7 +152,7 @@ func TestWindowsBenchmarkTargetPublicRoute(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	site := model.Site{Name: "blog", Domain: "blog.test", Status: model.StatusRunning}
+	site := model.Site{Name: "blog", Domain: "blog.test", Status: model.StatusRunning, TLS: true}
 	target, insecure, err := svc.benchmarkTargetLocked(ctx, site)
 	if err != nil {
 		t.Fatalf("benchmarkTargetLocked: %v", err)
@@ -223,5 +223,3 @@ func TestWindowsRunBenchmarkStoresResult(t *testing.T) {
 		t.Errorf("GetBenchmark = %+v, want ID %s and target https://blog.test/", got, res.ID)
 	}
 }
-
-

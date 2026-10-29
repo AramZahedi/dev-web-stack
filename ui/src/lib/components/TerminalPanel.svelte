@@ -219,9 +219,10 @@
         <div>
           <p class="terminal-title">Open a shell in this site</p>
           <p>
-            Commands run as your user in <span class="mono">{site.host_path}</span>. The
-            site's PHP and Node shims are first in <span class="mono">PATH</span>; root,
-            sudo, and the Docker socket are never available.
+            Commands run inside the site environment at <span class="mono">{site.host_path}</span>.
+            The site's PHP and Node shims are first in <span class="mono">PATH</span>. On
+            Windows the managed WSL agent runs this shell as root inside the distro; treat
+            it as a full-power local shell.
           </p>
         </div>
       </div>

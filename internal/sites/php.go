@@ -748,8 +748,16 @@ func (s *Service) PHPExec(ctx context.Context, ref string, argv []string) (backe
 	if err != nil {
 		return backend.Result{}, err
 	}
-	if _, err := s.deps.Backend.Prepare(ctx, spec); err != nil {
-		return backend.Result{}, fmt.Errorf("sites: prepare %q for exec: %w", site.Name, err)
+	// PHP sites use the generation-aware stager. The generic backend Prepare
+	// path only knows the static runtime and rejects kind "php".
+	if s.deps.PHPBackend != nil {
+		generation := strings.TrimSpace(site.PHPConfigHash)
+		if generation == "" {
+			generation = phpDefaultGeneration
+		}
+		if _, err := s.deps.PHPBackend.PreparePHP(ctx, site.ID, generation, spec); err != nil {
+			return backend.Result{}, fmt.Errorf("sites: prepare %q for exec: %w", site.Name, err)
+		}
 	}
 	command := append([]string{
 		filepath.Join(build.Path, "bin", "php"),

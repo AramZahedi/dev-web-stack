@@ -196,6 +196,7 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 		_ = conn.Close(websocket.StatusInternalError, "site environment is unavailable")
 		return
 	}
+	caEnv["PATH"] = r.sitePathEnv(site.spec, caEnv["PATH"])
 	caEnv["TERM"] = "xterm-256color"
 	caEnv["DEVSTACK_SITE"] = siteID
 

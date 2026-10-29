@@ -95,10 +95,10 @@ devstack enforces an explicit execution and permission model across the Windows-
    - Root execution is required inside the distro to manage system services (PHP-FPM pools, Docker containers, database daemons), bind internal ports, manipulate `/etc/hosts`, and configure systemd without interactive password prompts.
    - Interactive shell sessions spawned via `wsl.exe -d devstack` run as `root` by default, giving developers full administrative control over the Linux guest environment.
 
-2. **Runtime Worker Privilege Separation:**
-   - Although the daemon agent and supervisors run as root, web execution workers operate under dedicated unprivileged service accounts.
-   - PHP-FPM site pools execute worker processes under the `www-data` account (`UID 33`, `GID 33`).
-   - Script execution (PHP scripts, Node processes) cannot write to protected agent state (`/data/devstack/system/` is restricted to mode `0600` owned by `root`).
+2. **Runtime Worker Privilege Inside the Distro:**
+   - The daemon agent and the site runtimes it starts (PHP-FPM, Node, static, builds, and terminals) currently execute as `root` inside the managed distro. Docker service containers run with their image-defined users.
+   - Script execution (PHP scripts, Node processes) therefore has the same access as the agent; treat the managed distro as a full-power local development environment.
+   - `/data/devstack/system/` remains restricted to mode `0600` owned by `root`; the API still requires the install token, loopback access, and CSRF for mutations.
 
 3. **Project File Permissions Across Storage Models:**
    - **WSL-Mode Projects (ext4 container at `/data/devstack/projects/`):**

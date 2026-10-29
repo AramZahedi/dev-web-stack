@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -64,6 +65,58 @@ func TestAllowedServiceIDsAreFixedCatalog(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("AllowedServiceIDs()[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+type offlinePullRunner struct {
+	calls      [][]string
+	localImage bool
+}
+
+func (r *offlinePullRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, append([]string{name}, args...))
+	if len(args) > 0 && args[0] == "image" {
+		if r.localImage {
+			return []byte("sha256:local\n"), nil
+		}
+		return nil, errors.New("image not found")
+	}
+	if len(args) > 1 && args[len(args)-2] == "pull" {
+		return nil, errors.New("registry unreachable")
+	}
+	return nil, nil
+}
+
+func TestInstallFallsBackToLocalDigestPinnedImage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixed service Compose mounts are POSIX paths and execute in WSL")
+	}
+	root := filepath.Join(t.TempDir(), "data", "devstack")
+	runner := &offlinePullRunner{localImage: true}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := module.Install(context.Background(), "mysql"); err != nil {
+		t.Fatalf("Install with a local digest-pinned image = %v", err)
+	}
+	inspected := false
+	for _, call := range runner.calls {
+		if len(call) >= 3 && call[1] == "image" && call[2] == "inspect" {
+			inspected = true
+		}
+	}
+	if !inspected {
+		t.Fatalf("Docker calls = %v, want a local image inspect fallback", runner.calls)
+	}
+
+	missing := &offlinePullRunner{}
+	module, err = agentdocker.New(agentdocker.Config{Root: filepath.Join(t.TempDir(), "data", "devstack"), Runner: missing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := module.Install(context.Background(), "mysql"); err == nil || !strings.Contains(err.Error(), "pull mysql") {
+		t.Fatalf("Install without a local image = %v, want pull failure", err)
 	}
 }
 

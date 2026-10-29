@@ -222,6 +222,18 @@ func (c *Client) UpdateSite(ctx context.Context, ref string, req sites.UpdateReq
 	return site, err
 }
 
+// ChangeSourceMode copies a stopped site into another source mode.
+func (c *Client) ChangeSourceMode(ctx context.Context, ref string, mode model.SourceMode, destination string, remove bool) (model.Site, error) {
+	payload := struct {
+		Mode         string `json:"mode"`
+		Path         string `json:"path"`
+		RemoveSource bool   `json:"remove_source,omitempty"`
+	}{Mode: string(mode), Path: destination, RemoveSource: remove}
+	var site model.Site
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/sites/"+url.PathEscape(ref)+"/source", payload, &site)
+	return site, err
+}
+
 // PHPInfo returns a site's effective PHP configuration.
 func (c *Client) PHPInfo(ctx context.Context, ref string) (sites.PHPInfo, error) {
 	var info sites.PHPInfo

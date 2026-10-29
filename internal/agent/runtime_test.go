@@ -23,6 +23,25 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
 
+func TestListenSitePortRetriesTransientBind(t *testing.T) {
+	blocked, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := blocked.Addr().(*net.TCPAddr).Port
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = blocked.Close()
+	}()
+
+	runtime, _ := newTestRuntimeOnly(t)
+	listener, err := runtime.listenSitePort(context.Background(), port)
+	if err != nil {
+		t.Fatalf("listenSitePort did not retry a transient bind: %v", err)
+	}
+	_ = listener.Close()
+}
+
 func TestStaticRuntimePrepareStartStopAndServe(t *testing.T) {
 	runtime, root, spec := newStaticTestRuntime(t)
 	prepared, err := runtime.PrepareSite(context.Background(), spec)

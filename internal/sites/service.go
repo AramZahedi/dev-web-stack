@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -573,6 +574,24 @@ func (s *Service) Get(ctx context.Context, ref string) (model.Site, error) {
 	return s.refreshLocked(ctx, site)
 }
 
+// Logs returns the backend's recent lines or live stream for a site. The
+// Windows daemon's backend proxies the WSL agent; the Linux backend reads its
+// supervised process output. The caller closes the reader.
+func (s *Service) Logs(ctx context.Context, ref string, follow bool) (io.ReadCloser, error) {
+	ctx = nonNilContext(ctx)
+	s.mu.Lock()
+	if s.deps.Backend == nil {
+		s.mu.Unlock()
+		return nil, errors.New("sites: missing dependencies: backend")
+	}
+	site, err := s.resolveLocked(ctx, ref)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return s.deps.Backend.Logs(ctx, site.ID, follow)
+}
+
 // List returns every site after refreshing observed statuses.
 func (s *Service) List(ctx context.Context) ([]model.Site, error) {
 	ctx = nonNilContext(ctx)
@@ -886,6 +905,14 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 
 	switch kind {
 	case model.SiteStatic:
+		// A build profile's output is the public document root unless the
+		// caller explicitly selected a different directory. The output may not
+		// exist until the first build, so validate its shape here and let the
+		// backend resolve it when the site starts.
+		if site.Build != nil && strings.TrimSpace(req.DocumentRoot) == "" && strings.TrimSpace(site.Build.Output) != "" {
+			site.DocumentRoot = filepath.ToSlash(filepath.Clean(site.Build.Output))
+			break
+		}
 		site.DocumentRoot, err = resolveSiteDocumentRoot(site, req.DocumentRoot)
 		if err != nil {
 			return model.Site{}, err
@@ -1116,6 +1143,22 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 	}
 	if s.externalServing() && site.Kind == model.SiteStatic {
 		return s.startExternalStaticLocked(ctx, site)
+	}
+
+	// Starting an already running site is idempotent. The agent rejects a
+	// second Prepare for a live static or Node site, so confirm the observed
+	// state before staging it again.
+	if site.Status == model.StatusRunning {
+		if status, err := s.deps.Backend.Status(ctx, site.ID); err == nil && status.State == model.StatusRunning {
+			if site.DesiredState != model.DesiredRunning {
+				site.DesiredState = model.DesiredRunning
+				site.UpdatedAt = s.currentTime()
+				if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
+					return site, fmt.Errorf("sites: record running state for %q: %w", site.Name, err)
+				}
+			}
+			return site, nil
+		}
 	}
 
 	var allocated int

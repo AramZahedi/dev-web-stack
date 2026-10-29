@@ -114,29 +114,48 @@ func DefaultBuildCommand(backendPath string) string {
 	}
 }
 
-// BuildSite executes a project build in WSL with the site's Node runtime.
+// BuildSite executes a project build in WSL with the site's Node runtime. It
+// accepts an unprepared site when the request carries the project path, so a
+// static build site can be built before its first successful output exists.
 func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.BuildRequest) (agentproto.BuildResponse, error) {
 	if err := ctxErr(ctx); err != nil {
 		return agentproto.BuildResponse{}, err
 	}
 	site, err := r.site(id)
+	var spec agentproto.SiteSpec
 	if err != nil {
-		return agentproto.BuildResponse{}, err
+		if !errors.Is(err, ErrSiteNotFound) {
+			return agentproto.BuildResponse{}, err
+		}
+		spec = agentproto.SiteSpec{
+			ID:             id,
+			BackendPath:    strings.TrimSpace(req.BackendPath),
+			RuntimeVersion: strings.TrimSpace(req.RuntimeVersion),
+		}
+		if spec.BackendPath == "" || !filepath.IsAbs(spec.BackendPath) {
+			return agentproto.BuildResponse{}, errors.New("agent: build requires an absolute backend path for an unprepared site")
+		}
+	} else {
+		spec = site.spec
+	}
+	runtimeVersion := strings.TrimSpace(req.RuntimeVersion)
+	if runtimeVersion == "" {
+		runtimeVersion = strings.TrimSpace(spec.RuntimeVersion)
 	}
 
 	commandStr := strings.TrimSpace(req.Command)
 	if commandStr == "" {
-		commandStr = DefaultBuildCommand(site.spec.BackendPath)
+		commandStr = DefaultBuildCommand(spec.BackendPath)
 	}
 	if commandStr == "" {
-		commandStr = strings.TrimSpace(site.spec.Command)
+		commandStr = strings.TrimSpace(spec.Command)
 	}
 	if commandStr == "" {
 		return agentproto.BuildResponse{}, errors.New("agent: no build command configured or detected")
 	}
 
 	// Performance warning for Windows source mode (/mnt/c)
-	isWindowsSource := strings.EqualFold(site.spec.SourceMode, "windows") || strings.HasPrefix(site.spec.BackendPath, "/mnt/")
+	isWindowsSource := strings.EqualFold(spec.SourceMode, "windows") || strings.HasPrefix(spec.BackendPath, "/mnt/")
 	if isWindowsSource {
 		warning := "warning: project resides on Windows filesystem (/mnt/); build performance may be degraded compared to native WSL ext4"
 		r.logs.append(id, warning)
@@ -152,14 +171,14 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 	} else {
 		cmd = exec.CommandContext(cmdCtx, "/bin/sh", "-c", commandStr)
 	}
-	cmd.Dir = site.spec.BackendPath
+	cmd.Dir = spec.BackendPath
 	// Kill the whole process tree on timeout: npm/pnpm/vite spawn children that
 	// would otherwise keep running after the shell is killed.
 	configureBuildCmd(cmd)
 
-	// Build environment with Node runtime prepended if available
+	// Build environment with the selected Node runtime prepended.
 	envMap := make(map[string]string)
-	for k, v := range site.spec.Env {
+	for k, v := range spec.Env {
 		envMap[k] = v
 	}
 	for k, v := range req.Env {
@@ -170,15 +189,19 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 		return agentproto.BuildResponse{}, err
 	}
 
-	if site.spec.RuntimeVersion != "" {
-		nodeBin := filepath.Join(r.root, "runtimes", "node@"+site.spec.RuntimeVersion, "bin")
-		if info, err := os.Stat(nodeBin); err == nil && info.IsDir() {
-			existingPath := caEnv["PATH"]
-			if existingPath == "" {
-				existingPath = os.Getenv("PATH")
-			}
-			caEnv["PATH"] = nodeBin + ":" + existingPath
+	if runtimeVersion != "" {
+		r.mu.Lock()
+		nodeRoot, err := r.nodeRuntimePathLocked(runtimeVersion)
+		r.mu.Unlock()
+		if err != nil {
+			return agentproto.BuildResponse{}, err
 		}
+		nodeBin := filepath.Join(nodeRoot, "bin")
+		existingPath := caEnv["PATH"]
+		if existingPath == "" {
+			existingPath = os.Getenv("PATH")
+		}
+		caEnv["PATH"] = nodeBin + ":" + existingPath
 	}
 
 	envList := os.Environ()
@@ -245,6 +268,7 @@ func (r *Runtime) ExecSite(ctx context.Context, id string, req agentproto.SiteEx
 	if err != nil {
 		return agentproto.SiteExecResponse{}, err
 	}
+	caEnv["PATH"] = r.sitePathEnv(site.spec, caEnv["PATH"])
 	envList := os.Environ()
 	for k, v := range caEnv {
 		envList = append(envList, k+"="+v)

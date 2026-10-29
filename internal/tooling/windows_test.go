@@ -11,6 +11,36 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
+func TestWindowsSiteEnvironmentIncludesRuntimeBins(t *testing.T) {
+	site := model.Site{
+		Name:        "app",
+		BackendPath: "/mnt/c/projects/app",
+		PHPBuild:    "php@8.4.27-r1",
+		NodeVersion: "24.22.1",
+	}
+	env := WindowsSiteEnvironment(site)
+	path := env["PATH"]
+	for _, want := range []string{
+		"/data/devstack/tools/sites/app/bin",
+		"/data/devstack/runtimes/php@8.4.27-r1/bin",
+		"/data/devstack/runtimes/node@24.22.1/bin",
+		"/data/devstack/bin",
+	} {
+		if !strings.Contains(path, want) {
+			t.Fatalf("PATH = %q, missing %q", path, want)
+		}
+	}
+
+	static := model.Site{
+		Name:        "build-site",
+		BackendPath: "/mnt/c/projects/build-site",
+		Build:       &model.BuildProfile{NodeVersion: "22"},
+	}
+	if got := WindowsSiteEnvironment(static)["PATH"]; !strings.Contains(got, "/data/devstack/runtimes/node@22/bin") {
+		t.Fatalf("build PATH = %q, missing the build Node runtime", got)
+	}
+}
+
 func TestEnsureWindowsToolShimsWritesNonDotCmdFiles(t *testing.T) {
 	bin := t.TempDir()
 	if err := EnsureWindowsToolShims(bin, "devstack"); err != nil {

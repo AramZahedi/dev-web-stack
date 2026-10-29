@@ -187,7 +187,9 @@ func (d *Docker) Handler() http.Handler {
 	return mux
 }
 
-// Install pulls a digest-pinned image for one fixed service.
+// Install pulls a digest-pinned image for one fixed service. When the registry
+// is unreachable, an already-present digest-pinned image is accepted so offline
+// installs and re-installs keep working; the Compose file still pins the digest.
 func (d *Docker) Install(ctx context.Context, id string) error {
 	service, err := d.service(id)
 	if err != nil {
@@ -201,11 +203,19 @@ func (d *Docker) Install(ctx context.Context, id string) error {
 	if err := d.scaffold(service.ID); err != nil {
 		return err
 	}
-	_, err = d.compose(ctx, "pull", string(service.ID))
-	if err != nil {
-		return fmt.Errorf("agentdocker: pull %s: %w", service.ID, err)
+	if _, err = d.compose(ctx, "pull", string(service.ID)); err != nil {
+		if !d.localImagePresent(ctx, service.Image) {
+			return fmt.Errorf("agentdocker: pull %s: %w", service.ID, err)
+		}
 	}
 	return nil
+}
+
+// localImagePresent reports whether the exact image reference (including its
+// digest) is already available to the local Docker daemon.
+func (d *Docker) localImagePresent(ctx context.Context, image string) bool {
+	out, err := d.runner.Run(ctx, "docker", "image", "inspect", image, "--format", "{{.Id}}")
+	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
 // Action performs a closed set of lifecycle operations.

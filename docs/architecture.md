@@ -398,8 +398,9 @@ service lifecycle paths exist.
   redacted from logs/list responses. Docker web files and certificates are mounted
   read-only; generated config uses conflict/backup rules.
 - Native CA/trust remains host-only; containers receive leaf certs under `/certs`.
-- Shell/exec and builds run as the installing user, never root; build output is confined
-  to the project root and snapshotted/restored on failure.
+- Shell/exec and builds run as the invoking user on Linux. On Windows they run
+  inside the managed WSL agent, which currently executes as root; build output is
+  confined to the project root and snapshotted/restored on failure.
 - Service config access is confined to `services/<id>/config`, rejects symlinks and
   sensitive/reserved names, caps files at 1 MiB, and validates/reloads through catalog
   commands with file+manifest rollback. File contents require the dashboard session;
@@ -408,8 +409,9 @@ service lifecycle paths exist.
   `/etc/sysctl.d` and `/etc/security/limits.d` paths, backups, verification, and rollback.
   No host path or shell fragment comes from the API.
 - Terminal tickets are short-lived, one-use, site/UID-bound, and Origin/Host checked;
-  sessions run as the installing user with no root, sudo, or Docker socket, kill the PTY
-  process group on disconnect, and cap sessions/output/idle time.
+  on Linux sessions run as the installing user, while on Windows the managed WSL agent
+  currently runs the PTY as root inside the distro. The daemon kills the PTY process
+  group on disconnect and caps sessions/output/idle time.
 
 ## 12. Current limitations
 

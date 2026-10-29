@@ -17,6 +17,43 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
 
+func TestSitePathEnvPrependsRuntimeShims(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	phpRoot := filepath.Join(root, "runtimes", "php@8.4.0")
+	nodeRoot := filepath.Join(root, "runtimes", "node@24.1.0")
+	writeShim := func(path string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeShim(filepath.Join(phpRoot, "bin", "php"))
+	writeShim(filepath.Join(nodeRoot, "bin", "node"))
+	runtime.runtimes["node@24.1.0"] = agentproto.RuntimeResponse{
+		ID: "node@24.1.0", Kind: "node", Version: "24.1.0", Path: nodeRoot,
+	}
+
+	got := runtime.sitePathEnv(agentproto.SiteSpec{
+		PHPBuild:       "php@8.4.0",
+		RuntimeVersion: "24",
+	}, "/usr/bin:/bin")
+	want := filepath.Join(nodeRoot, "bin") + ":" +
+		filepath.Join(phpRoot, "bin") + ":/usr/bin:/bin"
+	if got != want {
+		t.Fatalf("sitePathEnv = %q, want %q", got, want)
+	}
+
+	// A site without a runtime still gets the installed global PHP shim.
+	writeShim(filepath.Join(root, "tools", "php-default", "bin", "php"))
+	got = runtime.sitePathEnv(agentproto.SiteSpec{}, "/usr/bin")
+	want = filepath.Join(root, "tools", "php-default", "bin") + ":/usr/bin"
+	if got != want {
+		t.Fatalf("global sitePathEnv = %q, want %q", got, want)
+	}
+}
+
 func TestIssueTerminalTicketClampsDimensionsAndPrunesExpired(t *testing.T) {
 	runtime, _, spec := newStaticTestRuntime(t)
 	if _, err := runtime.PrepareSite(context.Background(), spec); err != nil {

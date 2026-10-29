@@ -166,7 +166,24 @@ func WindowsSiteEnvironment(site model.Site) map[string]string {
 	values["DEVSTACK_SITE"] = site.Name
 	values["DEVSTACK_HOME"] = "/data/devstack"
 	values["DEVSTACK_PROJECT"] = site.BackendPath
-	values["PATH"] = "/data/devstack/tools/sites/" + site.Name + "/bin:/data/devstack/bin:/usr/local/bin:/usr/bin:/bin"
+
+	// The agent does not materialize per-site shim directories on Windows, so
+	// point PATH at the exact runtime builds as well as the conventional shim
+	// directory (kept first for forward compatibility).
+	pathDirs := []string{"/data/devstack/tools/sites/" + site.Name + "/bin"}
+	if site.PHPBuild != "" {
+		pathDirs = append(pathDirs, "/data/devstack/runtimes/"+site.PHPBuild+"/bin")
+	}
+	nodeVersion := strings.TrimPrefix(strings.TrimSpace(site.NodeVersion), "node@")
+	if nodeVersion == "" && site.Build != nil {
+		nodeVersion = strings.TrimPrefix(strings.TrimSpace(site.Build.NodeVersion), "node@")
+	}
+	if nodeVersion != "" {
+		pathDirs = append(pathDirs, "/data/devstack/runtimes/node@"+nodeVersion+"/bin")
+	}
+	pathDirs = append(pathDirs, "/data/devstack/bin", "/usr/local/bin", "/usr/bin", "/bin")
+	values["PATH"] = strings.Join(pathDirs, ":")
+
 	if site.PHPBuild != "" {
 		values["DEVSTACK_PHP_BUILD"] = site.PHPBuild
 	}

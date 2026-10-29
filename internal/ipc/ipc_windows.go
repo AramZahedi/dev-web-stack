@@ -101,7 +101,6 @@ func peerIdentityFromImpersonation(handle windows.Handle) (string, error) {
 	return user.User.Sid.String(), nil
 }
 
-
 // PipeSDDL builds a protected DACL that grants full access to SYSTEM, the
 // installing user, and optionally Administrators. No inherited or anonymous
 // access is allowed.

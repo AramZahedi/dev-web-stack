@@ -27,6 +27,9 @@ func TestCreateStaticBuildSiteWithMissingOutputIsStopped(t *testing.T) {
 	if site.HTTPPort != 0 {
 		t.Fatalf("stopped site allocated HTTP port %d", site.HTTPPort)
 	}
+	if site.DocumentRoot != profile.Output {
+		t.Fatalf("document root = %q, want build output %q", site.DocumentRoot, profile.Output)
+	}
 	if _, ok := fakes.router.Lookup(site.Domain); ok {
 		t.Fatal("stopped site published a route")
 	}

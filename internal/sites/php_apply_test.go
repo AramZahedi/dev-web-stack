@@ -1209,8 +1209,18 @@ func TestCheckRuntimeRemovalBlocksPinnedAndLegacySites(t *testing.T) {
 	svc, fakes := newTestService(t)
 	r1 := fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
 	fakes.installPHPBuild("php@8.5.1-r1", "8.5.1")
+	nodeBuild := model.RuntimeBuild{
+		ID: "node@24.22.1", Kind: "node", Version: "24.22.1", Backend: model.BackendLocal,
+		Path: filepath.Join(fakes.config.Home, "runtimes", "node@24.22.1"),
+	}
+	if err := fakes.store.UpsertRuntime(ctx, nodeBuild); err != nil {
+		t.Fatal(err)
+	}
 	mustCreate(t, svc, fakes, CreateRequest{Name: "zulu", Path: fakes.root, Kind: "php", PHPVersion: "8.4", PHPBuild: r1.ID})
 	mustCreate(t, svc, fakes, CreateRequest{Name: "alpha", Path: fakes.root, Kind: "php", PHPVersion: "8.4", PHPBuild: r1.ID})
+	mustCreate(t, svc, fakes, CreateRequest{
+		Name: "api", Path: fakes.root, Kind: "node", NodeVersion: "24.22.1", Command: "node server.js",
+	})
 	legacy := mustCreate(t, svc, fakes, CreateRequest{Name: "legacy", Path: fakes.root, Kind: "php", PHPVersion: "8.4", PHPBuild: r1.ID})
 	storedLegacy, err := fakes.store.GetSite(ctx, legacy.ID)
 	if err != nil {
@@ -1236,6 +1246,10 @@ func TestCheckRuntimeRemovalBlocksPinnedAndLegacySites(t *testing.T) {
 	if inUse.BuildID != r1.ID {
 		t.Fatalf("build = %q", inUse.BuildID)
 	}
+	err = svc.CheckRuntimeRemoval(ctx, nodeBuild.ID)
+	if !errors.As(err, &inUse) || !reflect.DeepEqual(inUse.Sites, []string{"api"}) {
+		t.Fatalf("node build check = %v, want only the Node site", err)
+	}
 	if !errors.As(fmt.Errorf("wrapped: %w", err), &inUse) {
 		t.Fatal("wrapped RuntimeInUseError is not discoverable")
 	}
@@ -1257,6 +1271,16 @@ func TestCheckRuntimeRemovalBlocksPinnedAndLegacySites(t *testing.T) {
 	}
 	if err := svc.CheckRuntimeRemoval(ctx, r1.ID); err != nil {
 		t.Fatalf("runtime still blocked after migration: %v", err)
+	}
+	err = svc.CheckRuntimeRemoval(ctx, nodeBuild.ID)
+	if !errors.As(err, &inUse) || !reflect.DeepEqual(inUse.Sites, []string{"api"}) {
+		t.Fatalf("node build check after migration = %v, want the Node site", err)
+	}
+	if err := svc.Delete(ctx, "api"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckRuntimeRemoval(ctx, nodeBuild.ID); err != nil {
+		t.Fatalf("runtime still blocked after deleting the Node site: %v", err)
 	}
 }
 
@@ -1430,6 +1454,36 @@ func TestStoppedPHPStartAndExecPickUpEditedDefaults(t *testing.T) {
 	execIni := string(readFile(t, exec.Argv[2]))
 	if !strings.Contains(execIni, "memory_limit = 768M") {
 		t.Fatalf("PHPExec used a stale php.ini:\n%s", execIni)
+	}
+}
+
+func TestPHPExecUsesPHPStager(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
+
+	fakes.backend.mu.Lock()
+	genericBefore := fakes.backend.genericPrepareCalls
+	fakes.backend.mu.Unlock()
+
+	if _, err := svc.PHPExec(ctx, site.ID, []string{"-r", "echo 1;"}); err != nil {
+		t.Fatal(err)
+	}
+
+	fakes.backend.mu.Lock()
+	defer fakes.backend.mu.Unlock()
+	if fakes.backend.genericPrepareCalls != genericBefore {
+		t.Fatal("PHPExec used the static backend Prepare path")
+	}
+	found := false
+	for _, event := range fakes.backend.phpEvents {
+		if event.Op == "prepare" && event.SiteID == site.ID && event.Generation == site.PHPConfigHash {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("PHPExec did not prepare generation %q: %+v", site.PHPConfigHash, fakes.backend.phpEvents)
 	}
 }
 

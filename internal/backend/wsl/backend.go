@@ -65,6 +65,12 @@ func (b *Backend) Status(ctx context.Context, id string) (backend.Status, error)
 	}
 	resp, err := b.Client.SiteStatus(ctx, id)
 	if err != nil {
+		// The backend contract treats unknown sites as stopped. The agent
+		// returns not_found for a site that was never prepared (for example a
+		// static build site created while its output directory is missing).
+		if errors.Is(err, agentproto.ErrNotFound) {
+			return backend.Status{State: model.StatusStopped}, nil
+		}
 		return backend.Status{}, err
 	}
 	return backend.Status{State: model.SiteStatus(resp.Status), PID: resp.PID, Message: resp.Message}, nil
@@ -81,7 +87,15 @@ func (b *Backend) Exec(ctx context.Context, id string, argv []string, env map[st
 	if err := b.check(); err != nil {
 		return backend.Result{}, err
 	}
-	resp, err := b.Client.ExecSite(ctx, id, agentproto.SiteExecRequest{Argv: argv, Env: env})
+	// The daemon builds generated paths in the Windows namespace (for example
+	// the site php.ini under the profile), while the agent executes in WSL.
+	// Translate absolute Windows arguments before handing them to the agent so
+	// PHPExec and other server-side commands point at the same file.
+	converted := make([]string, len(argv))
+	for i, arg := range argv {
+		converted[i] = toWSLPath(arg)
+	}
+	resp, err := b.Client.ExecSite(ctx, id, agentproto.SiteExecRequest{Argv: converted, Env: env})
 	if err != nil {
 		return backend.Result{}, err
 	}

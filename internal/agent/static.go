@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
@@ -27,8 +30,8 @@ func (r *Runtime) StartSite(ctx context.Context, id string) (agentproto.SiteActi
 		r.mu.Unlock()
 		return agentproto.SiteActionResponse{}, fmt.Errorf("%w: %s", ErrSiteNotFound, id)
 	}
-	if site.server != nil {
-		response := agentproto.SiteActionResponse{Status: "running"}
+	if site.server != nil || site.nodeCmd != nil {
+		response := agentproto.SiteActionResponse{Status: "running", PID: site.nodePID}
 		r.mu.Unlock()
 		return response, nil
 	}
@@ -36,12 +39,22 @@ func (r *Runtime) StartSite(ctx context.Context, id string) (agentproto.SiteActi
 		r.mu.Unlock()
 		return agentproto.SiteActionResponse{}, fmt.Errorf("agent: site %q has no allocated HTTP port", id)
 	}
+	if site.spec.Kind == "node" {
+		response, cmd, done, err := r.startNodeLocked(site)
+		if err != nil {
+			r.mu.Unlock()
+			return agentproto.SiteActionResponse{}, err
+		}
+		r.mu.Unlock()
+		go r.watchNode(site.spec.ID, cmd, done)
+		return response, nil
+	}
 	handler, err := staticserve.NewStaticHandler(site.documentRoot, site.spec.SPAFallback)
 	if err != nil {
 		r.mu.Unlock()
 		return agentproto.SiteActionResponse{}, fmt.Errorf("agent: open static document root: %w", err)
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", site.spec.HTTPPort)))
+	listener, err := r.listenSitePort(ctx, site.spec.HTTPPort)
 	if err != nil {
 		_ = handler.Close()
 		r.mu.Unlock()
@@ -91,6 +104,21 @@ func (r *Runtime) StopSite(ctx context.Context, id string, graceful bool) error 
 	if site == nil {
 		r.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrSiteNotFound, id)
+	}
+	if site.spec.Kind == "node" {
+		cmd, pid, done := site.nodeCmd, site.nodePID, site.nodeDone
+		site.desiredRunning = false
+		site.status = "stopped"
+		if err := r.saveLocked(); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+		r.mu.Unlock()
+		if cmd != nil {
+			stopNodeProcess(cmd, pid, done)
+			r.logs.append(id, "stopped Node site")
+		}
+		return nil
 	}
 	server := site.server
 	site.desiredRunning = false
@@ -160,10 +188,15 @@ func (r *Runtime) SiteStatus(id string) (agentproto.SiteStatusResponse, error) {
 		}, nil
 	}
 	status := site.status
-	if site.server == nil && status == "running" {
+	running := site.server != nil || site.nodeCmd != nil
+	if !running && status == "running" {
 		status = "stopped"
 	}
-	return agentproto.SiteStatusResponse{Status: status, HTTPPort: site.spec.HTTPPort}, nil
+	pid := 0
+	if site.spec.Kind == "node" {
+		pid = site.nodePID
+	}
+	return agentproto.SiteStatusResponse{Status: status, PID: pid, HTTPPort: site.spec.HTTPPort}, nil
 }
 
 // SiteLogs returns a finite tail or a cancellable live stream of site logs.
@@ -224,6 +257,47 @@ func resolveDocumentRoot(project, documentRoot string) (string, error) {
 		return "", errors.New("agent: document root is not a directory")
 	}
 	return root, nil
+}
+
+// listenSitePort retries a loopback bind briefly when the port is held by a
+// transient client socket. The managed backend range overlaps the Linux
+// ephemeral range, so an unrelated outbound connection can occupy a port that
+// was free moments earlier.
+func (r *Runtime) listenSitePort(ctx context.Context, port int) (net.Listener, error) {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		if err := ctxErr(ctx); err != nil {
+			return nil, err
+		}
+		listener, err := net.Listen("tcp", addr)
+		if err == nil {
+			return listener, nil
+		}
+		lastErr = err
+		if !isAddressInUse(err) {
+			return nil, err
+		}
+		if attempt < 3 {
+			time.Sleep(15 * time.Millisecond)
+		}
+	}
+	return nil, lastErr
+}
+
+// isAddressInUse reports EADDRINUSE portably. Windows exposes WSAEADDRINUSE
+// (10048) rather than the POSIX errno used by the Linux agent.
+func isAddressInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		var errno syscall.Errno
+		if errors.As(err, &errno) && uintptr(errno) == 10048 {
+			return true
+		}
+	}
+	return false
 }
 
 func rejectSymlinkComponents(path string) error {

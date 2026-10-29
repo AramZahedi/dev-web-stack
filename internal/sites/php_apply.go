@@ -888,11 +888,18 @@ func (s *Service) CheckRuntimeRemoval(ctx context.Context, buildID string) error
 	line := catalog.LineOf(build.Version)
 	names := make(map[string]bool, len(sites))
 	for _, site := range sites {
-		if site.Kind != model.SitePHP {
-			continue
-		}
-		if site.PHPBuild == build.ID || (site.PHPBuild == "" && site.PHPVersion == line) {
-			names[site.Name] = true
+		switch site.Kind {
+		case model.SitePHP:
+			if site.PHPBuild == build.ID || (site.PHPBuild == "" && site.PHPVersion == line) {
+				names[site.Name] = true
+			}
+		case model.SiteNode:
+			version := strings.TrimSpace(site.NodeVersion)
+			if version != "" &&
+				(version == build.ID || version == build.Version || version == line ||
+					strings.HasPrefix(build.Version, version+".")) {
+				names[site.Name] = true
+			}
 		}
 	}
 	if len(names) == 0 {

@@ -45,6 +45,7 @@
     PHPRuntimeBuild,
     RuntimeBuild,
     Site,
+    SourceMode,
     UpdateSiteRequest,
   } from '../lib/types';
   import Badge from '../lib/components/Badge.svelte';
@@ -58,6 +59,7 @@
   import IconButton from '../lib/components/IconButton.svelte';
   import LogsPanel from '../lib/components/LogsPanel.svelte';
   import PHPIniEditor from '../lib/components/PHPIniEditor.svelte';
+  import ProjectSourceMode from '../lib/components/ProjectSourceMode.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
   import StatusPill from '../lib/components/StatusPill.svelte';
   import TerminalPanel from '../lib/components/TerminalPanel.svelte';
@@ -120,6 +122,12 @@
   let editBuildOutput = $state('');
   let editBuildEnvRows = $state<EnvRow[]>([{ key: '', value: '' }]);
 
+  let sourceOpen = $state(false);
+  let sourceMode = $state<SourceMode>('wsl');
+  let sourcePath = $state('');
+  let sourceSaving = $state(false);
+  let sourceError = $state<{ code: string; message: string } | null>(null);
+
   let buildRunning = $state(false);
   let buildResult = $state<BuildResult | null>(null);
   let buildError = $state<{ code: string; message: string } | null>(null);
@@ -147,6 +155,10 @@
 
   const stopped = $derived(
     Boolean(site && (site.desired_state === 'stopped' || site.status === 'stopped')),
+  );
+
+  const canSwitchSource = $derived(
+    Boolean(site && (site.source_mode === 'windows' || site.source_mode === 'wsl')),
   );
 
   function phpLine(version: string): string {
@@ -240,6 +252,10 @@
       savingConfig = false;
       configError = null;
       configValidation = {};
+      sourceOpen = false;
+      sourceSaving = false;
+      sourceError = null;
+      sourcePath = '';
       buildRunning = false;
       buildResult = null;
       buildError = null;
@@ -436,6 +452,80 @@
 
   function toggleReveal(key: string): void {
     revealed = { ...revealed, [key]: !revealed[key] };
+  }
+
+  function sourceSlug(): string {
+    return (
+      (site?.name ?? 'site')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'site'
+    );
+  }
+
+  function defaultSourceDestination(mode: SourceMode): string {
+    if (mode === 'wsl') return `/data/devstack/projects/${sourceSlug()}`;
+    return '';
+  }
+
+  function beginSourceEdit(): void {
+    if (!site) return;
+    sourceMode = site.source_mode === 'windows' ? 'wsl' : 'windows';
+    sourcePath = defaultSourceDestination(sourceMode);
+    sourceError = null;
+    sourceOpen = true;
+  }
+
+  function chooseSourceMode(mode: SourceMode): void {
+    sourceMode = mode;
+    sourcePath = defaultSourceDestination(mode);
+  }
+
+  function cancelSourceEdit(): void {
+    if (sourceSaving) return;
+    sourceOpen = false;
+    sourceError = null;
+  }
+
+  async function changeSource(): Promise<void> {
+    if (!site || sourceSaving) return;
+    const destination = sourcePath.trim();
+    if (!destination) {
+      sourceError = { code: 'INVALID_REQUEST', message: 'Enter an absolute destination path.' };
+      return;
+    }
+    if (sourceMode === 'wsl' && !destination.startsWith('/')) {
+      sourceError = {
+        code: 'INVALID_REQUEST',
+        message: 'Use an absolute Linux path such as /data/devstack/projects/app.',
+      };
+      return;
+    }
+    if (sourceMode === 'windows' && !/^[A-Za-z]:[\\/]/.test(destination)) {
+      sourceError = {
+        code: 'INVALID_REQUEST',
+        message: 'Use an absolute Windows path such as C:\\Users\\you\\Projects\\app.',
+      };
+      return;
+    }
+    sourceSaving = true;
+    sourceError = null;
+    try {
+      const updated = await api.changeSiteSource(site.id, sourceMode, destination);
+      site = updated;
+      sourceOpen = false;
+      addToast({
+        kind: 'success',
+        title: 'Source mode changed',
+        message: `${updated.name} now uses ${sourceModeLabel(sourceMode)}. The original source was kept.`,
+      });
+      await load();
+    } catch (caught) {
+      sourceError = describeError(caught);
+    } finally {
+      sourceSaving = false;
+    }
   }
 
   function envRows(env: Record<string, string> | undefined): EnvRow[] {
@@ -1308,6 +1398,89 @@
       {/if}
     </section>
 
+    {#if canSwitchSource}
+      <section class="config-section" aria-labelledby="source-heading">
+        <div class="section-head">
+          <div class="section-head-copy">
+            <p class="section-eyebrow">Source</p>
+            <h3 id="source-heading">Project source</h3>
+            <p class="section-sub">
+              Copy a stopped site's files into the other source mode. The agent verifies the copy,
+              republishes the route and keeps the original source.
+            </p>
+          </div>
+          {#if !sourceOpen}
+            <Button size="sm" variant="secondary" onclick={beginSourceEdit} disabled={!stopped}>
+              Change source
+            </Button>
+          {:else}
+            <Button size="sm" variant="ghost" onclick={cancelSourceEdit} disabled={sourceSaving}>
+              Cancel
+            </Button>
+          {/if}
+        </div>
+
+        {#if sourceError}
+          <div class="section-error">
+            <ErrorBanner
+              title="Could not change the source mode"
+              code={sourceError.code}
+              message={sourceError.message}
+              ondismiss={() => (sourceError = null)}
+            />
+          </div>
+        {/if}
+
+        {#if !stopped && !sourceOpen}
+          <p class="section-sub">Stop the site before changing source modes.</p>
+        {/if}
+
+        {#if sourceOpen}
+          <div class="config-form">
+            <ProjectSourceMode
+              mode={sourceMode}
+              kind={site.kind}
+              isWindows={true}
+              onmodechange={chooseSourceMode}
+            />
+            <Field
+              id="source-destination"
+              label="Destination path"
+              required
+              hint={sourceMode === 'wsl'
+                ? 'Absolute path inside the managed WSL distro. The folder must not exist yet.'
+                : 'Absolute Windows path. The folder must not exist yet.'}
+            >
+              <input
+                id="source-destination"
+                class="input mono"
+                type="text"
+                bind:value={sourcePath}
+                placeholder={sourceMode === 'wsl'
+                  ? '/data/devstack/projects/app'
+                  : 'C:\\Users\\you\\Projects\\app'}
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </Field>
+            <div class="config-actions">
+              <Button variant="ghost" onclick={cancelSourceEdit} disabled={sourceSaving}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                loading={sourceSaving}
+                disabled={sourceSaving || !sourcePath.trim()}
+                onclick={changeSource}
+              >
+                Copy and switch
+              </Button>
+            </div>
+          </div>
+        {/if}
+      </section>
+    {/if}
+
     {#if site.kind === 'static'}
       <section class="build-section" aria-labelledby="build-heading">
         <div class="section-head">
@@ -1315,8 +1488,9 @@
             <p class="section-eyebrow">Build</p>
             <h3 id="build-heading">Static build</h3>
             <p class="section-sub">
-              Runs the configured command natively as the installing user, then refreshes the
-              build log. A failed build can restore the previous output snapshot.
+              Runs the configured command in the site's build environment (the managed WSL
+              agent on Windows), then refreshes the build log. A failed build can restore the
+              previous output snapshot.
             </p>
           </div>
           {#if site.build}
