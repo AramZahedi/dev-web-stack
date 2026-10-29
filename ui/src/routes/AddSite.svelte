@@ -125,7 +125,7 @@
   function buildsOnLine(line: string): RuntimeBuild[] {
     return phpRuntimes.filter((runtime) => phpLine(runtime.version) === line);
   }
-  const previewName = $derived(name.trim() || 'your-site');
+  const previewName = $derived(slugify(name) || 'your-site');
   const previewUrl = $derived(`${tls ? 'https' : 'http'}://${previewName}.test`);
   const previewRuntime = $derived(
     kind === 'static'
@@ -260,11 +260,9 @@
 
   function validateAll(): Record<string, string> {
     const next: Record<string, string> = {};
-    const finalName = name.trim();
+    const finalName = slugify(name);
     if (!finalName) {
       next.name = 'Enter a site name.';
-    } else if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(finalName)) {
-      next.name = 'Use lowercase letters, numbers and hyphens; start and end with a letter or number.';
     } else if (finalName.length > 63) {
       next.name = 'Keep the name at 63 characters or fewer.';
     }
@@ -470,6 +468,12 @@
   }
 
   async function next(): Promise<void> {
+    if (step === 1 && name.trim()) {
+      name = slugify(name);
+      if (!pathTouched && !path.trim()) {
+        path = defaultPathFor(name, sourceMode);
+      }
+    }
     const found = validateStep(step);
     const keys = new Set(stepFields(step));
     const nextErrors = { ...errors };
