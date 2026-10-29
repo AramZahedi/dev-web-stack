@@ -48,6 +48,8 @@ func TestTranslateSourceEnforcesConfiguredDistroAndCDrive(t *testing.T) {
 		{"wsl posix path", model.SourceWSL, `/data/devstack/projects/site`, "devstack", true},
 		{"wsl posix custom distro", model.SourceWSL, `/home/aram/site`, "Ubuntu", true},
 		{"other distro", model.SourceWSL, `\\wsl.localhost\Other\home\aram\site`, "Ubuntu", false},
+		{"invalid configured distro", model.SourceWSL, `/home/aram/site`, `..\Other`, false},
+		{"UNC distro with traversal", model.SourceWSL, `\\wsl.localhost\..\home`, "..", false},
 		{"C drive", model.SourceWindows, `C:\devstack\projects\site`, "", true},
 		{"other drive", model.SourceWindows, `D:\projects\site`, "", false},
 	} {

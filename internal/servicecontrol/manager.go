@@ -547,13 +547,15 @@ func (m *Manager) service(id services.ID) (services.Service, error) {
 // the explicit Docker -> builtin transition.
 func (m *Manager) StopForProviderSwitch(ctx context.Context, id services.ID) error {
 	ctx = normalizeContext(ctx)
-	unlock := m.lockMutation(ctx)
-	defer unlock()
-	ctx = m.markTransition(ctx)
-	return m.stopForProviderSwitchLocked(ctx, id)
+	// Deliberately not serialized behind m.mu. The caller (sites.Service)
+	// holds its own mutex while switching Docker -> builtin; taking m.mu here
+	// would create the opposite order from Activate -> dockerweb.Prepare ->
+	// sites.StopForDocker and deadlock the two services. The helper remains
+	// the final authority on the container transition.
+	return m.stopForProviderSwitch(ctx, id)
 }
 
-func (m *Manager) stopForProviderSwitchLocked(ctx context.Context, id services.ID) error {
+func (m *Manager) stopForProviderSwitch(ctx context.Context, id services.ID) error {
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -568,13 +570,12 @@ func (m *Manager) stopForProviderSwitchLocked(ctx context.Context, id services.I
 // Docker -> builtin transition fails after the container was stopped.
 func (m *Manager) StartForProviderSwitch(ctx context.Context, id services.ID) error {
 	ctx = normalizeContext(ctx)
-	unlock := m.lockMutation(ctx)
-	defer unlock()
-	ctx = m.markTransition(ctx)
-	return m.startForProviderSwitchLocked(ctx, id)
+	// See StopForProviderSwitch: this path is the other half of the sites ->
+	// manager edge and must not take m.mu while the caller holds sites.mu.
+	return m.startForProviderSwitch(ctx, id)
 }
 
-func (m *Manager) startForProviderSwitchLocked(ctx context.Context, id services.ID) error {
+func (m *Manager) startForProviderSwitch(ctx context.Context, id services.ID) error {
 	svc, err := m.service(id)
 	if err != nil {
 		return err

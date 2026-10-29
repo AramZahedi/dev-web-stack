@@ -582,11 +582,19 @@ func (s *Service) portResponding(port int) bool {
 }
 
 func (s *Service) isPortResponding(port int) bool {
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	conn, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
-	if err == nil {
-		_ = conn.Close()
-		return true
+	// A wildcard bind probe cannot tell which address owns a port, and some
+	// listeners (for example a dual-stack or IPv6-only service) are invisible
+	// to a dial of 127.0.0.1. Check both loopback families.
+	addrs := []string{
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		net.JoinHostPort("::1", strconv.Itoa(port)),
+	}
+	for _, addr := range addrs {
+		conn, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
 	}
 	client := &http.Client{
 		Timeout: 200 * time.Millisecond,
@@ -594,13 +602,15 @@ func (s *Service) isPortResponding(port int) bool {
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
-	if resp, err := client.Get("http://" + addr); err == nil {
-		_ = resp.Body.Close()
-		return true
-	}
-	if resp, err := client.Get("https://" + addr); err == nil {
-		_ = resp.Body.Close()
-		return true
+	for _, addr := range addrs {
+		if resp, err := client.Get("http://" + addr); err == nil {
+			_ = resp.Body.Close()
+			return true
+		}
+		if resp, err := client.Get("https://" + addr); err == nil {
+			_ = resp.Body.Close()
+			return true
+		}
 	}
 	return false
 }

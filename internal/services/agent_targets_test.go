@@ -45,6 +45,18 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 				Kind:        model.SiteStatic,
 				BackendPath: "/data/devstack/projects/static",
 			},
+			{
+				ID:          "stopped-node",
+				Domain:      "stopped-node.test",
+				Kind:        model.SiteNode,
+				BackendPath: "/data/devstack/projects/stopped-node",
+			},
+			{
+				ID:          "stopped-php",
+				Domain:      "stopped-php.test",
+				Kind:        model.SitePHP,
+				BackendPath: "/data/devstack/projects/stopped-php",
+			},
 		},
 	})
 
@@ -84,5 +96,13 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 	// Static site
 	if byKind["static.test"] != "static" || byPort["static.test"] != 0 || byDomain["static.test"] != "/data/devstack/projects/static" {
 		t.Errorf("static.test target = kind:%s port:%d addr:%s", byKind["static.test"], byPort["static.test"], byDomain["static.test"])
+	}
+
+	// Stopped Node/PHP sites have no allocated backend and must not be pointed
+	// at a fixed port that another site could own.
+	for _, domain := range []string{"stopped-node.test", "stopped-php.test"} {
+		if _, ok := byDomain[domain]; ok {
+			t.Errorf("stopped site %s was included as a private web target", domain)
+		}
 	}
 }

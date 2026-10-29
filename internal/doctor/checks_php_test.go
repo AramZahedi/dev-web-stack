@@ -484,6 +484,35 @@ func TestDoctorPHPBuildWSLBackendValidatesExtensions(t *testing.T) {
 	_ = site
 }
 
+func TestDoctorPHPBuildWSLBackendFailsWhenVisibleBinaryIsMissing(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	fakes.addPHPSite(t, "php@8.4.4-r1", "8.4.4")
+	buildRoot := filepath.Join(fakes.dir, "runtimes", "php@8.4.4-r1")
+	build := model.RuntimeBuild{
+		ID:          "php@8.4.4-r1",
+		Kind:        "php",
+		Version:     "8.4.4",
+		Backend:     model.BackendWSL,
+		Path:        buildRoot,
+		InstalledAt: time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC),
+	}
+	if err := fakes.store.UpsertRuntime(context.Background(), build); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(buildRoot, "bin", "php")); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "php-builds")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("php-builds = %+v, want failure for a visible build missing bin/php", check)
+	}
+}
+
 func TestDoctorPHPBuildWarnsWhenCompiledExtensionDirPointsToTmpWithoutCompensation(t *testing.T) {
 	svc, fakes := newTestDoctor(t)
 	fakes.addPHPSite(t, "php@8.4.4-r1", "8.4.4")

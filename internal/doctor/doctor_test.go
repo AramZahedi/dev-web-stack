@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -359,6 +360,19 @@ func TestTrustInstalledBrowserSucceeds(t *testing.T) {
 	}
 	if !hasCheck(rep, "trust", StatusOK) {
 		t.Fatalf("%+v", rep.Checks)
+	}
+}
+
+func TestIsPortRespondingChecksIPv6Loopback(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	port := listener.Addr().(*net.TCPAddr).Port
+	svc := &Service{}
+	if !svc.isPortResponding(port) {
+		t.Fatalf("IPv6-only listener on port %d was reported as free", port)
 	}
 }
 

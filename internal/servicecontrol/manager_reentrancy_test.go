@@ -2,7 +2,6 @@ package servicecontrol
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -66,70 +65,3 @@ func TestActivateAllowsPreparerReentrantDeactivateWithoutDeadlock(t *testing.T) 
 		t.Fatal("CommitActivate was not called")
 	}
 }
-
-func TestConcurrentProviderSwitchAndActivationSerialize(t *testing.T) {
-	catalog := services.Catalog{Services: []services.Service{
-		{ID: services.IDNginx, DisplayName: "nginx", Group: services.GroupWeb, Image: nginxImage},
-		{ID: services.IDRedis, DisplayName: "redis", Group: services.GroupStandalone, Image: redisImage},
-	}}
-	helper := &serializedHelper{}
-	manager := NewManager(t.TempDir(), newFakeStore(), helper, catalog, nil)
-
-	start := make(chan struct{})
-	errs := make(chan error, 2)
-	go func() {
-		<-start
-		errs <- manager.StopForProviderSwitch(context.Background(), services.IDNginx)
-	}()
-	go func() {
-		<-start
-		errs <- manager.Activate(context.Background(), services.IDRedis)
-	}()
-	close(start)
-	for i := 0; i < 2; i++ {
-		if err := <-errs; err != nil {
-			t.Fatalf("operation: %v", err)
-		}
-	}
-	if got := helper.maxConcurrent(); got > 1 {
-		t.Fatalf("lifecycle RPCs overlapped: max concurrency %d", got)
-	}
-}
-
-type serializedHelper struct {
-	mu        sync.Mutex
-	active    int
-	maxActive int
-}
-
-func (h *serializedHelper) enter() {
-	h.mu.Lock()
-	h.active++
-	if h.active > h.maxActive {
-		h.maxActive = h.active
-	}
-	h.mu.Unlock()
-	time.Sleep(25 * time.Millisecond)
-	h.mu.Lock()
-	h.active--
-	h.mu.Unlock()
-}
-
-func (h *serializedHelper) maxConcurrent() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.maxActive
-}
-
-func (h *serializedHelper) Status(context.Context) ([]helperproto.ServiceStatus, error) {
-	return nil, nil
-}
-func (h *serializedHelper) Install(context.Context, string) error    { h.enter(); return nil }
-func (h *serializedHelper) Activate(context.Context, string) error   { h.enter(); return nil }
-func (h *serializedHelper) Deactivate(context.Context, string) error { h.enter(); return nil }
-func (h *serializedHelper) Restart(context.Context, string) error    { h.enter(); return nil }
-func (h *serializedHelper) Uninstall(context.Context, string, bool) error {
-	h.enter()
-	return nil
-}
-func (h *serializedHelper) Logs(context.Context, string, int) (string, error) { return "", nil }

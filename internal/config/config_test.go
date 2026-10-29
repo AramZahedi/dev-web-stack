@@ -249,6 +249,41 @@ func TestValidatePorts(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeSettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		wantOK bool
+	}{
+		{"defaults", func(*Config) {}, true},
+		{"distro with dot", func(c *Config) { c.WSLDistro = "devstack.2" }, true},
+		{"empty distro", func(c *Config) { c.WSLDistro = "" }, false},
+		{"distro with separator", func(c *Config) { c.WSLDistro = `../devstack` }, false},
+		{"distro with space", func(c *Config) { c.WSLDistro = "dev stack" }, false},
+		{"zero log size", func(c *Config) { c.LogMaxMB = 0 }, false},
+		{"negative log size", func(c *Config) { c.LogMaxMB = -1 }, false},
+		{"huge log size", func(c *Config) { c.LogMaxMB = 1<<20 + 1 }, false},
+		{"negative log keep", func(c *Config) { c.LogKeep = -1 }, false},
+		{"zero log keep", func(c *Config) { c.LogKeep = 0 }, true},
+		{"zero request body", func(c *Config) { c.MaxRequestBodyMB = 0 }, false},
+		{"negative request body", func(c *Config) { c.MaxRequestBodyMB = -1 }, false},
+		{"huge request body", func(c *Config) { c.MaxRequestBodyMB = 1<<20 + 1 }, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mutate(&cfg)
+			err := cfg.Validate()
+			if tt.wantOK && err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
+			if !tt.wantOK && err == nil {
+				t.Fatal("Validate() = nil, want error")
+			}
+		})
+	}
+}
+
 func TestValidateErrorNamesTheField(t *testing.T) {
 	cfg := Default()
 	cfg.UIPort = 42000

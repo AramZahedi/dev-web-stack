@@ -252,6 +252,19 @@ func (s *Store) applyMigration(ctx context.Context, m migration) error {
 		_ = tx.Rollback()
 	}()
 
+	// Another process may have applied this version after we listed pending
+	// migrations but before this immediate transaction acquired the write
+	// lock. Re-check inside the transaction instead of failing on duplicate
+	// DDL or recording the version twice.
+	var alreadyApplied int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&alreadyApplied); err != nil {
+		return fmt.Errorf("check migration %04d: %w", m.version, err)
+	}
+	if alreadyApplied > 0 {
+		return nil
+	}
+
 	if _, err := tx.ExecContext(ctx, m.script); err != nil {
 		return fmt.Errorf("apply migration %04d (%s): %w", m.version, m.name, err)
 	}
