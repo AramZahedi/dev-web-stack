@@ -637,6 +637,30 @@ func TestConfiguredAllowedHostsUnionWithLoopback(t *testing.T) {
 	}
 }
 
+func TestHealthEndpointReturnsHelperStatus(t *testing.T) {
+	fx := newFixture(t, Config{})
+	rec := fx.request(t, "GET", "/api/v1/health", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health status = %d", rec.Code)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Errorf("status = %v, want ok", resp["status"])
+	}
+	if resp["helper"] != "ok" {
+		t.Errorf("helper = %v, want ok", resp["helper"])
+	}
+	if resp["helper_version"] != helperproto.Version {
+		t.Errorf("helper_version = %v, want %v", resp["helper_version"], helperproto.Version)
+	}
+	if resp["ca_fingerprint"] == nil || resp["ca_fingerprint"] == "" {
+		t.Errorf("ca_fingerprint is empty")
+	}
+}
+
 func TestAPIMethodMismatchReturnsJSON(t *testing.T) {
 	fx := newFixture(t, Config{})
 	rec := fx.request(t, "PUT", "/api/v1/sites", strings.NewReader(`{}`))

@@ -515,11 +515,26 @@ type sessionResponse struct {
 	CSRFToken string `json:"csrf_token"`
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]any{
 		"status":  "ok",
 		"version": version.Version,
-	})
+		"helper":  "unknown",
+	}
+	if s.helper != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+		defer cancel()
+		if st, err := s.helper.Status(ctx); err == nil {
+			resp["helper"] = "ok"
+			resp["helper_version"] = st.Version
+			if st.CAFingerprint != "" {
+				resp["ca_fingerprint"] = st.CAFingerprint
+			}
+		} else {
+			resp["helper"] = "down"
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
