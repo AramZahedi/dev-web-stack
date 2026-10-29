@@ -325,6 +325,58 @@ func fileExists(p string) bool {
 	return err == nil && !st.IsDir()
 }
 
+func TestWindowsNodeShimUsesResolvedExactBuild(t *testing.T) {
+	bin := t.TempDir()
+	build := model.RuntimeBuild{
+		ID:      "node@22.11.0",
+		Kind:    "node",
+		Version: "22.11.0",
+		Backend: model.BackendWSL,
+		Path:    "/data/devstack/runtimes/node@22.11.0",
+	}
+	if err := EnsureWindowsNodeShims(bin, "devstack", build); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"node", "npm", "npx"} {
+		content, err := os.ReadFile(filepath.Join(bin, name+".cmd"))
+		if err != nil {
+			t.Fatalf("read %s.cmd: %v", name, err)
+		}
+		text := string(content)
+		if !strings.Contains(text, `wsl.exe -d devstack --exec`) {
+			t.Fatalf("%s.cmd does not call the managed distro:\n%s", name, text)
+		}
+		if want := "/data/devstack/runtimes/node@22.11.0/bin/" + name; !strings.Contains(text, want) {
+			t.Fatalf("%s.cmd does not use the resolved exact build %s:\n%s", name, want, text)
+		}
+		if strings.Contains(text, "/runtimes/node@22/bin/") {
+			t.Fatalf("%s.cmd used the version line instead of the exact build:\n%s", name, text)
+		}
+		if !strings.Contains(text, `\"${args[@]}\"`) || !strings.Contains(text, "%*") {
+			t.Fatalf("%s.cmd does not forward argv:\n%s", name, text)
+		}
+		if !strings.Contains(text, "//wsl") {
+			t.Fatalf("%s.cmd missing UNC path translation:\n%s", name, text)
+		}
+		if strings.Contains(text, "exit /b %ERRORLEVEL%") {
+			t.Fatalf("%s.cmd should not trap Ctrl+C:\n%s", name, text)
+		}
+	}
+}
+
+func TestEnsureWindowsNodeShimsRejectsUnsafeInputs(t *testing.T) {
+	build := model.RuntimeBuild{Kind: "node", Version: "22.11.0", Path: "/data/devstack/runtimes/node@22.11.0"}
+	if err := EnsureWindowsNodeShims(t.TempDir(), `devstack & whoami`, build); err == nil {
+		t.Fatal("unsafe distro name was accepted")
+	}
+	if err := EnsureWindowsNodeShims(t.TempDir(), "devstack", model.RuntimeBuild{Kind: "node", Version: "22.11.0"}); err == nil {
+		t.Fatal("empty build path was accepted")
+	}
+	if err := EnsureWindowsNodeShims(t.TempDir(), "devstack", model.RuntimeBuild{Kind: "php", Version: "8.4.12", Path: "/data/php"}); err == nil {
+		t.Fatal("PHP build was accepted as a Node build")
+	}
+}
+
 func TestWSLComposerWrapperScriptContainsRequiredExtensions(t *testing.T) {
 	script := WSLComposerWrapperScript()
 	if !strings.HasPrefix(script, "#!/bin/sh") {
