@@ -45,6 +45,8 @@ func TestTranslateSourceEnforcesConfiguredDistroAndCDrive(t *testing.T) {
 	}{
 		{"configured localhost distro", model.SourceWSL, `\\wsl.localhost\Ubuntu\home\aram\site`, "Ubuntu", true},
 		{"configured legacy alias", model.SourceWSL, `\\wsl$\Ubuntu\home\aram\site`, "Ubuntu", true},
+		{"wsl posix path", model.SourceWSL, `/data/devstack/projects/site`, "devstack", true},
+		{"wsl posix custom distro", model.SourceWSL, `/home/aram/site`, "Ubuntu", true},
 		{"other distro", model.SourceWSL, `\\wsl.localhost\Other\home\aram\site`, "Ubuntu", false},
 		{"C drive", model.SourceWindows, `C:\devstack\projects\site`, "", true},
 		{"other drive", model.SourceWindows, `D:\projects\site`, "", false},
@@ -115,6 +117,7 @@ func TestTranslateSource(t *testing.T) {
 		{"windows lowercase C drive", model.SourceWindows, `c:\code\app`, `C:\code\app`, "/mnt/c/code/app", false},
 		{"wsl localhost", model.SourceWSL, `\\wsl.localhost\Ubuntu\home\aram\app`, `\\wsl.localhost\Ubuntu\home\aram\app`, "/home/aram/app", false},
 		{"wsl dollar", model.SourceWSL, `\\wsl$\Ubuntu\home\aram\app`, `\\wsl.localhost\Ubuntu\home\aram\app`, "/home/aram/app", false},
+		{"wsl posix path", model.SourceWSL, `/data/devstack/projects/site`, `\\wsl.localhost\devstack\data\devstack\projects\site`, "/data/devstack/projects/site", false},
 		{"local", model.SourceLocal, "/home/aram/app", "/home/aram/app", "/home/aram/app", false},
 		{"local clean", model.SourceLocal, "/home/aram/./app/", "/home/aram/app", "/home/aram/app", false},
 		{"empty", model.SourceWindows, "", "", "", true},

@@ -91,6 +91,10 @@ func TranslateSourceForDistro(mode model.SourceMode, input, configuredDistro str
 	if configuredDistro == "" {
 		return "", "", fmt.Errorf("%w: managed WSL distro is not configured", ErrInvalidPath)
 	}
+	if strings.HasPrefix(strings.TrimSpace(input), "/") && !strings.HasPrefix(strings.TrimSpace(input), "//") {
+		host = `\\wsl.localhost\` + configuredDistro + `\` + strings.ReplaceAll(strings.TrimPrefix(backend, "/"), "/", `\`)
+		return host, backend, nil
+	}
 	const prefix = `\\wsl.localhost\`
 	if !strings.HasPrefix(strings.ToLower(host), strings.ToLower(prefix)) {
 		return "", "", fmt.Errorf("%w: source is not in the managed WSL distro", ErrInvalidPath)
@@ -209,6 +213,22 @@ func translateWindows(input string) (string, string, error) {
 }
 
 func translateWSL(input string) (string, string, error) {
+	if strings.HasPrefix(input, "/") && !strings.HasPrefix(input, "//") {
+		cleaned := path.Clean(input)
+		if cleaned == "/" {
+			return "", "", fmt.Errorf("%w: WSL path must not be the filesystem root", ErrInvalidPath)
+		}
+		for _, component := range strings.Split(strings.Trim(cleaned, "/"), "/") {
+			if component == "" || component == "." || component == ".." {
+				return "", "", fmt.Errorf("%w: %q has an invalid component", ErrInvalidPath, input)
+			}
+			if strings.Contains(component, ":") {
+				return "", "", fmt.Errorf("%w: %q contains an alternate data stream", ErrInvalidPath, input)
+			}
+		}
+		host := `\\wsl.localhost\devstack\` + strings.ReplaceAll(strings.TrimPrefix(cleaned, "/"), "/", `\`)
+		return host, cleaned, nil
+	}
 	slashed := strings.ReplaceAll(input, "/", `\`)
 	const localhost = `\\wsl.localhost\`
 	const legacy = `\\wsl$\`
