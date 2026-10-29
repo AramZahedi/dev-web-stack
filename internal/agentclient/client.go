@@ -495,3 +495,14 @@ func (c *Client) CopySource(ctx context.Context, req agentproto.SourceCopyReques
 	err := c.do(ctx, http.MethodPost, agentproto.PathSourceCopy, req, &out)
 	return out, err
 }
+
+// BrowseFS lists directories inside WSL ext4 filesystem.
+func (c *Client) BrowseFS(ctx context.Context, path string) (agentproto.FSListing, error) {
+	var out agentproto.FSListing
+	endpoint := agentproto.PathFS
+	if strings.TrimSpace(path) != "" {
+		endpoint += "?path=" + url.QueryEscape(path)
+	}
+	err := c.do(ctx, http.MethodGet, endpoint, nil, &out)
+	return out, err
+}

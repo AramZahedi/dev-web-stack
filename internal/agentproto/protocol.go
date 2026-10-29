@@ -45,6 +45,7 @@ const (
 	PathCAInstall     = "/v1/ca/install"
 	PathPathsValidate = "/v1/paths/validate"
 	PathSourceCopy    = "/v1/source/copy"
+	PathFS            = "/v1/fs"
 )
 
 // Site-scoped path helpers.
@@ -473,6 +474,18 @@ type PathValidateResponse struct {
 	HostPath    string `json:"host_path"`
 	BackendPath string `json:"backend_path"`
 	Exists      bool   `json:"exists"`
+}
+
+// FSEntry represents one directory entry in a WSL filesystem listing.
+type FSEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// FSListing represents a directory listing response from WSL.
+type FSListing struct {
+	Path    string    `json:"path"`
+	Entries []FSEntry `json:"entries"`
 }
 
 // SourceCopyRequest moves a project between Windows and WSL with verification.

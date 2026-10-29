@@ -297,6 +297,7 @@ func Run(ctx context.Context, opts Options) error {
 		Build:         buildService,
 		Terminal:      terminalManager,
 		Performance:   performanceService,
+		WSLFS:         agentServices,
 		Logger:        logger,
 	})
 
@@ -1243,6 +1244,14 @@ func (a *windowsAgentConfigAdapter) ensureAwake(ctx context.Context) (*agentclie
 	return a.get()
 }
 
+func (a *windowsAgentServiceAdapter) BrowseFS(ctx context.Context, path string) (agentproto.FSListing, error) {
+	c, err := a.ensureAwake(ctx)
+	if err != nil {
+		return agentproto.FSListing{}, err
+	}
+	return c.BrowseFS(ctx, path)
+}
+
 func (a *windowsAgentConfigAdapter) ServiceConfig(ctx context.Context, id string) (agentproto.ServiceConfigResponse, error) {
 	c, err := a.get()
 	if err == nil {
@@ -1382,6 +1391,14 @@ func (a *windowsAgentServiceAdapter) ensureAwake(ctx context.Context) (*agentcli
 		}
 	}
 	return a.get()
+}
+
+func (a *windowsAgentServiceAdapter) BrowseFS(ctx context.Context, path string) (agentproto.FSListing, error) {
+	c, err := a.ensureAwake(ctx)
+	if err != nil {
+		return agentproto.FSListing{}, err
+	}
+	return c.BrowseFS(ctx, path)
 }
 
 func (a *windowsAgentServiceAdapter) ServiceAction(ctx context.Context, req agentproto.ServiceRequest) (agentproto.ServiceResponse, error) {

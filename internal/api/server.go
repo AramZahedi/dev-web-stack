@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
@@ -218,6 +219,11 @@ type PerformanceService interface {
 	GetBenchmark(ctx context.Context, id string) (performance.BenchmarkResult, error)
 }
 
+// WSLFSBrowser browses files inside the WSL environment.
+type WSLFSBrowser interface {
+	BrowseFS(ctx context.Context, path string) (agentproto.FSListing, error)
+}
+
 // ListenerPorts is the set of loopback listener ports the daemon bound at
 // startup. Zero values mean the caller did not supply them.
 type ListenerPorts struct {
@@ -290,6 +296,7 @@ type Config struct {
 	Build         BuildService
 	Terminal      TerminalService
 	Performance   PerformanceService
+	WSLFS         WSLFSBrowser
 	Logger        *slog.Logger
 }
 
@@ -308,6 +315,7 @@ type Server struct {
 	build         BuildService
 	terminal      TerminalService
 	performance   PerformanceService
+	wslFS         WSLFSBrowser
 	cfg           Config
 
 	secret       [sha256.Size]byte
@@ -354,6 +362,7 @@ func NewServer(
 		build:             cfg.Build,
 		terminal:          cfg.Terminal,
 		performance:       cfg.Performance,
+		wslFS:             cfg.WSLFS,
 		cfg:               cfg,
 		allowedHosts:      normalizeAllowedHosts(cfg.AllowedHosts),
 		ui:                cfg.UI,

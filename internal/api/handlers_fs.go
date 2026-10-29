@@ -23,7 +23,27 @@ type fsListing struct {
 }
 
 func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
+	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
 	raw := strings.TrimSpace(r.URL.Query().Get("path"))
+
+	if mode == "wsl" || (raw != "" && strings.HasPrefix(raw, "/") && !filepath.IsAbs(raw)) {
+		browser := s.wslFS
+		if browser == nil {
+			browser = s.cfg.WSLFS
+		}
+		if browser == nil {
+			writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "WSL agent is not available", nil)
+			return
+		}
+		listing, err := browser.BrowseFS(r.Context(), raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, codeInvalidRequest, "WSL directory browse failed: "+err.Error(), nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, listing)
+		return
+	}
+
 	if raw == "" {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path is required", nil)
 		return
