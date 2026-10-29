@@ -68,7 +68,13 @@ func New(root string) (*Manager, error) {
 		manifestPath: filepath.Join(abs, manifestName),
 		now:          time.Now,
 	}
-	if err := m.migrateLegacyManifest(); err != nil {
+	// The legacy rename is a shared-root operation, so it must use the same
+	// lock as every other Manager operation. Without it two concurrent
+	// constructors can both observe the legacy file and one rename fails.
+	m.mu.Lock()
+	err = m.migrateLegacyManifest()
+	m.mu.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	return m, nil

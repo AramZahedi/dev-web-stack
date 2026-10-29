@@ -103,10 +103,10 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 		Proxy: nil,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
-			if err == nil && strings.HasSuffix(strings.ToLower(host), ".test") {
-				if ips, lookupErr := net.LookupIP(host); lookupErr == nil && len(ips) > 0 {
-					return dialer.DialContext(ctx, network, addr)
-				}
+			if err == nil && isTestHost(host) {
+				// ".test" is reserved for local development, and the daemon
+				// only accepts loopback benchmark targets. Never let a hosts-
+				// file or DNS entry redirect this run to a remote address.
 				return dialer.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
 			}
 			return dialer.DialContext(ctx, network, addr)

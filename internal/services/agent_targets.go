@@ -47,22 +47,25 @@ func (s *AgentTargetSource) PrivateWebTargets(ctx context.Context, server string
 		port := 0
 		switch site.Kind {
 		case model.SiteNode:
+			// A zero port means the site is stopped or has not been allocated
+			// yet. Never fall back to a fixed backend port: another site may
+			// own it, and the private vhost would then serve the wrong site.
+			if site.HTTPPort == 0 {
+				continue
+			}
 			kind = "node"
 			address = "127.0.0.1"
 			port = site.HTTPPort
-			if port == 0 {
-				port = 41000
-			}
 		case model.SitePHP:
+			if site.FastCGIPort == 0 {
+				continue
+			}
 			kind = "php"
 			address = strings.TrimSpace(site.BackendPath)
 			if address == "" {
 				address = strings.TrimSpace(site.HostPath)
 			}
 			port = site.FastCGIPort
-			if port == 0 {
-				port = 43000
-			}
 		case model.SiteStatic:
 			kind = "static"
 			address = strings.TrimSpace(site.BackendPath)

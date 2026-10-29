@@ -80,6 +80,48 @@ type Manager struct {
 	now       func() time.Time
 }
 
+// transitionMarker identifies the Manager that owns the current lifecycle
+// critical section. Preparers can call back into the Manager (the Docker web
+// provider does this from Commit/Rollback), so those nested calls must not try
+// to take the same non-reentrant mutex again. The marker travels only through
+// contexts derived from the operation that owns the lock; independent callers
+// still serialize normally.
+type transitionMarker struct{}
+
+// markTransition returns ctx tagged as belonging to m's current mutation.
+func (m *Manager) markTransition(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, transitionMarker{}, m)
+}
+
+// ownsTransition reports whether ctx was derived from an active mutation of m.
+func (m *Manager) ownsTransition(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	owner, _ := ctx.Value(transitionMarker{}).(*Manager)
+	return owner == m
+}
+
+// lockMutation acquires the lifecycle mutex unless the caller is already inside
+// this Manager's critical section. The returned function releases the mutex.
+func (m *Manager) lockMutation(ctx context.Context) func() {
+	if m.ownsTransition(ctx) {
+		return func() {}
+	}
+	m.mu.Lock()
+	return m.mu.Unlock
+}
+
+func normalizeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 // NewManager returns a Manager for root and catalog. A nil or empty preparer
 // map falls back to NoopPreparer for every service.
 func NewManager(
@@ -109,6 +151,8 @@ func NewManager(
 // It is used by the daemon when the web provider and database preparers are
 // wired in a cycle-safe order. Existing entries with a nil value are ignored.
 func (m *Manager) RegisterPreparers(preparers map[services.ID]Preparer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.preparers == nil {
 		m.preparers = make(map[services.ID]Preparer, len(preparers))
 	}
@@ -182,8 +226,14 @@ func (m *Manager) Get(ctx context.Context, id services.ID) (services.View, error
 // Install prepares the service, pulls its image through the helper, and
 // persists the installed state.
 func (m *Manager) Install(ctx context.Context, id services.ID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx = normalizeContext(ctx)
+	unlock := m.lockMutation(ctx)
+	defer unlock()
+	ctx = m.markTransition(ctx)
+	return m.installLocked(ctx, id)
+}
+
+func (m *Manager) installLocked(ctx context.Context, id services.ID) error {
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -203,8 +253,14 @@ func (m *Manager) Install(ctx context.Context, id services.ID) error {
 // preparer's work, and persists the active state. Any failure runs
 // CleanupActivate and records the error.
 func (m *Manager) Activate(ctx context.Context, id services.ID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx = normalizeContext(ctx)
+	unlock := m.lockMutation(ctx)
+	defer unlock()
+	ctx = m.markTransition(ctx)
+	return m.activateLocked(ctx, id)
+}
+
+func (m *Manager) activateLocked(ctx context.Context, id services.ID) error {
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -241,8 +297,14 @@ func (m *Manager) Activate(ctx context.Context, id services.ID) error {
 
 // Deactivate stops the service and records the stopped state.
 func (m *Manager) Deactivate(ctx context.Context, id services.ID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx = normalizeContext(ctx)
+	unlock := m.lockMutation(ctx)
+	defer unlock()
+	ctx = m.markTransition(ctx)
+	return m.deactivateLocked(ctx, id)
+}
+
+func (m *Manager) deactivateLocked(ctx context.Context, id services.ID) error {
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -258,10 +320,19 @@ func (m *Manager) Deactivate(ctx context.Context, id services.ID) error {
 
 // Restart restarts the service and records the active state.
 func (m *Manager) Restart(ctx context.Context, id services.ID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx = normalizeContext(ctx)
+	unlock := m.lockMutation(ctx)
+	defer unlock()
+	ctx = m.markTransition(ctx)
+	return m.restartLocked(ctx, id)
+}
+
+func (m *Manager) restartLocked(ctx context.Context, id services.ID) error {
 	svc, err := m.service(id)
 	if err != nil {
+		return err
+	}
+	if err := m.checkRestartDependencies(ctx, svc); err != nil {
 		return err
 	}
 	if err := m.helper.Restart(ctx, string(id)); err != nil {
@@ -274,8 +345,14 @@ func (m *Manager) Restart(ctx context.Context, id services.ID) error {
 // preserved unless deleteData is set; the helper owns the backup and deletion
 // flow.
 func (m *Manager) Uninstall(ctx context.Context, id services.ID, deleteData bool) (UninstallResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx = normalizeContext(ctx)
+	unlock := m.lockMutation(ctx)
+	defer unlock()
+	ctx = m.markTransition(ctx)
+	return m.uninstallLocked(ctx, id, deleteData)
+}
+
+func (m *Manager) uninstallLocked(ctx context.Context, id services.ID, deleteData bool) (UninstallResult, error) {
 	svc, err := m.service(id)
 	if err != nil {
 		return UninstallResult{}, err
@@ -319,6 +396,14 @@ func (m *Manager) Credentials(ctx context.Context, id services.ID) (Credentials,
 // A MySQL-family rotation also restarts an active phpMyAdmin so it drops
 // sessions authenticated with the old account.
 func (m *Manager) RotateCredentials(ctx context.Context, id services.ID) (Credentials, error) {
+	ctx = normalizeContext(ctx)
+	unlock := m.lockMutation(ctx)
+	defer unlock()
+	ctx = m.markTransition(ctx)
+	return m.rotateCredentialsLocked(ctx, id)
+}
+
+func (m *Manager) rotateCredentialsLocked(ctx context.Context, id services.ID) (Credentials, error) {
 	svc, err := m.service(id)
 	if err != nil {
 		return Credentials{}, err
@@ -347,6 +432,26 @@ func (m *Manager) checkActivationDependencies(ctx context.Context, svc services.
 	if err != nil {
 		return helperFailure("check service activation dependencies", err)
 	}
+	return m.checkDependenciesFromStatuses(svc, statuses)
+}
+
+// checkRestartDependencies lets an already-active service restart, but applies
+// the same exclusive-group and phpMyAdmin dependency checks when a stopped
+// service is restarted into a group whose other member is running.
+func (m *Manager) checkRestartDependencies(ctx context.Context, svc services.Service) error {
+	statuses, err := m.helper.Status(ctx)
+	if err != nil {
+		return helperFailure("check service restart dependencies", err)
+	}
+	for _, status := range statuses {
+		if statusServiceID(status.ID) == svc.ID && status.Active {
+			return nil
+		}
+	}
+	return m.checkDependenciesFromStatuses(svc, statuses)
+}
+
+func (m *Manager) checkDependenciesFromStatuses(svc services.Service, statuses []helperproto.ServiceStatus) error {
 	if svc.Group.Exclusive() {
 		for _, status := range statuses {
 			otherID := statusServiceID(status.ID)
@@ -441,6 +546,16 @@ func (m *Manager) service(id services.ID) (services.Service, error) {
 // bypassing the active-server guard because sites.Service has already chosen
 // the explicit Docker -> builtin transition.
 func (m *Manager) StopForProviderSwitch(ctx context.Context, id services.ID) error {
+	ctx = normalizeContext(ctx)
+	// Deliberately not serialized behind m.mu. The caller (sites.Service)
+	// holds its own mutex while switching Docker -> builtin; taking m.mu here
+	// would create the opposite order from Activate -> dockerweb.Prepare ->
+	// sites.StopForDocker and deadlock the two services. The helper remains
+	// the final authority on the container transition.
+	return m.stopForProviderSwitch(ctx, id)
+}
+
+func (m *Manager) stopForProviderSwitch(ctx context.Context, id services.ID) error {
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -454,6 +569,13 @@ func (m *Manager) StopForProviderSwitch(ctx context.Context, id services.ID) err
 // StartForProviderSwitch restarts a previously active container when a
 // Docker -> builtin transition fails after the container was stopped.
 func (m *Manager) StartForProviderSwitch(ctx context.Context, id services.ID) error {
+	ctx = normalizeContext(ctx)
+	// See StopForProviderSwitch: this path is the other half of the sites ->
+	// manager edge and must not take m.mu while the caller holds sites.mu.
+	return m.startForProviderSwitch(ctx, id)
+}
+
+func (m *Manager) startForProviderSwitch(ctx context.Context, id services.ID) error {
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -473,6 +595,10 @@ type ServiceValidator interface {
 
 // Validate runs the catalog validation command inside a service container.
 func (m *Manager) Validate(ctx context.Context, id services.ID) error {
+	ctx = normalizeContext(ctx)
+	unlock := m.lockMutation(ctx)
+	defer unlock()
+	ctx = m.markTransition(ctx)
 	if _, err := m.service(id); err != nil {
 		return err
 	}
@@ -488,6 +614,10 @@ func (m *Manager) Validate(ctx context.Context, id services.ID) error {
 
 // Reload gracefully reloads a service container.
 func (m *Manager) Reload(ctx context.Context, id services.ID) error {
+	ctx = normalizeContext(ctx)
+	unlock := m.lockMutation(ctx)
+	defer unlock()
+	ctx = m.markTransition(ctx)
 	if _, err := m.service(id); err != nil {
 		return err
 	}

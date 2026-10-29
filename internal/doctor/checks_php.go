@@ -127,10 +127,10 @@ func checkPHPBuilds(sites []model.Site, builds []model.RuntimeBuild, listErr err
 	var problems, badIDs []string
 	var warnings []string
 	for _, build := range builds {
-		if err := verifyPHPBuild(build); err != nil {
+		if err := verifyPHPBuild(build, distro...); err != nil {
 			problems = append(problems, fmt.Sprintf("%s (%s): %v", build.ID, build.Version, err))
 			badIDs = append(badIDs, build.ID)
-		} else if warn := checkCompiledExtensionDir(build); warn != "" {
+		} else if warn := checkCompiledExtensionDir(build, distro...); warn != "" {
 			warnings = append(warnings, fmt.Sprintf("%s (%s): %s", build.ID, build.Version, warn))
 		}
 	}
@@ -159,37 +159,43 @@ func checkPHPBuilds(sites []model.Site, builds []model.RuntimeBuild, listErr err
 	return check
 }
 
-// resolvePHPBuildPath locates the build path locally or via WSL network share if on Windows.
-func resolvePHPBuildPath(build model.RuntimeBuild, distro ...string) string {
+// resolvePHPBuildPath locates the build path locally or via the configured WSL
+// network share on Windows. The boolean reports whether the path was actually
+// found; callers use it to distinguish "file missing inside a visible build"
+// from "this Windows process cannot see the WSL filesystem at all".
+func resolvePHPBuildPath(build model.RuntimeBuild, distro ...string) (string, bool) {
 	p := strings.TrimSpace(build.Path)
 	if p == "" {
-		return ""
+		return "", false
 	}
 	if _, err := os.Stat(p); err == nil {
-		return p
+		return p, true
 	}
 	if runtime.GOOS == "windows" && strings.HasPrefix(p, "/") {
 		distros := []string{"devstack"}
-		if len(distro) > 0 && strings.TrimSpace(distro[0]) != "" && !strings.EqualFold(distro[0], "devstack") {
-			distros = append([]string{strings.TrimSpace(distro[0])}, distros...)
+		if len(distro) > 0 {
+			configured := strings.TrimSpace(distro[0])
+			if configured != "" && !strings.EqualFold(configured, "devstack") {
+				distros = append([]string{configured}, distros...)
+			}
 		}
 		for _, d := range distros {
 			for _, prefix := range []string{`\\wsl.localhost\` + d, `\\wsl$\` + d} {
 				candidate := filepath.Join(prefix, filepath.FromSlash(p))
 				if _, err := os.Stat(candidate); err == nil {
-					return candidate
+					return candidate, true
 				}
 			}
 		}
 	}
-	return p
+	return p, false
 }
 
 // verifyPHPBuild checks the layout produced by the runtime installer. A build
 // needs bin/php, sbin/php-fpm, and extension modules either directly under
 // lib/php/extensions or in one architecture subdirectory.
 func verifyPHPBuild(build model.RuntimeBuild, distro ...string) error {
-	buildPath := resolvePHPBuildPath(build, distro...)
+	buildPath, resolved := resolvePHPBuildPath(build, distro...)
 	if strings.TrimSpace(buildPath) == "" {
 		return errors.New("build path is empty")
 	}
@@ -199,7 +205,11 @@ func verifyPHPBuild(build model.RuntimeBuild, distro ...string) error {
 	} {
 		info, err := os.Stat(filepath.Join(buildPath, rel))
 		if err != nil {
-			if build.Backend == model.BackendWSL && errors.Is(err, os.ErrNotExist) {
+			// A WSL build examined from Windows is only fully visible when
+			// resolvePHPBuildPath found the \\wsl.localhost share. If the share
+			// itself is unavailable, do not turn "cannot inspect" into a false
+			// success or a false corruption report.
+			if build.Backend == model.BackendWSL && !resolved && errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			return fmt.Errorf("%s: %w", rel, err)
@@ -212,6 +222,9 @@ func verifyPHPBuild(build model.RuntimeBuild, distro ...string) error {
 	extDir := filepath.Join(buildPath, "lib", "php", "extensions")
 	entries, err := os.ReadDir(extDir)
 	if err != nil {
+		if build.Backend == model.BackendWSL && !resolved && errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("%s: %w", filepath.Join("lib", "php", "extensions"), err)
 	}
 	if !phpExtensionsPresent(extDir, entries) {
@@ -223,7 +236,7 @@ func verifyPHPBuild(build model.RuntimeBuild, distro ...string) error {
 // checkCompiledExtensionDir warns if a PHP build's compiled-in extension_dir points to
 // a nonexistent /tmp path without compensation in its etc/php.ini.
 func checkCompiledExtensionDir(build model.RuntimeBuild, distro ...string) string {
-	buildPath := resolvePHPBuildPath(build, distro...)
+	buildPath, _ := resolvePHPBuildPath(build, distro...)
 	if buildPath == "" {
 		return ""
 	}

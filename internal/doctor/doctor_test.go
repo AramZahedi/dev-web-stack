@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -122,6 +123,8 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 		Vhosts:    fakes.vhosts,
 		PHP:       fakes.php,
 		HostsPath: hostsPath,
+		// Unit tests must not depend on listeners present on the host machine.
+		PortResponding: func(int) bool { return false },
 	})
 	return svc, fakes
 }
@@ -357,6 +360,36 @@ func TestTrustInstalledBrowserSucceeds(t *testing.T) {
 	}
 	if !hasCheck(rep, "trust", StatusOK) {
 		t.Fatalf("%+v", rep.Checks)
+	}
+}
+
+func TestIsPortRespondingChecksIPv6Loopback(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	port := listener.Addr().(*net.TCPAddr).Port
+	svc := &Service{}
+	if !svc.isPortResponding(port) {
+		t.Fatalf("IPv6-only listener on port %d was reported as free", port)
+	}
+}
+
+func TestPortChecksTreatsSpecificListenerAsOwnedWhenWildcardBindSucceeds(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	delete(fakes.ports.errs, ":8080")
+	svc.deps.PortResponding = func(port int) bool { return port == 8080 }
+
+	check := svc.checkPorts()
+	if check.Status != StatusOK {
+		t.Fatalf("ports = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "8080 (the devstack proxy)") {
+		t.Fatalf("ports detail = %q, want the specific-address listener treated as owned", check.Detail)
+	}
+	if strings.Contains(check.Detail, "port 8080 is free") {
+		t.Fatalf("ports detail = %q, still reports a bound port as free", check.Detail)
 	}
 }
 

@@ -132,6 +132,22 @@ func validateSiteID(id string) error {
 	return nil
 }
 
+// validateEnvironment rejects names that cannot be exported safely and values
+// that contain NUL. Callers render these entries into shell scripts (site shims
+// and shell-init), so an unvalidated name such as "X; command" would become
+// executable shell syntax rather than an environment assignment.
+func validateEnvironment(env map[string]string) error {
+	for key, value := range env {
+		if !envNamePattern.MatchString(key) {
+			return fmt.Errorf("invalid environment variable name %q", key)
+		}
+		if strings.ContainsRune(value, 0) {
+			return fmt.Errorf("environment variable %q contains a NUL byte", key)
+		}
+	}
+	return nil
+}
+
 // BuildSiteEnv resolves the site's PHP and Node builds, writes site-scoped
 // shims, and returns the environment for a shell or exec command. It never
 // runs as root and never falls back to a different PHP for a site.
@@ -146,6 +162,9 @@ func BuildSiteEnv(site model.Site, deps EnvDeps) (SiteEnvironment, error) {
 		return SiteEnvironment{}, fmt.Errorf("tooling: site %q: %w", site.Name, err)
 	}
 
+	if err := validateEnvironment(site.Env); err != nil {
+		return SiteEnvironment{}, fmt.Errorf("tooling: site %q: %w", site.Name, err)
+	}
 	env := SiteEnvironment{Site: site, ShimDir: SiteShimDir(deps.Paths, site.Name)}
 	values := make(map[string]string, len(site.Env)+8)
 	for key, value := range site.Env {
@@ -353,6 +372,12 @@ func ShellExports(env SiteEnvironment) string {
 	sort.Strings(keys)
 	var builder strings.Builder
 	for _, key := range keys {
+		// Values normally come from BuildSiteEnv/WindowsSiteEnvironment, which
+		// validate names. Keep this renderer fail-closed as well because callers
+		// can construct SiteEnvironment directly.
+		if !envNamePattern.MatchString(key) {
+			continue
+		}
 		builder.WriteString("export ")
 		builder.WriteString(key)
 		builder.WriteString("=")

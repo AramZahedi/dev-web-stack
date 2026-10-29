@@ -79,6 +79,10 @@ func Open(path string) (*Store, error) {
 	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "foreign_keys(1)")
 	query.Add("_pragma", "journal_mode(WAL)")
+	// Take the write lock when a transaction starts. This prevents two daemon
+	// or CLI processes from upgrading a read snapshot into a competing schema
+	// migration or a lost update.
+	query.Add("_txlock", "immediate")
 	dsn.RawQuery = query.Encode()
 
 	db, err := sql.Open("sqlite", dsn.String())
@@ -641,15 +645,24 @@ func (s *Store) AddEvent(ctx context.Context, e model.Event) error {
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO events (site_id, type, message, created_at)
-		VALUES (?, ?, ?, ?)`, e.SiteID, e.Type, e.Message, createdAt.Unix())
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("add event %q: begin transaction: %w", e.Type, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events (site_id, type, message, created_at)
+		VALUES (?, ?, ?, ?)`, e.SiteID, e.Type, e.Message, createdAt.Unix()); err != nil {
 		return fmt.Errorf("add event %q: %w", e.Type, err)
 	}
-	// The event feed is bounded to the most recent 500 rows by the spec.
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE id NOT IN (
+	// The event feed is bounded to the most recent 500 rows by the spec. Keep
+	// the insert and the prune atomic so a prune failure cannot report the
+	// event as unsaved (and cause a retry to duplicate it).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE id NOT IN (
 		SELECT id FROM events ORDER BY created_at DESC, id DESC LIMIT 500)`); err != nil {
 		return fmt.Errorf("prune events: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("add event %q: commit: %w", e.Type, err)
 	}
 	return nil
 }

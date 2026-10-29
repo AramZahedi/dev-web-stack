@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -17,6 +18,10 @@ var (
 	ErrInvalidSourceMode = errors.New("pathmode: invalid source mode")
 	// ErrInvalidPath is returned for an unsafe or unusable source path.
 	ErrInvalidPath = errors.New("pathmode: invalid source path")
+
+	// distroPattern is the WSL distro-name shape used anywhere a name becomes
+	// part of a UNC path or a wsl.exe argument.
+	distroPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 )
 
 // ValidateSourceMode enforces the platform matrix: Linux only local; Windows
@@ -90,6 +95,9 @@ func TranslateSourceForDistro(mode model.SourceMode, input, configuredDistro str
 	configuredDistro = strings.TrimSpace(configuredDistro)
 	if configuredDistro == "" {
 		return "", "", fmt.Errorf("%w: managed WSL distro is not configured", ErrInvalidPath)
+	}
+	if !distroPattern.MatchString(configuredDistro) {
+		return "", "", fmt.Errorf("%w: invalid managed WSL distro %q", ErrInvalidPath, configuredDistro)
 	}
 	if strings.HasPrefix(strings.TrimSpace(input), "/") && !strings.HasPrefix(strings.TrimSpace(input), "//") {
 		host = `\\wsl.localhost\` + configuredDistro + `\` + strings.ReplaceAll(strings.TrimPrefix(backend, "/"), "/", `\`)
@@ -246,6 +254,9 @@ func translateWSL(input string) (string, string, error) {
 		return "", "", fmt.Errorf("%w: %q must name a distro and a path inside it", ErrInvalidPath, input)
 	}
 	distro := parts[0]
+	if !distroPattern.MatchString(distro) {
+		return "", "", fmt.Errorf("%w: invalid WSL distro %q", ErrInvalidPath, distro)
+	}
 	inside := strings.Join(parts[1:], "/")
 	inside = strings.Trim(inside, "/")
 	if inside == "" {

@@ -312,6 +312,52 @@ func TestBackupReplacesStaleTempFile(t *testing.T) {
 	}
 }
 
+func TestConcurrentApplyMigrationRecordsVersionOnce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.db")
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("open s1: %v", err)
+	}
+	defer func() { _ = s1.Close() }()
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("open s2: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+
+	m := migration{
+		version: 9997,
+		name:    "9997_concurrent.sql",
+		script:  `INSERT INTO settings (key, value) VALUES ('applied-once', 'yes');`,
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, s := range []*Store{s1, s2} {
+		go func(s *Store) {
+			<-start
+			errs <- s.applyMigration(context.Background(), m)
+		}(s)
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent applyMigration: %v", err)
+		}
+	}
+
+	var rows int
+	if err := s1.db.QueryRow(`SELECT COUNT(*) FROM settings WHERE key = 'applied-once'`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("migration body ran %d times, want 1", rows)
+	}
+	if !migrationRecorded(t, s1, m.version) {
+		t.Fatal("migration version was not recorded")
+	}
+}
+
 func TestMigrationBackupRetentionIgnoresTemporaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	backups := filepath.Join(dir, "backups")

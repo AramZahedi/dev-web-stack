@@ -25,10 +25,16 @@ func IsLocalOrTestHost(host string) bool {
 			host = h
 		}
 	}
-	lower := strings.ToLower(host)
-	if lower == "localhost" || strings.HasSuffix(lower, ".test") || lower == "test" {
+	if strings.EqualFold(host, "localhost") || isTestHost(host) {
 		return true
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// isTestHost reports whether host is the reserved .test namespace used by
+// devstack sites. The trailing dot form is accepted.
+func isTestHost(host string) bool {
+	lower := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	return lower == "test" || strings.HasSuffix(lower, ".test")
 }

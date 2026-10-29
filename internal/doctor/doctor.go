@@ -73,7 +73,11 @@ type Deps struct {
 	// PersistedPathContains checks if a directory is in persistent Machine/User PATH.
 	// Nil checks the Windows registry and standard install dir.
 	PersistedPathContains func(string) bool
-	Windows               WindowsDiagnostics
+	// PortResponding reports whether a loopback TCP connection succeeds. Nil
+	// probes the port directly. Tests use it to separate a wildcard bind from
+	// a listener that only owns a specific address.
+	PortResponding func(port int) bool
+	Windows        WindowsDiagnostics
 }
 
 // WindowsDiagnostics describes the Windows/WSL dependencies without granting

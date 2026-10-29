@@ -3,6 +3,7 @@ package performance
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,6 +48,30 @@ func TestRunLoadMeasuresLocalHTTPServer(t *testing.T) {
 	text := string(raw)
 	if !strings.Contains(text, LoadToolName) || !strings.Contains(text, "requests=") {
 		t.Fatalf("raw output = %q", text)
+	}
+}
+
+func TestRunLoadSendsTestHostsToLoopback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, _, err := RunLoad(context.Background(), LoadOptions{
+		URL:         "http://bench.test:" + port + "/",
+		HostHeader:  "bench.test",
+		Duration:    250 * time.Millisecond,
+		Connections: 2,
+	})
+	if err != nil {
+		t.Fatalf("RunLoad(.test): %v", err)
+	}
+	if result.Requests == 0 || result.Errors != 0 {
+		t.Fatalf("result = requests=%d errors=%d", result.Requests, result.Errors)
 	}
 }
 

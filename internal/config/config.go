@@ -7,12 +7,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"go.yaml.in/yaml/v3"
 )
+
+// wslDistroPattern is the same shape the WSL tooling accepts. Validating it
+// here keeps a malformed config from reaching wsl.exe arguments or UNC paths.
+var wslDistroPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // Backend port ranges reserved for site upstreams and FastCGI pools. They are
 // allocated by the daemon, so they must never appear in config.yaml.
@@ -169,6 +174,21 @@ func (c Config) Validate() error {
 	}
 	if c.GracefulStopSeconds <= 0 {
 		return fmt.Errorf("graceful_stop_seconds must be greater than 0, got %d", c.GracefulStopSeconds)
+	}
+	distro := strings.TrimSpace(c.WSLDistro)
+	if !wslDistroPattern.MatchString(distro) {
+		return fmt.Errorf("wsl_distro %q must start with a letter or digit and contain only letters, digits, '.', '_' or '-'", c.WSLDistro)
+	}
+	// logs.New treats zero as a test-only rotate-on-every-write hook. A
+	// persisted config must never select that mode accidentally.
+	if c.LogMaxMB < 1 || c.LogMaxMB > 1<<20 {
+		return fmt.Errorf("log_max_mb must be between 1 and %d, got %d", 1<<20, c.LogMaxMB)
+	}
+	if c.LogKeep < 0 || c.LogKeep > 10000 {
+		return fmt.Errorf("log_keep must be between 0 and 10000, got %d", c.LogKeep)
+	}
+	if c.MaxRequestBodyMB < 1 || c.MaxRequestBodyMB > 1<<20 {
+		return fmt.Errorf("max_request_body_mb must be between 1 and %d, got %d", 1<<20, c.MaxRequestBodyMB)
 	}
 	if !ValidServingMode(c.ServingMode) {
 		return fmt.Errorf("serving_mode %q must be one of %s, %s, or %s", c.ServingMode,
