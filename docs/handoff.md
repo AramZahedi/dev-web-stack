@@ -20,6 +20,7 @@
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
   [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
+- **Proposed next milestone (not implemented):** [Per-Site Node Toolchains and Global Node Default](superpowers/specs/2026-10-30-node-toolchain-design.md); current findings and builder review are recorded in the [Node toolchain handoff](superpowers/status/2026-10-30-node-toolchain-handoff.md).
 
 This is the continue-on-another-machine document. Read it first, then
 [architecture](architecture.md), [requirements](requirements.md), [decisions](decisions.md),

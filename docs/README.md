@@ -20,6 +20,11 @@ machine, and the design/plan for the next milestone.
 
 ## Current design and plans
 
+- [Per-Site Node Toolchains and Global Node Default](superpowers/specs/2026-10-30-node-toolchain-design.md)
+  - proposed 2026-10-30; live Node discovery, per-site Node for every kind,
+    global Node default, and dashboard/CLI installation.
+- [Node toolchain handoff](superpowers/status/2026-10-30-node-toolchain-handoff.md)
+  - current code findings, builder review, risks, and implementation phases.
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
   — Waves 0–2 and the next batch implemented; remaining host gates noted.
 - [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)

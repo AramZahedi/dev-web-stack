@@ -1,5 +1,10 @@
 # Windows 10/11 + WSL2 Support Design
 
+> **Node toolchain note (2026-10-30):** The Node runtime catalog, per-site Node
+> selection, and global Node default described in this document are superseded
+> by the proposed [Per-Site Node Toolchains and Global Node Default](2026-10-30-node-toolchain-design.md).
+> PHP, proxy, TLS, helper, and installer sections remain current.
+
 - **Date:** 2026-10-26
 - **Revised:** 2026-10-27 after in-depth plan review; updated 2026-10-28 post-audit remediation
 - **Status:** Implemented in v0.2.0; post-completion audit findings resolved per remediation plan

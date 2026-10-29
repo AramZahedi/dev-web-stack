@@ -1,4 +1,9 @@
-# dev-web-stack — M1 Design: Foundation & Sites
+# dev-web-stack - M1 Design: Foundation & Sites
+
+> **Node toolchain note (2026-10-30):** M1's fixed Node 22/24 catalog, Node-site-only
+> version selection, and embedded-only Node discovery are superseded for the next
+> milestone by the proposed [Per-Site Node Toolchains and Global Node Default](2026-10-30-node-toolchain-design.md).
+> The rest of the M1 design remains historical context.
 
 - **Status:** Implemented in v0.1.0 (Linux scope; Windows/WSL deferred to Plan 3)
 - **Date:** 2026-10-22
