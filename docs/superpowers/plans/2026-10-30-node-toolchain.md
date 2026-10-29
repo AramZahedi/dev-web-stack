@@ -10,6 +10,94 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-30-node-toolchain-design.md`
 
+## Parallel Execution Model
+
+The main agent owns the main checkout, integration, reviews, merges, and pushes.
+Implementer subagents work only in their lane worktree and branch. They never
+merge, rebase onto another lane, push, or edit outside their lane's ownership.
+
+### Model and worktree rules
+
+- Every subagent uses `opencode-go/deepseek-v4.1-flash#max`.
+- Branch naming: `node-toolchain/<lane>`.
+- Worktree naming: `<repo>/.worktrees/node-toolchain-<lane>`.
+- Before creating worktrees, verify `.worktrees/` is ignored; add it to
+  `.gitignore` and commit that change on `master` if needed.
+- Each lane is created from the current `master` at the start of its wave.
+- The base commit for Wave 1 is the commit containing this plan. Later waves
+  branch from `master` after the prior wave merges.
+- One worktree per lane, not per task. Tasks within a lane run sequentially;
+  lanes run concurrently.
+- A lane may contain only its assigned files. Shared wiring files are
+  integration-owned by the main agent (see the conflict matrix).
+- Each task ends with its own commit in the lane branch. A lane report records
+  task commits, tests, deviations, and open concerns.
+- Never dispatch two implementers in the same lane at once.
+- Task and lane reviews use the same diff-first process as the normal
+  subagent-driven workflow. The main agent runs the final whole-branch review
+  after all merges.
+
+### Waves and branch bases
+
+| Wave | Lane | Tasks | Branch | Depends on |
+|---|---|---|---|---|
+| 1 | A - discovery/runtime | 1, 2, 3, 4 | `node-toolchain/discovery` | current `master` |
+| 1 | B - global default | 8, 9, 10 | `node-toolchain/global-default` | current `master` |
+| 2 | C - daemon/API/CLI | 5, 6, 7 | `node-toolchain/runtime-api` | merged A |
+| 2 | D - site toolchain | 11, 12 | `node-toolchain/site-toolchain` | merged B |
+| 3 | E - dashboard | 13, 14 | `node-toolchain/dashboard` | merged C and D |
+| 4 | main checkout | 15 | `master` | merged A-E |
+
+Wave 1 starts with A and B concurrently. After both lanes are complete and
+reviewed, the main agent merges A then B into `master`, runs the affected
+tests, and creates Wave 2 worktrees from the updated `master`. Wave 2 runs C
+and D concurrently, then merges C then D. Wave 3 runs the dashboard lane, then
+merges it. Task 15 is executed by the main agent on `master` after all lanes
+are merged.
+
+### File ownership and conflict matrix
+
+| Owner | Files |
+|---|---|
+| Lane A | `internal/nodereleases/**`, `internal/runtime/**`, `internal/agent/**`, `internal/agentproto/**`, `internal/agentclient/**` |
+| Lane B | `internal/tooling/node.go`, `internal/tooling/node_test.go`, `internal/tooling/windows_node.go`, `internal/tooling/windows_test.go`, `internal/helper/**`, `internal/helperproto/**`, `internal/cli/node.go`, `internal/daemon/windows_tooling.go` |
+| Lane C | `internal/daemon/node_runtime.go`, `internal/daemon/windows.go` runtime-install portions, `internal/api/handlers_node_runtime.go`, `internal/client/node_releases.go`, `internal/cli/runtime.go` |
+| Lane D | `internal/model/model.go`, `internal/sites/**`, `internal/api/handlers_sites.go`, `internal/client/site_node.go`, `internal/cli/site.go`, `internal/cli/tooling.go`, `internal/tooling/siteenv.go`, `internal/tooling/windows.go` site-environment portions |
+| Lane E | `ui/**` |
+| Main agent | `internal/api/server.go` route wiring, `internal/cli/root.go`, `internal/daemon/daemon.go` wiring, `api/openapi.yaml`, `docs/**`, `go.mod` |
+
+Lanes use **new files** for methods and handlers wherever possible so they do
+not edit shared registration files. New API routes are registered only by the
+main agent after a lane reports. A lane may add narrow optional-interface
+assertions inside its own handler file rather than editing `server.go`.
+
+Shared files (`server.go`, `root.go`, `daemon.go`, `api/openapi.yaml`) are
+edited only by the main agent after a lane reports. Lane tests may call
+handlers/commands directly or use temporary registration in tests; the main
+agent adds production registration before merging. If a lane needs a shared
+interface change, it writes the exact requested signature in its report; the
+main agent applies it during integration.
+
+### Merge protocol
+
+1. Wait until every lane in the wave reports DONE (or an adjudicated park).
+2. Run the lane's full affected test set in its worktree.
+3. In the main checkout, merge the lane branch with `git merge --no-ff
+   node-toolchain/<lane>` in the order shown above.
+4. Resolve shared-file conflicts centrally; never let a lane rebase another
+   lane's work.
+5. Run the affected tests after each merge, then the full gate after the wave.
+6. Remove the worktree and branch only after a clean merge and test run:
+   `git worktree remove .worktrees/node-toolchain-<lane>` and
+   `git branch -d node-toolchain/<lane>`.
+7. Do not push until all waves, Task 15, and the final review are complete.
+
+### Execution pause
+
+Do not create worktrees or dispatch implementers until the human partner
+approves this updated plan. This section is the execution contract; a later
+message will confirm the start.
+
 ## Global Constraints
 
 - Node releases are `linux-x64` only; no native Windows Node.
@@ -224,13 +312,14 @@ git commit -m "feat: accept pinned node artifacts in the wsl agent"
 ### Task 5: Daemon discovery wiring and Windows runtime service
 
 **Files:**
-- Modify: `internal/daemon/daemon.go`
+- Create: `internal/daemon/node_runtime.go`
 - Modify: `internal/daemon/windows.go`
-- Create: `internal/daemon/node_releases_test.go`
+- Create: `internal/daemon/node_runtime_test.go`
 
 **Interfaces:**
 - Consumes: Task 2 client; Task 3 manager; Task 4 agent protocol.
-- Produces: a daemon-owned `*nodereleases.Client` and runtime service methods `NodeReleases`, `NodeRelease`, `RefreshNodeReleases`.
+- Produces: `newNodeReleaseClient(home string) (*nodereleases.Client, error)` and runtime service methods `NodeReleases`, `NodeRelease`, `RefreshNodeReleases`.
+- The main agent wires `newNodeReleaseClient` and the local manager into `daemon.go` during integration.
 
 - [ ] **Step 1: Write failing daemon tests**
 
@@ -268,15 +357,14 @@ git commit -m "feat: wire node discovery into daemon runtime services"
 ### Task 6: API discovery, refresh, and preflight endpoints
 
 **Files:**
-- Modify: `internal/api/handlers_runtime.go`
-- Modify: `internal/api/server.go`
+- Create: `internal/api/handlers_node_runtime.go`
 - Modify: `internal/api/api_test.go`
-- Modify: `internal/client/client.go`
-- Modify: `internal/client/client_test.go`
-- Modify: `api/openapi.yaml`
+- Create: `internal/client/node_releases.go`
+- Create: `internal/client/node_releases_test.go`
+- Note: `server.go` route registration and `api/openapi.yaml` are main-agent integration files.
 
 **Interfaces:**
-- Consumes: Task 5 runtime service.
+- Consumes: Task 5 runtime service via a narrow optional interface in the handler file.
 - Produces: `GET /api/v1/runtimes/node/releases`, `GET /api/v1/runtimes/node/releases/{version}`, `POST /api/v1/runtimes/node/refresh`.
 - Client: `NodeReleases(ctx, major string, all, offline bool) (nodereleases.Snapshot, error)`, `NodeRelease(ctx, version string) (nodereleases.Preflight, error)`, `RefreshNodeReleases(ctx) (nodereleases.Snapshot, error)`.
 
@@ -296,7 +384,7 @@ Expected: FAIL because the routes/methods are missing.
 
 - [ ] **Step 3: Implement handlers and client methods**
 
-Parse `major`, `all`, `refresh`, and `offline` query flags. Return typed errors for offline/preflight failures. Add OpenAPI paths and schemas. Do not expose cache paths or raw fetch errors containing URLs with credentials (there are none, but keep messages sanitized).
+Parse `major`, `all`, `refresh`, and `offline` query flags. Return typed errors for offline/preflight failures. Use a narrow optional interface (`nodeReleaseService`) defined in `handlers_node_runtime.go`; do not edit `server.go`. The main agent adds the routes and OpenAPI paths. Do not expose cache paths or raw fetch errors containing URLs with credentials (there are none, but keep messages sanitized).
 
 - [ ] **Step 4: Run the tests and verify they pass**
 
@@ -306,7 +394,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/api internal/client api/openapi.yaml
+git add internal/api internal/client
 git commit -m "feat: expose node release discovery and preflight api"
 ```
 
@@ -359,7 +447,7 @@ git commit -m "feat: add node release discovery to runtime cli"
 **Files:**
 - Create: `internal/tooling/node.go`
 - Create: `internal/tooling/node_test.go`
-- Modify: `internal/tooling/windows.go`
+- Create: `internal/tooling/windows_node.go`
 - Modify: `internal/tooling/windows_test.go`
 - Modify: `internal/config/config.go` (only if a new path helper is needed)
 
@@ -407,7 +495,7 @@ git commit -m "feat: add global node default resolution and shims"
 - Modify: `internal/helper/tool_test.go`
 - Modify: `internal/daemon/toolbin.go`
 - Modify: `internal/daemon/toolbin_test.go`
-- Modify: `internal/daemon/windows.go`
+- Create: `internal/daemon/windows_tooling.go`
 
 **Interfaces:**
 - Consumes: Task 8 global default resolution.
@@ -448,15 +536,13 @@ git commit -m "feat: install system-wide node default wrappers"
 ### Task 10: Node default API and CLI
 
 **Files:**
-- Modify: `internal/api/handlers_tooling.go`
-- Modify: `internal/api/server.go`
-- Modify: `internal/api/handlers_tooling_test.go`
-- Modify: `internal/client/client.go`
-- Modify: `internal/client/client_test.go`
+- Create: `internal/api/handlers_node_default.go`
+- Create: `internal/api/handlers_node_default_test.go`
+- Create: `internal/client/node_default.go`
+- Create: `internal/client/node_default_test.go`
 - Create: `internal/cli/node.go`
-- Modify: `internal/cli/root.go`
 - Modify: `internal/cli/cli_test.go`
-- Modify: `api/openapi.yaml`
+- Note: `server.go` route registration, `root.go` command registration, and `api/openapi.yaml` are main-agent integration files.
 
 **Interfaces:**
 - Consumes: Task 8 tooling core and Task 9 helper wrappers.
@@ -477,7 +563,7 @@ Expected: FAIL because the endpoints/command are missing.
 
 - [ ] **Step 3: Implement the API and CLI**
 
-Return the resolved build, configured value, shim directory/status, and source. Set validates an installed build; clear removes the setting and re-resolves the newest installed fallback. Update OpenAPI and error remediation.
+Return the resolved build, configured value, shim directory/status, and source. Set validates an installed build; clear removes the setting and re-resolves the newest installed fallback. Use a narrow optional interface in `handlers_node_default.go`; the main agent adds routes/CLI registration/OpenAPI. Update error remediation.
 
 - [ ] **Step 4: Run the tests and verify they pass**
 
@@ -487,7 +573,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/api internal/client internal/cli api/openapi.yaml
+git add internal/api internal/client internal/cli
 git commit -m "feat: expose node default api and cli"
 ```
 
@@ -500,8 +586,7 @@ git commit -m "feat: expose node default api and cli"
 - Modify: `internal/sites/service.go`
 - Modify: `internal/sites/php_apply.go`
 - Modify: `internal/api/handlers_sites.go`
-- Modify: `internal/api/server.go`
-- Modify: `internal/client/client.go`
+- Create: `internal/client/site_node.go`
 - Modify: `internal/client/client_test.go`
 - Modify: `internal/agentproto/protocol.go`
 - Modify: `internal/agent/terminal.go`
@@ -560,7 +645,6 @@ git commit -m "feat: resolve per-site node toolchains for all site kinds"
 **Files:**
 - Modify: `internal/cli/site.go`
 - Modify: `internal/cli/tooling.go`
-- Modify: `internal/cli/root.go`
 - Modify: `internal/cli/cli_test.go`
 
 **Interfaces:**
@@ -706,6 +790,9 @@ git commit -m "feat: add node discovery and default settings to the dashboard"
 - Modify: `internal/sites/php_apply_test.go`
 - Modify: `internal/runtime/manager.go` (startup normalization hook if needed)
 - Create: `internal/sites/node_migration_test.go`
+- Modify: `internal/api/server.go` (final route wiring)
+- Modify: `internal/cli/root.go` (final command wiring)
+- Modify: `internal/daemon/daemon.go` (final runtime-source wiring)
 - Modify: `api/openapi.yaml`
 - Modify: `docs/README.md`
 - Modify: `docs/sites.md`

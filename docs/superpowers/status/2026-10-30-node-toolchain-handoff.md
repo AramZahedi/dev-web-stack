@@ -287,7 +287,10 @@ A fresh builder review raised six ambiguities. The spec now settles them:
 ## 7. Implementation plan phases
 
 The task-by-task plan is [2026-10-30-node-toolchain.md](../plans/2026-10-30-node-toolchain.md).
-Its phases are:
+It uses parallel worktree lanes: Wave 1 runs discovery/runtime and global-default
+lanes concurrently; Wave 2 runs daemon/API and site-toolchain lanes; Wave 3 runs
+the dashboard lane; the main agent merges each reviewed lane in order and runs
+Task 15 on `master`. Its phases are:
 
 1. **Docs and contracts:** spec links, OpenAPI schemas/routes, decisions C8
    amendment, CLI/UI copy.
