@@ -43,7 +43,7 @@ func (c *AgentServiceConfig) List(ctx context.Context, id string) (agentproto.Se
 	if err := c.validateService(id); err != nil {
 		return agentproto.ServiceConfigResponse{}, err
 	}
-	response, err := c.api.ServiceConfig(ctx, id)
+	response, err := c.api.ServiceConfig(ctx, agentAPIID(id))
 	if err != nil {
 		return agentproto.ServiceConfigResponse{}, fmt.Errorf("servicecontrol: list %s config through agent: %w", id, err)
 	}
@@ -60,7 +60,9 @@ func (c *AgentServiceConfig) Content(ctx context.Context, request agentproto.Ser
 	if err := c.validateRequest(request); err != nil {
 		return agentproto.ServiceContentResponse{}, err
 	}
-	response, err := c.api.ServiceContent(ctx, request)
+	req := request
+	req.ID = agentAPIID(req.ID)
+	response, err := c.api.ServiceContent(ctx, req)
 	if err != nil {
 		return agentproto.ServiceContentResponse{}, fmt.Errorf("servicecontrol: read %s config through agent: %w", request.ID, err)
 	}
@@ -79,7 +81,9 @@ func (c *AgentServiceConfig) Apply(ctx context.Context, request agentproto.Servi
 	if len(request.Content) > 1<<20 || !utf8.ValidString(request.Content) || strings.ContainsRune(request.Content, 0) {
 		return agentproto.ServiceContentResponse{}, errors.New("servicecontrol: config content must be UTF-8 text no larger than 1 MiB")
 	}
-	response, err := c.api.ServiceApply(ctx, request)
+	req := request
+	req.ID = agentAPIID(req.ID)
+	response, err := c.api.ServiceApply(ctx, req)
 	if err != nil {
 		return agentproto.ServiceContentResponse{}, fmt.Errorf("servicecontrol: apply %s config through agent: %w", request.ID, err)
 	}
@@ -94,7 +98,9 @@ func (c *AgentServiceConfig) Reset(ctx context.Context, request agentproto.Servi
 	if err := c.validateRequest(request); err != nil {
 		return err
 	}
-	if err := c.api.ServiceReset(ctx, request); err != nil {
+	req := request
+	req.ID = agentAPIID(req.ID)
+	if err := c.api.ServiceReset(ctx, req); err != nil {
 		return fmt.Errorf("servicecontrol: reset %s config through agent: %w", request.ID, err)
 	}
 	return nil
@@ -109,7 +115,7 @@ func (c *AgentServiceConfig) validateRequest(request agentproto.ServiceConfigReq
 }
 
 func (c *AgentServiceConfig) validateService(id string) error {
-	if _, err := c.paths.ForService(id); err != nil {
+	if _, err := c.paths.ForService(agentAPIID(id)); err != nil {
 		return err
 	}
 	return nil

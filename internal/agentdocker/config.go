@@ -169,7 +169,11 @@ func (d *Docker) ServiceReset(ctx context.Context, request agentproto.ServiceCon
 }
 
 func (d *Docker) serviceConfigRoot(id services.ID) string {
-	return filepath.Join(d.root, "services", string(id), "config")
+	canonicalID := id
+	if canonicalID == services.IDPostgreSQL {
+		canonicalID = "postgres"
+	}
+	return filepath.Join(d.root, "services", string(canonicalID), "config")
 }
 
 func (d *Docker) safeServiceConfigRoot(id services.ID) (string, error) {

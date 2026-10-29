@@ -137,7 +137,7 @@ func (a *AgentDocker) Logs(ctx context.Context, id string, tail int) (string, er
 	if tail <= 0 {
 		tail = 100
 	}
-	response, err := a.api.ServiceLogs(ctx, id, agentproto.ServiceLogsRequest{Tail: tail})
+	response, err := a.api.ServiceLogs(ctx, agentAPIID(id), agentproto.ServiceLogsRequest{Tail: tail})
 	if err != nil {
 		return "", fmt.Errorf("servicecontrol: read %s logs from agent: %w", id, err)
 	}
@@ -156,7 +156,7 @@ func (a *AgentDocker) Credentials(ctx context.Context, id services.ID) (Credenti
 		return Credentials{}, fmt.Errorf("%w: service %q", ErrCredentialsUnsupported, name)
 	}
 	field := "devstack_password"
-	response, err := a.api.ServiceCredential(ctx, agentproto.ServiceCredentialRequest{ID: name, Field: field})
+	response, err := a.api.ServiceCredential(ctx, agentproto.ServiceCredentialRequest{ID: agentAPIID(name), Field: field})
 	if err != nil {
 		return Credentials{}, fmt.Errorf("servicecontrol: read %s credential from agent: %w", name, err)
 	}
@@ -167,9 +167,6 @@ func (a *AgentDocker) Credentials(ctx context.Context, id services.ID) (Credenti
 		username = response.User
 	}
 	database := "devstack"
-	if name == "postgres" {
-		database = "devstack"
-	}
 	return Credentials{Engine: name, Username: username, Password: response.Value, Database: database, Host: "127.0.0.1", Port: port}, nil
 }
 
@@ -197,7 +194,7 @@ func (a *AgentDocker) action(ctx context.Context, id, action string, config map[
 	if err := validateAgentServiceID(id); err != nil {
 		return err
 	}
-	_, err := a.api.ServiceAction(ctx, agentproto.ServiceRequest{ID: id, Action: action, Config: config})
+	_, err := a.api.ServiceAction(ctx, agentproto.ServiceRequest{ID: agentAPIID(id), Action: action, Config: config})
 	if err != nil {
 		return fmt.Errorf("servicecontrol: %s %s through agent: %w", action, id, err)
 	}
@@ -210,8 +207,16 @@ func AllowedAgentServiceIDs() []string {
 	return []string{"nginx", "apache", "mysql", "mariadb", "postgres", "redis", "phpmyadmin"}
 }
 
+func agentAPIID(id string) string {
+	if id == "postgresql" {
+		return "postgres"
+	}
+	return id
+}
+
 func validateAgentServiceID(id string) error {
-	if _, ok := fixedAgentServiceIDs[id]; !ok {
+	normalized := agentAPIID(id)
+	if _, ok := fixedAgentServiceIDs[normalized]; !ok {
 		return fmt.Errorf("servicecontrol: unsupported service ID %q", id)
 	}
 	return nil
@@ -228,7 +233,7 @@ func databaseCredential(id string) (username string, port int, ok bool) {
 	switch id {
 	case "mysql", "mariadb":
 		return "devstack", 3306, true
-	case "postgres":
+	case "postgres", "postgresql":
 		return "devstack", 5432, true
 	default:
 		return "", 0, false

@@ -134,7 +134,7 @@ func (m *Manager) List(ctx context.Context) ([]services.View, error) {
 
 	byID := make(map[services.ID]helperproto.ServiceStatus, len(statuses))
 	for _, status := range statuses {
-		byID[services.ID(status.ID)] = status
+		byID[statusServiceID(status.ID)] = status
 	}
 
 	views := make([]services.View, 0, len(m.catalog.Services))
@@ -160,7 +160,7 @@ func (m *Manager) Get(ctx context.Context, id services.ID) (services.View, error
 	var status helperproto.ServiceStatus
 	hasStatus := false
 	for _, candidate := range statuses {
-		if services.ID(candidate.ID) == id {
+		if statusServiceID(candidate.ID) == id {
 			status = candidate
 			hasStatus = true
 			break
@@ -325,18 +325,34 @@ func (m *Manager) RotateCredentials(ctx context.Context, id services.ID) (Creden
 }
 
 // checkActivationDependencies enforces dynamic dependencies that cannot be
-// expressed as Compose depends_on edges. phpMyAdmin follows the exclusive
+// expressed as Compose depends_on edges. It also enforces mutual exclusivity
+// for exclusive groups (web, mysql-family). phpMyAdmin follows the exclusive
 // MySQL-family group, so either engine satisfies the requirement.
 func (m *Manager) checkActivationDependencies(ctx context.Context, svc services.Service) error {
+	statuses, err := m.helper.Status(ctx)
+	if err != nil {
+		return helperFailure("check service activation dependencies", err)
+	}
+	if svc.Group.Exclusive() {
+		for _, status := range statuses {
+			otherID := statusServiceID(status.ID)
+			if otherID == svc.ID {
+				continue
+			}
+			otherSvc, ok := m.catalog.Get(otherID)
+			if !ok || otherSvc.Group != svc.Group {
+				continue
+			}
+			if status.Active {
+				return fmt.Errorf("%w: service %q is already active in exclusive group %s", helperproto.ErrServiceConflict, otherID, svc.Group)
+			}
+		}
+	}
 	if svc.ID != services.IDPHPMyAdmin {
 		return nil
 	}
-	statuses, err := m.helper.Status(ctx)
-	if err != nil {
-		return helperFailure("check phpMyAdmin database dependency", err)
-	}
 	for _, status := range statuses {
-		id := services.ID(status.ID)
+		id := statusServiceID(status.ID)
 		if id != services.IDMySQL && id != services.IDMariaDB {
 			continue
 		}
@@ -689,4 +705,11 @@ func helperFailure(operation string, err error) error {
 	default:
 		return fmt.Errorf("%w: %s: %w", ErrHelperUnavailable, operation, err)
 	}
+}
+
+func statusServiceID(id string) services.ID {
+	if id == "postgres" {
+		return services.IDPostgreSQL
+	}
+	return services.ID(id)
 }

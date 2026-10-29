@@ -64,14 +64,27 @@ func (d *Docker) backupServiceData(id services.ID) (string, error) {
 		if err != nil {
 			return err
 		}
-		if fileInfo.Mode()&os.ModeSymlink != 0 || (!fileInfo.IsDir() && !fileInfo.Mode().IsRegular()) {
+		link := ""
+		if fileInfo.Mode()&os.ModeSymlink != 0 {
+			target, readErr := os.Readlink(name)
+			if readErr != nil {
+				return readErr
+			}
+			// Ephemeral sockets and socket symlinks cannot be archived.
+			if strings.HasSuffix(target, ".sock") || strings.Contains(target, "mysqld.sock") {
+				return nil
+			}
+			link = target
+		} else if fileInfo.Mode()&os.ModeSocket != 0 {
+			return nil
+		} else if !fileInfo.IsDir() && !fileInfo.Mode().IsRegular() {
 			return fmt.Errorf("refusing special service backup entry %s", name)
 		}
 		rel, err := filepath.Rel(serviceRoot, name)
 		if err != nil {
 			return err
 		}
-		header, err := tar.FileInfoHeader(fileInfo, "")
+		header, err := tar.FileInfoHeader(fileInfo, link)
 		if err != nil {
 			return err
 		}
@@ -79,7 +92,7 @@ func (d *Docker) backupServiceData(id services.ID) (string, error) {
 		if err := tarWriter.WriteHeader(header); err != nil {
 			return err
 		}
-		if fileInfo.IsDir() {
+		if fileInfo.IsDir() || fileInfo.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
 		file, err := os.Open(name)
