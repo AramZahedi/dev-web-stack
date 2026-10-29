@@ -143,8 +143,9 @@ func (c *Client) List(ctx context.Context, options ListOptions) (Snapshot, error
 	return snapshotFrom(loaded, options), nil
 }
 
-// Refresh forces an index fetch. It returns an error on failure and never
-// replaces or removes an existing cache.
+// Refresh forces an index fetch. When the fetch fails it serves the cached
+// index as stale, or the embedded catalog when no cache exists. It returns an
+// error only when no snapshot can be produced.
 func (c *Client) Refresh(ctx context.Context) (Snapshot, error) {
 	loaded, err := c.loadIndex(ctx, false, true)
 	if err != nil {
@@ -214,14 +215,15 @@ func (c *Client) loadIndex(ctx context.Context, offline, force bool) (loadedInde
 
 	releases, err := c.fetchIndex(ctx)
 	if err != nil {
-		if force {
-			return loadedIndex{}, fmt.Errorf("nodereleases: refresh index: %w", err)
-		}
-		if hasCache {
-			return c.fromCache(cached, true,
-				fmt.Sprintf("could not refresh the node release index: %v", err)), nil
-		}
-		return c.embeddedIndex(fmt.Sprintf("could not fetch the node release index: %v", err))
+		return c.indexFallback(cached, hasCache,
+			fmt.Sprintf("could not refresh the node release index: %v", err))
+	}
+	// Checksums and sizes are tied to the index generation. Drop lazily
+	// fetched metadata so the next Preflight revalidates it against this
+	// refresh instead of serving documents cached for an older index.
+	if err := c.cache.invalidateMetadata(); err != nil {
+		return c.indexFallback(cached, hasCache,
+			fmt.Sprintf("could not revalidate cached checksums and sizes: %v", err))
 	}
 
 	now := c.now()
@@ -235,6 +237,15 @@ func (c *Client) loadIndex(ctx context.Context, offline, force bool) (loadedInde
 		cachedAt: now,
 		warning:  warning,
 	}, nil
+}
+
+// indexFallback serves the stale cache or embedded catalog after a refresh
+// failure. It returns an error only when neither source can be loaded.
+func (c *Client) indexFallback(cached indexCacheDocument, hasCache bool, warning string) (loadedIndex, error) {
+	if hasCache {
+		return c.fromCache(cached, true, warning), nil
+	}
+	return c.embeddedIndex(warning)
 }
 
 func (c *Client) fromCache(cached indexCacheDocument, stale bool, warning string) loadedIndex {

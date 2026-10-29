@@ -153,6 +153,17 @@ func (l cacheLayout) sizePath(version string) (string, error) {
 	return filepath.Join(l.sizes, version+".json"), nil
 }
 
+// invalidateMetadata drops lazily fetched checksum and size documents so the
+// next Preflight revalidates them against a refreshed index.
+func (l cacheLayout) invalidateMetadata() error {
+	for _, dir := range []string{l.shasums, l.sizes} {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("remove %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
 // validCachedReleases checks the invariants discovery needs from a cached
 // entry without trusting the document's origin.
 func validCachedReleases(releases []Release) bool {

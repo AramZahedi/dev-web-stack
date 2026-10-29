@@ -169,6 +169,12 @@ func (f *fixture) setIndexBody(body string) {
 	f.indexBody = body
 }
 
+func (f *fixture) setSizes(version string, size int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sizes[version] = size
+}
+
 func (f *fixture) setRedirects(checksums, archive string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -354,6 +360,127 @@ func TestRefreshForcesIndexFetch(t *testing.T) {
 	assertHasVersion(t, refreshed.All, "19.10.0")
 }
 
+func TestRefreshFallsBackToEmbeddedWithoutCache(t *testing.T) {
+	f := newFixture(t)
+	f.fail.Store(true)
+	client := newTestClient(t, t.TempDir(), officialClient(f.Server), nil)
+
+	snapshot, err := client.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("Refresh without a cache returned an error: %v", err)
+	}
+	if snapshot.Source != SourceEmbedded {
+		t.Errorf("source = %q, want %q", snapshot.Source, SourceEmbedded)
+	}
+	if !snapshot.Stale {
+		t.Error("embedded snapshot is not marked stale")
+	}
+	if snapshot.Warning == "" {
+		t.Error("embedded snapshot has no warning")
+	}
+	assertHasVersion(t, snapshot.All, "24.22.1")
+}
+
+func TestRefreshInvalidatesCachedChecksumsAndSizes(t *testing.T) {
+	f := newFixture(t)
+	home := t.TempDir()
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	client := newTestClient(t, home, officialClient(f.Server), func() time.Time { return now })
+
+	first, err := client.Preflight(context.Background(), fixtureVersion)
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if first.Entry.SHA256 != fixtureSHA256 || first.Entry.Size != fixtureSize {
+		t.Fatalf("initial preflight = %s/%d, want %s/%d",
+			first.Entry.SHA256, first.Entry.Size, fixtureSHA256, fixtureSize)
+	}
+
+	newChecksum := strings.Repeat("c", 64)
+	newSize := fixtureSize + 1
+	newChecksums := newChecksum + "  node-v19.9.0-linux-x64.tar.gz\n" +
+		strings.Repeat("d", 64) + "  node-v19.9.0-darwin-arm64.tar.gz\n"
+	f.setChecksums(fixtureVersion, newChecksums)
+	f.setSizes(fixtureVersion, newSize)
+
+	if _, err := client.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	second, err := client.Preflight(context.Background(), fixtureVersion)
+	if err != nil {
+		t.Fatalf("Preflight after Refresh: %v", err)
+	}
+	if second.Entry.SHA256 != newChecksum {
+		t.Errorf("post-refresh sha256 = %q, want %q (cached checksum was reused)",
+			second.Entry.SHA256, newChecksum)
+	}
+	if second.Entry.Size != newSize {
+		t.Errorf("post-refresh size = %d, want %d (cached size was reused)",
+			second.Entry.Size, newSize)
+	}
+	if got := f.checksumRequests.Load(); got != 2 {
+		t.Errorf("checksum requests = %d, want 2", got)
+	}
+	if got := f.sizeRequests.Load(); got != 2 {
+		t.Errorf("size requests = %d, want 2", got)
+	}
+
+	cachedChecksums, err := os.ReadFile(filepath.Join(home, "cache", "node", "shasums", fixtureVersion+".txt"))
+	if err != nil {
+		t.Fatalf("read cached checksums: %v", err)
+	}
+	if string(cachedChecksums) != newChecksums {
+		t.Error("cached checksums were not replaced after refresh")
+	}
+}
+
+func TestIndexTTLCacheFreshnessBoundary(t *testing.T) {
+	if DefaultIndexTTL != 6*time.Hour {
+		t.Fatalf("DefaultIndexTTL = %s, want 6h", DefaultIndexTTL)
+	}
+
+	f := newFixture(t)
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	client := newTestClient(t, t.TempDir(), officialClient(f.Server), func() time.Time { return now })
+
+	first, err := client.List(context.Background(), ListOptions{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if first.Source != SourceLive {
+		t.Fatalf("first source = %q, want %q", first.Source, SourceLive)
+	}
+
+	now = now.Add(5*time.Hour + 59*time.Minute)
+	almostFresh, err := client.List(context.Background(), ListOptions{})
+	if err != nil {
+		t.Fatalf("List at 5h59m: %v", err)
+	}
+	if almostFresh.Source != SourceCache || almostFresh.Stale {
+		t.Errorf("5h59m snapshot = source %q stale %v, want fresh cache",
+			almostFresh.Source, almostFresh.Stale)
+	}
+	if got := f.indexRequests.Load(); got != 1 {
+		t.Errorf("5h59m index requests = %d, want 1", got)
+	}
+
+	now = now.Add(time.Minute) // exactly six hours after the fetch
+	boundary, err := client.List(context.Background(), ListOptions{})
+	if err != nil {
+		t.Fatalf("List at 6h: %v", err)
+	}
+	if boundary.Source != SourceLive {
+		t.Errorf("6h snapshot source = %q, want %q", boundary.Source, SourceLive)
+	}
+	if boundary.Stale {
+		t.Error("6h snapshot is stale, want a fresh fetch")
+	}
+	if got := f.indexRequests.Load(); got != 2 {
+		t.Errorf("6h index requests = %d, want 2", got)
+	}
+}
+
 func TestListServesStaleCacheAfterRefreshFailure(t *testing.T) {
 	f := newFixture(t)
 	home := t.TempDir()
@@ -396,12 +523,19 @@ func TestListServesStaleCacheAfterRefreshFailure(t *testing.T) {
 	assertHasVersion(t, stale.All, fixtureVersion)
 
 	refreshed, refreshErr := client.Refresh(context.Background())
-	if refreshErr == nil {
-		t.Fatalf("Refresh succeeded with an unreachable server: %+v", refreshed)
+	if refreshErr != nil {
+		t.Fatalf("Refresh with a usable cache returned an error: %v", refreshErr)
 	}
-	if refreshed.All != nil {
-		t.Errorf("failed Refresh returned releases: %+v", refreshed)
+	if refreshed.Source != SourceCache {
+		t.Errorf("failed Refresh source = %q, want %q", refreshed.Source, SourceCache)
 	}
+	if !refreshed.Stale {
+		t.Error("failed Refresh snapshot is not marked stale")
+	}
+	if refreshed.Warning == "" {
+		t.Error("failed Refresh snapshot has no warning")
+	}
+	assertHasVersion(t, refreshed.All, fixtureVersion)
 
 	after, err := os.ReadFile(indexPath)
 	if err != nil {
