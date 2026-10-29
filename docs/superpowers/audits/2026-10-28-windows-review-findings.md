@@ -1765,10 +1765,33 @@ Additional defects found and fixed during the E2E pass:
 5. Agent backend ports overlap the Linux ephemeral range; the static listener
    now retries `EADDRINUSE` briefly, removing the intermittent WSL suite flake.
 
-Remaining residuals (see the E2E report for detail): native `go test -race`
-requires CGO; no clean-machine/reboot/populated upgrade/Windows 10/multi-user
-test; root execution inside the distro (R2-M12/R4-H1); A-2 provider-switch
-interleaving; WSL `/api/v1/fs` is not confined to project/home roots; Node
-in-use remediation text says PHP; doctor `extension_dir` warning; service
-config reset JSON hash/size; and a one-request WSL localhost-forwarding race
-immediately after a new backend port starts.
+Remaining residuals (see the E2E report for detail): root execution inside the
+distro (R2-M12/R4-H1); no clean-machine/reboot/populated upgrade/Windows
+10/multi-user E2E; no independent security review or fuzzing; 73.9% statement
+coverage; and a one-request victim of a WSL forwarding outage longer than the
+1.5 s retry window.
+
+## Post-E2E hardening (2026-10-30)
+
+The security and concurrency residuals from the E2E pass were closed:
+
+- **WSL file browsing** is confined to `<root>/projects` by the agent after
+  lexical and resolved-symlink checks; the API rejects relative paths, NULs, and
+  `..` segments before calling the agent. Live probes: projects 200, traversal
+  400, `/etc` 400, secrets 400, Windows-outside 403.
+- **A-2 provider-switch/activation interleaving** now uses one lifecycle mutex:
+  `sites.SetServingMode` takes it before `sites.mu`, and service activation
+  already holds it before calling into sites. Added concurrency tests and a full
+  `-race` run.
+- **WSL forwarding 502s** are covered by a host-side readiness probe plus a
+  bounded proxy retry (20 x 75 ms) for bodyless requests on connection refused.
+  A fresh live add returned 200 on the first request.
+- **Node in-use errors** now say “Node runtime” rather than “PHP runtime”.
+- **Service config reset** reports the restored hash and byte size.
+- **New PHP installs** write a compensating `extension_dir` into the build base
+  `etc/php.ini`; the existing live build was patched the same way.
+
+Final verification for this hardening: native `go test ./...` green; WSL full
+suite under `-race -p 1` as an unprivileged user green (60 packages, 0 data
+races); coverage 73.9% statements. A clean-machine/reboot/upgrade matrix and an
+independent security review remain future work.

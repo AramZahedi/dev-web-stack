@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
@@ -18,6 +19,28 @@ type fakeWSLFSBrowser struct {
 func (f *fakeWSLFSBrowser) BrowseFS(ctx context.Context, path string) (agentproto.FSListing, error) {
 	f.requestedPath = path
 	return f.listing, f.err
+}
+
+func TestHandleFSWSLRejectsTraversalBeforeBrowsing(t *testing.T) {
+	mockBrowser := &fakeWSLFSBrowser{}
+	server := &Server{cfg: Config{UserHome: t.TempDir(), WSLFS: mockBrowser}}
+
+	for _, path := range []string{
+		"../../etc",
+		"/data/devstack/projects/../../etc",
+		"data/devstack/projects",
+		"/data/devstack/projects\x00",
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/fs?mode=wsl&path="+url.QueryEscape(path), nil)
+		rec := httptest.NewRecorder()
+		server.handleFS(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("path %q: code = %d, want 400; body = %s", path, rec.Code, rec.Body.String())
+		}
+	}
+	if mockBrowser.requestedPath != "" {
+		t.Fatalf("unsafe path reached the agent: %q", mockBrowser.requestedPath)
+	}
 }
 
 func TestHandleFSWithWSLMode(t *testing.T) {

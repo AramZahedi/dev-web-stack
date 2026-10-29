@@ -33,7 +33,11 @@ const testToken = "test-agent-secret-token"
 
 func newTestAgent(t *testing.T) (*agent.Server, agent.TLSIdentity) {
 	t.Helper()
-	root := t.TempDir()
+	return newTestAgentAt(t, t.TempDir())
+}
+
+func newTestAgentAt(t *testing.T, root string) (*agent.Server, agent.TLSIdentity) {
+	t.Helper()
 	tlsDir := filepath.Join(root, "agent-tls")
 	identity, err := agent.GenerateTLSIdentity(tlsDir)
 	if err != nil {

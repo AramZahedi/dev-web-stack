@@ -282,6 +282,15 @@ func (s *Service) SetServingMode(ctx context.Context, mode string) error {
 		return fmt.Errorf("sites: unsupported serving mode %q", mode)
 	}
 
+	// Serialize provider switches with service lifecycle mutations. Service
+	// activation takes the same coordinator before its own lock and then calls
+	// StopForDocker/StartAfterDocker, so the shared order is always
+	// lifecycle -> sites.
+	if s.deps.Lifecycle != nil {
+		s.deps.Lifecycle.Lock()
+		defer s.deps.Lifecycle.Unlock()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

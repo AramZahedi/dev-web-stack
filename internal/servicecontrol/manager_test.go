@@ -206,6 +206,8 @@ type fakePreparer struct {
 	cleanupCause error
 	calls        []string
 	trace        *[]string
+
+	prepareActivateHook func()
 }
 
 func (p *fakePreparer) record(call string) {
@@ -222,6 +224,9 @@ func (p *fakePreparer) PrepareInstall(_ context.Context, svc services.Service) e
 
 func (p *fakePreparer) PrepareActivate(_ context.Context, svc services.Service) error {
 	p.record("prepare_activate:" + string(svc.ID))
+	if p.prepareActivateHook != nil {
+		p.prepareActivateHook()
+	}
 	return p.prepareActivateErr
 }
 
@@ -257,6 +262,38 @@ func newTestManager(t *testing.T, st Store, helper Helper, preparers map[service
 	manager := NewManager(t.TempDir(), st, helper, testCatalog(), preparers)
 	manager.now = func() time.Time { return testNow }
 	return manager
+}
+
+func TestActivationHoldsLifecycleMutex(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	prep := &fakePreparer{prepareActivateHook: func() {
+		close(entered)
+		<-release
+	}}
+	manager := newTestManager(t, newFakeStore(), &fakeHelper{}, map[services.ID]Preparer{
+		services.IDNginx: prep,
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.Activate(context.Background(), services.IDNginx)
+	}()
+	<-entered
+
+	coordinator := manager.LifecycleMutex()
+	if coordinator.TryLock() {
+		coordinator.Unlock()
+		t.Fatal("activation did not hold the shared lifecycle mutex")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	if !coordinator.TryLock() {
+		t.Fatal("activation leaked the shared lifecycle mutex")
+	}
+	coordinator.Unlock()
 }
 
 func TestManagerListMergesCatalogHelperAndStore(t *testing.T) {

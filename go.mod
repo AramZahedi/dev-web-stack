@@ -3,6 +3,7 @@ module github.com/AramZahedi/dev-web-stack
 go 1.26.0
 
 require (
+	github.com/Microsoft/go-winio v0.6.4
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
 	github.com/spf13/cobra v1.10.2
@@ -12,7 +13,6 @@ require (
 )
 
 require (
-	github.com/Microsoft/go-winio v0.6.4 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

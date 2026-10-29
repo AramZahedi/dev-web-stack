@@ -96,6 +96,30 @@ func (f *fakeDockerSwitch) counts() (int, int) {
 	return len(f.stopped), len(f.started)
 }
 
+func TestSetServingModeTakesSharedLifecycleLock(t *testing.T) {
+	svc, fakes := newTestService(t)
+	if _, err := svc.Create(context.Background(), CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"}); err != nil {
+		t.Fatal(err)
+	}
+	coordinator := &sync.Mutex{}
+	svc.deps.Lifecycle = coordinator
+	coordinator.Lock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.SetServingMode(context.Background(), config.ServingModeNginx)
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("SetServingMode returned while the lifecycle lock was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	coordinator.Unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("SetServingMode: %v", err)
+	}
+}
+
 func TestDockerProviderSyncVhostsUsesDockerSyncer(t *testing.T) {
 	svc, fakes := newTestService(t)
 	svc.deps.Config.ServingMode = config.ServingModeNginx

@@ -284,6 +284,8 @@ func Run(ctx context.Context, opts Options) error {
 		PHPBackend:   local,
 		PHPManifest:  &phpManifest,
 		SourceCopier: localSourceCopier{},
+		Lifecycle:    serviceManager.LifecycleMutex(),
+		WaitReady:    waitBackendReady,
 	})
 	d.certs = certManager
 	d.sites = siteService

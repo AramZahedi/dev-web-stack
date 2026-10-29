@@ -87,15 +87,21 @@ type Router struct {
 
 	staticTransport *http.Transport
 	nodeTransport   *http.Transport
+	staticUpstream  http.RoundTripper
+	nodeUpstream    http.RoundTripper
 	fcgiDial        fcgiDialer
 	handler         http.Handler
 }
 
 // NewRouter returns an empty router.
 func NewRouter() *Router {
+	staticTransport := newUpstreamTransport(staticResponseHeaderTimeout)
+	nodeTransport := newUpstreamTransport(nodeResponseHeaderTimeout)
 	r := &Router{
-		staticTransport: newUpstreamTransport(staticResponseHeaderTimeout),
-		nodeTransport:   newUpstreamTransport(nodeResponseHeaderTimeout),
+		staticTransport: staticTransport,
+		nodeTransport:   nodeTransport,
+		staticUpstream:  &retryTransport{base: staticTransport},
+		nodeUpstream:    &retryTransport{base: nodeTransport},
 		fcgiDial: func(ctx context.Context, addr string) (fcgiClient, error) {
 			return fcgi.Dial(ctx, addr)
 		},

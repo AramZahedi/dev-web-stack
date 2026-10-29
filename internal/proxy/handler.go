@@ -112,10 +112,16 @@ func (r *Router) reverseProxy(route Route) (*httputil.ReverseProxy, error) {
 	if err != nil {
 		return nil, err
 	}
-	transport := r.staticTransport
+	transport := r.staticUpstream
+	if transport == nil {
+		transport = r.staticTransport
+	}
 	switch route.Kind {
 	case KindNode:
-		transport = r.nodeTransport
+		transport = r.nodeUpstream
+		if transport == nil {
+			transport = r.nodeTransport
+		}
 	case KindStatic, "":
 		// Static sites are HTTP services started by the local backend.
 	case KindPHP:

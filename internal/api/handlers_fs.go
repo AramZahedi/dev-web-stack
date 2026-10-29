@@ -27,6 +27,12 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 	raw := strings.TrimSpace(r.URL.Query().Get("path"))
 
 	if mode == "wsl" || (raw != "" && strings.HasPrefix(raw, "/") && !filepath.IsAbs(raw)) {
+		if raw != "" {
+			if strings.ContainsRune(raw, 0) || !strings.HasPrefix(raw, "/") || hasParentPathSegment(raw) {
+				writeError(w, http.StatusBadRequest, codeInvalidRequest, "WSL directory path must be absolute and must not contain '..' segments", nil)
+				return
+			}
+		}
 		browser := s.wslFS
 		if browser == nil {
 			browser = s.cfg.WSLFS
@@ -136,4 +142,13 @@ func withinDirectory(base, target string) bool {
 		return false
 	}
 	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func hasParentPathSegment(p string) bool {
+	for _, segment := range strings.Split(strings.ReplaceAll(p, `\`, "/"), "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
 }

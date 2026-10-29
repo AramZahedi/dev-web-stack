@@ -115,6 +115,12 @@ func (m *Manager) lockMutation(ctx context.Context) func() {
 	return m.mu.Unlock
 }
 
+// LifecycleMutex exposes the mutation mutex so the site provider switch can
+// share the same lock order (lifecycle -> sites) as service activation.
+func (m *Manager) LifecycleMutex() *sync.Mutex {
+	return &m.mu
+}
+
 func normalizeContext(ctx context.Context) context.Context {
 	if ctx == nil {
 		return context.Background()

@@ -734,13 +734,27 @@ func (s *ConfigService) Reset(ctx context.Context, id services.ID, rel string) (
 			s.audit(ctx, "config_reset", id, clean, false, err.Error())
 			return ConfigApplyResult{}, err
 		}
-		s.audit(ctx, "config_reset", id, clean, true, "reset config through agent")
-		return ConfigApplyResult{
+		result := ConfigApplyResult{
 			Service: string(id),
 			Path:    clean,
 			Action:  "reset",
 			Changed: true,
-		}, nil
+		}
+		// Reset restores the file but the agent call returns no metadata. Read
+		// the restored content back so JSON clients see the same hash/size a
+		// normal apply reports.
+		restored, readErr := s.agent.ServiceContent(ctx, agentproto.ServiceConfigRequest{
+			ID:  string(id),
+			Rel: clean,
+		})
+		if readErr != nil {
+			result.Message = "reset succeeded; restored metadata is unavailable: " + readErr.Error()
+		} else {
+			result.Hash = restored.Hash
+			result.Size = int64(len(restored.Content))
+		}
+		s.audit(ctx, "config_reset", id, clean, true, "reset config through agent")
+		return result, nil
 	}
 	svc, configRoot, manager, err := s.prepare(ctx, id)
 	if err != nil {

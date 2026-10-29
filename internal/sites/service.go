@@ -170,6 +170,12 @@ type Deps struct {
 	SourceCopier SourceCopier
 	Now          func() time.Time
 	NewID        func() string
+	// Lifecycle is shared with the service manager so provider switches and
+	// service activation cannot interleave.
+	Lifecycle *sync.Mutex
+	// WaitReady probes the host-visible loopback port after a backend starts.
+	// Nil disables the probe (tests and platforms without a proxy boundary).
+	WaitReady func(context.Context, model.Site) error
 }
 
 // Service owns site lifecycle operations. Mutating operations and status
@@ -1187,6 +1193,13 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 	if _, err := s.deps.Backend.Start(ctx, site.ID); err != nil {
 		releaseAllocated()
 		return site, fmt.Errorf("sites: start %q: %w", site.Name, err)
+	}
+	if s.deps.WaitReady != nil {
+		if err := s.deps.WaitReady(ctx, site); err != nil {
+			_ = s.deps.Backend.Stop(ctx, site.ID, false)
+			releaseAllocated()
+			return site, fmt.Errorf("sites: wait for %q: %w", site.Name, err)
+		}
 	}
 
 	oldStatus := site.Status

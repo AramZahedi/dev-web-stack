@@ -1250,6 +1250,9 @@ func TestCheckRuntimeRemovalBlocksPinnedAndLegacySites(t *testing.T) {
 	if !errors.As(err, &inUse) || !reflect.DeepEqual(inUse.Sites, []string{"api"}) {
 		t.Fatalf("node build check = %v, want only the Node site", err)
 	}
+	if !strings.Contains(err.Error(), "Node runtime") || strings.Contains(err.Error(), "PHP runtime") {
+		t.Fatalf("node in-use message = %q, want Node runtime wording", err)
+	}
 	if !errors.As(fmt.Errorf("wrapped: %w", err), &inUse) {
 		t.Fatal("wrapped RuntimeInUseError is not discoverable")
 	}

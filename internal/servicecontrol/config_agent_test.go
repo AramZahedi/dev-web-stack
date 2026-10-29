@@ -88,6 +88,9 @@ func TestConfigServiceWithAgent(t *testing.T) {
 	if resetRes.Path != "my.cnf" || !resetRes.Changed {
 		t.Fatalf("resetRes = %+v, want changed: true", resetRes)
 	}
+	if resetRes.Hash != "current-hash" || resetRes.Size != int64(len(api.content.Content)) {
+		t.Fatalf("resetRes metadata = hash %q size %d, want %q/%d", resetRes.Hash, resetRes.Size, "current-hash", len(api.content.Content))
+	}
 	if len(api.resets) != 1 || api.resets[0].Rel != "my.cnf" {
 		t.Fatalf("api.resets = %+v, want reset for 'my.cnf'", api.resets)
 	}

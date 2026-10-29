@@ -325,6 +325,11 @@ func (m *Manager) installEntry(ctx context.Context, entry catalog.Entry, source 
 	if err != nil {
 		return model.RuntimeBuild{}, err
 	}
+	if entry.Kind == "php" {
+		if err := ensurePHPBaseIni(tempDir, target); err != nil {
+			return model.RuntimeBuild{}, fmt.Errorf("runtime: write PHP base config: %w", err)
+		}
+	}
 	if err := writeManifest(tempDir, manifest{
 		ID:          entry.ID,
 		Kind:        entry.Kind,

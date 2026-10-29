@@ -93,10 +93,17 @@ func (e *RuntimeInUseError) Error() string {
 	if e == nil {
 		return ErrRuntimeInUse.Error()
 	}
-	if len(e.Sites) == 0 {
-		return fmt.Sprintf("sites: PHP runtime %q is in use", e.BuildID)
+	kind := "runtime"
+	switch {
+	case strings.HasPrefix(e.BuildID, "node@"):
+		kind = "Node runtime"
+	case strings.HasPrefix(e.BuildID, "php@"):
+		kind = "PHP runtime"
 	}
-	return fmt.Sprintf("sites: PHP runtime %q is in use by: %s", e.BuildID, strings.Join(e.Sites, ", "))
+	if len(e.Sites) == 0 {
+		return fmt.Sprintf("sites: %s %q is in use", kind, e.BuildID)
+	}
+	return fmt.Sprintf("sites: %s %q is in use by: %s", kind, e.BuildID, strings.Join(e.Sites, ", "))
 }
 
 // Unwrap makes every in-use failure match ErrRuntimeInUse.
