@@ -48,7 +48,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
   "docker-ce=${DOCKER_VERSION}" \
   "docker-ce-cli=${DOCKER_VERSION}" \
   "docker-buildx-plugin=${BUILDX_VERSION}" \
-  "docker-compose-plugin=${COMPOSE_VERSION}"
+  "docker-compose-plugin=${COMPOSE_VERSION}" \
+  unzip 7zip
 
 install -D -m 0644 "${CONFIG_SOURCE}" /etc/docker/daemon.json
 install -d -o root -g root -m 0711 /data/devstack/docker

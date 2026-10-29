@@ -60,7 +60,7 @@ function Show-Usage {
 Usage: install.ps1 [-InstallDir <path>] [-RootFSPath <path>] [-AllowReboot] [-SkipWSL] [-DryRun] [-TestSandbox <path>] [-Upgrade] [-Help]
 
 Parameters:
-    -InstallDir <path>     Installation target directory (default: C:\devstack)
+    -InstallDir <path>     Installation target directory (default: %USERPROFILE%\.devstack)
     -RootFSPath <path>     Path to WSL rootfs tar.gz archive
     -AllowReboot           Allow automatic reboot and schedule resume if required by Windows features
     -SkipWSL               Skip WSL feature enablement and distro provisioning

@@ -309,6 +309,38 @@ func TestRuntimeReleasePortsForgetsPreparedSite(t *testing.T) {
 	}
 }
 
+func TestRuntimeReleasePortsForgetsPHPPreparedSite(t *testing.T) {
+	runtime, root, _ := newStaticTestRuntime(t)
+	if err := os.MkdirAll(filepath.Join(root, "project", "public"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:           "testphprelease",
+		Kind:         "php",
+		HostPath:     filepath.Join(root, "project"),
+		BackendPath:  filepath.Join(root, "project"),
+		DocumentRoot: "public",
+		PHPVersion:   "8.4",
+		PHPBuild:     "php@8.4.27-r1",
+	}
+	prepared, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{
+		Generation: "gen-1",
+		Site:       spec,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ReleasePorts(spec.ID, prepared.FastCGIPort); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.SiteStatus(spec.ID); !errors.Is(err, ErrSiteNotFound) {
+		t.Fatalf("SiteStatus after release = %v, want ErrSiteNotFound", err)
+	}
+	if _, err := NewRuntime(runtime.root); err != nil {
+		t.Fatalf("released PHP site remained in persisted runtime state: %v", err)
+	}
+}
+
 func TestStaticRuntimeInjectsInstalledCABundleIntoSiteEnvironment(t *testing.T) {
 	runtime, _, spec := newStaticTestRuntime(t)
 	caPath, err := InstallCABundle(runtime.root, testCABundle(t))

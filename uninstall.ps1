@@ -50,7 +50,7 @@ Parameters:
     -PurgeDistro           Unregister and remove the managed WSL distro 'devstack'
     -PurgeData             Delete DPAPI secrets (agent-token, agent-pin) and remove installation directory
     -Force                 Skip confirmation prompts
-    -InstallDir <path>     Installation target directory (default: C:\devstack)
+    -InstallDir <path>     Installation target directory (default: %USERPROFILE%\.devstack)
     -TestSandbox <path>    Run uninstallation inside an isolated test directory
     -DryRun                Print planned operations without modifying system
     -Help                  Display this help message

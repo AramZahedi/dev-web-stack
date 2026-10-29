@@ -620,6 +620,28 @@ func TestPHPProxyStripsHSTSAndHopByHopResponseHeaders(t *testing.T) {
 	}
 }
 
+func TestFastCGIDialRetrySucceeds(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "index.php", "<?php echo 'ok';")
+	r, client := newPHPRoute(t, root, true, true)
+	attempts := 0
+	r.fcgiDial = func(_ context.Context, addr string) (fcgiClient, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, errors.New("transient dial error")
+		}
+		return client, nil
+	}
+
+	rec := servePHPTest(r, httptest.NewRequest(http.MethodGet, "https://blog.test/index.php", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
 func TestPHPProxyReturnsBranded502BeforeHeaders(t *testing.T) {
 	t.Run("dial failure", func(t *testing.T) {
 		root := t.TempDir()

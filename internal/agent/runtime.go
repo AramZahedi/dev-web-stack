@@ -98,12 +98,12 @@ func NewRuntime(root string) (*Runtime, error) {
 		}
 		if item.Spec.HTTPPort > 0 {
 			if err := runtime.ports.Restore(item.Spec.ID, "http", item.Spec.HTTPPort); err != nil {
-				return nil, err
+				item.Spec.HTTPPort = 0
 			}
 		}
 		if item.Spec.FastCGIPort > 0 {
 			if err := runtime.ports.Restore(item.Spec.ID, "fastcgi", item.Spec.FastCGIPort); err != nil {
-				return nil, err
+				item.Spec.FastCGIPort = 0
 			}
 		}
 		site := &runtimeSite{
@@ -285,7 +285,7 @@ func (r *Runtime) ReleasePorts(siteID string, port int) error {
 		r.mu.Unlock()
 		return err
 	}
-	if site != nil && (port == 0 || port == site.spec.HTTPPort) {
+	if site != nil && (port == 0 || port == site.spec.HTTPPort || port == site.spec.FastCGIPort) {
 		delete(r.sites, siteID)
 	}
 	if site != nil {

@@ -202,7 +202,26 @@ func (r *Router) dialFastCGI(ctx context.Context, addr string) (fcgiClient, erro
 	if r.fcgiDial == nil {
 		return nil, errors.New("proxy: FastCGI dialer is not configured")
 	}
-	return r.fcgiDial(ctx, addr)
+	client, err := r.fcgiDial(ctx, addr)
+	if err == nil {
+		return client, nil
+	}
+	// On Windows, the WSL localhost forwarding relay or a freshly restarted
+	// worker pool may take up to ~1 second to accept connections from Windows.
+	// Retry briefly before returning 502 Bad Gateway.
+	delays := []time.Duration{50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond, 350 * time.Millisecond, 500 * time.Millisecond, 500 * time.Millisecond}
+	for _, delay := range delays {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+		client, err = r.fcgiDial(ctx, addr)
+		if err == nil {
+			return client, nil
+		}
+	}
+	return nil, err
 }
 
 // writeFastCGIResponse copies the CGI status and headers, then streams the
