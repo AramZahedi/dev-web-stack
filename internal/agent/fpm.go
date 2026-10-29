@@ -112,6 +112,13 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 	if port <= 0 {
 		return nil, errors.New("agent: invalid FastCGI port for FPM process")
 	}
+	// A persisted allocation is reused without re-probing, and a previous
+	// generation may still own the port. Without this check a new master that
+	// fails to bind is masked by the old listener: the readiness dial succeeds
+	// and StartPHP reports a running site backed by a dead process.
+	if !portAvailable(port) {
+		return nil, fmt.Errorf("agent: FastCGI port %d is already in use", port)
+	}
 
 	buildPath = toPOSIXPath(buildPath)
 	fpmPath = toPOSIXPath(fpmPath)
@@ -167,7 +174,9 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 		}()
 	}
 
-	// Await port listening readiness
+	// Await port listening readiness. A successful dial is not sufficient: the
+	// port may already belong to the previous generation, so the process must
+	// still be alive after the dial.
 	ready := make(chan struct{})
 	go func() {
 		target := "127.0.0.1:" + strconv.Itoa(port)
@@ -181,7 +190,9 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 				c, err := net.DialTimeout("tcp", target, 50*time.Millisecond)
 				if err == nil {
 					_ = c.Close()
-					close(ready)
+					if proc.running() {
+						close(ready)
+					}
 					return
 				}
 				time.Sleep(20 * time.Millisecond)
@@ -192,6 +203,9 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 	select {
 	case <-ready:
 		return proc, nil
+	case <-proc.done:
+		proc.stop()
+		return nil, fmt.Errorf("agent: php-fpm exited before listening on port %d", port)
 	case <-time.After(3 * time.Second):
 		proc.stop()
 		return nil, fmt.Errorf("agent: php-fpm timed out listening on port %d", port)

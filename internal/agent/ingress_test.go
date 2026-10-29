@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestIngressUsesFixed80To8080And443To8443Targets(t *testing.T) {
@@ -70,6 +71,53 @@ func TestIngressParsesOnlyPrivateGatewayFromDefaultRoute(t *testing.T) {
 	}
 	if _, err := parseWindowsGateway([]byte("default dev eth0\n")); err == nil {
 		t.Fatal("default route without a gateway was accepted")
+	}
+}
+
+func TestIngressStopClosesIdleRelays(t *testing.T) {
+	gateway := net.ParseIP("172.20.0.1")
+	listeners := make(map[string]net.Listener)
+	dialed := make(chan struct{}, 1)
+	ingress := NewIngress()
+	ingress.discoverGateway = func(context.Context) (net.IP, error) { return gateway, nil }
+	ingress.listen = func(network, address string) (net.Listener, error) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err == nil {
+			listeners[address] = listener
+		}
+		return listener, err
+	}
+	ingress.dial = func(_ context.Context, network, address string) (net.Conn, error) {
+		client, server := net.Pipe()
+		// Keep both ends open: this models an idle HTTP keep-alive stream.
+		t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+		dialed <- struct{}{}
+		return client, nil
+	}
+	if err := ingress.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	listener := listeners["127.0.0.1:80"]
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	select {
+	case <-dialed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ingress did not dial the fixed upstream")
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- ingress.Stop() }()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop blocked on an idle relay")
 	}
 }
 

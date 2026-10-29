@@ -180,6 +180,19 @@ func (i *Ingress) relay(ctx context.Context, client net.Conn, gateway string, ta
 		return
 	}
 	defer upstream.Close()
+	// Stop/Refresh cancels the run context. Without this watcher an idle
+	// keep-alive stream keeps io.Copy blocked and wg.Wait (Stop, Refresh) hangs
+	// until the peer disconnects.
+	relayDone := make(chan struct{})
+	defer close(relayDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = client.Close()
+			_ = upstream.Close()
+		case <-relayDone:
+		}
+	}()
 	done := make(chan struct{}, 1)
 	go func() {
 		_, _ = io.Copy(upstream, client)

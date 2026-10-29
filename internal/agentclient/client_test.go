@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,6 +57,67 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func TestLongRunningOperationsUseLongTimeout(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(agentproto.PathRuntimes, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		writeJSON(w, http.StatusOK, agentproto.RuntimeResponse{ID: "php@8.4.27-r1", Kind: "php", Version: "8.4.27"})
+	})
+	srv, pin := newTLSServer(t, mux)
+	c, err := New(Config{
+		BaseURL: srv.URL, Token: "secret", PinSHA256: pin,
+		Timeout: 25 * time.Millisecond, LongTimeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	response, err := c.InstallRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "php@8.4.27-r1"})
+	if err != nil {
+		t.Fatalf("InstallRuntime used the short Timeout: %v", err)
+	}
+	if response.ID != "php@8.4.27-r1" {
+		t.Fatalf("runtime response = %+v", response)
+	}
+	// A short call still fails fast on the ordinary timeout.
+	if _, err := c.ListRuntimes(context.Background()); err == nil {
+		t.Fatal("ListRuntimes did not use the short Timeout")
+	}
+}
+
+func TestFollowedLogStreamIsNotCutByTheClientTimeout(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(agentproto.PathSiteLogsFor("site-1"), func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("first\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(150 * time.Millisecond)
+		_, _ = w.Write([]byte("second\n"))
+	})
+	srv, pin := newTLSServer(t, mux)
+	c, err := New(Config{BaseURL: srv.URL, Token: "secret", PinSHA256: pin, Timeout: 25 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	stream, err := c.SiteLogs(context.Background(), "site-1", agentproto.SiteLogsRequest{Follow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	data, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatalf("followed log stream was cut: %v", err)
+	}
+	if string(data) != "first\nsecond\n" {
+		t.Fatalf("stream = %q", data)
+	}
 }
 
 func TestHealth(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +174,36 @@ func TestProvisionRejectsRootfsChecksumOrDiskSpace(t *testing.T) {
 	p.FreeDiskBytes = func(string) (uint64, error) { return 0, nil }
 	if _, err := p.Provision(context.Background()); err == nil || !strings.Contains(err.Error(), "disk space") {
 		t.Fatalf("disk space error = %v", err)
+	}
+}
+
+func TestProvisionCreatesImportParentBeforeDiskCheck(t *testing.T) {
+	runner := &provisionRunner{version: "WSL version: 2.1.5\n", initProc: "systemd\n"}
+	p := testProvisioner(t, runner)
+	parent := filepath.Dir(p.Config.InstallDir)
+	checked := ""
+	p.FreeDiskBytes = func(path string) (uint64, error) {
+		info, err := os.Stat(path)
+		if err != nil || !info.IsDir() {
+			return 0, fmt.Errorf("disk check ran before the import parent existed: %v", err)
+		}
+		checked = path
+		return 1 << 30, nil
+	}
+	if _, err := p.Provision(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if checked != parent {
+		t.Fatalf("disk check path = %q, want %q", checked, parent)
+	}
+}
+
+func TestProvisionRequiresAbsoluteInstallDirectory(t *testing.T) {
+	runner := &provisionRunner{version: "WSL version: 2.0.0\n"}
+	p := testProvisioner(t, runner)
+	p.Config.InstallDir = filepath.Join("relative", "devstack")
+	if _, err := p.Provision(context.Background()); err == nil {
+		t.Fatal("Provision accepted a relative install directory")
 	}
 }
 

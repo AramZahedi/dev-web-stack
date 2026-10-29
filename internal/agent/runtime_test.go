@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -54,6 +55,56 @@ func TestStaticRuntimePrepareStartStopAndServe(t *testing.T) {
 	}
 	if root == "" {
 		t.Fatal("test runtime root is empty")
+	}
+}
+
+func TestStopSiteWithExpiredContextClearsTheServerAndRestarts(t *testing.T) {
+	runtime, _, spec := newStaticTestRuntime(t)
+	prepared, err := runtime.PrepareSite(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartSite(context.Background(), spec.ID); err != nil {
+		t.Fatal(err)
+	}
+	address := "127.0.0.1:" + strconv.Itoa(prepared.HTTPPort)
+	// An in-flight (partial) request makes Shutdown wait for the context
+	// instead of returning immediately.
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: devstack.test\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runtime.StopSite(ctx, spec.ID, false); err == nil {
+		t.Fatal("StopSite reported success while a request was still in flight")
+	}
+
+	runtime.mu.Lock()
+	server := runtime.sites[spec.ID].server
+	runtime.mu.Unlock()
+	if server != nil {
+		t.Fatal("a failed shutdown left a phantom server that blocks a real restart")
+	}
+	if _, err := runtime.StartSite(context.Background(), spec.ID); err != nil {
+		t.Fatalf("restart after a failed shutdown: %v", err)
+	}
+	response, err := http.Get("http://" + address + "/")
+	if err != nil {
+		t.Fatalf("restarted site is not listening: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("restarted site status = %d", response.StatusCode)
+	}
+	if err := runtime.StopSite(context.Background(), spec.ID, false); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -368,7 +419,20 @@ func newTestRuntimeOnly(t *testing.T) (*Runtime, string) {
 }
 
 func TestAgentInstallRuntimeCatalogValidationAndListing(t *testing.T) {
-	runtime, _ := newTestRuntimeOnly(t)
+	runtime, root := newTestRuntimeOnly(t)
+	// Stage a runnable build so the test never downloads the real 242 MB PHP
+	// archive. The compatibility gate executes both binaries on Linux; a
+	// trivial script exits 0.
+	buildDir := filepath.Join(root, "runtimes", "php@8.4.27-r1")
+	for _, binary := range []string{"bin/php", "sbin/php-fpm"} {
+		path := filepath.Join(buildDir, filepath.FromSlash(binary))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	resp, err := runtime.InstallRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "php@8.4.27-r1"})
 	if err != nil {
 		t.Fatalf("InstallRuntime(php@8.4.27-r1) = %v", err)
@@ -385,6 +449,17 @@ func TestAgentInstallRuntimeCatalogValidationAndListing(t *testing.T) {
 	}
 	if err := runtime.RemoveRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "php@8.4.27-r1"}); err != nil {
 		t.Fatalf("RemoveRuntime = %v", err)
+	}
+}
+
+func TestAgentInstallRuntimeFailsClosedWhenTheBuildIsMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("runtime downloads and binary checks are disabled on native Windows")
+	}
+	agentRuntime, _ := newTestRuntimeOnly(t)
+	t.Setenv("DEVSTACK_NO_DOWNLOAD", "1")
+	if _, err := agentRuntime.InstallRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "node@24.22.1"}); err == nil {
+		t.Fatal("InstallRuntime registered a runtime that was never installed")
 	}
 }
 

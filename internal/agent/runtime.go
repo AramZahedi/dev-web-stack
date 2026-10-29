@@ -37,6 +37,7 @@ type Runtime struct {
 	mu          sync.Mutex
 	sites       map[string]*runtimeSite
 	runtimes    map[string]agentproto.RuntimeResponse
+	runtimeMu   sync.Mutex
 	termMu      sync.Mutex
 	termTickets map[string]*terminalTicket
 }
