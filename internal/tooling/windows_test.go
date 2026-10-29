@@ -264,3 +264,66 @@ func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
 }
+
+func TestWSLComposerWrapperScriptContainsRequiredExtensions(t *testing.T) {
+	script := WSLComposerWrapperScript()
+	if !strings.HasPrefix(script, "#!/bin/sh") {
+		t.Fatalf("wrapper script missing shebang: %s", script)
+	}
+	required := []string{
+		"extension=phar.so",
+		"extension=mbstring.so",
+		"extension=openssl.so",
+		"extension=curl.so",
+		"/data/devstack/tools/composer/composer.phar",
+		"readlink -f",
+	}
+	for _, req := range required {
+		if !strings.Contains(script, req) {
+			t.Errorf("wrapper script missing %q:\n%s", req, script)
+		}
+	}
+}
+
+func TestProvisionWSLComposerFilesCreatesExpectedLayout(t *testing.T) {
+	wslRoot := t.TempDir()
+	pharData := []byte("mock-composer-phar-content")
+	version := "2.10.3"
+
+	if err := ProvisionWSLComposerFiles(wslRoot, pharData, version); err != nil {
+		t.Fatalf("ProvisionWSLComposerFiles failed: %v", err)
+	}
+
+	pharPath := filepath.Join(wslRoot, "tools", "composer", "composer.phar")
+	gotPhar, err := os.ReadFile(pharPath)
+	if err != nil {
+		t.Fatalf("read composer.phar: %v", err)
+	}
+	if string(gotPhar) != string(pharData) {
+		t.Errorf("composer.phar = %q, want %q", gotPhar, pharData)
+	}
+
+	versionPath := filepath.Join(wslRoot, "tools", "composer", "VERSION")
+	gotVersion, err := os.ReadFile(versionPath)
+	if err != nil {
+		t.Fatalf("read VERSION: %v", err)
+	}
+	if strings.TrimSpace(string(gotVersion)) != version {
+		t.Errorf("VERSION = %q, want %q", gotVersion, version)
+	}
+
+	for _, rel := range []string{
+		filepath.Join("tools", "composer", "bin", "composer"),
+		filepath.Join("bin", "composer"),
+	} {
+		wrapperPath := filepath.Join(wslRoot, rel)
+		gotWrapper, err := os.ReadFile(wrapperPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if !strings.Contains(string(gotWrapper), "composer.phar") {
+			t.Errorf("%s missing composer.phar reference:\n%s", rel, gotWrapper)
+		}
+	}
+}
+

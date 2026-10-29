@@ -1,9 +1,11 @@
 package tooling
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -228,3 +230,91 @@ func hasParentSegment(value string) bool {
 	}
 	return false
 }
+
+// WSLComposerWrapperScript returns the robust POSIX shell wrapper executed
+// inside WSL. It inspects the active PHP binary and dynamically injects the
+// Composer-required extensions (phar, mbstring, openssl, curl) from the runtime.
+func WSLComposerWrapperScript() string {
+	return `#!/bin/sh
+PHP_BIN="/usr/local/bin/php"
+if [ -e "$PHP_BIN" ]; then
+    REAL_PHP="$(readlink -f "$PHP_BIN")"
+    PHP_DIR="$(dirname "$(dirname "$REAL_PHP")")"
+    EXT_DIR="$PHP_DIR/lib/php/extensions"
+    if [ -d "$EXT_DIR" ]; then
+        exec "$PHP_BIN" -d extension_dir="$EXT_DIR" -d extension=phar.so -d extension=mbstring.so -d extension=openssl.so -d extension=curl.so /data/devstack/tools/composer/composer.phar "$@"
+    fi
+fi
+exec php /data/devstack/tools/composer/composer.phar "$@"
+`
+}
+
+// ProvisionWSLComposerFiles lays down the composer artifacts on the target
+// WSL filesystem (typically accessed via UNC path or temp directory in tests).
+func ProvisionWSLComposerFiles(wslDataDir string, pharData []byte, version string) error {
+	if strings.TrimSpace(wslDataDir) == "" {
+		return errors.New("tooling: WSL data directory is empty")
+	}
+	toolsDir := filepath.Join(wslDataDir, "tools", "composer")
+	binDir := filepath.Join(toolsDir, "bin")
+	globalBinDir := filepath.Join(wslDataDir, "bin")
+	for _, dir := range []string{toolsDir, binDir, globalBinDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("tooling: create WSL directory %s: %w", dir, err)
+		}
+	}
+
+	pharPath := filepath.Join(toolsDir, "composer.phar")
+	if err := os.WriteFile(pharPath, pharData, 0o644); err != nil {
+		return fmt.Errorf("tooling: write WSL composer.phar: %w", err)
+	}
+
+	versionPath := filepath.Join(toolsDir, "VERSION")
+	if err := os.WriteFile(versionPath, []byte(strings.TrimSpace(version)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("tooling: write WSL composer VERSION: %w", err)
+	}
+
+	wrapperScript := []byte(WSLComposerWrapperScript())
+	for _, target := range []string{
+		filepath.Join(binDir, "composer"),
+		filepath.Join(globalBinDir, "composer"),
+	} {
+		if err := os.WriteFile(target, wrapperScript, 0o755); err != nil {
+			return fmt.Errorf("tooling: write WSL composer wrapper %s: %w", target, err)
+		}
+	}
+	return nil
+}
+
+// ProvisionWSLComposer deploys Composer into the managed WSL distro.
+func ProvisionWSLComposer(ctx context.Context, distro string, source composerSource, localPharPath string) error {
+	if distro == "" {
+		distro = "devstack"
+	}
+	if !wslDistroPattern.MatchString(distro) {
+		return fmt.Errorf("tooling: invalid WSL distro name %q", distro)
+	}
+	// Locate UNC path to /data/devstack
+	wslDataDir := fmt.Sprintf(`\\wsl.localhost\%s\data\devstack`, distro)
+	if _, err := os.Stat(wslDataDir); err != nil {
+		wslDataDir = fmt.Sprintf(`\\wsl$\%s\data\devstack`, distro)
+		if _, err := os.Stat(wslDataDir); err != nil {
+			return fmt.Errorf("tooling: WSL data directory not accessible: %w", err)
+		}
+	}
+
+	pharData, err := os.ReadFile(localPharPath)
+	if err != nil {
+		return fmt.Errorf("tooling: read local composer.phar: %w", err)
+	}
+
+	if err := ProvisionWSLComposerFiles(wslDataDir, pharData, source.Version); err != nil {
+		return err
+	}
+
+	// Symlink into /usr/local/bin/composer inside WSL if wsl.exe is available
+	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "bash", "-c", "mkdir -p /usr/local/bin && ln -sf /data/devstack/bin/composer /usr/local/bin/composer && chmod +x /usr/local/bin/composer /data/devstack/bin/composer /data/devstack/tools/composer/bin/composer")
+	_ = cmd.Run()
+	return nil
+}
+

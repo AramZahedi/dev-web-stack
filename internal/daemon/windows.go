@@ -924,12 +924,23 @@ func (h *helperAdapter) devstackHome() string {
 	return platform.DefaultRoot("windows")
 }
 
+func (h *helperAdapter) toolShimName(id string) string {
+	switch id {
+	case helperproto.ToolPHPDefault:
+		return "php.cmd"
+	case helperproto.ToolComposer:
+		return "composer.cmd"
+	default:
+		return id + ".cmd"
+	}
+}
+
 func (h *helperAdapter) ToolStatus(ctx context.Context) (helperproto.ToolStatusResponse, error) {
 	home := h.devstackHome()
 	binDir := filepath.Join(home, "bin")
 	var tools []helperproto.ToolStatus
 	for _, id := range []string{helperproto.ToolPHPDefault, helperproto.ToolComposer} {
-		wrapper := filepath.Join(binDir, id+".cmd")
+		wrapper := filepath.Join(binDir, h.toolShimName(id))
 		status := helperproto.ToolStatus{
 			ID:          id,
 			WrapperPath: wrapper,
@@ -947,7 +958,7 @@ func (h *helperAdapter) ToolStatus(ctx context.Context) (helperproto.ToolStatusR
 func (h *helperAdapter) ToolInstall(ctx context.Context, id string, force bool) (helperproto.ToolStatus, error) {
 	home := h.devstackHome()
 	_ = tooling.EnsureGlobalWindowsToolShims(home, "")
-	wrapper := filepath.Join(home, "bin", id+".cmd")
+	wrapper := filepath.Join(home, "bin", h.toolShimName(id))
 	return helperproto.ToolStatus{
 		ID:          id,
 		Installed:   true,
@@ -959,7 +970,7 @@ func (h *helperAdapter) ToolInstall(ctx context.Context, id string, force bool) 
 
 func (h *helperAdapter) ToolRemove(ctx context.Context, id string) (helperproto.ToolStatus, error) {
 	home := h.devstackHome()
-	wrapper := filepath.Join(home, "bin", id+".cmd")
+	wrapper := filepath.Join(home, "bin", h.toolShimName(id))
 	_ = os.Remove(wrapper)
 	return helperproto.ToolStatus{
 		ID:          id,
@@ -1391,14 +1402,6 @@ func (a *windowsAgentServiceAdapter) ensureAwake(ctx context.Context) (*agentcli
 		}
 	}
 	return a.get()
-}
-
-func (a *windowsAgentServiceAdapter) BrowseFS(ctx context.Context, path string) (agentproto.FSListing, error) {
-	c, err := a.ensureAwake(ctx)
-	if err != nil {
-		return agentproto.FSListing{}, err
-	}
-	return c.BrowseFS(ctx, path)
 }
 
 func (a *windowsAgentServiceAdapter) ServiceAction(ctx context.Context, req agentproto.ServiceRequest) (agentproto.ServiceResponse, error) {

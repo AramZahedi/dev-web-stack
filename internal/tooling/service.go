@@ -268,6 +268,9 @@ func (s *Service) InstallTool(ctx context.Context, id string, force bool) (helpe
 		if err := s.ensureWindowsToolShims(); err != nil {
 			return helperproto.ToolStatus{}, err
 		}
+		if runtime.GOOS == "windows" {
+			_ = ProvisionWSLComposer(ctx, s.deps.WSLDistro, source, ComposerPHARPath(s.deps.Paths))
+		}
 		return s.helperInstallStatus(ctx, id, force)
 	default:
 		return helperproto.ToolStatus{}, fmt.Errorf("%w: %q", ErrUnsupportedTool, id)

@@ -570,3 +570,77 @@ func TestIsConnectionRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsHelperAdapterToolLifecycle(t *testing.T) {
+	home := t.TempDir()
+	binDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &helperAdapter{home: home}
+	ctx := context.Background()
+
+	// Initial status when no shims exist
+	resp, err := adapter.ToolStatus(ctx)
+	if err != nil {
+		t.Fatalf("ToolStatus failed: %v", err)
+	}
+	if len(resp.Tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(resp.Tools))
+	}
+	for _, tool := range resp.Tools {
+		if tool.Installed || tool.Managed {
+			t.Errorf("tool %s initially reported installed=%v managed=%v, want false", tool.ID, tool.Installed, tool.Managed)
+		}
+	}
+
+	// Create shims: php.cmd and composer.cmd
+	if err := os.WriteFile(filepath.Join(binDir, "php.cmd"), []byte("@echo off\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "composer.cmd"), []byte("@echo off\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err = adapter.ToolStatus(ctx)
+	if err != nil {
+		t.Fatalf("ToolStatus with shims failed: %v", err)
+	}
+	for _, tool := range resp.Tools {
+		if !tool.Installed || !tool.Managed {
+			t.Errorf("tool %s with shim reported installed=%v managed=%v, want true", tool.ID, tool.Installed, tool.Managed)
+		}
+		if tool.ID == helperproto.ToolPHPDefault && !strings.HasSuffix(tool.WrapperPath, "php.cmd") {
+			t.Errorf("php-default wrapper path = %q, want ending in php.cmd", tool.WrapperPath)
+		}
+		if tool.ID == helperproto.ToolComposer && !strings.HasSuffix(tool.WrapperPath, "composer.cmd") {
+			t.Errorf("composer wrapper path = %q, want ending in composer.cmd", tool.WrapperPath)
+		}
+	}
+
+	// Remove composer
+	remResp, err := adapter.ToolRemove(ctx, helperproto.ToolComposer)
+	if err != nil {
+		t.Fatalf("ToolRemove(composer) failed: %v", err)
+	}
+	if remResp.Installed || remResp.Managed {
+		t.Errorf("ToolRemove(composer) returned installed=%v managed=%v, want false", remResp.Installed, remResp.Managed)
+	}
+	if _, err := os.Stat(filepath.Join(binDir, "composer.cmd")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("composer.cmd still exists after remove")
+	}
+
+	// Remove php-default
+	remPHP, err := adapter.ToolRemove(ctx, helperproto.ToolPHPDefault)
+	if err != nil {
+		t.Fatalf("ToolRemove(php-default) failed: %v", err)
+	}
+	if remPHP.Installed || remPHP.Managed {
+		t.Errorf("ToolRemove(php-default) returned installed=%v managed=%v, want false", remPHP.Installed, remPHP.Managed)
+	}
+	if _, err := os.Stat(filepath.Join(binDir, "php.cmd")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("php.cmd still exists after remove")
+	}
+}
+
