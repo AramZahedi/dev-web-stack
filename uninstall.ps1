@@ -70,6 +70,22 @@ if ($Help) {
 # Determine effective target directory
 if ([string]::IsNullOrEmpty($InstallDir)) { $userProf = if ($env:USERPROFILE) { $env:USERPROFILE } else { "C:\Users\$env:USERNAME" }; $InstallDir = Join-Path $userProf ".devstack" }; $targetDir = if (-not [string]::IsNullOrEmpty($TestSandbox)) { $TestSandbox } else { $InstallDir }
 $isSandbox = -not [string]::IsNullOrEmpty($TestSandbox)
+
+$script:LoggedTestOverrides = @{}
+function Get-TestOverride([string]$Name) {
+    if (-not $isSandbox) {
+        return $null
+    }
+    $val = [Environment]::GetEnvironmentVariable($Name)
+    if ($null -ne $val -and $val -ne "") {
+        if (-not $script:LoggedTestOverrides.ContainsKey($Name)) {
+            $script:LoggedTestOverrides[$Name] = $true
+            Write-Host "devstack uninstaller: [TestSandbox] Using test override: $Name=$val"
+        }
+        return $val
+    }
+    return $null
+}
 $binDir = Join-Path $targetDir "bin"
 $systemDir = Join-Path $targetDir "system"
 $wslDistroDir = Join-Path $targetDir "wsl\devstack"
@@ -146,10 +162,30 @@ if ($DryRun) {
         }
     } catch {}
 
-    # Clean Firefox policy ownership marker if present
-    $firefoxMarker = Join-Path $systemDir "firefox-policy-managed"
-    if (Test-Path $firefoxMarker) {
-        Remove-Item -Path $firefoxMarker -Force -ErrorAction SilentlyContinue
+    # Remove the Firefox enterprise-root policy only when devstack recorded
+    # ownership. The helper runs as LocalSystem, so its marker may be in the
+    # system profile rather than the installing user's tree.
+    $firefoxMarkers = @(
+        (Join-Path $systemDir "firefox-policy-managed"),
+        "C:\Windows\system32\config\systemprofile\.devstack\system\firefox-policy-managed"
+    )
+    $ownsFirefoxPolicy = $false
+    foreach ($marker in $firefoxMarkers) {
+        if (Test-Path $marker) {
+            try {
+                if ((Get-Content -Path $marker -Raw -ErrorAction Stop).Trim() -eq "devstack-owned") {
+                    $ownsFirefoxPolicy = $true
+                }
+            } catch {}
+        }
+    }
+    if ($ownsFirefoxPolicy) {
+        try {
+            & reg.exe delete "HKLM\Software\Policies\Mozilla\Firefox\Certificates" /v ImportEnterpriseRoots /f 2>$null | Out-Null
+        } catch {}
+    }
+    foreach ($marker in $firefoxMarkers) {
+        Remove-Item -Path $marker -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -194,7 +230,7 @@ if ($DryRun) {
 }
 
 # Also clean WSL distro /etc/hosts if distro exists and not in sandbox
-if (-not $DryRun -and -not $isSandbox -and ($env:DEVSTACK_TEST_MOCK_WSL -ne "true")) {
+if (-not $DryRun -and -not $isSandbox -and ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -ne "true")) {
     try {
         & wsl.exe -d devstack -u root -- sed -i '/# BEGIN DEVSTACK MANAGED HOSTS/,/# END DEVSTACK MANAGED HOSTS/d' /etc/hosts 2>$null
         & wsl.exe -d devstack -u root -- sed -i '/# BEGIN devstack/,/# END devstack/d' /etc/hosts 2>$null
@@ -202,19 +238,23 @@ if (-not $DryRun -and -not $isSandbox -and ($env:DEVSTACK_TEST_MOCK_WSL -ne "tru
 }
 
 # -----------------------------------------------------------------------------
-# 5. Remove Windows Firewall Rule
+# 5. Remove Windows Firewall Rules
 # -----------------------------------------------------------------------------
-$ruleName = "devstack-daemon-proxy"
-Write-Host "devstack uninstaller: Removing Windows Firewall rule '$ruleName'..."
+$ruleNames = @("devstack-daemon-proxy", "Devstack WSL Proxy HTTP", "Devstack WSL Proxy HTTPS")
+Write-Host "devstack uninstaller: Removing Windows Firewall rules: $($ruleNames -join ', ')..."
 if ($DryRun) {
-    Write-Host "devstack uninstaller: [DryRun] Would remove firewall rule '$ruleName'"
+    Write-Host "devstack uninstaller: [DryRun] Would remove firewall rules: $($ruleNames -join ', ')"
 } elseif (-not $isSandbox) {
-    try {
-        Remove-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
-    } catch {}
-    try {
-        & netsh.exe advfirewall firewall delete rule name="$ruleName" 2>$null | Out-Null
-    } catch {}
+    foreach ($ruleName in $ruleNames) {
+        try {
+            Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -eq $ruleName -or $_.DisplayName -eq $ruleName
+            } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        } catch {}
+        try {
+            & netsh.exe advfirewall firewall delete rule name="$ruleName" 2>$null | Out-Null
+        } catch {}
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -266,7 +306,7 @@ if ($PurgeDistro) {
     Write-Host "devstack uninstaller: Purging WSL distro 'devstack'..."
     if ($DryRun) {
         Write-Host "devstack uninstaller: [DryRun] Would unregister WSL distro 'devstack'"
-    } elseif ($isSandbox -or ($env:DEVSTACK_TEST_MOCK_WSL -eq "true")) {
+    } elseif ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
         if (Test-Path $wslDistroDir) {
             Remove-Item -Path $wslDistroDir -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -326,6 +366,19 @@ if ($PurgeData) {
         if (Test-Path $sDir) {
             Remove-Item -Path (Join-Path $sDir "agent-token") -Force -ErrorAction SilentlyContinue
             Remove-Item -Path (Join-Path $sDir "agent-pin") -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path (Join-Path $sDir "api-token") -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Remove CA material wherever the helper may have created it, including
+    # legacy LocalSystem-profile installs.
+    $caDirs = @(
+        (Join-Path $systemDir "pki"),
+        "C:\Windows\system32\config\systemprofile\.devstack\system\pki"
+    )
+    foreach ($caDir in $caDirs) {
+        if (Test-Path $caDir) {
+            Remove-Item -Path $caDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 

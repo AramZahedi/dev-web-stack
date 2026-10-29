@@ -17,6 +17,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
@@ -24,6 +25,7 @@ import (
 var runWSL = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	command := exec.CommandContext(ctx, "wsl.exe", args...)
 	command.WaitDelay = 3 * time.Second
+	platform.ConfigureProcess(command)
 	command.Stdin = stdin
 	command.Stdout = stdout
 	command.Stderr = stderr

@@ -64,6 +64,18 @@ func (s *Server) handleInstallRuntime(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, build)
 }
 
+// validateRuntimeID rejects transport-level path syntax before the ID reaches a
+// runtime service. Registry/catalog membership is enforced by the service.
+func validateRuntimeID(id string) error {
+	if id == "" || id == "." || id == ".." {
+		return errors.New("invalid runtime id")
+	}
+	if strings.ContainsAny(id, "/\\\x00") || strings.Contains(id, "..") {
+		return errors.New("invalid runtime id")
+	}
+	return nil
+}
+
 func (s *Server) handleRemoveRuntime(w http.ResponseWriter, r *http.Request) {
 	if s.runtimes == nil {
 		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "runtime service is not available", nil)
@@ -72,6 +84,10 @@ func (s *Server) handleRemoveRuntime(w http.ResponseWriter, r *http.Request) {
 	buildID := strings.TrimSpace(r.PathValue("id"))
 	if buildID == "" {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "runtime id is required", nil)
+		return
+	}
+	if err := validateRuntimeID(buildID); err != nil {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, err.Error(), nil)
 		return
 	}
 	if s.sites != nil {

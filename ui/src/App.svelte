@@ -11,7 +11,7 @@
   import Settings from './routes/Settings.svelte';
   import NotFound from './routes/NotFound.svelte';
   import { initSession, refreshDaemon } from './lib/stores';
-  import { openEvents } from './lib/api';
+  import { authenticateFromFragment, openEvents } from './lib/api';
 
   const routes = {
     '/': Sites,
@@ -26,14 +26,28 @@
   };
 
   onMount(() => {
-    void initSession();
-    void refreshDaemon();
-    const closeEvents = openEvents((event) => {
-      if (/^(site|runtime|doctor|trust|service)\./.test(event.type)) {
-        window.dispatchEvent(new CustomEvent('devstack:refresh'));
+    let cancelled = false;
+    let closeEvents = () => {};
+    void (async () => {
+      try {
+        await authenticateFromFragment();
+      } catch {
+        // The session state below surfaces the locked dashboard; the token in
+        // the fragment is one-shot and has already been removed from history.
       }
-    });
-    return closeEvents;
+      if (cancelled) return;
+      void initSession();
+      void refreshDaemon();
+      closeEvents = openEvents((event) => {
+        if (/^(site|runtime|doctor|trust|service)\./.test(event.type)) {
+          window.dispatchEvent(new CustomEvent('devstack:refresh'));
+        }
+      });
+    })();
+    return () => {
+      cancelled = true;
+      closeEvents();
+    };
   });
 </script>
 

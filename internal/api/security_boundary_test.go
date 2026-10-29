@@ -75,6 +75,109 @@ func TestSecurityBoundaryRejectsSpoofedForwardedFor(t *testing.T) {
 	}
 }
 
+func TestAuthTokenGateProtectsDashboardAPI(t *testing.T) {
+	const token = "install-token-0123456789abcdef0123456789abcdef"
+	fx := newFixture(t, Config{UserHome: t.TempDir(), AuthToken: token})
+	handler := fx.server.Handler()
+
+	do := func(method, path string, headers map[string]string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "http://127.0.0.1"+path, nil)
+		req.RemoteAddr = "127.0.0.1:54321"
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		for _, cookie := range cookies {
+			req.AddCookie(cookie)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Health stays reachable for local diagnostics.
+	if rec := do(http.MethodGet, "/api/v1/health", nil); rec.Code != http.StatusOK {
+		t.Fatalf("health without token = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Every other API route requires the install token.
+	for _, path := range []string{"/api/v1/session", "/api/v1/sites", "/api/v1/services"} {
+		if rec := do(http.MethodGet, path, nil); rec.Code != http.StatusForbidden {
+			t.Fatalf("%s without token = %d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := do(http.MethodGet, "/api/v1/session", map[string]string{"X-Devstack-Token": "wrong"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("session with wrong token = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// The token header bootstraps an HttpOnly auth cookie.
+	rec := do(http.MethodPost, "/api/v1/auth", map[string]string{"X-Devstack-Token": token})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("auth bootstrap = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var authCookie *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == authCookieName {
+			authCookie = cookie
+			break
+		}
+	}
+	if authCookie == nil || !authCookie.HttpOnly || authCookie.Value != token {
+		t.Fatalf("auth cookie = %+v", authCookie)
+	}
+
+	if rec := do(http.MethodGet, "/api/v1/session", nil, authCookie); rec.Code != http.StatusOK {
+		t.Fatalf("session with auth cookie = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := do(http.MethodGet, "/api/v1/sites", nil, authCookie); rec.Code != http.StatusOK {
+		t.Fatalf("sites with auth cookie = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := do(http.MethodGet, "/api/v1/sites", map[string]string{"X-Devstack-Token": token}); rec.Code != http.StatusOK {
+		t.Fatalf("sites with token header = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// The SID-authenticated control pipe does not need the browser token.
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/sites", nil)
+	req.RemoteAddr = "172.25.48.1:54321"
+	req = req.WithContext(context.WithValue(req.Context(), socketAuthKey{}, true))
+	socketRec := httptest.NewRecorder()
+	handler.ServeHTTP(socketRec, req)
+	if socketRec.Code != http.StatusOK {
+		t.Fatalf("socket-authenticated sites = %d body=%s", socketRec.Code, socketRec.Body.String())
+	}
+}
+
+func TestAuthBootstrapRejectsWrongTokenAndSetsSecureCookie(t *testing.T) {
+	const token = "secure-install-token-0123456789abcdef"
+	fx := newFixture(t, Config{UserHome: t.TempDir(), AuthToken: token})
+	handler := fx.server.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/auth", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Devstack-Token", "wrong")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong bootstrap token = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("wrong bootstrap set cookies: %+v", rec.Result().Cookies())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/auth", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set("X-Devstack-Token", token)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("bootstrap = %d body=%s", rec.Code, rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != authCookieName || !cookies[0].Secure || !cookies[0].HttpOnly {
+		t.Fatalf("bootstrap cookie = %+v", cookies)
+	}
+}
+
 func TestSecurityBoundaryAllowsLoopbackAndSocketAuth(t *testing.T) {
 	_, fx := newTestAPIWithFakes(t)
 	handler := fx.server.Handler()

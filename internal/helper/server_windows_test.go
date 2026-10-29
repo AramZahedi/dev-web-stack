@@ -80,6 +80,43 @@ func TestWindowsHelperTrustInstallUsesFixedMachineRootAndFirefoxPolicy(t *testin
 	}
 }
 
+func TestWindowsHelperDerivesSystemAndCAPathsFromConfigPath(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "custom", "system", "helper.yaml")
+	server, err := NewServer(Config{AllowSID: testHelperSID, ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	systemDir := filepath.Dir(configPath)
+	if server.cfg.SystemDir != systemDir {
+		t.Fatalf("SystemDir = %q, want %q", server.cfg.SystemDir, systemDir)
+	}
+	if server.cfg.CADir != filepath.Join(systemDir, "pki") {
+		t.Fatalf("CADir = %q", server.cfg.CADir)
+	}
+	if server.cfg.RootCertPath != filepath.Join(systemDir, "pki", "root.crt") {
+		t.Fatalf("RootCertPath = %q", server.cfg.RootCertPath)
+	}
+}
+
+func TestWindowsHelperHonorsExplicitSystemPaths(t *testing.T) {
+	root := t.TempDir()
+	server, err := NewServer(Config{
+		AllowSID:     testHelperSID,
+		ConfigPath:   filepath.Join(root, "config", "helper.yaml"),
+		SystemDir:    filepath.Join(root, "system"),
+		CADir:        filepath.Join(root, "ca"),
+		RootCertPath: filepath.Join(root, "ca", "custom-root.crt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.cfg.SystemDir != filepath.Join(root, "system") ||
+		server.cfg.CADir != filepath.Join(root, "ca") ||
+		server.cfg.RootCertPath != filepath.Join(root, "ca", "custom-root.crt") {
+		t.Fatalf("config = %+v", server.cfg)
+	}
+}
+
 func TestWindowsHelperHostsSyncUsesManagedBlockAndRejectsOtherOperations(t *testing.T) {
 	hostsPath := filepath.Join(t.TempDir(), "hosts")
 	if err := os.WriteFile(hostsPath, []byte("127.0.0.1 localhost\r\n"), 0o644); err != nil {

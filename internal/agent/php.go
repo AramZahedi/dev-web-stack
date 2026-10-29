@@ -138,7 +138,9 @@ func (r *Runtime) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequ
 	return resp, nil
 }
 
-// RemoveRuntime deletes a registered runtime.
+// RemoveRuntime deletes a registered runtime. The request ID is used only as a
+// map key; the path recorded at install time is the only path ever removed.
+// Unknown IDs are an idempotent no-op.
 func (r *Runtime) RemoveRuntime(ctx context.Context, req agentproto.RuntimeRequest) error {
 	if err := ctxErr(ctx); err != nil {
 		return err
@@ -149,12 +151,57 @@ func (r *Runtime) RemoveRuntime(ctx context.Context, req agentproto.RuntimeReque
 	}
 
 	r.mu.Lock()
+	registered, ok := r.runtimes[id]
+	if !ok {
+		r.mu.Unlock()
+		return nil
+	}
+	targetDir := strings.TrimSpace(registered.Path)
+	if targetDir == "" {
+		if _, err := catalog.ParseID(id); err != nil {
+			r.mu.Unlock()
+			return fmt.Errorf("agent: remove runtime %q: %w", id, err)
+		}
+		targetDir = filepath.Join(r.root, "runtimes", id)
+	}
+	if err := validateRuntimePath(r.root, targetDir); err != nil {
+		r.mu.Unlock()
+		return fmt.Errorf("agent: remove runtime %q: %w", id, err)
+	}
 	delete(r.runtimes, id)
 	_ = r.saveRuntimesLocked()
 	r.mu.Unlock()
 
-	targetDir := filepath.Join(r.root, "runtimes", id)
-	_ = os.RemoveAll(targetDir)
+	if err := os.RemoveAll(targetDir); err != nil {
+		return fmt.Errorf("agent: remove runtime %q files: %w", id, err)
+	}
+	return nil
+}
+
+// validateRuntimePath confines a registered runtime path to <root>/runtimes.
+func validateRuntimePath(root, target string) error {
+	if root == "" || target == "" {
+		return errors.New("agent: runtime path is empty")
+	}
+	if !filepath.IsAbs(target) {
+		return fmt.Errorf("agent: runtime path %q is not absolute", target)
+	}
+	base, err := filepath.Abs(filepath.Join(root, "runtimes"))
+	if err != nil {
+		return fmt.Errorf("agent: resolve runtime root: %w", err)
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("agent: resolve runtime path: %w", err)
+	}
+	rel, err := filepath.Rel(base, absTarget)
+	if err != nil {
+		return fmt.Errorf("agent: compare runtime path: %w", err)
+	}
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("agent: runtime path %q escapes %s", absTarget, base)
+	}
 	return nil
 }
 
@@ -449,8 +496,16 @@ func (r *Runtime) loadRuntimes() {
 }
 
 func downloadAndExtractArchive(ctx context.Context, url, expectedSHA256, destDir string) error {
-	tmpFile := filepath.Join(os.TempDir(), "devstack-runtime-"+filepath.Base(url))
-	defer os.Remove(tmpFile)
+	expected := strings.ToLower(strings.TrimSpace(expectedSHA256))
+	if len(expected) != 64 {
+		return errors.New("agent: runtime archive checksum is missing or malformed")
+	}
+	if _, err := hex.DecodeString(expected); err != nil {
+		return fmt.Errorf("agent: runtime archive checksum is invalid: %w", err)
+	}
+	if strings.TrimSpace(destDir) == "" {
+		return errors.New("agent: runtime destination is empty")
+	}
 
 	curlBin, err := exec.LookPath("curl")
 	if err != nil {
@@ -461,26 +516,64 @@ func downloadAndExtractArchive(ctx context.Context, url, expectedSHA256, destDir
 		return err
 	}
 
-	cmdCurl := exec.CommandContext(ctx, curlBin, "--http1.1", "-fsSL", "-o", tmpFile, url)
+	workDir, err := os.MkdirTemp("", "devstack-runtime-")
+	if err != nil {
+		return fmt.Errorf("agent: create runtime download directory: %w", err)
+	}
+	defer os.RemoveAll(workDir)
+	if err := os.Chmod(workDir, 0o700); err != nil {
+		return fmt.Errorf("agent: secure runtime download directory: %w", err)
+	}
+	archivePath := filepath.Join(workDir, "archive.tar.gz")
+	archive, err := os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("agent: create runtime archive: %w", err)
+	}
+	if err := archive.Close(); err != nil {
+		return fmt.Errorf("agent: close runtime archive: %w", err)
+	}
+
+	cmdCurl := exec.CommandContext(ctx, curlBin, "--http1.1", "-fsSL", "-o", archivePath, url)
 	if out, err := cmdCurl.CombinedOutput(); err != nil {
 		return fmt.Errorf("curl: %w (output: %s)", err, string(out))
 	}
 
-	if expectedSHA256 != "" {
-		data, err := os.ReadFile(tmpFile)
-		if err == nil {
-			sum := sha256.Sum256(data)
-			hexSum := hex.EncodeToString(sum[:])
-			if !strings.EqualFold(hexSum, expectedSHA256) {
-				return fmt.Errorf("checksum mismatch: got %s, want %s", hexSum, expectedSHA256)
-			}
-		}
+	data, err := os.ReadFile(archivePath)
+	if err != nil {
+		return fmt.Errorf("agent: read runtime archive for checksum: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	hexSum := hex.EncodeToString(sum[:])
+	if !strings.EqualFold(hexSum, expected) {
+		return fmt.Errorf("checksum mismatch: got %s, want %s", hexSum, expected)
 	}
 
-	cmdTar := exec.CommandContext(ctx, tarBin, "-xz", "--strip-components=1", "-C", destDir, "-f", tmpFile)
+	if err := os.MkdirAll(filepath.Dir(destDir), 0o755); err != nil {
+		return fmt.Errorf("agent: create runtime parent: %w", err)
+	}
+	staging, err := os.MkdirTemp(filepath.Dir(destDir), filepath.Base(destDir)+".staging-")
+	if err != nil {
+		return fmt.Errorf("agent: create runtime staging: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	if err := os.Chmod(staging, 0o755); err != nil {
+		return fmt.Errorf("agent: prepare runtime staging: %w", err)
+	}
+	cmdTar := exec.CommandContext(ctx, tarBin, "-xz", "--strip-components=1", "-C", staging, "-f", archivePath)
 	if out, err := cmdTar.CombinedOutput(); err != nil {
 		return fmt.Errorf("tar: %w (output: %s)", err, string(out))
 	}
 
+	if entries, err := os.ReadDir(destDir); err == nil && len(entries) != 0 {
+		return fmt.Errorf("agent: runtime destination %s is not empty", destDir)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("agent: inspect runtime destination: %w", err)
+	}
+	if err := os.RemoveAll(destDir); err != nil {
+		return fmt.Errorf("agent: clear runtime destination: %w", err)
+	}
+	if err := os.Rename(staging, destDir); err != nil {
+		return fmt.Errorf("agent: activate runtime: %w", err)
+	}
 	return nil
 }

@@ -794,6 +794,26 @@ func TestRemoveAbsentRuntimeIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRemoveRuntimeRejectsPathTraversalID(t *testing.T) {
+	fx := newFixture(t, Config{UserHome: t.TempDir()})
+
+	for _, path := range []string{
+		"/api/v1/runtimes/..%2F..%2Fetc",
+		"/api/v1/runtimes/..%5C..%5Cetc",
+		"/api/v1/runtimes/php%408.4.4-r1%00",
+	} {
+		rec := fx.request(t, http.MethodDelete, path, nil)
+		assertError(t, rec, http.StatusBadRequest, codeInvalidRequest)
+	}
+
+	fx.runtimes.mu.Lock()
+	removed := append([]string(nil), fx.runtimes.removed...)
+	fx.runtimes.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("runtime service received traversal ids: %v", removed)
+	}
+}
+
 func TestRuntimesDoctorAndTrustHandlers(t *testing.T) {
 	home := t.TempDir()
 	fx := newFixture(t, Config{UserHome: home})

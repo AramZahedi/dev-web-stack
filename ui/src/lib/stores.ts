@@ -45,20 +45,22 @@ export function toastError(title: string, message?: string): void {
 
 export interface SessionState {
   checked: boolean;
+  authenticated: boolean;
   mode: 'mock' | 'api';
 }
 
 export const session = writable<SessionState>({
   checked: false,
+  authenticated: isMockMode,
   mode: isMockMode ? 'mock' : 'api',
 });
 
 export async function initSession(): Promise<void> {
   try {
     await getSession();
-    session.set({ checked: true, mode: isMockMode ? 'mock' : 'api' });
+    session.set({ checked: true, authenticated: true, mode: isMockMode ? 'mock' : 'api' });
   } catch {
-    session.set({ checked: true, mode: isMockMode ? 'mock' : 'api' });
+    session.set({ checked: true, authenticated: isMockMode, mode: isMockMode ? 'mock' : 'api' });
   }
 }
 

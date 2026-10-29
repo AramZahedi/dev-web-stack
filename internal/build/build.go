@@ -520,6 +520,10 @@ func mergeEnvironment(base []string, values map[string]string) []string {
 	return env
 }
 
+// SafeComponent maps a site name to a directory component that cannot escape
+// the build-log root.
+func SafeComponent(value string) string { return safeComponent(value) }
+
 func safeComponent(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || value == "." || value == ".." {

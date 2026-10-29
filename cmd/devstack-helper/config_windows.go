@@ -18,6 +18,9 @@ import (
 type windowsFileConfig struct {
 	AllowSID       *string `yaml:"allow_sid"`
 	Pipe           *string `yaml:"pipe"`
+	SystemDir      *string `yaml:"system_dir"`
+	CADir          *string `yaml:"ca_dir"`
+	RootCert       *string `yaml:"root_cert"`
 	ProxyHTTPPort  *int    `yaml:"proxy_http_port"`
 	ProxyHTTPSPort *int    `yaml:"proxy_https_port"`
 }
@@ -56,6 +59,15 @@ func (cfg windowsFileConfig) apply(opts *windowsOptions) {
 	}
 	if cfg.Pipe != nil {
 		opts.pipe = *cfg.Pipe
+	}
+	if cfg.SystemDir != nil {
+		opts.systemDir = *cfg.SystemDir
+	}
+	if cfg.CADir != nil {
+		opts.caDir = *cfg.CADir
+	}
+	if cfg.RootCert != nil {
+		opts.rootCert = *cfg.RootCert
 	}
 	if cfg.ProxyHTTPPort != nil {
 		opts.proxyHTTPPort = *cfg.ProxyHTTPPort
@@ -141,6 +153,15 @@ func persistWindowsOptions(opts windowsOptions) error {
 	}
 	setWindowsConfigString(root, "allow_sid", opts.allowSID)
 	setWindowsConfigString(root, "pipe", opts.pipe)
+	if opts.systemDir != "" {
+		setWindowsConfigString(root, "system_dir", opts.systemDir)
+	}
+	if opts.caDir != "" {
+		setWindowsConfigString(root, "ca_dir", opts.caDir)
+	}
+	if opts.rootCert != "" {
+		setWindowsConfigString(root, "root_cert", opts.rootCert)
+	}
 	setWindowsConfigInt(root, "proxy_http_port", opts.proxyHTTPPort)
 	setWindowsConfigInt(root, "proxy_https_port", opts.proxyHTTPSPort)
 	var output bytes.Buffer

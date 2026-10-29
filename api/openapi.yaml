@@ -7,14 +7,21 @@ info:
     allowed Host header (127.0.0.1, localhost, or devstack.test, with any
     numeric port); foreign hosts receive 403 before authentication or routing.
 
-    Read-only API GETs and SSE streams do not require a session cookie: the
-    listener is loopback-only and every request has already passed the Host
-    allowlist. Mutations (POST, PATCH, DELETE) require the `devstack_session`
-    cookie and the matching `X-CSRF-Token`; `GET /api/v1/session` creates the
-    cookie when absent and returns that token. CLI requests over the Unix
-    domain socket are authenticated by peer credentials through
-    `WithSocketAuth` and do not need the cookie or the CSRF header, but they
-    still pass the Host allowlist.
+    All API requests except `/api/v1/health` and the `/api/v1/auth`
+    bootstrap require the per-install dashboard token, supplied as the
+    `X-Devstack-Token` header or the HttpOnly `devstack_auth` cookie that
+    `POST /api/v1/auth` issues. The token is stored DPAPI-protected on Windows
+    and as a 0600 file elsewhere. `devstack ui` opens the dashboard with the
+    token in the URL fragment; the browser exchanges it for the cookie.
+
+    Read-only API GETs and SSE streams do not require a session cookie after
+    the install-token gate: the listener is loopback-only and every request has
+    already passed the Host allowlist. Mutations (POST, PATCH, DELETE) require
+    the `devstack_session` cookie and the matching `X-CSRF-Token`;
+    `GET /api/v1/session` creates the cookie when absent and returns that
+    token. CLI requests over the Unix domain socket are authenticated by peer
+    credentials through `WithSocketAuth` and do not need the token, cookie, or
+    the CSRF header, but they still pass the Host allowlist.
 
     Server-sent events (logs and events) use `data: <json>\n\n` frames with
     comment keepalives every 15 seconds. The API request-body guard is
@@ -62,6 +69,37 @@ paths:
         "403":
           $ref: "#/components/responses/ForbiddenHost"
 
+  /api/v1/auth:
+    post:
+      tags: [session]
+      summary: Exchange the per-install token for an auth cookie
+      description: |
+        Validates the per-install dashboard token and sets the HttpOnly
+        `devstack_auth` cookie. The token may also be supplied in the cookie
+        (idempotent re-auth). This route is reachable without an existing
+        token only to report 403; it is exempt from the session/CSRF check.
+      operationId: authenticateDashboard
+      security: []
+      parameters:
+        - in: header
+          name: X-Devstack-Token
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The auth cookie was set.
+          headers:
+            Set-Cookie:
+              description: The HttpOnly devstack_auth cookie.
+              schema:
+                type: string
+        "403":
+          description: Missing or invalid install token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/v1/session:
     get:
       tags: [session]

@@ -18,7 +18,7 @@ if (-not (Test-Path $systemDir)) {
     $systemDir = $HomeDir
 }
 $vbsPath = Join-Path $systemDir "devstack-daemon.vbs"
-$vbsContent = "Set WshShell = CreateObject(""WScript.Shell"")`r`nWshShell.Run """"""$Binary"""" daemon run"", 0, False`r`n"
+$vbsContent = "Set WshShell = CreateObject(""WScript.Shell"")`r`nWshShell.Run """"""$Binary"""" daemon run --home """"$HomeDir"""""", 0, False`r`n"
 Set-Content -Path $vbsPath -Value $vbsContent -Encoding Ascii -Force
 
 $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsPath`"" -WorkingDirectory $HomeDir

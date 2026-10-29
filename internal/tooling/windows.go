@@ -14,6 +14,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 )
 
 var (
@@ -314,6 +315,7 @@ func ProvisionWSLComposer(ctx context.Context, distro string, source composerSou
 
 	// Symlink into /usr/local/bin/composer inside WSL if wsl.exe is available
 	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "bash", "-c", "mkdir -p /usr/local/bin && ln -sf /data/devstack/bin/composer /usr/local/bin/composer && chmod +x /usr/local/bin/composer /data/devstack/bin/composer /data/devstack/tools/composer/bin/composer")
+	platform.ConfigureProcess(cmd)
 	_ = cmd.Run()
 	return nil
 }

@@ -388,6 +388,108 @@ func TestAgentInstallRuntimeCatalogValidationAndListing(t *testing.T) {
 	}
 }
 
+func TestRemoveRuntimeUsesRegisteredPathAndRejectsTraversal(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+
+	victim := filepath.Join(root, "audit-victim")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(victim, "keep")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runtime.RemoveRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "../audit-victim"}); err != nil {
+		t.Fatalf("unknown runtime removal should be idempotent, got %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("traversal build id deleted a path outside the runtime root: %v", err)
+	}
+
+	const id = "php@8.4.27-r1"
+	registered := filepath.Join(root, "runtimes", id)
+	if err := os.MkdirAll(registered, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(registered, "php"), []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime.mu.Lock()
+	runtime.runtimes[id] = agentproto.RuntimeResponse{ID: id, Path: registered}
+	runtime.mu.Unlock()
+	if err := runtime.RemoveRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: id}); err != nil {
+		t.Fatalf("RemoveRuntime(%s) = %v", id, err)
+	}
+	if _, err := os.Stat(registered); !os.IsNotExist(err) {
+		t.Fatalf("registered runtime directory still exists: %v", err)
+	}
+
+	tampered := filepath.Join(root, "tampered-victim")
+	if err := os.MkdirAll(tampered, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tamperedSentinel := filepath.Join(tampered, "keep")
+	if err := os.WriteFile(tamperedSentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runtime.mu.Lock()
+	runtime.runtimes["php@8.4.28-r1"] = agentproto.RuntimeResponse{ID: "php@8.4.28-r1", Path: tampered}
+	runtime.mu.Unlock()
+	if err := runtime.RemoveRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "php@8.4.28-r1"}); err == nil {
+		t.Fatal("RemoveRuntime accepted a registered path outside the runtime root")
+	}
+	if _, err := os.Stat(tamperedSentinel); err != nil {
+		t.Fatalf("tampered registered path was deleted: %v", err)
+	}
+}
+
+func TestAgentCopySourceCopiesAndHashes(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	source := filepath.Join(root, "projects", "source")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("<h1>hello</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "projects", "destination")
+	resp, err := runtime.CopySource(context.Background(), agentproto.SourceCopyRequest{
+		Mode:        "wsl",
+		Source:      source,
+		Destination: destination,
+	})
+	if err != nil {
+		t.Fatalf("CopySource = %v", err)
+	}
+	if resp.Files != 1 || resp.Bytes == 0 || len(resp.SHA256) != 64 {
+		t.Fatalf("response = %+v", resp)
+	}
+	data, err := os.ReadFile(filepath.Join(destination, "index.html"))
+	if err != nil || string(data) != "<h1>hello</h1>" {
+		t.Fatalf("destination = %q, %v", data, err)
+	}
+}
+
+func TestAgentCopySourceRejectsRelativeOrUnknownPaths(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	source := filepath.Join(root, "source")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []agentproto.SourceCopyRequest{
+		{Mode: "wsl", Source: "relative", Destination: filepath.Join(root, "dst")},
+		{Mode: "wsl", Source: source, Destination: "relative"},
+		{Mode: "bogus", Source: source, Destination: filepath.Join(root, "dst")},
+		{Mode: "wsl", Source: source + "\x00", Destination: filepath.Join(root, "dst")},
+	}
+	for _, request := range cases {
+		if _, err := runtime.CopySource(context.Background(), request); err == nil {
+			t.Fatalf("CopySource accepted %+v", request)
+		}
+	}
+}
+
 func TestDebian12PHPCatalogCompatibilityGate(t *testing.T) {
 	tempDir := t.TempDir()
 	if err := CheckDebian12PHPCompatibility(context.Background(), tempDir); err == nil {

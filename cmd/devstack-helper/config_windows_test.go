@@ -34,6 +34,31 @@ func TestWindowsConfigLoadsOnlyFixedProxyTargets(t *testing.T) {
 	}
 }
 
+func TestWindowsConfigLoadsSystemAndCAPaths(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "system", "helper.yaml")
+	systemDir := filepath.Join(root, "custom-system")
+	yaml := "allow_sid: " + allowedHelperSID + "\n" +
+		"system_dir: \"" + strings.ReplaceAll(systemDir, `\`, "/") + "\"\n" +
+		"ca_dir: \"" + strings.ReplaceAll(filepath.Join(systemDir, "ca"), `\`, "/") + "\"\n" +
+		"root_cert: \"" + strings.ReplaceAll(filepath.Join(systemDir, "ca", "root.crt"), `\`, "/") + "\"\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := parseWindowsOptions([]string{"--config", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.systemDir != systemDir ||
+		opts.caDir != filepath.Join(systemDir, "ca") ||
+		opts.rootCert != filepath.Join(systemDir, "ca", "root.crt") {
+		t.Fatalf("options = %+v", opts)
+	}
+}
+
 func TestWindowsConfigPersistsInstallingSIDAndFixedPorts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "helper.yaml")
 	opts := windowsOptions{configPath: path, allowSID: allowedHelperSID, pipe: `\\.\pipe\devstack-helper`, proxyHTTPPort: 8080, proxyHTTPSPort: 8443}

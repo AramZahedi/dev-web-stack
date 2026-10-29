@@ -71,6 +71,12 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.PipeName == "" {
 		cfg.PipeName = DefaultWindowsPipe
 	}
+	// The helper runs as LocalSystem, so USERPROFILE is the system profile.
+	// The installer always passes --config under the real install tree; derive
+	// the system and CA paths from it unless they were supplied explicitly.
+	if cfg.SystemDir == "" && cfg.ConfigPath != "" {
+		cfg.SystemDir = filepath.Dir(cfg.ConfigPath)
+	}
 	if cfg.SystemDir == "" {
 		cfg.SystemDir = DefaultWindowsSystemDir
 	}
@@ -315,7 +321,7 @@ func (s *Server) handleTrustInstall(w http.ResponseWriter, r *http.Request) {
 		writeWindowsError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
 		return
 	}
-	if err := s.trust.InstallRoot(r.Context(), DefaultWindowsRootCert); err != nil {
+	if err := s.trust.InstallRoot(r.Context(), s.cfg.RootCertPath); err != nil {
 		writeWindowsError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
 		return
 	}
@@ -462,7 +468,7 @@ func (s *Server) ensureAuthority(ctx context.Context) (*Authority, error) {
 	if err := s.trust.EnsureStorage(ctx); err != nil {
 		return nil, err
 	}
-	authority, err := LoadOrCreateAuthority(DefaultWindowsCADir, time.Now)
+	authority, err := LoadOrCreateAuthority(s.cfg.CADir, time.Now)
 	if err != nil {
 		return nil, err
 	}

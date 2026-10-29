@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/AramZahedi/dev-web-stack/internal/agent"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
@@ -369,6 +371,31 @@ func (c *Client) TerminalTicket(ctx context.Context, id string, req agentproto.T
 	var out agentproto.TerminalTicketResponse
 	err := c.do(ctx, http.MethodPost, agentproto.PathSiteTerminalFor(id), req, &out)
 	return out, err
+}
+
+// TerminalWebSocket dials the agent's site terminal with a one-time ticket.
+// The caller owns the returned connection and must close it.
+func (c *Client) TerminalWebSocket(ctx context.Context, id, ticket string) (*websocket.Conn, error) {
+	base := strings.TrimRight(c.baseURL, "/")
+	if !strings.HasPrefix(base, "https://") {
+		return nil, errors.New("agentclient: terminal websocket requires an https base URL")
+	}
+	endpoint := "wss://" + strings.TrimPrefix(base, "https://") +
+		agentproto.PathSiteTerminalFor(id) + "?ticket=" + url.QueryEscape(ticket)
+	headers := http.Header{}
+	headers.Set(agentproto.HeaderProtocol, agentproto.ProtocolVersion)
+	headers.Set(agentproto.HeaderAuth, agentproto.BearerPrefix+c.token)
+	conn, resp, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
+		HTTPClient: c.http,
+		HTTPHeader: headers,
+	})
+	if err != nil {
+		if resp != nil {
+			return nil, fmt.Errorf("agentclient: terminal websocket: %w (status %d)", err, resp.StatusCode)
+		}
+		return nil, fmt.Errorf("agentclient: terminal websocket: %w", err)
+	}
+	return conn, nil
 }
 
 // InstallRuntime installs or returns a runtime build.

@@ -24,7 +24,6 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/api"
 	wslbackend "github.com/AramZahedi/dev-web-stack/internal/backend/wsl"
-	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -42,7 +41,6 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
-	"github.com/AramZahedi/dev-web-stack/internal/terminal"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"github.com/AramZahedi/dev-web-stack/internal/wsl"
@@ -163,6 +161,14 @@ func Run(ctx context.Context, opts Options) error {
 
 	certManager := certs.NewManager(st, adapter, paths.PKI, nil)
 
+	agentBaseURL := fmt.Sprintf("https://127.0.0.1:%d", cfg.AgentPort)
+	agentServices := &windowsAgentServiceAdapter{
+		home:    cfg.Home,
+		baseURL: agentBaseURL,
+		distro:  cfg.WSLDistro,
+		logger:  logger,
+	}
+
 	siteService := sites.NewService(sites.Deps{
 		Store:        st,
 		Backend:      wslBackend,
@@ -179,15 +185,9 @@ func Run(ctx context.Context, opts Options) error {
 		PHP:          sites.NewPHPCommands(),
 		PHPBackend:   wslBackend,
 		PHPManifest:  &phpManifest,
+		SourceCopier: agentServices,
 	})
 
-	agentBaseURL := fmt.Sprintf("https://127.0.0.1:%d", cfg.AgentPort)
-	agentServices := &windowsAgentServiceAdapter{
-		home:    cfg.Home,
-		baseURL: agentBaseURL,
-		distro:  cfg.WSLDistro,
-		logger:  logger,
-	}
 	agentDocker, err := servicecontrol.NewAgentDocker(agentServices, "/data/devstack")
 	if err != nil {
 		return fmt.Errorf("daemon: init agent docker: %w", err)
@@ -240,20 +240,9 @@ func Run(ctx context.Context, opts Options) error {
 
 	runtimeService := &windowsRuntimeService{backend: wslBackend, store: st, agent: agentServices}
 
-	buildService := build.NewService(build.Deps{
-		Store:    st,
-		Runtimes: runtimeService,
-		Paths:    paths,
-	})
+	buildService := newWindowsBuildService(agentServices, paths)
 
-	terminalManager := terminal.NewManager(terminal.Deps{
-		Paths:    paths,
-		Runtimes: runtimeService,
-		PHP:      siteService,
-		Logger:   logger,
-		UID:      1000,
-	})
-	defer terminalManager.Close()
+	terminalService := newWindowsTerminalService(agentServices, logger)
 
 	toolingService := tooling.NewService(tooling.Deps{
 		Store:  st,
@@ -286,17 +275,22 @@ func Run(ctx context.Context, opts Options) error {
 		},
 	})
 
+	authToken, err := dashboardAuthToken(cfg.Home)
+	if err != nil {
+		return err
+	}
 	apiServer := api.NewServer(st, siteService, runtimeService, doctorService, logStore, adapter, api.Config{
 		UserHome:      cfg.Home,
 		ProjectsRoot:  cfg.ProjectsRoot,
 		MaxBodyBytes:  int64(cfg.MaxRequestBodyMB) << 20,
+		AuthToken:     authToken,
 		Listeners:     api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},
 		Vhosts:        siteService,
 		Services:      serviceManager,
 		ServiceConfig: serviceConfigService,
 		Tooling:       toolingService,
 		Build:         buildService,
-		Terminal:      terminalManager,
+		Terminal:      terminalService,
 		Performance:   performanceService,
 		WSLFS:         agentServices,
 		Logger:        logger,
@@ -1130,13 +1124,10 @@ func wakeWSL(ctx context.Context, distro string, logger *slog.Logger) {
 	if logger != nil {
 		logger.Info("daemon: waking WSL distro", "distro", distro)
 	}
-	wakeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	wakeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(wakeCtx, "wsl.exe", "-d", distro, "-u", "root", "--exec", "/bin/true")
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-	}
+	platform.ConfigureProcess(cmd)
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
@@ -1155,10 +1146,7 @@ func runWSLKeepalive(ctx context.Context, distro string, logger *slog.Logger) {
 		}
 
 		cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "-u", "root", "--exec", "/bin/sleep", "infinity")
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-		}
+		platform.ConfigureProcess(cmd)
 		cmd.Stdin = nil
 		cmd.Stdout = io.Discard
 		cmd.Stderr = io.Discard
@@ -1179,9 +1167,9 @@ func runWSLKeepalive(ctx context.Context, distro string, logger *slog.Logger) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(1 * time.Second):
+		case <-time.After(250 * time.Millisecond):
 			if logger != nil {
-				logger.Debug("daemon: WSL keepalive exited; restarting", "distro", distro)
+				logger.Info("daemon: WSL keepalive exited; restarting", "distro", distro)
 			}
 		}
 	}
@@ -1235,7 +1223,7 @@ func (a *windowsAgentConfigAdapter) ensureAwake(ctx context.Context) (*agentclie
 		}
 	}
 	wakeWSL(ctx, a.distro, a.logger)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -1262,6 +1250,15 @@ func (a *windowsAgentServiceAdapter) BrowseFS(ctx context.Context, path string) 
 		return agentproto.FSListing{}, err
 	}
 	return c.BrowseFS(ctx, path)
+}
+
+// CopySource performs the verified source-mode move inside the managed distro.
+func (a *windowsAgentServiceAdapter) CopySource(ctx context.Context, req agentproto.SourceCopyRequest) (agentproto.SourceCopyResponse, error) {
+	c, err := a.ensureAwake(ctx)
+	if err != nil {
+		return agentproto.SourceCopyResponse{}, err
+	}
+	return c.CopySource(ctx, req)
 }
 
 func (a *windowsAgentConfigAdapter) ServiceConfig(ctx context.Context, id string) (agentproto.ServiceConfigResponse, error) {
@@ -1384,7 +1381,7 @@ func (a *windowsAgentServiceAdapter) ensureAwake(ctx context.Context) (*agentcli
 		}
 	}
 	wakeWSL(ctx, a.distro, a.logger)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -1699,6 +1696,27 @@ func (s *windowsRuntimeService) Remove(ctx context.Context, buildID string) erro
 	s.ensureClient()
 	if s.backend == nil || s.backend.Client == nil {
 		return errors.New("WSL agent not connected")
+	}
+	if _, err := catalog.ParseID(buildID); err != nil {
+		return err
+	}
+	builds, err := s.List(ctx)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, build := range builds {
+		if build.ID == buildID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		// DELETE is idempotent; an absent runtime cannot be in use.
+		if s.store != nil {
+			_ = s.store.DeleteRuntime(ctx, buildID)
+		}
+		return nil
 	}
 	if err := s.backend.RemoveRuntime(ctx, buildID); err != nil {
 		return err

@@ -4,6 +4,7 @@
 package securestore
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -14,7 +15,14 @@ import (
 )
 
 func storeDir() (string, error) {
-	home := strings.TrimSpace(os.Getenv("DEVSTACK_HOME"))
+	return storeDirAt("")
+}
+
+func storeDirAt(home string) (string, error) {
+	home = strings.TrimSpace(home)
+	if home == "" {
+		home = strings.TrimSpace(os.Getenv("DEVSTACK_HOME"))
+	}
 	if home == "" {
 		userHome, err := os.UserHomeDir()
 		if err != nil {
@@ -35,10 +43,15 @@ func validateName(name string) error {
 // Save writes a secret under name. The file is always 0600; on Windows the
 // bytes are DPAPI-protected first.
 func Save(name string, secret []byte) error {
+	return SaveAt("", name, secret)
+}
+
+// SaveAt is Save for an explicit devstack home.
+func SaveAt(home, name string, secret []byte) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
-	dir, err := storeDir()
+	dir, err := storeDirAt(home)
 	if err != nil {
 		return err
 	}
@@ -83,10 +96,15 @@ func Save(name string, secret []byte) error {
 // Load reads and unseals a secret. A missing secret returns the underlying
 // os.ErrNotExist so callers can provision on first start.
 func Load(name string) ([]byte, error) {
+	return LoadAt("", name)
+}
+
+// LoadAt is Load for an explicit devstack home.
+func LoadAt(home, name string) ([]byte, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
-	dir, err := storeDir()
+	dir, err := storeDirAt(home)
 	if err != nil {
 		return nil, err
 	}
@@ -97,12 +115,40 @@ func Load(name string) ([]byte, error) {
 	return open(data)
 }
 
+// LoadOrCreateAt loads a secret of at least size bytes, or generates and
+// persists a fresh random one. It is used for the per-install dashboard token.
+func LoadOrCreateAt(home, name string, size int) ([]byte, error) {
+	if size <= 0 {
+		return nil, errors.New("securestore: secret size must be positive")
+	}
+	existing, err := LoadAt(home, name)
+	if err == nil && len(existing) >= size {
+		return existing, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	secret := make([]byte, size)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("securestore: generate %s: %w", name, err)
+	}
+	if err := SaveAt(home, name, secret); err != nil {
+		return nil, err
+	}
+	return secret, nil
+}
+
 // Delete removes a stored secret. Deleting a missing secret succeeds.
 func Delete(name string) error {
+	return DeleteAt("", name)
+}
+
+// DeleteAt is Delete for an explicit devstack home.
+func DeleteAt(home, name string) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
-	dir, err := storeDir()
+	dir, err := storeDirAt(home)
 	if err != nil {
 		return err
 	}

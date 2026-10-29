@@ -17,14 +17,24 @@ func TestParseFlags(t *testing.T) {
 		wantDry  bool
 		wantY    bool
 		wantUnin bool
+		wantSet  bool
 	}{
 		{
 			name:     "defaults",
 			args:     []string{},
-			wantDir:  "C:\\devstack",
+			wantDir:  defaultInstallDir(),
 			wantDry:  false,
 			wantY:    false,
 			wantUnin: false,
+		},
+		{
+			name:     "explicit default install dir is tracked",
+			args:     []string{"-install-dir", defaultInstallDir()},
+			wantDir:  defaultInstallDir(),
+			wantDry:  false,
+			wantY:    false,
+			wantUnin: false,
+			wantSet:  true,
 		},
 		{
 			name:     "custom install dir and dry-run",
@@ -33,6 +43,7 @@ func TestParseFlags(t *testing.T) {
 			wantDry:  true,
 			wantY:    true,
 			wantUnin: false,
+			wantSet:  true,
 		},
 		{
 			name:     "uninstall with purge options",
@@ -41,6 +52,7 @@ func TestParseFlags(t *testing.T) {
 			wantDry:  false,
 			wantY:    false,
 			wantUnin: true,
+			wantSet:  true,
 		},
 	}
 
@@ -61,6 +73,9 @@ func TestParseFlags(t *testing.T) {
 			}
 			if opts.Uninstall != tc.wantUnin {
 				t.Errorf("Uninstall = %v, want %v", opts.Uninstall, tc.wantUnin)
+			}
+			if opts.InstallDirSet != tc.wantSet {
+				t.Errorf("InstallDirSet = %v, want %v", opts.InstallDirSet, tc.wantSet)
 			}
 		})
 	}

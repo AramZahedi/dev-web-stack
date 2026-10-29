@@ -146,6 +146,44 @@ interface RequestOptions {
   voidResponse?: boolean;
 }
 
+/**
+ * Exchange the per-install token for an HttpOnly auth cookie. The token is
+ * delivered in the URL fragment by `devstack ui` and never reaches a server
+ * log or Referer header.
+ */
+export async function authenticate(token: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/auth`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'X-Devstack-Token': token },
+    });
+  } catch (error) {
+    throw networkError(error);
+  }
+  if (!response.ok) throw await readError(response);
+  csrfToken = null;
+  sessionRequest = null;
+}
+
+/**
+ * Consume a `#token=...` fragment, bootstrap the auth cookie, and remove the
+ * fragment from history. Returns false when no token is present.
+ */
+export async function authenticateFromFragment(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  const prefix = '#token=';
+  if (!window.location.hash.startsWith(prefix)) return false;
+  const token = decodeURIComponent(window.location.hash.slice(prefix.length));
+  try {
+    await authenticate(token);
+  } finally {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+  return true;
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? 'GET';
   const mutation = options.mutation ?? method !== 'GET';

@@ -126,6 +126,26 @@ if ($isSandbox) {
     }
 }
 
+# Select a prebuilt Linux agent while excluding the destination itself. A
+# reinstall/upgrade in a source checkout can otherwise try to copy
+# bin\devstack-agent onto itself and abort.
+function Select-PrebuiltAgent([string]$Destination, [string]$RepoRoot, [string]$BinDir) {
+    $destFull = [System.IO.Path]::GetFullPath($Destination)
+    return @(
+        (Join-Path $RepoRoot "devstack-agent"),
+        (Join-Path $RepoRoot "build\wsl\devstack-agent"),
+        (Join-Path $RepoRoot "bin\linux_amd64\devstack-agent"),
+        (Join-Path $BinDir "devstack-agent")
+    ) | Where-Object {
+        if (-not (Test-Path -LiteralPath $_)) { return $false }
+        try {
+            return [System.IO.Path]::GetFullPath($_) -ne $destFull
+        } catch {
+            return $false
+        }
+    } | Select-Object -First 1
+}
+
 # -----------------------------------------------------------------------------
 # 1. Elevation check
 # -----------------------------------------------------------------------------
@@ -435,9 +455,15 @@ if (-not $DryRun) {
         }
     }
     if ($writeHelper) {
+        $systemDirYaml = $systemDir.Replace('\', '/')
+        $caDirYaml = (Join-Path $systemDir "pki").Replace('\', '/')
+        $rootCertYaml = (Join-Path $systemDir "pki\root.crt").Replace('\', '/')
         $helperYaml = @"
 allow_sid: "$effectiveUserSid"
 pipe: "\\\\.\\pipe\\devstack-helper"
+system_dir: "$systemDirYaml"
+ca_dir: "$caDirYaml"
+root_cert: "$rootCertYaml"
 proxy_http_port: 8080
 proxy_https_port: 8443
 "@
@@ -601,12 +627,7 @@ if ($Upgrade) {
     # 6. Stage updated Linux agent binary
     $upgradeFailed = $false
     $stagedAgentLinux = Join-Path $binDir "devstack-agent"
-    $prebuiltAgentLinux = @(
-        (Join-Path $repoRoot "devstack-agent"),
-        (Join-Path $repoRoot "build\wsl\devstack-agent"),
-        (Join-Path $repoRoot "bin\linux_amd64\devstack-agent"),
-        (Join-Path $binDir "devstack-agent")
-    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $prebuiltAgentLinux = Select-PrebuiltAgent -Destination $stagedAgentLinux -RepoRoot $repoRoot -BinDir $binDir
 
     if ($null -ne $prebuiltAgentLinux) {
         Copy-Item -Path $prebuiltAgentLinux -Destination $stagedAgentLinux -Force
@@ -693,14 +714,26 @@ if ($Upgrade) {
     # 8. Handle rollback on error (C3: Never rm -rf before verified extraction)
     if ($upgradeFailed) {
         Write-InstallerError "devstack-agent health check failed. Initiating rollback..."
+        $rollbackOK = $true
+        $rollbackFailure = ""
         if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
-            if (Test-Path $mockBackupTar) {
-                Remove-Item -Path $mockRollbackTmp -Recurse -Force -ErrorAction SilentlyContinue
-                New-Item -ItemType Directory -Force -Path $mockRollbackTmp | Out-Null
-                if (Test-Path $mockBackupDir) {
+            if ((Get-TestOverride "DEVSTACK_TEST_BACKUP_MISSING") -eq "true") {
+                Remove-Item -Path $mockBackupTar -Force -ErrorAction SilentlyContinue
+            }
+            if (-not (Test-Path $mockBackupTar)) {
+                $rollbackOK = $false
+                $rollbackFailure = "backup archive is missing"
+            } elseif (-not (Test-Path $mockBackupDir)) {
+                $rollbackOK = $false
+                $rollbackFailure = "backup directory is missing"
+            } else {
+                try {
+                    Remove-Item -Path $mockRollbackTmp -Recurse -Force -ErrorAction SilentlyContinue
+                    New-Item -ItemType Directory -Force -Path $mockRollbackTmp | Out-Null
                     Copy-Item -Path $mockBackupDir -Destination (Join-Path $mockRollbackTmp "devstack") -Recurse -Force
-                }
-                if (Test-Path (Join-Path $mockRollbackTmp "devstack")) {
+                    if (-not (Test-Path (Join-Path $mockRollbackTmp "devstack"))) {
+                        throw "staged restore is missing"
+                    }
                     Remove-Item -Path $mockFailedTmp -Recurse -Force -ErrorAction SilentlyContinue
                     if (Test-Path $mockData) {
                         Move-Item -Path $mockData -Destination $mockFailedTmp -Force
@@ -708,30 +741,51 @@ if ($Upgrade) {
                     Move-Item -Path (Join-Path $mockRollbackTmp "devstack") -Destination $mockData -Force
                     Remove-Item -Path $mockFailedTmp -Recurse -Force -ErrorAction SilentlyContinue
                     Remove-Item -Path $mockRollbackTmp -Recurse -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path $mockBackupTar -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path $mockBackupDir -Recurse -Force -ErrorAction SilentlyContinue
+                } catch {
+                    $rollbackOK = $false
+                    $rollbackFailure = $_.Exception.Message
                 }
-                Remove-Item -Path $mockBackupTar -Force -ErrorAction SilentlyContinue
-                Remove-Item -Path $mockBackupDir -Recurse -Force -ErrorAction SilentlyContinue
             }
-            if (Test-Path (Join-Path $mockDataBin "devstack-agent.bak")) {
-                Move-Item -Path (Join-Path $mockDataBin "devstack-agent.bak") -Destination (Join-Path $mockDataBin "devstack-agent") -Force
+            if ($rollbackOK -and (Test-Path (Join-Path $mockDataBin "devstack-agent.bak"))) {
+                try {
+                    Move-Item -Path (Join-Path $mockDataBin "devstack-agent.bak") -Destination (Join-Path $mockDataBin "devstack-agent") -Force
+                } catch {
+                    $rollbackOK = $false
+                    $rollbackFailure = "restore devstack-agent: $($_.Exception.Message)"
+                }
             }
         } else {
             & wsl.exe -d devstack -u root -- tar -tzf /data/devstack-backup.tar.gz 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
+            if ($LASTEXITCODE -ne 0) {
+                $rollbackOK = $false
+                $rollbackFailure = "backup archive is missing or corrupt"
+            } else {
                 $rollbackScript = @"
-tar -tzf /data/devstack-backup.tar.gz >/dev/null 2>&1 && \
-rm -rf /data/devstack.rollback-tmp && \
-mkdir -p /data/devstack.rollback-tmp && \
-tar -xzf /data/devstack-backup.tar.gz -C /data/devstack.rollback-tmp && \
-test -d /data/devstack.rollback-tmp/devstack && \
-rm -rf /data/devstack.failed-tmp && \
-mv /data/devstack /data/devstack.failed-tmp && \
-mv /data/devstack.rollback-tmp/devstack /data/devstack && \
+set -e
+tar -tzf /data/devstack-backup.tar.gz >/dev/null
+rm -rf /data/devstack.rollback-tmp
+mkdir -p /data/devstack.rollback-tmp
+tar -xzf /data/devstack-backup.tar.gz -C /data/devstack.rollback-tmp
+test -d /data/devstack.rollback-tmp/devstack
+rm -rf /data/devstack.failed-tmp
+if [ -d /data/devstack ]; then mv /data/devstack /data/devstack.failed-tmp; fi
+mv /data/devstack.rollback-tmp/devstack /data/devstack
 rm -rf /data/devstack.failed-tmp /data/devstack.rollback-tmp /data/devstack-backup.tar.gz
 "@
                 $rollbackScript -replace "`r`n", "`n" | & wsl.exe -d devstack -u root -- sh
+                if ($LASTEXITCODE -ne 0) {
+                    $rollbackOK = $false
+                    $rollbackFailure = "restore script exited with code $LASTEXITCODE"
+                } else {
+                    & wsl.exe -d devstack -u root -- systemctl restart devstack-agent.service 2>$null
+                    if ($LASTEXITCODE -ne 0) {
+                        $rollbackOK = $false
+                        $rollbackFailure = "agent restart failed after restore"
+                    }
+                }
             }
-            & wsl.exe -d devstack -u root -- systemctl restart devstack-agent.service 2>$null
         }
         if (Test-Path "$dstDevstack.bak") {
             Move-Item -Path "$dstDevstack.bak" -Destination $dstDevstack -Force
@@ -743,7 +797,11 @@ rm -rf /data/devstack.failed-tmp /data/devstack.rollback-tmp /data/devstack-back
                 Start-Service -Name "DevstackHelper" -ErrorAction SilentlyContinue
             } catch {}
         }
-        Write-InstallerError "Upgrade rolled back successfully to previous version."
+        if ($rollbackOK) {
+            Write-Host "devstack installer: Upgrade rolled back successfully to previous version."
+        } else {
+            Write-InstallerError "Upgrade rollback FAILED: $rollbackFailure. The previous WSL data may be preserved at /data/devstack.failed-tmp; do not start new work until it is recovered."
+        }
         exit 1
     }
 
@@ -906,7 +964,7 @@ if (-not $DryRun -and -not $isSandbox) {
             $homeDir = Join-Path $userProfileDir ".devstack"
             if (-not (Test-Path $homeDir)) { New-Item -ItemType Directory -Force -Path $homeDir | Out-Null }
             $vbsPath = Join-Path $systemDir "devstack-daemon.vbs"
-            $vbsContent = "Set WshShell = CreateObject(""WScript.Shell"")`r`nWshShell.Run """"""$dstDevstack"""" daemon run"", 0, False`r`n"
+            $vbsContent = "Set WshShell = CreateObject(""WScript.Shell"")`r`nWshShell.Run """"""$dstDevstack"""" daemon run --home """"$homeDir"""""", 0, False`r`n"
             Set-Content -Path $vbsPath -Value $vbsContent -Encoding Ascii -Force
             $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$vbsPath`"" -WorkingDirectory $homeDir
             $trigger = try {
@@ -926,6 +984,10 @@ if (-not $DryRun -and -not $isSandbox) {
 
 if ($SkipWSL) {
     Write-Host "devstack installer: Skipping WSL distro and proxy firewall rule (-SkipWSL specified)."
+    if (-not $DryRun -and -not $isSandbox) {
+        try { Start-ScheduledTask -TaskName "devstack-daemon" -ErrorAction SilentlyContinue } catch {}
+        try { & schtasks.exe /Run /TN "devstack-daemon" 2>$null | Out-Null } catch {}
+    }
     Write-Host "devstack installer: System phase completed successfully."
     exit 0
 }
@@ -1034,8 +1096,8 @@ if (Test-Path $versionsLockPath) {
 
 $effectiveRootFS = $RootFSPath
 if ([string]::IsNullOrEmpty($effectiveRootFS)) {
-    $defaultCandidate = @((Join-Path $repoRoot "debian-12-wsl-rootfs.tar.gz"), (Join-Path $repoRoot "build\wsl\debian-12-wsl-rootfs.tar.gz")) | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (Test-Path $defaultCandidate) {
+    $defaultCandidate = @((Join-Path $repoRoot "debian-12-wsl-rootfs.tar.gz"), (Join-Path $repoRoot "build\wsl\debian-12-wsl-rootfs.tar.gz")) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($defaultCandidate -and (Test-Path -LiteralPath $defaultCandidate)) {
         $effectiveRootFS = $defaultCandidate
     } elseif ($DryRun -or $isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
         $mockDir = Join-Path $targetDir "mock-rootfs"
@@ -1271,12 +1333,7 @@ if ($DryRun) {
 
 # 11.8 Linux devstack-agent binary staging and systemd service installation
 $stagedAgentLinux = Join-Path $binDir "devstack-agent"
-$prebuiltAgentLinux = @(
-    (Join-Path $repoRoot "devstack-agent"),
-    (Join-Path $repoRoot "build\wsl\devstack-agent"),
-    (Join-Path $repoRoot "bin\linux_amd64\devstack-agent"),
-    (Join-Path $binDir "devstack-agent")
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
+$prebuiltAgentLinux = Select-PrebuiltAgent -Destination $stagedAgentLinux -RepoRoot $repoRoot -BinDir $binDir
 
 if ($DryRun) {
     Write-Host "devstack installer: [DryRun] Would stage devstack-agent and install devstack-agent.service"
@@ -1466,4 +1523,10 @@ if (-not $DryRun) {
 }
 
 Write-Host "devstack installer: WSL phase completed successfully."
+if (-not $DryRun -and -not $isSandbox) {
+    # Start the logon task in this session too; without a running daemon the
+    # WSL keepalive does not exist and the distro is eligible for idle shutdown.
+    try { Start-ScheduledTask -TaskName "devstack-daemon" -ErrorAction SilentlyContinue } catch {}
+    try { & schtasks.exe /Run /TN "devstack-daemon" 2>$null | Out-Null } catch {}
+}
 exit 0

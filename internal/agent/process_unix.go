@@ -15,9 +15,17 @@ func configureFPMCmd(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-func killFPMProcess(cmd *exec.Cmd, pid int) {
-	if pid <= 0 {
+func killFPMProcess(cmd *exec.Cmd, pid int, done <-chan struct{}) {
+	if cmd == nil || cmd.Process == nil || pid <= 0 {
 		return
+	}
+	if done != nil {
+		select {
+		case <-done:
+			// The child was already reaped; its PID may have been reused.
+			return
+		default:
+		}
 	}
 	// Signal the process group with SIGQUIT first (gracefully stops FPM master and workers)
 	_ = syscall.Kill(-pid, syscall.SIGQUIT)

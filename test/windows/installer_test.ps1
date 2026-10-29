@@ -677,6 +677,41 @@ try {
 }
 
 # -------------------------------------------------------------------------
+# Test 23b: Missing backup must fail closed, never report a false rollback
+# -------------------------------------------------------------------------
+Step "Testing rollback failure reporting when the backup archive is missing"
+$tempRollbackFailDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-rollback-missing-" + [Guid]::NewGuid().ToString("N"))
+$mockFailWSL = Join-Path $tempRollbackFailDir "mock-wsl\data\devstack"
+$mockFailBin = Join-Path $mockFailWSL "bin"
+New-Item -ItemType Directory -Force -Path $mockFailBin | Out-Null
+Set-Content -Path (Join-Path $mockFailBin "devstack-agent") -Value "original-agent-v2" -Encoding utf8
+$mockFailData = Join-Path $mockFailWSL "database.sqlite"
+Set-Content -Path $mockFailData -Value "must-survive" -Encoding utf8
+New-Item -ItemType Directory -Force -Path (Join-Path $tempRollbackFailDir "bin") | Out-Null
+
+try {
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $env:DEVSTACK_TEST_UPGRADE_FAIL = "true"
+    $env:DEVSTACK_TEST_BACKUP_MISSING = "true"
+    $res = Invoke-Installer @("-TestSandbox", $tempRollbackFailDir, "-Upgrade")
+    Require ($res.ExitCode -eq 1) "Missing-backup rollback exits with code 1 (got $($res.ExitCode))"
+    Require ($res.Output -match "Upgrade rollback FAILED") "Missing-backup rollback reports failure"
+    Require ($res.Output -notmatch "rolled back successfully") "Missing-backup rollback never claims success"
+    Require ((Test-Path $mockFailData) -and ((Get-Content $mockFailData -Raw).Trim() -eq "must-survive")) "Missing-backup rollback does not destroy live data"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_UPGRADE_FAIL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_BACKUP_MISSING -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempRollbackFailDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Static guard: the upgrade must select a prebuilt agent that is not the
+# destination, so a reinstall cannot copy bin\devstack-agent onto itself.
+$installerContentForAgent = Get-Content -Raw -Path $installerScript
+Require ($installerContentForAgent -match 'function Select-PrebuiltAgent') "install.ps1 defines Select-PrebuiltAgent"
+Require (([regex]::Matches($installerContentForAgent, 'Select-PrebuiltAgent -Destination')).Count -ge 2) "both agent staging paths exclude the destination"
+
+# -------------------------------------------------------------------------
 # Test 24: Upgrade Helper Service Stop/Start and Order Validation (C3, M8)
 # -------------------------------------------------------------------------
 Step "Testing upgrade ordering and helper service handling"
@@ -973,6 +1008,55 @@ Require ($freshInstallContent -match 'if \(-not \(Test-Path \$dstHelper\)\)') "i
 # -------------------------------------------------------------------------
 Step "Testing reboot-resume argument deduplication"
 Require ($freshInstallContent -match 'if \(-not \$PSBoundParameters\.ContainsKey\("ResumeUserSID"\)\)') "install.ps1 uses ContainsKey to prevent duplicate -ResumeUserSID arguments"
+
+# -------------------------------------------------------------------------
+# Test 35: Missing rootfs reports a controlled error, not a null Test-Path
+# -------------------------------------------------------------------------
+Step "Testing missing rootfs archive guard"
+$tempNoRootfsRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-norootfs-" + [Guid]::NewGuid().ToString("N"))
+$tempNoRootfsSandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-norootfs-sandbox-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path (Join-Path $tempNoRootfsRepo "build\wsl"), (Join-Path $tempNoRootfsRepo "build\windows") | Out-Null
+Copy-Item $installerScript $tempNoRootfsRepo
+Copy-Item (Join-Path $repoRoot "build\wsl\versions.lock") (Join-Path $tempNoRootfsRepo "build\wsl")
+Copy-Item $daemonTaskScript (Join-Path $tempNoRootfsRepo "build\windows")
+Copy-Item (Join-Path $repoRoot "build\windows\devstack-daemon.vbs") (Join-Path $tempNoRootfsRepo "build\windows")
+try {
+    $env:DEVSTACK_TEST_ELEVATED = "true"
+    $env:DEVSTACK_TEST_OS_ARCH = "AMD64"
+    $env:DEVSTACK_TEST_OS_BUILD = "22631"
+    $env:DEVSTACK_TEST_VIRTUALIZATION = "true"
+    $noRootOut = & $psEngine -NoProfile -File (Join-Path $tempNoRootfsRepo "install.ps1") -TestSandbox $tempNoRootfsSandbox -DryRun 2>&1 | Out-String
+    Require ($LASTEXITCODE -eq 0) "Dry-run without a rootfs exits cleanly (got $LASTEXITCODE)"
+    Require ($noRootOut -notmatch "Value cannot be null") "Dry-run without a rootfs does not crash in Test-Path"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_ELEVATED -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_OS_ARCH -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_OS_BUILD -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_VIRTUALIZATION -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempNoRootfsRepo -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempNoRootfsSandbox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 36: Uninstaller residue and test-escape gating
+# -------------------------------------------------------------------------
+Step "Testing uninstaller cleanup of machine-wide policy, firewall, and secrets"
+$uninstallerContent = Get-Content -Raw -Path (Join-Path $repoRoot "uninstall.ps1")
+Require ($uninstallerContent -match 'ImportEnterpriseRoots') "uninstall.ps1 removes the devstack-owned Firefox enterprise policy"
+Require ($uninstallerContent -match 'Devstack WSL Proxy HTTP' -and $uninstallerContent -match 'Devstack WSL Proxy HTTPS') "uninstall.ps1 removes both helper firewall rules"
+Require ($uninstallerContent -match 'api-token') "uninstall.ps1 purges the dashboard install token"
+Require ($uninstallerContent -match 'systemprofile.*\.devstack') "uninstall.ps1 accounts for the legacy LocalSystem CA/marker location"
+Require ($uninstallerContent -notmatch '\$env:DEVSTACK_TEST_MOCK_WSL') "uninstall.ps1 never reads DEVSTACK_TEST_MOCK_WSL directly"
+Require ($uninstallerContent -match 'Get-TestOverride "DEVSTACK_TEST_MOCK_WSL"') "uninstall.ps1 gates DEVSTACK_TEST_MOCK_WSL through the sandbox helper"
+
+# -------------------------------------------------------------------------
+# Test 34b: Daemon task starts in this session and pins the install home
+# -------------------------------------------------------------------------
+Step "Testing daemon logon task starts immediately and uses the install home"
+$a = Get-Content -Raw -Path $daemonTaskScript
+Require ($a -match 'daemon run --home') "devstack-daemon-task.ps1 passes --home to the daemon"
+Require ($freshInstallContent -match 'Start-ScheduledTask -TaskName "devstack-daemon"') "install.ps1 starts the daemon task in the current session"
+Require ($freshInstallContent -match 'daemon run --home') "install.ps1 fallback task also passes --home"
 
 # -------------------------------------------------------------------------
 # Test Summary

@@ -52,6 +52,48 @@ func TestSaveLoadDelete(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateAtPersistsAndReloads(t *testing.T) {
+	home := t.TempDir()
+	first, err := LoadOrCreateAt(home, "api-token", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 32 {
+		t.Fatalf("token length = %d, want 32", len(first))
+	}
+	second, err := LoadOrCreateAt(home, "api-token", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("LoadOrCreateAt regenerated an existing token")
+	}
+	if _, err := os.Stat(filepath.Join(home, "system", "secrets", "api-token")); err != nil {
+		t.Fatalf("token file: %v", err)
+	}
+}
+
+func TestLoadOrCreateAtReplacesShortSecret(t *testing.T) {
+	home := t.TempDir()
+	if err := SaveAt(home, "api-token", []byte("short")); err != nil {
+		t.Fatal(err)
+	}
+	token, err := LoadOrCreateAt(home, "api-token", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(token) != 32 {
+		t.Fatalf("token length = %d, want 32", len(token))
+	}
+	stored, err := LoadAt(home, "api-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, token) {
+		t.Fatal("replacement token was not persisted")
+	}
+}
+
 func TestRejectsUnsafeNames(t *testing.T) {
 	t.Setenv("DEVSTACK_HOME", t.TempDir())
 	for _, name := range []string{"", ".", "..", "../x", `a\b`, "a/b", ".secret"} {

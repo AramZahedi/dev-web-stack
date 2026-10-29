@@ -4,6 +4,7 @@
   import Sidebar from './Sidebar.svelte';
   import Topbar from './Topbar.svelte';
   import ToastHost from './ToastHost.svelte';
+  import { session } from '../stores';
 
   interface Props {
     children: Snippet;
@@ -54,6 +55,11 @@
 
 <div class="shell-main">
   <Topbar onmenu={() => (drawerOpen = true)} />
+  {#if $session.checked && !$session.authenticated}
+    <div class="auth-banner" role="alert">
+      Dashboard locked. Run <code>devstack ui</code> to open an authenticated session.
+    </div>
+  {/if}
   <main id="main" tabindex="-1">
     {@render children()}
   </main>
@@ -80,6 +86,20 @@
 
   .skip-link:focus {
     transform: translateY(0);
+  }
+
+  .auth-banner {
+    margin: 12px 24px 0;
+    padding: 10px 14px;
+    border: 1px solid var(--warning, #d97706);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--warning, #d97706) 10%, var(--surface));
+    color: var(--fg);
+    font-size: 13px;
+  }
+
+  .auth-banner code {
+    font-family: var(--font-mono, monospace);
   }
 
   .shell-main {

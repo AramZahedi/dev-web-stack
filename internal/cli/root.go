@@ -6,6 +6,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/securestore"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
@@ -519,15 +521,28 @@ func (a *App) newUICmd() *cobra.Command {
 				return wrapError(err, "CONFIG_INVALID", "Inspect config.yaml or rerun `devstack init`.")
 			}
 			fallback := fmt.Sprintf("http://127.0.0.1:%d", cfg.UIPort)
+			token := ""
+			if secret, err := securestore.LoadAt(home, "api-token"); err == nil && len(secret) > 0 {
+				token = hex.EncodeToString(secret)
+			}
+			openURL := dashboardURL
+			fallbackOpenURL := fallback
+			if token != "" {
+				fragment := "#token=" + token
+				openURL += fragment
+				fallbackOpenURL += fragment
+			}
 			if a.jsonOutput {
 				return a.writeJSON(cmd, struct {
 					URL         string `json:"url"`
 					FallbackURL string `json:"fallback_url"`
-				}{URL: dashboardURL, FallbackURL: fallback})
+					OpenURL     string `json:"open_url"`
+				}{URL: dashboardURL, FallbackURL: fallback, OpenURL: openURL})
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Dashboard: %s\nFallback:  %s\n", dashboardURL, fallback)
-			if err := openBrowser(dashboardURL); err != nil {
+			if err := openBrowser(openURL); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "devstack: could not open a browser: %v\n", err)
+				fmt.Fprintf(cmd.ErrOrStderr(), "devstack: open this URL manually: %s\n", fallbackOpenURL)
 			}
 			return nil
 		},

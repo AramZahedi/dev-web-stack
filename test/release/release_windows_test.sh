@@ -5,7 +5,9 @@
 # - devstack_<version>_windows_amd64.zip and outer checksums.txt exist
 # - Exact expected members: devstack.exe, devstack-helper.exe, devstack-agent,
 #   debian-12-wsl-rootfs.tar.gz, sidecar sha256, install.ps1, uninstall.ps1,
-#   README.md, internal checksums.txt, and devstack.spdx.json
+#   README.md, internal checksums.txt, devstack.spdx.json, and the WSL
+#   provisioning assets under build/wsl/ (agent.service, install-agent.sh,
+#   install-docker.sh, docker-daemon.json)
 # - Binaries have correct headers (Windows PE for .exe, Linux ELF for devstack-agent)
 # - SPDX SBOM is valid JSON and conforms to SPDX-2.3
 # - Internal checksums.txt verifies all packaged components
@@ -66,10 +68,16 @@ else
 fi
 
 # Verify required files
-for req in devstack.exe devstack-helper.exe devstack-agent debian-12-wsl-rootfs.tar.gz debian-12-wsl-rootfs.tar.gz.sha256 install.ps1 uninstall.ps1 README.md checksums.txt devstack.spdx.json; do
-	[ -f "${EXTRACT}/${req}" ] || fail "missing expected member: ${req}"
+for req in devstack.exe devstack-helper.exe devstack-agent debian-12-wsl-rootfs.tar.gz debian-12-wsl-rootfs.tar.gz.sha256 install.ps1 uninstall.ps1 README.md checksums.txt devstack.spdx.json build/wsl/agent.service build/wsl/install-agent.sh build/wsl/install-docker.sh build/wsl/docker-daemon.json; do
+	[ -s "${EXTRACT}/${req}" ] || fail "missing or empty expected member: ${req}"
 done
 pass "all required release members present in archive"
+
+# The installer resolves its provisioning assets under <payload>/build/wsl.
+for asset in agent.service install-agent.sh install-docker.sh docker-daemon.json; do
+	grep -Fq "build\\wsl\\${asset}" "${EXTRACT}/install.ps1" || fail "install.ps1 does not reference build\\wsl\\${asset}"
+done
+pass "install.ps1 references the packaged WSL provisioning assets"
 
 # Check binary formats
 for winBin in devstack.exe devstack-helper.exe; do

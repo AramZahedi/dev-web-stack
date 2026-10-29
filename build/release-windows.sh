@@ -214,6 +214,16 @@ if [ -f "${REPO_ROOT}/LICENSE" ]; then
 	chmod 0644 "${STAGE}/LICENSE"
 fi
 
+# Stage the WSL provisioning assets consumed by install.ps1 under
+# <payload>/build/wsl. A release without these cannot provision Docker or the
+# agent service on a fresh machine.
+mkdir -p "${STAGE}/build/wsl"
+for asset in agent.service install-agent.sh install-docker.sh docker-daemon.json; do
+	[ -f "${REPO_ROOT}/build/wsl/${asset}" ] || die "missing WSL provisioning asset: build/wsl/${asset}"
+	cp "${REPO_ROOT}/build/wsl/${asset}" "${STAGE}/build/wsl/${asset}"
+	chmod 0644 "${STAGE}/build/wsl/${asset}"
+done
+
 # Acquire or generate WSL rootfs
 TARGET_ROOTFS="${STAGE}/debian-12-wsl-rootfs.tar.gz"
 ROOTFS_MIN_BYTES=1073741824
@@ -390,6 +400,10 @@ printf 'release-windows: generating internal checksums manifest\n'
 		$( [ -f devstack-daemon.vbs ] && echo "devstack-daemon.vbs" ) \
 		README.md \
 		$( [ -f LICENSE ] && echo "LICENSE" ) \
+		build/wsl/agent.service \
+		build/wsl/install-agent.sh \
+		build/wsl/install-docker.sh \
+		build/wsl/docker-daemon.json \
 		devstack.spdx.json >checksums.txt
 )
 
@@ -442,7 +456,7 @@ TAR_MTIME="${SOURCE_DATE_EPOCH:-0}"
 )
 
 # Build standalone binary installer executable (devstack-installer.exe)
-INSTALLER_STAGE="${BUILD_DIR}/.installer-stage-$$"
+INSTALLER_STAGE="${REPO_ROOT}/build/.installer-stage-$$"
 mkdir -p "${INSTALLER_STAGE}"
 cp "${REPO_ROOT}/cmd/devstack-installer/"*.go "${INSTALLER_STAGE}/"
 cp -f "${ARCHIVE_ZIP}" "${INSTALLER_STAGE}/payload.zip"

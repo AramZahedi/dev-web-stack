@@ -120,6 +120,17 @@ try {
         Copy-Item -Path (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $stageDir "LICENSE") -Force
     }
 
+    # WSL provisioning assets consumed by install.ps1 at <payload>\build\wsl.
+    $wslAssetDir = Join-Path $stageDir "build\wsl"
+    New-Item -ItemType Directory -Force -Path $wslAssetDir | Out-Null
+    foreach ($asset in @("agent.service", "install-agent.sh", "install-docker.sh", "docker-daemon.json")) {
+        $assetSource = Join-Path $repoRoot "build\wsl\$asset"
+        if (-not (Test-Path -LiteralPath $assetSource)) {
+            throw "release-windows: missing WSL provisioning asset '$assetSource'."
+        }
+        Copy-Item -LiteralPath $assetSource -Destination (Join-Path $wslAssetDir $asset) -Force
+    }
+
     # RootFS archive
     $rootfsMinBytes = 1073741824 # 1GB minimum for real release archive
     $versionsLockPath = Join-Path $repoRoot "build\wsl\versions.lock"
@@ -241,11 +252,12 @@ try {
     Set-Content -Path (Join-Path $stageDir "devstack.spdx.json") -Value $sbom -Encoding utf8
 
     # Internal checksums.txt
-    $stageFiles = Get-ChildItem -File -Path $stageDir
+    $stageFiles = Get-ChildItem -File -Recurse -Path $stageDir
     $manifestLines = @()
-    foreach ($f in ($stageFiles | Sort-Object Name)) {
+    foreach ($f in ($stageFiles | Sort-Object FullName)) {
         $h = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLower()
-        $manifestLines += "$h  $($f.Name)"
+        $relative = $f.FullName.Substring($stageDir.Length + 1).Replace('\', '/')
+        $manifestLines += "$h  $relative"
     }
     Set-Content -Path (Join-Path $stageDir "checksums.txt") -Value ($manifestLines -join "`n") -Encoding ascii
 
@@ -265,7 +277,7 @@ try {
     $zipHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
     # Build standalone binary installer executable (devstack-installer.exe)
     Write-Host "release-windows: Building standalone devstack-installer.exe..."
-    $installerStageDir = Join-Path $bldDir (".installer-stage-" + [System.Guid]::NewGuid().ToString("N"))
+    $installerStageDir = Join-Path $repoRoot ("build\.installer-stage-" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $installerStageDir | Out-Null
     try {
         Copy-Item -Path (Join-Path $repoRoot "cmd\devstack-installer\*.go") -Destination $installerStageDir -Force

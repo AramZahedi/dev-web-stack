@@ -14,8 +14,9 @@ import (
 )
 
 type InstallerOptions struct {
-	InstallDir  string
-	RootFSPath  string
+	InstallDir    string
+	InstallDirSet bool
+	RootFSPath    string
 	AllowReboot bool
 	SkipWSL     bool
 	DryRun      bool
@@ -28,10 +29,25 @@ type InstallerOptions struct {
 	PurgeData   bool
 }
 
+func defaultInstallDir() string {
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".devstack")
+	}
+	if profile := strings.TrimSpace(os.Getenv("USERPROFILE")); profile != "" {
+		return filepath.Join(profile, ".devstack")
+	}
+	return `C:\devstack`
+}
+
+func installManifestExists(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "system", "install-manifest.json"))
+	return err == nil && !info.IsDir()
+}
+
 func parseFlags(args []string) (InstallerOptions, error) {
 	var opts InstallerOptions
 	fs := flag.NewFlagSet("devstack-installer", flag.ContinueOnError)
-	fs.StringVar(&opts.InstallDir, "install-dir", "C:\\devstack", "Installation directory on Windows")
+	fs.StringVar(&opts.InstallDir, "install-dir", defaultInstallDir(), "Installation directory on Windows")
 	fs.StringVar(&opts.RootFSPath, "rootfs", "", "Path to debian-12-wsl-rootfs.tar.gz archive")
 	fs.BoolVar(&opts.AllowReboot, "allow-reboot", false, "Allow automatic reboot if Windows features require a restart")
 	fs.BoolVar(&opts.SkipWSL, "skip-wsl", false, "Skip WSL optional feature enablement and distro provisioning")
@@ -48,6 +64,17 @@ func parseFlags(args []string) (InstallerOptions, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return opts, err
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "install-dir" {
+			opts.InstallDirSet = true
+		}
+	})
+	// Existing installs from the pre-profile layout are upgraded/uninstalled in
+	// place unless -install-dir was explicit.
+	if !opts.InstallDirSet && (opts.Upgrade || opts.Uninstall) &&
+		!installManifestExists(opts.InstallDir) && installManifestExists(`C:\devstack`) {
+		opts.InstallDir = `C:\devstack`
 	}
 	return opts, nil
 }

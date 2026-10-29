@@ -157,7 +157,9 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 			return nil, fmt.Errorf("agent: simulate php-fpm listen on %s: %w", addr, err)
 		}
 		proc.listener = l
-		proc.pid = os.Getpid()
+		// The simulator has no child process. Keep pid zero so stop() can never
+		// signal the agent's own process group.
+		proc.pid = 0
 		go func() {
 			<-ctx.Done()
 			_ = l.Close()
@@ -235,7 +237,11 @@ func (p *fpmProcess) stop() {
 	if p.listener != nil {
 		_ = p.listener.Close()
 	}
-	killFPMProcess(p.cmd, p.pid)
+	// Only a real started child has a process group to signal. A simulated
+	// listener and an already-reaped child are never signaled.
+	if p.cmd != nil && p.cmd.Process != nil && p.pid > 0 {
+		killFPMProcess(p.cmd, p.pid, p.done)
+	}
 	select {
 	case <-p.done:
 	case <-time.After(1 * time.Second):

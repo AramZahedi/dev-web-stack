@@ -24,6 +24,25 @@ func (s *Server) mountRuntime(mux *http.ServeMux, runtime *Runtime) {
 	mux.HandleFunc(agentproto.PathRuntimesRemove, func(w http.ResponseWriter, r *http.Request) { handleRuntimesRemove(w, r, runtime) })
 	mux.HandleFunc(agentproto.PathRuntimesList, func(w http.ResponseWriter, r *http.Request) { handleRuntimesList(w, r, runtime) })
 	mux.HandleFunc("/v1/sites/", func(w http.ResponseWriter, r *http.Request) { handleSite(w, r, runtime) })
+	mux.HandleFunc(agentproto.PathSourceCopy, func(w http.ResponseWriter, r *http.Request) { handleSourceCopy(w, r, runtime) })
+}
+
+func handleSourceCopy(w http.ResponseWriter, r *http.Request, runtime *Runtime) {
+	if r.Method != http.MethodPost {
+		writeAgentError(w, http.StatusMethodNotAllowed, agentproto.CodeInvalidRequest, "POST required")
+		return
+	}
+	var req agentproto.SourceCopyRequest
+	if err := decodeAgentJSON(w, r, &req); err != nil {
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	resp, err := runtime.CopySource(r.Context(), req)
+	if err != nil {
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handleRuntimes(w http.ResponseWriter, r *http.Request, runtime *Runtime) {

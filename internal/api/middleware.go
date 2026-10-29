@@ -2,11 +2,17 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+)
+
+const (
+	authTokenHeader = "X-Devstack-Token"
+	authCookieName  = "devstack_auth"
 )
 
 // defaultAllowedHosts are the only hostnames the loopback dashboard answers
@@ -145,6 +151,12 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 
+		if isAPIPath(r.URL.Path) && !socketAuthenticated(r.Context()) &&
+			s.authToken != "" && !isAuthGateExempt(r.URL.Path) && !s.authorizedRequest(r) {
+			writeError(w, http.StatusForbidden, codeForbidden, "access denied: install token required", nil)
+			return
+		}
+
 		if !isAPIPath(r.URL.Path) || socketAuthenticated(r.Context()) || isAuthExempt(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
@@ -270,9 +282,31 @@ func isAPIPath(value string) bool {
 	return value == "/api/v1" || strings.HasPrefix(value, "/api/v1/")
 }
 
-// isAuthExempt reports the two API routes that establish health and sessions.
+// isAuthExempt reports the API routes that establish health, authentication,
+// and sessions. The install-token gate still applies to /session; see
+// isAuthGateExempt.
 func isAuthExempt(value string) bool {
-	return value == "/api/v1/health" || value == "/api/v1/session"
+	return value == "/api/v1/health" || value == "/api/v1/session" || value == "/api/v1/auth"
+}
+
+// isAuthGateExempt reports the routes reachable without the install token.
+func isAuthGateExempt(value string) bool {
+	return value == "/api/v1/health" || value == "/api/v1/auth"
+}
+
+// authorizedRequest reports whether the install token was supplied as the
+// header or the HttpOnly bootstrap cookie.
+func (s *Server) authorizedRequest(r *http.Request) bool {
+	if s.authToken == "" {
+		return true
+	}
+	supplied := r.Header.Get(authTokenHeader)
+	if supplied == "" {
+		if cookie, err := r.Cookie(authCookieName); err == nil {
+			supplied = cookie.Value
+		}
+	}
+	return subtle.ConstantTimeCompare([]byte(supplied), []byte(s.authToken)) == 1
 }
 
 // isMutation reports whether a method requires CSRF protection.

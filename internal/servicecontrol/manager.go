@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
@@ -68,6 +69,9 @@ type UninstallResult struct {
 
 // Manager owns service lifecycle actions and the merged service view.
 type Manager struct {
+	// mu serializes lifecycle mutations so exclusive-group checks and the
+	// helper action that follows them are one critical section.
+	mu        sync.Mutex
 	root      string
 	store     Store
 	helper    Helper
@@ -178,6 +182,8 @@ func (m *Manager) Get(ctx context.Context, id services.ID) (services.View, error
 // Install prepares the service, pulls its image through the helper, and
 // persists the installed state.
 func (m *Manager) Install(ctx context.Context, id services.ID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -197,6 +203,8 @@ func (m *Manager) Install(ctx context.Context, id services.ID) error {
 // preparer's work, and persists the active state. Any failure runs
 // CleanupActivate and records the error.
 func (m *Manager) Activate(ctx context.Context, id services.ID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -233,6 +241,8 @@ func (m *Manager) Activate(ctx context.Context, id services.ID) error {
 
 // Deactivate stops the service and records the stopped state.
 func (m *Manager) Deactivate(ctx context.Context, id services.ID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -248,6 +258,8 @@ func (m *Manager) Deactivate(ctx context.Context, id services.ID) error {
 
 // Restart restarts the service and records the active state.
 func (m *Manager) Restart(ctx context.Context, id services.ID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	svc, err := m.service(id)
 	if err != nil {
 		return err
@@ -262,6 +274,8 @@ func (m *Manager) Restart(ctx context.Context, id services.ID) error {
 // preserved unless deleteData is set; the helper owns the backup and deletion
 // flow.
 func (m *Manager) Uninstall(ctx context.Context, id services.ID, deleteData bool) (UninstallResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	svc, err := m.service(id)
 	if err != nil {
 		return UninstallResult{}, err

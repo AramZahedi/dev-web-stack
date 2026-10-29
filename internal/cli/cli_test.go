@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +32,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/securestore"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
@@ -1734,6 +1736,29 @@ func TestCLIUIOpensDashboard(t *testing.T) {
 	}
 	if !reflect.DeepEqual(opened, []string{"https://devstack.test"}) {
 		t.Fatalf("opened = %v", opened)
+	}
+}
+
+func TestCLIUIOpensDashboardWithInstallToken(t *testing.T) {
+	useTestSeams(t)
+	var opened []string
+	oldOpen := openBrowser
+	openBrowser = func(url string) error {
+		opened = append(opened, url)
+		return nil
+	}
+	t.Cleanup(func() { openBrowser = oldOpen })
+
+	home := t.TempDir()
+	token := []byte("0123456789abcdef0123456789abcdef")
+	if err := securestore.SaveAt(home, "api-token", token); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeClient{}
+	runCLI(t, fake, "ui", "--home", home)
+	want := dashboardURL + "#token=" + hex.EncodeToString(token)
+	if !reflect.DeepEqual(opened, []string{want}) {
+		t.Fatalf("opened = %v, want [%s]", opened, want)
 	}
 }
 

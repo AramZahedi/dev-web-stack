@@ -283,6 +283,7 @@ func Run(ctx context.Context, opts Options) error {
 		PHP:          sites.NewPHPCommands(),
 		PHPBackend:   local,
 		PHPManifest:  &phpManifest,
+		SourceCopier: localSourceCopier{},
 	})
 	d.certs = certManager
 	d.sites = siteService
@@ -370,9 +371,14 @@ func Run(ctx context.Context, opts Options) error {
 		Logger:      logger,
 	})
 
+	authToken, err := dashboardAuthToken(cfg.Home)
+	if err != nil {
+		return err
+	}
 	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
+		AuthToken:    authToken,
 		Listeners: api.ListenerPorts{
 			HTTPPort:  cfg.HTTPPort,
 			HTTPSPort: cfg.HTTPSPort,

@@ -196,6 +196,7 @@ func serviceCommand(args []string) error {
 		}
 		return helper.RunWindowsService(windowsServiceName, helper.Config{
 			AllowSID: opts.allowSID, PipeName: opts.pipe, ConfigPath: opts.configPath,
+			SystemDir: opts.systemDir, CADir: opts.caDir, RootCertPath: opts.rootCert,
 			ProxyHTTPPort: opts.proxyHTTPPort, ProxyHTTPSPort: opts.proxyHTTPSPort,
 		})
 	default:

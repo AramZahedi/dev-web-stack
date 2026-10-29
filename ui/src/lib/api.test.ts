@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   activateService,
   applyPHP,
+  authenticateFromFragment,
   browseFs,
   buildSite,
   clearPHPDefault,
@@ -61,6 +62,43 @@ describe('api client', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     resetApiClientForTests();
+  });
+
+  it('bootstraps the install token from the URL fragment into an auth cookie', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(emptyResponse(204));
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState(null, '', '/sites#token=abc123');
+
+    await expect(authenticateFromFragment()).resolves.toBe(true);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/auth');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('same-origin');
+    expect(new Headers(init.headers).get('X-Devstack-Token')).toBe('abc123');
+    expect(window.location.hash).toBe('');
+    expect(window.location.pathname).toBe('/sites');
+  });
+
+  it('does nothing when the URL fragment has no install token', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState(null, '', '/sites');
+
+    await expect(authenticateFromFragment()).resolves.toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid install token without clearing business state', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ code: 'FORBIDDEN', message: 'invalid dashboard install token' }, 403));
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState(null, '', '/#token=wrong');
+
+    await expect(authenticateFromFragment()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(window.location.hash).toBe('');
   });
 
   it('fetches a session and sends its CSRF token with same-origin credentials', async () => {

@@ -1682,3 +1682,45 @@ Rounds 1-2/3 findings are mostly fixed in code and covered by tests:
 - `AGENTS.md`: project model policy (`opencode-go/deepseek-v4.1-flash#max`).
 - Prior remediation commits: `e4b0574` (C1), `d2890b1` (platform root), `6f74dcc` (services); full list in `git log 6d7bdaa..6f74dcc`.
 - The audit made no product-code changes and did not push.
+
+---
+
+# Remediation Completion (2026-10-29)
+
+All Round-4 findings are implemented in the remediation commit on top of `835372c`:
+
+| Finding | Change | Evidence |
+|---|---|---|
+| R4-C1 | Both release scripts stage `build/wsl/{agent.service,install-agent.sh,install-docker.sh,docker-daemon.json}`; internal checksums recurse; release test requires them and verifies the installer references them. | `test/release/release_windows_test.sh` PASS; ZIP inspection |
+| R4-C2 | API rejects separators/NUL/`..`; Windows runtime service checks the installed set; agent deletes only the registered, contained `Path`. | `TestRemoveRuntimeRejectsPathTraversalID`, `TestRemoveRuntimeUsesRegisteredPathAndRejectsTraversal` |
+| R4-H1 | Per-install dashboard token in `securestore` (DPAPI/0600), API auth gate + `/auth` HttpOnly cookie, CLI `ui` fragment bootstrap, UI locked banner, OpenAPI updated. The public-proxy path is covered because the API validates the cookie, not the proxy peer. | `TestAuthTokenGateProtectsDashboardAPI`, `TestAuthBootstrapRejectsWrongTokenAndSetsSecureCookie`, UI `authenticateFromFragment` tests |
+| R4-H2 | Windows build calls the agent `BuildSite` and writes host build logs; Windows terminal issues an agent ticket and bridges the browser WebSocket to the agent PTY. | `TestWindowsBuildService*`, `TestWindowsTerminalService*` |
+| R4-H3 | Helper derives system/CA/root paths from `--config`, supports explicit `system_dir`/`ca_dir`/`root_cert`, and the installer writes them. | `TestWindowsHelperDerivesSystemAndCAPathsFromConfigPath`, `TestWindowsConfigLoadsSystemAndCAPaths` |
+| R4-H4 | Standalone installer defaults to `%USERPROFILE%\.devstack` with legacy `C:\devstack` detection for upgrade/uninstall. | `TestParseFlags` |
+| R4-H5 | Rollback uses a fail-closed `set -e` script, checks every exit status, and prints success only after a verified restore. | Missing-backup fault injection in `installer_test.ps1` |
+| R4-H6 | `Select-PrebuiltAgent` excludes the destination; repair/upgrade no longer self-copies. | Static guard in `installer_test.ps1` |
+| R4-M1 | Null rootfs guard; dry-run without a rootfs exits cleanly. | Installer test 35 |
+| R4-M2 | Uninstaller removes the devstack-owned Firefox policy, all three firewall rules, `api-token`, and the legacy LocalSystem CA. | Installer test 36 |
+| R4-M3 | Agent `/v1/source/copy` + `Runtime.CopySource`; Windows agent adapter and Linux local copier wired into sites. | `TestAgentCopySource*` |
+| R4-M4 | Runtime archives require a 32-byte hex checksum, verification is fail-closed, staging is private and atomic. | `TestDownloadAndExtractArchive*` |
+| R4-M5 | Simulated FPM has no PID; only a live child is signaled, and never after it is reaped. | Native + WSL FPM tests |
+| R4-M6 | Lifecycle mutations serialize behind a Manager mutex. | `TestConcurrentActivationOfExclusiveGroupSerializes` |
+| R4-L1 | `uninstall.ps1` reads `DEVSTACK_TEST_MOCK_WSL` only through the sandbox-gated helper. | Installer test 36 |
+
+Additional Windows lifecycle fixes made while addressing the user-reported "WSL turns off / visible terminal" problems:
+
+- Every `wsl.exe` launched by the daemon, CLI tooling, and tooling package uses `CREATE_NO_WINDOW`; no new console flashes.
+- The installer starts the `devstack-daemon` logon task after WSL provisioning (and on `-SkipWSL`), and the VBS/task passes `--home` so the daemon uses the install home.
+- WSL wake timeout raised to 30 seconds; keepalive restarts immediately and logs an unexpected exit.
+- The daemon keepalive remains the `sleep infinity` child held for the daemon lifetime; when the daemon is stopped, WSL idle shutdown is expected.
+
+Gates run after remediation:
+
+- `go build ./...`, `go vet ./...`, native `go test ./...`: PASS.
+- `npm --prefix ui test -- --run`: 123/123 PASS.
+- `npm --prefix ui run check`: 0 errors/warnings.
+- `npm --prefix ui run build`: PASS.
+- `test/windows/installer_test.ps1`: 205 checks, 0 failures.
+- `test/release/release_windows_test.sh`: PASS, including the staged WSL assets.
+
+Known residual: the managed distro still runs the agent/PHP execution as root (R2-M12). The install-token gate now prevents other local users from reaching it, but privilege separation inside the distro is still a hardening item for the Round-5 audit.

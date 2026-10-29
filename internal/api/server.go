@@ -9,6 +9,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -286,6 +287,11 @@ type Config struct {
 	ProjectsRoot string
 	MaxBodyBytes int64
 	AllowedHosts []string
+	// AuthToken is the per-install dashboard secret. When non-empty, every API
+	// request except health and the auth bootstrap must present it as the
+	// X-Devstack-Token header or the devstack_auth cookie. The SID-authenticated
+	// control pipe is exempt. Empty disables the gate (tests and legacy mode).
+	AuthToken string
 	// Listeners records the ports the running daemon actually bound. Settings
 	// patches compare against these, not against config.yaml, so a saved but
 	// not-yet-applied port change keeps restart_required set.
@@ -321,6 +327,7 @@ type Server struct {
 
 	secret       [sha256.Size]byte
 	allowedHosts map[string]struct{}
+	authToken    string
 	ui           fs.FS
 	mux          *http.ServeMux
 	logger       *slog.Logger
@@ -366,6 +373,7 @@ func NewServer(
 		wslFS:             cfg.WSLFS,
 		cfg:               cfg,
 		allowedHosts:      normalizeAllowedHosts(cfg.AllowedHosts),
+		authToken:         strings.TrimSpace(cfg.AuthToken),
 		ui:                cfg.UI,
 		mux:               http.NewServeMux(),
 		logger:            cfg.Logger,
@@ -410,6 +418,7 @@ func (s *Server) apiRoutes() []route {
 	return []route{
 		{http.MethodGet, "/api/v1/health", s.handleHealth},
 		{http.MethodGet, "/api/v1/session", s.handleSession},
+		{http.MethodPost, "/api/v1/auth", s.handleAuth},
 
 		{http.MethodGet, "/api/v1/sites", s.handleListSites},
 		{http.MethodPost, "/api/v1/sites", s.handleCreateSite},
@@ -535,6 +544,37 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
+	if !isLoopbackRequest(r) {
+		writeError(w, http.StatusForbidden, codeForbidden, "access denied: auth endpoint is loopback only", nil)
+		return
+	}
+	if s.authToken == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	supplied := r.Header.Get(authTokenHeader)
+	if supplied == "" {
+		if cookie, err := r.Cookie(authCookieName); err == nil {
+			supplied = cookie.Value
+		}
+	}
+	if subtle.ConstantTimeCompare([]byte(supplied), []byte(s.authToken)) != 1 {
+		writeError(w, http.StatusForbidden, codeForbidden, "invalid dashboard install token", nil)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     authCookieName,
+		Value:    s.authToken,
+		Path:     "/",
+		MaxAge:   30 * 24 * 60 * 60,
+		HttpOnly: true,
+		Secure:   secureRequest(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {

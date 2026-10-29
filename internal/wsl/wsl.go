@@ -20,6 +20,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 )
 
 var (
@@ -51,6 +52,9 @@ func (ExecRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	cmd := exec.CommandContext(ctx, "wsl.exe", args...)
 	cmd.WaitDelay = 3 * time.Second
+	// The daemon and CLI are GUI-less or background parents; without
+	// CREATE_NO_WINDOW every wsl.exe call flashes a console window.
+	platform.ConfigureProcess(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
