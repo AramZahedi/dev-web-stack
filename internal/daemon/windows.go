@@ -1718,8 +1718,5 @@ func (s *windowsRuntimeService) Available() []catalog.Entry {
 }
 
 func resolveWindowsToolBinDir(cfg config.Config) string {
-	if fi, err := os.Stat(`C:\devstack\bin`); err == nil && fi.IsDir() {
-		return `C:\devstack\bin`
-	}
 	return filepath.Join(cfg.Home, "bin")
 }

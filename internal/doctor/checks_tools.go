@@ -37,6 +37,14 @@ func (s *Service) checkTools() Check {
 		"php":      filepath.Join(tooling.ShimDir(paths), "php"),
 		"composer": filepath.Join(home, "tools", "composer", "bin", "composer"),
 	}
+	if runtime.GOOS == "windows" {
+		if !regularExecutable(targets["php"]) && regularExecutable(filepath.Join(binDir, "php.cmd")) {
+			targets["php"] = filepath.Join(binDir, "php.cmd")
+		}
+		if !regularExecutable(targets["composer"]) && regularExecutable(filepath.Join(binDir, "composer.cmd")) {
+			targets["composer"] = filepath.Join(binDir, "composer.cmd")
+		}
+	}
 	var problems []string
 	checked := 0
 	stalePATHSession := false
