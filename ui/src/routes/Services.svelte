@@ -122,8 +122,9 @@
   }
 
   function showStateBadge(state: string): boolean {
-    const s = (state || '').replace(/-/g, '_');
-    return s !== 'active' && s !== 'installed' && s !== 'not_installed' && s !== 'inactive';
+    if (!state) return false;
+    const s = state.toLowerCase().replace(/[-_]/g, '');
+    return s !== 'active' && s !== 'installed' && s !== 'notinstalled' && s !== 'inactive';
   }
 
   function stateVariant(
@@ -436,9 +437,11 @@
                         <Badge variant={installed ? 'accent' : 'neutral'}>
                           {installed ? 'Installed' : 'Not installed'}
                         </Badge>
-                        <Badge variant={active ? 'accent' : 'neutral'}>
-                          {active ? 'Active' : 'Inactive'}
-                        </Badge>
+                        {#if installed}
+                          <Badge variant={active ? 'accent' : 'neutral'}>
+                            {active ? 'Active' : 'Inactive'}
+                          </Badge>
+                        {/if}
                         {#if showStateBadge(service.state)}
                           <Badge variant={stateVariant(service.state)}>{service.state}</Badge>
                         {/if}
