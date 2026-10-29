@@ -17,16 +17,16 @@ type InstallerOptions struct {
 	InstallDir    string
 	InstallDirSet bool
 	RootFSPath    string
-	AllowReboot bool
-	SkipWSL     bool
-	DryRun      bool
-	Upgrade     bool
-	Uninstall   bool
-	Unattended  bool
-	ZipPath     string
-	Help        bool
-	PurgeDistro bool
-	PurgeData   bool
+	AllowReboot   bool
+	SkipWSL       bool
+	DryRun        bool
+	Upgrade       bool
+	Uninstall     bool
+	Unattended    bool
+	ZipPath       string
+	Help          bool
+	PurgeDistro   bool
+	PurgeData     bool
 }
 
 func defaultInstallDir() string {
@@ -42,6 +42,20 @@ func defaultInstallDir() string {
 func installManifestExists(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, "system", "install-manifest.json"))
 	return err == nil && !info.IsDir()
+}
+
+// legacyInstallDir is the pre-profile default. It is a variable so tests can
+// point the legacy-detection paths at a temporary directory.
+var legacyInstallDir = `C:\devstack`
+
+func validateFreshInstallTarget(opts InstallerOptions) error {
+	if opts.InstallDirSet || opts.Upgrade || opts.Uninstall || opts.DryRun {
+		return nil
+	}
+	if installManifestExists(opts.InstallDir) || !installManifestExists(legacyInstallDir) {
+		return nil
+	}
+	return fmt.Errorf("an existing legacy devstack installation was found at %s; run with --upgrade to upgrade it, or pass --install-dir to choose a different location", legacyInstallDir)
 }
 
 func parseFlags(args []string) (InstallerOptions, error) {
@@ -73,8 +87,8 @@ func parseFlags(args []string) (InstallerOptions, error) {
 	// Existing installs from the pre-profile layout are upgraded/uninstalled in
 	// place unless -install-dir was explicit.
 	if !opts.InstallDirSet && (opts.Upgrade || opts.Uninstall) &&
-		!installManifestExists(opts.InstallDir) && installManifestExists(`C:\devstack`) {
-		opts.InstallDir = `C:\devstack`
+		!installManifestExists(opts.InstallDir) && installManifestExists(legacyInstallDir) {
+		opts.InstallDir = legacyInstallDir
 	}
 	return opts, nil
 }
@@ -186,22 +200,8 @@ func findPowerShell() (string, error) {
 }
 
 func locatePayload(opts InstallerOptions) (io.ReaderAt, int64, error) {
-	// 0. Environment variable override (e.g. for release packaging validation or testing)
-	if envPath := os.Getenv("DEVSTACK_PAYLOAD_ZIP"); envPath != "" {
-		if fi, err := os.Stat(envPath); err == nil && fi.Size() > 22 {
-			f, err := os.Open(envPath)
-			if err == nil {
-				return f, fi.Size(), nil
-			}
-		}
-	}
-
-	// 1. Embedded payload
-	if len(embeddedPayload) > 22 {
-		return bytes.NewReader(embeddedPayload), int64(len(embeddedPayload)), nil
-	}
-
-	// 2. Explicit -zip flag
+	// 1. Explicit -zip flag wins over both the embedded payload and the test
+	// environment override so an operator can validate another artifact.
 	if opts.ZipPath != "" {
 		fi, err := os.Stat(opts.ZipPath)
 		if err != nil {
@@ -214,7 +214,22 @@ func locatePayload(opts InstallerOptions) (io.ReaderAt, int64, error) {
 		return f, fi.Size(), nil
 	}
 
-	// 3. Search for devstack_*_windows_amd64.zip in executable dir and cwd
+	// 2. Environment variable override (e.g. for release packaging validation or testing)
+	if envPath := os.Getenv("DEVSTACK_PAYLOAD_ZIP"); envPath != "" {
+		if fi, err := os.Stat(envPath); err == nil && fi.Size() > 22 {
+			f, err := os.Open(envPath)
+			if err == nil {
+				return f, fi.Size(), nil
+			}
+		}
+	}
+
+	// 3. Embedded payload
+	if len(embeddedPayload) > 22 {
+		return bytes.NewReader(embeddedPayload), int64(len(embeddedPayload)), nil
+	}
+
+	// 4. Search for devstack_*_windows_amd64.zip in executable dir and cwd
 	candidates := []string{}
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)

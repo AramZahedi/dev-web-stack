@@ -145,7 +145,7 @@ The standalone binary installer executable (`devstack-installer.exe` or `devstac
 | Flag | Default | Description |
 |---|---|---|
 | `-y`, `--unattended` | `false` | Run without interactive prompts or pause on exit. |
-| `-dir <path>` | `%USERPROFILE%\.devstack` | Custom installation directory. |
+| `--install-dir <path>` | `%USERPROFILE%\.devstack` | Custom installation directory. |
 | `--dry-run` | `false` | Validate environment and simulate installation without making system changes. |
 | `--allow-reboot` | `false` | Allow automatic reboot scheduling if optional Windows features require a restart. |
 | `--skip-wsl` | `false` | Skip WSL distro import and agent provisioning (host CLI and helper only). |
@@ -208,6 +208,12 @@ When using `install.ps1` directly, the following flags are supported:
 | `-Upgrade` | `$false` | Performs in-place binary upgrades with automatic rollback on failure. |
 | `-TestSandbox <path>` | `$null` | Isolates installation inside a test directory without modifying machine services. |
 
+`install.ps1` and `uninstall.ps1` detect a legacy install at `C:\devstack` when
+no `-InstallDir` is supplied and no `%USERPROFILE%\.devstack` install exists.
+Pass `-InstallDir` explicitly to choose a different location. A fresh install
+over a completed installation is refused; use `-Upgrade` for the existing
+directory. `-DryRun` never writes to the install directory.
+
 ---
 
 ## 4. Verification
@@ -240,6 +246,9 @@ After installation finishes, verify the environment:
    - PHP and Node runtime catalogs
 
 4. **Start the User Daemon:**
+   The installer registers the `devstack-daemon` logon task and starts it in the
+   current session, so the dashboard normally starts automatically. If it is not
+   running, start it manually:
    ```powershell
    devstack daemon start
    ```
@@ -265,20 +274,23 @@ cd .\upgrade-pack
 ```
 
 The upgrade workflow:
-1. Stops the running daemon.
-2. Backs up `/data/devstack` inside WSL to a verified temporary archive (`/data/devstack-backup.tar.gz`) before touching any binaries.
-3. Stops the `DevstackHelper` Windows service and backs up `devstack.exe` and `devstack-helper.exe` to `.bak`.
-4. Stages updated Windows binaries and restarts the `DevstackHelper` service.
-5. Stages the new `devstack-agent` into the WSL distribution and restarts `devstack-agent.service`.
-6. Performs a health probe against the agent HTTPS API.
-7. Restarts the user daemon.
-8. If any health or staging step fails, immediately initiates automatic rollback to previous binaries and verified WSL state without data loss.
+1. Refuses to continue unless a completed installation exists at the target.
+2. Stops the running daemon and the `DevstackHelper` Windows service.
+3. Backs up `devstack.exe` and `devstack-helper.exe` to `.bak`.
+4. Backs up `/data/devstack` inside WSL to a verified temporary archive (`/data/devstack-backup.tar.gz`) before replacing binaries.
+5. Stages updated Windows binaries and repairs/restarts the `DevstackHelper` service so it uses the target `helper.yaml`.
+6. Stages the new `devstack-agent` into the WSL distribution and restarts `devstack-agent.service`.
+7. Performs a health probe against the agent HTTPS API (when agent credentials already exist).
+8. Restarts the user daemon.
+9. If any staging or health step fails, initiates automatic rollback to the previous binaries and verified WSL state without data loss. A rollback that cannot be completed reports failure instead of claiming success.
 
 ---
 
 ## 6. Uninstallation
 
-Uninstallation is performed using `uninstall.ps1` from an elevated prompt:
+Uninstallation is performed using `uninstall.ps1` from an elevated prompt. If no
+`-InstallDir` is supplied, the script detects a legacy `C:\devstack` install;
+otherwise it targets `%USERPROFILE%\.devstack`:
 
 ```powershell
 cd "$env:USERPROFILE\.devstack"
@@ -288,11 +300,20 @@ cd "$env:USERPROFILE\.devstack"
 By default, uninstallation:
 - Stops and unregisters the `DevstackHelper` Windows service.
 - Unregisters the user daemon scheduled startup task.
-- Cleans the managed `.test` block from `C:\Windows\System32\drivers\etc\hosts`.
-- Removes the devstack local CA from the Windows Root certificate store.
-- Removes the inbound `devstack-daemon-proxy` Windows Firewall rule.
-- Removes `%USERPROFILE%\.devstack\bin` from `PATH`.
+- Cleans the managed `.test` block from `C:\Windows\System32\drivers\etc\hosts`
+  without rewriting the file when no block exists, and leaves an unterminated
+  block untouched with a warning.
+- Removes the devstack local CA from the Windows Root certificate store and
+  deletes the CA private key material.
+- Removes the inbound `devstack-daemon-proxy` Windows Firewall rule and the
+  helper proxy rules.
+- Removes the install's `bin` directory from `PATH`.
 - **Preserves** all user projects, SQLite state, and the managed WSL distribution (`ext4.vhdx`).
+
+The uninstaller refuses to remove a `DevstackHelper` service that belongs to a
+different installation unless `-Force` is supplied. It also refuses to run from
+a path that does not contain a devstack installation unless `-Force` is used to
+remove machine-wide registrations only.
 
 ### Purge Options
 
@@ -305,3 +326,7 @@ To permanently remove user state or the WSL distro:
 # Remove DPAPI secrets, SQLite database, and the .devstack directory:
 .\uninstall.ps1 -PurgeData -Force
 ```
+
+`-PurgeDistro` refuses to delete the distro directory if `wsl --unregister`
+fails. `-PurgeData` requires a valid `system\install-manifest.json` in the target
+directory and fails instead of recursively deleting an unverified path.

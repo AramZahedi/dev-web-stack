@@ -251,3 +251,85 @@ func TestLocatePayload(t *testing.T) {
 		_ = closer.Close()
 	}
 }
+
+func TestLocatePayloadExplicitZipOverridesEmbedded(t *testing.T) {
+	makeZip := func(content string) []byte {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		fw, err := zw.Create("payload.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+
+	explicit := makeZip("explicit payload")
+	embedded := makeZip("embedded payload")
+	path := filepath.Join(t.TempDir(), "explicit.zip")
+	if err := os.WriteFile(path, explicit, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	original := embeddedPayload
+	embeddedPayload = embedded
+	t.Cleanup(func() { embeddedPayload = original })
+
+	reader, size, err := locatePayload(InstallerOptions{ZipPath: path})
+	if err != nil {
+		t.Fatalf("locatePayload: %v", err)
+	}
+	if size != int64(len(explicit)) {
+		t.Fatalf("explicit --zip was ignored: got size %d, want %d (embedded size %d)", size, len(explicit), len(embedded))
+	}
+	if closer, ok := reader.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
+}
+
+func TestValidateFreshInstallTarget(t *testing.T) {
+	legacy := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(legacy, "system"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "system", "install-manifest.json"), []byte(`{"stage":"complete"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalLegacy := legacyInstallDir
+	legacyInstallDir = legacy
+	t.Cleanup(func() { legacyInstallDir = originalLegacy })
+
+	defaultDir := filepath.Join(t.TempDir(), ".devstack")
+	opts := InstallerOptions{InstallDir: defaultDir}
+	if err := validateFreshInstallTarget(opts); err == nil {
+		t.Fatal("expected a fresh install beside a legacy installation to fail")
+	}
+
+	for name, tc := range map[string]InstallerOptions{
+		"explicit install dir": {InstallDir: defaultDir, InstallDirSet: true},
+		"upgrade":              {InstallDir: defaultDir, Upgrade: true},
+		"uninstall":            {InstallDir: defaultDir, Uninstall: true},
+		"dry run":              {InstallDir: defaultDir, DryRun: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateFreshInstallTarget(tc); err != nil {
+				t.Fatalf("validateFreshInstallTarget(%+v) = %v, want nil", tc, err)
+			}
+		})
+	}
+
+	if err := os.MkdirAll(filepath.Join(defaultDir, "system"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultDir, "system", "install-manifest.json"), []byte(`{"stage":"complete"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateFreshInstallTarget(InstallerOptions{InstallDir: defaultDir}); err != nil {
+		t.Fatalf("existing profile install should be allowed (parse/merge path): %v", err)
+	}
+}

@@ -101,8 +101,14 @@ with open('${EXTRACT}/devstack.spdx.json') as f:
     data = json.load(f)
 assert data.get('spdxVersion') == 'SPDX-2.3'
 assert data.get('SPDXID') == 'SPDXRef-DOCUMENT'
-assert len(data.get('packages', [])) >= 6
-" || fail "devstack.spdx.json is invalid SPDX 2.3 JSON"
+packages = {p.get('name') for p in data.get('packages', [])}
+assert len(packages) >= 10, packages
+for required in ('devstack.exe', 'devstack-helper.exe', 'devstack-agent',
+                 'debian-12-wsl-rootfs.tar.gz', 'install.ps1', 'uninstall.ps1',
+                 'build/wsl/agent.service', 'build/wsl/install-agent.sh',
+                 'build/wsl/install-docker.sh', 'build/wsl/docker-daemon.json'):
+    assert required in packages, required
+" || fail "devstack.spdx.json is invalid SPDX 2.3 JSON or omits packaged components"
 elif command -v python >/dev/null 2>&1; then
 	python -c "
 import json
@@ -110,10 +116,41 @@ with open('${EXTRACT}/devstack.spdx.json') as f:
     data = json.load(f)
 assert data.get('spdxVersion') == 'SPDX-2.3'
 assert data.get('SPDXID') == 'SPDXRef-DOCUMENT'
-assert len(data.get('packages', [])) >= 6
-" || fail "devstack.spdx.json is invalid SPDX 2.3 JSON"
+packages = {p.get('name') for p in data.get('packages', [])}
+assert len(packages) >= 10, packages
+for required in ('devstack.exe', 'devstack-helper.exe', 'devstack-agent',
+                 'debian-12-wsl-rootfs.tar.gz', 'install.ps1', 'uninstall.ps1',
+                 'build/wsl/agent.service', 'build/wsl/install-agent.sh',
+                 'build/wsl/install-docker.sh', 'build/wsl/docker-daemon.json'):
+    assert required in packages, required
+" || fail "devstack.spdx.json is invalid SPDX 2.3 JSON or omits packaged components"
 fi
 pass "devstack.spdx.json is valid SPDX-2.3 JSON with packaged components"
+
+# The installer must fail closed when the WSL provisioning assets are absent.
+grep -Fq "Release payload is incomplete" "${EXTRACT}/install.ps1" ||
+	fail "install.ps1 does not fail closed on a missing WSL provisioning payload"
+
+# --mock-rootfs must only skip the real-rootfs gates for a rootfs this build
+# fabricated. Supplying an unpinned rootfs together with the flag must still
+# fail closed.
+PINNED_TEST_ROOTFS="${TMP}/unpinned-rootfs.tar.gz"
+if command -v truncate >/dev/null 2>&1; then
+	truncate -s 110000000 "${PINNED_TEST_ROOTFS}"
+	OUT_PINNED="${TMP}/out-pinned"
+	BUILD_PINNED="${TMP}/build-pinned"
+	mkdir -p "${OUT_PINNED}" "${BUILD_PINNED}"
+	if (cd "${REPO_ROOT}" && bash "${RELEASE_SCRIPT}" --version "${VERSION}" --skip-ui \
+		--rootfs "${PINNED_TEST_ROOTFS}" --mock-rootfs \
+		--output "${OUT_PINNED}" --build-dir "${BUILD_PINNED}" 2>"${TMP}/pinned.err"); then
+		fail "release accepted an unpinned rootfs supplied together with --mock-rootfs"
+	fi
+	grep -Fq "does not match pinned rootfs_sha256" "${TMP}/pinned.err" ||
+		fail "unpinned rootfs failure did not mention the pinned hash: $(cat "${TMP}/pinned.err")"
+	pass "--mock-rootfs does not bypass the pinned-rootfs gate for supplied artifacts"
+else
+	log "truncate is unavailable; pinned-rootfs override check skipped"
+fi
 
 # Verify internal checksums.txt
 (cd "${EXTRACT}" && sha256sum -c checksums.txt >/dev/null) || fail "internal checksums.txt verification failed"
