@@ -161,7 +161,7 @@
 
   const isWindowsHost = $derived(Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)));
   const initialBrowsePath = $derived(
-    path
+    pathTouched && path
       ? path
       : sourceMode === 'wsl'
         ? '/data/devstack/projects'

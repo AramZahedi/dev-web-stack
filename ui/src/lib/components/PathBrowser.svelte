@@ -54,6 +54,17 @@
     } catch (caught) {
       if (seq !== requestSeq) return;
       const described = describeError(caught);
+      const parent = parentPath(path);
+      if ((described.code === 'NOT_FOUND' || described.code === 'INVALID_REQUEST') && parent && parent !== path) {
+        try {
+          const parentListing = await browseFs(parent, mode);
+          if (seq !== requestSeq) return;
+          listing = parentListing;
+          return;
+        } catch {
+          // If parent fails too, fall through to error reporting
+        }
+      }
       error = { code: described.code, message: described.message };
     } finally {
       if (seq === requestSeq) loading = false;
@@ -171,7 +182,7 @@
             onretry={() => browse(requestedPath || initialPath)}
           />
           <div class="error-actions">
-            <Button size="sm" variant="secondary" onclick={() => browse('/')}>
+            <Button size="sm" variant="secondary" onclick={() => browse(rootPath)}>
               Go to root
             </Button>
           </div>
