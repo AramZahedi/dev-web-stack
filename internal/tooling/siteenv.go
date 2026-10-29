@@ -18,13 +18,23 @@ import (
 // changing process credentials.
 var currentEUID = os.Geteuid
 
+func init() {
+	// The site service cannot import tooling directly because tooling consumes
+	// sites for the PHP environment types. Installing the resolver here keeps
+	// the production global-default rules in ResolveNodeDefault.
+	sites.NodeDefaultResolver = ResolveNodeDefault
+}
+
 // EnvDeps carries the runtime inventory and generated site configuration used
 // to build a shell environment.
 type EnvDeps struct {
-	Paths    config.Paths
-	Builds   []model.RuntimeBuild
-	PHPInfo  *sites.PHPInfo
-	BasePATH string
+	Paths   config.Paths
+	Builds  []model.RuntimeBuild
+	PHPInfo *sites.PHPInfo
+	// NodeDefault is the resolved machine-wide default used when a site has no
+	// pin. When nil, the newest installed Node build acts as the default.
+	NodeDefault *model.RuntimeBuild
+	BasePATH    string
 }
 
 // SiteEnvironment is a fully resolved site shell environment.
@@ -171,7 +181,7 @@ func BuildSiteEnv(site model.Site, deps EnvDeps) (SiteEnvironment, error) {
 		values[key] = value
 	}
 
-	var phpBuild, nodeBuild *model.RuntimeBuild
+	var phpBuild *model.RuntimeBuild
 	switch site.Kind {
 	case model.SitePHP:
 		build, err := ResolvePHPBuild(deps.Builds, site.PHPBuild, site.PHPVersion)
@@ -192,25 +202,20 @@ func BuildSiteEnv(site model.Site, deps EnvDeps) (SiteEnvironment, error) {
 		}
 		env.PHPIni = ini
 		values["PHPRC"] = ini
-	case model.SiteNode:
-		build, err := ResolveNodeBuild(deps.Builds, site.NodeVersion)
-		if err != nil {
-			return SiteEnvironment{}, err
-		}
-		nodeBuild = &build
-	case model.SiteStatic:
-		if site.Build != nil {
-			build, err := ResolveNodeBuild(deps.Builds, site.Build.NodeVersion)
-			if err != nil {
-				return SiteEnvironment{}, err
-			}
-			nodeBuild = &build
-		}
+	case model.SiteStatic, model.SiteNode:
 	default:
 		return SiteEnvironment{}, fmt.Errorf("tooling: unsupported site kind %q", site.Kind)
 	}
+	nodeBuild, nodeSource, err := resolveShellNodeBuild(site, deps)
+	if err != nil {
+		return SiteEnvironment{}, err
+	}
 	env.PHPBuild = phpBuild
 	env.NodeBuild = nodeBuild
+	if nodeBuild != nil {
+		values["DEVSTACK_NODE_VERSION"] = nodeBuild.Version
+		values["DEVSTACK_NODE_SOURCE"] = nodeSource
+	}
 
 	if err := ensureSiteShims(env.ShimDir, phpBuild, nodeBuild, env.PHPIni); err != nil {
 		return SiteEnvironment{}, err
@@ -228,6 +233,54 @@ func BuildSiteEnv(site model.Site, deps EnvDeps) (SiteEnvironment, error) {
 	values["PATH"] = env.PATH
 	env.Values = values
 	return env, nil
+}
+
+// resolveShellNodeBuild applies the shell/exec order: the exact site pin wins,
+// then the global default. A static build profile is deliberately ignored; it
+// only selects the Node runtime for build execution. PHP sites without any Node
+// toolchain still get a usable shell, and Node-kind sites require a pin.
+func resolveShellNodeBuild(site model.Site, deps EnvDeps) (*model.RuntimeBuild, string, error) {
+	pin := strings.TrimSpace(site.NodeVersion)
+	if pin != "" {
+		build, err := ResolveNodeBuild(deps.Builds, pin)
+		if err != nil {
+			return nil, "", err
+		}
+		return &build, model.NodeSourceSite, nil
+	}
+	if site.Kind == model.SiteNode {
+		return nil, "", fmt.Errorf("%w: Node version is empty", ErrRuntimeMissing)
+	}
+	if deps.NodeDefault != nil {
+		if deps.NodeDefault.Kind != "" && deps.NodeDefault.Kind != "node" {
+			return nil, "", fmt.Errorf("tooling: global Node default %q is not a Node build", deps.NodeDefault.ID)
+		}
+		if strings.TrimSpace(deps.NodeDefault.Version) == "" {
+			return nil, "", errors.New("tooling: global Node default has no version")
+		}
+		build := *deps.NodeDefault
+		return &build, model.NodeSourceGlobal, nil
+	}
+	if build, ok := newestInstalledNodeBuild(deps.Builds); ok {
+		return &build, model.NodeSourceGlobal, nil
+	}
+	return nil, "", nil
+}
+
+// newestInstalledNodeBuild mirrors the no-setting fallback of the global Node
+// default: the newest installed compatible build.
+func newestInstalledNodeBuild(builds []model.RuntimeBuild) (model.RuntimeBuild, bool) {
+	var best model.RuntimeBuild
+	found := false
+	for _, build := range builds {
+		if build.Kind != "node" || !isCompatibleBackend(build.Backend) {
+			continue
+		}
+		if !found || compareVersions(build.Version, best.Version) > 0 {
+			best, found = build, true
+		}
+	}
+	return best, found
 }
 
 func validateHash(hash string) error {

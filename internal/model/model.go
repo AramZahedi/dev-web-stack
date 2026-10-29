@@ -68,6 +68,22 @@ const (
 	StatusError    SiteStatus = "error"
 )
 
+// Node toolchain sources reported by ResolveNodeToolchain and the site API.
+const (
+	NodeSourceSite   = "site"
+	NodeSourceGlobal = "global"
+)
+
+// NodeToolchain is the resolved Node runtime for a site shell or exec session.
+// Version is always an exact version and Installed reports whether that build
+// is present.
+type NodeToolchain struct {
+	Version   string `json:"version"`
+	BuildID   string `json:"build_id,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Installed bool   `json:"installed"`
+}
+
 // BuildProfile configures an optional client-side asset build.
 type BuildProfile struct {
 	NodeVersion string            `json:"node_version,omitempty"`
@@ -99,6 +115,10 @@ type Site struct {
 	NodeVersion string            `json:"node_version"`
 	Command     string            `json:"command"`
 	Env         map[string]string `json:"env"`
+
+	// NodeToolchain is a response-only summary populated by the site service.
+	// It is never persisted; the stored pin is NodeVersion.
+	NodeToolchain *NodeToolchain `json:"node_toolchain,omitempty"`
 
 	DocumentRoot        string        `json:"document_root"`
 	FrontController     bool          `json:"front_controller"`

@@ -1,12 +1,39 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 )
+
+// siteNodeToolchainResolver is the narrow optional surface used to attach the
+// response-only Node summary. The site service implements it; lightweight test
+// doubles may not, in which case the site's existing summary is left as-is.
+type siteNodeToolchainResolver interface {
+	ResolveNodeToolchain(context.Context, model.Site) (model.NodeToolchain, error)
+}
+
+// siteResponse attaches the Node toolchain summary when the service exposes the
+// resolver and the service result did not already carry one.
+func (s *Server) siteResponse(r *http.Request, site model.Site) model.Site {
+	if site.NodeToolchain != nil {
+		return site
+	}
+	resolver, ok := s.sites.(siteNodeToolchainResolver)
+	if !ok {
+		return site
+	}
+	summary, err := resolver.ResolveNodeToolchain(r.Context(), site)
+	if err != nil {
+		return site
+	}
+	site.NodeToolchain = &summary
+	return site
+}
 
 // createSiteRequest is the dashboard/CLI create payload. domain is derived
 // from name by the site service; host_path is accepted as an alias for path so
@@ -62,7 +89,7 @@ func (s *Server) handleChangeSiteSourceMode(w http.ResponseWriter, r *http.Reque
 		s.writeServiceError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, site)
+	writeJSON(w, http.StatusOK, s.siteResponse(r, site))
 }
 
 // updateSiteRequest is a partial update. Pointer fields distinguish an omitted
@@ -84,6 +111,9 @@ type updateSiteRequest struct {
 	Command             string              `json:"command"`
 	DocumentRoot        string              `json:"document_root"`
 	Env                 *map[string]string  `json:"env"`
+	// NodeVersion is raw so an omitted key stays nil while an explicit null
+	// clears the pin. A JSON string sets or normalizes it.
+	NodeVersion json.RawMessage `json:"node_version"`
 }
 
 func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +128,9 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 	}
 	if list == nil {
 		list = []model.Site{}
+	}
+	for i := range list {
+		list[i] = s.siteResponse(r, list[i])
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -153,7 +186,7 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, site)
+	writeJSON(w, http.StatusCreated, s.siteResponse(r, site))
 }
 
 func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +199,7 @@ func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, site)
+	writeJSON(w, http.StatusOK, s.siteResponse(r, site))
 }
 
 func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
@@ -200,12 +233,22 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 	if req.Env != nil {
 		update.Env = *req.Env
 	}
+	if len(req.NodeVersion) != 0 {
+		// json.Unmarshal maps null (and "") to the empty string, which the
+		// service treats as an explicit clear for static and PHP sites.
+		var pin string
+		if err := json.Unmarshal(req.NodeVersion, &pin); err != nil {
+			writeError(w, http.StatusBadRequest, codeInvalidRequest, "node_version must be a string or null", nil)
+			return
+		}
+		update.NodeVersion = &pin
+	}
 	site, err := s.sites.Update(r.Context(), r.PathValue("ref"), update)
 	if err != nil {
 		s.writeServiceError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, site)
+	writeJSON(w, http.StatusOK, s.siteResponse(r, site))
 }
 
 func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
