@@ -134,15 +134,20 @@ try {
     # RootFS archive
     $rootfsMinBytes = 1073741824 # 1GB minimum for real release archive
     $versionsLockPath = Join-Path $repoRoot "build\wsl\versions.lock"
+    $pinnedRootfsHash = $null
     if (Test-Path $versionsLockPath) {
         Get-Content $versionsLockPath | ForEach-Object {
             if ($_ -match '^\s*rootfs_minimum_bytes\s*=\s*(\d+)') {
                 $rootfsMinBytes = [int64]$Matches[1]
             }
+            if ($_ -match '^\s*rootfs_sha256\s*=\s*([0-9a-fA-F]{64})\s*$') {
+                $pinnedRootfsHash = $Matches[1].ToLower()
+            }
         }
     }
 
     $targetRootFS = Join-Path $stageDir "debian-12-wsl-rootfs.tar.gz"
+    $usedMockRootfs = $false
     if ($RootFSPath) {
         if (-not (Test-Path $RootFSPath)) {
             throw "release-windows: Specified -RootFSPath '$RootFSPath' does not exist."
@@ -153,7 +158,9 @@ try {
     } elseif (Test-Path (Join-Path $repoRoot "dist\wsl\debian-12-wsl-rootfs.tar.gz")) {
         Copy-Item -Path (Join-Path $repoRoot "dist\wsl\debian-12-wsl-rootfs.tar.gz") -Destination $targetRootFS -Force
     } elseif ($MockRootFS) {
-        # Minimal rootfs placeholder
+        # Minimal rootfs placeholder. Mark it so the size and pinned-hash gates
+        # are skipped only for an artifact this build actually fabricated.
+        $usedMockRootfs = $true
         Write-Host "release-windows: creating minimal WSL rootfs archive (-MockRootFS)..."
         $mockDir = Join-Path $env:TEMP ("mock-rootfs-" + [System.Guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Force -Path (Join-Path $mockDir "etc") | Out-Null
@@ -165,7 +172,7 @@ try {
         throw "release-windows: WSL rootfs archive not found. Expected build\wsl\debian-12-wsl-rootfs.tar.gz or -RootFSPath <path>. Real release builds require a real rootfs archive (>= 1GB). To allow mock rootfs for development/testing, pass -MockRootFS."
     }
 
-    if (-not $MockRootFS) {
+    if (-not $usedMockRootfs) {
         $rootfsSize = (Get-Item $targetRootFS).Length
         if ($rootfsSize -lt $rootfsMinBytes) {
             throw "release-windows: WSL rootfs archive '$targetRootFS' size ($rootfsSize bytes) is below minimum required $rootfsMinBytes bytes (1GB) for a release build. Use -MockRootFS for development/testing builds."
@@ -173,6 +180,14 @@ try {
     }
 
     $rootfsHash = (Get-FileHash -Path $targetRootFS -Algorithm SHA256).Hash.ToLower()
+    if (-not $usedMockRootfs) {
+        if (-not $pinnedRootfsHash) {
+            throw "release-windows: no pinned rootfs_sha256 was found in build\wsl\versions.lock; refusing to publish an unpinned rootfs."
+        }
+        if ($rootfsHash -ne $pinnedRootfsHash) {
+            throw "release-windows: WSL rootfs SHA256 '$rootfsHash' does not match pinned rootfs_sha256 '$pinnedRootfsHash' in build\wsl\versions.lock."
+        }
+    }
     Set-Content -Path (Join-Path $stageDir "debian-12-wsl-rootfs.tar.gz.sha256") -Value "$rootfsHash  debian-12-wsl-rootfs.tar.gz`n" -NoNewline
 
     # Generate SPDX SBOM
@@ -182,6 +197,10 @@ try {
     $agtHash = (Get-FileHash -Path (Join-Path $stageDir "devstack-agent") -Algorithm SHA256).Hash.ToLower()
     $instHash = (Get-FileHash -Path (Join-Path $stageDir "install.ps1") -Algorithm SHA256).Hash.ToLower()
     $uninstHash = (Get-FileHash -Path (Join-Path $stageDir "uninstall.ps1") -Algorithm SHA256).Hash.ToLower()
+    $wslAssetHashes = [ordered]@{}
+    foreach ($asset in @("agent.service", "install-agent.sh", "install-docker.sh", "docker-daemon.json")) {
+        $wslAssetHashes[$asset] = (Get-FileHash -Path (Join-Path $wslAssetDir $asset) -Algorithm SHA256).Hash.ToLower()
+    }
 
     $sbom = @"
 {
@@ -245,6 +264,38 @@ try {
       "downloadLocation": "NOASSERTION",
       "licenseConcluded": "Apache-2.0",
       "checksums": [{ "algorithm": "SHA256", "checksumValue": "$uninstHash" }]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wsl-agent-service",
+      "name": "build/wsl/agent.service",
+      "versionInfo": "$normVersion",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "checksums": [{ "algorithm": "SHA256", "checksumValue": "$($wslAssetHashes['agent.service'])" }]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wsl-install-agent",
+      "name": "build/wsl/install-agent.sh",
+      "versionInfo": "$normVersion",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "checksums": [{ "algorithm": "SHA256", "checksumValue": "$($wslAssetHashes['install-agent.sh'])" }]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wsl-install-docker",
+      "name": "build/wsl/install-docker.sh",
+      "versionInfo": "$normVersion",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "checksums": [{ "algorithm": "SHA256", "checksumValue": "$($wslAssetHashes['install-docker.sh'])" }]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wsl-docker-daemon",
+      "name": "build/wsl/docker-daemon.json",
+      "versionInfo": "$normVersion",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "checksums": [{ "algorithm": "SHA256", "checksumValue": "$($wslAssetHashes['docker-daemon.json'])" }]
     }
   ]
 }

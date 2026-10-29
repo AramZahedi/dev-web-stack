@@ -41,6 +41,17 @@ function Invoke-Installer([string[]]$Arguments) {
     }
 }
 
+function Invoke-Uninstaller([string[]]$Arguments) {
+    $prev = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $psEngine -NoProfile -File $uninstallerScript @Arguments 2>&1 | Out-String
+        return @{ ExitCode = $LASTEXITCODE; Output = $output }
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 # -------------------------------------------------------------------------
 # Test 1: install.ps1 existence
 # -------------------------------------------------------------------------
@@ -605,6 +616,8 @@ $tempUpgradeFailDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-upg
 New-Item -ItemType Directory -Force -Path $tempUpgradeFailDir | Out-Null
 $mockUpgWSL = Join-Path $tempUpgradeFailDir "mock-wsl\data\devstack"
 New-Item -ItemType Directory -Force -Path $mockUpgWSL | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $tempUpgradeFailDir "system") | Out-Null
+Set-Content -Path (Join-Path $tempUpgradeFailDir "system\install-manifest.json") -Value '{"stage":"complete"}' -Encoding utf8
 $mockUserDataFile = Join-Path $mockUpgWSL "critical-user-data.txt"
 Set-Content -Path $mockUserDataFile -Value "pre-upgrade-state-must-be-preserved" -Encoding utf8
 
@@ -648,6 +661,8 @@ Set-Content -Path $mockRbUserData -Value "pre-existing-database" -Encoding utf8
 
 $mockBinDir = Join-Path $tempRollbackDir "bin"
 New-Item -ItemType Directory -Force -Path $mockBinDir | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $tempRollbackDir "system") | Out-Null
+Set-Content -Path (Join-Path $tempRollbackDir "system\install-manifest.json") -Value '{"version":"1.0","stage":"complete"}' -Encoding utf8
 Set-Content -Path (Join-Path $mockBinDir "devstack.exe") -Value "devstack-v1" -Encoding utf8
 Set-Content -Path (Join-Path $mockBinDir "devstack-helper.exe") -Value "devstack-helper-v1" -Encoding utf8
 
@@ -656,7 +671,7 @@ try {
     $env:DEVSTACK_TEST_UPGRADE_FAIL = "true"
     $res = Invoke-Installer @("-TestSandbox", $tempRollbackDir, "-Upgrade")
     Require ($res.ExitCode -eq 1) "Failed upgrade health check exits with code 1 (got $($res.ExitCode))"
-    Require ($res.Output -match "devstack-agent health check failed\. Initiating rollback") "Output indicates rollback was initiated"
+    Require ($res.Output -match "Upgrade failed\. Initiating rollback") "Output indicates rollback was initiated"
     Require ($res.Output -match "Upgrade rolled back successfully to previous version") "Output reports successful rollback"
 
     # Verify live data restored
@@ -688,6 +703,8 @@ Set-Content -Path (Join-Path $mockFailBin "devstack-agent") -Value "original-age
 $mockFailData = Join-Path $mockFailWSL "database.sqlite"
 Set-Content -Path $mockFailData -Value "must-survive" -Encoding utf8
 New-Item -ItemType Directory -Force -Path (Join-Path $tempRollbackFailDir "bin") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $tempRollbackFailDir "system") | Out-Null
+Set-Content -Path (Join-Path $tempRollbackFailDir "system\install-manifest.json") -Value '{"stage":"complete"}' -Encoding utf8
 
 try {
     $env:DEVSTACK_TEST_MOCK_WSL = "true"
@@ -732,7 +749,7 @@ Require ($installerContent -notmatch 'tar -czf /data/devstack-backup\.tar\.gz -C
 
 # M8 user daemon restart upon upgrade completion
 Require ($installerContent -match 'Restarting user daemon') "install.ps1 restarts user daemon upon upgrade completion"
-Require ($installerContent -match '& "\$dstDevstack" daemon restart') "install.ps1 runs 'devstack daemon restart' on upgrade success"
+Require ($installerContent -match '& "\$dstDevstack" --home "\$targetDir" daemon restart') "install.ps1 runs 'devstack --home <install> daemon restart' on upgrade success"
 
 # -------------------------------------------------------------------------
 # Test 25: Firewall Rule Scoping, Deferral, and SkipWSL (H1)
@@ -1025,8 +1042,16 @@ try {
     $env:DEVSTACK_TEST_OS_ARCH = "AMD64"
     $env:DEVSTACK_TEST_OS_BUILD = "22631"
     $env:DEVSTACK_TEST_VIRTUALIZATION = "true"
-    $noRootOut = & $psEngine -NoProfile -File (Join-Path $tempNoRootfsRepo "install.ps1") -TestSandbox $tempNoRootfsSandbox -DryRun 2>&1 | Out-String
-    Require ($LASTEXITCODE -eq 0) "Dry-run without a rootfs exits cleanly (got $LASTEXITCODE)"
+    $noRootOut = $null
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $noRootOut = & $psEngine -NoProfile -File (Join-Path $tempNoRootfsRepo "install.ps1") -TestSandbox $tempNoRootfsSandbox -DryRun 2>&1 | Out-String
+        $noRootExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    Require ($noRootExit -eq 0) "Dry-run without a rootfs exits cleanly (got $noRootExit)"
     Require ($noRootOut -notmatch "Value cannot be null") "Dry-run without a rootfs does not crash in Test-Path"
 } finally {
     Remove-Item env:DEVSTACK_TEST_ELEVATED -ErrorAction SilentlyContinue
@@ -1048,6 +1073,190 @@ Require ($uninstallerContent -match 'api-token') "uninstall.ps1 purges the dashb
 Require ($uninstallerContent -match 'systemprofile.*\.devstack') "uninstall.ps1 accounts for the legacy LocalSystem CA/marker location"
 Require ($uninstallerContent -notmatch '\$env:DEVSTACK_TEST_MOCK_WSL') "uninstall.ps1 never reads DEVSTACK_TEST_MOCK_WSL directly"
 Require ($uninstallerContent -match 'Get-TestOverride "DEVSTACK_TEST_MOCK_WSL"') "uninstall.ps1 gates DEVSTACK_TEST_MOCK_WSL through the sandbox helper"
+
+# -------------------------------------------------------------------------
+# Test 37: Dry-run is read-only; existing-install and upgrade target guards
+# -------------------------------------------------------------------------
+Step "Testing dry-run read-only behavior and install target guards"
+$tempDryRealDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-dryreal-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempDryRealDir | Out-Null
+try {
+    $res = Invoke-Installer @("-DryRun", "-InstallDir", $tempDryRealDir)
+    Require ($res.ExitCode -eq 0) "Dry-run with a real -InstallDir exits with code 0 (got $($res.ExitCode))"
+    Require (-not (Test-Path (Join-Path $tempDryRealDir "mock-rootfs"))) "Dry-run does not create a mock-rootfs directory"
+    Require (@(Get-ChildItem -Path $tempDryRealDir -Force -ErrorAction SilentlyContinue).Count -eq 0) "Dry-run leaves the install directory untouched"
+} finally {
+    Remove-Item -Path $tempDryRealDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$tempExistingDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-existing-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path (Join-Path $tempExistingDir "system"), (Join-Path $tempExistingDir "bin") | Out-Null
+Set-Content -Path (Join-Path $tempExistingDir "system\install-manifest.json") -Value '{"stage":"complete"}' -Encoding utf8
+Set-Content -Path (Join-Path $tempExistingDir "sentinel.txt") -Value "must-survive" -Encoding utf8
+try {
+    $res = Invoke-Installer @("-TestSandbox", $tempExistingDir)
+    Require ($res.ExitCode -eq 1) "Fresh install over a completed install exits with code 1 (got $($res.ExitCode))"
+    Require ($res.Output -match "existing devstack installation") "Existing-install error tells the user to use -Upgrade"
+    Require ((Get-Content (Join-Path $tempExistingDir "sentinel.txt") -Raw).Trim() -eq "must-survive") "Existing-install guard does not modify target files"
+} finally {
+    Remove-Item -Path $tempExistingDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$tempMissingUpgradeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-upgmissing-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempMissingUpgradeDir | Out-Null
+try {
+    $res = Invoke-Installer @("-TestSandbox", $tempMissingUpgradeDir, "-Upgrade")
+    Require ($res.ExitCode -eq 1) "Upgrade without an existing install exits with code 1 (got $($res.ExitCode))"
+    Require ($res.Output -match "Cannot upgrade") "Upgrade-without-install error is explicit"
+} finally {
+    Remove-Item -Path $tempMissingUpgradeDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$tempPartialDir = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-partial-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path (Join-Path $tempPartialDir "system"), (Join-Path $tempPartialDir "bin") | Out-Null
+Set-Content -Path (Join-Path $tempPartialDir "system\install-manifest.json") -Value '{"version":"1.0","stage":"system-phase-complete"}' -Encoding utf8
+Set-Content -Path (Join-Path $tempPartialDir "bin\devstack.exe") -Value "partial" -Encoding utf8
+Set-Content -Path (Join-Path $tempPartialDir "bin\devstack-helper.exe") -Value "partial" -Encoding utf8
+Set-Content -Path (Join-Path $tempPartialDir "sentinel.txt") -Value "keep-partial" -Encoding utf8
+try {
+    $res = Invoke-Installer @("-TestSandbox", $tempPartialDir, "-SkipWSL")
+    Require ($res.ExitCode -eq 0) "A failed/partial install can be retried without -Upgrade (got $($res.ExitCode))"
+    Require ((Get-Content (Join-Path $tempPartialDir "sentinel.txt") -Raw).Trim() -eq "keep-partial") "Partial-install retry preserves unrelated files"
+} finally {
+    Remove-Item -Path $tempPartialDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$res = Invoke-Installer @("-DryRun", "-InstallDir", "C:\")
+Require ($res.ExitCode -eq 1) "Dry-run refuses the protected drive root (got $($res.ExitCode))"
+Require ($res.Output -match "protected path") "Protected-install error is explicit"
+
+# -------------------------------------------------------------------------
+# Test 38: Incomplete release payload fails closed
+# -------------------------------------------------------------------------
+Step "Testing missing WSL provisioning assets fail closed"
+$tempNoAssetsRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-noassets-repo-" + [Guid]::NewGuid().ToString("N"))
+$tempNoAssetsSandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-noassets-sandbox-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path (Join-Path $tempNoAssetsRepo "build\windows"), $tempNoAssetsSandbox | Out-Null
+Copy-Item $installerScript $tempNoAssetsRepo
+Copy-Item $daemonTaskScript (Join-Path $tempNoAssetsRepo "build\windows")
+Copy-Item (Join-Path $repoRoot "build\windows\devstack-daemon.vbs") (Join-Path $tempNoAssetsRepo "build\windows")
+try {
+    $env:DEVSTACK_TEST_WSL_VERSION = "2.3.26"
+    $env:DEVSTACK_TEST_MOCK_WSL = "true"
+    $env:DEVSTACK_TEST_SYSTEMD_PID1 = "systemd"
+    $noAssetsOut = $null
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $noAssetsOut = & $psEngine -NoProfile -File (Join-Path $tempNoAssetsRepo "install.ps1") -TestSandbox $tempNoAssetsSandbox 2>&1 | Out-String
+        $noAssetsExit = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    Require ($noAssetsExit -eq 1) "Missing WSL assets exit with code 1 (got $noAssetsExit)"
+    Require ($noAssetsOut -match "Release payload is incomplete") "Missing WSL assets produce an explicit payload error"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_WSL_VERSION -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_MOCK_WSL -ErrorAction SilentlyContinue
+    Remove-Item env:DEVSTACK_TEST_SYSTEMD_PID1 -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempNoAssetsRepo -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempNoAssetsSandbox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 39: Uninstaller purge guards, hosts preservation, distro fail-closed
+# -------------------------------------------------------------------------
+Step "Testing uninstaller destructive-path guards"
+$tempUnsafePurge = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-unsafepurge-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempUnsafePurge | Out-Null
+Set-Content -Path (Join-Path $tempUnsafePurge "keep.txt") -Value "keep-me" -Encoding utf8
+try {
+    $res = Invoke-Uninstaller @("-PurgeData", "-TestSandbox", $tempUnsafePurge)
+    Require ($res.ExitCode -eq 1) "-PurgeData without a manifest exits with code 1 (got $($res.ExitCode))"
+    Require (Test-Path (Join-Path $tempUnsafePurge "keep.txt")) "-PurgeData refusal preserves the directory"
+} finally {
+    Remove-Item -Path $tempUnsafePurge -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$tempHostsIncomplete = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-hostsincomplete-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempHostsIncomplete | Out-Null
+$incompleteHosts = Join-Path $tempHostsIncomplete "hosts"
+$incompleteText = "127.0.0.1 localhost`r`n# BEGIN devstack`r`n127.0.0.1 app.test`r`n10.0.0.9 keep.after`r`n"
+[System.IO.File]::WriteAllText($incompleteHosts, $incompleteText, (New-Object System.Text.UTF8Encoding($false)))
+try {
+    $env:DEVSTACK_TEST_HOSTS_PATH = $incompleteHosts
+    $res = Invoke-Uninstaller @("-TestSandbox", $tempHostsIncomplete)
+    Require ($res.ExitCode -eq 0) "Uninstaller with an unterminated hosts block still exits 0 (got $($res.ExitCode))"
+    Require ($res.Output -match "without a matching") "Uninstaller warns about an unterminated hosts block"
+    Require ((Get-Content $incompleteHosts -Raw) -eq $incompleteText) "Uninstaller leaves an unterminated hosts block byte-identical"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_HOSTS_PATH -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempHostsIncomplete -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$tempHostsNoBlock = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-hostsnone-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tempHostsNoBlock | Out-Null
+$noBlockHosts = Join-Path $tempHostsNoBlock "hosts"
+$noBlockText = "127.0.0.1 localhost`n10.1.2.3 custom.local`n"
+[System.IO.File]::WriteAllText($noBlockHosts, $noBlockText, (New-Object System.Text.UTF8Encoding($false)))
+try {
+    $env:DEVSTACK_TEST_HOSTS_PATH = $noBlockHosts
+    $beforeHash = (Get-FileHash $noBlockHosts -Algorithm SHA256).Hash
+    $res = Invoke-Uninstaller @("-TestSandbox", $tempHostsNoBlock)
+    Require ($res.ExitCode -eq 0) "Uninstaller without a hosts block exits 0 (got $($res.ExitCode))"
+    Require ((Get-FileHash $noBlockHosts -Algorithm SHA256).Hash -eq $beforeHash) "Uninstaller does not rewrite a hosts file without a devstack block"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_HOSTS_PATH -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempHostsNoBlock -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$tempPurgeFail = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-purgefail-" + [Guid]::NewGuid().ToString("N"))
+$purgeFailWsl = Join-Path $tempPurgeFail "wsl\devstack"
+New-Item -ItemType Directory -Force -Path $purgeFailWsl | Out-Null
+Set-Content -Path (Join-Path $purgeFailWsl "ext4.vhdx") -Value "fake-disk" -Encoding utf8
+try {
+    $env:DEVSTACK_TEST_UNREGISTER_FAIL = "true"
+    $res = Invoke-Uninstaller @("-PurgeDistro", "-TestSandbox", $tempPurgeFail)
+    Require ($res.ExitCode -eq 1) "Failed distro unregister exits with code 1 (got $($res.ExitCode))"
+    Require ($res.Output -match "refusing to delete") "Failed distro unregister refuses to delete the VHD directory"
+    Require (Test-Path (Join-Path $purgeFailWsl "ext4.vhdx")) "Failed distro unregister preserves ext4.vhdx"
+} finally {
+    Remove-Item env:DEVSTACK_TEST_UNREGISTER_FAIL -ErrorAction SilentlyContinue
+    Remove-Item -Path $tempPurgeFail -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -------------------------------------------------------------------------
+# Test 40: Install-home propagation and upgrade failure accumulation
+# -------------------------------------------------------------------------
+Step "Testing daemon task home propagation and upgrade failure accumulation"
+Require ($freshInstallContent -match '-Binary "\$dstDevstack" -HomeDir "\$targetDir"') "install.ps1 passes -HomeDir to the daemon task"
+Require ($freshInstallContent -match '\$homeDir = \$targetDir') "install.ps1 fallback task uses the install home"
+Require (([regex]::Matches($freshInstallContent, '\$upgradeFailed = \$false')).Count -eq 1) "install.ps1 initializes upgradeFailed once and never resets it after a failure"
+Require ($freshInstallContent -match 'Repair-HelperServiceConfiguration') "install.ps1 verifies/repairs the helper service config path"
+Require ($freshInstallContent -match 'sc\.exe config DevstackHelper') "install.ps1 can repair the helper service binPath"
+Require ($freshInstallContent -notmatch 'New-ScheduledTaskPrincipal -UserId "SYSTEM"') "install.ps1 never falls back to a SYSTEM reboot-resume task"
+Require ($freshInstallContent -match '\[TestSandbox\] Skipping live daemon shutdown') "install.ps1 does not stop the host daemon from a sandbox upgrade"
+Require ($uninstallerContent -match '\[TestSandbox\] Skipping live daemon shutdown') "uninstall.ps1 does not stop the host daemon from a sandbox test"
+
+# -------------------------------------------------------------------------
+# Test 41: -Upgrade -SkipWSL updates Windows only and preserves the stage
+# -------------------------------------------------------------------------
+Step "Testing -Upgrade -SkipWSL"
+$tempSkipUpgrade = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-skipupgrade-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path (Join-Path $tempSkipUpgrade "system"), (Join-Path $tempSkipUpgrade "bin") | Out-Null
+Set-Content -Path (Join-Path $tempSkipUpgrade "system\install-manifest.json") -Value '{"stage":"complete-no-wsl","agent_installed":false}' -Encoding utf8
+Set-Content -Path (Join-Path $tempSkipUpgrade "bin\devstack.exe") -Value "old" -Encoding utf8
+Set-Content -Path (Join-Path $tempSkipUpgrade "bin\devstack-helper.exe") -Value "old" -Encoding utf8
+try {
+    $res = Invoke-Installer @("-Upgrade", "-SkipWSL", "-TestSandbox", $tempSkipUpgrade)
+    Require ($res.ExitCode -eq 0) "-Upgrade -SkipWSL exits with code 0 (got $($res.ExitCode))"
+    Require ($res.Output -match "WSL untouched") "-Upgrade -SkipWSL reports that WSL was not touched"
+    $m = Get-Content (Join-Path $tempSkipUpgrade "system\install-manifest.json") -Raw | ConvertFrom-Json
+    Require ($m.stage -eq "complete-no-wsl") "-Upgrade -SkipWSL preserves stage=complete-no-wsl"
+    Require ($m.agent_installed -eq $false) "-Upgrade -SkipWSL does not claim an agent was installed"
+} finally {
+    Remove-Item -Path $tempSkipUpgrade -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # -------------------------------------------------------------------------
 # Test 34b: Daemon task starts in this session and pins the install home

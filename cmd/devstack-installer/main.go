@@ -9,25 +9,34 @@ import (
 )
 
 func main() {
-	opts, err := parseFlags(os.Args[1:])
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(args []string) int {
+	opts, err := parseFlags(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "devstack-installer: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if opts.Help {
 		printUsage()
-		os.Exit(0)
+		return 0
+	}
+	if err := validateFreshInstallTarget(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "devstack-installer: %v\n", err)
+		pauseIfInteractive(opts.Unattended)
+		return 1
 	}
 
 	// 1. Ensure Administrator elevation
 	if !opts.DryRun && !isElevated() {
 		fmt.Println("devstack-installer: Administrator privileges required. Requesting elevation...")
-		if err := relaunchElevated(os.Args[1:]); err != nil {
+		if err := relaunchElevated(args); err != nil {
 			fmt.Fprintf(os.Stderr, "devstack-installer: failed to elevate: %v\n", err)
-			os.Exit(2)
+			return 2
 		}
-		return
+		return 0
 	}
 
 	printBanner(opts.Uninstall)
@@ -36,8 +45,9 @@ func main() {
 	stageDir, err := os.MkdirTemp("", "devstack-install-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "devstack-installer: failed to create temporary directory: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	// run() returns instead of calling os.Exit so this cleanup always executes.
 	defer func() { _ = os.RemoveAll(stageDir) }()
 
 	scriptName := "install.ps1"
@@ -71,7 +81,7 @@ func main() {
 		if err != nil && scriptPath == "" {
 			fmt.Fprintf(os.Stderr, "devstack-installer: %v\n", err)
 			pauseIfInteractive(opts.Unattended)
-			os.Exit(1)
+			return 1
 		}
 		if payloadReader != nil {
 			if closer, ok := payloadReader.(interface{ Close() error }); ok {
@@ -81,7 +91,7 @@ func main() {
 			if err := extractZip(payloadReader, size, stageDir); err != nil {
 				fmt.Fprintf(os.Stderr, "devstack-installer: extraction failed: %v\n", err)
 				pauseIfInteractive(opts.Unattended)
-				os.Exit(1)
+				return 1
 			}
 			scriptPath = filepath.Join(stageDir, scriptName)
 		}
@@ -90,7 +100,7 @@ func main() {
 	if _, err := os.Stat(scriptPath); err != nil {
 		fmt.Fprintf(os.Stderr, "devstack-installer: %s not found: %v\n", scriptName, err)
 		pauseIfInteractive(opts.Unattended)
-		os.Exit(1)
+		return 1
 	}
 
 	// 3. Locate PowerShell
@@ -98,7 +108,7 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "devstack-installer: %v\n", err)
 		pauseIfInteractive(opts.Unattended)
-		os.Exit(2)
+		return 2
 	}
 
 	// 4. Execute PowerShell installer script
@@ -131,10 +141,16 @@ func main() {
 			fmt.Printf("  Installation directory: %s\n", opts.InstallDir)
 			fmt.Printf("  Binaries on PATH:       %s\\bin\n", opts.InstallDir)
 			fmt.Println("  Helper Windows Service: DevstackHelper (running)")
-			fmt.Println("  Managed WSL Distro:     devstack (running)")
+			if opts.SkipWSL {
+				fmt.Println("  Managed WSL Distro:     skipped (-SkipWSL)")
+			} else {
+				fmt.Println("  Managed WSL Distro:     devstack (provisioned)")
+			}
 			fmt.Println("\n  To get started, open a new PowerShell or Terminal window and run:")
 			fmt.Println("    devstack init")
-			fmt.Println("    devstack doctor")
+			if !opts.SkipWSL {
+				fmt.Println("    devstack doctor")
+			}
 			fmt.Println("======================================================================")
 		}
 	} else if exitCode == 3010 {
@@ -147,7 +163,7 @@ func main() {
 	}
 
 	pauseIfInteractive(opts.Unattended)
-	os.Exit(exitCode)
+	return exitCode
 }
 
 func printBanner(uninstall bool) {
@@ -161,10 +177,10 @@ func printBanner(uninstall bool) {
 }
 
 func printUsage() {
-	fmt.Println(`Usage: devstack-installer.exe [options]
+	_, _ = os.Stdout.WriteString(`Usage: devstack-installer.exe [options]
 
 Options:
-  --install-dir <path>  Target installation directory (default: C:\devstack)
+  --install-dir <path>  Target installation directory (default: %USERPROFILE%\.devstack)
   --rootfs <path>       Path to debian-12-wsl-rootfs.tar.gz archive
   --allow-reboot        Allow automatic reboot if Windows features require a restart
   --skip-wsl            Skip WSL feature enablement and distro provisioning
@@ -175,7 +191,8 @@ Options:
   --purge-data          Delete DPAPI secrets and remove installation directory (with --uninstall)
   -y, --unattended      Non-interactive unattended mode; do not prompt on completion
   --zip <path>          Path to external release ZIP archive
-  -h, --help            Show this help message`)
+  -h, --help            Show this help message
+`)
 }
 
 func pauseIfInteractive(unattended bool) {

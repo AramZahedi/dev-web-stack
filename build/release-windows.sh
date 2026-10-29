@@ -227,13 +227,19 @@ done
 # Acquire or generate WSL rootfs
 TARGET_ROOTFS="${STAGE}/debian-12-wsl-rootfs.tar.gz"
 ROOTFS_MIN_BYTES=1073741824
+PINNED_ROOTFS_SHA256=""
 if [ -f "${REPO_ROOT}/build/wsl/versions.lock" ]; then
 	parsed_min=$(grep -E '^rootfs_minimum_bytes=' "${REPO_ROOT}/build/wsl/versions.lock" | cut -d'=' -f2 | tr -d ' \r\n')
 	if [[ "${parsed_min}" =~ ^[0-9]+$ ]]; then
 		ROOTFS_MIN_BYTES="${parsed_min}"
 	fi
+	parsed_sha=$(grep -E '^rootfs_sha256=' "${REPO_ROOT}/build/wsl/versions.lock" | cut -d'=' -f2 | tr -d ' \r\n')
+	if [[ "${parsed_sha}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+		PINNED_ROOTFS_SHA256="${parsed_sha,,}"
+	fi
 fi
 
+USED_MOCK_ROOTFS=0
 if [ -n "${ROOTFS_PATH}" ]; then
 	[ -f "${ROOTFS_PATH}" ] || die "specified --rootfs ${ROOTFS_PATH} not found"
 	cp "${ROOTFS_PATH}" "${TARGET_ROOTFS}"
@@ -242,7 +248,9 @@ elif [ -f "${REPO_ROOT}/build/wsl/debian-12-wsl-rootfs.tar.gz" ]; then
 elif [ -f "${REPO_ROOT}/dist/wsl/debian-12-wsl-rootfs.tar.gz" ]; then
 	cp "${REPO_ROOT}/dist/wsl/debian-12-wsl-rootfs.tar.gz" "${TARGET_ROOTFS}"
 elif [ "${MOCK_ROOTFS}" -eq 1 ]; then
-	# Create minimal valid rootfs archive
+	# Create minimal valid rootfs archive. Only this fabricated artifact skips
+	# the release size and pinned-hash gates.
+	USED_MOCK_ROOTFS=1
 	printf 'release-windows: creating minimal WSL rootfs archive (--mock-rootfs)\n'
 	mock_rootfs_dir="$(mktemp -d)"
 	mkdir -p "${mock_rootfs_dir}/etc" "${mock_rootfs_dir}/data/devstack"
@@ -258,10 +266,18 @@ else
 	die "WSL rootfs archive not found. Expected build/wsl/debian-12-wsl-rootfs.tar.gz or --rootfs <path>. Real release builds require a real rootfs archive (>= 1GB). To create a mock rootfs for development/testing, pass --mock-rootfs."
 fi
 
-if [ "${MOCK_ROOTFS}" -eq 0 ]; then
+if [ "${USED_MOCK_ROOTFS}" -eq 0 ]; then
 	rootfs_size=$(wc -c <"${TARGET_ROOTFS}" | tr -d ' ')
 	if [ "${rootfs_size}" -lt "${ROOTFS_MIN_BYTES}" ]; then
 		die "WSL rootfs archive size (${rootfs_size} bytes) is below minimum required ${ROOTFS_MIN_BYTES} bytes (1GB). Use --mock-rootfs for testing."
+	fi
+fi
+
+ROOTFS_ACTUAL_SHA256="$(sha256sum "${TARGET_ROOTFS}" | cut -d' ' -f1)"
+if [ "${USED_MOCK_ROOTFS}" -eq 0 ]; then
+	[ -n "${PINNED_ROOTFS_SHA256}" ] || die "no pinned rootfs_sha256 was found in build/wsl/versions.lock; refusing to publish an unpinned rootfs."
+	if [ "${ROOTFS_ACTUAL_SHA256}" != "${PINNED_ROOTFS_SHA256}" ]; then
+		die "WSL rootfs SHA256 ${ROOTFS_ACTUAL_SHA256} does not match pinned rootfs_sha256 ${PINNED_ROOTFS_SHA256} in build/wsl/versions.lock."
 	fi
 fi
 
@@ -285,6 +301,10 @@ else
 	ROOTFS_SHA="$(sha256sum "${TARGET_ROOTFS}" | cut -d' ' -f1)"
 	INSTALL_SHA="$(sha256sum "${STAGE}/install.ps1" | cut -d' ' -f1)"
 	UNINSTALL_SHA="$(sha256sum "${STAGE}/uninstall.ps1" | cut -d' ' -f1)"
+	AGENT_SERVICE_SHA="$(sha256sum "${STAGE}/build/wsl/agent.service" | cut -d' ' -f1)"
+	INSTALL_AGENT_SHA="$(sha256sum "${STAGE}/build/wsl/install-agent.sh" | cut -d' ' -f1)"
+	INSTALL_DOCKER_SHA="$(sha256sum "${STAGE}/build/wsl/install-docker.sh" | cut -d' ' -f1)"
+	DOCKER_DAEMON_SHA="$(sha256sum "${STAGE}/build/wsl/docker-daemon.json" | cut -d' ' -f1)"
 
 	cat >"${SBOM_FILE}" <<EOF
 {
@@ -376,6 +396,58 @@ else
         {
           "algorithm": "SHA256",
           "checksumValue": "${UNINSTALL_SHA}"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wsl-agent-service",
+      "name": "build/wsl/agent.service",
+      "versionInfo": "${VERSION}",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "${AGENT_SERVICE_SHA}"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wsl-install-agent",
+      "name": "build/wsl/install-agent.sh",
+      "versionInfo": "${VERSION}",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "${INSTALL_AGENT_SHA}"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wsl-install-docker",
+      "name": "build/wsl/install-docker.sh",
+      "versionInfo": "${VERSION}",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "${INSTALL_DOCKER_SHA}"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-wsl-docker-daemon",
+      "name": "build/wsl/docker-daemon.json",
+      "versionInfo": "${VERSION}",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "${DOCKER_DAEMON_SHA}"
         }
       ]
     }

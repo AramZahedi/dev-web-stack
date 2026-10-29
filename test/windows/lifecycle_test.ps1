@@ -69,13 +69,21 @@ Require ($resUninstall.Output -match "-PurgeDistro" -and $resUninstall.Output -m
 # Test 3: Elevation check in uninstall.ps1
 # -------------------------------------------------------------------------
 Step "Testing uninstaller elevation check logic"
-$env:DEVSTACK_TEST_ELEVATED = "false"
-try {
-    $res = Invoke-Script $uninstallerScript @()
-    Require ($res.ExitCode -eq 2) "uninstall.ps1 without elevation exits with code 2 (got $($res.ExitCode))"
-    Require ($res.Output -match "elevation" -or $res.Output -match "Administrator") "Non-elevated output mentions elevation/administrator"
-} finally {
-    Remove-Item env:DEVSTACK_TEST_ELEVATED -ErrorAction SilentlyContinue
+$isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isElevated) {
+    $env:DEVSTACK_TEST_ELEVATED = "false"
+    try {
+        $res = Invoke-Script $uninstallerScript @()
+        Require ($res.ExitCode -eq 2) "uninstall.ps1 without elevation exits with code 2 (got $($res.ExitCode))"
+        Require ($res.Output -match "elevation" -or $res.Output -match "Administrator") "Non-elevated output mentions elevation/administrator"
+    } finally {
+        Remove-Item env:DEVSTACK_TEST_ELEVATED -ErrorAction SilentlyContinue
+    }
+} else {
+    # Never invoke the real uninstaller from an elevated test process: it would
+    # remove the helper service, firewall, hosts block, and CA from the host.
+    # The sandbox path below covers the non-elevated bypass behavior instead.
+    Write-Host "lifecycle-test: skip real non-elevated uninstall check (test process is elevated)"
 }
 
 $tempSandboxElev = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-uninst-elev-" + [Guid]::NewGuid().ToString("N"))
@@ -314,6 +322,7 @@ New-Item -ItemType Directory -Force -Path $sandboxPurgeData | Out-Null
 try {
     $sbSecrets = Join-Path $sandboxPurgeData "system\secrets"
     New-Item -ItemType Directory -Force -Path $sbSecrets | Out-Null
+    Set-Content -Path (Join-Path $sandboxPurgeData "system\install-manifest.json") -Value '{"version":"1.0","stage":"complete"}' -Encoding utf8
     Set-Content -Path (Join-Path $sbSecrets "agent-token") -Value "secret-token-val" -Encoding utf8
     Set-Content -Path (Join-Path $sbSecrets "agent-pin") -Value "secret-pin-val" -Encoding utf8
 
