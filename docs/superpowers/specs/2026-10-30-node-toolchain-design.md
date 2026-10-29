@@ -4,7 +4,7 @@
 - **Status:** Proposed
 - **Scope:** Node runtime discovery/install, per-site Node selection for every site kind, global Node CLI default, dashboard and CLI surfaces
 - **Supersedes:** the Node-specific parts of the runtime-catalog section in the 2026-10-22 M1 design and the Node option rows in `docs/sites.md`
-- **Implementation plan:** to be written after this design is approved
+- **Implementation plan:** [2026-10-30 node toolchain plan](../plans/2026-10-30-node-toolchain.md)
 
 ## 1. Intent and why
 
@@ -357,12 +357,19 @@ refresh from it.
 ### 7.9 Agent and shell integration
 
 - `backendSpec` sends the site's exact Node version for every kind, not only
-  Node kind.
+  Node kind. The daemon resolves an inherited global default before preparing
+  the site.
 - `Runtime.sitePathEnv` prepends the selected Node bin for every site that
-  resolves one; static build profiles fall back to `build.node_version`.
-- `WindowsSiteEnvironment` receives a resolved runtime path or performs a
-  lookup through the runtime list; it must never concatenate `node@22` when the
-  installed build is `node@22.11.0`.
+  resolves one.
+- Terminal tickets carry the daemon-resolved exact Node version, so a new
+  terminal for an inheriting site uses the current global default without
+  restarting the site. `HandleTerminalWebSocket` prefers the ticket value and
+  falls back to the site spec.
+- `WindowsSiteEnvironment` receives a resolved exact runtime from the CLI’s
+  site context (via the Node default status); it must never concatenate
+  `node@22` when the installed build is `node@22.11.0`.
+- Site API responses include a `node_toolchain` summary (exact version, source,
+  installed) so UI and CLI agree on what a shell will use.
 - `devstack shell`, `shell-init`, and `exec` expose
   `DEVSTACK_NODE_VERSION`, `DEVSTACK_NODE_SOURCE`, and the resolved `PATH`.
 - `node -v`, `npm -v`, and `npx --version` in a site shell must return the

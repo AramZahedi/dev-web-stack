@@ -25,6 +25,8 @@ machine, and the design/plan for the next milestone.
     global Node default, and dashboard/CLI installation.
 - [Node toolchain handoff](superpowers/status/2026-10-30-node-toolchain-handoff.md)
   - current code findings, builder review, risks, and implementation phases.
+- [Node toolchain implementation plan](superpowers/plans/2026-10-30-node-toolchain.md)
+  - task-by-task TDD plan; execution not started.
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
   — Waves 0–2 and the next batch implemented; remaining host gates noted.
 - [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)

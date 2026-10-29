@@ -1,10 +1,11 @@
 # Node Toolchain Handoff - Design Knowledge and Current State
 
 - **Date:** 2026-10-30
-- **Status:** Design proposed; **no implementation started**
+- **Status:** Design accepted for planning; implementation plan written; **no implementation started**
 - **Base commit:** `a36c6b6` (`fix: harden WSL browsing, lifecycle, and startup paths`)
 - **Design:** [Per-Site Node Toolchains and Global Node Default](../specs/2026-10-30-node-toolchain-design.md)
-- **Next gate:** design approval, then the implementation plan
+- **Plan:** [Node toolchain implementation plan](../plans/2026-10-30-node-toolchain.md)
+- **Next gate:** plan review and execution-mode choice
 
 This handoff records everything learned while shaping the design so a fresh
 agent can plan or implement without re-discovering the codebase.
@@ -276,14 +277,17 @@ A fresh builder review raised six ambiguities. The spec now settles them:
   validation, conflict handling, uninstall, and tests must mirror `php-default`.
 - **Migration:** existing line-valued pins must normalize only when an installed
   exact build exists; unresolved values stay visible and actionable.
+- **Implementation is not started**; the task-by-task plan is written and awaits
+  review/execution-mode selection.
 - **Exact JSON/OpenAPI shapes** are left to the plan.
 - **Prerelease toggle** is out of scope.
-- **No implementation plan exists yet**; the next step after design approval is
-  to invoke the planning skill and write it.
 
 ---
 
-## 7. Suggested implementation phases (for the plan, not yet approved)
+## 7. Implementation plan phases
+
+The task-by-task plan is [2026-10-30-node-toolchain.md](../plans/2026-10-30-node-toolchain.md).
+Its phases are:
 
 1. **Docs and contracts:** spec links, OpenAPI schemas/routes, decisions C8
    amendment, CLI/UI copy.
