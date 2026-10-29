@@ -364,8 +364,15 @@ func (s *Service) checkPorts() Check {
 		case spec.free:
 			switch {
 			case err == nil:
-				free = append(free, strconv.Itoa(spec.port))
-			case isAddrInUse(err) || s.isPortResponding(spec.port):
+				// A wildcard bind can succeed while another process owns a
+				// specific loopback address (Go sets SO_REUSEADDR on Unix).
+				// Ask the port directly before calling it free.
+				if s.portResponding(spec.port) {
+					warnings = append(warnings, fmt.Sprintf("port %d is in use; external mode expects the built-in proxy ports to be free", spec.port))
+				} else {
+					free = append(free, strconv.Itoa(spec.port))
+				}
+			case isAddrInUse(err) || s.portResponding(spec.port):
 				warnings = append(warnings, fmt.Sprintf("port %d is in use; external mode expects the built-in proxy ports to be free", spec.port))
 			case isProbePermission(err):
 				warnings = append(warnings, fmt.Sprintf("cannot probe port %d as this user; external mode expects it to be free", spec.port))
@@ -373,7 +380,11 @@ func (s *Service) checkPorts() Check {
 				warnings = append(warnings, fmt.Sprintf("could not probe port %d (%v); external mode expects it to be free", spec.port, err))
 			}
 		case err == nil:
-			warnings = append(warnings, fmt.Sprintf("port %d is free; expected owner is %s", spec.port, spec.owner))
+			if s.portResponding(spec.port) {
+				owned = append(owned, fmt.Sprintf("%d (%s)", spec.port, spec.owner))
+			} else {
+				warnings = append(warnings, fmt.Sprintf("port %d is free; expected owner is %s", spec.port, spec.owner))
+			}
 		case isProbePermission(err):
 			warnings = append(warnings, fmt.Sprintf("cannot probe port %d as this user; expected owner is %s", spec.port, spec.owner))
 		case isAddrInUse(err) || s.isPortInUseByDevstack(spec, err):
@@ -563,6 +574,13 @@ func windowsDiagnosticCheck(id, title, code, remediation string, err error, okDe
 	return check
 }
 
+func (s *Service) portResponding(port int) bool {
+	if s.deps.PortResponding != nil {
+		return s.deps.PortResponding(port)
+	}
+	return s.isPortResponding(port)
+}
+
 func (s *Service) isPortResponding(port int) bool {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
@@ -599,7 +617,7 @@ func (s *Service) isPortInUseByDevstack(spec portSpec, probeErr error) bool {
 	if isAddrInUse(probeErr) {
 		return true
 	}
-	if isProbePermission(probeErr) && s.isPortResponding(spec.port) {
+	if isProbePermission(probeErr) && s.portResponding(spec.port) {
 		return true
 	}
 	return false

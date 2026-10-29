@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -132,6 +133,20 @@ func TestBuildWSLExecArgsRejectsUnsafeInputs(t *testing.T) {
 	}
 }
 
+func TestEnsureWindowsSiteShimsRejectsUnsafeEnvironmentNames(t *testing.T) {
+	bin := t.TempDir()
+	site := model.Site{
+		ID: "site1", Name: "app", BackendPath: "/data/devstack/projects/app",
+		Env: map[string]string{"EVIL; rm -rf /": "x"},
+	}
+	if err := EnsureWindowsSiteShims(bin, "devstack", site); err == nil {
+		t.Fatal("EnsureWindowsSiteShims accepted a shell-unsafe environment name")
+	}
+	if _, err := os.Stat(filepath.Join(bin, "php.cmd")); !os.IsNotExist(err) {
+		t.Fatalf("shims were written despite the invalid environment: %v", err)
+	}
+}
+
 func TestEnsureWindowsSiteShimsWritesExpectedCmdFiles(t *testing.T) {
 	bin := t.TempDir()
 	site := model.Site{
@@ -199,10 +214,17 @@ func TestBuildWSLExecArgsQuotesSpacesAndQuotesInArguments(t *testing.T) {
 
 func TestWindowsShimArgumentTranslationInBash(t *testing.T) {
 	var bashPath string
-	if gitBash := filepath.Join(os.Getenv("ProgramFiles"), "Git", "bin", "bash.exe"); fileExists(gitBash) {
-		bashPath = gitBash
-	} else if p, err := exec.LookPath("bash"); err == nil && !strings.Contains(strings.ToLower(p), "windowsapps") {
-		bashPath = p
+	// Prefer a native POSIX bash when this test runs under WSL/Linux. Git
+	// Bash is only the right interpreter for a native Windows test process.
+	if runtime.GOOS == "windows" {
+		if gitBash := filepath.Join(os.Getenv("ProgramFiles"), "Git", "bin", "bash.exe"); fileExists(gitBash) {
+			bashPath = gitBash
+		}
+	}
+	if bashPath == "" {
+		if p, err := exec.LookPath("bash"); err == nil && !strings.Contains(strings.ToLower(p), "windowsapps") {
+			bashPath = p
+		}
 	}
 	if bashPath == "" {
 		t.Skip("bash is not available")
@@ -228,6 +250,14 @@ func TestWindowsShimArgumentTranslationInBash(t *testing.T) {
 	unescapedScript := strings.ReplaceAll(scriptPart[:endIdx], `\"`, `"`)
 	// Replace "exec php" with "printf '%s\n'" to inspect the translated arguments
 	testScript := strings.Replace(unescapedScript, `exec php "${args[@]}"`, `printf '%s\n' "${args[@]}"`, 1)
+	// Execute the generated script from a file. Passing it through `bash -c`
+	// from a Go test lets Git Bash's Windows command-line parser interpret the
+	// backslashes before the script reaches bash, which does not match the
+	// wsl.exe invocation used by the real .cmd shim.
+	scriptFile := filepath.Join(t.TempDir(), "translate.sh")
+	if err := os.WriteFile(scriptFile, []byte(testScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		arg  string
@@ -248,7 +278,7 @@ func TestWindowsShimArgumentTranslationInBash(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		cmd := exec.Command(bashPath, "-c", testScript, "_", tc.arg)
+		cmd := exec.Command(bashPath, scriptFile, tc.arg)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("bash failed on %q: %v, output: %s", tc.arg, err, string(out))
@@ -326,4 +356,3 @@ func TestProvisionWSLComposerFilesCreatesExpectedLayout(t *testing.T) {
 		}
 	}
 }
-

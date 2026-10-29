@@ -244,6 +244,33 @@ func TestBuildSiteEnvRequiresInstalledRuntimesAndConfig(t *testing.T) {
 	}
 }
 
+func TestBuildSiteEnvRejectsShellUnsafeEnvironmentNames(t *testing.T) {
+	site := model.Site{
+		ID: "site1", Name: "app", Kind: model.SiteStatic, HostPath: t.TempDir(),
+		Env: map[string]string{"EVIL; touch /tmp/pwned": "x"},
+	}
+	_, err := BuildSiteEnv(site, EnvDeps{Paths: config.NewPaths(t.TempDir())})
+	if err == nil {
+		t.Fatal("BuildSiteEnv accepted a shell-unsafe environment name")
+	}
+	if !strings.Contains(err.Error(), "invalid environment variable name") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestShellExportsSkipsInvalidEnvironmentNames(t *testing.T) {
+	exports := ShellExports(SiteEnvironment{Values: map[string]string{
+		"GOOD":              "value",
+		"BAD; touch /tmp/x": "value",
+	}})
+	if !strings.Contains(exports, "export GOOD='value'") {
+		t.Fatalf("valid export missing: %q", exports)
+	}
+	if strings.Contains(exports, "BAD") {
+		t.Fatalf("invalid export was rendered: %q", exports)
+	}
+}
+
 func TestEnvironmentAndShellExports(t *testing.T) {
 	base := []string{"PATH=/usr/bin", "HOME=/home/user", "KEEP=yes"}
 	values := map[string]string{"PATH": "/shim:/usr/bin", "PHPRC": "/tmp/a b/php.ini"}

@@ -122,6 +122,8 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 		Vhosts:    fakes.vhosts,
 		PHP:       fakes.php,
 		HostsPath: hostsPath,
+		// Unit tests must not depend on listeners present on the host machine.
+		PortResponding: func(int) bool { return false },
 	})
 	return svc, fakes
 }
@@ -357,6 +359,23 @@ func TestTrustInstalledBrowserSucceeds(t *testing.T) {
 	}
 	if !hasCheck(rep, "trust", StatusOK) {
 		t.Fatalf("%+v", rep.Checks)
+	}
+}
+
+func TestPortChecksTreatsSpecificListenerAsOwnedWhenWildcardBindSucceeds(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	delete(fakes.ports.errs, ":8080")
+	svc.deps.PortResponding = func(port int) bool { return port == 8080 }
+
+	check := svc.checkPorts()
+	if check.Status != StatusOK {
+		t.Fatalf("ports = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "8080 (the devstack proxy)") {
+		t.Fatalf("ports detail = %q, want the specific-address listener treated as owned", check.Detail)
+	}
+	if strings.Contains(check.Detail, "port 8080 is free") {
+		t.Fatalf("ports detail = %q, still reports a bound port as free", check.Detail)
 	}
 }
 
