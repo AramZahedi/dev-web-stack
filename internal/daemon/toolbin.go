@@ -18,8 +18,8 @@ type toolStatusProvider interface {
 }
 
 // resolveToolBinDir derives the system bin directory from the helper's managed
-// PHP wrapper. An unavailable helper keeps the documented /usr/local/bin
-// default rather than failing daemon startup.
+// PHP wrapper, falling back to the Node wrapper. An unavailable helper keeps
+// the documented /usr/local/bin default rather than failing daemon startup.
 func resolveToolBinDir(ctx context.Context, provider toolStatusProvider) string {
 	if provider == nil {
 		return defaultToolBinDir
@@ -30,12 +30,16 @@ func resolveToolBinDir(ctx context.Context, provider toolStatusProvider) string 
 	if err != nil {
 		return defaultToolBinDir
 	}
-	for _, tool := range status.Tools {
-		if tool.ID != helperproto.ToolPHPDefault {
-			continue
-		}
-		if wrapper := strings.TrimSpace(tool.WrapperPath); wrapper != "" {
-			return filepath.Dir(wrapper)
+	// PHP owns the canonical tool bin directory, but the Node default wrapper
+	// carries the same configured directory when PHP is not managed.
+	for _, id := range []string{helperproto.ToolPHPDefault, helperproto.ToolNodeDefault} {
+		for _, tool := range status.Tools {
+			if tool.ID != id {
+				continue
+			}
+			if wrapper := strings.TrimSpace(tool.WrapperPath); wrapper != "" {
+				return filepath.Dir(wrapper)
+			}
 		}
 	}
 	return defaultToolBinDir

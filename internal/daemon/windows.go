@@ -152,7 +152,11 @@ func Run(ctx context.Context, opts Options) error {
 	if strings.TrimSpace(helperSocket) == "" {
 		helperSocket = DefaultHelperSocket
 	}
-	adapter := &helperAdapter{socketPath: helperSocket, home: cfg.Home}
+	adapter := &helperAdapter{
+		socketPath: helperSocket,
+		home:       cfg.Home,
+		nodeTools:  newWindowsToolService(cfg.Home, cfg.WSLDistro, st),
+	}
 	wslBackend := wslbackend.New(nil)
 	agentPorts := ports.NewAgentProvider(nil)
 
@@ -758,6 +762,7 @@ type helperAdapter struct {
 	socketPath string
 	client     *helperclient.Client
 	home       string
+	nodeTools  *windowsToolService
 }
 
 func (h *helperAdapter) set(c *helperclient.Client) {
@@ -942,6 +947,8 @@ func (h *helperAdapter) toolShimName(id string) string {
 		return "php.cmd"
 	case helperproto.ToolComposer:
 		return "composer.cmd"
+	case helperproto.ToolNodeDefault:
+		return "node.cmd"
 	default:
 		return id + ".cmd"
 	}
@@ -964,10 +971,27 @@ func (h *helperAdapter) ToolStatus(ctx context.Context) (helperproto.ToolStatusR
 		}
 		tools = append(tools, status)
 	}
+	if h.nodeTools != nil {
+		node, err := h.nodeTools.Status(ctx)
+		if err != nil {
+			node = helperproto.ToolStatus{
+				ID:          helperproto.ToolNodeDefault,
+				WrapperPath: filepath.Join(binDir, h.toolShimName(helperproto.ToolNodeDefault)),
+				Conflict:    err.Error(),
+			}
+		}
+		tools = append(tools, node)
+	}
 	return helperproto.ToolStatusResponse{Tools: tools}, nil
 }
 
 func (h *helperAdapter) ToolInstall(ctx context.Context, id string, force bool) (helperproto.ToolStatus, error) {
+	if id == helperproto.ToolNodeDefault {
+		if h.nodeTools == nil {
+			return helperproto.ToolStatus{}, fmt.Errorf("%w: node tool shims are not configured", helperproto.ErrInvalidRequest)
+		}
+		return h.nodeTools.Install(ctx, force)
+	}
 	home := h.devstackHome()
 	_ = tooling.EnsureGlobalWindowsToolShims(home, "")
 	wrapper := filepath.Join(home, "bin", h.toolShimName(id))
@@ -981,6 +1005,12 @@ func (h *helperAdapter) ToolInstall(ctx context.Context, id string, force bool) 
 }
 
 func (h *helperAdapter) ToolRemove(ctx context.Context, id string) (helperproto.ToolStatus, error) {
+	if id == helperproto.ToolNodeDefault {
+		if h.nodeTools == nil {
+			return helperproto.ToolStatus{}, fmt.Errorf("%w: node tool shims are not configured", helperproto.ErrInvalidRequest)
+		}
+		return h.nodeTools.Remove(ctx)
+	}
 	home := h.devstackHome()
 	wrapper := filepath.Join(home, "bin", h.toolShimName(id))
 	_ = os.Remove(wrapper)

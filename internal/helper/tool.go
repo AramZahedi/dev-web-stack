@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
@@ -59,7 +60,7 @@ func NewToolManager(home, binDir string, allowUID int, logger *slog.Logger) (*To
 	}, nil
 }
 
-// Status reports both managed tools.
+// Status reports the managed tools.
 func (m *ToolManager) Status(ctx context.Context) (helperproto.ToolStatusResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return helperproto.ToolStatusResponse{}, err
@@ -67,10 +68,14 @@ func (m *ToolManager) Status(ctx context.Context) (helperproto.ToolStatusRespons
 	return helperproto.ToolStatusResponse{Tools: []helperproto.ToolStatus{
 		m.status(helperproto.ToolPHPDefault),
 		m.status(helperproto.ToolComposer),
+		m.status(helperproto.ToolNodeDefault),
 	}}, nil
 }
 
 func (m *ToolManager) status(id string) helperproto.ToolStatus {
+	if id == helperproto.ToolNodeDefault {
+		return m.nodeStatus()
+	}
 	target, version := m.target(id)
 	status := helperproto.ToolStatus{
 		ID:          id,
@@ -134,6 +139,12 @@ func (m *ToolManager) target(id string) (target, version string) {
 			version = tooling.ComposerVersion
 		}
 		return tooling.ComposerWrapperPath(paths), version
+	case helperproto.ToolNodeDefault:
+		root, id, err := m.nodeDefaultRoot()
+		if err != nil {
+			return "", ""
+		}
+		return filepath.Join(root, "bin", "node"), id
 	default:
 		return "", ""
 	}
@@ -157,6 +168,12 @@ func (m *ToolManager) wrapperPaths(id string) []string {
 		}
 	case helperproto.ToolComposer:
 		return []string{filepath.Join(m.binDir, "composer")}
+	case helperproto.ToolNodeDefault:
+		return []string{
+			filepath.Join(m.binDir, "node"),
+			filepath.Join(m.binDir, "npm"),
+			filepath.Join(m.binDir, "npx"),
+		}
 	default:
 		return nil
 	}
@@ -192,6 +209,9 @@ func (m *ToolManager) Install(ctx context.Context, req helperproto.ToolInstallRe
 	}
 	if err := validateToolID(req.ID); err != nil {
 		return helperproto.ToolStatus{}, err
+	}
+	if req.ID == helperproto.ToolNodeDefault {
+		return m.installNodeDefault(req)
 	}
 	status := m.status(req.ID)
 	if !status.Managed {
@@ -318,6 +338,9 @@ func (m *ToolManager) Remove(ctx context.Context, id string) (helperproto.ToolSt
 	if err := validateToolID(id); err != nil {
 		return helperproto.ToolStatus{}, err
 	}
+	if id == helperproto.ToolNodeDefault {
+		return m.removeNodeDefault()
+	}
 	status := m.status(id)
 	if status.Conflict != "" {
 		return helperproto.ToolStatus{}, fmt.Errorf("%w: %s: %s", helperproto.ErrToolConflict, status.WrapperPath, status.Conflict)
@@ -363,10 +386,250 @@ func (m *ToolManager) Remove(ctx context.Context, id string) (helperproto.ToolSt
 
 func validateToolID(id string) error {
 	switch id {
-	case helperproto.ToolPHPDefault, helperproto.ToolComposer:
+	case helperproto.ToolPHPDefault, helperproto.ToolComposer, helperproto.ToolNodeDefault:
 		return nil
 	default:
-		return fmt.Errorf("%w: tool id %q (want %s or %s)",
-			helperproto.ErrInvalidRequest, id, helperproto.ToolPHPDefault, helperproto.ToolComposer)
+		return fmt.Errorf("%w: tool id %q (want %s, %s, or %s)",
+			helperproto.ErrInvalidRequest, id, helperproto.ToolPHPDefault, helperproto.ToolComposer, helperproto.ToolNodeDefault)
 	}
+}
+
+// errNodeDefaultNotPrepared reports that no global Node default has been
+// registered by the tooling service yet.
+var errNodeDefaultNotPrepared = errors.New("helper: node-default is not prepared")
+
+// nodeDefaultWrapperMarker identifies a system wrapper owned by devstack.
+const nodeDefaultWrapperMarker = "# Managed by devstack: node-default (do not edit)"
+
+// nodeDefaultRoot resolves the registered global Node default. The only
+// accepted input is the build id recorded in tools/node-default/VERSION; it
+// must name an exact node@<major>.<minor>.<patch> build whose complete bin
+// directory resolves inside <home>/runtimes.
+func (m *ToolManager) nodeDefaultRoot() (root, id string, err error) {
+	paths := config.NewPaths(m.home)
+	data, err := os.ReadFile(tooling.NodeDefaultVersionPath(paths))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", "", errNodeDefaultNotPrepared
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("helper: read the node-default build: %w", err)
+	}
+	id = strings.TrimSpace(string(data))
+	if id == "" {
+		return "", "", errNodeDefaultNotPrepared
+	}
+	parsed, parseErr := catalog.ParseID(id)
+	if parseErr != nil || parsed.Kind != "node" || id != catalog.FormatID("node", parsed.Version, 0) {
+		return "", "", fmt.Errorf("node-default build %q is not an exact node@<version> id", id)
+	}
+
+	runtimes := filepath.Clean(paths.Runtimes)
+	if strings.ContainsAny(runtimes, "\x00\r\n") {
+		return "", "", errors.New("the runtimes directory contains invalid characters")
+	}
+	root = filepath.Join(runtimes, id)
+	if filepath.Dir(root) != runtimes || filepath.Base(root) != id {
+		return "", "", fmt.Errorf("node-default build %q is outside %s", id, runtimes)
+	}
+	realRuntimes, err := filepath.EvalSymlinks(runtimes)
+	if err != nil {
+		return "", "", fmt.Errorf("helper: resolve the runtimes directory: %w", err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", "", fmt.Errorf("helper: resolve node-default build %q: %w", id, err)
+	}
+	if realRoot != filepath.Join(realRuntimes, id) {
+		return "", "", fmt.Errorf("node-default build %q escapes %s", id, runtimes)
+	}
+	for _, name := range []string{"node", "npm", "npx"} {
+		binary := filepath.Join(root, "bin", name)
+		resolved, err := filepath.EvalSymlinks(binary)
+		if err != nil {
+			return "", "", fmt.Errorf("helper: node-default build %q has no usable %s: %w", id, binary, err)
+		}
+		// Official Node tarballs ship npm and npx as symlinks into the build's
+		// lib directory. Follow them, but never outside the registered build.
+		rel, err := filepath.Rel(realRoot, resolved)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", "", fmt.Errorf("helper: node-default binary %s escapes the registered build", binary)
+		}
+		info, err := os.Stat(binary)
+		if err != nil {
+			return "", "", fmt.Errorf("helper: inspect node-default binary %s: %w", binary, err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", "", fmt.Errorf("helper: node-default binary %s is not a regular file", binary)
+		}
+	}
+	return root, id, nil
+}
+
+func (m *ToolManager) nodeStatus() helperproto.ToolStatus {
+	status := helperproto.ToolStatus{
+		ID:          helperproto.ToolNodeDefault,
+		WrapperPath: filepath.Join(m.binDir, "node"),
+	}
+	root, id, err := m.nodeDefaultRoot()
+	if err != nil {
+		if !errors.Is(err, errNodeDefaultNotPrepared) {
+			status.Conflict = err.Error()
+		}
+		return status
+	}
+	status.Managed = true
+	status.Target = filepath.Join(root, "bin", "node")
+	status.Version = id
+
+	current := true
+	for _, wrapper := range m.wrapperPaths(helperproto.ToolNodeDefault) {
+		expected := nodeDefaultWrapperScript(root, filepath.Base(wrapper))
+		info, err := os.Lstat(wrapper)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			current = false
+			continue
+		case err != nil:
+			status.Conflict = "cannot inspect the system wrapper: " + err.Error()
+			return status
+		case !info.Mode().IsRegular():
+			status.Conflict = fmt.Sprintf("an unmanaged file occupies %s", wrapper)
+			return status
+		}
+		data, err := os.ReadFile(wrapper)
+		if err != nil {
+			status.Conflict = "cannot read the system wrapper: " + err.Error()
+			return status
+		}
+		if !nodeDefaultWrapperOwned(string(data)) {
+			status.Conflict = fmt.Sprintf("an unmanaged file occupies %s", wrapper)
+			return status
+		}
+		if string(data) != expected {
+			current = false
+		}
+	}
+	status.Installed = current
+	return status
+}
+
+func nodeDefaultWrapperOwned(content string) bool {
+	return strings.HasPrefix(content, "#!/bin/sh\n"+nodeDefaultWrapperMarker+"\n")
+}
+
+func nodeDefaultWrapperScript(root, name string) string {
+	binDir := filepath.Join(root, "bin")
+	return "#!/bin/sh\n" + nodeDefaultWrapperMarker + "\n" +
+		"export PATH=" + shellSingleQuote(binDir) + ":\"$PATH\"\n" +
+		"exec " + shellSingleQuote(filepath.Join(binDir, name)) + " \"$@\"\n"
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func (m *ToolManager) installNodeDefault(req helperproto.ToolInstallRequest) (helperproto.ToolStatus, error) {
+	root, _, err := m.nodeDefaultRoot()
+	if err != nil {
+		if errors.Is(err, errNodeDefaultNotPrepared) {
+			return helperproto.ToolStatus{}, fmt.Errorf("%w: %s is not prepared; install it with devstack first", helperproto.ErrInvalidRequest, req.ID)
+		}
+		return helperproto.ToolStatus{}, fmt.Errorf("%w: %v", helperproto.ErrInvalidRequest, err)
+	}
+	if strings.ContainsAny(m.binDir, "\x00\r\n") {
+		return helperproto.ToolStatus{}, fmt.Errorf("%w: the tool bin directory contains invalid characters", helperproto.ErrInvalidRequest)
+	}
+	status := m.nodeStatus()
+	if status.Conflict != "" && !req.Force {
+		return helperproto.ToolStatus{}, fmt.Errorf("%w: %s", helperproto.ErrToolConflict, status.Conflict)
+	}
+	if !status.Managed {
+		return helperproto.ToolStatus{}, fmt.Errorf("%w: %s is not prepared; install it with devstack first", helperproto.ErrInvalidRequest, req.ID)
+	}
+	if err := os.MkdirAll(m.binDir, 0o755); err != nil {
+		return helperproto.ToolStatus{}, fmt.Errorf("helper: create tool bin directory: %w", err)
+	}
+
+	backup := ""
+	for _, wrapper := range m.wrapperPaths(req.ID) {
+		expected := nodeDefaultWrapperScript(root, filepath.Base(wrapper))
+		info, err := os.Lstat(wrapper)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			if err := writeAtomicFile(wrapper, []byte(expected), 0o755); err != nil {
+				return helperproto.ToolStatus{}, fmt.Errorf("helper: install node-default wrapper: %w", err)
+			}
+			continue
+		case err != nil:
+			return helperproto.ToolStatus{}, fmt.Errorf("helper: inspect tool wrapper: %w", err)
+		case info.Mode().IsRegular():
+			data, readErr := os.ReadFile(wrapper)
+			if readErr != nil {
+				return helperproto.ToolStatus{}, fmt.Errorf("helper: read tool wrapper: %w", readErr)
+			}
+			if nodeDefaultWrapperOwned(string(data)) {
+				if string(data) == expected {
+					continue
+				}
+				if err := writeAtomicFile(wrapper, []byte(expected), 0o755); err != nil {
+					return helperproto.ToolStatus{}, fmt.Errorf("helper: update node-default wrapper: %w", err)
+				}
+				continue
+			}
+		}
+		if !req.Force {
+			return helperproto.ToolStatus{}, fmt.Errorf("%w: an unmanaged file occupies %s", helperproto.ErrToolConflict, wrapper)
+		}
+		saved, err := m.backup(wrapper, req.ID+"-"+filepath.Base(wrapper))
+		if err != nil {
+			return helperproto.ToolStatus{}, err
+		}
+		if backup == "" {
+			backup = saved
+		}
+		if err := writeAtomicFile(wrapper, []byte(expected), 0o755); err != nil {
+			return helperproto.ToolStatus{}, fmt.Errorf("helper: install node-default wrapper: %w", err)
+		}
+	}
+	m.logger.Info("helper: installed managed tool", "id", req.ID, "wrapper", status.WrapperPath, "target", status.Target)
+	installed := m.nodeStatus()
+	installed.Backup = backup
+	return installed, nil
+}
+
+func (m *ToolManager) removeNodeDefault() (helperproto.ToolStatus, error) {
+	wrappers := m.wrapperPaths(helperproto.ToolNodeDefault)
+	for _, wrapper := range wrappers {
+		info, err := os.Lstat(wrapper)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return helperproto.ToolStatus{}, fmt.Errorf("helper: inspect tool wrapper: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return helperproto.ToolStatus{}, fmt.Errorf("%w: an unmanaged file occupies %s", helperproto.ErrToolConflict, wrapper)
+		}
+		data, err := os.ReadFile(wrapper)
+		if err != nil {
+			return helperproto.ToolStatus{}, fmt.Errorf("helper: read tool wrapper: %w", err)
+		}
+		if !nodeDefaultWrapperOwned(string(data)) {
+			return helperproto.ToolStatus{}, fmt.Errorf("%w: an unmanaged file occupies %s", helperproto.ErrToolConflict, wrapper)
+		}
+	}
+
+	// Remove the home artifacts first. If this fails, leave the system wrappers
+	// in place so the tool is still usable (and the failure is recoverable).
+	paths := config.NewPaths(m.home)
+	if err := os.RemoveAll(tooling.NodeDefaultToolDir(paths)); err != nil {
+		return helperproto.ToolStatus{}, fmt.Errorf("helper: remove node-default artifacts: %w", err)
+	}
+	for _, wrapper := range wrappers {
+		if err := os.Remove(wrapper); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return helperproto.ToolStatus{}, fmt.Errorf("helper: remove tool wrapper: %w", err)
+		}
+	}
+	m.logger.Info("helper: removed managed tool", "id", helperproto.ToolNodeDefault)
+	return m.nodeStatus(), nil
 }

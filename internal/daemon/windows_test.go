@@ -28,6 +28,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/ipc"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -653,5 +654,52 @@ func TestWindowsHelperAdapterToolLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(binDir, "php.cmd")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("php.cmd still exists after remove")
+	}
+}
+
+func TestWindowsHelperAdapterManagesNodeShims(t *testing.T) {
+	home := t.TempDir()
+	st, err := store.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	if err := st.UpsertRuntime(ctx, model.RuntimeBuild{
+		ID:          "node@22.11.0",
+		Kind:        "node",
+		Version:     "22.11.0",
+		Backend:     model.BackendWSL,
+		Path:        "/data/devstack/runtimes/node@22.11.0",
+		InstalledAt: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &helperAdapter{
+		home:      home,
+		nodeTools: newWindowsToolService(home, "devstack", st),
+	}
+	installed, err := adapter.ToolInstall(ctx, helperproto.ToolNodeDefault, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !installed.Installed || !installed.Managed || installed.WrapperPath != filepath.Join(home, "bin", "node.cmd") {
+		t.Fatalf("node install status = %+v", installed)
+	}
+	status, err := adapter.ToolStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Tools) != 3 {
+		t.Fatalf("tools = %+v, want php, composer, and node", status.Tools)
+	}
+	if _, err := adapter.ToolRemove(ctx, helperproto.ToolNodeDefault); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"node", "npm", "npx"} {
+		if _, err := os.Stat(filepath.Join(home, "bin", name+".cmd")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s.cmd still exists after remove: %v", name, err)
+		}
 	}
 }
