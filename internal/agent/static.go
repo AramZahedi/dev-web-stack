@@ -32,6 +32,10 @@ func (r *Runtime) StartSite(ctx context.Context, id string) (agentproto.SiteActi
 		r.mu.Unlock()
 		return response, nil
 	}
+	if site.spec.HTTPPort <= 0 {
+		r.mu.Unlock()
+		return agentproto.SiteActionResponse{}, fmt.Errorf("agent: site %q has no allocated HTTP port", id)
+	}
 	handler, err := staticserve.NewStaticHandler(site.documentRoot, site.spec.SPAFallback)
 	if err != nil {
 		r.mu.Unlock()
@@ -99,6 +103,16 @@ func (r *Runtime) StopSite(ctx context.Context, id string, graceful bool) error 
 	if server != nil {
 		if err := server.Shutdown(ctx); err != nil {
 			_ = server.Close()
+			// Shutdown failed (usually a request that outlived the deadline).
+			// Close released the listener; clear the server so a later start
+			// does not report a phantom "already running" site.
+			r.mu.Lock()
+			if current := r.sites[id]; current == site && current.server == server {
+				current.server = nil
+				current.status = "stopped"
+				_ = r.saveLocked()
+			}
+			r.mu.Unlock()
 			return fmt.Errorf("agent: stop site %q: %w", id, err)
 		}
 	}
@@ -165,14 +179,23 @@ func resolveStaticDocumentRoot(spec agentproto.SiteSpec) (string, error) {
 	if project == "" || !filepath.IsAbs(project) {
 		return "", errors.New("agent: static site backend_path must be an absolute WSL path")
 	}
-	project, err := filepath.Abs(project)
+	abs, err := filepath.Abs(project)
 	if err != nil {
 		return "", fmt.Errorf("agent: resolve backend path: %w", err)
 	}
-	if err := rejectSymlinkComponents(project); err != nil {
+	if err := rejectSymlinkComponents(abs); err != nil {
 		return "", fmt.Errorf("agent: unsafe backend path: %w", err)
 	}
-	root := strings.TrimSpace(spec.DocumentRoot)
+	return resolveDocumentRoot(abs, spec.DocumentRoot)
+}
+
+// resolveDocumentRoot resolves a site's configured document root inside an
+// absolute, already-validated project root. Every existing component is checked
+// for symlinks: a symlinked intermediate directory can otherwise escape the
+// project while the final component is a real directory.
+func resolveDocumentRoot(project, documentRoot string) (string, error) {
+	root := strings.TrimSpace(documentRoot)
+	var err error
 	if root == "" || root == "." {
 		root = project
 	} else if filepath.IsAbs(root) {

@@ -1,14 +1,18 @@
 package agent
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -25,6 +29,19 @@ type phpGeneration struct {
 	fpmPath      string
 	port         int
 	process      *fpmProcess
+}
+
+// runtimeBinaryPath returns the relative path of the command a runtime build
+// must provide. The agent refuses to register a build whose binary is missing.
+func runtimeBinaryPath(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "php":
+		return "bin/php"
+	case "node":
+		return "bin/node"
+	default:
+		return ""
+	}
 }
 
 // CheckDebian12PHPCompatibility verifies that a PHP build contains required
@@ -99,19 +116,47 @@ func (r *Runtime) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequ
 	}
 
 	targetDir := filepath.Join(r.root, "runtimes", match.ID)
+	if filepath.Base(targetDir) != match.ID || strings.ContainsAny(match.ID, `/\`) {
+		return agentproto.RuntimeResponse{}, fmt.Errorf("agent: invalid catalog runtime ID %q", match.ID)
+	}
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return agentproto.RuntimeResponse{}, fmt.Errorf("agent: stage runtime directory: %w", err)
 	}
 
-	// Gate PHP on Debian 12 compatibility check if binaries are present
-	if match.Kind == "php" {
-		phpBin := filepath.Join(targetDir, "bin", "php")
-		if runtime.GOOS != "windows" && match.URL != "" && os.Getenv("DEVSTACK_NO_DOWNLOAD") == "" {
-			if _, err := os.Stat(phpBin); errors.Is(err, os.ErrNotExist) {
-				_ = downloadAndExtractArchive(ctx, match.URL, match.SHA256, targetDir)
+	// Serialise installs so two requests for one build cannot download and
+	// extract into the same destination concurrently.
+	r.runtimeMu.Lock()
+	defer r.runtimeMu.Unlock()
+
+	// Every downloadable kind is staged the same way: verify the pinned
+	// archive, extract to a private staging tree, then activate. PHP then gets
+	// its Debian 12 runnable-binary gate.
+	binaryRel := runtimeBinaryPath(match.Kind)
+	if binaryRel == "" {
+		return agentproto.RuntimeResponse{}, fmt.Errorf("agent: runtime %q has unsupported kind %q", match.ID, match.Kind)
+	}
+	binaryPath := filepath.Join(targetDir, filepath.FromSlash(binaryRel))
+	if runtime.GOOS != "windows" && match.URL != "" && os.Getenv("DEVSTACK_NO_DOWNLOAD") == "" {
+		if _, err := os.Stat(binaryPath); errors.Is(err, os.ErrNotExist) {
+			// A failed download or checksum mismatch must fail the install.
+			// The previous code discarded this error and returned a successful
+			// response for a runtime that does not exist.
+			if err := downloadAndExtractArchive(ctx, match.URL, match.SHA256, targetDir); err != nil {
+				return agentproto.RuntimeResponse{}, fmt.Errorf("agent: install runtime %q: %w", match.ID, err)
 			}
 		}
-		if _, err := os.Stat(phpBin); err == nil {
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(binaryPath)
+		if err != nil {
+			return agentproto.RuntimeResponse{}, fmt.Errorf("agent: install runtime %q: %s is missing: %w", match.ID, binaryRel, err)
+		}
+		if info.IsDir() || info.Mode().Perm()&0o111 == 0 {
+			return agentproto.RuntimeResponse{}, fmt.Errorf("agent: install runtime %q: %s is not executable", match.ID, binaryRel)
+		}
+	}
+	if match.Kind == "php" {
+		if _, err := os.Stat(filepath.Join(targetDir, "bin", "php")); err == nil {
 			if err := CheckDebian12PHPCompatibility(ctx, targetDir); err != nil {
 				return agentproto.RuntimeResponse{}, err
 			}
@@ -149,6 +194,11 @@ func (r *Runtime) RemoveRuntime(ctx context.Context, req agentproto.RuntimeReque
 	if id == "" {
 		return errors.New("agent: build id is required")
 	}
+
+	// Serialise with InstallRuntime so a removal cannot delete a build while
+	// its archive is being extracted into the same directory.
+	r.runtimeMu.Lock()
+	defer r.runtimeMu.Unlock()
 
 	r.mu.Lock()
 	registered, ok := r.runtimes[id]
@@ -447,32 +497,22 @@ func (r *Runtime) StopPHP(ctx context.Context, id string, req agentproto.PHPActi
 }
 
 func resolvePHPDocumentRoot(spec agentproto.SiteSpec) (string, error) {
-	projectRoot, err := filepath.Abs(spec.BackendPath)
+	project := strings.TrimSpace(spec.BackendPath)
+	if project == "" || !filepath.IsAbs(project) {
+		return "", errors.New("agent: invalid project root: backend path must be an absolute WSL path")
+	}
+	project, err := filepath.Abs(project)
 	if err != nil {
 		return "", fmt.Errorf("agent: invalid project root: %w", err)
 	}
-	doc := strings.TrimSpace(spec.DocumentRoot)
-	if doc == "" || doc == "." {
-		return projectRoot, nil
+	if err := rejectSymlinkComponents(project); err != nil {
+		return "", fmt.Errorf("agent: unsafe project root: %w", err)
 	}
-	resolved := ""
-	if filepath.IsAbs(doc) {
-		resolved = filepath.Clean(doc)
-	} else {
-		resolved = filepath.Clean(filepath.Join(projectRoot, doc))
-	}
-	rel, err := filepath.Rel(projectRoot, resolved)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", errors.New("agent: document root escapes project root")
-	}
-	info, err := os.Lstat(resolved)
-	if err != nil {
-		return "", fmt.Errorf("agent: document root: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("agent: document root is a symlink")
-	}
-	return resolved, nil
+	// Reuse the same containment rules as static sites. The previous
+	// implementation only rejected a symlink as the final component, so a
+	// document root reached through a symlinked intermediate directory could
+	// escape the project.
+	return resolveDocumentRoot(project, spec.DocumentRoot)
 }
 
 func (r *Runtime) saveRuntimesLocked() error {
@@ -533,19 +573,28 @@ func downloadAndExtractArchive(ctx context.Context, url, expectedSHA256, destDir
 		return fmt.Errorf("agent: close runtime archive: %w", err)
 	}
 
-	cmdCurl := exec.CommandContext(ctx, curlBin, "--http1.1", "-fsSL", "-o", archivePath, url)
+	cmdCurl := exec.CommandContext(ctx, curlBin,
+		"--http1.1", "-fsSL", "--retry", "2", "--retry-delay", "1",
+		"--connect-timeout", "20", "--max-time", "900",
+		"-o", archivePath, url)
 	if out, err := cmdCurl.CombinedOutput(); err != nil {
 		return fmt.Errorf("curl: %w (output: %s)", err, string(out))
 	}
 
-	data, err := os.ReadFile(archivePath)
+	// Stream the archive through SHA-256. Reading the whole file into memory
+	// would allocate the archive size (hundreds of MiB for a PHP runtime) in
+	// the root agent.
+	sum, err := hashFileSHA256(archivePath)
 	if err != nil {
 		return fmt.Errorf("agent: read runtime archive for checksum: %w", err)
 	}
-	sum := sha256.Sum256(data)
-	hexSum := hex.EncodeToString(sum[:])
-	if !strings.EqualFold(hexSum, expected) {
-		return fmt.Errorf("checksum mismatch: got %s, want %s", hexSum, expected)
+	if !strings.EqualFold(sum, expected) {
+		return fmt.Errorf("checksum mismatch: got %s, want %s", sum, expected)
+	}
+
+	// Reject traversal and unsafe link members before tar touches the disk.
+	if err := validateRuntimeArchive(archivePath); err != nil {
+		return err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(destDir), 0o755); err != nil {
@@ -559,9 +608,15 @@ func downloadAndExtractArchive(ctx context.Context, url, expectedSHA256, destDir
 	if err := os.Chmod(staging, 0o755); err != nil {
 		return fmt.Errorf("agent: prepare runtime staging: %w", err)
 	}
-	cmdTar := exec.CommandContext(ctx, tarBin, "-xz", "--strip-components=1", "-C", staging, "-f", archivePath)
+	cmdTar := exec.CommandContext(ctx, tarBin, "-xz", "--no-same-owner", "--strip-components=1", "-C", staging, "-f", archivePath)
 	if out, err := cmdTar.CombinedOutput(); err != nil {
 		return fmt.Errorf("tar: %w (output: %s)", err, string(out))
+	}
+	// tar's own checks are not a substitute for verifying the tree that was
+	// actually produced: reject any extracted link that resolves outside the
+	// staging directory.
+	if err := verifyExtractedLinks(staging); err != nil {
+		return err
 	}
 
 	if entries, err := os.ReadDir(destDir); err == nil && len(entries) != 0 {
@@ -576,4 +631,128 @@ func downloadAndExtractArchive(ctx context.Context, url, expectedSHA256, destDir
 		return fmt.Errorf("agent: activate runtime: %w", err)
 	}
 	return nil
+}
+
+func hashFileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+const (
+	maxRuntimeArchiveEntries = 200_000
+	maxRuntimeArchiveBytes   = int64(2) << 30
+)
+
+// validateRuntimeArchive walks every member before extraction. It rejects
+// absolute or escaping names, device/FIFO/hardlink members, and symlinks whose
+// lexical target leaves the extraction root.
+func validateRuntimeArchive(archivePath string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("agent: open runtime archive: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("agent: open runtime archive gzip: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+	reader := tar.NewReader(io.LimitReader(gz, maxRuntimeArchiveBytes+1<<20))
+
+	entries := 0
+	var total int64
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("agent: read runtime archive: %w", err)
+		}
+		entries++
+		if entries > maxRuntimeArchiveEntries {
+			return fmt.Errorf("agent: runtime archive has more than %d members", maxRuntimeArchiveEntries)
+		}
+		if header.Size < 0 || total > maxRuntimeArchiveBytes-header.Size {
+			return fmt.Errorf("agent: runtime archive expands beyond %d bytes", maxRuntimeArchiveBytes)
+		}
+		total += header.Size
+
+		name, err := cleanRuntimeArchivePath(header.Name)
+		if err != nil {
+			return err
+		}
+		switch header.Typeflag {
+		case tar.TypeReg, tar.TypeRegA, tar.TypeDir:
+		case tar.TypeSymlink:
+			if err := validateRuntimeArchiveLink(name, header.Linkname); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("agent: runtime archive member %q has unsupported type %q", header.Name, header.Typeflag)
+		}
+	}
+}
+
+func cleanRuntimeArchivePath(name string) (string, error) {
+	if name == "" || strings.ContainsRune(name, 0) || strings.Contains(name, `\`) {
+		return "", fmt.Errorf("agent: runtime archive member %q has an invalid name", name)
+	}
+	if path.IsAbs(name) || strings.HasPrefix(name, "/") {
+		return "", fmt.Errorf("agent: runtime archive member %q is absolute", name)
+	}
+	clean := path.Clean(name)
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("agent: runtime archive member %q escapes the extraction root", name)
+	}
+	return clean, nil
+}
+
+func validateRuntimeArchiveLink(name, target string) error {
+	if target == "" || strings.ContainsRune(target, 0) || strings.Contains(target, `\`) ||
+		path.IsAbs(target) || strings.HasPrefix(target, "/") {
+		return fmt.Errorf("agent: runtime archive symlink %q has an invalid target", name)
+	}
+	// Resolve the target against the link's directory. The first component is
+	// stripped from the extracted tree, so evaluate the lexically joined path
+	// below the archive root as well.
+	joined := path.Clean(path.Join(path.Dir(name), target))
+	if joined == ".." || strings.HasPrefix(joined, "../") {
+		return fmt.Errorf("agent: runtime archive symlink %q points outside the extraction root", name)
+	}
+	return nil
+}
+
+// verifyExtractedLinks rejects any symlink in the staged tree whose resolved
+// target leaves the tree.
+func verifyExtractedLinks(root string) error {
+	return filepath.WalkDir(root, func(current string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
+		target, err := os.Readlink(current)
+		if err != nil {
+			return fmt.Errorf("agent: read extracted symlink %s: %w", current, err)
+		}
+		if path.IsAbs(target) || strings.HasPrefix(target, "/") {
+			return fmt.Errorf("agent: extracted symlink %s is absolute", current)
+		}
+		resolved := filepath.Clean(filepath.Join(filepath.Dir(current), filepath.FromSlash(target)))
+		rel, err := filepath.Rel(root, resolved)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return fmt.Errorf("agent: extracted symlink %s points outside the runtime directory", current)
+		}
+		return nil
+	})
 }

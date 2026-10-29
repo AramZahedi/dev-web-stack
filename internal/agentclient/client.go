@@ -29,6 +29,10 @@ type Config struct {
 	Token     string
 	PinSHA256 string
 	Timeout   time.Duration
+	// LongTimeout bounds requests that legitimately run for minutes: builds,
+	// runtime downloads, source copies, and site execs. A single 30-second
+	// client timeout used to abort a PHP runtime install mid-download.
+	LongTimeout time.Duration
 }
 
 // API is the complete typed agent surface. A fake agent and the real client
@@ -78,6 +82,8 @@ type Client struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	long    *http.Client
+	stream  *http.Client
 }
 
 var _ API = (*Client)(nil)
@@ -108,6 +114,13 @@ func New(cfg Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	longTimeout := cfg.LongTimeout
+	if longTimeout <= 0 {
+		longTimeout = 30 * time.Minute
+	}
+	if longTimeout < timeout {
+		longTimeout = timeout
+	}
 	transport := &http.Transport{
 		TLSClientConfig:     tlsConfig,
 		MaxIdleConns:        8,
@@ -118,18 +131,39 @@ func New(cfg Config) (*Client, error) {
 		baseURL: base,
 		token:   cfg.Token,
 		http:    &http.Client{Transport: transport, Timeout: timeout},
+		long:    &http.Client{Transport: transport, Timeout: longTimeout},
+		// Streaming responses are bounded by their request context. A total
+		// client timeout would cut a followed log stream after 30 seconds.
+		stream: &http.Client{Transport: transport},
 	}, nil
 }
 
 // Close releases idle connections.
 func (c *Client) Close() error {
-	if c != nil && c.http != nil {
-		c.http.CloseIdleConnections()
+	if c != nil {
+		if c.http != nil {
+			c.http.CloseIdleConnections()
+		}
+		if c.long != nil {
+			c.long.CloseIdleConnections()
+		}
+		if c.stream != nil {
+			c.stream.CloseIdleConnections()
+		}
 	}
 	return nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	return c.doWith(c.http, ctx, method, path, in, out)
+}
+
+// doLong is used for operations whose bounded runtime exceeds Timeout.
+func (c *Client) doLong(ctx context.Context, method, path string, in, out any) error {
+	return c.doWith(c.long, ctx, method, path, in, out)
+}
+
+func (c *Client) doWith(client *http.Client, ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		data, err := json.Marshal(in)
@@ -147,7 +181,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		if isTimeout(err) {
 			return fmt.Errorf("%w: %v", agentproto.ErrTimeout, err)
@@ -191,7 +225,7 @@ func (c *Client) open(ctx context.Context, method, path string, in any) (io.Read
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.stream.Do(req)
 	if err != nil {
 		if isTimeout(err) {
 			return nil, fmt.Errorf("%w: %v", agentproto.ErrTimeout, err)
@@ -334,7 +368,7 @@ func (c *Client) SiteLogs(ctx context.Context, id string, req agentproto.SiteLog
 // ExecSite runs argv in the site environment.
 func (c *Client) ExecSite(ctx context.Context, id string, req agentproto.SiteExecRequest) (agentproto.SiteExecResponse, error) {
 	var out agentproto.SiteExecResponse
-	err := c.do(ctx, http.MethodPost, agentproto.PathSiteExecFor(id), req, &out)
+	err := c.doLong(ctx, http.MethodPost, agentproto.PathSiteExecFor(id), req, &out)
 	return out, err
 }
 
@@ -362,7 +396,7 @@ func (c *Client) StopPHP(ctx context.Context, id string, req agentproto.PHPActio
 // BuildSite runs the site build command.
 func (c *Client) BuildSite(ctx context.Context, id string, req agentproto.BuildRequest) (agentproto.BuildResponse, error) {
 	var out agentproto.BuildResponse
-	err := c.do(ctx, http.MethodPost, agentproto.PathSiteBuildFor(id), req, &out)
+	err := c.doLong(ctx, http.MethodPost, agentproto.PathSiteBuildFor(id), req, &out)
 	return out, err
 }
 
@@ -401,7 +435,7 @@ func (c *Client) TerminalWebSocket(ctx context.Context, id, ticket string) (*web
 // InstallRuntime installs or returns a runtime build.
 func (c *Client) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequest) (agentproto.RuntimeResponse, error) {
 	var out agentproto.RuntimeResponse
-	err := c.do(ctx, http.MethodPost, agentproto.PathRuntimes, req, &out)
+	err := c.doLong(ctx, http.MethodPost, agentproto.PathRuntimes, req, &out)
 	return out, err
 }
 
@@ -519,7 +553,7 @@ func (c *Client) ValidatePath(ctx context.Context, req agentproto.PathValidateRe
 // CopySource moves a project with checksum and ownership verification.
 func (c *Client) CopySource(ctx context.Context, req agentproto.SourceCopyRequest) (agentproto.SourceCopyResponse, error) {
 	var out agentproto.SourceCopyResponse
-	err := c.do(ctx, http.MethodPost, agentproto.PathSourceCopy, req, &out)
+	err := c.doLong(ctx, http.MethodPost, agentproto.PathSourceCopy, req, &out)
 	return out, err
 }
 

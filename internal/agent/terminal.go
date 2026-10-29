@@ -22,6 +22,16 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
 
+const (
+	// maxTerminalDimension bounds a client-supplied PTY size. The browser
+	// terminal only ever uses a few hundred columns/rows; anything larger is a
+	// malformed or hostile frame.
+	maxTerminalDimension = 1000
+	// terminalTicketTTL is short because the ticket is exchanged immediately
+	// after it is minted.
+	terminalTicketTTL = 30 * time.Second
+)
+
 type terminalTicket struct {
 	token     string
 	siteID    string
@@ -63,13 +73,18 @@ func (r *Runtime) IssueTerminalTicket(id string, req agentproto.TerminalTicketRe
 	if rows <= 0 {
 		rows = 24
 	}
+	cols = min(cols, maxTerminalDimension)
+	rows = min(rows, maxTerminalDimension)
 
-	expiresAt := time.Now().Add(30 * time.Second)
+	expiresAt := time.Now().Add(terminalTicketTTL)
 
 	r.termMu.Lock()
 	if r.termTickets == nil {
 		r.termTickets = make(map[string]*terminalTicket)
 	}
+	// Prune expired tickets here so a stream of minted-but-never-consumed
+	// tickets cannot grow the map without bound.
+	r.pruneTerminalTicketsLocked(time.Now())
 	r.termTickets[token] = &terminalTicket{
 		token:     token,
 		siteID:    id,
@@ -100,6 +115,14 @@ func (r *Runtime) consumeTerminalTicket(token, id string) (*terminalTicket, bool
 		return nil, false
 	}
 	return ticket, true
+}
+
+func (r *Runtime) pruneTerminalTicketsLocked(now time.Time) {
+	for token, ticket := range r.termTickets {
+		if ticket == nil || !now.Before(ticket.expiresAt) {
+			delete(r.termTickets, token)
+		}
+	}
 }
 
 // HandleTerminalWebSocket upgrades to WebSocket, validates the ticket, and runs a PTY shell.
@@ -156,9 +179,10 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 	}
 	defer conn.CloseNow()
 
-	shell := "/bin/bash"
-	if runtime.GOOS == "windows" {
-		shell = "cmd.exe"
+	shell, err := terminalShell()
+	if err != nil {
+		_ = conn.Close(websocket.StatusInternalError, "site shell is unavailable")
+		return
 	}
 	cmd := exec.Command(shell)
 	cmd.Dir = site.spec.BackendPath
@@ -167,7 +191,11 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 	for k, v := range site.spec.Env {
 		envMap[k] = v
 	}
-	caEnv, _ := r.Environment(envMap)
+	caEnv, err := r.Environment(envMap)
+	if err != nil {
+		_ = conn.Close(websocket.StatusInternalError, "site environment is unavailable")
+		return
+	}
 	caEnv["TERM"] = "xterm-256color"
 	caEnv["DEVSTACK_SITE"] = siteID
 
@@ -263,7 +291,15 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 					_, _ = inWriter.Write([]byte(frame.Data))
 				case "resize":
 					if ptyFile != nil {
-						_ = pty.Setsize(ptyFile, &pty.Winsize{Rows: frame.Rows, Cols: frame.Cols})
+						cols := int(frame.Cols)
+						rows := int(frame.Rows)
+						if cols <= 0 || rows <= 0 {
+							continue
+						}
+						_ = pty.Setsize(ptyFile, &pty.Winsize{
+							Rows: uint16(min(rows, maxTerminalDimension)),
+							Cols: uint16(min(cols, maxTerminalDimension)),
+						})
 					}
 				}
 			}
@@ -287,4 +323,19 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 		_ = sendFrame(terminalServerFrame{Type: "exit", Code: &exitCode})
 		_ = conn.Close(websocket.StatusNormalClosure, "process exited")
 	}
+}
+
+// terminalShell returns the shell used for a site PTY. A missing /bin/bash
+// (minimal rootfs) falls back to /bin/sh instead of failing every session.
+func terminalShell() (string, error) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", nil
+	}
+	for _, candidate := range []string{"/bin/bash", "/bin/sh"} {
+		info, err := os.Stat(candidate)
+		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("agent: no usable shell (tried /bin/bash, /bin/sh)")
 }

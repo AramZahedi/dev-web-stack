@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -146,6 +147,86 @@ func TestCopySourceRejectsSymlinkAndNonEmptyDestination(t *testing.T) {
 	}
 	if _, err := CopySource(context.Background(), plain, dst, "local", false); !errors.Is(err, ErrDestinationNotEmpty) {
 		t.Fatalf("nonempty destination error = %v", err)
+	}
+}
+
+func TestCopySourceRejectsOverlappingTrees(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := os.MkdirAll(filepath.Join(src, "public"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "public", "index.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range []string{
+		filepath.Join(src, "nested"),
+		src,
+		base,
+	} {
+		if _, err := CopySource(context.Background(), src, destination, "local", false); !errors.Is(err, ErrOverlappingCopy) {
+			t.Fatalf("CopySource(%q) error = %v, want ErrOverlappingCopy", destination, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(src, "public", "index.php")); err != nil {
+		t.Fatalf("source was modified by a rejected overlapping copy: %v", err)
+	}
+}
+
+func TestCopySourceRefusesAnInProgressDestination(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "index.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(base, "dst")
+	lockPath := filepath.Join(base, "."+filepath.Base(dst)+".copy.lock")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CopySource(context.Background(), src, dst, "local", false); !errors.Is(err, ErrDestinationInUse) {
+		t.Fatalf("CopySource error = %v, want ErrDestinationInUse", err)
+	}
+	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a refused copy created the destination")
+	}
+}
+
+func TestCopySourceManifestIsStableAndVerifiesContent(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := os.MkdirAll(filepath.Join(src, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a", "one.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "two.txt"), []byte("two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := CopySource(context.Background(), src, filepath.Join(base, "dst-one"), "local", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := CopySource(context.Background(), src, filepath.Join(base, "dst-two"), "local", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SHA256 != second.SHA256 {
+		t.Fatalf("manifest is not deterministic: %s != %s", first.SHA256, second.SHA256)
+	}
+	if first.Files != 2 || first.Bytes != 6 {
+		t.Fatalf("copy result = %+v", first)
+	}
+	info, err := os.Stat(filepath.Join(base, "dst-one", "two.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("file mode = %04o, want 0600", info.Mode().Perm())
 	}
 }
 

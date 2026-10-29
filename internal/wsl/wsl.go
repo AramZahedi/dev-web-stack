@@ -28,6 +28,10 @@ var (
 	ErrInvalidPath = errors.New("wsl: invalid path")
 	// ErrDestinationNotEmpty is returned when a copy target already has data.
 	ErrDestinationNotEmpty = errors.New("wsl: destination is not empty")
+	// ErrDestinationInUse is returned when another copy owns the destination.
+	ErrDestinationInUse = errors.New("wsl: destination copy is already in progress")
+	// ErrOverlappingCopy is returned when source and destination nest.
+	ErrOverlappingCopy = errors.New("wsl: source and destination must not overlap")
 	// ErrLocalhostForwarding is returned when WSL cannot reach the Windows
 	// daemon through the host gateway.
 	ErrLocalhostForwarding = errors.New("wsl: localhost forwarding is unavailable")
@@ -42,6 +46,11 @@ type Runner interface {
 // ExecRunner runs the real wsl.exe.
 type ExecRunner struct{}
 
+// defaultExecTimeout bounds a wsl.exe call whose caller did not set a
+// deadline. WSL can wedge (service restart, distro boot, a stuck 9P mount) and
+// a hung wsl.exe would otherwise pin the calling goroutine forever.
+const defaultExecTimeout = 3 * time.Minute
+
 // Run invokes wsl.exe with args and returns stdout.
 func (ExecRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	if len(args) == 0 {
@@ -50,6 +59,11 @@ func (ExecRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultExecTimeout)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, "wsl.exe", args...)
 	cmd.WaitDelay = 3 * time.Second
 	// The daemon and CLI are GUI-less or background parents; without
@@ -57,6 +71,9 @@ func (ExecRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	platform.ConfigureProcess(cmd)
 	out, err := cmd.Output()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return out, fmt.Errorf("wsl: %w", ctxErr)
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return out, fmt.Errorf("wsl: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
@@ -207,6 +224,17 @@ func CopySource(ctx context.Context, src, dst, mode string, removeSource bool) (
 	default:
 		return CopyResult{}, fmt.Errorf("wsl: unknown copy mode %q", mode)
 	}
+	src, err := canonicalCopyPath(src)
+	if err != nil {
+		return CopyResult{}, err
+	}
+	dst, err = canonicalCopyPath(dst)
+	if err != nil {
+		return CopyResult{}, err
+	}
+	if err := rejectOverlappingCopy(src, dst); err != nil {
+		return CopyResult{}, err
+	}
 	info, err := os.Lstat(src)
 	if err != nil {
 		return CopyResult{}, fmt.Errorf("wsl: source %s: %w", src, err)
@@ -224,6 +252,22 @@ func CopySource(ctx context.Context, src, dst, mode string, removeSource bool) (
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return CopyResult{}, fmt.Errorf("wsl: create destination parent: %w", err)
 	}
+	// A destination lock makes the check-then-publish sequence exclusive. Two
+	// concurrent copies must never both pass the empty check, because the
+	// second publish would delete the first copy.
+	lockPath := filepath.Join(parent, "."+filepath.Base(dst)+".copy.lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return CopyResult{}, fmt.Errorf("%w: %s", ErrDestinationInUse, dst)
+		}
+		return CopyResult{}, fmt.Errorf("wsl: lock destination %s: %w", dst, err)
+	}
+	defer func() {
+		_ = lockFile.Close()
+		_ = os.Remove(lockPath)
+	}()
+
 	temp, err := os.MkdirTemp(parent, filepath.Base(dst)+".copy-")
 	if err != nil {
 		return CopyResult{}, fmt.Errorf("wsl: create copy staging: %w", err)
@@ -237,6 +281,7 @@ func CopySource(ctx context.Context, src, dst, mode string, removeSource bool) (
 
 	hash := sha256.New()
 	var result CopyResult
+	dirModes := make(map[string]os.FileMode)
 	err = filepath.WalkDir(src, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -264,9 +309,12 @@ func CopySource(ctx context.Context, src, dst, mode string, removeSource bool) (
 			return fmt.Errorf("%w: symlink %q", ErrInvalidPath, rel)
 		}
 		if info.IsDir() {
-			if err := os.MkdirAll(target, info.Mode().Perm()); err != nil {
+			// Keep the staging directory writable while children are copied;
+			// the source mode is applied after the walk.
+			if err := os.MkdirAll(target, info.Mode().Perm()|0o700); err != nil {
 				return err
 			}
+			dirModes[target] = info.Mode().Perm()
 			return nil
 		}
 		if !info.Mode().IsRegular() {
@@ -277,28 +325,27 @@ func CopySource(ctx context.Context, src, dst, mode string, removeSource bool) (
 	if err != nil {
 		return CopyResult{}, err
 	}
-	// Verify the staged tree before publishing it.
-	verify := 0
-	verifyBytes := int64(0)
-	if err := filepath.WalkDir(temp, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	for target, mode := range dirModes {
+		if err := os.Chmod(target, mode); err != nil {
+			return CopyResult{}, fmt.Errorf("wsl: chmod staged directory %s: %w", target, err)
 		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		verify++
-		verifyBytes += info.Size()
-		return nil
-	}); err != nil {
+	}
+	// Verify the staged tree, including a fresh hash of every file. A count and
+	// size check alone accepts a same-size corrupted copy.
+	verify, err := verifyCopyTree(ctx, temp)
+	if err != nil {
 		return CopyResult{}, fmt.Errorf("wsl: verify copy: %w", err)
 	}
-	if verify != result.Files || verifyBytes != result.Bytes {
-		return CopyResult{}, fmt.Errorf("wsl: copy verification mismatch: files %d/%d bytes %d/%d", verify, result.Files, verifyBytes, result.Bytes)
+	if verify.Files != result.Files || verify.Bytes != result.Bytes {
+		return CopyResult{}, fmt.Errorf("wsl: copy verification mismatch: files %d/%d bytes %d/%d", verify.Files, result.Files, verify.Bytes, result.Bytes)
+	}
+	if !strings.EqualFold(verify.SHA256, hex.EncodeToString(hash.Sum(nil))) {
+		return CopyResult{}, errors.New("wsl: copy verification mismatch: staged content hash differs from the copied manifest")
+	}
+	// Re-check under the lock: a destination populated after the first check
+	// must not be deleted.
+	if err := ensureEmptyDestination(dst); err != nil {
+		return CopyResult{}, err
 	}
 	if err := os.RemoveAll(dst); err != nil {
 		return CopyResult{}, fmt.Errorf("wsl: clear destination: %w", err)
@@ -314,6 +361,103 @@ func CopySource(ctx context.Context, src, dst, mode string, removeSource bool) (
 		}
 	}
 	return result, nil
+}
+
+func canonicalCopyPath(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%w: path is empty", ErrInvalidPath)
+	}
+	abs, err := filepath.Abs(value)
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve %q: %v", ErrInvalidPath, value, err)
+	}
+	return filepath.Clean(abs), nil
+}
+
+// rejectOverlappingCopy refuses copies where one tree contains the other. The
+// staging directory lives beside the destination, so a destination inside the
+// source would also make the walk copy its own staging output.
+func rejectOverlappingCopy(src, dst string) error {
+	if samePath(src, dst) || pathContains(src, dst) || pathContains(dst, src) {
+		return fmt.Errorf("%w: %s and %s", ErrOverlappingCopy, src, dst)
+	}
+	return nil
+}
+
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	// Windows paths are case-insensitive.
+	return strings.EqualFold(a, b)
+}
+
+func pathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+// verifyCopyTree re-hashes the staged tree using the same manifest encoding as
+// copyFile, so the published copy is exactly the bytes that were hashed.
+func verifyCopyTree(ctx context.Context, root string) (CopyResult, error) {
+	hash := sha256.New()
+	var result CopyResult
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return fmt.Errorf("%w: unexpected special file %q", ErrInvalidPath, path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		fileHash, written, err := hashFile(path)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(hash, "%s\x00%d\x00%s\x00", filepath.ToSlash(rel), written, fileHash)
+		if written != info.Size() {
+			return fmt.Errorf("wsl: verify %q: read %d bytes, want %d", rel, written, info.Size())
+		}
+		result.Files++
+		result.Bytes += written
+		return nil
+	})
+	if err != nil {
+		return CopyResult{}, err
+	}
+	result.SHA256 = hex.EncodeToString(hash.Sum(nil))
+	return result, nil
+}
+
+func hashFile(path string) (string, int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer func() { _ = file.Close() }()
+	hash := sha256.New()
+	written, err := io.Copy(hash, file)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), written, nil
 }
 
 func ensureEmptyDestination(dst string) error {

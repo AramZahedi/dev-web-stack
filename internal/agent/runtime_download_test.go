@@ -16,18 +16,25 @@ import (
 
 func testRuntimeArchive(t *testing.T) []byte {
 	t.Helper()
+	return testRuntimeArchiveWith(t, func(tw *tar.Writer) {
+		payload := []byte("#!/bin/sh\necho php\n")
+		if err := tw.WriteHeader(&tar.Header{
+			Name: "php-8.4.0/bin/php", Mode: 0o755, Size: int64(len(payload)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func testRuntimeArchiveWith(t *testing.T, write func(*tar.Writer)) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	payload := []byte("#!/bin/sh\necho php\n")
-	if err := tw.WriteHeader(&tar.Header{
-		Name: "php-8.4.0/bin/php", Mode: 0o755, Size: int64(len(payload)),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tw.Write(payload); err != nil {
-		t.Fatal(err)
-	}
+	write(tw)
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -90,5 +97,95 @@ func TestDownloadAndExtractArchiveFailsClosed(t *testing.T) {
 				t.Fatalf("failed download left %d entries in destination", len(entries))
 			}
 		})
+	}
+}
+
+func TestDownloadAndExtractArchiveRejectsUnsafeMembers(t *testing.T) {
+	cases := []struct {
+		name  string
+		write func(*tar.Writer)
+	}{
+		{
+			name: "parent traversal",
+			write: func(tw *tar.Writer) {
+				payload := []byte("x")
+				_ = tw.WriteHeader(&tar.Header{Name: "../../evil", Mode: 0o644, Size: int64(len(payload)), Typeflag: tar.TypeReg})
+				_, _ = tw.Write(payload)
+			},
+		},
+		{
+			name: "absolute path",
+			write: func(tw *tar.Writer) {
+				payload := []byte("x")
+				_ = tw.WriteHeader(&tar.Header{Name: "/etc/passwd", Mode: 0o644, Size: int64(len(payload)), Typeflag: tar.TypeReg})
+				_, _ = tw.Write(payload)
+			},
+		},
+		{
+			name: "escaping symlink",
+			write: func(tw *tar.Writer) {
+				_ = tw.WriteHeader(&tar.Header{Name: "php-8.4.0/bin/php", Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: "../../../etc/passwd"})
+			},
+		},
+		{
+			name: "absolute symlink",
+			write: func(tw *tar.Writer) {
+				_ = tw.WriteHeader(&tar.Header{Name: "php-8.4.0/bin/php", Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: "/bin/sh"})
+			},
+		},
+		{
+			name: "hardlink",
+			write: func(tw *tar.Writer) {
+				_ = tw.WriteHeader(&tar.Header{Name: "php-8.4.0/bin/php", Typeflag: tar.TypeLink, Linkname: "php-8.4.0/bin/sh"})
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			archive := testRuntimeArchiveWith(t, tc.write)
+			sum := sha256.Sum256(archive)
+			digest := hex.EncodeToString(sum[:])
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(archive)
+			}))
+			defer server.Close()
+
+			dest := filepath.Join(t.TempDir(), "runtime")
+			if err := os.MkdirAll(dest, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := downloadAndExtractArchive(context.Background(), server.URL+"/php.tar.gz", digest, dest); err == nil {
+				t.Fatal("downloadAndExtractArchive accepted an unsafe archive")
+			}
+			entries, err := os.ReadDir(dest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("unsafe archive left %d entries in the destination", len(entries))
+			}
+		})
+	}
+}
+
+func TestValidateRuntimeArchiveAllowsContainedRelativeSymlink(t *testing.T) {
+	archive := testRuntimeArchiveWith(t, func(tw *tar.Writer) {
+		payload := []byte("#!/bin/sh\n")
+		if err := tw.WriteHeader(&tar.Header{Name: "node-v24/bin/node", Mode: 0o755, Size: int64(len(payload)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: "node-v24/bin/npm", Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: "../lib/node_modules/npm/bin/npm-cli.js"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	path := filepath.Join(t.TempDir(), "archive.tar.gz")
+	if err := os.WriteFile(path, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRuntimeArchive(path); err != nil {
+		t.Fatalf("validateRuntimeArchive rejected a contained symlink: %v", err)
 	}
 }

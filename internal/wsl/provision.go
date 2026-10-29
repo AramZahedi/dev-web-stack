@@ -146,11 +146,14 @@ func (p *Provisioner) Provision(ctx context.Context) (ManagedDistro, error) {
 	if p.Config.ForwardingPort < 0 || p.Config.ForwardingPort > 65535 {
 		return ManagedDistro{}, fmt.Errorf("wsl: invalid localhost-forwarding port %d", p.Config.ForwardingPort)
 	}
-	if err := p.verifyRootFS(); err != nil {
-		return ManagedDistro{}, err
-	}
+	// The import parent must exist before the disk-space check: on a fresh
+	// install GetDiskFreeSpaceEx fails with ERROR_PATH_NOT_FOUND for a missing
+	// directory, which used to abort provisioning before wsl --import.
 	if err := os.MkdirAll(filepath.Dir(p.Config.InstallDir), 0o755); err != nil {
 		return ManagedDistro{}, fmt.Errorf("wsl: create import parent: %w", err)
+	}
+	if err := p.verifyRootFS(); err != nil {
+		return ManagedDistro{}, err
 	}
 
 	list, err := p.Runner.Run(ctx, "--list", "--quiet")
@@ -346,6 +349,9 @@ func (p *Provisioner) validate() error {
 	}
 	if p.Config.InstallDir == "" {
 		p.Config.InstallDir = DefaultInstallDir
+	}
+	if !filepath.IsAbs(p.Config.InstallDir) {
+		return errors.New("wsl: install directory must be an absolute path")
 	}
 	if p.Config.RootFSPath == "" || !filepath.IsAbs(p.Config.RootFSPath) {
 		return errors.New("wsl: rootfs path must be absolute")

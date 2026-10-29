@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -26,6 +27,10 @@ const (
 	SnapshotSizeCap int64 = 2 << 30
 
 	buildLogReadLimit = 1 << 20
+	// buildLogWriteLimit bounds the on-disk build log. A build that prints
+	// without limit (a watch loop, a runaway compiler, a test runner) must not
+	// fill the disk; further output is discarded after the marker is written.
+	buildLogWriteLimit = 16 << 20
 )
 
 // ErrRuntimeMissing reports that a site's selected Node build is not installed.
@@ -79,7 +84,8 @@ type Logs struct {
 
 // Service runs static builds as the installing user.
 type Service struct {
-	deps Deps
+	deps  Deps
+	locks sync.Map // site ID -> *sync.Mutex
 }
 
 // NewService returns a build service.
@@ -96,9 +102,26 @@ func NewService(deps Deps) *Service {
 	return &Service{deps: deps}
 }
 
+// lockSite serialises builds for one site. Two concurrent builds share the same
+// project and output directory, so their snapshot/restore pairs would otherwise
+// overwrite each other and could delete a successful output.
+func (s *Service) lockSite(site model.Site) func() {
+	key := strings.TrimSpace(site.ID)
+	if key == "" {
+		key = strings.TrimSpace(site.Name)
+	}
+	value, _ := s.locks.LoadOrStore(key, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // Build runs site.Build.Command with the selected Node runtime in the project
 // directory. It snapshots and restores the previous output when practical.
 func (s *Service) Build(ctx context.Context, site model.Site) (Result, error) {
+	unlock := s.lockSite(site)
+	defer unlock()
+
 	result := Result{Site: site.Name}
 	if s.deps.Store == nil {
 		return result, errors.New("build: no store configured")
@@ -187,7 +210,8 @@ func (s *Service) Build(ctx context.Context, site model.Site) (Result, error) {
 
 	env := buildEnvironment(nodeBin, site, s.deps.Paths.Home)
 	started := s.deps.Now()
-	runErr := s.deps.Runner.Run(ctx, project, env, "/bin/sh", []string{"-c", result.Command}, logFile)
+	writer := newCappedLogWriter(logFile, buildLogWriteLimit)
+	runErr := s.deps.Runner.Run(ctx, project, env, "/bin/sh", []string{"-c", result.Command}, writer)
 	closeErr := logFile.Close()
 	result.DurationMS = s.deps.Now().Sub(started).Milliseconds()
 
@@ -549,7 +573,51 @@ func (execRunner) Run(ctx context.Context, dir string, env []string, name string
 	command.Env = env
 	command.Stdout = output
 	command.Stderr = output
+	configureBuildCommand(command)
 	return command.Run()
+}
+
+// cappedLogWriter limits how many bytes reach the build log. It reports every
+// write as successful so the child is never blocked or broken by truncation.
+type cappedLogWriter struct {
+	file      *os.File
+	remaining int64
+	truncated bool
+}
+
+func newCappedLogWriter(file *os.File, limit int64) *cappedLogWriter {
+	if limit <= 0 {
+		limit = buildLogWriteLimit
+	}
+	return &cappedLogWriter{file: file, remaining: limit}
+}
+
+func (w *cappedLogWriter) Write(p []byte) (int, error) {
+	if w.remaining <= 0 {
+		w.markTruncated()
+		return len(p), nil
+	}
+	if int64(len(p)) > w.remaining {
+		if _, err := w.file.Write(p[:w.remaining]); err != nil {
+			return 0, err
+		}
+		w.remaining = 0
+		w.markTruncated()
+		return len(p), nil
+	}
+	if _, err := w.file.Write(p); err != nil {
+		return 0, err
+	}
+	w.remaining -= int64(len(p))
+	return len(p), nil
+}
+
+func (w *cappedLogWriter) markTruncated() {
+	if w.truncated {
+		return
+	}
+	w.truncated = true
+	_, _ = w.file.WriteString("\n[devstack: build output truncated]\n")
 }
 
 type outputSnapshot struct {

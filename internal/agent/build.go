@@ -15,6 +15,73 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
 
+const (
+	// maxCapturedOutput bounds each captured stream. A build or exec that
+	// prints without limit must not be able to exhaust the root agent's memory;
+	// the response marks the stream as truncated instead.
+	maxCapturedOutput = 8 << 20
+	// maxCommandTimeout bounds a client-supplied timeout. The API default is
+	// far lower; this only prevents an effectively unbounded process lifetime.
+	maxCommandTimeout = time.Hour
+)
+
+// cappedBuffer keeps at most limit bytes and records whether more arrived.
+// Write always reports the full length so the child never blocks or fails on a
+// truncation.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func newCappedBuffer(limit int) *cappedBuffer {
+	if limit <= 0 {
+		limit = maxCapturedOutput
+	}
+	return &cappedBuffer{limit: limit}
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len() >= b.limit {
+		b.truncated = true
+		return len(p), nil
+	}
+	remaining := b.limit - b.buf.Len()
+	if len(p) > remaining {
+		_, _ = b.buf.Write(p[:remaining])
+		b.truncated = true
+		return len(p), nil
+	}
+	_, _ = b.buf.Write(p)
+	return len(p), nil
+}
+
+func (b *cappedBuffer) String() string {
+	if b == nil {
+		return ""
+	}
+	if b.truncated {
+		return b.buf.String() + "\n[devstack: output truncated]\n"
+	}
+	return b.buf.String()
+}
+
+func (b *cappedBuffer) WriteString(value string) {
+	_, _ = b.Write([]byte(value))
+}
+
+// commandTimeout resolves a request timeout against the hard ceiling.
+func commandTimeout(requestedMS int, fallback time.Duration) time.Duration {
+	timeout := fallback
+	if requestedMS > 0 {
+		timeout = time.Duration(requestedMS) * time.Millisecond
+	}
+	if timeout > maxCommandTimeout {
+		timeout = maxCommandTimeout
+	}
+	return timeout
+}
+
 // DetectNodePackageManager inspects lockfiles to identify the project package manager.
 func DetectNodePackageManager(backendPath string) string {
 	for _, entry := range []struct {
@@ -75,10 +142,7 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 		r.logs.append(id, warning)
 	}
 
-	timeout := 5 * time.Minute
-	if req.TimeoutMS > 0 {
-		timeout = time.Duration(req.TimeoutMS) * time.Millisecond
-	}
+	timeout := commandTimeout(req.TimeoutMS, 5*time.Minute)
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -89,6 +153,9 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 		cmd = exec.CommandContext(cmdCtx, "/bin/sh", "-c", commandStr)
 	}
 	cmd.Dir = site.spec.BackendPath
+	// Kill the whole process tree on timeout: npm/pnpm/vite spawn children that
+	// would otherwise keep running after the shell is killed.
+	configureBuildCmd(cmd)
 
 	// Build environment with Node runtime prepended if available
 	envMap := make(map[string]string)
@@ -98,7 +165,10 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 	for k, v := range req.Env {
 		envMap[k] = v
 	}
-	caEnv, _ := r.Environment(envMap)
+	caEnv, err := r.Environment(envMap)
+	if err != nil {
+		return agentproto.BuildResponse{}, err
+	}
 
 	if site.spec.RuntimeVersion != "" {
 		nodeBin := filepath.Join(r.root, "runtimes", "node@"+site.spec.RuntimeVersion, "bin")
@@ -117,9 +187,10 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 	}
 	cmd.Env = envList
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newCappedBuffer(maxCapturedOutput)
+	stderr := newCappedBuffer(maxCapturedOutput)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	startErr := cmd.Run()
 	exitCode := 0
@@ -155,15 +226,13 @@ func (r *Runtime) ExecSite(ctx context.Context, id string, req agentproto.SiteEx
 		return agentproto.SiteExecResponse{}, err
 	}
 
-	timeout := 2 * time.Minute
-	if req.TimeoutMS > 0 {
-		timeout = time.Duration(req.TimeoutMS) * time.Millisecond
-	}
+	timeout := commandTimeout(req.TimeoutMS, 2*time.Minute)
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, req.Argv[0], req.Argv[1:]...)
 	cmd.Dir = site.spec.BackendPath
+	configureBuildCmd(cmd)
 
 	envMap := make(map[string]string)
 	for k, v := range site.spec.Env {
@@ -172,16 +241,20 @@ func (r *Runtime) ExecSite(ctx context.Context, id string, req agentproto.SiteEx
 	for k, v := range req.Env {
 		envMap[k] = v
 	}
-	caEnv, _ := r.Environment(envMap)
+	caEnv, err := r.Environment(envMap)
+	if err != nil {
+		return agentproto.SiteExecResponse{}, err
+	}
 	envList := os.Environ()
 	for k, v := range caEnv {
 		envList = append(envList, k+"="+v)
 	}
 	cmd.Env = envList
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newCappedBuffer(maxCapturedOutput)
+	stderr := newCappedBuffer(maxCapturedOutput)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	startErr := cmd.Run()
 	exitCode := 0

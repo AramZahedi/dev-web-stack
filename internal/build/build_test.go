@@ -88,6 +88,36 @@ func buildSite(project string, output string) model.Site {
 	}
 }
 
+func TestCappedLogWriterBoundsTheBuildLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "build.log")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := newCappedLogWriter(file, 16)
+	for _, chunk := range []string{"0123456789", "abcdefghij", "more"} {
+		if n, err := writer.Write([]byte(chunk)); n != len(chunk) || err != nil {
+			t.Fatalf("Write(%q) = %d, %v", chunk, n, err)
+		}
+	}
+	if !writer.truncated {
+		t.Fatal("writer did not record truncation")
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > 16+len("\n[devstack: build output truncated]\n") {
+		t.Fatalf("log grew beyond the cap: %d bytes", len(data))
+	}
+	if !strings.Contains(string(data), "truncated") {
+		t.Fatalf("truncation marker missing: %q", data)
+	}
+}
+
 func TestBuildSuccessStreamsLogAndValidatesOutput(t *testing.T) {
 	svc, _, project, _ := newBuildFixture(t)
 	script := "#!/bin/sh\n" +
