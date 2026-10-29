@@ -94,6 +94,7 @@ func TestParseIndexRejectsMalformedIndex(t *testing.T) {
 	}{
 		{name: "malformed json", index: `[{"version":`, wantErr: "decode"},
 		{name: "not an array", index: `{"version":"v22.11.0"}`, wantErr: "decode"},
+		{name: "null document", index: `null`, wantErr: "array"},
 		{name: "missing v prefix", index: `[{"version":"22.11.0","files":["linux-x64"]}]`, wantErr: "version"},
 		{name: "malformed version", index: `[{"version":"v22.11","files":["linux-x64"]}]`, wantErr: "version"},
 		{name: "leading zero", index: `[{"version":"v022.11.0","files":["linux-x64"]}]`, wantErr: "version"},

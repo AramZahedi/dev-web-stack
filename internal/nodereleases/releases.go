@@ -82,12 +82,16 @@ func (l *indexLTS) UnmarshalJSON(data []byte) error {
 
 // ParseIndex decodes the official Node.js release index and returns the stable
 // Linux x64 releases in index order. Prerelease, build-metadata, and
-// non-linux-x64 entries are skipped. Malformed JSON, invalid versions, invalid
-// lts values, and duplicate eligible versions are rejected.
+// non-linux-x64 entries are skipped. Malformed JSON, non-array documents,
+// invalid versions, invalid lts values, and duplicate eligible versions are
+// rejected.
 func ParseIndex(data []byte) ([]Release, error) {
 	var entries []indexEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, fmt.Errorf("nodereleases: decode index: %w", err)
+	}
+	if entries == nil {
+		return nil, fmt.Errorf("nodereleases: decode index: expected a JSON array")
 	}
 
 	releases := make([]Release, 0, len(entries))
