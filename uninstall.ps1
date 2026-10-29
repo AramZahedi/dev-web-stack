@@ -30,7 +30,7 @@ param(
     [switch]$PurgeDistro,
     [switch]$PurgeData,
     [switch]$Force,
-    [string]$InstallDir = "C:\devstack",
+    [string]$InstallDir = "",
     [string]$TestSandbox = "",
     [switch]$DryRun,
     [switch]$Help
@@ -68,7 +68,7 @@ if ($Help) {
 }
 
 # Determine effective target directory
-$targetDir = if (-not [string]::IsNullOrEmpty($TestSandbox)) { $TestSandbox } else { $InstallDir }
+if ([string]::IsNullOrEmpty($InstallDir)) { $userProf = if ($env:USERPROFILE) { $env:USERPROFILE } else { "C:\Users\$env:USERNAME" }; $InstallDir = Join-Path $userProf ".devstack" }; $targetDir = if (-not [string]::IsNullOrEmpty($TestSandbox)) { $TestSandbox } else { $InstallDir }
 $isSandbox = -not [string]::IsNullOrEmpty($TestSandbox)
 $binDir = Join-Path $targetDir "bin"
 $systemDir = Join-Path $targetDir "system"

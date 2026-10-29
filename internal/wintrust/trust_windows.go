@@ -13,15 +13,19 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 	"golang.org/x/sys/windows"
 )
 
+var (
+	DefaultSystemDir       = filepath.Join(platform.DefaultRoot("windows"), "system")
+	DefaultCADir           = filepath.Join(platform.DefaultRoot("windows"), "system", "pki")
+	DefaultRootCertificate = filepath.Join(platform.DefaultRoot("windows"), "system", "pki", "root.crt")
+)
+
 const (
-	DefaultSystemDir       = `C:\devstack\system`
-	DefaultCADir           = `C:\devstack\system\pki`
-	DefaultRootCertificate = `C:\devstack\system\pki\root.crt`
-	firefoxPolicyKey       = `HKLM\Software\Policies\Mozilla\Firefox\Certificates`
+	firefoxPolicyKey = `HKLM\Software\Policies\Mozilla\Firefox\Certificates`
 )
 
 type CommandRunner interface {

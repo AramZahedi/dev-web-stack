@@ -71,20 +71,20 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.PipeName == "" {
 		cfg.PipeName = DefaultWindowsPipe
 	}
-	if cfg.SystemDir != "" && !strings.EqualFold(filepath.Clean(cfg.SystemDir), filepath.Clean(DefaultWindowsSystemDir)) {
-		return nil, fmt.Errorf("helper: system directory must be %s", DefaultWindowsSystemDir)
+	if cfg.SystemDir == "" {
+		cfg.SystemDir = DefaultWindowsSystemDir
 	}
-	if cfg.CADir != "" && !strings.EqualFold(filepath.Clean(cfg.CADir), filepath.Clean(DefaultWindowsCADir)) {
-		return nil, fmt.Errorf("helper: CA directory must be %s", DefaultWindowsCADir)
+	if cfg.CADir == "" {
+		cfg.CADir = filepath.Join(cfg.SystemDir, "pki")
 	}
 	if cfg.HostsPath == "" {
 		cfg.HostsPath = DefaultWindowsHostsPath
 	}
 	if cfg.RootCertPath == "" {
-		cfg.RootCertPath = DefaultWindowsRootCert
+		cfg.RootCertPath = filepath.Join(cfg.CADir, "root.crt")
 	}
 	if cfg.ConfigPath == "" {
-		cfg.ConfigPath = DefaultWindowsConfigPath
+		cfg.ConfigPath = filepath.Join(cfg.SystemDir, "helper.yaml")
 	}
 	if cfg.ProxyHTTPPort == 0 {
 		cfg.ProxyHTTPPort = DefaultWindowsProxyHTTP

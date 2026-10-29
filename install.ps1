@@ -26,7 +26,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$InstallDir = "C:\devstack",
+    [string]$InstallDir = "",
     [string]$RootFSPath = "",
     [switch]$AllowReboot,
     [switch]$SkipWSL,
@@ -96,7 +96,7 @@ if (-not $psExe -or -not (Test-Path $psExe)) {
 
 # Determine effective target directory
 $repoRoot = $PSScriptRoot
-$targetDir = if (-not [string]::IsNullOrEmpty($TestSandbox)) { $TestSandbox } else { $InstallDir }
+if ([string]::IsNullOrEmpty($InstallDir)) { $userProf = if ($env:USERPROFILE) { $env:USERPROFILE } else { "C:\Users\$env:USERNAME" }; $InstallDir = Join-Path $userProf ".devstack" }; $targetDir = if (-not [string]::IsNullOrEmpty($TestSandbox)) { $TestSandbox } else { $InstallDir }
 $isSandbox = -not [string]::IsNullOrEmpty($TestSandbox)
 
 $script:LoggedTestOverrides = @{}

@@ -4,19 +4,24 @@ package helper
 
 import (
 	"log/slog"
+	"path/filepath"
 
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/winfirewall"
 	"github.com/AramZahedi/dev-web-stack/internal/winhosts"
 	"github.com/AramZahedi/dev-web-stack/internal/wintrust"
 )
 
+var (
+	DefaultWindowsRoot       = platform.DefaultRoot("windows")
+	DefaultWindowsSystemDir  = filepath.Join(platform.DefaultRoot("windows"), "system")
+	DefaultWindowsCADir      = filepath.Join(platform.DefaultRoot("windows"), "system", "pki")
+	DefaultWindowsRootCert   = filepath.Join(platform.DefaultRoot("windows"), "system", "pki", "root.crt")
+	DefaultWindowsConfigPath = filepath.Join(platform.DefaultRoot("windows"), "system", "helper.yaml")
+)
+
 const (
 	DefaultWindowsPipe       = `\\.\pipe\devstack-helper`
-	DefaultWindowsRoot       = `C:\devstack`
-	DefaultWindowsSystemDir  = `C:\devstack\system`
-	DefaultWindowsCADir      = `C:\devstack\system\pki`
-	DefaultWindowsRootCert   = `C:\devstack\system\pki\root.crt`
-	DefaultWindowsConfigPath = `C:\devstack\system\helper.yaml`
 	DefaultWindowsHostsPath  = `C:\Windows\System32\drivers\etc\hosts`
 	DefaultWindowsHTTPPort   = 80
 	DefaultWindowsHTTPSPort  = 443

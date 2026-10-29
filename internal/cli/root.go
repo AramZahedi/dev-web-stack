@@ -28,6 +28,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -362,11 +363,7 @@ func resolveHome(home string) (string, error) {
 		home = os.Getenv("DEVSTACK_HOME")
 	}
 	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return "", wrapError(fmt.Errorf("resolve user home: %w", err), "HOME_UNRESOLVED", "Set --home or DEVSTACK_HOME.")
-		}
-		home = filepath.Join(userHome, ".devstack")
+		home = platform.DefaultRoot(goruntime.GOOS)
 	}
 	abs, err := filepath.Abs(home)
 	if err != nil {

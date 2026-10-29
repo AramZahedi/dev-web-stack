@@ -2,7 +2,7 @@
 # Run from a normal PowerShell prompt; it never elevates.
 param(
     [string]$HomeDir = "$env:USERPROFILE\.devstack",
-    [string]$Binary = "C:\devstack\bin\devstack.exe",
+    [string]$Binary = "$env:USERPROFILE\.devstack\bin\devstack.exe",
     [string]$UserId = "$env:USERDOMAIN\$env:USERNAME"
 )
 

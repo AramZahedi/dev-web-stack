@@ -4,26 +4,33 @@ package platform
 
 import (
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
 const (
 	// LinuxRoot is the application root for new Linux and WSL installs.
 	LinuxRoot = "/data/devstack"
-	// WindowsRoot is the application root on Windows.
-	WindowsRoot = `C:\devstack`
 )
 
 // IsWindows reports whether goos is Windows.
 func IsWindows(goos string) bool { return goos == "windows" }
 
-// DefaultRoot returns the platform application root. Existing Linux installs
-// at ~/.devstack are detected by config.resolveHome and preserved; this value
-// is only the default for a new install.
+// DefaultRoot returns the platform application root. On Windows, it defaults
+// to .devstack in the user profile. Existing Linux installs at ~/.devstack are
+// detected by config.resolveHome and preserved; LinuxRoot is the default for a
+// new install.
 func DefaultRoot(goos string) string {
 	if IsWindows(goos) {
-		return WindowsRoot
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return filepath.Join(home, ".devstack")
+		}
+		if profile := os.Getenv("USERPROFILE"); profile != "" {
+			return filepath.Join(profile, ".devstack")
+		}
+		return `C:\Users\Default\.devstack`
 	}
 	return LinuxRoot
 }

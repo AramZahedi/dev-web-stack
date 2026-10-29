@@ -260,7 +260,7 @@ Step "Testing devstack-daemon-task.ps1 references C:\devstack\bin\devstack.exe"
 Require (Test-Path $daemonTaskScript) "devstack-daemon-task.ps1 exists"
 if (Test-Path $daemonTaskScript) {
     $taskContent = Get-Content -Raw -Path $daemonTaskScript
-    Require ($taskContent -match 'C:\\devstack\\bin\\devstack\.exe') "devstack-daemon-task.ps1 references C:\devstack\bin\devstack.exe"
+    Require ($taskContent -match 'devstack\.exe') "devstack-daemon-task.ps1 references devstack.exe"
 }
 
 # -------------------------------------------------------------------------

@@ -151,7 +151,7 @@ func Run(ctx context.Context, opts Options) error {
 	if strings.TrimSpace(helperSocket) == "" {
 		helperSocket = DefaultHelperSocket
 	}
-	adapter := &helperAdapter{socketPath: helperSocket}
+	adapter := &helperAdapter{socketPath: helperSocket, home: cfg.Home}
 	wslBackend := wslbackend.New(nil)
 	agentPorts := ports.NewAgentProvider(nil)
 
@@ -561,7 +561,7 @@ func loadWindowsConfig(home string) (config.Config, error) {
 		}
 	}
 	if home == "" {
-		home = platform.WindowsRoot
+		home = platform.DefaultRoot("windows")
 	}
 	abs, err := filepath.Abs(home)
 	if err != nil {
@@ -744,6 +744,7 @@ type helperAdapter struct {
 	mu         sync.RWMutex
 	socketPath string
 	client     *helperclient.Client
+	home       string
 }
 
 func (h *helperAdapter) set(c *helperclient.Client) {
@@ -912,11 +913,18 @@ func (h *helperAdapter) RemoveVhosts(ctx context.Context) error {
 	return nil
 }
 
-func (h *helperAdapter) ToolStatus(ctx context.Context) (helperproto.ToolStatusResponse, error) {
-	home := os.Getenv("DEVSTACK_HOME")
-	if home == "" {
-		home = `C:\devstack`
+func (h *helperAdapter) devstackHome() string {
+	if strings.TrimSpace(h.home) != "" {
+		return h.home
 	}
+	if home := os.Getenv("DEVSTACK_HOME"); strings.TrimSpace(home) != "" {
+		return home
+	}
+	return platform.DefaultRoot("windows")
+}
+
+func (h *helperAdapter) ToolStatus(ctx context.Context) (helperproto.ToolStatusResponse, error) {
+	home := h.devstackHome()
 	binDir := filepath.Join(home, "bin")
 	var tools []helperproto.ToolStatus
 	for _, id := range []string{helperproto.ToolPHPDefault, helperproto.ToolComposer} {
@@ -927,6 +935,8 @@ func (h *helperAdapter) ToolStatus(ctx context.Context) (helperproto.ToolStatusR
 		}
 		if _, err := os.Stat(wrapper); err == nil {
 			status.Target = wrapper
+			status.Installed = true
+			status.Managed = true
 		}
 		tools = append(tools, status)
 	}
@@ -934,28 +944,26 @@ func (h *helperAdapter) ToolStatus(ctx context.Context) (helperproto.ToolStatusR
 }
 
 func (h *helperAdapter) ToolInstall(ctx context.Context, id string, force bool) (helperproto.ToolStatus, error) {
-	home := os.Getenv("DEVSTACK_HOME")
-	if home == "" {
-		home = `C:\devstack`
-	}
+	home := h.devstackHome()
 	_ = tooling.EnsureGlobalWindowsToolShims(home, "")
 	wrapper := filepath.Join(home, "bin", id+".cmd")
 	return helperproto.ToolStatus{
 		ID:          id,
+		Installed:   true,
+		Managed:     true,
 		WrapperPath: wrapper,
 		Target:      wrapper,
 	}, nil
 }
 
 func (h *helperAdapter) ToolRemove(ctx context.Context, id string) (helperproto.ToolStatus, error) {
-	home := os.Getenv("DEVSTACK_HOME")
-	if home == "" {
-		home = `C:\devstack`
-	}
+	home := h.devstackHome()
 	wrapper := filepath.Join(home, "bin", id+".cmd")
 	_ = os.Remove(wrapper)
 	return helperproto.ToolStatus{
 		ID:          id,
+		Installed:   false,
+		Managed:     false,
 		WrapperPath: wrapper,
 	}, nil
 }
