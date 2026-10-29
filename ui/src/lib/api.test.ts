@@ -14,6 +14,7 @@ import {
   getPHPDefaults,
   getPHPInfo,
   getService,
+  getServiceConfigContent,
   getSettings,
   getVhostStatus,
   installService,
@@ -758,6 +759,29 @@ describe('filesystem browser session', () => {
 
     await expect(browseFs('/data/devstack/projects', 'wsl')).resolves.toMatchObject({ path: '/data/devstack/projects' });
     expect((fetchMock.mock.calls[1] as [string])[0]).toContain('mode=wsl');
+  });
+});
+
+describe('service config content session', () => {
+  beforeEach(() => resetApiClientForTests());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetApiClientForTests();
+  });
+
+  it('establishes a session before reading session-gated config content', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'token-1' }))
+      .mockResolvedValueOnce(jsonResponse({ path: 'phpmyadmin/config.inc.php', content: 'x' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getServiceConfigContent('phpmyadmin', 'phpmyadmin/config.inc.php')).resolves.toMatchObject({
+      path: 'phpmyadmin/config.inc.php',
+      content: 'x',
+    });
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/v1/session');
+    expect((fetchMock.mock.calls[1] as [string])[0]).toContain('/api/v1/services/phpmyadmin/config/content');
   });
 });
 

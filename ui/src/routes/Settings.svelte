@@ -44,6 +44,7 @@
 
   let settings = $state<Settings | null>(null);
   let trust = $state<TrustTarget[]>([]);
+  let trustError = $state<{ code: string; message: string } | null>(null);
   let loading = $state(true);
   let error = $state<{ code: string; message: string } | null>(null);
   let vhostStatus = $state<VhostStatus | null>(null);
@@ -169,6 +170,7 @@
   let portsSaved = $state(false);
 
   const restartRequired = $derived(Boolean(settings?.restart_required));
+  const publicPortsFixed = $derived(Boolean(settings?.public_ports_fixed));
   const portsDirty = $derived(
     Boolean(settings) &&
       (portDrafts.http_port !== settings?.http_port ||
@@ -239,18 +241,28 @@
     if (initial) loading = true;
     error = null;
     try {
-      const [config, targets] = await Promise.all([api.getSettings(), api.getTrust()]);
+      const config = await api.getSettings();
       settings = config;
-      trust = targets;
       if (initial || !portsReady) {
         setPortDrafts(config);
         portsReady = true;
       }
     } catch (caught) {
       error = describeError(caught);
-    } finally {
       loading = false;
+      return;
     }
+    // Trust depends on the privileged helper. A stopped helper must not turn
+    // the whole settings page into an error: the remaining settings are local
+    // to the daemon and still actionable.
+    try {
+      trust = await api.getTrust();
+      trustError = null;
+    } catch (caught) {
+      trust = [];
+      trustError = describeError(caught);
+    }
+    loading = false;
   }
 
   async function loadVhosts(initial = false): Promise<void> {
@@ -464,6 +476,7 @@
     trustAction = 'repair';
     try {
       trust = await api.repairTrust();
+      trustError = null;
       addToast({
         kind: 'success',
         title: 'Trust repaired',
@@ -482,6 +495,7 @@
     trustAction = 'remove';
     try {
       trust = await api.removeTrust();
+      trustError = null;
       removeTrustOpen = false;
       addToast({
         kind: 'success',
@@ -793,6 +807,7 @@
               min="1"
               max="65535"
               bind:value={portDrafts.http_port}
+              disabled={publicPortsFixed}
               oninput={() => {
                 portsSaved = false;
                 portError = null;
@@ -808,6 +823,7 @@
               min="1"
               max="65535"
               bind:value={portDrafts.https_port}
+              disabled={publicPortsFixed}
               oninput={() => {
                 portsSaved = false;
                 portError = null;
@@ -834,6 +850,12 @@
           Ports 41000–43999 are reserved for site backends. Public 80/443 remain owned by
           the helper or the active web-server service.
         </p>
+        {#if publicPortsFixed}
+          <p class="port-hint">
+            On Windows the HTTP and HTTPS proxy ports are fixed because the helper
+            forwarders and firewall rule target them. The dashboard port can still change.
+          </p>
+        {/if}
         {#if portError}
           <div class="port-error">
             <ErrorBanner
@@ -1377,65 +1399,74 @@
           </Button>
         {/snippet}
 
-        <div class="trust-summary">
-          <span class="trust-icon" class:ok={failingTargets === 0}>
-            <ShieldCheck size={16} strokeWidth={1.9} aria-hidden="true" />
-          </span>
-          <p>
-            {#if trust.length === 0}
-              No trust targets were reported by the helper.
-            {:else if failingTargets === 0}
-              All {trust.length} available targets trust the devstack CA.
-            {:else if failingTargets === 1}
-              1 of {trust.length} targets needs attention.
-            {:else}
-              {failingTargets} of {trust.length} targets need attention.
-            {/if}
-          </p>
-        </div>
+        {#if trustError}
+          <ErrorBanner
+            title="Could not read trust status"
+            code={trustError.code}
+            message={trustError.message}
+            onretry={() => void load()}
+          />
+        {:else}
+          <div class="trust-summary">
+            <span class="trust-icon" class:ok={failingTargets === 0}>
+              <ShieldCheck size={16} strokeWidth={1.9} aria-hidden="true" />
+            </span>
+            <p>
+              {#if trust.length === 0}
+                No trust targets were reported by the helper.
+              {:else if failingTargets === 0}
+                All {trust.length} available targets trust the devstack CA.
+              {:else if failingTargets === 1}
+                1 of {trust.length} targets needs attention.
+              {:else}
+                {failingTargets} of {trust.length} targets need attention.
+              {/if}
+            </p>
+          </div>
 
-        <div class="trust-list">
-          {#each trust as target (target.name)}
-            <div class="trust-row">
-              <span class="trust-state" class:ok={target.ok} aria-hidden="true">
-                {#if target.ok}
-                  <CircleCheck size={16} strokeWidth={1.9} />
-                {:else}
-                  <CircleX size={16} strokeWidth={1.9} />
-                {/if}
-              </span>
-              <div class="trust-copy">
-                <div class="trust-title">
-                  <span>{target.name}</span>
-                  <span class="trust-label" class:ok={target.ok}>{target.ok ? 'Trusted' : 'Not trusted'}</span>
+          <div class="trust-list">
+            {#each trust as target (target.name)}
+              <div class="trust-row">
+                <span class="trust-state" class:ok={target.ok} aria-hidden="true">
+                  {#if target.ok}
+                    <CircleCheck size={16} strokeWidth={1.9} />
+                  {:else}
+                    <CircleX size={16} strokeWidth={1.9} />
+                  {/if}
+                </span>
+                <div class="trust-copy">
+                  <div class="trust-title">
+                    <span>{target.name}</span>
+                    <span class="trust-label" class:ok={target.ok}>{target.ok ? 'Trusted' : 'Not trusted'}</span>
+                  </div>
+                  <p>{target.detail}</p>
                 </div>
-                <p>{target.detail}</p>
+                <div class="trust-actions">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onclick={repairTrust}
+                    disabled={Boolean(trustAction)}
+                    title="Repair the CA in all trust stores"
+                  >
+                    Repair
+                  </Button>
+                  <IconButton
+                    label="Remove CA from all trust stores"
+                    icon={Trash2}
+                    size="sm"
+                    variant="danger"
+                    disabled={Boolean(trustAction)}
+                    onclick={() => (removeTrustOpen = true)}
+                  />
+                </div>
               </div>
-              <div class="trust-actions">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onclick={repairTrust}
-                  disabled={Boolean(trustAction)}
-                  title="Repair the CA in all trust stores"
-                >
-                  Repair
-                </Button>
-                <IconButton
-                  label="Remove CA from all trust stores"
-                  icon={Trash2}
-                  size="sm"
-                  variant="danger"
-                  disabled={Boolean(trustAction)}
-                  onclick={() => (removeTrustOpen = true)}
-                />
-              </div>
-            </div>
-          {/each}
-          {#if trust.length === 0}
-            <p class="empty-trust">No trust targets were reported by the helper.</p>
-          {/if}
-        </div>
+            {/each}
+            {#if trust.length === 0}
+              <p class="empty-trust">No trust targets were reported by the helper.</p>
+            {/if}
+          </div>
+        {/if}
         <p class="trust-foot">Trust actions apply to every target. A missing browser is reported as not installed.</p>
       </Card>
 

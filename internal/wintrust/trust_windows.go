@@ -44,10 +44,20 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 }
 
 // Manager performs fixed Windows certificate and ACL operations.
+//
+// The system directory, CA directory, and root certificate are configurable
+// because the helper service runs as LocalSystem: the process profile is not
+// the installing user's profile. Every fixed-path check compares against these
+// configured paths, never the package defaults evaluated in the service's
+// profile.
 type Manager struct {
-	runner          CommandRunner
-	aclApply        ACLSetter
-	policyStatePath string
+	runner            CommandRunner
+	aclApply          ACLSetter
+	systemDir         string
+	caDir             string
+	rootCertPath      string
+	policyStatePath   string
+	policyStateCustom bool
 }
 
 // ACLSetter applies a protected security descriptor. Tests inject a recorder
@@ -60,6 +70,9 @@ func NewManager(runner CommandRunner, aclSetters ...ACLSetter) *Manager {
 	}
 	manager := &Manager{
 		runner: runner, aclApply: applyDirectoryACL,
+		systemDir:       DefaultSystemDir,
+		caDir:           DefaultCADir,
+		rootCertPath:    DefaultRootCertificate,
 		policyStatePath: filepath.Join(DefaultSystemDir, "firefox-policy-managed"),
 	}
 	if len(aclSetters) > 0 && aclSetters[0] != nil {
@@ -68,31 +81,76 @@ func NewManager(runner CommandRunner, aclSetters ...ACLSetter) *Manager {
 	return manager
 }
 
+// ConfigurePaths points this manager at one install tree. The helper calls it
+// with the values derived from --config so that a LocalSystem service operates
+// on the installer's protected system directory instead of its own profile.
+// An empty CA directory or root certificate path is derived below systemDir.
+func (m *Manager) ConfigurePaths(systemDir, caDir, rootCertPath string) error {
+	systemDir = strings.TrimSpace(systemDir)
+	caDir = strings.TrimSpace(caDir)
+	rootCertPath = strings.TrimSpace(rootCertPath)
+	if systemDir == "" {
+		return errors.New("wintrust: system directory is empty")
+	}
+	if !filepath.IsAbs(systemDir) {
+		return fmt.Errorf("wintrust: system directory %q must be absolute", systemDir)
+	}
+	if caDir == "" {
+		caDir = filepath.Join(systemDir, "pki")
+	}
+	if !filepath.IsAbs(caDir) {
+		return fmt.Errorf("wintrust: CA directory %q must be absolute", caDir)
+	}
+	if rootCertPath == "" {
+		rootCertPath = filepath.Join(caDir, "root.crt")
+	}
+	if !filepath.IsAbs(rootCertPath) {
+		return fmt.Errorf("wintrust: root certificate %q must be absolute", rootCertPath)
+	}
+	m.systemDir = filepath.Clean(systemDir)
+	m.caDir = filepath.Clean(caDir)
+	m.rootCertPath = filepath.Clean(rootCertPath)
+	if !m.policyStateCustom {
+		m.policyStatePath = filepath.Join(m.systemDir, "firefox-policy-managed")
+	}
+	return nil
+}
+
+// Paths reports the configured system, CA, and root-certificate paths.
+func (m *Manager) Paths() (systemDir, caDir, rootCertPath string) {
+	if m == nil {
+		return DefaultSystemDir, DefaultCADir, DefaultRootCertificate
+	}
+	return m.systemDir, m.caDir, m.rootCertPath
+}
+
 // NewManagerWithStatePath is used by the helper's unit tests to keep Firefox
 // policy ownership metadata outside the machine system directory.
 func NewManagerWithStatePath(runner CommandRunner, aclSetter ACLSetter, statePath string) *Manager {
 	manager := NewManager(runner, aclSetter)
 	if statePath != "" {
 		manager.policyStatePath = statePath
+		manager.policyStateCustom = true
 	}
 	return manager
 }
 
 func (m *Manager) ProtectSystem(ctx context.Context, systemDir string) error {
-	if !sameWindowsPath(systemDir, DefaultSystemDir) {
+	if !sameWindowsPath(systemDir, m.systemDir) {
 		return fmt.Errorf("wintrust: refusing to protect non-system path %q", systemDir)
 	}
-	return m.protectPath(ctx, DefaultSystemDir, ProtectionSDDL())
+	return m.protectPath(ctx, m.systemDir, ProtectionSDDL())
 }
 
 func (m *Manager) ProtectCAPath(ctx context.Context, path string) error {
-	for _, fixed := range []string{DefaultCADir, filepath.Join(DefaultCADir, "root.key"), filepath.Join(DefaultCADir, "root.crt")} {
-		if sameWindowsPath(path, fixed) {
+	fixed := []string{m.caDir, filepath.Join(m.caDir, "root.key"), m.rootCertPath}
+	for _, candidate := range fixed {
+		if sameWindowsPath(path, candidate) {
 			sddl := ProtectionSDDL()
-			if !sameWindowsPath(fixed, DefaultCADir) {
+			if !sameWindowsPath(candidate, m.caDir) {
 				sddl = ProtectionFileSDDL()
 			}
-			return m.protectPath(ctx, fixed, sddl)
+			return m.protectPath(ctx, candidate, sddl)
 		}
 	}
 	return fmt.Errorf("wintrust: refusing to protect non-CA path %q", path)
@@ -137,7 +195,7 @@ func applyDirectoryACL(path, sddl string) error {
 }
 
 func (m *Manager) InstallRoot(ctx context.Context, certificatePath string) error {
-	args, err := RootInstallArgs(certificatePath)
+	args, err := RootInstallArgsAt(certificatePath, m.rootCertPath)
 	if err != nil {
 		return err
 	}
@@ -148,10 +206,21 @@ func (m *Manager) InstallRoot(ctx context.Context, certificatePath string) error
 }
 
 func RootInstallArgs(certificatePath string) ([]string, error) {
-	if !sameWindowsPath(certificatePath, DefaultRootCertificate) {
+	return RootInstallArgsAt(certificatePath, DefaultRootCertificate)
+}
+
+// RootInstallArgsAt validates that certificatePath is the configured root
+// certificate. Callers that run in the LocalSystem profile must use their
+// configured path rather than the package default.
+func RootInstallArgsAt(certificatePath, configuredRootCertificate string) ([]string, error) {
+	configuredRootCertificate = strings.TrimSpace(configuredRootCertificate)
+	if configuredRootCertificate == "" {
+		return nil, errors.New("wintrust: configured root certificate path is empty")
+	}
+	if !sameWindowsPath(certificatePath, configuredRootCertificate) {
 		return nil, fmt.Errorf("wintrust: refusing to install root certificate from %q", certificatePath)
 	}
-	return []string{"-addstore", "-f", "Root", DefaultRootCertificate}, nil
+	return []string{"-addstore", "-f", "Root", configuredRootCertificate}, nil
 }
 
 func (m *Manager) RemoveRoot(ctx context.Context, sha1Thumbprint string) error {
@@ -309,67 +378,83 @@ func FirefoxRemoveArgs() []string {
 	return []string{"delete", firefoxPolicyKey, "/v", "ImportEnterpriseRoots", "/f"}
 }
 
-// EnsureStorage creates the fixed CA directory before protecting its parent.
+// EnsureStorage creates the configured CA directory before protecting its
+// parent and the CA files.
 func (m *Manager) EnsureStorage(ctx context.Context) error {
-	info, err := os.Lstat(DefaultSystemDir)
+	info, err := os.Lstat(m.systemDir)
 	if err != nil {
 		return fmt.Errorf("inspect protected system directory (installer must create it first): %w", err)
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("wintrust: protected system path must be a non-reparse directory")
 	}
-	attributes, err := windows.GetFileAttributes(windows.StringToUTF16Ptr(DefaultSystemDir))
+	attributes, err := windows.GetFileAttributes(windows.StringToUTF16Ptr(m.systemDir))
 	if err != nil {
 		return fmt.Errorf("inspect protected system directory attributes: %w", err)
 	}
 	if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		return errors.New("wintrust: protected system path must not be a reparse point")
 	}
-	if err := m.ProtectSystem(ctx, DefaultSystemDir); err != nil {
+	if err := m.ProtectSystem(ctx, m.systemDir); err != nil {
 		return err
 	}
-	caInfo, err := os.Lstat(DefaultCADir)
+	caInfo, err := os.Lstat(m.caDir)
 	if errors.Is(err, os.ErrNotExist) {
-		if err := os.Mkdir(DefaultCADir, 0o700); err != nil {
+		if err := os.Mkdir(m.caDir, 0o700); err != nil {
 			return fmt.Errorf("create Windows CA directory: %w", err)
 		}
-		caInfo, err = os.Lstat(DefaultCADir)
+		caInfo, err = os.Lstat(m.caDir)
 	}
 	if err != nil {
 		return fmt.Errorf("inspect Windows CA directory: %w", err)
 	}
-	caAttributes, err := windows.GetFileAttributes(windows.StringToUTF16Ptr(DefaultCADir))
+	caAttributes, err := windows.GetFileAttributes(windows.StringToUTF16Ptr(m.caDir))
 	if err != nil {
 		return fmt.Errorf("inspect Windows CA directory attributes: %w", err)
 	}
 	if !caInfo.IsDir() || caInfo.Mode()&os.ModeSymlink != 0 || caAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		return errors.New("wintrust: CA directory must be a non-reparse directory")
 	}
-	if err := m.ProtectCAPath(ctx, DefaultCADir); err != nil {
+	if err := m.ProtectCAPath(ctx, m.caDir); err != nil {
 		return err
 	}
-	for _, name := range []string{"root.key", "root.crt"} {
-		path := filepath.Join(DefaultCADir, name)
+	for _, path := range m.caFiles() {
 		if info, err := os.Lstat(path); err == nil {
 			attributes, attrErr := windows.GetFileAttributes(windows.StringToUTF16Ptr(path))
 			if attrErr != nil {
-				return fmt.Errorf("inspect Windows CA file %s attributes: %w", name, attrErr)
+				return fmt.Errorf("inspect Windows CA file %s attributes: %w", path, attrErr)
 			}
-			if err := validateExistingCAFile(path, info.Mode(), attributes); err != nil {
+			if err := m.validateExistingCAFile(path, info.Mode(), attributes); err != nil {
 				return err
 			}
 			if err := m.ProtectCAPath(ctx, path); err != nil {
 				return err
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("inspect Windows CA file %s: %w", name, err)
+			return fmt.Errorf("inspect Windows CA file %s: %w", path, err)
 		}
 	}
 	return nil
 }
 
-func validateExistingCAFile(path string, mode os.FileMode, attributes uint32) error {
-	if !sameWindowsPath(path, filepath.Join(DefaultCADir, "root.key")) && !sameWindowsPath(path, DefaultRootCertificate) {
+// caFiles returns the distinct CA files this manager may protect.
+func (m *Manager) caFiles() []string {
+	candidates := []string{filepath.Join(m.caDir, "root.key"), filepath.Join(m.caDir, "root.crt"), m.rootCertPath}
+	out := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		key := strings.ToLower(filepath.Clean(candidate))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func (m *Manager) validateExistingCAFile(path string, mode os.FileMode, attributes uint32) error {
+	if !sameWindowsPath(path, filepath.Join(m.caDir, "root.key")) && !sameWindowsPath(path, m.rootCertPath) {
 		return fmt.Errorf("wintrust: refusing to protect non-CA file %q", path)
 	}
 	if mode&os.ModeType != 0 || attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {

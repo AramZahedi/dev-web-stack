@@ -10,7 +10,7 @@
   import Doctor from './routes/Doctor.svelte';
   import Settings from './routes/Settings.svelte';
   import NotFound from './routes/NotFound.svelte';
-  import { initSession, refreshDaemon } from './lib/stores';
+  import { initSession, refreshDaemon, session } from './lib/stores';
   import { authenticateFromFragment, openEvents } from './lib/api';
 
   const routes = {
@@ -36,13 +36,19 @@
         // the fragment is one-shot and has already been removed from history.
       }
       if (cancelled) return;
-      void initSession();
+      await initSession();
+      if (cancelled) return;
       void refreshDaemon();
-      closeEvents = openEvents((event) => {
-        if (/^(site|runtime|doctor|trust|service)\./.test(event.type)) {
-          window.dispatchEvent(new CustomEvent('devstack:refresh'));
-        }
-      });
+      // Do not open the SSE stream while the dashboard is locked: EventSource
+      // would retry the 403 forever. The stream starts only after the install
+      // token has established an authenticated session.
+      if ($session.authenticated) {
+        closeEvents = openEvents((event) => {
+          if (/^(site|runtime|doctor|trust|service)\./.test(event.type)) {
+            window.dispatchEvent(new CustomEvent('devstack:refresh'));
+          }
+        });
+      }
     })();
     return () => {
       cancelled = true;

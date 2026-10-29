@@ -116,6 +116,12 @@ func NewServer(cfg Config) (*Server, error) {
 	if trustManager == nil {
 		trustManager = wintrust.NewManager(cfg.Runner)
 	}
+	// The service runs as LocalSystem, so its process profile is not the
+	// installer's profile. Point every fixed-path trust operation at the
+	// install tree (--config) rather than wintrust's package defaults.
+	if err := trustManager.ConfigurePaths(cfg.SystemDir, cfg.CADir, cfg.RootCertPath); err != nil {
+		return nil, fmt.Errorf("helper: configure trust paths: %w", err)
+	}
 	firewall := cfg.FirewallManager
 	if firewall == nil {
 		firewall = winfirewall.NewManager(cfg.Runner)

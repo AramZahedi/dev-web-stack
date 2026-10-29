@@ -28,6 +28,14 @@ func daemonStopWindows(ctx context.Context, home string) (bool, error) {
 		return false, daemonStopRefused(home, "refusing to signal pid 1")
 	}
 
+	// A pid file is not proof of identity on Windows: it can be stale and the
+	// PID reused. Only a process whose image is devstack.exe may be force-killed.
+	pidVerified := pid > 0 && processIsDevstack(pid)
+	if !status.Running && !pidVerified {
+		_ = os.Remove(daemon.PidPath(home))
+		return false, nil
+	}
+
 	endpoint := daemon.Endpoint(home)
 	transport := &http.Transport{
 		DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
@@ -56,7 +64,7 @@ func daemonStopWindows(ctx context.Context, home string) (bool, error) {
 		_, err := os.Stat(daemon.PidPath(home))
 		pidFileExists := err == nil
 		stillRunning := st.Running
-		if pidFileExists && pid > 0 && processRunning(pid) {
+		if pidVerified && pidFileExists && processRunning(pid) {
 			stillRunning = true
 		}
 		if !stillRunning {
@@ -64,7 +72,10 @@ func daemonStopWindows(ctx context.Context, home string) (bool, error) {
 			return true, nil
 		}
 		if time.Now().After(deadline) {
-			if pid > 0 && processRunning(pid) {
+			// Force-kill only a PID that both looked like devstack.exe and had
+			// this home's live control pipe. A stale pid file can name another
+			// install's devstack.exe, which must never be killed.
+			if status.Running && pidVerified && processIsDevstack(pid) {
 				if proc, err := os.FindProcess(pid); err == nil {
 					_ = proc.Kill()
 				}

@@ -93,13 +93,14 @@ func TestProtectCAStorageAppliesExactACLOnlyToFixedCAPaths(t *testing.T) {
 }
 
 func TestValidateExistingCAFileRejectsReparsePoints(t *testing.T) {
-	if err := validateExistingCAFile(DefaultRootCertificate, 0, 0); err != nil {
+	manager := NewManager(&recordingRunner{})
+	if err := manager.validateExistingCAFile(manager.rootCertPath, 0, 0); err != nil {
 		t.Fatalf("regular inherited file: %v", err)
 	}
-	if err := validateExistingCAFile(DefaultRootCertificate, os.ModeSymlink, 0x400); err == nil {
+	if err := manager.validateExistingCAFile(manager.rootCertPath, os.ModeSymlink, 0x400); err == nil {
 		t.Fatal("CA storage accepted a reparse-point file")
 	}
-	if err := validateExistingCAFile(`C:\devstack\projects\other.key`, 0, 0); err == nil {
+	if err := manager.validateExistingCAFile(`C:\devstack\projects\other.key`, 0, 0); err == nil {
 		t.Fatal("CA storage accepted a path outside the fixed CA files")
 	}
 }
@@ -144,6 +145,83 @@ func TestTrustManagerInstallsAndRemovesRootAndFirefoxPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(runner.calls) != 5 || runner.calls[0].name != "certutil.exe" || runner.calls[1].args[0] != "query" || runner.calls[2].args[0] != "add" || runner.calls[3].args[0] != "query" || runner.calls[4].args[0] != "delete" {
+		t.Fatalf("calls = %+v", runner.calls)
+	}
+}
+
+func TestConfiguredPathsReplaceProcessProfileDefaults(t *testing.T) {
+	root := t.TempDir()
+	systemDir := filepath.Join(root, "system")
+	caDir := filepath.Join(systemDir, "pki")
+	if err := os.MkdirAll(systemDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var protected []string
+	manager := NewManager(&recordingRunner{}, func(path, _ string) error {
+		protected = append(protected, path)
+		return nil
+	})
+	if err := manager.ConfigurePaths(systemDir, caDir, filepath.Join(caDir, "custom-root.crt")); err != nil {
+		t.Fatalf("ConfigurePaths: %v", err)
+	}
+	if gotSystem, gotCA, gotRoot := manager.Paths(); gotSystem != systemDir || gotCA != caDir || gotRoot != filepath.Join(caDir, "custom-root.crt") {
+		t.Fatalf("Paths = %q, %q, %q", gotSystem, gotCA, gotRoot)
+	}
+	if err := manager.EnsureStorage(context.Background()); err != nil {
+		t.Fatalf("EnsureStorage: %v", err)
+	}
+	if len(protected) == 0 || protected[0] != systemDir {
+		t.Fatalf("protected paths = %v, want the configured system dir first", protected)
+	}
+	if manager.policyStatePath != filepath.Join(systemDir, "firefox-policy-managed") {
+		t.Fatalf("policy state path = %q", manager.policyStatePath)
+	}
+	if err := manager.ProtectSystem(context.Background(), DefaultSystemDir); err == nil && !sameWindowsPath(DefaultSystemDir, systemDir) {
+		t.Fatal("ProtectSystem accepted the process-profile default after reconfiguration")
+	}
+}
+
+func TestRootInstallArgsUseConfiguredCertificate(t *testing.T) {
+	configured := `D:\devstack\system\pki\root.crt`
+	args, err := RootInstallArgsAt(configured, configured)
+	if err != nil {
+		t.Fatalf("RootInstallArgsAt: %v", err)
+	}
+	if strings.Join(args, " ") != "-addstore -f Root "+configured {
+		t.Fatalf("args = %q", strings.Join(args, " "))
+	}
+	if _, err := RootInstallArgsAt(DefaultRootCertificate, configured); err == nil {
+		t.Fatal("RootInstallArgsAt accepted a certificate outside the configured root")
+	}
+	manager := NewManager(&recordingRunner{})
+	if err := manager.ConfigurePaths(t.TempDir(), `D:\devstack\system\pki`, configured); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.InstallRoot(context.Background(), DefaultRootCertificate); err == nil {
+		t.Fatal("InstallRoot accepted the process-profile default after reconfiguration")
+	}
+}
+
+func TestManagerInstallsConfiguredRootAndProtectsConfiguredCA(t *testing.T) {
+	root := t.TempDir()
+	systemDir := filepath.Join(root, "system")
+	caDir := filepath.Join(systemDir, "pki")
+	if err := os.MkdirAll(systemDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	manager := NewManager(runner, func(string, string) error { return nil })
+	if err := manager.ConfigurePaths(systemDir, caDir, filepath.Join(caDir, "root.crt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.EnsureStorage(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.InstallRoot(context.Background(), filepath.Join(caDir, "root.crt")); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0].name != "certutil.exe" ||
+		strings.Join(runner.calls[0].args, " ") != "-addstore -f Root "+filepath.Join(caDir, "root.crt") {
 		t.Fatalf("calls = %+v", runner.calls)
 	}
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
+	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
@@ -324,6 +325,17 @@ func TestWindowsDiagnosticsAndDoctorServices(t *testing.T) {
 	port := freeTCPPort(t)
 	if err := probe.Listenable(net.JoinHostPort("127.0.0.1", fmt.Sprint(port))); err != nil {
 		t.Fatalf("Listenable: %v", err)
+	}
+}
+
+func TestWindowsHelperAdapterRejectsSilentHostsSyncWithoutHelper(t *testing.T) {
+	adapter := &helperAdapter{}
+	err := adapter.SyncHosts(context.Background(), []string{"blog.test"})
+	if err == nil {
+		t.Fatal("SyncHosts reported success without a helper; the hosts file was not updated")
+	}
+	if !errors.Is(err, servicecontrol.ErrHelperUnavailable) {
+		t.Fatalf("SyncHosts error = %v, want ErrHelperUnavailable", err)
 	}
 }
 
@@ -643,4 +655,3 @@ func TestWindowsHelperAdapterToolLifecycle(t *testing.T) {
 		t.Errorf("php.cmd still exists after remove")
 	}
 }
-

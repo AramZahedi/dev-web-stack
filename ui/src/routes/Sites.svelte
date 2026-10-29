@@ -77,20 +77,27 @@
 
   const nodeBuilds = $derived(runtimes.filter((runtime) => runtime.kind === 'node').length);
   const phpBuilds = $derived(runtimes.filter((runtime) => runtime.kind === 'php').length);
+  let runtimesUnavailable = $state(false);
   const unavailable = $derived(Boolean(error) && sites.length === 0);
 
   async function load(initial = false): Promise<void> {
     if (initial) loading = true;
     error = null;
     try {
-      const [siteList, runtimeList] = await Promise.all([api.listSites(), api.listRuntimes()]);
-      sites = siteList;
-      runtimes = runtimeList;
+      sites = await api.listSites();
     } catch (caught) {
       error = describeError(caught);
-    } finally {
-      loading = false;
     }
+    // Runtime inventory is optional for this page: on Windows it lives in the
+    // WSL agent, and an agent outage must not hide the sites that did load.
+    try {
+      runtimes = await api.listRuntimes();
+      runtimesUnavailable = false;
+    } catch {
+      runtimes = [];
+      runtimesUnavailable = true;
+    }
+    loading = false;
   }
 
   onMount(() => {
@@ -226,11 +233,13 @@
         <Skeleton width="42px" height="30px" radius="5px" />
         <Skeleton width="90px" height="10px" />
       {:else}
-        <p class="tile-value mono">{unavailable ? '—' : runtimes.length}</p>
+        <p class="tile-value mono">{unavailable || runtimesUnavailable ? '—' : runtimes.length}</p>
         <p class="tile-context">
           {unavailable
             ? 'Unavailable'
-            : `${nodeBuilds} Node · ${phpBuilds} PHP ${nodeBuilds + phpBuilds === 1 ? 'build' : 'builds'}`}
+            : runtimesUnavailable
+              ? 'Runtime inventory unavailable'
+              : `${nodeBuilds} Node · ${phpBuilds} PHP ${nodeBuilds + phpBuilds === 1 ? 'build' : 'builds'}`}
         </p>
       {/if}
     </div>

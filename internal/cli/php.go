@@ -64,11 +64,11 @@ func (a *App) newPHPCmd() *cobra.Command {
 				fmt.Fprint(cmd.ErrOrStderr(), result.Stderr)
 			}
 			if result.ExitCode != 0 {
-				return &Error{
+				return &ExitError{Code: result.ExitCode, Err: &Error{
 					Code:        "PHP_EXEC_FAILED",
 					Message:     fmt.Sprintf("php exited with status %d", result.ExitCode),
 					Remediation: "Fix the PHP error reported above, then retry.",
-				}
+				}}
 			}
 			return nil
 		},

@@ -579,11 +579,24 @@ export async function getServiceConfigContent(
   path: string,
 ): Promise<ServiceConfigContent> {
   if (isMockMode) return mockApi.getServiceConfigContent(id, path);
-  const response = await request<ServiceConfigContent | string>(
-    `/services/${encodeURIComponent(id)}/config/content?path=${encodeURIComponent(path)}`,
-  );
-  if (typeof response === 'string') return { path, content: response };
-  return response;
+  // /config/content is session-gated even though it is a GET. Establish the
+  // session cookie before the first call, and retry once after a daemon restart
+  // invalidated it.
+  await fetchSession();
+  const endpoint = `/services/${encodeURIComponent(id)}/config/content?path=${encodeURIComponent(path)}`;
+  try {
+    const response = await request<ServiceConfigContent | string>(endpoint);
+    if (typeof response === 'string') return { path, content: response };
+    return response;
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 403) throw error;
+    csrfToken = null;
+    sessionRequest = null;
+    await fetchSession();
+    const response = await request<ServiceConfigContent | string>(endpoint);
+    if (typeof response === 'string') return { path, content: response };
+    return response;
+  }
 }
 
 export async function diffServiceConfig(

@@ -82,7 +82,11 @@ func (a *App) newSiteSourceCmd() *cobra.Command {
 			if a.jsonOutput {
 				return a.writeJSON(cmd, site)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Changed %s source mode to %s. The original source was kept.\n", site.Name, site.SourceMode)
+			disposition := "kept"
+			if removeSource {
+				disposition = "removed"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Changed %s source mode to %s. The previous source was %s.\n", site.Name, site.SourceMode, disposition)
 			return nil
 		},
 	}

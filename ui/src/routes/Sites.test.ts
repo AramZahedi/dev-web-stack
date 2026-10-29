@@ -53,6 +53,40 @@ describe('Sites', () => {
     });
   });
 
+  it('keeps sites visible when the runtime inventory is unavailable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/api/v1/runtimes')) {
+          return jsonResponse(
+            { code: 'INTERNAL', message: 'WSL agent not connected', details: null },
+            500,
+          );
+        }
+        if (url.includes('/api/v1/sites')) {
+          return jsonResponse([
+            {
+              id: 'mysite',
+              name: 'My Site',
+              domain: 'mysite.test',
+              status: 'running',
+              kind: 'static',
+              host_path: 'C:\\Projects\\mysite',
+              source_mode: 'windows',
+            },
+          ]);
+        }
+        return jsonResponse([]);
+      }),
+    );
+
+    render(Sites);
+    expect((await screen.findAllByText('My Site')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Runtime inventory unavailable').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Could not load sites')).toBeNull();
+  });
+
   it('displays source mode badge when present', async () => {
     vi.stubGlobal(
       'fetch',

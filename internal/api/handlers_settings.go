@@ -57,6 +57,18 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// restarted port change and any deliberate out-of-band edit. The store is
 	// only a mirror for GET /settings, so omitted values must come from cfg.
 	running := s.runningPorts(current)
+	if s.cfg.PublicPortsFixed {
+		if req.HTTPPort != nil && *req.HTTPPort != running.HTTPPort {
+			writeError(w, http.StatusBadRequest, codeInvalidRequest,
+				fmt.Sprintf("HTTP proxy port is fixed at %d on Windows because the helper forwarders and firewall rule target it", running.HTTPPort), nil)
+			return
+		}
+		if req.HTTPSPort != nil && *req.HTTPSPort != running.HTTPSPort {
+			writeError(w, http.StatusBadRequest, codeInvalidRequest,
+				fmt.Sprintf("HTTPS proxy port is fixed at %d on Windows because the helper forwarders and firewall rule target it", running.HTTPSPort), nil)
+			return
+		}
+	}
 	if req.HTTPPort != nil {
 		cfg.HTTPPort = *req.HTTPPort
 	}

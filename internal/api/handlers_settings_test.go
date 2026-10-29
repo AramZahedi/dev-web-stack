@@ -138,6 +138,34 @@ func TestPatchSettingsPersistsListenerPortsAndReportsRestart(t *testing.T) {
 	}
 }
 
+func TestPatchSettingsRejectsFixedWindowsPublicPorts(t *testing.T) {
+	home, fx := settingsTestHome(t)
+	fx.server.cfg.PublicPortsFixed = true
+
+	rec := fx.request(t, http.MethodPatch, "/api/v1/settings", strings.NewReader(`{"http_port":9090}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH fixed HTTP port = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "fixed at 8080") {
+		t.Fatalf("error does not explain the fixed port: %s", rec.Body.String())
+	}
+	loaded, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.HTTPPort != 8080 {
+		t.Fatalf("fixed HTTP port changed to %d", loaded.HTTPPort)
+	}
+
+	// Unchanged public ports and a dashboard-port change are still allowed.
+	uiPort := settingsFreePort(t, map[int]bool{})
+	rec = fx.request(t, http.MethodPatch, "/api/v1/settings",
+		strings.NewReader(fmt.Sprintf(`{"http_port":8080,"https_port":8443,"ui_port":%d}`, uiPort)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH unchanged public ports + ui port = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestPatchSettingsPreservesManualConfigEdits(t *testing.T) {
 	home, fx := settingsTestHome(t)
 	used := map[int]bool{}

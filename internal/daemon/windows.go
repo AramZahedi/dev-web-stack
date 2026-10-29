@@ -82,8 +82,11 @@ func Run(ctx context.Context, opts Options) error {
 	if err := prepareWindowsLayout(cfg.Home); err != nil {
 		return err
 	}
-	if os.Getenv("DEVSTACK_HOME") == "" {
-		_ = os.Setenv("DEVSTACK_HOME", cfg.Home)
+	// This process serves exactly cfg.Home. Do not inherit a different
+	// DEVSTACK_HOME from the launching shell: the agent credential loader and
+	// securestore compare against it and would reject a --home override.
+	if err := os.Setenv("DEVSTACK_HOME", cfg.Home); err != nil {
+		return fmt.Errorf("daemon: set DEVSTACK_HOME: %w", err)
 	}
 
 	lock, err := acquireLifetimeLock(cfg.Home)
@@ -157,7 +160,7 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = publicProxy.Stop(context.Background()) }()
+	defer func() { stopWindowsProxy(publicProxy, logger) }()
 
 	certManager := certs.NewManager(st, adapter, paths.PKI, nil)
 
@@ -280,20 +283,21 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 	apiServer := api.NewServer(st, siteService, runtimeService, doctorService, logStore, adapter, api.Config{
-		UserHome:      cfg.Home,
-		ProjectsRoot:  cfg.ProjectsRoot,
-		MaxBodyBytes:  int64(cfg.MaxRequestBodyMB) << 20,
-		AuthToken:     authToken,
-		Listeners:     api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},
-		Vhosts:        siteService,
-		Services:      serviceManager,
-		ServiceConfig: serviceConfigService,
-		Tooling:       toolingService,
-		Build:         buildService,
-		Terminal:      terminalService,
-		Performance:   performanceService,
-		WSLFS:         agentServices,
-		Logger:        logger,
+		UserHome:         cfg.Home,
+		ProjectsRoot:     cfg.ProjectsRoot,
+		MaxBodyBytes:     int64(cfg.MaxRequestBodyMB) << 20,
+		AuthToken:        authToken,
+		Listeners:        api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},
+		PublicPortsFixed: true,
+		Vhosts:           siteService,
+		Services:         serviceManager,
+		ServiceConfig:    serviceConfigService,
+		Tooling:          toolingService,
+		Build:            buildService,
+		Terminal:         terminalService,
+		Performance:      performanceService,
+		WSLFS:            agentServices,
+		Logger:           logger,
 	})
 
 	tcpLn, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(cfg.UIPort)))
@@ -537,6 +541,13 @@ func EnsureRunning(ctx context.Context, opts Options) error {
 	}()
 	readyErr := waitWindowsReady(ctx, cfg.Home, windowsStartTimeout, waitCh)
 	if readyErr != nil {
+		// Do not leave a daemon we already reported as failed running in the
+		// background; a retry would then hit ErrAlreadyRunning.
+		_ = cmd.Process.Kill()
+		select {
+		case <-waitCh:
+		case <-time.After(2 * time.Second):
+		}
 		return readyErr
 	}
 	_ = cmd.Process.Release()
@@ -549,11 +560,8 @@ func loadWindowsConfig(home string) (config.Config, error) {
 		home = strings.TrimSpace(os.Getenv("DEVSTACK_HOME"))
 	}
 	if home == "" {
-		if userHome, err := os.UserHomeDir(); err == nil {
-			legacy := filepath.Join(userHome, ".devstack")
-			if fileExists(filepath.Join(legacy, "config.yaml")) || fileExists(filepath.Join(legacy, "state.db")) {
-				home = legacy
-			}
+		if legacy, ok := LegacyWindowsHome(); ok {
+			home = legacy
 		}
 	}
 	if home == "" {
@@ -617,11 +625,6 @@ func prepareWindowsLayout(home string) error {
 	return prepareRunDir(home)
 }
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 func serveWindows(server *http.Server, ln net.Listener, name string, errs chan<- error) {
 	if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		select {
@@ -638,6 +641,20 @@ func shutdownWindowsServers(servers []*http.Server) {
 		if err := server.Shutdown(ctx); err != nil {
 			_ = server.Close()
 		}
+	}
+}
+
+// stopWindowsProxy bounds the public-proxy shutdown. A background context would
+// wait forever for a stuck upstream or streaming response, preventing the
+// daemon process from exiting.
+func stopWindowsProxy(server *proxy.Server, logger *slog.Logger) {
+	if server == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Stop(ctx); err != nil && logger != nil {
+		logger.Warn("daemon: stop Windows public proxy", "error", err)
 	}
 }
 
@@ -790,7 +807,7 @@ func (h *helperAdapter) RootPEM() []byte {
 func (h *helperAdapter) SyncHosts(ctx context.Context, domains []string) error {
 	c := h.get()
 	if c == nil {
-		return nil
+		return fmt.Errorf("helper is not connected; the managed hosts file was not updated: %w", servicecontrol.ErrHelperUnavailable)
 	}
 	return c.SyncHosts(ctx, domains)
 }
@@ -1134,10 +1151,39 @@ func wakeWSL(ctx context.Context, distro string, logger *slog.Logger) {
 	_ = cmd.Run()
 }
 
+const (
+	keepaliveMinBackoff = 250 * time.Millisecond
+	keepaliveMaxBackoff = 30 * time.Second
+	// A keepalive that stayed up this long was healthy; the next exit starts a
+	// fresh backoff instead of inheriting an old failure count.
+	keepaliveHealthyRun = 30 * time.Second
+)
+
+// keepaliveBackoff returns the restart delay after the given consecutive
+// failures. A keepalive that exits immediately (missing distro, WSL disabled,
+// or a broken wsl.exe) must not respawn four times a second forever.
+func keepaliveBackoff(failures int, ranFor time.Duration) time.Duration {
+	if ranFor >= keepaliveHealthyRun {
+		return keepaliveMinBackoff
+	}
+	if failures < 1 {
+		failures = 1
+	}
+	delay := keepaliveMinBackoff
+	for i := 1; i < failures && delay < keepaliveMaxBackoff; i++ {
+		delay *= 2
+	}
+	if delay > keepaliveMaxBackoff {
+		delay = keepaliveMaxBackoff
+	}
+	return delay
+}
+
 func runWSLKeepalive(ctx context.Context, distro string, logger *slog.Logger) {
 	if strings.TrimSpace(distro) == "" {
 		distro = "devstack"
 	}
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -1145,31 +1191,50 @@ func runWSLKeepalive(ctx context.Context, distro string, logger *slog.Logger) {
 		default:
 		}
 
+		started := time.Now()
 		cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "-u", "root", "--exec", "/bin/sleep", "infinity")
 		platform.ConfigureProcess(cmd)
 		cmd.Stdin = nil
 		cmd.Stdout = io.Discard
 		cmd.Stderr = io.Discard
 		if err := cmd.Start(); err != nil {
+			failures++
+			delay := keepaliveBackoff(failures, 0)
 			if logger != nil {
-				logger.Warn("daemon: start WSL keepalive", "distro", distro, "error", err)
+				if failures == 1 {
+					logger.Warn("daemon: start WSL keepalive; retrying", "distro", distro, "error", err, "backoff", delay)
+				} else {
+					logger.Debug("daemon: WSL keepalive still failing", "distro", distro, "error", err, "backoff", delay)
+				}
 			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(2 * time.Second):
-				continue
+			case <-time.After(delay):
 			}
+			continue
 		}
 
 		_ = cmd.Wait()
+		ranFor := time.Since(started)
 
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(250 * time.Millisecond):
-			if logger != nil {
-				logger.Info("daemon: WSL keepalive exited; restarting", "distro", distro)
+		case <-time.After(keepaliveBackoff(failures+1, ranFor)):
+		}
+		if ranFor >= keepaliveHealthyRun {
+			failures = 0
+		} else {
+			failures++
+		}
+		if logger != nil {
+			if failures <= 1 {
+				logger.Info("daemon: WSL keepalive exited; restarting",
+					"distro", distro, "ran_for", ranFor.Round(time.Millisecond), "backoff", keepaliveBackoff(failures, ranFor))
+			} else {
+				logger.Debug("daemon: WSL keepalive exited; backing off",
+					"distro", distro, "ran_for", ranFor.Round(time.Millisecond), "failures", failures)
 			}
 		}
 	}

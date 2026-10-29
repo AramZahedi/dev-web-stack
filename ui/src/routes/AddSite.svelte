@@ -194,18 +194,20 @@
     runtimesLoading = true;
     runtimesError = null;
     try {
-      const [builds, config] = await Promise.all([
-        api.listRuntimes(),
-        api.getSettings().catch(() => null),
-      ]);
-      runtimes = builds;
-      settings = config;
-      if (!sourceModeTouched) sourceMode = defaultSourceMode(kind, Boolean(config?.home && /^[a-z]:[\\/]/i.test(config.home)));
+      // Settings drive Windows source-mode defaults; runtimes drive the PHP and
+      // Node pickers. Neither must prevent a static site when the other call
+      // fails (for example while the WSL agent is asleep).
+      settings = await api.getSettings().catch(() => null);
+      if (!sourceModeTouched) sourceMode = defaultSourceMode(kind, Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)));
+      try {
+        runtimes = await api.listRuntimes();
+      } catch (caught) {
+        runtimes = [];
+        runtimesError = describeError(caught);
+      }
       if (!nodeVersion && nodeRuntimes.length > 0) nodeVersion = nodeRuntimes[0].version;
       if (!buildNodeVersion && nodeRuntimes.length > 0) buildNodeVersion = nodeRuntimes[0].version;
       if (!phpBuild && phpRuntimes.length > 0) phpBuild = phpRuntimes[0].id;
-    } catch (caught) {
-      runtimesError = describeError(caught);
     } finally {
       runtimesLoading = false;
     }

@@ -214,9 +214,9 @@ func (s *Server) bodyLimit(next http.Handler) http.Handler {
 	})
 }
 
-// apiMethodErrors converts net/http's plain-text 405 for API method
-// mismatches into the stable JSON error envelope. It sits directly around the
-// mux so it never interferes with authentication or SSE writes.
+// apiMethodErrors converts net/http's plain-text 404/405 responses for API
+// method/path mismatches into the stable JSON error envelope. It sits directly
+// around the mux so it never interferes with authentication or SSE writes.
 func (s *Server) apiMethodErrors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isAPIPath(r.URL.Path) {
@@ -226,9 +226,16 @@ func (s *Server) apiMethodErrors(next http.Handler) http.Handler {
 		writer := &methodErrorWriter{ResponseWriter: w}
 		next.ServeHTTP(writer, r)
 		if writer.intercepted {
+			status := writer.interceptedStatus
+			code := codeMethodNotAllowed
+			message := "method not allowed"
+			if status == http.StatusNotFound {
+				code = codeNotFound
+				message = "API route not found"
+			}
 			body, err := json.Marshal(apiError{
-				Code:    codeMethodNotAllowed,
-				Message: "method not allowed",
+				Code:    code,
+				Message: message,
 				Details: nil,
 			})
 			if err == nil {
@@ -238,22 +245,27 @@ func (s *Server) apiMethodErrors(next http.Handler) http.Handler {
 	})
 }
 
-// methodErrorWriter swallows the plain-text body net/http writes for a 405 and
-// gives the surrounding middleware a chance to replace it with JSON.
+// methodErrorWriter swallows the plain-text body net/http writes for a 404/405
+// and gives the surrounding middleware a chance to replace it with JSON.
 type methodErrorWriter struct {
 	http.ResponseWriter
-	intercepted bool
-	wroteHeader bool
+	intercepted       bool
+	interceptedStatus int
+	wroteHeader       bool
 }
 
 func (w *methodErrorWriter) WriteHeader(status int) {
-	if status == http.StatusMethodNotAllowed && !w.wroteHeader {
-		w.intercepted = true
-		w.wroteHeader = true
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		w.ResponseWriter.WriteHeader(status)
-		return
+	if (status == http.StatusMethodNotAllowed || status == http.StatusNotFound) && !w.wroteHeader {
+		contentType := w.Header().Get("Content-Type")
+		if status == http.StatusMethodNotAllowed || strings.HasPrefix(contentType, "text/plain") {
+			w.intercepted = true
+			w.interceptedStatus = status
+			w.wroteHeader = true
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			w.ResponseWriter.WriteHeader(status)
+			return
+		}
 	}
 	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(status)

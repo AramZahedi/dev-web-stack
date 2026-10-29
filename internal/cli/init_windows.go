@@ -35,8 +35,8 @@ var (
 		return agentclient.New(cfg)
 	}
 	generateTLSIdentity = agent.GenerateTLSIdentity
-	securestoreSave     = securestore.Save
-	securestoreLoad     = securestore.Load
+	securestoreSaveAt   = securestore.SaveAt
+	securestoreLoadAt   = securestore.LoadAt
 )
 
 type platformInitContext struct {
@@ -174,13 +174,12 @@ func initPlatformPreDaemon(ctx context.Context, home string, cfg config.Config, 
 }
 
 func ensureAgentCredentials(ctx context.Context, runner wsl.Runner, distroName, home string, cfg config.Config) (string, string, error) {
-	// Sync DEVSTACK_HOME so securestore looks in the correct home directory
-	if os.Getenv("DEVSTACK_HOME") == "" {
-		_ = os.Setenv("DEVSTACK_HOME", home)
-	}
-
-	tokenBytes, errToken := securestoreLoad("agent-token")
-	pinBytes, errPin := securestoreLoad("agent-pin")
+	// Always address the resolved --home explicitly. Reading $DEVSTACK_HOME
+	// implicitly here makes `devstack init --home A` write credentials to B when
+	// the environment names another install, and the daemon then rejects the
+	// mismatch.
+	tokenBytes, errToken := securestoreLoadAt(home, "agent-token")
+	pinBytes, errPin := securestoreLoadAt(home, "agent-pin")
 
 	hasSecurestore := errToken == nil && errPin == nil && len(tokenBytes) > 0 && len(pinBytes) > 0
 
@@ -218,11 +217,11 @@ func ensureAgentCredentials(ctx context.Context, runner wsl.Runner, distroName, 
 		return "", "", fmt.Errorf("generate agent TLS identity: %w", err)
 	}
 
-	// Save to Windows DPAPI securestore
-	if err := securestoreSave("agent-token", []byte(token)); err != nil {
+	// Save to Windows DPAPI securestore under this install's home.
+	if err := securestoreSaveAt(home, "agent-token", []byte(token)); err != nil {
 		return "", "", fmt.Errorf("save agent-token to securestore: %w", err)
 	}
-	if err := securestoreSave("agent-pin", []byte(identity.Pin)); err != nil {
+	if err := securestoreSaveAt(home, "agent-pin", []byte(identity.Pin)); err != nil {
 		return "", "", fmt.Errorf("save agent-pin to securestore: %w", err)
 	}
 
