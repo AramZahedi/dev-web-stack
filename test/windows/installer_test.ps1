@@ -1235,6 +1235,8 @@ Require (([regex]::Matches($freshInstallContent, '\$upgradeFailed = \$false')).C
 Require ($freshInstallContent -match 'Repair-HelperServiceConfiguration') "install.ps1 verifies/repairs the helper service config path"
 Require ($freshInstallContent -match 'sc\.exe config DevstackHelper') "install.ps1 can repair the helper service binPath"
 Require ($freshInstallContent -notmatch 'New-ScheduledTaskPrincipal -UserId "SYSTEM"') "install.ps1 never falls back to a SYSTEM reboot-resume task"
+Require ($freshInstallContent -match '\[TestSandbox\] Skipping live daemon shutdown') "install.ps1 does not stop the host daemon from a sandbox upgrade"
+Require ($uninstallerContent -match '\[TestSandbox\] Skipping live daemon shutdown') "uninstall.ps1 does not stop the host daemon from a sandbox test"
 
 # -------------------------------------------------------------------------
 # Test 41: -Upgrade -SkipWSL updates Windows only and preserves the stage

@@ -624,13 +624,17 @@ if ($Upgrade) {
     $upgradeFailed = $false
 
     # 1. Stop daemon
-    Write-Host "devstack installer: Stopping daemon for upgrade..."
-    if (Test-Path $dstDevstack) {
-        try { & "$dstDevstack" --home "$targetDir" daemon stop 2>$null | Out-Null } catch {}
+    if (-not $isSandbox) {
+        Write-Host "devstack installer: Stopping daemon for upgrade..."
+        if (Test-Path $dstDevstack) {
+            try { & "$dstDevstack" --home "$targetDir" daemon stop 2>$null | Out-Null } catch {}
+        }
+        try {
+            Get-Process -Name "devstack" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        } catch {}
+    } else {
+        Write-Host "devstack installer: [TestSandbox] Skipping live daemon shutdown."
     }
-    try {
-        Get-Process -Name "devstack" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    } catch {}
 
     # 2. Stop DevstackHelper service before staging/replacing binaries to avoid file sharing violations (C3)
     if (-not $isSandbox) {

@@ -215,7 +215,7 @@ Write-Host "devstack uninstaller: Starting uninstallation..."
 Write-Host "devstack uninstaller: Stopping devstack daemon if running..."
 if ($DryRun) {
     Write-Host "devstack uninstaller: [DryRun] Would stop devstack daemon"
-} else {
+} elseif (-not $isSandbox) {
     if (Test-Path $dstDevstack) {
         try {
             & "$dstDevstack" --home "$targetDir" daemon stop 2>$null | Out-Null
@@ -224,6 +224,8 @@ if ($DryRun) {
     try {
         Get-Process -Name "devstack" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     } catch {}
+} else {
+    Write-Host "devstack uninstaller: [TestSandbox] Skipping live daemon shutdown."
 }
 
 # -----------------------------------------------------------------------------
