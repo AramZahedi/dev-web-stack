@@ -288,6 +288,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	apiServer := api.NewServer(st, siteService, runtimeService, doctorService, logStore, adapter, api.Config{
 		UserHome:      cfg.Home,
+		ProjectsRoot:  cfg.ProjectsRoot,
 		MaxBodyBytes:  int64(cfg.MaxRequestBodyMB) << 20,
 		Listeners:     api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},
 		Vhosts:        siteService,

@@ -599,7 +599,7 @@ func (s *Service) isPortInUseByDevstack(spec portSpec, probeErr error) bool {
 	if isAddrInUse(probeErr) {
 		return true
 	}
-	if s.isPortResponding(spec.port) {
+	if isProbePermission(probeErr) && s.isPortResponding(spec.port) {
 		return true
 	}
 	return false

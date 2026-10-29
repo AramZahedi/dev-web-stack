@@ -45,8 +45,14 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if raw == "" {
-		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path is required", nil)
-		return
+		if s.cfg.ProjectsRoot != "" {
+			raw = s.cfg.ProjectsRoot
+		} else if s.cfg.UserHome != "" {
+			raw = filepath.Join(s.cfg.UserHome, "projects")
+		} else {
+			writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path is required", nil)
+			return
+		}
 	}
 	if strings.ContainsRune(raw, 0) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path contains a NUL byte", nil)

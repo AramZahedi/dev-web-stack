@@ -633,6 +633,9 @@ func findPHP(t *testing.T) string {
 		}
 	}
 	if path, err := exec.LookPath("php"); err == nil {
+		if strings.HasSuffix(strings.ToLower(path), ".cmd") || strings.HasSuffix(strings.ToLower(path), ".bat") {
+			t.Skip("skipping real PHP lint on Windows when only a WSL wrapper shim is present")
+		}
 		return path
 	}
 	t.Skip("php not found at /usr/local/php/bin/php or on PATH; skipping real PHP lint")

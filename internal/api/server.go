@@ -283,6 +283,7 @@ func (readOnlyServiceService) RotateCredentials(context.Context, services.ID) (s
 type Config struct {
 	UI           fs.FS
 	UserHome     string
+	ProjectsRoot string
 	MaxBodyBytes int64
 	AllowedHosts []string
 	// Listeners records the ports the running daemon actually bound. Settings
