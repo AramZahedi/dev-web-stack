@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -279,4 +280,82 @@ func TestEnsureNodeShimsRejectsUnsafeBuild(t *testing.T) {
 	if err := EnsureNodeShims(paths, model.RuntimeBuild{Kind: "php", Version: "8.4.12", Path: t.TempDir()}); err == nil {
 		t.Fatal("PHP build was accepted as a Node build")
 	}
+}
+
+func TestNodeShimsPinNpmAndNpxToExactNode(t *testing.T) {
+	bash := testBashPath(t)
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	root := filepath.Join(home, "runtimes", "node@22.11.0")
+	buildBin := filepath.Join(root, "bin")
+
+	// The exact build's node prints "exact"; npm and npx are launchers with the
+	// same /usr/bin/env node shebang used by real Node distributions.
+	writeTestScript(t, filepath.Join(buildBin, "node"), "#!/bin/sh\nprintf '%s\\n' exact\n", 0o755)
+	for _, name := range []string{"npm", "npx"} {
+		writeTestScript(t, filepath.Join(buildBin, name), "#!/usr/bin/env node\n", 0o755)
+	}
+	decoy := t.TempDir()
+	writeTestScript(t, filepath.Join(decoy, "node"), "#!/bin/sh\nprintf '%s\\n' decoy\n", 0o755)
+
+	build := model.RuntimeBuild{
+		ID:      "node@22.11.0",
+		Kind:    "node",
+		Version: "22.11.0",
+		Backend: model.BackendLocal,
+		Path:    bashTestPath(root),
+	}
+	if err := EnsureNodeShims(paths, build); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"npm", "npx"} {
+		shim := filepath.Join(NodeDefaultShimDir(paths), name)
+		command := exec.Command(bash, shim)
+		// The decoy node comes first in the ambient PATH. A correct shim
+		// prepends the exact build's bin directory before executing npm/npx.
+		command.Env = append(os.Environ(), "PATH="+bashTestPath(decoy)+":"+bashTestPath(buildBin))
+		out, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run %s shim: %v\n%s", name, err, out)
+		}
+		if got := strings.TrimSpace(string(out)); got != "exact" {
+			content, _ := os.ReadFile(shim)
+			t.Fatalf("%s resolved node to %q, want the exact build node\nshim:\n%s", name, got, content)
+		}
+	}
+}
+
+// testBashPath returns a POSIX shell capable of executing shebang scripts.
+func testBashPath(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		for _, root := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)")} {
+			if root == "" {
+				continue
+			}
+			candidate := filepath.Join(root, "Git", "bin", "bash.exe")
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate
+			}
+		}
+	}
+	if candidate, err := exec.LookPath("bash"); err == nil && !strings.Contains(strings.ToLower(candidate), "windowsapps") {
+		return candidate
+	}
+	t.Skip("bash is not available")
+	return ""
+}
+
+// bashTestPath converts a host path into the POSIX form the managed Node shims
+// use. Managed Node builds always live under POSIX paths.
+func bashTestPath(path string) string {
+	path = filepath.ToSlash(path)
+	if runtime.GOOS != "windows" {
+		return path
+	}
+	if len(path) >= 2 && path[1] == ':' {
+		return "/" + strings.ToLower(path[:1]) + path[2:]
+	}
+	return path
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -43,19 +44,21 @@ func EnsureWindowsNodeShims(binDir, distro string, build model.RuntimeBuild) err
 		if err != nil {
 			return err
 		}
-		path := filepath.Join(binDir, name+".cmd")
-		content := fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s --exec bash -c \"%s exec %s \\\"${args[@]}\\\"\" _ %%*\r\n", distro, wslNodeArgTranslate, posixQuote(binary))
-		temporary := path + ".tmp"
+		shimPath := filepath.Join(binDir, name+".cmd")
+		// npm and npx launch JS entrypoints through /usr/bin/env node, so the
+		// exact build's bin directory must precede the ambient PATH inside WSL.
+		content := fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s --exec bash -c \"%s export PATH=%s:\\\"$PATH\\\" && exec %s \\\"${args[@]}\\\"\" _ %%*\r\n", distro, wslNodeArgTranslate, posixQuote(path.Dir(binary)), posixQuote(binary))
+		temporary := shimPath + ".tmp"
 		if err := os.WriteFile(temporary, []byte(content), 0o600); err != nil {
 			return fmt.Errorf("tooling: write %s: %w", temporary, err)
 		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(shimPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			_ = os.Remove(temporary)
-			return fmt.Errorf("tooling: replace %s: %w", path, err)
+			return fmt.Errorf("tooling: replace %s: %w", shimPath, err)
 		}
-		if err := os.Rename(temporary, path); err != nil {
+		if err := os.Rename(temporary, shimPath); err != nil {
 			_ = os.Remove(temporary)
-			return fmt.Errorf("tooling: install %s: %w", path, err)
+			return fmt.Errorf("tooling: install %s: %w", shimPath, err)
 		}
 	}
 	return nil

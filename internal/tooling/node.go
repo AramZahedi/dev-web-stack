@@ -184,7 +184,11 @@ func EnsureNodeShims(paths config.Paths, build model.RuntimeBuild) error {
 		if err != nil {
 			return err
 		}
-		script := "#!/bin/sh\nexec " + shellQuote(binary) + " \"$@\"\n"
+		// npm and npx are launchers with a /usr/bin/env node shebang. Pin the
+		// exact build's bin directory first so their interpreter never resolves
+		// through an ambient PATH. The node shim gets the same PATH so child
+		// processes also see the selected build.
+		script := "#!/bin/sh\nexport PATH=" + shellQuote(path.Dir(binary)) + ":\"$PATH\"\nexec " + shellQuote(binary) + " \"$@\"\n"
 		if err := writeScriptAtomic(filepath.Join(dir, name), script); err != nil {
 			return err
 		}

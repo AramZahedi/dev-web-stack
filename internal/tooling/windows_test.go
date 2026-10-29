@@ -377,6 +377,59 @@ func TestEnsureWindowsNodeShimsRejectsUnsafeInputs(t *testing.T) {
 	}
 }
 
+func TestWindowsNodeShimsPinNpmAndNpxToExactNode(t *testing.T) {
+	bash := testBashPath(t)
+	root := t.TempDir()
+	buildBin := filepath.Join(root, "bin")
+	writeTestScript(t, filepath.Join(buildBin, "node"), "#!/bin/sh\nprintf '%s\\n' exact\n", 0o755)
+	for _, name := range []string{"npm", "npx"} {
+		writeTestScript(t, filepath.Join(buildBin, name), "#!/usr/bin/env node\n", 0o755)
+	}
+	decoy := t.TempDir()
+	writeTestScript(t, filepath.Join(decoy, "node"), "#!/bin/sh\nprintf '%s\\n' decoy\n", 0o755)
+
+	build := model.RuntimeBuild{
+		ID:      "node@22.11.0",
+		Kind:    "node",
+		Version: "22.11.0",
+		Backend: model.BackendWSL,
+		Path:    bashTestPath(root),
+	}
+	bin := t.TempDir()
+	if err := EnsureWindowsNodeShims(bin, "devstack", build); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"npm", "npx"} {
+		content, err := os.ReadFile(filepath.Join(bin, name+".cmd"))
+		if err != nil {
+			t.Fatalf("read %s.cmd: %v", name, err)
+		}
+		text := string(content)
+		idx := strings.Index(text, `bash -c "`)
+		end := strings.LastIndex(text, `" _ %*`)
+		if idx < 0 || end <= idx {
+			t.Fatalf("%s.cmd has no inspectable bash script:\n%s", name, text)
+		}
+		script := strings.ReplaceAll(text[idx+len(`bash -c "`):end], `\"`, `"`)
+		scriptFile := filepath.Join(t.TempDir(), name+".sh")
+		if err := os.WriteFile(scriptFile, []byte(script), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command(bash, scriptFile)
+		// The decoy node is first in the ambient PATH. The Windows bash script
+		// must prepend the exact build before npm/npx look up their interpreter.
+		command.Env = append(os.Environ(), "PATH="+bashTestPath(decoy)+":"+bashTestPath(buildBin))
+		out, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run %s.cmd script: %v\n%s", name, err, out)
+		}
+		if got := strings.TrimSpace(string(out)); got != "exact" {
+			t.Fatalf("%s.cmd resolved node to %q, want the exact build node\nscript:\n%s", name, got, script)
+		}
+	}
+}
+
 func TestWSLComposerWrapperScriptContainsRequiredExtensions(t *testing.T) {
 	script := WSLComposerWrapperScript()
 	if !strings.HasPrefix(script, "#!/bin/sh") {
