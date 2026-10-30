@@ -466,6 +466,26 @@ func TestRunInputStreamCapsErrorOutput(t *testing.T) {
 	}
 }
 
+func TestHelperListBackupsReturnsEmptySlice(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	backups, err := c.ListBackups(context.Background(), "mysql")
+	if err != nil || backups == nil || len(backups) != 0 {
+		t.Fatalf("backups=%v err=%v", backups, err)
+	}
+}
+
+func TestHelperCreateBackupRejectsUnknownKind(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	_, err := c.CreateBackup(context.Background(), "mysql", "app", databases.CreateBackupRequest{Kind: "bogus"})
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("calls=%v", runner.calls)
+	}
+}
+
 func TestHelperListReturnsNonNilSlices(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	runner := c.runner.(*fakeCommandRunner)

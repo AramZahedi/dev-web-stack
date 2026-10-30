@@ -121,7 +121,7 @@ func (c *DockerServiceController) ListBackups(ctx context.Context, serviceID str
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return []model.DatabaseBackup{}, nil
 		}
 		return nil, fmt.Errorf("list backups: %w", err)
 	}
@@ -230,12 +230,15 @@ func (c *DockerServiceController) CreateBackup(ctx context.Context, serviceID, d
 	if err := engine.ValidateDatabaseName(database); err != nil {
 		return model.DatabaseJob{}, invalidIdentifier(err)
 	}
-	if err := c.requireActive(ctx, serviceID); err != nil {
-		return model.DatabaseJob{}, err
-	}
 	kind := req.Kind
 	if kind == "" {
 		kind = model.BackupManual
+	}
+	if !validBackupKind(kind) {
+		return model.DatabaseJob{}, fmt.Errorf("%w: unsupported backup kind %q", databases.ErrInvalidRequest, kind)
+	}
+	if err := c.requireActive(ctx, serviceID); err != nil {
+		return model.DatabaseJob{}, err
 	}
 	command, err := engine.DumpCommand(database)
 	if err != nil {
@@ -316,6 +319,15 @@ func (c *DockerServiceController) CreateBackup(ctx context.Context, serviceID, d
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
+}
+
+func validBackupKind(kind model.DatabaseBackupKind) bool {
+	switch kind {
+	case model.BackupManual, model.BackupPreDrop, model.BackupPreRestore, model.BackupPreImport:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *DockerServiceController) backupFilename(dir string, kind model.DatabaseBackupKind) string {
