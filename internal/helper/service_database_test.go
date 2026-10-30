@@ -331,6 +331,40 @@ func TestHelperDatabaseSecretIsPrivate(t *testing.T) {
 	}
 }
 
+func TestHelperRejectsTopLevelServicesSymlink(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "services")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := c.writeDatabaseSecret("mysql", "usr_app", "s3cret"); err == nil {
+		t.Fatal("writeDatabaseSecret followed a top-level services symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "mysql", "secrets", "database-users", "usr_app")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("secret escaped the helper root: %v", err)
+	}
+}
+
+func TestHelperRejectsTopLevelBackupsSymlink(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "databases", "mysql", "app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "databases", "mysql", "app", "20261030T120000.000000000Z.sql.gz"), []byte("gzip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "backups")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := c.ListBackups(context.Background(), "mysql"); err == nil {
+		t.Fatal("ListBackups followed a top-level backups symlink")
+	}
+	if _, err := c.CreateBackup(context.Background(), "mysql", "app", databases.CreateBackupRequest{Kind: model.BackupManual}); err == nil {
+		t.Fatal("CreateBackup followed a top-level backups symlink")
+	}
+}
+
 func TestHelperDatabaseSecretRejectsTraversal(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	for _, userID := range []string{"../root", "..", "a/b", ""} {

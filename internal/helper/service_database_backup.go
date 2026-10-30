@@ -79,7 +79,7 @@ func (c *DockerServiceController) resolveBackup(serviceID, backupID string) (str
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", "", "", nil, engineID, fmt.Errorf("%w: invalid backup path", databases.ErrInvalidRequest)
 	}
-	if err := rejectSymlinkPath(filepath.Join(c.root, "backups"), dir); err != nil {
+	if err := rejectSymlinkPath(c.root, dir); err != nil {
 		return "", "", "", nil, engineID, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
 	}
 	if info, err := os.Lstat(dir); err != nil {
@@ -114,7 +114,7 @@ func (c *DockerServiceController) ListBackups(ctx context.Context, serviceID str
 		return nil, fmt.Errorf("%w: Redis does not support backups", databases.ErrUnsupported)
 	}
 	root := c.backupRoot(serviceID)
-	if err := rejectSymlinkPath(filepath.Join(c.root, "backups"), root); err != nil {
+	if err := rejectSymlinkPath(c.root, root); err != nil {
 		return nil, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
 	}
 	entries, err := os.ReadDir(root)
@@ -223,7 +223,7 @@ func (c *DockerServiceController) CreateBackup(ctx context.Context, serviceID, d
 	defer func() { _ = stream.Close() }()
 
 	dir := filepath.Join(c.backupRoot(serviceID), database)
-	if err := rejectSymlinkPath(filepath.Join(c.root, "backups"), dir); err != nil {
+	if err := rejectSymlinkPath(c.root, dir); err != nil {
 		return model.DatabaseJob{}, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -473,7 +473,7 @@ func (c *DockerServiceController) ImportDatabase(ctx context.Context, serviceID,
 		}
 	}
 	stagingDir := filepath.Join(c.backupRoot(serviceID), ".staging")
-	if err := rejectSymlinkPath(filepath.Join(c.root, "backups"), stagingDir); err != nil {
+	if err := rejectSymlinkPath(c.root, stagingDir); err != nil {
 		return model.DatabaseJob{}, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
 	}
 	if err := os.MkdirAll(stagingDir, 0o700); err != nil {

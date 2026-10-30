@@ -394,7 +394,7 @@ func (c *DockerServiceController) EnableRedisACLFile(ctx context.Context) error 
 	aclPath := filepath.Join(c.root, "services", string(services.IDRedis), "data", "users.acl")
 	markerPath := filepath.Join(c.root, "services", string(services.IDRedis), "config", ".aclfile-restart-pending")
 	for _, target := range []string{configPath, aclPath, markerPath} {
-		if err := rejectSymlinkPath(filepath.Join(c.root, "services"), target); err != nil {
+		if err := rejectSymlinkPath(c.root, target); err != nil {
 			return fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
 		}
 	}

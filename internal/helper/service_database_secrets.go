@@ -38,7 +38,7 @@ func (c *DockerServiceController) databaseSecretPath(serviceID, userID string) (
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%w: invalid database user ID %q", databases.ErrInvalidRequest, userID)
 	}
-	if err := rejectSymlinkPath(filepath.Join(c.root, "services"), dir); err != nil {
+	if err := rejectSymlinkPath(c.root, dir); err != nil {
 		return "", fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
 	}
 	return path, nil
