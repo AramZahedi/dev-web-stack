@@ -94,12 +94,12 @@ func (execRunner) RunStream(ctx context.Context, name string, args ...string) (i
 	if err != nil {
 		return nil, fmt.Errorf("%s: open stdout: %w", name, err)
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &limitedBuffer{limit: 64 << 10}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	return &commandStream{ReadCloser: stdout, cmd: cmd, name: name, stderr: &stderr}, nil
+	return &commandStream{ReadCloser: stdout, cmd: cmd, name: name, stderr: stderr}, nil
 }
 
 func (execRunner) RunInputStream(ctx context.Context, input io.Reader, name string, args ...string) error {
@@ -151,7 +151,7 @@ type commandStream struct {
 	io.ReadCloser
 	cmd    *exec.Cmd
 	name   string
-	stderr *bytes.Buffer
+	stderr *limitedBuffer
 }
 
 func (s *commandStream) Close() error {

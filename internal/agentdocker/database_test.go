@@ -21,12 +21,12 @@ type databaseCall struct {
 }
 
 type fakeDatabaseRunner struct {
-	mu           sync.Mutex
-	calls        []databaseCall
-	runOutputs   map[string][]byte
-	streamOutput   []byte
-	streamErr      error
-	streamCloseErr error
+	mu                sync.Mutex
+	calls             []databaseCall
+	runOutputs        map[string][]byte
+	streamOutput      []byte
+	streamErr         error
+	streamCloseErr    error
 	inputErr          error
 	failOnInput       string
 	failOnArgs        string
@@ -280,6 +280,24 @@ func TestRunInputStreamDiscardsLargeStdout(t *testing.T) {
 	}
 	if len(err.Error()) > 128*1024 {
 		t.Fatalf("RunInputStream buffered large stdout in its error (%d bytes)", len(err.Error()))
+	}
+}
+
+func TestRunStreamBoundsStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell")
+	}
+	stream, err := (execRunner{}).RunStream(context.Background(), "sh", "-c", "head -c 2000000 /dev/zero >&2; exit 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(stream)
+	closeErr := stream.Close()
+	if closeErr == nil {
+		t.Fatal("RunStream reported success for a failed command")
+	}
+	if len(closeErr.Error()) > 128*1024 {
+		t.Fatalf("RunStream buffered unbounded stderr (%d bytes)", len(closeErr.Error()))
 	}
 }
 
