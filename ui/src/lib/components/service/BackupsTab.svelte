@@ -51,7 +51,7 @@
   let restoreTarget = $state<DatabaseBackup | null>(null);
   let restoreMode = $state<'new' | 'overwrite'>('new');
   let restoreName = $state('');
-  let preRestoreBackup = $state(true);
+  let preRestoreBackup = $state(false);
   let restoring = $state(false);
   let restoreError = $state<DescribedError | null>(null);
 
@@ -173,8 +173,14 @@
     restoreError = null;
     restoreMode = 'new';
     restoreName = defaultRestoreName(backup.database);
-    preRestoreBackup = true;
+    preRestoreBackup = false;
     restoreTarget = backup;
+  }
+
+  function setRestoreMode(mode: 'new' | 'overwrite'): void {
+    restoreMode = mode;
+    // An overwrite always takes a pre-restore backup; the toggle is locked on.
+    preRestoreBackup = mode === 'overwrite';
   }
 
   async function confirmRestore(): Promise<void> {
@@ -187,7 +193,7 @@
         target: restoreMode === 'overwrite' ? target.database : restoreName,
         overwrite: restoreMode === 'overwrite',
         confirm: target.database,
-        pre_restore_backup: preRestoreBackup,
+        pre_restore_backup: restoreMode === 'overwrite' ? true : preRestoreBackup,
       });
       restoreTarget = null;
       addToast({
@@ -463,7 +469,7 @@
             name="restore-mode"
             value="new"
             checked={restoreMode === 'new'}
-            onchange={() => (restoreMode = 'new')}
+            onchange={() => setRestoreMode('new')}
           />
           <span>
             <strong>Restore to a new database (default)</strong>
@@ -476,7 +482,7 @@
             name="restore-mode"
             value="overwrite"
             checked={restoreMode === 'overwrite'}
-            onchange={() => (restoreMode = 'overwrite')}
+            onchange={() => setRestoreMode('overwrite')}
           />
           <span>
             <strong>Overwrite existing database</strong>
@@ -500,7 +506,10 @@
       <Toggle
         bind:checked={preRestoreBackup}
         label="Pre-restore backup"
-        description="Back up the target before the restore so a failure has a one-click recovery."
+        disabled={restoreMode === 'overwrite'}
+        description={restoreMode === 'overwrite'
+          ? 'Required for overwrite restores so a failure has a one-click recovery.'
+          : 'Optional for a new database; back up the target before the restore.'}
       />
 
       {#if restoreError}

@@ -119,28 +119,7 @@ describe('BackupsTab', () => {
     expect(screen.queryByText(/activate the service to download/i)).toBeNull();
   });
 
-  it('requires the target name for overwrite restore', async () => {
-    render(BackupsTab, {
-      props: {
-        service: MYSQL_SERVICE,
-        backups: MYSQL_BACKUPS,
-        databases: MYSQL_DATABASES,
-        onRefresh: vi.fn(),
-      },
-    });
-
-    await fireEvent.click(screen.getByRole('button', { name: /restore app backup/i }));
-
-    const confirm = screen.getByRole('button', { name: 'Restore backup' }) as HTMLButtonElement;
-    expect(confirm.disabled).toBe(true);
-
-    await fireEvent.input(screen.getByLabelText(/type .app. to confirm/i), {
-      target: { value: 'app' },
-    });
-    await waitFor(() => expect(confirm.disabled).toBe(false));
-  });
-
-  it('restores into a new database after the typed confirmation', async () => {
+  it('forces and locks the pre-restore backup for overwrite restore', async () => {
     render(BackupsTab, {
       props: {
         service: MYSQL_SERVICE,
@@ -152,6 +131,45 @@ describe('BackupsTab', () => {
 
     await fireEvent.click(screen.getByRole('button', { name: /restore app backup/i }));
     const dialog = await screen.findByRole('dialog');
+
+    await fireEvent.click(within(dialog).getByLabelText(/overwrite existing database/i));
+
+    const backupToggle = within(dialog).getByRole('switch', {
+      name: 'Pre-restore backup',
+    }) as HTMLButtonElement;
+    expect(backupToggle.getAttribute('aria-checked')).toBe('true');
+    expect(backupToggle.disabled).toBe(true);
+
+    const confirm = within(dialog).getByRole('button', {
+      name: 'Restore backup',
+    }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+
+    await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+  });
+
+  it('restores into a new database with no pre-restore backup by default', async () => {
+    render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: MYSQL_BACKUPS,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /restore app backup/i }));
+    const dialog = await screen.findByRole('dialog');
+
+    const backupToggle = within(dialog).getByRole('switch', {
+      name: 'Pre-restore backup',
+    }) as HTMLButtonElement;
+    expect(backupToggle.getAttribute('aria-checked')).toBe('false');
+    expect(backupToggle.disabled).toBe(false);
+
     await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
       target: { value: 'app' },
     });
@@ -164,14 +182,15 @@ describe('BackupsTab', () => {
         expect.objectContaining({
           overwrite: false,
           confirm: 'app',
-          pre_restore_backup: true,
+          pre_restore_backup: false,
           target: expect.stringMatching(/^app_restore_/),
         }),
       ),
     );
   });
 
-  it('shows an inactive-service error instead of creating a backup while stopped', async () => {    render(BackupsTab, {
+  it('shows an inactive-service error instead of creating a backup while stopped', async () => {
+    render(BackupsTab, {
       props: {
         service: STOPPED_MYSQL,
         backups: MYSQL_BACKUPS,
