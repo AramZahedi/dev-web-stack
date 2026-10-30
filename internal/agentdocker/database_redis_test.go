@@ -280,3 +280,60 @@ func TestDeleteRedisUserRequiresConfirmation(t *testing.T) {
 		t.Fatalf("delete did not remove the redis user: %s", runner.joinedCalls())
 	}
 }
+
+func TestRedisMutationMigratesACLFileBeforeSetUser(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	configDir := filepath.Join(d.root, "services", "redis", "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "redis.conf"), []byte("appendonly yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner.runOutputs["ACL LIST"] = []byte("user default on nopass ~* &* +@all\n")
+	if _, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache"}); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(configDir, "redis.conf"))
+	if err != nil || !strings.Contains(string(config), "aclfile /data/users.acl") {
+		t.Fatalf("config = %s, %v", config, err)
+	}
+	if _, err := os.Stat(filepath.Join(d.root, "services", "redis", "data", "users.acl")); err != nil {
+		t.Fatalf("users.acl missing: %v", err)
+	}
+	restart := strings.Index(runner.joinedCalls(), "restart redis")
+	setuser := strings.Index(runner.joinedCalls(), "ACL SETUSER")
+	if restart < 0 || setuser < 0 || restart > setuser {
+		t.Fatalf("ACL mutation ran before migration:\n%s", runner.joinedCalls())
+	}
+}
+
+func TestRedisACLFileMigrationBacksUpExistingACL(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	configDir := filepath.Join(d.root, "services", "redis", "config")
+	dataDir := filepath.Join(d.root, "services", "redis", "data")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "redis.conf"), []byte("appendonly yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "users.acl"), []byte("user old on #hash ~* +@read\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner.runOutputs["ACL LIST"] = []byte("user default on nopass ~* &* +@all\n")
+	if err := d.EnableRedisACLFile(context.Background(), "redis"); err != nil {
+		t.Fatal(err)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dataDir, "users.acl.bak.*"))
+	if len(matches) != 1 {
+		t.Fatalf("ACL backups = %v", matches)
+	}
+	backup, err := os.ReadFile(matches[0])
+	if err != nil || !strings.Contains(string(backup), "user old") {
+		t.Fatalf("ACL backup = %s, %v", backup, err)
+	}
+}

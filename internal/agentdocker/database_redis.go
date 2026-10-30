@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/credentials"
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/dbengine"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
 
 const redisShellWrapper = `set -eu
@@ -90,6 +92,9 @@ func (d *Docker) SetRedisUser(ctx context.Context, serviceID string, req databas
 	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
 		return model.DatabaseUser{}, err
 	}
+	if err := d.ensureRedisACLFileLocked(ctx, serviceID, service); err != nil {
+		return model.DatabaseUser{}, err
+	}
 	if _, err := d.runRedisCommand(ctx, serviceID, command, secretArg); err != nil {
 		return model.DatabaseUser{}, err
 	}
@@ -126,6 +131,9 @@ func (d *Docker) UpdateRedisUser(ctx context.Context, serviceID, userID string, 
 	lock.Lock()
 	defer lock.Unlock()
 	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
+		return model.DatabaseUser{}, err
+	}
+	if err := d.ensureRedisACLFileLocked(ctx, serviceID, service); err != nil {
 		return model.DatabaseUser{}, err
 	}
 	user, err := d.findRedisUser(ctx, serviceID, userID)
@@ -193,6 +201,9 @@ func (d *Docker) DeleteRedisUser(ctx context.Context, serviceID, userID, confirm
 	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
 		return err
 	}
+	if err := d.ensureRedisACLFileLocked(ctx, serviceID, service); err != nil {
+		return err
+	}
 	acl := dbengine.NewRedisACL()
 	if _, err := d.runRedisCommand(ctx, serviceID, acl.DeleteUserCommand(username), ""); err != nil {
 		return err
@@ -227,6 +238,9 @@ func (d *Docker) SetRedisPassword(ctx context.Context, serviceID string) (databa
 	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
 		return databases.Secret{}, err
 	}
+	if err := d.ensureRedisACLFileLocked(ctx, serviceID, service); err != nil {
+		return databases.Secret{}, err
+	}
 	if _, err := d.runRedisCommand(ctx, serviceID, command, secretArg); err != nil {
 		return databases.Secret{}, err
 	}
@@ -254,8 +268,8 @@ func (d *Docker) RevealRedisPassword(ctx context.Context, serviceID, userID stri
 }
 
 // EnableRedisACLFile makes ACL state durable. It is idempotent: a config that
-// already contains an aclfile directive is left alone and Redis is not
-// restarted a second time.
+// already contains an aclfile directive and an existing ACL file is left alone
+// and Redis is not restarted a second time.
 func (d *Docker) EnableRedisACLFile(ctx context.Context, serviceID string) error {
 	engine, service, err := d.databaseEngine(serviceID)
 	if err != nil {
@@ -270,6 +284,10 @@ func (d *Docker) EnableRedisACLFile(ctx context.Context, serviceID string) error
 	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
 		return err
 	}
+	return d.ensureRedisACLFileLocked(ctx, serviceID, service)
+}
+
+func (d *Docker) ensureRedisACLFileLocked(ctx context.Context, serviceID string, service services.Service) error {
 	serviceRoot := filepath.Join(d.root, "services", string(service.ID))
 	configDir := filepath.Join(serviceRoot, "config")
 	configPath := filepath.Join(configDir, "redis.conf")
@@ -279,45 +297,90 @@ func (d *Docker) EnableRedisACLFile(ctx context.Context, serviceID string) error
 	} else if err != nil {
 		return fmt.Errorf("agentdocker: read redis config: %w", err)
 	}
-	if redisConfigHasACLFile(original) {
+	dataDir := filepath.Join(serviceRoot, "data")
+	aclPath := filepath.Join(dataDir, "users.acl")
+	aclExists := false
+	if _, err := os.Lstat(aclPath); err == nil {
+		aclExists = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("agentdocker: inspect redis ACL file: %w", err)
+	}
+	hasACLFile := redisConfigHasACLFile(original)
+	if hasACLFile && aclExists {
 		return nil
 	}
 	if err := ensureRealDirectory(configDir, 0o755); err != nil {
 		return fmt.Errorf("agentdocker: prepare redis config: %w", err)
 	}
-	backupPath := filepath.Join(configDir, "redis.conf.bak."+backupTimestamp())
-	if err := writeDatabaseFileAtomic(backupPath, original, 0o600); err != nil {
-		return fmt.Errorf("agentdocker: back up redis config: %w", err)
+	if err := ensureRealDirectory(dataDir, 0o755); err != nil {
+		return fmt.Errorf("agentdocker: prepare redis data: %w", err)
 	}
-	updated := append(append([]byte{}, original...), []byte("\naclfile /data/users.acl\n")...)
-	if err := writeDatabaseFileAtomic(configPath, updated, 0o644); err != nil {
-		return fmt.Errorf("agentdocker: write redis config: %w", err)
+	if aclExists {
+		data, err := os.ReadFile(aclPath)
+		if err != nil {
+			return fmt.Errorf("agentdocker: read redis ACL file: %w", err)
+		}
+		if err := writeDatabaseFileAtomic(aclPath+".bak."+backupTimestamp(), data, 0o600); err != nil {
+			return fmt.Errorf("agentdocker: back up redis ACL file: %w", err)
+		}
+	}
+	if !hasACLFile {
+		backupPath := filepath.Join(configDir, "redis.conf.bak."+backupTimestamp())
+		if err := writeDatabaseFileAtomic(backupPath, original, 0o600); err != nil {
+			return fmt.Errorf("agentdocker: back up redis config: %w", err)
+		}
+		updated := append(append([]byte{}, original...), []byte("\naclfile /data/users.acl\n")...)
+		if err := writeDatabaseFileAtomic(configPath, updated, 0o644); err != nil {
+			return fmt.Errorf("agentdocker: write redis config: %w", err)
+		}
 	}
 	acl := dbengine.NewRedisACL()
 	output, err := d.runRedisCommand(ctx, serviceID, acl.ListUsersCommand(), "")
 	if err != nil {
-		_ = writeDatabaseFileAtomic(configPath, original, 0o644)
+		if !hasACLFile {
+			_ = writeDatabaseFileAtomic(configPath, original, 0o644)
+		}
 		return fmt.Errorf("agentdocker: seed redis ACL file: %w", err)
-	}
-	dataDir := filepath.Join(serviceRoot, "data")
-	if err := ensureRealDirectory(dataDir, 0o755); err != nil {
-		_ = writeDatabaseFileAtomic(configPath, original, 0o644)
-		return fmt.Errorf("agentdocker: prepare redis data: %w", err)
 	}
 	if len(output) == 0 || output[len(output)-1] != '\n' {
 		output = append(output, '\n')
 	}
 	// The ACL file contains password hashes, not plaintext, and must be
 	// readable by the Redis container user inside /data.
-	if err := writeDatabaseFileAtomic(filepath.Join(dataDir, "users.acl"), output, 0o644); err != nil {
-		_ = writeDatabaseFileAtomic(configPath, original, 0o644)
+	if err := writeDatabaseFileAtomic(aclPath, output, 0o644); err != nil {
+		if !hasACLFile {
+			_ = writeDatabaseFileAtomic(configPath, original, 0o644)
+		}
 		return fmt.Errorf("agentdocker: write redis ACL file: %w", err)
 	}
 	if _, err := d.compose(ctx, "restart", string(service.ID)); err != nil {
-		_ = writeDatabaseFileAtomic(configPath, original, 0o644)
+		if !hasACLFile {
+			_ = writeDatabaseFileAtomic(configPath, original, 0o644)
+		}
 		return fmt.Errorf("agentdocker: restart redis with ACL file: %w", err)
 	}
+	if err := d.waitRedisHealthy(ctx, serviceID); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (d *Docker) waitRedisHealthy(ctx context.Context, serviceID string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, err := d.Status(ctx, serviceID)
+		if err == nil && status.State == "active" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("agentdocker: redis did not become healthy after ACL file migration")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 func (d *Docker) runRedisCommand(ctx context.Context, serviceID string, command []string, secretArg string) ([]byte, error) {
