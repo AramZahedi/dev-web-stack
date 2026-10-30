@@ -1203,6 +1203,21 @@ func TestListUsersUsesLiveGrantsAndPasswordState(t *testing.T) {
 	}
 }
 
+func TestCompletedJobClearsCancellationState(t *testing.T) {
+	m, _, platform, _, _ := testManagerWithFakes(t)
+	platform.job = model.DatabaseJob{ID: "job_1", Status: model.JobSucceeded, BackupID: "bkp_1"}
+	job, err := m.CreateBackup(context.Background(), "mysql", "app", CreateBackupRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitJob(t, m, job.ID)
+	m.jobsMu.Lock()
+	defer m.jobsMu.Unlock()
+	if len(m.cancels) != 0 || len(m.platformJobs) != 0 {
+		t.Fatalf("completed job left state: cancels=%v platformJobs=%v", m.cancels, m.platformJobs)
+	}
+}
+
 func TestManagerEmitsDatabaseAndRedisSSENames(t *testing.T) {
 	m, st, platform, _, events := testManagerWithFakes(t)
 	counter := 0
