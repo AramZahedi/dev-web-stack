@@ -29,6 +29,7 @@ type fakeDatabaseRunner struct {
 	streamCloseErr error
 	inputErr       error
 	failOnInput    string
+	failOnArgs     string
 	state          string
 }
 
@@ -63,9 +64,13 @@ func (r *fakeDatabaseRunner) RunInput(ctx context.Context, input []byte, name st
 	r.mu.Lock()
 	r.calls = append(r.calls, databaseCall{args: append([]string{name}, args...), input: append([]byte(nil), input...)})
 	failOn := r.failOnInput
+	failOnArgs := r.failOnArgs
 	r.mu.Unlock()
 	if failOn != "" && strings.Contains(string(input), failOn) {
 		return nil, errors.New("simulated input failure")
+	}
+	if failOnArgs != "" && strings.Contains(strings.Join(args, " "), failOnArgs) {
+		return nil, errors.New("simulated args failure")
 	}
 	if r.inputErr != nil {
 		return nil, r.inputErr

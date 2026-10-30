@@ -148,7 +148,7 @@ func (*postgresEngine) ParseUsers(output []byte) ([]model.DatabaseUser, error) {
 }
 
 func (*postgresEngine) ListGrantsCommand(username, host string) ([]string, error) {
-	if err := ValidateIdentifier(username); err != nil {
+	if err := ValidateExistingUsername(model.DatabasePostgreSQL, username); err != nil {
 		return nil, err
 	}
 	if err := (&postgresEngine{}).ValidateHost(host); err != nil {
@@ -207,7 +207,7 @@ func (*postgresEngine) CreateUserSQL(username, host, password string) (string, e
 	if err := validatePasswordLiteral(password); err != nil {
 		return "", err
 	}
-	quoted, err := QuoteIdentifier(model.DatabasePostgreSQL, username)
+	quoted, err := quotePostgresRole(username)
 	if err != nil {
 		return "", err
 	}
@@ -215,16 +215,13 @@ func (*postgresEngine) CreateUserSQL(username, host, password string) (string, e
 }
 
 func (*postgresEngine) SetPasswordSQL(username, host, password string) (string, error) {
-	if err := ValidateIdentifier(username); err != nil {
-		return "", err
-	}
 	if err := (&postgresEngine{}).ValidateHost(host); err != nil {
 		return "", err
 	}
 	if err := validatePasswordLiteral(password); err != nil {
 		return "", err
 	}
-	quoted, err := QuoteIdentifier(model.DatabasePostgreSQL, username)
+	quoted, err := quotePostgresRole(username)
 	if err != nil {
 		return "", err
 	}
@@ -232,17 +229,21 @@ func (*postgresEngine) SetPasswordSQL(username, host, password string) (string, 
 }
 
 func (*postgresEngine) DeleteUserSQL(username, host string) (string, error) {
-	if err := ValidateIdentifier(username); err != nil {
-		return "", err
-	}
 	if err := (&postgresEngine{}).ValidateHost(host); err != nil {
 		return "", err
 	}
-	quoted, err := QuoteIdentifier(model.DatabasePostgreSQL, username)
+	quoted, err := quotePostgresRole(username)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("DROP ROLE %s;", quoted), nil
+}
+
+func quotePostgresRole(name string) (string, error) {
+	if err := ValidateExistingUsername(model.DatabasePostgreSQL, name); err != nil {
+		return "", err
+	}
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`, nil
 }
 
 func (e *postgresEngine) GrantSQL(username, host, database string, grant model.DatabaseGrant) (string, error) {
@@ -254,7 +255,7 @@ func (e *postgresEngine) RevokeSQL(username, host, database string, grant model.
 }
 
 func (e *postgresEngine) grantRevokeSQL(verb, target, username, host, database string, grant model.DatabaseGrant) (string, error) {
-	if err := e.ValidateUsername(username); err != nil {
+	if err := ValidateExistingUsername(model.DatabasePostgreSQL, username); err != nil {
 		return "", err
 	}
 	if err := e.ValidateHost(host); err != nil {
@@ -263,7 +264,7 @@ func (e *postgresEngine) grantRevokeSQL(verb, target, username, host, database s
 	if err := e.ValidateDatabaseName(database); err != nil {
 		return "", err
 	}
-	user, err := QuoteIdentifier(model.DatabasePostgreSQL, username)
+	user, err := quotePostgresRole(username)
 	if err != nil {
 		return "", err
 	}

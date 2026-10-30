@@ -307,3 +307,37 @@ func TestPostgresListUsersIncludesDisabledRoles(t *testing.T) {
 		t.Fatalf("disabled role = %+v", users[1])
 	}
 }
+
+func TestExistingUsernamesAllowDotsAndDashes(t *testing.T) {
+	for _, e := range []Engine{NewMySQL(), NewMariaDB(), NewPostgreSQL()} {
+		if err := e.ValidateUsername("app-user"); err == nil {
+			t.Fatalf("%s accepted a dot/dash name for a new user", e.ID())
+		}
+	}
+	mysql := NewMySQL()
+	if _, err := mysql.GrantSQL("app-user", "%", "app", model.DatabaseGrant{Database: "app", Preset: model.GrantReadOnly}); err != nil {
+		t.Fatalf("mysql grant for existing dashed user: %v", err)
+	}
+	if _, err := mysql.SetPasswordSQL("app.user", "%", "pw"); err != nil {
+		t.Fatalf("mysql password for existing dotted user: %v", err)
+	}
+	if _, err := mysql.DeleteUserSQL("app-user", "%"); err != nil {
+		t.Fatalf("mysql delete for existing dashed user: %v", err)
+	}
+	pg := NewPostgreSQL()
+	if _, err := pg.GrantSQL("app-user", "", "app", model.DatabaseGrant{Database: "app", Preset: model.GrantReadOnly}); err != nil {
+		t.Fatalf("postgres grant for existing dashed role: %v", err)
+	}
+	if _, err := pg.SetPasswordSQL("app.user", "", "pw"); err != nil {
+		t.Fatalf("postgres password for existing dotted role: %v", err)
+	}
+	if _, err := pg.DeleteUserSQL("app-user", ""); err != nil {
+		t.Fatalf("postgres delete for existing dashed role: %v", err)
+	}
+	if err := ValidateExistingUsername(model.DatabaseMySQL, "app-user"); err != nil {
+		t.Fatalf("existing username validation rejected app-user: %v", err)
+	}
+	if err := ValidateExistingUsername(model.DatabaseMySQL, "app;drop"); err == nil {
+		t.Fatal("existing username validation accepted injection")
+	}
+}

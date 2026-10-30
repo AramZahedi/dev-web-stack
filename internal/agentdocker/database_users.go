@@ -59,9 +59,11 @@ func (d *Docker) ListUsers(ctx context.Context, serviceID string) ([]model.Datab
 		users[i].Host = normalizeDatabaseHost(engine.ID(), users[i].Host)
 		users[i].ID = databaseUserID(string(service.ID), users[i].Username, users[i].Host)
 		users[i].PasswordManaged = d.databaseSecretExists(serviceID, users[i].ID)
-		if grants, grantErr := d.listUserGrants(ctx, serviceID, engine, users[i].Username, users[i].Host); grantErr == nil {
-			users[i].Grants = grants
+		grants, err := d.listUserGrants(ctx, serviceID, engine, users[i].Username, users[i].Host)
+		if err != nil {
+			return nil, err
 		}
+		users[i].Grants = grants
 	}
 	return users, nil
 }
@@ -367,7 +369,7 @@ func (d *Docker) isProtectedUserID(engine dbengine.Engine, serviceID, userID str
 }
 
 func databaseSetEnabledSQL(engine dbengine.Engine, username, host string, enabled bool) (string, error) {
-	if err := engine.ValidateUsername(username); err != nil {
+	if err := dbengine.ValidateExistingUsername(engine.ID(), username); err != nil {
 		return "", err
 	}
 	if err := engine.ValidateHost(host); err != nil {
@@ -395,11 +397,11 @@ func databaseSetEnabledSQL(engine dbengine.Engine, username, host string, enable
 }
 
 func (d *Docker) reassignOwnedObjects(ctx context.Context, serviceID, username string) error {
-	user, err := dbengine.QuoteIdentifier(model.DatabasePostgreSQL, username)
+	user, err := dbengine.QuoteExistingIdentifier(model.DatabasePostgreSQL, username)
 	if err != nil {
 		return err
 	}
-	owner, err := dbengine.QuoteIdentifier(model.DatabasePostgreSQL, "devstack")
+	owner, err := dbengine.QuoteExistingIdentifier(model.DatabasePostgreSQL, "devstack")
 	if err != nil {
 		return err
 	}

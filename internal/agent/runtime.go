@@ -502,7 +502,10 @@ func ctxErr(ctx context.Context) error {
 	return ctx.Err()
 }
 
-var agentDatabaseUserIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var (
+	agentDatabaseUserIDPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	agentExistingUsernamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+)
 
 // resolveDatabaseEnv turns the site's non-secret database links into the
 // DB_*/DATABASE_URL values. Secrets are read from the agent-owned tree and are
@@ -527,6 +530,9 @@ func (r *Runtime) resolveDatabaseEnv(spec agentproto.SiteSpec) (map[string]strin
 		}
 		if expectedEngine == "" || engine != expectedEngine {
 			return nil, fmt.Errorf("agent: link engine %q does not match service %q", engine, serviceID)
+		}
+		if !agentExistingUsernamePattern.MatchString(link.Username) {
+			return nil, fmt.Errorf("agent: invalid database username %q", link.Username)
 		}
 		port := link.Port
 		if port <= 0 || port > 65535 {

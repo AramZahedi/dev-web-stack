@@ -2,11 +2,46 @@ package dbengine
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
+
+var existingUsernameRegex = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+// ValidateExistingUsername accepts a conservative superset of the strict
+// new-user grammar so users created outside devstack (for example app-user or
+// app.user) remain manageable. Quoting still rejects control characters and
+// quote characters.
+func ValidateExistingUsername(engine model.DatabaseEngine, name string) error {
+	switch engine {
+	case model.DatabaseMySQL, model.DatabaseMariaDB, model.DatabasePostgreSQL:
+		if existingUsernameRegex.MatchString(name) {
+			return nil
+		}
+		return fmt.Errorf("%w: invalid existing username %q", ErrInvalidIdentifier, name)
+	default:
+		return ErrUnsupported
+	}
+}
+
+// QuoteExistingIdentifier quotes an existing engine identity without applying
+// the stricter new-identifier grammar.
+func QuoteExistingIdentifier(engine model.DatabaseEngine, name string) (string, error) {
+	if err := ValidateExistingUsername(engine, name); err != nil {
+		return "", err
+	}
+	switch engine {
+	case model.DatabaseMySQL, model.DatabaseMariaDB:
+		return "`" + strings.ReplaceAll(name, "`", "``") + "`", nil
+	case model.DatabasePostgreSQL, model.DatabaseRedis:
+		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`, nil
+	default:
+		return "", ErrUnsupported
+	}
+}
 
 // mysqlEngine implements the shared MySQL/MariaDB SQL surface. The two engines
 // differ only in the client and dump tool names and in the identity of the
@@ -208,6 +243,9 @@ func (e *mysqlEngine) ParseGrants(output []byte) ([]model.DatabaseGrant, error) 
 }
 
 func (e *mysqlEngine) CreateUserSQL(username, host, password string) (string, error) {
+	if err := e.ValidateUsername(username); err != nil {
+		return "", err
+	}
 	user, err := e.quoteUser(username, host)
 	if err != nil {
 		return "", err
@@ -285,7 +323,7 @@ func (e *mysqlEngine) RestoreCommand(database string) ([]string, error) {
 }
 
 func (e *mysqlEngine) quoteUser(username, host string) (string, error) {
-	if err := e.ValidateUsername(username); err != nil {
+	if err := ValidateExistingUsername(e.id, username); err != nil {
 		return "", err
 	}
 	host = normalizeMySQLHost(host)

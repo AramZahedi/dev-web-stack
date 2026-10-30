@@ -277,3 +277,35 @@ func TestCreateUserRollsBackOnGrantFailure(t *testing.T) {
 		t.Fatalf("failed create left a secret at %s: %v", path, statErr)
 	}
 }
+
+func TestListUsersSupportsDottedAndDashedNames(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.runOutputs["mysql.user"] = []byte("app-user\t%\tN\napp.user\t%\tN\n")
+	runner.runOutputs["SHOW GRANTS"] = []byte("GRANT SELECT ON `app`.* TO `app-user`@`%`\n")
+	users, err := d.ListUsers(context.Background(), "mysql")
+	if err != nil || len(users) != 2 {
+		t.Fatalf("users = %+v, %v", users, err)
+	}
+	enabled := false
+	if _, err := d.UpdateUser(context.Background(), "mysql", databaseUserID("mysql", "app-user", "%"), databases.UpdateUserRequest{Enabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains("ALTER USER 'app-user'@'%' ACCOUNT LOCK") {
+		t.Fatalf("dashed user update SQL missing: %s", runner.joinedCalls())
+	}
+	if err := d.DeleteUser(context.Background(), "mysql", databaseUserID("mysql", "app.user", "%"), databases.DeleteUserRequest{Confirm: "app.user"}); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains("DROP USER 'app.user'@'%'") {
+		t.Fatalf("dotted user delete SQL missing: %s", runner.joinedCalls())
+	}
+}
+
+func TestListUsersPropagatesGrantErrors(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.runOutputs["mysql.user"] = []byte("app\t%\tN\n")
+	runner.failOnArgs = "SHOW GRANTS"
+	if _, err := d.ListUsers(context.Background(), "mysql"); err == nil {
+		t.Fatal("ListUsers swallowed a grant discovery failure")
+	}
+}
