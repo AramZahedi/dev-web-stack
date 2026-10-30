@@ -30,6 +30,7 @@ the run.
 | Race suite | `CGO_ENABLED=1 go test -race -p 1 ./...` | Not run: no host gcc/cgo; WSL has no Go toolchain |
 | Windows lifecycle | `pwsh -NoProfile -File test/windows/lifecycle_test.ps1` | PASS, 41 tests |
 | Windows release | `pwsh -NoProfile -File test/release/release_windows_ps_test.ps1` | PASS, 41 checks |
+| Windows/WSL vertical slice | `pwsh -NoProfile -File test/windows/vertical_slice.ps1` with `DEVSTACK_HOME` | PASS, 100% green (static Windows/WSL, PHP-FPM, HTTPS, shims, doctor) |
 
 ## CLI coverage
 
@@ -89,6 +90,7 @@ Every action below was exercised against the live daemon with Playwright.
 | Settings | Node default fallback, set 22.11.0, clear to newest 24.22.1, managed shim state, install-more link | PASS |
 | Doctor | checks-pass state, Run checks | PASS |
 | Services | page load, Reload, Preview, profile/benchmark controls present | PASS |
+| Services — Redis lifecycle | install, activate, logs, configuration, restart, deactivate, uninstall with permanent data deletion | PASS |
 | Events/SSE | live logs and refresh after mutations | PASS |
 | Error envelope | invalid Node default, deletion 404 after removal, source validation | PASS |
 | Console | fresh tab across Sites, Runtimes, and Settings | PASS, 0 errors / 0 warnings |
@@ -119,6 +121,23 @@ Every action below was exercised against the live daemon with Playwright.
    credentials/hosts/trust but does not replace a running old agent binary. The
    installer-equivalent stop/copy/start flow was used; documented in
    [Known issues](../../known-issues.md).
+7. **Windows PHP/Composer shims used ambient WSL `php`.** The vertical slice
+   caught `php.cmd`/`composer.cmd` failing after a stale PHP 8.3 symlink was
+   left in `/usr/local/bin/php`. The global shims now pass the resolved PHP
+   build path, set the exact extension directory, and Composer executes its
+   PHAR with that exact PHP binary (`internal/tooling/windows.go`,
+   `internal/tooling/service.go`, tests).
+8. **Vertical-slice harness assumed `C:\devstack` and loopback dashboard access
+   from WSL.** The script now honors `DEVSTACK_HOME`, uses `system/secrets` for
+   agent credentials, and asserts the intentional 403 loopback boundary instead
+   of expecting dashboard access from the WSL network namespace
+   (`test/windows/vertical_slice.ps1`).
+9. **Tooling tests overwrote the live WSL Composer PHAR.** `InstallTool`
+   called `ProvisionWSLComposer` with a fixture PHAR from a temporary test home,
+   writing `composer fixture` into `/data/devstack/tools/composer/composer.phar`.
+   Composer provisioning is now an injectable `Deps` seam and tooling tests use a
+   no-op; the real PHAR is preserved (`internal/tooling/service.go`,
+   `internal/tooling/service_test.go`).
 
 ## Cleanup and final state
 
@@ -135,5 +154,13 @@ Every action below was exercised against the live daemon with Playwright.
 - The native Windows suite and live WSL agent were exercised. A WSL-side Go
   race suite could not run because the distro has no Go toolchain.
 - Host cgo/race support is unavailable, so the native race suite was not run.
-- Windows lifecycle (41 tests) and release (41 checks) PowerShell suites passed
-  in the final gate.
+- Windows lifecycle (41 tests), release (41 checks), and the full Windows/WSL
+  vertical slice passed in the final gate.
+- The dashboard remains intentionally unreachable from the WSL network
+  namespace; WSL site traffic and trusted TLS still pass, and the dashboard
+  loopback boundary returns 403 as designed.
+- The IPv6 doctor probe is skipped on this host because Windows forbids
+  `::1` loopback dials (the listener itself is accepted); the explicit
+  `tcp4`/`tcp6` probe remains in production code.
+- Windows PHP/Composer wrappers now pin the exact resolved PHP build; the WSL
+  `/usr/local/bin/php` legacy symlink is not used by the Windows wrappers.
