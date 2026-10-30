@@ -231,24 +231,26 @@ func TestSiteDBListJSON(t *testing.T) {
 
 func TestSiteDBListJSONRedactsConnectionPasswords(t *testing.T) {
 	useTestSeams(t)
+	secret := "p@ssw0rd-9f3a2b7c"
+	blogSecret := "bl0g-s3cret-7c1d"
 	fake := &fakeClient{databaseLinks: []model.DatabaseLink{{
 		ID: "lnk_1", SiteID: "site-1", ServiceID: "mysql", Engine: model.DatabaseMySQL,
 		Database: "app", Username: "app", PasswordManaged: true,
 		Connection: model.DatabaseConnection{
 			Engine: model.DatabaseMySQL, Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
 			PasswordManaged: true,
-			URL:             "mysql://app:s3cret@127.0.0.1:3306/app",
+			URL:             "mysql://app:" + secret + "@127.0.0.1:3306/app",
 			Env: map[string]string{
-				"DB_PASSWORD":      "s3cret",
-				"DATABASE_URL":     "mysql://app:s3cret@127.0.0.1:3306/app",
+				"DB_PASSWORD":      secret,
+				"DATABASE_URL":     "mysql://app:" + secret + "@127.0.0.1:3306/app",
 				"DB_HOST":          "127.0.0.1",
-				"DB_BLOG_PASSWORD": "blog-secret",
-				"DB_BLOG_URL":      "mysql://blog:blog-secret@127.0.0.1:3306/blog",
+				"DB_BLOG_PASSWORD": blogSecret,
+				"DB_BLOG_URL":      "mysql://blog:" + blogSecret + "@127.0.0.1:3306/blog",
 			},
 		},
 	}}}
 	out := runCLI(t, fake, "site", "db", "list", "blog", "--json")
-	if strings.Contains(out, "s3cret") || strings.Contains(out, "blog-secret") {
+	if strings.Contains(out, secret) || strings.Contains(out, blogSecret) {
 		t.Fatalf("link list leaked a connection password: %s", out)
 	}
 	if !strings.Contains(out, "mysql://app@127.0.0.1:3306/app") || !strings.Contains(out, "mysql://blog@127.0.0.1:3306/blog") {
@@ -261,16 +263,17 @@ func TestSiteDBListJSONRedactsConnectionPasswords(t *testing.T) {
 
 func TestSiteDBLinkJSONRedactsConnectionSecrets(t *testing.T) {
 	useTestSeams(t)
+	secret := "p@ssw0rd-9f3a2b7c"
 	fake := &fakeClient{databaseLinked: model.DatabaseLink{
 		ID: "lnk_1", Database: "app", Username: "app",
 		Connection: model.DatabaseConnection{
 			Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
-			URL: "mysql://app:s3cret@127.0.0.1:3306/app?password=s3cret",
-			Env: map[string]string{"DB_PASSWORD": "s3cret", "DB_BLOG_PASSWORD": "s3cret", "DB_BLOG_URL": "mysql://blog:s3cret@127.0.0.1:3306/blog"},
+			URL: "mysql://app:" + secret + "@127.0.0.1:3306/app?password=" + secret,
+			Env: map[string]string{"DB_PASSWORD": secret, "DB_BLOG_PASSWORD": secret, "DB_BLOG_URL": "mysql://blog:" + secret + "@127.0.0.1:3306/blog"},
 		},
 	}}
 	out := runCLI(t, fake, "site", "db", "link", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--json")
-	if strings.Contains(out, "s3cret") {
+	if strings.Contains(out, secret) {
 		t.Fatalf("site db link JSON leaked a secret: %s", out)
 	}
 	if strings.Contains(out, "DB_PASSWORD") || strings.Contains(out, "DB_BLOG_PASSWORD") {
@@ -367,6 +370,34 @@ func TestSiteDBLinkExternalPasswordStdinUnsupported(t *testing.T) {
 	}
 	if fake.databaseLinkReq.UserID != "" || fake.lastHome != "" {
 		t.Fatal("site db link called the daemon for an unsupported external password")
+	}
+}
+
+func TestSiteDBLinkExplicitFalsePasswordStdinDoesNotRead(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseLinked: model.DatabaseLink{ID: "lnk_1", Database: "app"}}
+	reader := &trackingReader{data: "s3cret\n"}
+	code, stdout, stderr := runCLIExitReader(t, fake, reader, "site", "db", "link", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--password-stdin=false")
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if reader.read {
+		t.Fatal("explicitly false password-stdin flag still read stdin")
+	}
+	if fake.databaseLinkReq.Password != "" || fake.databaseLinkReq.UserID != "usr_app" {
+		t.Fatalf("link req=%+v", fake.databaseLinkReq)
+	}
+}
+
+func TestSiteDBLinkRejectsRedisBeforeAPI(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "site", "db", "link", "blog", "--service", "redis", "--database", "app", "--user-id", "usr_app")
+	if code == 0 || !strings.Contains(stderr, "DATABASE_UNSUPPORTED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.databaseLinkReq.UserID != "" || fake.lastHome != "" {
+		t.Fatal("site db link called the daemon for a Redis link")
 	}
 }
 

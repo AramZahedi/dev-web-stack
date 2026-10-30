@@ -113,6 +113,57 @@ func TestDBUserCreateRejectsPrivilegesForNonCustomPreset(t *testing.T) {
 	}
 }
 
+func TestDBUserCreateAccessLevelAndCustomGrant(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseUserCreated: model.DatabaseUser{ID: "usr_cache", Username: "cache"}}
+	runCLI(t, fake, "db", "user", "create", "--service", "redis", "--name", "cache",
+		"--access-level", "read-only", "--grant", "cache:custom", "--privilege", "GET", "--privilege", "SET")
+	req := fake.databaseUserCreateReq
+	if req.AccessLevel != "read-only" {
+		t.Fatalf("access level=%q", req.AccessLevel)
+	}
+	if len(req.Grants) != 1 || req.Grants[0].Preset != model.GrantCustom || len(req.Grants[0].Privileges) != 2 {
+		t.Fatalf("grants=%+v", req.Grants)
+	}
+}
+
+func TestDBBackupDeleteYesCallsAPI(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	runCLI(t, fake, "db", "backup", "delete", "--service", "mysql", "--backup-id", "bkp_1", "--yes")
+	if !fake.databaseBackupDelete {
+		t.Fatal("backup delete API not called with --yes")
+	}
+}
+
+func TestDBLinkExplicitFalsePasswordStdinDoesNotRead(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseLinked: model.DatabaseLink{ID: "lnk_1", Database: "app"}}
+	reader := &trackingReader{data: "s3cret\n"}
+	code, stdout, stderr := runCLIExitReader(t, fake, reader, "db", "link", "--site", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--password-stdin=false")
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if reader.read {
+		t.Fatal("explicitly false password-stdin flag still read stdin")
+	}
+	if fake.databaseLinkReq.Password != "" || fake.databaseLinkReq.UserID != "usr_app" {
+		t.Fatalf("link req=%+v", fake.databaseLinkReq)
+	}
+}
+
+func TestDBLinkRejectsRedisBeforeAPI(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "db", "link", "--site", "blog", "--service", "redis", "--database", "app", "--user-id", "usr_app")
+	if code == 0 || !strings.Contains(stderr, "DATABASE_UNSUPPORTED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.databaseLinkReq.UserID != "" || fake.lastHome != "" {
+		t.Fatal("db link called the daemon for a Redis link")
+	}
+}
+
 func TestDBUserGrantMergesExistingGrants(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{
@@ -361,17 +412,18 @@ func TestDBLinkAndUnlink(t *testing.T) {
 
 func TestDBLinkJSONRedactsConnectionSecrets(t *testing.T) {
 	useTestSeams(t)
+	secret := "p@ssw0rd-9f3a2b7c"
 	fake := &fakeClient{databaseLinked: model.DatabaseLink{
 		ID: "lnk_1", Database: "app", Username: "app",
-		Error: "failed mysql://app:s3cret@127.0.0.1:3306/app?password=s3cret",
+		Error: "failed mysql://app:" + secret + "@127.0.0.1:3306/app?password=" + secret,
 		Connection: model.DatabaseConnection{
 			Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
-			URL: "mysql://app:s3cret@127.0.0.1:3306/app?password=s3cret&sslmode=require",
-			Env: map[string]string{"DB_PASSWORD": "s3cret", "DB_BLOG_PASSWORD": "s3cret", "DB_BLOG_URL": "mysql://blog:s3cret@127.0.0.1:3306/blog", "DB_HOST": "127.0.0.1"},
+			URL: "mysql://app:" + secret + "@127.0.0.1:3306/app?password=" + secret + "&sslmode=require",
+			Env: map[string]string{"DB_PASSWORD": secret, "DB_BLOG_PASSWORD": secret, "DB_BLOG_URL": "mysql://blog:" + secret + "@127.0.0.1:3306/blog", "DB_HOST": "127.0.0.1"},
 		},
 	}}
 	out := runCLI(t, fake, "db", "link", "--site", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--json")
-	if strings.Contains(out, "s3cret") {
+	if strings.Contains(out, secret) {
 		t.Fatalf("db link JSON leaked a secret: %s", out)
 	}
 	if strings.Contains(out, "DB_PASSWORD") || strings.Contains(out, "DB_BLOG_PASSWORD") {

@@ -23,8 +23,8 @@ const maxDatabaseImportBytes = 1 << 30
 var (
 	databasePasswordEnvPattern = regexp.MustCompile(`(?i)^DB_.*_PASSWORD$`)
 	databaseURLEnvPattern      = regexp.MustCompile(`(?i)^(DATABASE_URL|DB_.*_URL)$`)
-	databaseURLUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+):([^@\s/]+)@`)
-	databaseDSNUserinfoPattern = regexp.MustCompile(`(?i)([a-z0-9_.-]+):([^@\s]+)@(tcp\(|unix\(|/)`)
+	databaseURLUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+):([^/\s?#]+)@`)
+	databaseDSNUserinfoPattern = regexp.MustCompile(`(?i)([a-z0-9_.-]+):([^?#\s]+)@(tcp\(|unix\(|/)`)
 	databaseSecretParamPattern = regexp.MustCompile(`(?i)([?&][^=&\s]*(?:password|passwd|pwd|secret|token)[^=&\s]*=)[^&\s]+`)
 	databaseSecretTextPattern  = regexp.MustCompile(`(?i)(password|passwd|pwd|secret|token)\s*[:=]\s*[^\s,;]+`)
 )
