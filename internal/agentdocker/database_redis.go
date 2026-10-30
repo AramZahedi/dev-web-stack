@@ -248,7 +248,9 @@ func (d *Docker) EnableRedisACLFile(ctx context.Context, serviceID string) error
 	if len(output) == 0 || output[len(output)-1] != '\n' {
 		output = append(output, '\n')
 	}
-	if err := writeDatabaseFileAtomic(filepath.Join(dataDir, "users.acl"), output, 0o600); err != nil {
+	// The ACL file contains password hashes, not plaintext, and must be
+	// readable by the Redis container user inside /data.
+	if err := writeDatabaseFileAtomic(filepath.Join(dataDir, "users.acl"), output, 0o644); err != nil {
 		_ = writeDatabaseFileAtomic(configPath, original, 0o644)
 		return fmt.Errorf("agentdocker: write redis ACL file: %w", err)
 	}
