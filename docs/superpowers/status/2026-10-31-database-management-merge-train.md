@@ -17,7 +17,7 @@
 | Merge Lane B | done | `ed725a9` | store/databases/servicecontrol/api/sites/tooling/terminal/phpfpm/daemon PASS; build + vet PASS |
 | Windows bridge direct assignment | done | `c40f230` | wsl backend PASS; build + vet PASS |
 | Merge Lane C | done | `18b5194` | svelte-check 0/0; 77 focused tests; 267 full tests; build PASS |
-| Merge Lane D | pending | — | — |
+| Merge Lane D | done | `f0c5e0f` | svelte-check 0/0; 79 focused tests; 329 full tests; build PASS |
 | Merge Lane E | pending | — | — |
 | Redis ACL confirmation path | pending | — | — |
 | Merged registry verification | pending | — | — |
@@ -64,3 +64,11 @@
 - No Critical or Important findings in the reviewed range.
 - Merge commit `18b5194` (`merge: database service dashboard`).
 - Gate: `npm run check` 0 errors/0 warnings; focused Vitest 5 files/77 tests PASS; `npm test -- --run` 27 files/267 tests PASS; `npm run build` PASS (existing >500 kB chunk warning only).
+
+### Step 6 — Lane D targeted review and merge
+
+- Reviewed `6426234..b48d787`: managed-user password recovery, link-dialog validation persistence, protected identifiers, URL/secret sanitizing, reveal/reset races, exact post-create matching, link-load failure handling, picker retry preservation, mock link sync, and metadata-only URL omission.
+- No Critical or Important findings in the reviewed range.
+- **Documentation conflict resolution:** kept B as `FINAL-STATUS-daemon.md`, D as `FINAL-STATUS-site.md`, C as `RECOVERY-service.md`, and D as `RECOVERY-site.md`.
+- Merge commit `f0c5e0f` (`merge: database site dashboard`).
+- Gate: `npm run check` 0 errors/0 warnings; focused Vitest 2 files/79 tests PASS; `npm test -- --run` 30 files/329 tests PASS; `npm run build` PASS (existing >500 kB chunk warning only).
