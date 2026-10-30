@@ -21,7 +21,7 @@
 | Merge Lane E | done | `d6af29a` | CLI/client/tooling PASS; full Go suite PASS; vet + build PASS |
 | Redis ACL confirmation path | done | `c948272` | manager/servicecontrol/API tests PASS; UI 330 tests PASS; build + vet PASS |
 | Merged registry verification | done | — | dbengine/helper/helperclient/agentdocker/agentclient + databases/servicecontrol + API + sites PASS |
-| Full merged-tree gate | pending | — | — |
+| Full merged-tree gate | done | `f60e1a8` | Go race/vet/build PASS; UI 0/0 + 330 tests + build PASS; 5 binaries built |
 | Full E2E plan | pending | — | — |
 
 ## Step log
@@ -97,3 +97,13 @@
 - API routes, OpenAPI, and install-token boundary: `go test ./internal/api -run 'TestDatabase|TestOpenAPI|TestEveryAPIRouteRequiresTheInstallToken' -count=1` PASS.
 - Site lifecycle and database links: `go test ./internal/sites -run 'TestCreate|TestDelete|TestStart|TestDatabase' -count=1` PASS.
 - No code change was needed; the merged registry and adapters agree.
+
+### Step 10 — Full merged-tree gate
+
+- First `go test ./... -race -count=1` run failed with data races in `internal/databases` tests. Every report pointed at test-only doubles: background jobs wrote `fakeStore`, `fakeAudit`, and `fakeEvents` while tests read them. Production store and manager code was not implicated.
+- Fix (test-only): added mutex protection to all `fakeStore`, `fakeAudit`, and `fakeEvents` methods; `waitJob` now also waits for the job goroutine's deferred cleanup, giving audit/event writes a happens-before edge with assertions. Commit `f60e1a8`.
+- `go test ./... -race -count=1` PASS (race_exit=0, no `DATA RACE`, no failing tests).
+- `go vet ./...` PASS; `go build ./...` PASS.
+- `go test ./internal/api -run 'TestOpenAPI|TestEveryAPIRouteRequiresTheInstallToken|TestSecurity|TestDatabase' -count=1` PASS.
+- UI: `npm run check` 0 errors/0 warnings; `npm test -- --run` 30 files/330 tests PASS; `npm run build` PASS (existing >500 kB chunk warning only).
+- Deployable binaries built: `dist/gate/devstack.exe`, `dist/gate/devstack-helper.exe`, `dist/gate/devstack-linux-amd64`, `dist/gate/devstack-helper-linux-amd64`, `dist/gate/devstack-agent-linux-amd64`.
