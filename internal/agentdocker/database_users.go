@@ -153,7 +153,12 @@ func (d *Docker) CreateUser(ctx context.Context, serviceID string, req databases
 			d.rollbackCreatedUser(ctx, serviceID, engine, command, req.Username, host, userID)
 			return model.DatabaseUser{}, mapEngineError(err)
 		}
-		if _, err := d.runDatabaseSQL(ctx, serviceID, command, []byte(grantStatement)); err != nil {
+		grantCommand, err := databaseSQLCommandFor(engine.ID(), grant.Database)
+		if err != nil {
+			d.rollbackCreatedUser(ctx, serviceID, engine, command, req.Username, host, userID)
+			return model.DatabaseUser{}, mapEngineError(err)
+		}
+		if _, err := d.runDatabaseSQL(ctx, serviceID, grantCommand, []byte(grantStatement)); err != nil {
 			d.rollbackCreatedUser(ctx, serviceID, engine, command, req.Username, host, userID)
 			return model.DatabaseUser{}, err
 		}
@@ -227,11 +232,16 @@ func (d *Docker) UpdateUser(ctx context.Context, serviceID, userID string, req d
 				Preset:   model.GrantAdmin,
 			})
 			if err != nil {
-				d.restoreUserGrants(ctx, serviceID, engine, command, user.Username, user.Host, existing)
+				d.restoreUserGrants(ctx, serviceID, engine, user.Username, user.Host, existing)
 				return model.DatabaseUser{}, mapEngineError(err)
 			}
-			if _, err := d.runDatabaseSQL(ctx, serviceID, command, []byte(statement)); err != nil {
-				d.restoreUserGrants(ctx, serviceID, engine, command, user.Username, user.Host, existing)
+			grantCommand, err := databaseSQLCommandFor(engine.ID(), existingGrant.Database)
+			if err != nil {
+				d.restoreUserGrants(ctx, serviceID, engine, user.Username, user.Host, existing)
+				return model.DatabaseUser{}, mapEngineError(err)
+			}
+			if _, err := d.runDatabaseSQL(ctx, serviceID, grantCommand, []byte(statement)); err != nil {
+				d.restoreUserGrants(ctx, serviceID, engine, user.Username, user.Host, existing)
 				return model.DatabaseUser{}, err
 			}
 		}
@@ -239,11 +249,16 @@ func (d *Docker) UpdateUser(ctx context.Context, serviceID, userID string, req d
 		for _, grant := range req.Grants {
 			statement, err := engine.GrantSQL(user.Username, user.Host, grant.Database, grant)
 			if err != nil {
-				d.rollbackGrantUpdate(ctx, serviceID, engine, command, user.Username, user.Host, existing, applied)
+				d.rollbackGrantUpdate(ctx, serviceID, engine, user.Username, user.Host, existing, applied)
 				return model.DatabaseUser{}, mapEngineError(err)
 			}
-			if _, err := d.runDatabaseSQL(ctx, serviceID, command, []byte(statement)); err != nil {
-				d.rollbackGrantUpdate(ctx, serviceID, engine, command, user.Username, user.Host, existing, applied)
+			grantCommand, err := databaseSQLCommandFor(engine.ID(), grant.Database)
+			if err != nil {
+				d.rollbackGrantUpdate(ctx, serviceID, engine, user.Username, user.Host, existing, applied)
+				return model.DatabaseUser{}, mapEngineError(err)
+			}
+			if _, err := d.runDatabaseSQL(ctx, serviceID, grantCommand, []byte(statement)); err != nil {
+				d.rollbackGrantUpdate(ctx, serviceID, engine, user.Username, user.Host, existing, applied)
 				return model.DatabaseUser{}, err
 			}
 			applied = append(applied, grant)
@@ -252,7 +267,7 @@ func (d *Docker) UpdateUser(ctx context.Context, serviceID, userID string, req d
 	return d.findDatabaseUser(ctx, serviceID, userID)
 }
 
-func (d *Docker) rollbackGrantUpdate(ctx context.Context, serviceID string, engine dbengine.Engine, command []string, username, host string, existing, applied []model.DatabaseGrant) {
+func (d *Docker) rollbackGrantUpdate(ctx context.Context, serviceID string, engine dbengine.Engine, username, host string, existing, applied []model.DatabaseGrant) {
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	for _, grant := range applied {
@@ -260,19 +275,29 @@ func (d *Docker) rollbackGrantUpdate(ctx context.Context, serviceID string, engi
 			Database: grant.Database,
 			Preset:   model.GrantAdmin,
 		})
-		if err == nil {
-			_, _ = d.runDatabaseSQL(rollbackCtx, serviceID, command, []byte(statement))
+		if err != nil {
+			continue
 		}
+		command, err := databaseSQLCommandFor(engine.ID(), grant.Database)
+		if err != nil {
+			continue
+		}
+		_, _ = d.runDatabaseSQL(rollbackCtx, serviceID, command, []byte(statement))
 	}
-	d.restoreUserGrants(rollbackCtx, serviceID, engine, command, username, host, existing)
+	d.restoreUserGrants(rollbackCtx, serviceID, engine, username, host, existing)
 }
 
-func (d *Docker) restoreUserGrants(ctx context.Context, serviceID string, engine dbengine.Engine, command []string, username, host string, grants []model.DatabaseGrant) {
+func (d *Docker) restoreUserGrants(ctx context.Context, serviceID string, engine dbengine.Engine, username, host string, grants []model.DatabaseGrant) {
 	for _, grant := range grants {
 		statement, err := engine.GrantSQL(username, host, grant.Database, grant)
-		if err == nil {
-			_, _ = d.runDatabaseSQL(ctx, serviceID, command, []byte(statement))
+		if err != nil {
+			continue
 		}
+		command, err := databaseSQLCommandFor(engine.ID(), grant.Database)
+		if err != nil {
+			continue
+		}
+		_, _ = d.runDatabaseSQL(ctx, serviceID, command, []byte(statement))
 	}
 }
 

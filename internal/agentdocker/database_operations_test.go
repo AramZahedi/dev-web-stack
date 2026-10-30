@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -251,6 +252,75 @@ func TestUpdateUserAppliesGrantsAndLock(t *testing.T) {
 	if !runner.stdinContains("GRANT SELECT, INSERT, UPDATE, DELETE ON `app`.*") {
 		t.Fatalf("grant SQL missing: %s", runner.joinedCalls())
 	}
+}
+
+func TestPostgresGrantsAndRevokesUseTargetDatabase(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	grants := []model.DatabaseGrant{
+		{Database: "app_ro", Preset: model.GrantReadOnly},
+		{Database: "app_rw", Preset: model.GrantReadWrite},
+		{Database: "app_rws", Preset: model.GrantReadWriteSchema},
+		{Database: "app_admin", Preset: model.GrantAdmin},
+		{Database: "app_custom", Preset: model.GrantCustom, Privileges: []string{"CONNECT", "SELECT"}},
+	}
+	if _, err := d.CreateUser(context.Background(), "postgres", databases.CreateUserRequest{
+		Username: "app", Grants: grants,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresStatementsTargetDatabase(t, runner, "GRANT ", grants)
+
+	// Revokes must also run in each target database, not in the postgres
+	// maintenance database.
+	runner.runOutputs["pg_roles"] = []byte("app\tt\tf\n")
+	runner.runOutputs["information_schema.role_table_grants"] = []byte("app_ro\tSELECT\napp_ro\tCONNECT\napp_rw\tCONNECT\n")
+	runner.calls = nil
+	if _, err := d.UpdateUser(context.Background(), "postgres", databaseUserID("postgres", "app", ""), databases.UpdateUserRequest{
+		Grants: []model.DatabaseGrant{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresStatementsTargetDatabase(t, runner, "REVOKE ", []model.DatabaseGrant{
+		{Database: "app_ro", Preset: model.GrantAdmin},
+		{Database: "app_rw", Preset: model.GrantAdmin},
+	})
+}
+
+func assertPostgresStatementsTargetDatabase(t *testing.T, runner *fakeDatabaseRunner, verb string, grants []model.DatabaseGrant) {
+	t.Helper()
+	seen := make(map[string]bool)
+	for _, call := range runner.calls {
+		input := string(call.input)
+		if !strings.Contains(input, verb) {
+			continue
+		}
+		joined := strings.Join(call.args, " ")
+		database := postgresDatabaseFromSQL(t, input)
+		if database == "" {
+			t.Fatalf("%s statement has no target database:\n%s", verb, input)
+		}
+		if !strings.Contains(joined, "--dbname="+database) {
+			t.Fatalf("%s for %s did not target --dbname=%s: %v", verb, database, database, call.args)
+		}
+		if strings.Contains(joined, "--dbname=postgres") {
+			t.Fatalf("%s for %s ran against postgres: %v", verb, database, call.args)
+		}
+		seen[database] = true
+	}
+	for _, grant := range grants {
+		if !seen[grant.Database] {
+			t.Fatalf("%s for %s was not executed (seen=%v)", verb, grant.Database, seen)
+		}
+	}
+}
+
+func postgresDatabaseFromSQL(t *testing.T, sql string) string {
+	t.Helper()
+	match := regexp.MustCompile(`ON DATABASE "([^"]+)"`).FindStringSubmatch(sql)
+	if len(match) != 2 {
+		return ""
+	}
+	return match[1]
 }
 
 func TestSetUserPasswordRejectsProtected(t *testing.T) {

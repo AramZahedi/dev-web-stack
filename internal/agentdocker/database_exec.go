@@ -29,6 +29,29 @@ func databaseSQLCommand(engine model.DatabaseEngine) ([]string, error) {
 	}
 }
 
+// databaseSQLCommandFor returns the fixed SQL client pointed at the database a
+// statement belongs to. PostgreSQL schema, table, and default-privilege grants
+// are database-local; running them against the "postgres" maintenance database
+// silently leaves the target database ungranted.
+func databaseSQLCommandFor(engine model.DatabaseEngine, database string) ([]string, error) {
+	command, err := databaseSQLCommand(engine)
+	if err != nil {
+		return nil, err
+	}
+	if engine != model.DatabasePostgreSQL {
+		return command, nil
+	}
+	if err := dbengine.ValidateIdentifier(database); err != nil {
+		return nil, err
+	}
+	for i := range command {
+		if strings.HasPrefix(command[i], "--dbname=") {
+			command[i] = "--dbname=" + database
+		}
+	}
+	return command, nil
+}
+
 func (d *Docker) runDatabaseSQL(ctx context.Context, serviceID string, command []string, input []byte) ([]byte, error) {
 	return d.composeExecSQL(ctx, serviceID, input, command)
 }
@@ -74,5 +97,3 @@ func (d *Docker) terminateDatabaseSessions(ctx context.Context, serviceID string
 	}
 	return nil
 }
-
-
