@@ -18,7 +18,7 @@
 | Windows bridge direct assignment | done | `c40f230` | wsl backend PASS; build + vet PASS |
 | Merge Lane C | done | `18b5194` | svelte-check 0/0; 77 focused tests; 267 full tests; build PASS |
 | Merge Lane D | done | `f0c5e0f` | svelte-check 0/0; 79 focused tests; 329 full tests; build PASS |
-| Merge Lane E | pending | — | — |
+| Merge Lane E | done | `d6af29a` | CLI/client/tooling PASS; full Go suite PASS; vet + build PASS |
 | Redis ACL confirmation path | pending | — | — |
 | Merged registry verification | pending | — | — |
 | Full merged-tree gate | pending | — | — |
@@ -72,3 +72,9 @@
 - **Documentation conflict resolution:** kept B as `FINAL-STATUS-daemon.md`, D as `FINAL-STATUS-site.md`, C as `RECOVERY-service.md`, and D as `RECOVERY-site.md`.
 - Merge commit `f0c5e0f` (`merge: database site dashboard`).
 - Gate: `npm run check` 0 errors/0 warnings; focused Vitest 2 files/79 tests PASS; `npm test -- --run` 30 files/329 tests PASS; `npm run build` PASS (existing >500 kB chunk warning only).
+
+### Step 7 — Lane E merge
+
+- Lane E already passed its final independent audit (`44c9d68..bb063ed`, code `80a41fc`).
+- Merge commit `d6af29a` (`merge: database CLI`).
+- Gate: `go test ./internal/cli ./internal/client ./internal/tooling -count=1` PASS; `go test ./... -count=1` PASS; `go vet ./...` PASS; `go build ./...` PASS.
