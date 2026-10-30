@@ -1300,3 +1300,63 @@ func TestPreparePHPInjectsDatabaseEnvWithoutWritingSecretToFPM(t *testing.T) {
 		t.Fatalf("php-fpm.conf contains a database password:\n%s", fpmData)
 	}
 }
+
+func TestPrepareSiteStripsReservedDatabaseEnv(t *testing.T) {
+	rt, root, spec := newStaticTestRuntime(t)
+	spec.Env = map[string]string{
+		"APP_ENV":      "local",
+		"DB_PASSWORD":  "leaked",
+		"DB_DATABASE":  "evil",
+		"DB_HOST":      "evil",
+		"DATABASE_URL": "mysql://evil",
+	}
+	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	stored := rt.sites[spec.ID].spec.Env
+	if stored["APP_ENV"] != "local" {
+		t.Fatalf("non-reserved env was lost: %v", stored)
+	}
+	for _, key := range []string{"DB_PASSWORD", "DB_DATABASE", "DB_HOST", "DATABASE_URL"} {
+		if _, ok := stored[key]; ok {
+			t.Fatalf("reserved key %s was persisted: %v", key, stored)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(root, "run", "sites.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "leaked") || strings.Contains(string(data), "mysql://evil") {
+		t.Fatalf("reserved database env reached sites.json:\n%s", data)
+	}
+}
+
+func TestPreparePHPStripsReservedDatabaseEnv(t *testing.T) {
+	rt, root := newTestRuntimeOnly(t)
+	project := filepath.Join(root, "php-env-app")
+	publicDir := filepath.Join(project, "public")
+	if err := os.MkdirAll(publicDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(publicDir, "index.php"), []byte("<?php echo 'ok';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID: "php-env-site", Kind: "php", BackendPath: project, DocumentRoot: "public",
+		PHPVersion: "8.4", PHPBuild: "php@8.4.27-r1",
+		Env: map[string]string{"APP_ENV": "local", "DB_PASSWORD": "leaked", "DATABASE_URL": "mysql://evil"},
+	}
+	if _, err := rt.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-1", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "sites", spec.ID, "fpm.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "leaked") || strings.Contains(string(data), "mysql://evil") {
+		t.Fatalf("reserved database env reached php-fpm.conf:\n%s", data)
+	}
+	if !strings.Contains(string(data), "APP_ENV") {
+		t.Fatalf("non-reserved env was lost:\n%s", data)
+	}
+}

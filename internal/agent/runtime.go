@@ -188,6 +188,7 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 			return agentproto.SitePrepareResponse{}, err
 		}
 	}
+	spec.Env = sanitizeSiteEnv(spec.Env)
 	env, err := r.Environment(spec.Env)
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
@@ -468,14 +469,30 @@ func (r *Runtime) sitePathEnv(spec agentproto.SiteSpec, existing string) string 
 }
 
 func cloneAgentSiteSpec(spec agentproto.SiteSpec) agentproto.SiteSpec {
-	if spec.Env != nil {
-		env := make(map[string]string, len(spec.Env))
-		for key, value := range spec.Env {
-			env[key] = value
-		}
-		spec.Env = env
-	}
+	spec.Env = sanitizeSiteEnv(spec.Env)
 	return spec
+}
+
+// sanitizeSiteEnv removes reserved database keys from caller-supplied site
+// env. Link values come only from DatabaseLinks and the agent secret tree; a
+// daemon that still sends resolved DB_* values must not get them persisted to
+// sites.json or rendered into php-fpm.conf.
+func sanitizeSiteEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	clean := make(map[string]string, len(env))
+	for key, value := range env {
+		upper := strings.ToUpper(key)
+		if upper == "DATABASE_URL" || strings.HasPrefix(upper, "DB_") {
+			continue
+		}
+		clean[key] = value
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	return clean
 }
 
 func ctxErr(ctx context.Context) error {

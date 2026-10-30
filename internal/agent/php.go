@@ -416,6 +416,7 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 		return agentproto.SitePrepareResponse{}, err
 	}
 
+	req.Site.Env = sanitizeSiteEnv(req.Site.Env)
 	req.Site.Env, err = r.Environment(req.Site.Env)
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
