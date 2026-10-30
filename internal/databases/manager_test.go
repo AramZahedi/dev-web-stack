@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -436,10 +437,17 @@ type fakePlatform struct {
 	lastPasswordUser string
 	lastRestoreReq   RestoreBackupRequest
 	lastImportReq    ImportRequest
+	importedFile     string
 	listErr          error
 	envErr           error
 	resolveEnv       func(serviceID string, links []model.DatabaseLink) map[string]string
 	passwordStateErr error
+	createStarted    chan struct{}
+	createRelease    chan struct{}
+	restoreStarted   chan struct{}
+	restoreRelease   chan struct{}
+	importStarted    chan struct{}
+	importRelease    chan struct{}
 }
 
 func (f *fakePlatform) ListDatabases(context.Context, string) ([]model.Database, error) {
@@ -512,7 +520,33 @@ func (f *fakePlatform) ListBackups(context.Context, string) ([]model.DatabaseBac
 	return append([]model.DatabaseBackup(nil), f.backups...), nil
 }
 
-func (f *fakePlatform) CreateBackup(_ context.Context, serviceID, database string, req CreateBackupRequest) (model.DatabaseJob, error) {
+func signalTest(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func waitTest(ctx context.Context, ch chan struct{}) error {
+	if ch == nil {
+		return nil
+	}
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (f *fakePlatform) CreateBackup(ctx context.Context, serviceID, database string, req CreateBackupRequest) (model.DatabaseJob, error) {
+	signalTest(f.createStarted)
+	if err := waitTest(ctx, f.createRelease); err != nil {
+		return model.DatabaseJob{ID: "job_canceled", Status: model.JobFailed, Message: err.Error()}, err
+	}
 	job := f.job
 	if job.ID == "" {
 		job.ID = "job_platform"
@@ -535,7 +569,11 @@ func (f *fakePlatform) CreateBackup(_ context.Context, serviceID, database strin
 
 func (f *fakePlatform) DeleteBackup(context.Context, string, string) error { return nil }
 
-func (f *fakePlatform) RestoreBackup(_ context.Context, serviceID, backupID string, req RestoreBackupRequest) (model.DatabaseJob, error) {
+func (f *fakePlatform) RestoreBackup(ctx context.Context, serviceID, backupID string, req RestoreBackupRequest) (model.DatabaseJob, error) {
+	signalTest(f.restoreStarted)
+	if err := waitTest(ctx, f.restoreRelease); err != nil {
+		return model.DatabaseJob{ID: "job_restore", Status: model.JobFailed, Message: err.Error()}, err
+	}
 	f.restoreCalls = append(f.restoreCalls, backupID)
 	f.lastRestoreReq = req
 	job := model.DatabaseJob{ID: "job_restore", ServiceID: serviceID, Database: req.Target, Kind: model.JobRestore, Status: model.JobSucceeded}
@@ -547,7 +585,13 @@ func (f *fakePlatform) RestoreBackup(_ context.Context, serviceID, backupID stri
 	return job, nil
 }
 
-func (f *fakePlatform) ImportDatabase(_ context.Context, serviceID, database string, _ io.Reader, _ string, req ImportRequest) (model.DatabaseJob, error) {
+func (f *fakePlatform) ImportDatabase(ctx context.Context, serviceID, database string, file io.Reader, _ string, req ImportRequest) (model.DatabaseJob, error) {
+	signalTest(f.importStarted)
+	if err := waitTest(ctx, f.importRelease); err != nil {
+		return model.DatabaseJob{ID: "job_import", Status: model.JobFailed, Message: err.Error()}, err
+	}
+	data, _ := io.ReadAll(file)
+	f.importedFile = string(data)
 	f.lastImportReq = req
 	job := model.DatabaseJob{ID: "job_import", ServiceID: serviceID, Database: database, Kind: model.JobImport, Status: model.JobSucceeded}
 	if f.importErr != nil {
@@ -648,6 +692,35 @@ func newTestManager(t *testing.T) *Manager {
 		Now:      func() time.Time { return time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC) },
 		NewID:    func() string { return "generated_id" },
 	})
+}
+
+func waitJob(t *testing.T, m *Manager, id string) model.DatabaseJob {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		job, err := m.GetJob(context.Background(), id)
+		if err == nil && job.Status != model.JobQueued && job.Status != model.JobRunning {
+			return job
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	job, _ := m.GetJob(context.Background(), id)
+	t.Fatalf("job %s did not finish: %+v", id, job)
+	return model.DatabaseJob{}
+}
+
+func waitAuditAction(t *testing.T, audit *fakeAudit, action string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, event := range audit.events {
+			if event.Action == action {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("audit action %q not recorded: %+v", action, audit.events)
 }
 
 func testManagerWithFakes(t *testing.T) (*Manager, *fakeStore, *fakePlatform, *fakeAudit, *fakeEvents) {
@@ -860,8 +933,12 @@ func TestManagerRedactsSecretsFromAuditAndJobs(t *testing.T) {
 	st := m.deps.Store.(*fakeStore)
 	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
 	job, err := m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{Target: "app", Confirm: "app"})
-	if err == nil {
-		t.Fatal("expected restore failure")
+	if err != nil {
+		t.Fatalf("start restore: %v", err)
+	}
+	job = waitJob(t, m, job.ID)
+	if job.Status != model.JobFailed {
+		t.Fatalf("expected restore failure: %+v", job)
 	}
 	if strings.Contains(job.Message, "s3cret") {
 		t.Fatalf("job leaked secret: %+v", job)
@@ -896,9 +973,11 @@ func TestListUsersUsesLiveGrantsAndPasswordState(t *testing.T) {
 func TestManagerEmitsDatabaseAndRedisSSENames(t *testing.T) {
 	m, _, platform, _, events := testManagerWithFakes(t)
 	platform.job = model.DatabaseJob{ID: "job_1", Status: model.JobSucceeded, BackupID: "bkp_1"}
-	if _, err := m.CreateBackup(context.Background(), "mysql", "app", CreateBackupRequest{}); err != nil {
+	job, err := m.CreateBackup(context.Background(), "mysql", "app", CreateBackupRequest{})
+	if err != nil {
 		t.Fatal(err)
 	}
+	waitJob(t, m, job.ID)
 	svc := m.deps.Services.(*fakeServices)
 	svc.views[services.IDRedis] = services.View{ID: services.IDRedis, State: services.StateActive, Active: true, Installed: true}
 	platform.users = []model.DatabaseUser{{ID: "usr_cache", ServiceID: "redis", Engine: model.DatabaseRedis, Username: "cache", Enabled: true}}
@@ -1095,14 +1174,97 @@ func TestCreateBackupRunsJobAndAudits(t *testing.T) {
 	m, _, platform, audit, _ := testManagerWithFakes(t)
 	platform.job = model.DatabaseJob{ID: "job_1", Status: model.JobSucceeded, BackupID: "bkp_1"}
 	job, err := m.CreateBackup(context.Background(), "mysql", "app", CreateBackupRequest{Kind: model.BackupManual})
-	if err != nil || job.Status != model.JobSucceeded {
-		t.Fatalf("job=%+v err=%v", job, err)
+	if err != nil {
+		t.Fatalf("create: %v", err)
 	}
-	if len(audit.events) != 1 || audit.events[0].Action != "database.backup.created" {
-		t.Fatalf("audit=%+v", audit.events)
+	job = waitJob(t, m, job.ID)
+	if job.Status != model.JobSucceeded {
+		t.Fatalf("job=%+v", job)
 	}
+	waitAuditAction(t, audit, "database.backup.created")
 	if len(platform.backups) != 1 || platform.backups[0].ID != "bkp_1" {
 		t.Fatalf("backups=%+v", platform.backups)
+	}
+}
+
+func TestCreateBackupReturnsBeforePlatformCompletes(t *testing.T) {
+	m, _, platform, _, _ := testManagerWithFakes(t)
+	platform.createStarted = make(chan struct{}, 1)
+	platform.createRelease = make(chan struct{})
+	start := time.Now()
+	job, err := m.CreateBackup(context.Background(), "mysql", "app", CreateBackupRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("CreateBackup blocked for %s", elapsed)
+	}
+	if job.Status != model.JobQueued && job.Status != model.JobRunning {
+		t.Fatalf("initial job = %+v", job)
+	}
+	select {
+	case <-platform.createStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("platform did not start")
+	}
+	close(platform.createRelease)
+	finished := waitJob(t, m, job.ID)
+	if finished.Status != model.JobSucceeded {
+		t.Fatalf("finished job = %+v", finished)
+	}
+}
+
+func TestCancelRunningJobMarksCanceled(t *testing.T) {
+	m, _, platform, _, _ := testManagerWithFakes(t)
+	platform.createStarted = make(chan struct{}, 1)
+	platform.createRelease = make(chan struct{})
+	job, err := m.CreateBackup(context.Background(), "mysql", "app", CreateBackupRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-platform.createStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("platform did not start")
+	}
+	if err := m.CancelJob(context.Background(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	finished := waitJob(t, m, job.ID)
+	if finished.Status != model.JobCanceled {
+		t.Fatalf("canceled job = %+v", finished)
+	}
+}
+
+func TestImportStagesFileAndCleansUp(t *testing.T) {
+	m, _, platform, _, _ := testManagerWithFakes(t)
+	m.stagingDir = t.TempDir()
+	platform.importStarted = make(chan struct{}, 1)
+	platform.importRelease = make(chan struct{})
+	job, err := m.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("select 1;"), "dump.sql", ImportRequest{Mode: ImportMerge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-platform.importStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("platform did not start")
+	}
+	entries, err := os.ReadDir(m.stagingDir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("staging entries=%v err=%v", entries, err)
+	}
+	close(platform.importRelease)
+	finished := waitJob(t, m, job.ID)
+	if finished.Status != model.JobSucceeded {
+		t.Fatalf("finished job = %+v", finished)
+	}
+	if platform.importedFile != "select 1;" {
+		t.Fatalf("imported file = %q", platform.importedFile)
+	}
+	entries, err = os.ReadDir(m.stagingDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("staging cleanup entries=%v err=%v", entries, err)
 	}
 }
 
@@ -1121,8 +1283,12 @@ func TestRestoreFailureKeepsPreRestoreBackup(t *testing.T) {
 	platform.job = model.DatabaseJob{ID: "job_backup", Status: model.JobSucceeded, BackupID: "bkp_pre"}
 	platform.restoreErr = errors.New("restore failed")
 	job, err := m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{Target: "app", Overwrite: true, Confirm: "app", PreRestoreBackup: true})
-	if err == nil || job.Status != model.JobFailed {
-		t.Fatalf("job=%+v err=%v", job, err)
+	if err != nil {
+		t.Fatalf("start restore: %v", err)
+	}
+	job = waitJob(t, m, job.ID)
+	if job.Status != model.JobFailed {
+		t.Fatalf("job=%+v", job)
 	}
 	if job.BackupID != "bkp_pre" {
 		t.Fatalf("pre-restore backup id = %q", job.BackupID)
@@ -1142,6 +1308,7 @@ func TestRestoreOverwriteForcesPreRestoreBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	job = waitJob(t, m, job.ID)
 	if job.BackupID != "bkp_pre" {
 		t.Fatalf("pre-restore backup = %q, want bkp_pre", job.BackupID)
 	}
@@ -1154,8 +1321,13 @@ func TestRestoreFailsClosedWhenDatabaseLookupFails(t *testing.T) {
 	m, st, platform, _, _ := testManagerWithFakes(t)
 	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
 	platform.listErr = errors.New("engine inventory unavailable")
-	if _, err := m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{Target: "app", Overwrite: true, Confirm: "app"}); err == nil {
-		t.Fatal("restore succeeded despite an inventory failure")
+	job, err := m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{Target: "app", Overwrite: true, Confirm: "app"})
+	if err != nil {
+		t.Fatalf("start restore: %v", err)
+	}
+	job = waitJob(t, m, job.ID)
+	if job.Status != model.JobFailed {
+		t.Fatalf("restore succeeded despite an inventory failure: %+v", job)
 	}
 	if len(platform.restoreCalls) != 0 {
 		t.Fatalf("restore reached platform: %v", platform.restoreCalls)
@@ -1165,9 +1337,11 @@ func TestRestoreFailsClosedWhenDatabaseLookupFails(t *testing.T) {
 func TestImportClearsPlatformPreImportFlag(t *testing.T) {
 	m, _, platform, _, _ := testManagerWithFakes(t)
 	platform.job = model.DatabaseJob{ID: "job_backup", Status: model.JobSucceeded, BackupID: "bkp_pre"}
-	if _, err := m.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("select 1;"), "dump.sql", ImportRequest{Mode: ImportMerge, PreImportBackup: true}); err != nil {
+	job, err := m.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("select 1;"), "dump.sql", ImportRequest{Mode: ImportMerge, PreImportBackup: true})
+	if err != nil {
 		t.Fatal(err)
 	}
+	waitJob(t, m, job.ID)
 	if platform.lastImportReq.PreImportBackup {
 		t.Fatal("manager passed PreImportBackup=true to the platform after creating its own backup")
 	}
@@ -1182,6 +1356,7 @@ func TestCreateBackupPersistsWhenRequestContextIsCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	job = waitJob(t, m, job.ID)
 	if job.Status != model.JobSucceeded {
 		t.Fatalf("job = %+v", job)
 	}
@@ -1312,12 +1487,14 @@ func TestImportReplaceRequiresConfirm(t *testing.T) {
 func TestImportRunsJobAndAudits(t *testing.T) {
 	m, _, _, audit, _ := testManagerWithFakes(t)
 	job, err := m.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("select 1;"), "dump.sql", ImportRequest{Mode: ImportMerge})
-	if err != nil || job.Status != model.JobSucceeded {
-		t.Fatalf("job=%+v err=%v", job, err)
+	if err != nil {
+		t.Fatalf("start import: %v", err)
 	}
-	if len(audit.events) != 1 || audit.events[0].Action != "database.import.completed" {
-		t.Fatalf("audit=%+v", audit.events)
+	job = waitJob(t, m, job.ID)
+	if job.Status != model.JobSucceeded {
+		t.Fatalf("job=%+v", job)
 	}
+	waitAuditAction(t, audit, "database.import.completed")
 }
 
 func TestCancelJobMarksCanceled(t *testing.T) {

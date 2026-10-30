@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -92,6 +93,9 @@ type Deps struct {
 	Logger   *slog.Logger
 	Now      func() time.Time
 	NewID    func() string
+	// StagingDir holds import uploads while a background job runs. Empty uses
+	// the OS temp directory.
+	StagingDir string
 }
 
 // Manager owns database metadata, site links, jobs, and audit. Engine work is
@@ -105,6 +109,7 @@ type Manager struct {
 	jobsMu       sync.Mutex
 	cancels      map[string]context.CancelFunc
 	platformJobs map[string]string
+	stagingDir   string
 }
 
 // NewManager returns a database manager. Nil logger/clock/id dependencies use
@@ -113,11 +118,16 @@ func NewManager(deps Deps) *Manager {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
+	stagingDir := strings.TrimSpace(deps.StagingDir)
+	if stagingDir == "" {
+		stagingDir = os.TempDir()
+	}
 	return &Manager{
 		deps:         deps,
 		locks:        make(map[string]*sync.Mutex),
 		cancels:      make(map[string]context.CancelFunc),
 		platformJobs: make(map[string]string),
+		stagingDir:   stagingDir,
 	}
 }
 
@@ -331,12 +341,13 @@ func (m *Manager) DropDatabase(ctx context.Context, serviceID, name string, req 
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return err
 	}
+	unlock := m.lockService(serviceID)
+	defer unlock()
 	if err := m.ensureLinkedSitesStopped(ctx, serviceID, name); err != nil {
 		return err
 	}
-
 	if req.BackupFirst {
-		job, err := m.CreateBackup(ctx, serviceID, name, CreateBackupRequest{Kind: model.BackupPreDrop})
+		job, err := m.createBackupLocked(ctx, serviceID, name, CreateBackupRequest{Kind: model.BackupPreDrop})
 		if err != nil {
 			return fmt.Errorf("backup before drop: %w", err)
 		}
@@ -344,8 +355,6 @@ func (m *Manager) DropDatabase(ctx context.Context, serviceID, name string, req 
 			return fmt.Errorf("%w: backup before drop did not succeed: %s", ErrConflict, job.Message)
 		}
 	}
-	unlock := m.lockService(serviceID)
-	defer unlock()
 	if err := m.deps.Platform.DropDatabase(ctx, serviceID, name, req); err != nil {
 		m.audit(ctx, "database.dropped", serviceID, "", "database", name, "failed", map[string]any{"error": safeErrorMessage(err)})
 		return err
@@ -887,30 +896,6 @@ func (m *Manager) GetJob(ctx context.Context, jobID string) (model.DatabaseJob, 
 		}
 		return model.DatabaseJob{}, err
 	}
-	if record.Status == string(model.JobRunning) || record.Status == string(model.JobQueued) {
-		m.jobsMu.Lock()
-		platformID := m.platformJobs[jobID]
-		m.jobsMu.Unlock()
-		if platformID != "" {
-			if platformJob, platformErr := m.deps.Platform.GetJob(ctx, platformID); platformErr == nil {
-				record.Status = string(platformJob.Status)
-				record.Progress = platformJob.Progress
-				if platformJob.Message != "" {
-					record.Message = platformJob.Message
-				}
-				if platformJob.BackupID != "" {
-					record.BackupID = platformJob.BackupID
-				}
-				record.UpdatedAt = m.now().Unix()
-				_ = m.deps.Store.UpdateDatabaseJob(ctx, record)
-				if record.Status != string(model.JobRunning) && record.Status != string(model.JobQueued) {
-					job := recordToJob(record)
-					m.auditJob(ctx, job, string(record.Status))
-					m.emitJobEvent(ctx, job)
-				}
-			}
-		}
-	}
 	return recordToJob(record), nil
 }
 
@@ -939,12 +924,12 @@ func (m *Manager) CancelJob(ctx context.Context, jobID string) error {
 	if platformJobID == "" {
 		platformJobID = jobID
 	}
-	if err := m.deps.Platform.CancelJob(ctx, platformJobID); err != nil && !errors.Is(err, ErrJobNotFound) {
-		return err
+	if err := m.deps.Platform.CancelJob(context.Background(), platformJobID); err != nil && !errors.Is(err, ErrJobNotFound) {
+		m.deps.Logger.Warn("database: platform job cancel failed", "job", jobID, "error", RedactError(err))
 	}
 	record.Status = string(model.JobCanceled)
 	record.UpdatedAt = m.now().Unix()
-	if err := m.deps.Store.UpdateDatabaseJob(ctx, record); err != nil {
+	if err := m.deps.Store.UpdateDatabaseJob(context.Background(), record); err != nil {
 		return err
 	}
 	m.audit(ctx, "database.job.updated", record.ServiceID, "", "database", record.DatabaseName, "canceled", map[string]any{"job_id": jobID})

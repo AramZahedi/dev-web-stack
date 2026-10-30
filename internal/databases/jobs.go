@@ -5,13 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
 
-// CreateBackup starts a logical backup and records its job and metadata.
+// CreateBackup starts a logical backup in the background and returns the queued
+// job immediately.
 func (m *Manager) CreateBackup(ctx context.Context, serviceID, database string, req CreateBackupRequest) (model.DatabaseJob, error) {
 	serviceID = canonicalServiceID(serviceID)
 	database = strings.TrimSpace(database)
@@ -24,21 +26,23 @@ func (m *Manager) CreateBackup(ctx context.Context, serviceID, database string, 
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return model.DatabaseJob{}, err
 	}
-	unlock := m.lockService(serviceID)
-	defer unlock()
-
 	if req.Kind == "" {
 		req.Kind = model.BackupManual
 	}
-	record := m.newJobRecord(serviceID, database, model.JobBackup)
-	return m.executeJob(ctx, record, func(jobCtx context.Context) (model.DatabaseJob, error) {
+	record, err := m.newJobRecord(serviceID, database, model.JobBackup)
+	if err != nil {
+		return model.DatabaseJob{}, err
+	}
+	return m.startJob(record, func(jobCtx context.Context) (model.DatabaseJob, error) {
+		unlock := m.lockService(serviceID)
+		defer unlock()
 		return m.deps.Platform.CreateBackup(jobCtx, serviceID, database, req)
-	}, req.Kind)
+	}, req.Kind), nil
 }
 
-// RestoreBackup restores a backup to a new or existing target. An overwrite
-// requires typed confirmation and a stopped-site check. A pre-restore backup
-// is created first when requested.
+// RestoreBackup validates the request synchronously and runs the restore in the
+// background. Overwrite validation and the pre-restore backup happen under the
+// service lock in the job goroutine.
 func (m *Manager) RestoreBackup(ctx context.Context, serviceID, backupID string, req RestoreBackupRequest) (model.DatabaseJob, error) {
 	serviceID = canonicalServiceID(serviceID)
 	if !isSQLService(serviceID) {
@@ -59,50 +63,58 @@ func (m *Manager) RestoreBackup(ctx context.Context, serviceID, backupID string,
 	if protectedDatabase(target) {
 		return model.DatabaseJob{}, fmt.Errorf("%w: database %q is protected", ErrProtected, target)
 	}
-	targetExists, err := m.databaseExists(ctx, serviceID, target)
-	if err != nil {
-		return model.DatabaseJob{}, fmt.Errorf("check restore target %q: %w", target, err)
-	}
 	if req.Overwrite {
 		if strings.TrimSpace(req.Confirm) != target {
 			return model.DatabaseJob{}, fmt.Errorf("%w: type %q to confirm the overwrite", ErrConflict, target)
 		}
-		if !targetExists {
-			return model.DatabaseJob{}, fmt.Errorf("%w: restore target %q", ErrNotFound, target)
-		}
 		if err := m.ensureLinkedSitesStopped(ctx, serviceID, target); err != nil {
 			return model.DatabaseJob{}, err
 		}
-		// An overwrite always needs a recovery point, even when the caller
-		// omitted the flag.
-		req.PreRestoreBackup = true
 	}
-	preBackupID := ""
-	if req.PreRestoreBackup && targetExists {
-		preJob, err := m.CreateBackup(ctx, serviceID, target, CreateBackupRequest{Kind: model.BackupPreRestore})
-		if err != nil {
-			return m.failedJobRecord(serviceID, target, model.JobRestore, "", fmt.Errorf("pre-restore backup: %w", err))
-		}
-		if preJob.Status != model.JobSucceeded || preJob.BackupID == "" {
-			return m.failedJobRecord(serviceID, target, model.JobRestore, "", fmt.Errorf("pre-restore backup did not succeed: %s", preJob.Message))
-		}
-		preBackupID = preJob.BackupID
+	record, err := m.newJobRecord(serviceID, target, model.JobRestore)
+	if err != nil {
+		return model.DatabaseJob{}, err
 	}
-	// The manager owns the pre-operation backup. Clear the platform flag so the
-	// adapter does not create a second backup.
-	req.PreRestoreBackup = false
-	unlock := m.lockService(serviceID)
-	defer unlock()
+	return m.startJob(record, func(jobCtx context.Context) (model.DatabaseJob, error) {
+		unlock := m.lockService(serviceID)
+		defer unlock()
 
-	record := m.newJobRecord(serviceID, target, model.JobRestore)
-	record.BackupID = preBackupID
-	return m.executeJob(ctx, record, func(jobCtx context.Context) (model.DatabaseJob, error) {
-		return m.deps.Platform.RestoreBackup(jobCtx, serviceID, backupID, req)
-	}, model.BackupPreRestore)
+		targetExists, err := m.databaseExists(jobCtx, serviceID, target)
+		if err != nil {
+			return model.DatabaseJob{}, fmt.Errorf("check restore target %q: %w", target, err)
+		}
+		if req.Overwrite {
+			if !targetExists {
+				return model.DatabaseJob{}, fmt.Errorf("%w: restore target %q", ErrNotFound, target)
+			}
+			if err := m.ensureLinkedSitesStopped(jobCtx, serviceID, target); err != nil {
+				return model.DatabaseJob{}, err
+			}
+			req.PreRestoreBackup = true
+		}
+		preBackupID := ""
+		if req.PreRestoreBackup && targetExists {
+			preJob, err := m.createBackupLocked(jobCtx, serviceID, target, CreateBackupRequest{Kind: model.BackupPreRestore})
+			if err != nil {
+				return model.DatabaseJob{}, fmt.Errorf("pre-restore backup: %w", err)
+			}
+			if preJob.Status != model.JobSucceeded || preJob.BackupID == "" {
+				return model.DatabaseJob{}, fmt.Errorf("pre-restore backup did not succeed: %s", preJob.Message)
+			}
+			preBackupID = preJob.BackupID
+		}
+		req.PreRestoreBackup = false
+		result, err := m.deps.Platform.RestoreBackup(jobCtx, serviceID, backupID, req)
+		if result.BackupID == "" {
+			result.BackupID = preBackupID
+		}
+		return result, err
+	}, model.BackupPreRestore), nil
 }
 
-// ImportDatabase imports SQL into an existing database. Replace mode requires
-// typed confirmation and a stopped-site check; a pre-import backup is optional.
+// ImportDatabase stages the upload synchronously and imports it in the
+// background. Replace validation and the pre-import backup happen under the
+// service lock in the job goroutine.
 func (m *Manager) ImportDatabase(ctx context.Context, serviceID, database string, file io.Reader, filename string, req ImportRequest) (model.DatabaseJob, error) {
 	serviceID = canonicalServiceID(serviceID)
 	database = strings.TrimSpace(database)
@@ -132,32 +144,105 @@ func (m *Manager) ImportDatabase(ctx context.Context, serviceID, database string
 			return model.DatabaseJob{}, err
 		}
 	}
-	preBackupID := ""
-	if req.PreImportBackup {
-		preJob, err := m.CreateBackup(ctx, serviceID, database, CreateBackupRequest{Kind: model.BackupPreImport})
-		if err != nil {
-			return m.failedJobRecord(serviceID, database, model.JobImport, "", fmt.Errorf("pre-import backup: %w", err))
-		}
-		if preJob.Status != model.JobSucceeded || preJob.BackupID == "" {
-			return m.failedJobRecord(serviceID, database, model.JobImport, "", fmt.Errorf("pre-import backup did not succeed: %s", preJob.Message))
-		}
-		preBackupID = preJob.BackupID
+	stagedPath, err := m.stageImport(file)
+	if err != nil {
+		return model.DatabaseJob{}, err
 	}
-	// The manager owns the pre-import backup; never ask the platform for a
-	// second one.
-	req.PreImportBackup = false
-	unlock := m.lockService(serviceID)
-	defer unlock()
+	record, err := m.newJobRecord(serviceID, database, model.JobImport)
+	if err != nil {
+		_ = os.Remove(stagedPath)
+		return model.DatabaseJob{}, err
+	}
+	return m.startJob(record, func(jobCtx context.Context) (model.DatabaseJob, error) {
+		defer func() { _ = os.Remove(stagedPath) }()
+		unlock := m.lockService(serviceID)
+		defer unlock()
 
-	record := m.newJobRecord(serviceID, database, model.JobImport)
-	record.BackupID = preBackupID
-	return m.executeJob(ctx, record, func(jobCtx context.Context) (model.DatabaseJob, error) {
-		return m.deps.Platform.ImportDatabase(jobCtx, serviceID, database, file, filename, req)
-	}, model.BackupPreImport)
+		if req.Mode == ImportReplace {
+			if err := m.ensureLinkedSitesStopped(jobCtx, serviceID, database); err != nil {
+				return model.DatabaseJob{}, err
+			}
+		}
+		preBackupID := ""
+		if req.PreImportBackup {
+			preJob, err := m.createBackupLocked(jobCtx, serviceID, database, CreateBackupRequest{Kind: model.BackupPreImport})
+			if err != nil {
+				return model.DatabaseJob{}, fmt.Errorf("pre-import backup: %w", err)
+			}
+			if preJob.Status != model.JobSucceeded || preJob.BackupID == "" {
+				return model.DatabaseJob{}, fmt.Errorf("pre-import backup did not succeed: %s", preJob.Message)
+			}
+			preBackupID = preJob.BackupID
+		}
+		req.PreImportBackup = false
+		staged, err := os.Open(stagedPath)
+		if err != nil {
+			return model.DatabaseJob{}, fmt.Errorf("open staged import: %w", err)
+		}
+		defer func() { _ = staged.Close() }()
+		result, err := m.deps.Platform.ImportDatabase(jobCtx, serviceID, database, staged, filename, req)
+		if result.BackupID == "" {
+			result.BackupID = preBackupID
+		}
+		return result, err
+	}, model.BackupPreImport), nil
+}
+
+// stageImport copies an upload into a private temporary file so the background
+// job owns the reader after the HTTP request returns.
+func (m *Manager) stageImport(file io.Reader) (string, error) {
+	if file == nil {
+		return "", fmt.Errorf("%w: import file is required", ErrInvalidRequest)
+	}
+	staged, err := os.CreateTemp(m.stagingDir, "devstack-import-*")
+	if err != nil {
+		return "", fmt.Errorf("stage import: %w", err)
+	}
+	path := staged.Name()
+	cleanup := func() {
+		_ = staged.Close()
+		_ = os.Remove(path)
+	}
+	if err := staged.Chmod(0o600); err != nil {
+		cleanup()
+		return "", fmt.Errorf("stage import permissions: %w", err)
+	}
+	if _, err := io.Copy(staged, file); err != nil {
+		cleanup()
+		return "", fmt.Errorf("stage import: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("stage import: %w", err)
+	}
+	return path, nil
+}
+
+// createBackupLocked runs a synchronous pre-operation backup while the caller
+// holds the service lock.
+func (m *Manager) createBackupLocked(ctx context.Context, serviceID, database string, req CreateBackupRequest) (model.DatabaseJob, error) {
+	if req.Kind == "" {
+		req.Kind = model.BackupManual
+	}
+	job, err := m.deps.Platform.CreateBackup(ctx, serviceID, database, req)
+	if err != nil {
+		return job, err
+	}
+	if job.Status == "" || job.Status == model.JobQueued || job.Status == model.JobRunning {
+		job.Status = model.JobSucceeded
+	}
+	if job.Status != model.JobSucceeded {
+		return job, fmt.Errorf("pre-operation backup %s", job.Status)
+	}
+	if job.BackupID != "" {
+		m.recordBackupMetadata(ctx, serviceID, database, job.BackupID, req.Kind)
+	}
+	m.audit(ctx, "database.backup.created", serviceID, "", "database", database, "ok", map[string]any{"backup_id": job.BackupID, "kind": string(req.Kind)})
+	return job, nil
 }
 
 // newJobRecord creates a queued job row.
-func (m *Manager) newJobRecord(serviceID, database string, kind model.DatabaseJobKind) model.DatabaseJobRecord {
+func (m *Manager) newJobRecord(serviceID, database string, kind model.DatabaseJobKind) (model.DatabaseJobRecord, error) {
 	now := m.now().Unix()
 	record := model.DatabaseJobRecord{
 		ID:           m.newID("job"),
@@ -168,46 +253,40 @@ func (m *Manager) newJobRecord(serviceID, database string, kind model.DatabaseJo
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	_ = m.deps.Store.CreateDatabaseJob(context.Background(), record)
-	return record
+	if err := m.deps.Store.CreateDatabaseJob(context.Background(), record); err != nil {
+		return model.DatabaseJobRecord{}, err
+	}
+	return record, nil
 }
 
-// failedJobRecord creates and persists a failed job without calling the
-// platform. It is used when a pre-operation backup cannot be made.
-func (m *Manager) failedJobRecord(serviceID, database string, kind model.DatabaseJobKind, backupID string, cause error) (model.DatabaseJob, error) {
-	record := m.newJobRecord(serviceID, database, kind)
-	record.Status = string(model.JobFailed)
-	record.BackupID = backupID
-	record.Message = safeErrorMessage(cause)
-	record.UpdatedAt = m.now().Unix()
-	_ = m.deps.Store.UpdateDatabaseJob(context.Background(), record)
-	job := recordToJob(record)
-	m.auditJob(context.Background(), job, "failed")
-	return job, cause
-}
-
-// executeJob runs one platform operation while tracking its queued/running/
-// terminal states. Platform calls may themselves be asynchronous; a completed
-// platform job is recorded as succeeded, a failed one as failed.
-func (m *Manager) executeJob(ctx context.Context, record model.DatabaseJobRecord, fn func(context.Context) (model.DatabaseJob, error), backupKind model.DatabaseBackupKind) (model.DatabaseJob, error) {
-	jobCtx, cancel := context.WithCancel(ctx)
+// startJob registers cancellation, launches the worker, and returns the queued
+// job immediately.
+func (m *Manager) startJob(record model.DatabaseJobRecord, fn func(context.Context) (model.DatabaseJob, error), backupKind model.DatabaseBackupKind) model.DatabaseJob {
+	jobCtx, cancel := context.WithCancel(context.Background())
 	m.jobsMu.Lock()
 	m.cancels[record.ID] = cancel
 	m.jobsMu.Unlock()
+	go m.runJob(jobCtx, cancel, record, fn, backupKind)
+	return recordToJob(record)
+}
+
+// runJob owns the queued/running/terminal lifecycle of one background job.
+func (m *Manager) runJob(jobCtx context.Context, cancel context.CancelFunc, record model.DatabaseJobRecord, fn func(context.Context) (model.DatabaseJob, error), backupKind model.DatabaseBackupKind) {
 	defer func() {
 		cancel()
 		m.jobsMu.Lock()
 		delete(m.cancels, record.ID)
+		delete(m.platformJobs, record.ID)
 		m.jobsMu.Unlock()
 	}()
 
 	record.Status = string(model.JobRunning)
 	record.UpdatedAt = m.now().Unix()
 	if err := m.deps.Store.UpdateDatabaseJob(context.Background(), record); err != nil {
-		return recordToJob(record), err
+		return
 	}
 	job := recordToJob(record)
-	m.emit(ctx, "", "database.job.updated", fmt.Sprintf("database job %s running", job.ID))
+	m.emit(context.Background(), "", "database.job.updated", fmt.Sprintf("database job %s running", job.ID))
 
 	result, err := fn(jobCtx)
 	if result.ID != "" {
@@ -227,47 +306,37 @@ func (m *Manager) executeJob(ctx context.Context, record model.DatabaseJobRecord
 	if result.BackupID != "" {
 		job.BackupID = result.BackupID
 	}
-	if err != nil || job.Status == model.JobFailed {
-		if errors.Is(jobCtx.Err(), context.Canceled) {
-			job.Status = model.JobCanceled
-		} else {
-			job.Status = model.JobFailed
-			if job.Message == "" {
-				job.Message = safeErrorMessage(err)
-			}
+
+	canceled := errors.Is(jobCtx.Err(), context.Canceled)
+	switch {
+	case canceled:
+		job.Status = model.JobCanceled
+	case err != nil || job.Status == model.JobFailed:
+		job.Status = model.JobFailed
+		if job.Message == "" {
+			job.Message = safeErrorMessage(err)
 		}
-		job.UpdatedAt = m.now()
-		record = jobToRecord(job)
-		_ = m.deps.Store.UpdateDatabaseJob(context.Background(), record)
-		m.emit(context.Background(), "", "database.job.updated", fmt.Sprintf("database job %s %s", job.ID, job.Status))
-		m.emitJobEvent(context.Background(), job)
-		m.auditJob(context.Background(), job, string(job.Status))
-		if err == nil {
-			err = fmt.Errorf("%w: database job %s %s: %s", ErrConflict, job.ID, job.Status, job.Message)
-		}
-		return job, err
-	}
-	if job.Status == model.JobRunning || job.Status == model.JobQueued {
-		// The platform started an asynchronous job. Keep the daemon job running;
-		// GetJob refreshes it from the platform.
+	case job.Status == model.JobRunning || job.Status == model.JobQueued:
+		// The platform is still working; leave the daemon job running.
 		job.UpdatedAt = m.now()
 		record = jobToRecord(job)
 		_ = m.deps.Store.UpdateDatabaseJob(context.Background(), record)
 		m.emit(context.Background(), "", "database.job.updated", fmt.Sprintf("database job %s running", job.ID))
-		return job, nil
+		return
+	default:
+		job.Status = model.JobSucceeded
+		job.Progress = 100
 	}
-	job.Status = model.JobSucceeded
-	job.Progress = 100
+
 	job.UpdatedAt = m.now()
 	record = jobToRecord(job)
 	_ = m.deps.Store.UpdateDatabaseJob(context.Background(), record)
-	if job.BackupID != "" {
-		m.recordBackupMetadata(ctx, record.ServiceID, record.DatabaseName, job.BackupID, backupKind)
+	if job.Status == model.JobSucceeded && job.BackupID != "" {
+		m.recordBackupMetadata(context.Background(), record.ServiceID, record.DatabaseName, job.BackupID, backupKind)
 	}
-	m.emit(context.Background(), "", "database.job.updated", fmt.Sprintf("database job %s succeeded", job.ID))
+	m.emit(context.Background(), "", "database.job.updated", fmt.Sprintf("database job %s %s", job.ID, job.Status))
 	m.emitJobEvent(context.Background(), job)
-	m.auditJob(context.Background(), job, "ok")
-	return job, nil
+	m.auditJob(context.Background(), job, string(job.Status))
 }
 
 // emitJobEvent publishes the domain-specific SSE name in addition to the
@@ -301,6 +370,31 @@ func (m *Manager) auditJob(ctx context.Context, job model.DatabaseJob, result st
 	m.audit(ctx, action, job.ServiceID, "", "database", job.Database, result, detail)
 }
 
+// ReconcileJobs fails queued/running jobs left over from a previous daemon
+// process. Their platform job IDs lived only in memory, so the daemon cannot
+// prove they are still running; failing them keeps the UI from showing a job
+// that will never finish. Terminal jobs are untouched.
+func (m *Manager) ReconcileJobs(ctx context.Context) error {
+	jobs, err := m.deps.Store.ListAllDatabaseJobs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, record := range jobs {
+		if record.Status != string(model.JobQueued) && record.Status != string(model.JobRunning) {
+			continue
+		}
+		record.Status = string(model.JobFailed)
+		record.Message = "daemon restarted before the database job completed"
+		record.UpdatedAt = m.now().Unix()
+		if err := m.deps.Store.UpdateDatabaseJob(ctx, record); err != nil {
+			return err
+		}
+		m.audit(ctx, "database.job.updated", record.ServiceID, "", "database", record.DatabaseName, "failed", map[string]any{"job_id": record.ID, "reason": "daemon_restart"})
+		m.emit(ctx, "", "database.job.updated", fmt.Sprintf("database job %s failed after daemon restart", record.ID))
+	}
+	return nil
+}
+
 // recordBackupMetadata persists the platform's backup view. When the platform
 // does not return metadata for a just-created backup, a minimal ready record is
 // stored so the backup remains addressable.
@@ -332,31 +426,6 @@ func (m *Manager) recordBackupMetadata(ctx context.Context, serviceID, database,
 	if _, getErr := m.deps.Store.GetDatabaseBackup(ctx, backupID); errors.Is(getErr, store.ErrNotFound) {
 		_ = m.deps.Store.CreateDatabaseBackup(ctx, record)
 	}
-}
-
-// ReconcileJobs fails queued/running jobs left over from a previous daemon
-// process. Their platform job IDs lived only in memory, so the daemon cannot
-// prove they are still running; failing them keeps the UI from showing a job
-// that will never finish. Terminal jobs are untouched.
-func (m *Manager) ReconcileJobs(ctx context.Context) error {
-	jobs, err := m.deps.Store.ListAllDatabaseJobs(ctx)
-	if err != nil {
-		return err
-	}
-	for _, record := range jobs {
-		if record.Status != string(model.JobQueued) && record.Status != string(model.JobRunning) {
-			continue
-		}
-		record.Status = string(model.JobFailed)
-		record.Message = "daemon restarted before the database job completed"
-		record.UpdatedAt = m.now().Unix()
-		if err := m.deps.Store.UpdateDatabaseJob(ctx, record); err != nil {
-			return err
-		}
-		m.audit(ctx, "database.job.updated", record.ServiceID, "", "database", record.DatabaseName, "failed", map[string]any{"job_id": record.ID, "reason": "daemon_restart"})
-		m.emit(ctx, "", "database.job.updated", fmt.Sprintf("database job %s failed after daemon restart", record.ID))
-	}
-	return nil
 }
 
 // backupRecord resolves a backup from metadata, falling back to the platform
