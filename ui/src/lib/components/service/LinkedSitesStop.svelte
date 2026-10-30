@@ -16,13 +16,14 @@
 
   function stateLabel(state: LinkedSiteState | undefined): string {
     if (state === 'stopped') return 'Stopped';
+    if (state === 'stopping') return 'Stopping';
     if (state === 'running') return 'Running';
     return 'Unknown';
   }
 
   function stateVariant(state: LinkedSiteState | undefined): 'accent' | 'warning' | 'neutral' {
     if (state === 'stopped') return 'accent';
-    if (state === 'running') return 'warning';
+    if (state === 'running' || state === 'stopping') return 'warning';
     return 'neutral';
   }
 </script>
@@ -41,7 +42,7 @@
           variant="secondary"
           ariaLabel={`Stop site ${site.name}`}
           loading={stopping[site.id] ?? false}
-          disabled={states[site.id] === 'stopped'}
+          disabled={states[site.id] === 'stopped' || states[site.id] === 'stopping'}
           onclick={() => onstop(site)}
         >
           Stop site

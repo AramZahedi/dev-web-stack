@@ -286,6 +286,33 @@ describe('DatabaseTab', () => {
     await waitFor(() => expect(confirm.disabled).toBe(false));
   });
 
+  it('keeps the confirm disabled while a linked site is stopping', async () => {
+    vi.mocked(api.getSite).mockResolvedValue({
+      id: 'site_blog',
+      name: 'blog',
+      status: 'stopping',
+      desired_state: 'stopped',
+    } as never);
+    render(DatabaseTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /drop app/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Stopping')).toBeTruthy();
+    await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    expect(
+      (within(dialog).getByRole('button', { name: 'Drop database' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
   it('requires linked sites to be stopped before renaming', async () => {
     render(DatabaseTab, {
       props: {
