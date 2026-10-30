@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -58,7 +59,7 @@ func rejectSymlinkPath(root, target string) error {
 		}
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 			return nil
 		}
 		if err != nil {
@@ -128,7 +129,7 @@ func (c *DockerServiceController) readDatabaseSecret(serviceID, userID string) (
 	}
 	info, err := os.Lstat(path)
 	switch {
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
 		return "", fmt.Errorf("%w: database user %q has no stored password", databases.ErrPasswordMissing, userID)
 	case err != nil:
 		return "", fmt.Errorf("inspect database user secret: %w", err)
@@ -171,7 +172,7 @@ func (c *DockerServiceController) deleteDatabaseSecret(serviceID, userID string)
 	}
 	info, err := os.Lstat(path)
 	switch {
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
 		return nil
 	case err != nil:
 		return fmt.Errorf("inspect database user secret: %w", err)

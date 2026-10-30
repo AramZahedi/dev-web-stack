@@ -243,7 +243,16 @@ func (c *DockerServiceController) setRedisUser(ctx context.Context, serviceID st
 	}
 	if err := c.writeDatabaseSecret(serviceID, userID, password); err != nil {
 		_ = c.deleteDatabaseSecret(serviceID, userID)
-		return model.DatabaseUser{}, fmt.Errorf("store generated password: %w", err)
+		return model.DatabaseUser{
+			ID:              userID,
+			ServiceID:       serviceID,
+			Engine:          model.DatabaseRedis,
+			Username:        req.Username,
+			Enabled:         true,
+			Managed:         false,
+			PasswordManaged: false,
+			AccessLevel:     accessLevel,
+		}, fmt.Errorf("store generated password: %w", err)
 	}
 	if err := c.redisApplyUserRules(ctx, serviceID, req.Username, accessLevel, true); err != nil {
 		return model.DatabaseUser{}, err

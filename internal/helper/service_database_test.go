@@ -526,6 +526,53 @@ func TestHelperCreateUserPasswordOnStdin(t *testing.T) {
 	}
 }
 
+func TestHelperCreateUserRollsBackWhenLookupFails(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.handle = func(name string, args []string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "list-users") {
+			return nil, nil
+		}
+		return runner.defaultRun(name, args)
+	}
+	_, err := c.CreateUser(context.Background(), "mysql", databases.CreateUserRequest{Username: "app", Host: "%"})
+	if err == nil {
+		t.Fatal("CreateUser succeeded without a resolvable user ID")
+	}
+	if !runner.stdinContains("DROP USER") {
+		t.Fatalf("created user was not rolled back: %q", runner.stdin)
+	}
+}
+
+func TestHelperCreateUserSecretFailureReturnsUser(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	if err := os.WriteFile(filepath.Join(root, "services"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	user, err := c.CreateUser(context.Background(), "mysql", databases.CreateUserRequest{Username: "app", Host: "%"})
+	if err == nil {
+		t.Fatal("CreateUser succeeded without storing a password")
+	}
+	if user.ID == "" || user.PasswordManaged || user.Username != "app" {
+		t.Fatalf("user = %+v", user)
+	}
+}
+
+func TestHelperRedisCreateUserSecretFailureReturnsUser(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	if err := os.WriteFile(filepath.Join(root, "services", "redis", "secrets"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	user, err := c.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "read-only"})
+	if err == nil {
+		t.Fatal("SetRedisUser succeeded without storing a password")
+	}
+	if user.ID != redisUserID("cache") || user.PasswordManaged || user.Username != "cache" {
+		t.Fatalf("user = %+v", user)
+	}
+}
+
 func TestHelperDropRequiresConfirmation(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	runner := c.runner.(*fakeCommandRunner)

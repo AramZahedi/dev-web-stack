@@ -4,6 +4,8 @@ package helper
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"sort"
@@ -296,7 +298,20 @@ func (c *DockerServiceController) CreateUser(ctx context.Context, serviceID stri
 
 	user, err := c.findUser(ctx, serviceID, req.Username, host)
 	if err != nil {
-		return model.DatabaseUser{}, fmt.Errorf("locate created user: %w", err)
+		rollbackErr := c.rollbackCreatedUser(ctx, serviceID, engine, req.Username, host)
+		if rollbackErr != nil {
+			return model.DatabaseUser{
+				ID:              derivedUserID(req.Username, host),
+				ServiceID:       serviceID,
+				Engine:          engineID,
+				Username:        req.Username,
+				Host:            host,
+				Enabled:         true,
+				Managed:         false,
+				PasswordManaged: false,
+			}, fmt.Errorf("locate created user: %v; rollback failed: %w", err, rollbackErr)
+		}
+		return model.DatabaseUser{}, fmt.Errorf("locate created user (rolled back): %w", err)
 	}
 	if err := c.writeDatabaseSecret(serviceID, user.ID, password); err != nil {
 		user.PasswordManaged = false
@@ -464,6 +479,26 @@ func (c *DockerServiceController) RevealUserPassword(ctx context.Context, servic
 func (c *DockerServiceController) engineID(serviceID string) (model.DatabaseEngine, error) {
 	_, engineID, err := c.databaseEngine(serviceID)
 	return engineID, err
+}
+
+func derivedUserID(username, host string) string {
+	sum := sha256.Sum256([]byte(username + "\x00" + host))
+	return "usr_" + hex.EncodeToString(sum[:])[:16]
+}
+
+// rollbackCreatedUser deletes a just-created engine user when its parser ID
+// cannot be resolved, so a failed create never leaves an orphan account with
+// an unknown password.
+func (c *DockerServiceController) rollbackCreatedUser(ctx context.Context, serviceID string, engine dbengine.Engine, username, host string) error {
+	sql, err := engine.DeleteUserSQL(username, host)
+	if err != nil {
+		return err
+	}
+	lock := c.databaseLock(serviceID)
+	lock.Lock()
+	defer lock.Unlock()
+	_, err = c.runDatabaseSQL(ctx, serviceID, sql)
+	return err
 }
 
 func (c *DockerServiceController) findUser(ctx context.Context, serviceID, username, host string) (model.DatabaseUser, error) {
