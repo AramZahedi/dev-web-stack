@@ -131,6 +131,52 @@ describe('RedisTab', () => {
     expect(db.revealServiceUserPassword).not.toHaveBeenCalled();
   });
 
+  it('clears a revealed default password when the user inventory refreshes', async () => {
+    const { rerender } = render(RedisTab, {
+      props: {
+        service: REDIS_SERVICE,
+        users: REDIS_USERS,
+        onRefresh: vi.fn(),
+        section: 'password',
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /reveal default password/i }));
+    expect(await screen.findByText('redissecret')).toBeTruthy();
+
+    rerender({
+      service: REDIS_SERVICE,
+      users: REDIS_USERS.map((user) => ({ ...user })),
+      onRefresh: vi.fn(),
+      section: 'password',
+    });
+
+    await waitFor(() => expect(screen.queryByText('redissecret')).toBeNull());
+  });
+
+  it('keeps a freshly reset password visible through its own refresh', async () => {
+    const { rerender } = render(RedisTab, {
+      props: {
+        service: REDIS_SERVICE,
+        users: REDIS_USERS,
+        onRefresh: vi.fn(),
+        section: 'password',
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /reset default password/i }));
+    expect(await screen.findByText('newredis')).toBeTruthy();
+
+    rerender({
+      service: REDIS_SERVICE,
+      users: REDIS_USERS.map((user) => ({ ...user })),
+      onRefresh: vi.fn(),
+      section: 'password',
+    });
+
+    expect(screen.getByText('newredis')).toBeTruthy();
+  });
+
   it('does not duplicate the default password card on the users tab', () => {
     render(RedisTab, {
       props: { service: REDIS_SERVICE, users: REDIS_USERS, onRefresh: vi.fn() },
