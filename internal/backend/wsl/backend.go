@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"strings"
@@ -34,7 +35,11 @@ func (b *Backend) Prepare(ctx context.Context, spec backend.SiteSpec) (backend.P
 	if err := b.check(); err != nil {
 		return backend.PreparedSite{}, err
 	}
-	resp, err := b.Client.PrepareSite(ctx, agentproto.SitePrepareRequest{Site: toAgentSite(spec)})
+	site, err := toAgentSite(spec)
+	if err != nil {
+		return backend.PreparedSite{}, err
+	}
+	resp, err := b.Client.PrepareSite(ctx, agentproto.SitePrepareRequest{Site: site})
 	if err != nil {
 		return backend.PreparedSite{}, err
 	}
@@ -151,9 +156,13 @@ func (b *Backend) PreparePHP(ctx context.Context, siteID, generation string, spe
 	if err := b.check(); err != nil {
 		return backend.PreparedSite{}, err
 	}
+	site, err := toAgentSite(spec)
+	if err != nil {
+		return backend.PreparedSite{}, err
+	}
 	resp, err := b.Client.PreparePHP(ctx, siteID, agentproto.PHPPrepareRequest{
 		Generation: generation,
-		Site:       toAgentSite(spec),
+		Site:       site,
 	})
 	if err != nil {
 		return backend.PreparedSite{}, err
@@ -219,7 +228,7 @@ func toWSLPath(p string) string {
 	return strings.ReplaceAll(p, `\`, "/")
 }
 
-func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
+func toAgentSite(spec backend.SiteSpec) (agentproto.SiteSpec, error) {
 	documentRoot := strings.TrimSpace(spec.DocumentRoot)
 	backendDocumentRoot := strings.TrimSpace(spec.BackendPath)
 	if documentRoot != "" && documentRoot != "." {
@@ -246,23 +255,25 @@ func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 		PHPVersion: spec.PHPVersion, PHPBuild: spec.PHPBuild, PHPBuildPath: toWSLPath(spec.PHPBuildPath),
 		PHPIniPath: toWSLPath(spec.PHPIniPath), FPMConfigPath: toWSLPath(spec.FPMConfigPath), PHPHealthScript: toWSLPath(spec.PHPHealthScript),
 	}
-	applyDatabaseLinks(&site, spec.DatabaseLinks)
-	return site
+	if err := applyDatabaseLinks(&site, spec.DatabaseLinks); err != nil {
+		return agentproto.SiteSpec{}, fmt.Errorf("backend/wsl: encode database links: %w", err)
+	}
+	return site, nil
 }
 
 // applyDatabaseLinks carries password-free link metadata to the agent. The
 // agent lane owns the SiteSpec.DatabaseLinks field; this JSON bridge lets the
 // daemon branch compile against the frozen foundation and start sending links
 // as soon as that field is merged, without importing a not-yet-landed type.
-func applyDatabaseLinks(site *agentproto.SiteSpec, links []backend.DatabaseLinkSpec) {
+func applyDatabaseLinks(site *agentproto.SiteSpec, links []backend.DatabaseLinkSpec) error {
 	if site == nil || len(links) == 0 {
-		return
+		return nil
 	}
 	raw, err := databaseLinksPayload(links)
 	if err != nil {
-		return
+		return err
 	}
-	_ = json.Unmarshal(raw, site)
+	return json.Unmarshal(raw, site)
 }
 
 // databaseLinksPayload is the wire fragment the agent's SiteSpec field

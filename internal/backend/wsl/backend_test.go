@@ -205,7 +205,10 @@ func TestToAgentSiteSourceMode(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		spec := toAgentSite(backend.SiteSpec{HostPath: tc.hostPath})
+		spec, err := toAgentSite(backend.SiteSpec{HostPath: tc.hostPath})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if spec.SourceMode != tc.wantMode {
 			t.Errorf("toAgentSite(%q).SourceMode = %q, want %q", tc.hostPath, spec.SourceMode, tc.wantMode)
 		}
