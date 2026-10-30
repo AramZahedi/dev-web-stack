@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -406,6 +407,26 @@ func TestDBBackupRestoreOverwriteRequiresYesAndTarget(t *testing.T) {
 	runCLI(t, fake, "db", "backup", "restore", "--service", "mysql", "--backup-id", "bkp_1", "--target", "app", "--overwrite", "--yes")
 	if !fake.databaseRestoreReq.Overwrite || fake.databaseRestoreReq.Confirm != "app" || !fake.databaseRestoreReq.PreRestoreBackup {
 		t.Fatalf("restore req=%+v", fake.databaseRestoreReq)
+	}
+}
+
+func TestDBExportDoesNotTruncateDestinationOnCopyFailure(t *testing.T) {
+	useTestSeams(t)
+	output := filepath.Join(t.TempDir(), "app.sql")
+	if err := os.WriteFile(output, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeClient{databaseExportReadErr: errors.New("stream failed")}
+	code, _, stderr := runCLIExit(t, fake, "db", "export", "--service", "mysql", "--database", "app", "--output", output)
+	if code == 0 {
+		t.Fatalf("export unexpectedly succeeded: %s", stderr)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original" {
+		t.Fatalf("destination was truncated before a successful copy: %q", data)
 	}
 }
 

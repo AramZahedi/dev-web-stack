@@ -1058,18 +1058,31 @@ func (a *App) writeDownload(cmd *cobra.Command, output string, body io.Reader) (
 	if output == "-" {
 		return io.Copy(cmd.OutOrStdout(), body)
 	}
-	file, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	temp, err := os.CreateTemp(filepath.Dir(output), "."+filepath.Base(output)+".tmp-*")
 	if err != nil {
 		return 0, err
 	}
-	// Tighten an existing file too; OpenFile's mode only applies on creation.
-	_ = file.Chmod(0o600)
-	written, copyErr := io.Copy(file, body)
-	closeErr := file.Close()
+	tempPath := temp.Name()
+	cleanup := func() {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+	}
+	_ = temp.Chmod(0o600)
+	written, copyErr := io.Copy(temp, body)
+	closeErr := temp.Close()
 	if copyErr != nil {
+		cleanup()
 		return written, copyErr
 	}
-	return written, closeErr
+	if closeErr != nil {
+		cleanup()
+		return written, closeErr
+	}
+	if err := os.Rename(tempPath, output); err != nil {
+		cleanup()
+		return written, err
+	}
+	return written, nil
 }
 
 const maxPasswordLineBytes = 4096

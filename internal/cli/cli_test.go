@@ -170,6 +170,7 @@ type fakeClient struct {
 	databaseImportReq        databases.ImportRequest
 	databaseImportFile       string
 	databaseExportData       string
+	databaseExportReadErr    error
 
 	databaseJob         model.DatabaseJob
 	databaseJobCanceled bool
@@ -681,6 +682,9 @@ func (f *fakeClient) ExportServiceDatabase(_ context.Context, _, _ string) (io.R
 		return nil, err
 	}
 	f.databaseExported = true
+	if f.databaseExportReadErr != nil {
+		return &failingReadCloser{data: "partial", err: f.databaseExportReadErr}, nil
+	}
 	data := f.databaseExportData
 	if data == "" {
 		data = "dump"
@@ -942,6 +946,23 @@ type errorReader struct{}
 func (errorReader) Read([]byte) (int, error) {
 	return 0, errors.New("stdin must not be read")
 }
+
+// failingReadCloser emits data and then returns err.
+type failingReadCloser struct {
+	data string
+	err  error
+}
+
+func (r *failingReadCloser) Read(p []byte) (int, error) {
+	if r.data != "" {
+		n := copy(p, r.data)
+		r.data = r.data[n:]
+		return n, nil
+	}
+	return 0, r.err
+}
+
+func (r *failingReadCloser) Close() error { return nil }
 
 func runCLI(t *testing.T, fake *fakeClient, args ...string) string {
 	t.Helper()
