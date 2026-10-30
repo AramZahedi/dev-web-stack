@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Copy, Database, Link2, RotateCw, Trash2 } from 'lucide-svelte';
   import { copyText } from '../../clipboard';
   import { describeError } from '../../errors';
@@ -49,6 +50,7 @@
   let managedUsers = $state<Record<string, boolean>>({});
   let restartNeeded = $state(false);
   let userGeneration = 0;
+  let revealGeneration = 0;
 
   const userCounts = $derived.by(() => {
     const counts: Record<string, number> = {};
@@ -109,6 +111,7 @@
   $effect(() => {
     if (site.id === lastSiteID) return;
     lastSiteID = site.id;
+    revealGeneration += 1;
     secrets = {};
     revealError = {};
     managedOverrides = {};
@@ -117,11 +120,25 @@
 
   let lastLinkKey = '';
   $effect(() => {
-    const key = links.map((link) => `${link.id}:${link.user_id}`).join(',');
+    const key = links
+      .map((link) => `${link.id}:${link.user_id}:${link.password_managed}`)
+      .join(',');
     if (key === lastLinkKey) return;
     lastLinkKey = key;
+    revealGeneration += 1;
     secrets = {};
     revealError = {};
+  });
+
+  onMount(() => {
+    const clearSecrets = () => {
+      revealGeneration += 1;
+      secrets = {};
+      revealError = {};
+      revealLoading = {};
+    };
+    window.addEventListener('devstack:refresh', clearSecrets);
+    return () => window.removeEventListener('devstack:refresh', clearSecrets);
   });
 
   function linkError(link: SiteDatabaseLink): { code: string; message: string } {
@@ -181,6 +198,7 @@
   }
 
   async function reveal(link: SiteDatabaseLink): Promise<void> {
+    const generation = ++revealGeneration;
     const cleared = { ...secrets };
     delete cleared[link.id];
     secrets = cleared;
@@ -188,15 +206,20 @@
     revealError = { ...revealError, [link.id]: '' };
     try {
       const secret = await revealServiceUserPassword(link.service_id, link.user_id);
+      if (generation !== revealGeneration) return;
       secrets = { ...secrets, [link.id]: secret.value };
     } catch (caught) {
+      if (generation !== revealGeneration) return;
       revealError = { ...revealError, [link.id]: describeError(caught).message };
     } finally {
-      revealLoading = { ...revealLoading, [link.id]: false };
+      if (generation === revealGeneration) {
+        revealLoading = { ...revealLoading, [link.id]: false };
+      }
     }
   }
 
   function hide(link: SiteDatabaseLink): void {
+    revealGeneration += 1;
     const next = { ...secrets };
     delete next[link.id];
     secrets = next;

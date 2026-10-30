@@ -839,6 +839,7 @@ describe('SiteDetail configuration and builds', () => {
   it('says linked databases remain when deleting the site', async () => {
     await renderSite('blog');
     await fireEvent.click(await screen.findByRole('button', { name: /remove site/i }));
+    expect(screen.getByText(/database links/i)).toBeTruthy();
     expect(
       screen.getByText(/databases, users, grants, passwords, backups, and data remain/i),
     ).toBeTruthy();
@@ -971,6 +972,18 @@ describe('SiteDetail configuration and builds', () => {
     mockDb.listSiteDatabases.mockResolvedValue({ links: [SITE_DB_LINK] });
     await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByText('Could not load databases')).toBeNull());
+  });
+
+  it('clears a revealed password on devstack:refresh', async () => {
+    mockDb.revealServiceUserPassword.mockResolvedValue({ value: 's3cret' });
+    await renderSite('blog');
+    await fireEvent.click(
+      await screen.findByRole('button', { name: /reveal password for app/i }),
+    );
+    expect(await screen.findByText('s3cret')).toBeTruthy();
+
+    window.dispatchEvent(new Event('devstack:refresh'));
+    await waitFor(() => expect(screen.queryByText('s3cret')).toBeNull());
   });
 
   it('sanitizes copied .env snippets and never echoes them', async () => {
