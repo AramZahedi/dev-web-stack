@@ -1635,11 +1635,24 @@ func TestHelperRedisACLListSkipsUnsafeUsernames(t *testing.T) {
 }
 
 func TestRedisOutputErrorDoesNotMatchUsername(t *testing.T) {
-	if err := redisOutputError([]byte("user err on #hash ~* +@read\n")); err != nil {
-		t.Fatalf("username false positive: %v", err)
+	for _, value := range []string{
+		"user err on #hash ~* +@read\n",
+		"user noauth on #hash ~* +@read\n",
+		"value wrongpass\n",
+	} {
+		if err := redisOutputError([]byte(value)); err != nil {
+			t.Fatalf("user data false positive %q: %v", value, err)
+		}
 	}
-	if err := redisOutputError([]byte("(error) ERR unknown command\n")); err == nil {
-		t.Fatal("redis error output was accepted")
+	for _, value := range []string{
+		"(error) ERR unknown command\n",
+		"(error) NOAUTH Authentication required.\n",
+		"(error) WRONGPASS invalid username-password pair\n",
+		"err unknown command\n",
+	} {
+		if err := redisOutputError([]byte(value)); err == nil {
+			t.Fatalf("redis error output was accepted: %q", value)
+		}
 	}
 }
 
@@ -1687,6 +1700,49 @@ func TestHelperRedisACLFileConfirmedMigrates(t *testing.T) {
 	}
 	if !runner.joinedCallsContains("restart") {
 		t.Fatalf("confirmed migration did not restart Redis: %s", runner.joinedCalls())
+	}
+}
+
+func TestHelperRedisExistingACLFileModeIsTightened(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	configPath := filepath.Join(root, "services", "redis", "config", "redis.conf")
+	if err := os.WriteFile(configPath, []byte("port 6379\n"+redisACLFileLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aclPath := filepath.Join(root, "services", "redis", "data", "users.acl")
+	if err := os.WriteFile(aclPath, []byte("user default on nopass ~* +@all\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	if err := c.EnableRedisACLFile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(aclPath)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("users.acl mode=%v err=%v", info, err)
+	}
+	if runner.joinedCallsContains("restart") {
+		t.Fatalf("mode-only repair restarted Redis: %s", runner.joinedCalls())
+	}
+}
+
+func TestHelperRedisACLFileRejectsDirectory(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	aclPath := filepath.Join(root, "services", "redis", "data", "users.acl")
+	if err := os.MkdirAll(aclPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	err := c.EnableRedisACLFileConfirmed(context.Background(), true)
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+	if runner.joinedCallsContains("restart") || runner.stdinContains("ACL LIST") {
+		t.Fatalf("directory ACL file was migrated: %s", runner.joinedCalls())
 	}
 }
 

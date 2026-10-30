@@ -73,8 +73,9 @@ func (c *DockerServiceController) redisExecInput(ctx context.Context, serviceID 
 func redisOutputError(out []byte) error {
 	for _, line := range strings.Split(strings.ToLower(string(out)), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "(error)") || strings.HasPrefix(line, "err ") ||
-			strings.Contains(line, "noauth") || strings.Contains(line, "wrongpass") {
+		// redis-cli prefixes server errors with "(error)"; do not match error
+		// words inside user data such as an ACL username or a key name.
+		if strings.HasPrefix(line, "(error)") || strings.HasPrefix(line, "err ") {
 			return fmt.Errorf("%w: redis rejected the command", databases.ErrInvalidRequest)
 		}
 	}
