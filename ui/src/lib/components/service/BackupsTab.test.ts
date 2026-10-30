@@ -446,6 +446,40 @@ describe('BackupsTab', () => {
     expect(overwrite.disabled).toBe(true);
   });
 
+  it('toasts a backup job that finishes during polling', async () => {
+    vi.mocked(db.createServiceBackup).mockResolvedValue(RUNNING_JOB);
+    vi.mocked(db.getDatabaseJob)
+      .mockResolvedValueOnce({ ...RUNNING_JOB, progress: 60 })
+      .mockResolvedValueOnce({
+        ...RUNNING_JOB,
+        status: 'succeeded',
+        progress: 100,
+        message: 'backup complete',
+      });
+
+    render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: MYSQL_BACKUPS,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create backup' }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Create backup' }));
+
+    await waitFor(
+      () => {
+        const toast = get(toasts).find((entry) => entry.title === 'backup succeeded');
+        expect(toast?.kind).toBe('success');
+      },
+      { timeout: 5000 },
+    );
+    expect(screen.getByText('backup complete')).toBeTruthy();
+  });
+
   it('shows job progress and cancels a running backup job', async () => {
     vi.mocked(db.createServiceBackup).mockResolvedValue(RUNNING_JOB);
     render(BackupsTab, {

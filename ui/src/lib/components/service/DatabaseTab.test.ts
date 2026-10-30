@@ -112,6 +112,18 @@ const POSTGRES_DATABASES: Database[] = [
 
 const UNLINKED_APP: Database = { ...MYSQL_DATABASES[0], linked_sites: [] };
 
+const RUNNING_JOB: DatabaseJob = {
+  id: 'job_running',
+  service_id: 'mysql',
+  database: 'app',
+  kind: 'backup',
+  status: 'running',
+  progress: 40,
+  message: 'Dumping tables',
+  created_at: '2026-10-29T10:00:00Z',
+  updated_at: '2026-10-29T10:00:02Z',
+};
+
 beforeEach(() => {
   clearToasts();
   vi.mocked(api.getSite).mockResolvedValue({
@@ -462,6 +474,41 @@ describe('DatabaseTab', () => {
         expect.objectContaining({ mode: 'replace', confirm: 'app' }),
       ),
     );
+  });
+
+  it.each([
+    ['failed', 'error'],
+    ['canceled', 'info'],
+    ['succeeded', 'success'],
+  ] as const)('toasts a %s job that finishes during polling', async (status, kind) => {
+    vi.mocked(db.createServiceBackup).mockResolvedValue(RUNNING_JOB);
+    vi.mocked(db.getDatabaseJob)
+      .mockResolvedValueOnce({ ...RUNNING_JOB, progress: 60 })
+      .mockResolvedValueOnce({
+        ...RUNNING_JOB,
+        status,
+        progress: 100,
+        message: `job ${status}`,
+      });
+
+    render(DatabaseTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        databases: [UNLINKED_APP, MYSQL_DATABASES[1]],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /back up app/i }));
+
+    await waitFor(
+      () => {
+        const toast = get(toasts).find((entry) => entry.title === `backup ${status}`);
+        expect(toast?.kind).toBe(kind);
+      },
+      { timeout: 5000 },
+    );
+    expect(screen.getByText(`job ${status}`)).toBeTruthy();
   });
 
   it('reports a failed backup job as an error toast and keeps the detail', async () => {    const failed: DatabaseJob = {

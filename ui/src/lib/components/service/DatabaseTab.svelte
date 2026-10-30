@@ -111,28 +111,35 @@
   async function pollJob(id: string): Promise<void> {
     try {
       const next = await dbApi.getDatabaseJob(id);
+      if (!jobRunning(next)) {
+        finishJob(next);
+        return;
+      }
       job = next;
       jobError = null;
-      if (!jobRunning(next)) {
-        stopJobPolling();
-        onRefresh();
-      }
     } catch (caught) {
       jobError = describeError(caught);
       stopJobPolling();
     }
   }
 
+  function finishJob(next: DatabaseJob): void {
+    job = next;
+    jobError = null;
+    stopJobPolling();
+    addToast({
+      kind: jobToastKind(next.status),
+      title: `${next.kind} ${next.status}`,
+      message: next.message || `The ${next.kind} job for ${next.database} finished.`,
+    });
+    onRefresh();
+  }
+
   function watchJob(next: DatabaseJob): void {
     job = next;
     jobError = null;
     if (!jobRunning(next)) {
-      addToast({
-        kind: jobToastKind(next.status),
-        title: `${next.kind} ${next.status}`,
-        message: next.message || `The ${next.kind} job for ${next.database} finished.`,
-      });
-      onRefresh();
+      finishJob(next);
       return;
     }
     stopJobPolling();
