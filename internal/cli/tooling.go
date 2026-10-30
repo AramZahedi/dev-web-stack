@@ -378,7 +378,7 @@ func degradedDatabaseEnvCode(err error) (string, bool) {
 		return "", false
 	}
 	switch apiErr.Code {
-	case "NOT_FOUND", "DATABASE_PASSWORD_MISSING", "DATABASE_SERVICE_INACTIVE":
+	case "NOT_FOUND", "DATABASE_NOT_FOUND", "DATABASE_PASSWORD_MISSING", "DATABASE_SERVICE_INACTIVE":
 		return apiErr.Code, true
 	default:
 		return "", false

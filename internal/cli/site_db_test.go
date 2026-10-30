@@ -432,7 +432,7 @@ func shellContextRuntimes() []model.RuntimeBuild {
 
 func TestSiteShellContextDegradesWhenDatabaseEnvUnavailable(t *testing.T) {
 	useTestSeams(t)
-	for _, code := range []string{"NOT_FOUND", "DATABASE_PASSWORD_MISSING", "DATABASE_SERVICE_INACTIVE"} {
+	for _, code := range []string{"NOT_FOUND", "DATABASE_NOT_FOUND", "DATABASE_PASSWORD_MISSING", "DATABASE_SERVICE_INACTIVE"} {
 		t.Run(code, func(t *testing.T) {
 			fake := &fakeClient{
 				sites:              []model.Site{shellContextSite()},
