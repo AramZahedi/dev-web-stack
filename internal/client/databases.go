@@ -337,11 +337,21 @@ func decodeList[T any](raw json.RawMessage, key string) ([]T, error) {
 }
 
 func decodeEnv(raw json.RawMessage) (map[string]string, error) {
-	var wrapper struct {
-		Env map[string]string `json:"env"`
-	}
-	if err := json.Unmarshal(raw, &wrapper); err == nil && wrapper.Env != nil {
-		return wrapper.Env, nil
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wrapper); err == nil {
+		if inner, ok := wrapper["env"]; ok {
+			if string(inner) == "null" {
+				return map[string]string{}, nil
+			}
+			var env map[string]string
+			if err := json.Unmarshal(inner, &env); err != nil {
+				return nil, err
+			}
+			if env == nil {
+				env = map[string]string{}
+			}
+			return env, nil
+		}
 	}
 	var env map[string]string
 	if err := json.Unmarshal(raw, &env); err != nil {
