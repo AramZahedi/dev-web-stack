@@ -176,18 +176,6 @@ func (d *Docker) UpdateUser(ctx context.Context, serviceID, userID string, req d
 	if engine.ID() == model.DatabaseRedis {
 		return model.DatabaseUser{}, databases.ErrUnsupported
 	}
-	user, err := d.findDatabaseUser(ctx, serviceID, userID)
-	if err != nil {
-		if errors.Is(err, databases.ErrNotFound) && d.isProtectedUserID(engine, string(service.ID), userID) {
-			return model.DatabaseUser{}, databases.ErrProtected
-		}
-		return model.DatabaseUser{}, err
-	}
-	if engine.ProtectedUser(user.Username, user.Host) {
-		if req.Enabled != nil || req.Grants != nil {
-			return model.DatabaseUser{}, databases.ErrProtected
-		}
-	}
 	for _, grant := range req.Grants {
 		if err := engine.ValidateDatabaseName(grant.Database); err != nil {
 			return model.DatabaseUser{}, mapEngineError(err)
@@ -206,6 +194,18 @@ func (d *Docker) UpdateUser(ctx context.Context, serviceID, userID string, req d
 	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
 		return model.DatabaseUser{}, err
 	}
+	user, err := d.findDatabaseUser(ctx, serviceID, userID)
+	if err != nil {
+		if errors.Is(err, databases.ErrNotFound) && d.isProtectedUserID(engine, string(service.ID), userID) {
+			return model.DatabaseUser{}, databases.ErrProtected
+		}
+		return model.DatabaseUser{}, err
+	}
+	if engine.ProtectedUser(user.Username, user.Host) {
+		if req.Enabled != nil || req.Grants != nil {
+			return model.DatabaseUser{}, databases.ErrProtected
+		}
+	}
 	if req.Enabled != nil {
 		statement, err := databaseSetEnabledSQL(engine, user.Username, user.Host, *req.Enabled)
 		if err != nil {
@@ -216,29 +216,60 @@ func (d *Docker) UpdateUser(ctx context.Context, serviceID, userID string, req d
 		}
 	}
 	if req.Grants != nil {
-		for _, existing := range user.Grants {
-			statement, err := engine.RevokeSQL(user.Username, user.Host, existing.Database, model.DatabaseGrant{
-				Database: existing.Database,
+		existing := user.Grants
+		for _, existingGrant := range existing {
+			statement, err := engine.RevokeSQL(user.Username, user.Host, existingGrant.Database, model.DatabaseGrant{
+				Database: existingGrant.Database,
 				Preset:   model.GrantAdmin,
 			})
 			if err != nil {
+				d.restoreUserGrants(ctx, serviceID, engine, command, user.Username, user.Host, existing)
 				return model.DatabaseUser{}, mapEngineError(err)
 			}
 			if _, err := d.runDatabaseSQL(ctx, serviceID, command, []byte(statement)); err != nil {
+				d.restoreUserGrants(ctx, serviceID, engine, command, user.Username, user.Host, existing)
 				return model.DatabaseUser{}, err
 			}
 		}
+		applied := make([]model.DatabaseGrant, 0, len(req.Grants))
 		for _, grant := range req.Grants {
 			statement, err := engine.GrantSQL(user.Username, user.Host, grant.Database, grant)
 			if err != nil {
+				d.rollbackGrantUpdate(ctx, serviceID, engine, command, user.Username, user.Host, existing, applied)
 				return model.DatabaseUser{}, mapEngineError(err)
 			}
 			if _, err := d.runDatabaseSQL(ctx, serviceID, command, []byte(statement)); err != nil {
+				d.rollbackGrantUpdate(ctx, serviceID, engine, command, user.Username, user.Host, existing, applied)
 				return model.DatabaseUser{}, err
 			}
+			applied = append(applied, grant)
 		}
 	}
 	return d.findDatabaseUser(ctx, serviceID, userID)
+}
+
+func (d *Docker) rollbackGrantUpdate(ctx context.Context, serviceID string, engine dbengine.Engine, command []string, username, host string, existing, applied []model.DatabaseGrant) {
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for _, grant := range applied {
+		statement, err := engine.RevokeSQL(username, host, grant.Database, model.DatabaseGrant{
+			Database: grant.Database,
+			Preset:   model.GrantAdmin,
+		})
+		if err == nil {
+			_, _ = d.runDatabaseSQL(rollbackCtx, serviceID, command, []byte(statement))
+		}
+	}
+	d.restoreUserGrants(rollbackCtx, serviceID, engine, command, username, host, existing)
+}
+
+func (d *Docker) restoreUserGrants(ctx context.Context, serviceID string, engine dbengine.Engine, command []string, username, host string, grants []model.DatabaseGrant) {
+	for _, grant := range grants {
+		statement, err := engine.GrantSQL(username, host, grant.Database, grant)
+		if err == nil {
+			_, _ = d.runDatabaseSQL(ctx, serviceID, command, []byte(statement))
+		}
+	}
 }
 
 func (d *Docker) DeleteUser(ctx context.Context, serviceID, userID string, req databases.DeleteUserRequest) error {

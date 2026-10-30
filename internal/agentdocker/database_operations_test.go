@@ -309,3 +309,23 @@ func TestListUsersPropagatesGrantErrors(t *testing.T) {
 		t.Fatal("ListUsers swallowed a grant discovery failure")
 	}
 }
+
+func TestUpdateUserRollsBackGrantsOnPartialFailure(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	userID := databaseUserID("mysql", "app", "%")
+	runner.runOutputs["mysql.user"] = []byte("app\t%\tN\n")
+	runner.runOutputs["SHOW GRANTS"] = []byte("GRANT SELECT ON `app`.* TO `app`@`%`\n")
+	runner.failOnInput = "GRANT SELECT ON `blog`"
+	_, err := d.UpdateUser(context.Background(), "mysql", userID, databases.UpdateUserRequest{
+		Grants: []model.DatabaseGrant{
+			{Database: "app", Preset: model.GrantReadWrite},
+			{Database: "blog", Preset: model.GrantReadOnly},
+		},
+	})
+	if err == nil {
+		t.Fatal("UpdateUser ignored a partial grant failure")
+	}
+	if !runner.stdinContains("GRANT SELECT ON `app`.*") {
+		t.Fatalf("existing app grant was not restored: %s", runner.joinedCalls())
+	}
+}
