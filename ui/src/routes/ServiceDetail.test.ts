@@ -215,6 +215,16 @@ describe('ServiceDetail', () => {
     expect(screen.getByRole('tab', { name: 'Databases' })).toBeTruthy();
   });
 
+  it('renders the service header before inventory calls finish', async () => {
+    vi.mocked(db.listServiceDatabases).mockImplementation(
+      () => new Promise(() => {}) as never,
+    );
+
+    render(ServiceDetail, { props: { params: { id: 'mysql' } } });
+
+    expect(await screen.findByRole('heading', { name: 'MySQL 8.4' })).toBeTruthy();
+  });
+
   it('shows not found for an empty service id instead of hanging', async () => {
     render(ServiceDetail, { props: { params: {} } });
 

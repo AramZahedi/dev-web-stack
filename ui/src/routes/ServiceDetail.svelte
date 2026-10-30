@@ -230,6 +230,7 @@
       const next = await api.getService(id);
       if (generation !== loadGeneration || id !== serviceID) return;
       service = next;
+      loading = false;
       applyRouteQuery(next);
       if (isRedis(next)) {
         await loadUsers(id, generation);
