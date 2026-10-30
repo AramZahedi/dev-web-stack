@@ -114,7 +114,7 @@ Open `$openUrl` in a fresh Playwright tab. If TLS trust is missing, use `$ui.fal
 
 **Artifacts:** `dist/e2e/full-dashboard/task-0/`
 
-- [ ] **Step 1: Capture source and binary baseline**
+- [x] **Step 1: Capture source and binary baseline**
 
 ```powershell
 git status --short --branch
@@ -129,7 +129,7 @@ go test ./...
 
 Expected: clean tree, green build/vet/test, `doctor` has no failures. Record the commit SHA in the evidence file.
 
-- [ ] **Step 2: Capture live state**
+- [x] **Step 2: Capture live state**
 
 ```powershell
 & $ds site list --json --home $h | Out-File "$outRoot\task-0\sites-before.json"
@@ -143,7 +143,7 @@ Expected: clean tree, green build/vet/test, `doctor` has no failures. Record the
 
 Expected baseline: no sites, no installed services, Node default `24.22.1`, PHP default `php@8.4.27-r1`, serving mode `builtin`, trust healthy.
 
-- [ ] **Step 3: Back up the live state**
+- [x] **Step 3: Back up the live state**
 
 ```powershell
 $backup = "$outRoot\task-0\backup"
@@ -159,7 +159,7 @@ Get-ChildItem 'C:\devstack\bin' -Filter 'devstack*' | Copy-Item -Destination $ba
 
 Do not restore the DB unless a task corrupts state; prefer reverting through the CLI/dashboard. Record the backup path.
 
-- [ ] **Step 4: Create fixture directories**
+- [x] **Step 4: Create fixture directories**
 
 ```powershell
 $p = "$h\projects"
@@ -178,11 +178,11 @@ Create a WSL-mode fixture inside WSL:
 wsl.exe -d devstack -u root -- sh -c "mkdir -p /data/devstack/projects/e2e-full-wsl && printf '<h1>e2e full wsl</h1>' > /data/devstack/projects/e2e-full-wsl/index.html"
 ```
 
-- [ ] **Step 5: Open a fresh dashboard tab and assert no console errors**
+- [x] **Step 5: Open a fresh dashboard tab and assert no console errors**
 
 Use the token URL. Assert the Sites page shows the current site count. Capture `task-0/sites.png` and the accessibility snapshot.
 
-- [ ] **Step 6: Record baseline**
+- [x] **Step 6: Record baseline**
 
 Write `task-0/README.md` with commit SHA, dashboard URL, baseline JSON, backup path, and any pre-existing anomalies. Commit the plan only; do not commit evidence (ignored).
 
@@ -824,3 +824,4 @@ Do not commit `dist/`, `.playwright-mcp/`, runtime data, or secrets.
 - [ ] No task weakens a security boundary to pass.
 - [ ] Final gate includes Go, UI, installer, lifecycle, release, vertical slice, and live state.
 - [ ] The final report is committed and linked from `docs/README.md` and `docs/handoff.md`.
+
