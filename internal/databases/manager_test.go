@@ -1115,6 +1115,24 @@ func TestImportClearsPlatformPreImportFlag(t *testing.T) {
 	}
 }
 
+func TestCreateBackupPersistsWhenRequestContextIsCanceled(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	platform.job = model.DatabaseJob{ID: "job_1", Status: model.JobSucceeded, BackupID: "bkp_1"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	job, err := m.CreateBackup(ctx, "mysql", "app", CreateBackupRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != model.JobSucceeded {
+		t.Fatalf("job = %+v", job)
+	}
+	stored, err := st.GetDatabaseJob(context.Background(), job.ID)
+	if err != nil || stored.Status != string(model.JobSucceeded) {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+}
+
 func TestCancelTerminalJobDoesNotRewriteStatus(t *testing.T) {
 	m, st, _, _, _ := testManagerWithFakes(t)
 	st.jobs = []model.DatabaseJobRecord{{ID: "job_1", ServiceID: "mysql", Status: string(model.JobSucceeded)}}
