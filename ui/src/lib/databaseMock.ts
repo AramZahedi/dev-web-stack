@@ -388,12 +388,59 @@ export const mockDatabaseApi = {
       connection: connectionFor({ engine: database.engine, database: database.name, username: user.username, password_managed: user.password_managed }),
     };
     links.push(link);
+    const siteRef = { id: siteID, name: siteID };
+    if (!Array.isArray(database.linked_sites)) database.linked_sites = [];
+    if (!database.linked_sites.some((site) => site.id === siteID)) {
+      database.linked_sites.push({ ...siteRef });
+    }
+    if (!Array.isArray(user.linked_sites)) user.linked_sites = [];
+    if (!user.linked_sites.some((site) => site.id === siteID)) {
+      user.linked_sites.push({ ...siteRef });
+    }
     return clone(link);
   },
 
   async unlinkSiteDatabase(siteID: string, linkID: string): Promise<void> {
     await wait();
+    const link = links.find(
+      (candidate) => candidate.site_id === siteID && candidate.id === linkID,
+    );
     links = links.filter((link) => !(link.site_id === siteID && link.id === linkID));
+    if (!link) return;
+    if (
+      !links.some(
+        (candidate) =>
+          candidate.site_id === siteID &&
+          candidate.service_id === link.service_id &&
+          candidate.database === link.database,
+      )
+    ) {
+      const database = databases.find(
+        (candidate) =>
+          candidate.service_id === link.service_id && candidate.name === link.database,
+      );
+      if (database?.linked_sites) {
+        database.linked_sites = database.linked_sites.filter(
+          (site) => site.id !== siteID,
+        );
+      }
+    }
+    if (
+      !links.some(
+        (candidate) =>
+          candidate.site_id === siteID &&
+          candidate.service_id === link.service_id &&
+          candidate.user_id === link.user_id,
+      )
+    ) {
+      const user = users.find(
+        (candidate) =>
+          candidate.service_id === link.service_id && candidate.id === link.user_id,
+      );
+      if (user?.linked_sites) {
+        user.linked_sites = user.linked_sites.filter((site) => site.id !== siteID);
+      }
+    }
   },
 
   async createSiteDatabase(siteID: string, body: CreateSiteDatabaseRequest): Promise<SiteDatabaseResult> {

@@ -1711,6 +1711,10 @@ export const mockApi = {
   async deleteSite(ref: string): Promise<void> {
     await wait();
     const site = findSite(ref);
+    const { links } = await mockDatabaseApi.listSiteDatabases(site.id);
+    for (const link of links) {
+      await mockDatabaseApi.unlinkSiteDatabase(site.id, link.id);
+    }
     const index = sites.findIndex((entry) => entry.id === site.id);
     if (index >= 0) sites.splice(index, 1);
     delete logTemplates[site.name];
