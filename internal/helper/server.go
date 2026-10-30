@@ -1364,6 +1364,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	defer func() { _ = r.Body.Close() }()
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	dec := json.NewDecoder(r.Body)
+	// Unknown fields are rejected instead of silently dropped. In particular,
+	// no helper request accepts a caller-supplied password; a "password"
+	// field is therefore an error, not metadata.
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		if errors.Is(err, io.EOF) {
 			return errors.New("request body is empty")

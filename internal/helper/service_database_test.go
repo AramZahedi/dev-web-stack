@@ -9,6 +9,7 @@ import (
 	cryptorand "crypto/rand"
 	"errors"
 	"io"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/dbengine"
+	"github.com/AramZahedi/dev-web-stack/internal/dbproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
@@ -1496,6 +1498,31 @@ func TestHelperResolveSiteEnvManagedPassword(t *testing.T) {
 	}
 	if !strings.Contains(env["DATABASE_URL"], "s3cret") {
 		t.Fatalf("url=%q", env["DATABASE_URL"])
+	}
+}
+
+func TestHelperResolveSiteEnvValidatesLinkIdentifiers(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	for _, link := range []model.DatabaseLink{
+		{ServiceID: "mysql", Database: "app; DROP DATABASE mysql", Username: "app"},
+		{ServiceID: "mysql", Database: "app", Username: "bad user"},
+	} {
+		if _, err := c.ResolveSiteEnv(context.Background(), "mysql", []model.DatabaseLink{link}); !errors.Is(err, databases.ErrInvalidRequest) {
+			t.Fatalf("link %+v err=%v", link, err)
+		}
+	}
+}
+
+func TestDecodeJSONRejectsUnknownFields(t *testing.T) {
+	for _, body := range []string{
+		`{"name":"app","password":"caller-supplied"}`,
+		`{"name":"app","bogus":true}`,
+	} {
+		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		var dst dbproto.DatabaseCreateRequest
+		if err := decodeJSON(httptest.NewRecorder(), req, &dst); err == nil {
+			t.Fatalf("unknown field was accepted: %s", body)
+		}
 	}
 }
 

@@ -744,12 +744,15 @@ func (c *DockerServiceController) reassignOwned(ctx context.Context, serviceID s
 // ResolveSiteEnv reads linked secrets and returns the DB_* environment for a
 // site process. Metadata-only links omit DB_PASSWORD and DATABASE_URL.
 func (c *DockerServiceController) ResolveSiteEnv(ctx context.Context, serviceID string, links []model.DatabaseLink) (map[string]string, error) {
-	engineID, err := c.engineID(serviceID)
+	engine, engineID, err := c.databaseEngine(serviceID)
 	if err != nil {
 		return nil, err
 	}
 	if engineID == model.DatabaseRedis {
 		return nil, fmt.Errorf("%w: Redis users are not site-linkable", databases.ErrUnsupported)
+	}
+	if engine == nil {
+		return nil, fmt.Errorf("%w: %s does not support site links", databases.ErrUnsupported, engineID)
 	}
 	port, err := c.databasePort(serviceID)
 	if err != nil {
@@ -770,6 +773,12 @@ func (c *DockerServiceController) ResolveSiteEnv(ctx context.Context, serviceID 
 	for i, link := range links {
 		if link.ServiceID != "" && link.ServiceID != serviceID {
 			return nil, fmt.Errorf("%w: link service %q does not match %q", databases.ErrInvalidRequest, link.ServiceID, serviceID)
+		}
+		if err := engine.ValidateDatabaseName(link.Database); err != nil {
+			return nil, invalidIdentifier(err)
+		}
+		if err := engine.ValidateUsername(link.Username); err != nil {
+			return nil, invalidIdentifier(err)
 		}
 		prefix := "DB_"
 		if i != primaryIndex {
