@@ -265,6 +265,9 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("daemon: init helper database platform: %w", err)
 	}
 	databaseManager := newDatabaseManager(st, helperDatabase, serviceManager, logger)
+	if err := databaseManager.ReconcileJobs(ctx); err != nil {
+		logger.Warn("daemon: reconcile database jobs", "error", err)
+	}
 	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
 	projectsRoot := cfg.ProjectsRoot
 	if projectsRoot == "" {

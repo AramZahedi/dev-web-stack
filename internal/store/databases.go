@@ -31,15 +31,32 @@ const databaseJobColumns = `id, service_id, database_name, kind, status, progres
 const auditEventColumns = `id, actor, service_id, site_id, object_type, object_name,
 	action, result, detail_json, created_at`
 
-// CreateDatabaseLink inserts a site/database link. The site and user foreign
-// keys must already exist.
+// CreateDatabaseLink inserts a site/database link. When link.Primary is set,
+// the previous primary is cleared in the same transaction. Uniqueness and
+// foreign-key failures are reported as ErrConflict so callers can map races to
+// a stable conflict instead of an internal error.
 func (s *Store) CreateDatabaseLink(ctx context.Context, link model.DatabaseLinkRecord) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO database_links (`+databaseLinkColumns+`)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create database link %q: begin transaction: %w", link.ID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if link.Primary {
+		if _, err := tx.ExecContext(ctx, `UPDATE database_links SET is_primary = 0 WHERE site_id = ?`, link.SiteID); err != nil {
+			return fmt.Errorf("clear primary database link for site %q: %w", link.SiteID, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO database_links (`+databaseLinkColumns+`)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		link.ID, link.SiteID, link.ServiceID, link.DatabaseName, link.UserID,
-		boolInt(link.Primary), link.CreatedAt)
-	if err != nil {
+		boolInt(link.Primary), link.CreatedAt); err != nil {
+		if isConstraintError(err) {
+			return fmt.Errorf("create database link %q: %w", link.ID, ErrConflict)
+		}
 		return fmt.Errorf("create database link %q: %w", link.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create database link %q: commit: %w", link.ID, err)
 	}
 	return nil
 }
@@ -93,13 +110,39 @@ func (s *Store) listDatabaseLinks(ctx context.Context, where string, args ...any
 	return links, nil
 }
 
-// DeleteDatabaseLink removes one link. It returns ErrNotFound when absent.
+// DeleteDatabaseLink removes one link. When the deleted link was primary, the
+// oldest remaining link for the site is promoted in the same transaction.
 func (s *Store) DeleteDatabaseLink(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM database_links WHERE id = ?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete database link %q: begin transaction: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var (
+		siteID     string
+		wasPrimary int
+	)
+	err = tx.QueryRowContext(ctx, `SELECT site_id, is_primary FROM database_links WHERE id = ?`, id).Scan(&siteID, &wasPrimary)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("database link %q: %w", id, ErrNotFound)
+	}
 	if err != nil {
 		return fmt.Errorf("delete database link %q: %w", id, err)
 	}
-	return requireAffected(res, "database link", id)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM database_links WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete database link %q: %w", id, err)
+	}
+	if wasPrimary != 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE database_links SET is_primary = 1
+			WHERE id = (SELECT id FROM database_links WHERE site_id = ?
+				ORDER BY created_at, id LIMIT 1)`, siteID); err != nil {
+			return fmt.Errorf("promote database link for site %q: %w", siteID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete database link %q: commit: %w", id, err)
+	}
+	return nil
 }
 
 // DeleteDatabaseLinksByService removes every link that points at a service and
@@ -418,6 +461,29 @@ func (s *Store) UpdateDatabaseJob(ctx context.Context, job model.DatabaseJobReco
 		return fmt.Errorf("update database job %q: %w", job.ID, err)
 	}
 	return requireAffected(res, "database job", job.ID)
+}
+
+// ListAllDatabaseJobs returns every job, newest first. Startup reconciliation
+// uses it to fail jobs orphaned by a daemon restart.
+func (s *Store) ListAllDatabaseJobs(ctx context.Context) ([]model.DatabaseJobRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+databaseJobColumns+`
+		FROM database_jobs ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list all database jobs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	jobs := []model.DatabaseJobRecord{}
+	for rows.Next() {
+		job, err := scanDatabaseJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list all database jobs: %w", err)
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list all database jobs: %w", err)
+	}
+	return jobs, nil
 }
 
 // ListDatabaseJobs returns a service's jobs, newest first.

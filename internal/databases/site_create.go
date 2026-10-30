@@ -122,11 +122,6 @@ func (m *Manager) LinkProvisioned(ctx context.Context, siteID string, provisione
 		}
 		return SiteDatabaseResult{}, err
 	}
-	if primary {
-		if err := m.deps.Store.SetPrimaryDatabaseLink(ctx, site.ID, record.ID); err != nil {
-			return SiteDatabaseResult{}, err
-		}
-	}
 	link := m.linkFromRecord(ctx, record, model.DatabaseUserRecord{
 		ID:              provisioned.User.ID,
 		ServiceID:       provisioned.User.ServiceID,

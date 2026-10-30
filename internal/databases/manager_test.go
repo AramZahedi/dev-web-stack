@@ -57,6 +57,13 @@ func (f *fakeStore) CreateDatabaseLink(_ context.Context, link model.DatabaseLin
 			return store.ErrConflict
 		}
 	}
+	if link.Primary {
+		for i := range f.links {
+			if f.links[i].SiteID == link.SiteID {
+				f.links[i].Primary = false
+			}
+		}
+	}
 	for i := range f.sites {
 		if f.sites[i].ID == link.SiteID {
 			link.SiteName = f.sites[i].Name
@@ -100,10 +107,21 @@ func (f *fakeStore) DeleteDatabaseLink(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i, link := range f.links {
-		if link.ID == id {
-			f.links = append(f.links[:i], f.links[i+1:]...)
-			return nil
+		if link.ID != id {
+			continue
 		}
+		wasPrimary := link.Primary
+		siteID := link.SiteID
+		f.links = append(f.links[:i], f.links[i+1:]...)
+		if wasPrimary {
+			for j := range f.links {
+				if f.links[j].SiteID == siteID {
+					f.links[j].Primary = true
+					break
+				}
+			}
+		}
+		return nil
 	}
 	return store.ErrNotFound
 }
@@ -318,6 +336,10 @@ func (f *fakeStore) UpdateDatabaseJob(_ context.Context, job model.DatabaseJobRe
 	return store.ErrNotFound
 }
 
+func (f *fakeStore) ListAllDatabaseJobs(context.Context) ([]model.DatabaseJobRecord, error) {
+	return append([]model.DatabaseJobRecord(nil), f.jobs...), nil
+}
+
 func (f *fakeStore) ListDatabaseJobs(_ context.Context, serviceID string) ([]model.DatabaseJobRecord, error) {
 	var out []model.DatabaseJobRecord
 	for _, job := range f.jobs {
@@ -359,10 +381,13 @@ type fakePlatform struct {
 	dropCalls        []string
 	restoreCalls     []string
 	lastPasswordUser string
+	lastRestoreReq   RestoreBackupRequest
+	lastImportReq    ImportRequest
+	listErr          error
 }
 
 func (f *fakePlatform) ListDatabases(context.Context, string) ([]model.Database, error) {
-	return append([]model.Database(nil), f.databases...), nil
+	return append([]model.Database(nil), f.databases...), f.listErr
 }
 
 func (f *fakePlatform) CreateDatabase(_ context.Context, serviceID string, req CreateDatabaseRequest) (model.Database, error) {
@@ -456,6 +481,7 @@ func (f *fakePlatform) DeleteBackup(context.Context, string, string) error { ret
 
 func (f *fakePlatform) RestoreBackup(_ context.Context, serviceID, backupID string, req RestoreBackupRequest) (model.DatabaseJob, error) {
 	f.restoreCalls = append(f.restoreCalls, backupID)
+	f.lastRestoreReq = req
 	job := model.DatabaseJob{ID: "job_restore", ServiceID: serviceID, Database: req.Target, Kind: model.JobRestore, Status: model.JobSucceeded}
 	if f.restoreErr != nil {
 		job.Status = model.JobFailed
@@ -465,7 +491,8 @@ func (f *fakePlatform) RestoreBackup(_ context.Context, serviceID, backupID stri
 	return job, nil
 }
 
-func (f *fakePlatform) ImportDatabase(_ context.Context, serviceID, database string, _ io.Reader, _ string, _ ImportRequest) (model.DatabaseJob, error) {
+func (f *fakePlatform) ImportDatabase(_ context.Context, serviceID, database string, _ io.Reader, _ string, req ImportRequest) (model.DatabaseJob, error) {
+	f.lastImportReq = req
 	job := model.DatabaseJob{ID: "job_import", ServiceID: serviceID, Database: database, Kind: model.JobImport, Status: model.JobSucceeded}
 	if f.importErr != nil {
 		job.Status = model.JobFailed
@@ -819,6 +846,95 @@ func TestRestoreFailureKeepsPreRestoreBackup(t *testing.T) {
 	}
 	if len(st.backups) == 0 {
 		t.Fatal("pre-restore backup not stored")
+	}
+}
+
+func TestRestoreOverwriteForcesPreRestoreBackup(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
+	platform.job = model.DatabaseJob{ID: "job_backup", Status: model.JobSucceeded, BackupID: "bkp_pre"}
+	job, err := m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{
+		Target: "app", Overwrite: true, Confirm: "app", PreRestoreBackup: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.BackupID != "bkp_pre" {
+		t.Fatalf("pre-restore backup = %q, want bkp_pre", job.BackupID)
+	}
+	if platform.lastRestoreReq.PreRestoreBackup {
+		t.Fatal("manager passed PreRestoreBackup=true to the platform after creating its own backup")
+	}
+}
+
+func TestRestoreFailsClosedWhenDatabaseLookupFails(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
+	platform.listErr = errors.New("engine inventory unavailable")
+	if _, err := m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{Target: "app", Overwrite: true, Confirm: "app"}); err == nil {
+		t.Fatal("restore succeeded despite an inventory failure")
+	}
+	if len(platform.restoreCalls) != 0 {
+		t.Fatalf("restore reached platform: %v", platform.restoreCalls)
+	}
+}
+
+func TestImportClearsPlatformPreImportFlag(t *testing.T) {
+	m, _, platform, _, _ := testManagerWithFakes(t)
+	platform.job = model.DatabaseJob{ID: "job_backup", Status: model.JobSucceeded, BackupID: "bkp_pre"}
+	if _, err := m.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("select 1;"), "dump.sql", ImportRequest{Mode: ImportMerge, PreImportBackup: true}); err != nil {
+		t.Fatal(err)
+	}
+	if platform.lastImportReq.PreImportBackup {
+		t.Fatal("manager passed PreImportBackup=true to the platform after creating its own backup")
+	}
+}
+
+func TestCancelTerminalJobDoesNotRewriteStatus(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	st.jobs = []model.DatabaseJobRecord{{ID: "job_1", ServiceID: "mysql", Status: string(model.JobSucceeded)}}
+	if err := m.CancelJob(context.Background(), "job_1"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := m.GetJob(context.Background(), "job_1")
+	if got.Status != model.JobSucceeded {
+		t.Fatalf("terminal job rewritten to %q", got.Status)
+	}
+}
+
+func TestReconcileJobsMarksOrphansFailed(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	st.jobs = []model.DatabaseJobRecord{
+		{ID: "job_queued", ServiceID: "mysql", Status: string(model.JobQueued)},
+		{ID: "job_running", ServiceID: "mysql", Status: string(model.JobRunning)},
+		{ID: "job_done", ServiceID: "mysql", Status: string(model.JobSucceeded)},
+	}
+	if err := m.ReconcileJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"job_queued", "job_running"} {
+		job, _ := m.GetJob(context.Background(), id)
+		if job.Status != model.JobFailed {
+			t.Fatalf("%s status = %q, want failed", id, job.Status)
+		}
+	}
+	done, _ := m.GetJob(context.Background(), "job_done")
+	if done.Status != model.JobSucceeded {
+		t.Fatalf("terminal job changed to %q", done.Status)
+	}
+}
+
+func TestUnlinkPrimaryPromotesNextLink(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	st.links = []model.DatabaseLinkRecord{
+		{ID: "lnk_1", SiteID: "site_1", SiteName: "blog", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app", Primary: true, CreatedAt: 1},
+		{ID: "lnk_2", SiteID: "site_1", SiteName: "blog", ServiceID: "mysql", DatabaseName: "blog", UserID: "usr_app", CreatedAt: 2},
+	}
+	if err := m.UnlinkDatabase(context.Background(), "blog", "lnk_1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.links) != 1 || !st.links[0].Primary {
+		t.Fatalf("links = %+v", st.links)
 	}
 }
 

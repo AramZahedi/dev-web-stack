@@ -49,6 +49,7 @@ type Store interface {
 	GetDatabaseJob(ctx context.Context, id string) (model.DatabaseJobRecord, error)
 	UpdateDatabaseJob(ctx context.Context, job model.DatabaseJobRecord) error
 	ListDatabaseJobs(ctx context.Context, serviceID string) ([]model.DatabaseJobRecord, error)
+	ListAllDatabaseJobs(ctx context.Context) ([]model.DatabaseJobRecord, error)
 
 	AddAuditEvent(ctx context.Context, event model.AuditEventRecord) error
 	ListAuditEvents(ctx context.Context, limit int) ([]model.AuditEventRecord, error)
@@ -889,6 +890,11 @@ func (m *Manager) CancelJob(ctx context.Context, jobID string) error {
 		}
 		return err
 	}
+	// Terminal jobs are immutable. Cancellation is idempotent for a job that
+	// already finished or was canceled.
+	if record.Status != string(model.JobQueued) && record.Status != string(model.JobRunning) {
+		return nil
+	}
 	m.jobsMu.Lock()
 	cancel := m.cancels[jobID]
 	platformID := m.platformJobs[jobID]
@@ -908,6 +914,7 @@ func (m *Manager) CancelJob(ctx context.Context, jobID string) error {
 	if err := m.deps.Store.UpdateDatabaseJob(ctx, record); err != nil {
 		return err
 	}
+	m.audit(ctx, "database.job.updated", record.ServiceID, "", "database", record.DatabaseName, "canceled", map[string]any{"job_id": jobID})
 	m.emit(ctx, "", "database.job.updated", fmt.Sprintf("database job %s canceled", jobID))
 	return nil
 }

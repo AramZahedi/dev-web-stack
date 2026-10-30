@@ -215,6 +215,9 @@ func Run(ctx context.Context, opts Options) error {
 		preparers,
 	)
 	databaseManager := newDatabaseManager(st, agentDocker, serviceManager, logger)
+	if err := databaseManager.ReconcileJobs(ctx); err != nil {
+		logger.Warn("daemon: reconcile database jobs", "error", err)
+	}
 
 	siteService := sites.NewService(sites.Deps{
 		Store:         st,

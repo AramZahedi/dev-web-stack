@@ -202,11 +202,6 @@ func (m *Manager) LinkDatabase(ctx context.Context, siteRef string, req LinkData
 		}
 		return model.DatabaseLink{}, err
 	}
-	if primary {
-		if err := m.deps.Store.SetPrimaryDatabaseLink(ctx, site.ID, record.ID); err != nil {
-			return model.DatabaseLink{}, err
-		}
-	}
 	link := m.linkFromRecord(ctx, record, user)
 	grants := m.storedGrants(ctx, user.ID)
 	if live, liveErr := m.existingUser(ctx, serviceID, user.ID); liveErr == nil {
@@ -378,24 +373,29 @@ func (m *Manager) ensureLinkedSitesStopped(ctx context.Context, serviceID, datab
 
 // ensureDatabaseExists verifies a database name against the live engine.
 func (m *Manager) ensureDatabaseExists(ctx context.Context, serviceID, database string) error {
-	if m.databaseExists(ctx, serviceID, database) {
+	exists, err := m.databaseExists(ctx, serviceID, database)
+	if err != nil {
+		return err
+	}
+	if exists {
 		return nil
 	}
 	return fmt.Errorf("%w: database %q", ErrNotFound, database)
 }
 
 // databaseExists reports whether the live engine currently has a database.
-func (m *Manager) databaseExists(ctx context.Context, serviceID, database string) bool {
+// Inventory failures are returned so destructive operations fail closed.
+func (m *Manager) databaseExists(ctx context.Context, serviceID, database string) (bool, error) {
 	databases, err := m.deps.Platform.ListDatabases(ctx, serviceID)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, candidate := range databases {
 		if candidate.Name == database {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // resolveSite resolves a site id first and then its unique name.

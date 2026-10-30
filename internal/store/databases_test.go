@@ -119,6 +119,70 @@ func TestRenameDatabaseReferences(t *testing.T) {
 	}
 }
 
+func TestCreateDatabaseLinkPrimaryIsAtomicAndDuplicatesConflict(t *testing.T) {
+	s := openTemp(t)
+	site := testSite("site_1", "blog")
+	if err := s.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"usr_app", "usr_ops"} {
+		if err := s.UpsertDatabaseUser(ctx, model.DatabaseUserRecord{ID: id, ServiceID: "mysql", Engine: model.DatabaseMySQL, Username: id, Host: "%"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := model.DatabaseLinkRecord{ID: "lnk_1", SiteID: site.ID, ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app", Primary: true}
+	if err := s.CreateDatabaseLink(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	second := model.DatabaseLinkRecord{ID: "lnk_2", SiteID: site.ID, ServiceID: "mysql", DatabaseName: "blog", UserID: "usr_ops", Primary: true}
+	if err := s.CreateDatabaseLink(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	links, _ := s.ListDatabaseLinksBySite(ctx, site.ID)
+	primaries := 0
+	for _, link := range links {
+		if link.Primary {
+			primaries++
+			if link.ID != second.ID {
+				t.Fatalf("primary = %q, want %q", link.ID, second.ID)
+			}
+		}
+	}
+	if primaries != 1 {
+		t.Fatalf("primary links = %d", primaries)
+	}
+	duplicate := model.DatabaseLinkRecord{ID: "lnk_3", SiteID: site.ID, ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app"}
+	if err := s.CreateDatabaseLink(ctx, duplicate); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate = %v, want ErrConflict", err)
+	}
+}
+
+func TestDeletePrimaryLinkPromotesNext(t *testing.T) {
+	s := openTemp(t)
+	site := testSite("site_1", "blog")
+	if err := s.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	user := model.DatabaseUserRecord{ID: "usr_app", ServiceID: "mysql", Engine: model.DatabaseMySQL, Username: "app", Host: "%"}
+	if err := s.UpsertDatabaseUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	first := model.DatabaseLinkRecord{ID: "lnk_1", SiteID: site.ID, ServiceID: "mysql", DatabaseName: "app", UserID: user.ID, Primary: true, CreatedAt: 1}
+	second := model.DatabaseLinkRecord{ID: "lnk_2", SiteID: site.ID, ServiceID: "mysql", DatabaseName: "blog", UserID: user.ID, CreatedAt: 2}
+	for _, link := range []model.DatabaseLinkRecord{first, second} {
+		if err := s.CreateDatabaseLink(ctx, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeleteDatabaseLink(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	links, _ := s.ListDatabaseLinksBySite(ctx, site.ID)
+	if len(links) != 1 || !links[0].Primary || links[0].ID != second.ID {
+		t.Fatalf("links = %+v", links)
+	}
+}
+
 func TestDatabaseUserDeleteBlockedWhileLinked(t *testing.T) {
 	s := openTemp(t)
 	site := testSite("site_1", "blog")

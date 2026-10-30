@@ -115,6 +115,8 @@ func mapDatabasePlatformError(err error) error {
 		return nil
 	}
 	switch {
+	case errors.Is(err, databases.ErrJobNotFound):
+		return fmt.Errorf("%w: %v", databases.ErrJobNotFound, err)
 	case errors.Is(err, agentproto.ErrNotFound):
 		return fmt.Errorf("%w: %v", databases.ErrNotFound, err)
 	case errors.Is(err, agentproto.ErrConflict):
@@ -130,6 +132,8 @@ func mapDatabasePlatformError(err error) error {
 	}
 	lower := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(lower, "job") && strings.Contains(lower, "not found"):
+		return fmt.Errorf("%w: %v", databases.ErrJobNotFound, err)
 	case strings.Contains(lower, "not found"), strings.Contains(lower, "does not exist"):
 		return fmt.Errorf("%w: %v", databases.ErrNotFound, err)
 	case strings.Contains(lower, "protected"), strings.Contains(lower, "system object"):
