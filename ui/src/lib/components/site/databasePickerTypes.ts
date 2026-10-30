@@ -36,25 +36,34 @@ export function withoutPassword(
 /** Removes a password embedded in a database URL before it reaches the DOM. */
 export function sanitizeDatabaseUrl(value: string): string {
   const scheme = value.indexOf('://');
-  if (scheme < 0) return value;
-  const prefix = value.slice(0, scheme + 3);
-  const rest = value.slice(scheme + 3);
+  const authorityStart = scheme >= 0 ? scheme + 3 : 0;
+  const rest = value.slice(authorityStart);
+  // The authority ends at the first path, query, or fragment delimiter. Only
+  // that slice may contain credential separators; an @ later in the path is
+  // part of the path, not the user info.
+  const authorityEnd = rest.search(/[/?#]/);
+  const authority = authorityEnd >= 0 ? rest.slice(0, authorityEnd) : rest;
+  const tail = authorityEnd >= 0 ? rest.slice(authorityEnd) : '';
   // The authority may contain an unescaped @ inside the password. Use the last
   // @ so user:p@ss@host is treated as user + password p@ss + host.
-  const at = rest.lastIndexOf('@');
+  const at = authority.lastIndexOf('@');
   if (at < 0) return value;
-  const authority = rest.slice(0, at);
-  const hostAndPath = rest.slice(at);
-  const colon = authority.indexOf(':');
+  const userInfo = authority.slice(0, at);
+  const host = authority.slice(at + 1);
+  const colon = userInfo.indexOf(':');
   if (colon < 0) return value;
-  return `${prefix}${authority.slice(0, colon)}${hostAndPath}`;
+  // Scheme-less values are only rewritten when the host looks like a host.
+  if (scheme < 0 && (!host || /\s/.test(host))) return value;
+  const prefix = scheme >= 0 ? value.slice(0, authorityStart) : '';
+  return `${prefix}${userInfo.slice(0, colon)}@${host}${tail}`;
 }
 
 /** True when an environment key is likely to carry a secret value. */
 export function isSecretEnvKey(key: string): boolean {
   return (
     /(key|token|secret|password|passwd|credential|auth)/i.test(key) ||
-    /(^|_)(pwd|pass)(_|$)/i.test(key)
+    /(^|_)(pwd|pass)(word|phrase|code)?(_|$)/i.test(key) ||
+    /(^|_)dsn(_|$)/i.test(key)
   );
 }
 
