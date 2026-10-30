@@ -108,6 +108,63 @@ func TestSiteAddMetadataOnlyDoesNotPromptForPassword(t *testing.T) {
 	}
 }
 
+func TestSiteAddDatabaseMutuallyExclusive(t *testing.T) {
+	useTestSeams(t)
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "databases",
+			args: []string{"site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+				"--database-service", "mysql", "--database", "app", "--database-new", "blog", "--database-user", "usr_app"},
+		},
+		{
+			name: "users",
+			args: []string{"site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+				"--database-service", "mysql", "--database", "app", "--database-user", "usr_app", "--database-user-new", "blog_user"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeClient{}
+			code, _, stderr := runCLIExit(t, fake, tc.args...)
+			if code == 0 || !strings.Contains(stderr, "mutually exclusive") {
+				t.Fatalf("code=%d stderr=%s", code, stderr)
+			}
+			if fake.addReq.Name != "" {
+				t.Fatal("site add called the daemon with mutually exclusive flags")
+			}
+		})
+	}
+}
+
+func TestSiteAddDatabaseRedisRejected(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+		"--database-service", "redis", "--database", "app", "--database-user", "usr_app")
+	if code == 0 || !strings.Contains(stderr, "DATABASE_UNSUPPORTED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.addReq.Name != "" {
+		t.Fatal("site add called the daemon for a Redis link")
+	}
+}
+
+func TestSiteAddDatabaseCustomGrantRejected(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+		"--database-service", "mysql", "--database-new", "blog", "--database-user-new", "blog_user", "--database-grant", "custom")
+	if code == 0 || !strings.Contains(stderr, "custom grants") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.addReq.Name != "" {
+		t.Fatal("site add called the daemon with a custom grant")
+	}
+}
+
 func TestSiteAddDatabaseFlagsRequireService(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{}
