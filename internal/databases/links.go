@@ -378,16 +378,24 @@ func (m *Manager) ensureLinkedSitesStopped(ctx context.Context, serviceID, datab
 
 // ensureDatabaseExists verifies a database name against the live engine.
 func (m *Manager) ensureDatabaseExists(ctx context.Context, serviceID, database string) error {
+	if m.databaseExists(ctx, serviceID, database) {
+		return nil
+	}
+	return fmt.Errorf("%w: database %q", ErrNotFound, database)
+}
+
+// databaseExists reports whether the live engine currently has a database.
+func (m *Manager) databaseExists(ctx context.Context, serviceID, database string) bool {
 	databases, err := m.deps.Platform.ListDatabases(ctx, serviceID)
 	if err != nil {
-		return err
+		return false
 	}
 	for _, candidate := range databases {
 		if candidate.Name == database {
-			return nil
+			return true
 		}
 	}
-	return fmt.Errorf("%w: database %q", ErrNotFound, database)
+	return false
 }
 
 // resolveSite resolves a site id first and then its unique name.

@@ -65,7 +65,7 @@ func (m *Manager) RestoreBackup(ctx context.Context, serviceID, backupID string,
 		}
 	}
 	preBackupID := ""
-	if req.PreRestoreBackup {
+	if req.PreRestoreBackup && m.databaseExists(ctx, serviceID, target) {
 		preJob, err := m.CreateBackup(ctx, serviceID, target, CreateBackupRequest{Kind: model.BackupPreRestore})
 		if err != nil {
 			return m.failedJobRecord(serviceID, target, model.JobRestore, "", fmt.Errorf("pre-restore backup: %w", err))
