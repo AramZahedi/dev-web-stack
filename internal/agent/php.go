@@ -413,8 +413,12 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 		return agentproto.SitePrepareResponse{}, err
 	}
 
+	req.Site.Env = sanitizeSiteEnv(req.Site.Env)
 	req.Site.Env, err = r.Environment(req.Site.Env)
 	if err != nil {
+		return agentproto.SitePrepareResponse{}, err
+	}
+	if _, err := r.resolveDatabaseEnv(req.Site); err != nil {
 		return agentproto.SitePrepareResponse{}, err
 	}
 
@@ -551,8 +555,13 @@ func (r *Runtime) StartPHP(ctx context.Context, id string, req agentproto.PHPAct
 		oldProcess = nil
 	}
 
-	// Launch target FPM process
-	proc, err := r.startFPM(ctx, id, gen, targetGen.fpmPath, targetGen.spec.PHPIniPath, targetGen.spec.PHPBuildPath, targetGen.port)
+	// Launch target FPM process. Re-resolve the secrets so a password rotation
+	// is picked up by the explicit site restart.
+	databaseEnv, err := r.resolveDatabaseEnv(targetGen.spec)
+	if err != nil {
+		return agentproto.SiteActionResponse{}, err
+	}
+	proc, err := r.startFPM(ctx, id, gen, targetGen.fpmPath, targetGen.spec.PHPIniPath, targetGen.spec.PHPBuildPath, targetGen.port, databaseEnv)
 	if err != nil {
 		return agentproto.SiteActionResponse{}, err
 	}

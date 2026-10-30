@@ -108,7 +108,7 @@ func generateFPMConfig(root string, site agentproto.SiteSpec, docroot string) ([
 	return rendered, fpmPath, nil
 }
 
-func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, iniPath, buildPath string, port int) (*fpmProcess, error) {
+func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, iniPath, buildPath string, port int, databaseEnv map[string]string) (*fpmProcess, error) {
 	if port <= 0 {
 		return nil, errors.New("agent: invalid FastCGI port for FPM process")
 	}
@@ -146,6 +146,12 @@ func (r *Runtime) startFPM(ctx context.Context, siteID, generation, fpmPath, ini
 		}
 		proc.cmd = exec.CommandContext(ctx, fpmBin, args...)
 		configureFPMCmd(proc.cmd)
+		if len(databaseEnv) > 0 {
+			// clear_env = no in the generated pool config lets workers inherit
+			// this process environment, so DB passwords never reach the config
+			// file on disk.
+			proc.cmd.Env = append(os.Environ(), environmentPairs(databaseEnv)...)
+		}
 		if err := proc.cmd.Start(); err != nil {
 			proc.cancel()
 			return nil, fmt.Errorf("agent: start php-fpm: %w", err)
