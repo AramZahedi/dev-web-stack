@@ -199,8 +199,33 @@ func (c *DockerServiceController) terminateSessions(ctx context.Context, service
 	if strings.TrimSpace(sql) == "" {
 		return nil
 	}
-	_, err = c.runDatabaseSQLIn(ctx, serviceID, database, sql)
-	return err
+	out, err := c.runDatabaseSQLIn(ctx, serviceID, database, sql)
+	if err != nil {
+		return err
+	}
+	engineID := engine.ID()
+	if engineID != model.DatabaseMySQL && engineID != model.DatabaseMariaDB {
+		return nil
+	}
+	// MySQL/MariaDB return SELECT rows containing the KILL statements. The
+	// helper must execute each one, exactly like the agent adapter.
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToUpper(line), "KILL ") {
+			return fmt.Errorf("%w: unexpected session termination output %q", databases.ErrInvalidRequest, line)
+		}
+		statement := line
+		if !strings.HasSuffix(statement, ";") {
+			statement += ";"
+		}
+		if _, err := c.runDatabaseSQL(ctx, serviceID, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListUsers returns the engine user inventory. Redis users are read directly

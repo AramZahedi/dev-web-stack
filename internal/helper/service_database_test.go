@@ -131,6 +131,8 @@ func (f *fakeCommandRunner) defaultInput(name string, args []string, input []byt
 	switch {
 	case strings.Contains(joined, "ACL LIST") || strings.Contains(string(input), "ACL LIST"):
 		return append([]byte("OK\n"), f.aclListOutput()...), nil
+	case strings.Contains(string(input), "SELECT CONCAT('KILL '"):
+		return []byte("KILL 11;\nKILL 12;\n"), nil
 	default:
 		return []byte("OK"), nil
 	}
@@ -323,7 +325,7 @@ func (e *fakeDatabaseEngine) RevokeSQL(username, host, database string, grant mo
 }
 
 func (e *fakeDatabaseEngine) TerminateSessionsSQL(database string) (string, error) {
-	return "KILL SESSIONS " + database, nil
+	return "SELECT CONCAT('KILL ', id, ';') FROM information_schema.PROCESSLIST WHERE DB = " + dbengine.QuoteLiteral(database), nil
 }
 
 func (e *fakeDatabaseEngine) DumpCommand(database string) ([]string, error) {
@@ -678,6 +680,70 @@ func TestHelperRedisCreateUserSecretFailureReturnsUser(t *testing.T) {
 	}
 	if user.ID != redisUserID("cache") || user.PasswordManaged || user.Username != "cache" {
 		t.Fatalf("user = %+v", user)
+	}
+}
+
+func TestHelperTerminatesMySQLSessions(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	if err := c.DropDatabase(context.Background(), "mysql", "app", databases.DropDatabaseRequest{Confirm: "app"}); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains("KILL 11;") || !runner.stdinContains("KILL 12;") {
+		t.Fatalf("session KILL statements not executed: %q", runner.stdin)
+	}
+	if !runner.stdinContains("DROP DATABASE `app`") {
+		t.Fatalf("drop did not run after session termination: %q", runner.stdin)
+	}
+}
+
+func TestHelperRejectsUnsafeSessionTerminationOutput(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.handleInput = func(name string, args []string, input []byte) ([]byte, error) {
+		if strings.Contains(string(input), "SELECT CONCAT('KILL '") {
+			return []byte("not a kill statement\n"), nil
+		}
+		return []byte("OK"), nil
+	}
+	err := c.DropDatabase(context.Background(), "mysql", "app", databases.DropDatabaseRequest{Confirm: "app"})
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+	if runner.stdinContains("DROP DATABASE") {
+		t.Fatalf("drop ran after invalid session output: %q", runner.stdin)
+	}
+}
+
+func TestHelperRestoreOverwriteTerminatesSessions(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.streamOutput = []byte("dump")
+	job, err := c.CreateBackup(context.Background(), "mysql", "app", databases.CreateBackupRequest{Kind: model.BackupManual})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.reset()
+	if _, err := c.RestoreBackup(context.Background(), "mysql", job.BackupID, databases.RestoreBackupRequest{
+		Target: "app", Overwrite: true, Confirm: "app",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains("KILL 11;") || !runner.stdinContains("KILL 12;") {
+		t.Fatalf("restore overwrite did not terminate sessions: %q", runner.stdin)
+	}
+}
+
+func TestHelperImportReplaceTerminatesSessions(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	if _, err := c.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("dump"), "app.sql", databases.ImportRequest{
+		Mode: databases.ImportReplace, Confirm: "app",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains("KILL 11;") || !runner.stdinContains("KILL 12;") {
+		t.Fatalf("replace import did not terminate sessions: %q", runner.stdin)
 	}
 }
 
