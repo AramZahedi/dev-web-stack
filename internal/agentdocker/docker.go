@@ -304,8 +304,6 @@ func (d *Docker) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/services/{id}/databases/{name}/import", d.handleDatabaseImport)
 	mux.HandleFunc("GET /v1/services/{id}/databases/{name}/export", d.handleDatabaseExport)
 	mux.HandleFunc("POST /v1/services/{id}/database-env", d.handleDatabaseEnv)
-	mux.HandleFunc("GET /v1/services/{id}/jobs/{jobID}", d.handleJobGet)
-	mux.HandleFunc("DELETE /v1/services/{id}/jobs/{jobID}", d.handleJobCancel)
 	return mux
 }
 

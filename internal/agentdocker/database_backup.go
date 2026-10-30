@@ -148,9 +148,12 @@ func (d *Docker) ListBackups(ctx context.Context, serviceID string) ([]model.Dat
 // DeleteBackup removes one file below the service backup tree. It works while
 // the service is stopped.
 func (d *Docker) DeleteBackup(ctx context.Context, serviceID, backupID string) error {
-	service, err := d.service(serviceID)
+	engine, service, err := d.databaseEngine(serviceID)
 	if err != nil {
 		return err
+	}
+	if engine.ID() == model.DatabaseRedis {
+		return databases.ErrUnsupported
 	}
 	path, err := d.databaseBackupPath(serviceID, backupID)
 	if err != nil {
@@ -176,6 +179,13 @@ func (d *Docker) DeleteBackup(ctx context.Context, serviceID, backupID string) e
 // DownloadBackup opens a backup for streaming. It works while the service is
 // stopped because it only touches the agent filesystem.
 func (d *Docker) DownloadBackup(ctx context.Context, serviceID, backupID string) (io.ReadCloser, error) {
+	engine, _, err := d.databaseEngine(serviceID)
+	if err != nil {
+		return nil, err
+	}
+	if engine.ID() == model.DatabaseRedis {
+		return nil, databases.ErrUnsupported
+	}
 	path, err := d.databaseBackupPath(serviceID, backupID)
 	if err != nil {
 		return nil, err
@@ -300,6 +310,9 @@ func (d *Docker) ImportDatabase(ctx context.Context, serviceID, database string,
 	}
 	if engine.ID() == model.DatabaseRedis {
 		return model.DatabaseJob{}, databases.ErrUnsupported
+	}
+	if file == nil {
+		return model.DatabaseJob{}, fmt.Errorf("%w: import body is required", databases.ErrInvalidRequest)
 	}
 	if err := engine.ValidateDatabaseName(database); err != nil {
 		return model.DatabaseJob{}, mapEngineError(err)

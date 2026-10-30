@@ -60,6 +60,10 @@ func (d *Docker) handleDatabaseRename(w http.ResponseWriter, r *http.Request) {
 	}
 	renamed, err := d.RenameDatabase(r.Context(), request.ID, request.Name, databases.RenameDatabaseRequest{Name: request.NewName})
 	if err != nil {
+		if errors.Is(err, dbengine.ErrUnsupported) {
+			writeJSON(w, http.StatusBadRequest, agentproto.ErrorResponse{Code: agentproto.CodeUnsupported, Message: err.Error()})
+			return
+		}
 		writeDatabaseError(w, err)
 		return
 	}
@@ -322,14 +326,6 @@ func (d *Docker) handleDatabaseEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, dbproto.SiteEnvResponse{Env: env})
-}
-
-func (d *Docker) handleJobGet(w http.ResponseWriter, r *http.Request) {
-	writeDatabaseError(w, databases.ErrJobNotFound)
-}
-
-func (d *Docker) handleJobCancel(w http.ResponseWriter, r *http.Request) {
-	writeDatabaseError(w, databases.ErrJobNotFound)
 }
 
 func (d *Docker) resolveSiteEnv(ctx context.Context, serviceID string, links []dbproto.LinkInfo) (map[string]string, error) {

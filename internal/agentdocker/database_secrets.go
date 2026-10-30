@@ -42,13 +42,24 @@ func (d *Docker) databaseSecretDir(serviceID string, create bool) (string, error
 		}
 		return dir, nil
 	}
-	for _, path := range []string{servicesRoot, serviceRoot, secrets, dir} {
-		info, err := os.Lstat(path)
+	for _, entry := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{servicesRoot, 0},
+		{serviceRoot, 0},
+		{secrets, 0o700},
+		{dir, 0o700},
+	} {
+		info, err := os.Lstat(entry.path)
 		if err != nil {
 			return "", err
 		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("agentdocker: %s is not a real directory", path)
+			return "", fmt.Errorf("agentdocker: %s is not a real directory", entry.path)
+		}
+		if entry.mode != 0 && runtime.GOOS != "windows" && info.Mode().Perm() != entry.mode {
+			return "", fmt.Errorf("agentdocker: %s has mode %04o, want %04o", entry.path, info.Mode().Perm(), entry.mode)
 		}
 	}
 	return dir, nil
@@ -172,7 +183,13 @@ func (d *Docker) deleteDatabaseSecret(serviceID, userID string) error {
 	return nil
 }
 
-func (d *Docker) databaseSecretExists(serviceID, userID string) bool {
+func (d *Docker) databaseSecretExists(serviceID, userID string) (bool, error) {
 	_, err := d.readDatabaseSecret(serviceID, userID)
-	return err == nil
+	if errors.Is(err, databases.ErrPasswordMissing) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }

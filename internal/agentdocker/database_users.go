@@ -58,7 +58,11 @@ func (d *Docker) ListUsers(ctx context.Context, serviceID string) ([]model.Datab
 		users[i].Engine = engine.ID()
 		users[i].Host = normalizeDatabaseHost(engine.ID(), users[i].Host)
 		users[i].ID = databaseUserID(string(service.ID), users[i].Username, users[i].Host)
-		users[i].PasswordManaged = d.databaseSecretExists(serviceID, users[i].ID)
+		managed, err := d.databaseSecretExists(serviceID, users[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		users[i].PasswordManaged = managed
 		grants, err := d.listUserGrants(ctx, serviceID, engine, users[i].Username, users[i].Host)
 		if err != nil {
 			return nil, err

@@ -319,3 +319,15 @@ func TestRedisACLFileRoute(t *testing.T) {
 		t.Fatalf("config = %s, %v", config, err)
 	}
 }
+
+func TestMySQLRenameRouteReturns400(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	body, _ := json.Marshal(dbproto.DatabaseRenameRequest{ID: "mysql", Name: "app", NewName: "app2"})
+	recorder := serveDatabase(t, d, http.MethodPatch, dbproto.ServiceDatabase("mysql", "app"), body)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("MySQL rename invoked Docker: %v", runner.joinedCalls())
+	}
+}

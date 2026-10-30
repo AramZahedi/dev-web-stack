@@ -43,7 +43,11 @@ func (d *Docker) ListRedisUsers(ctx context.Context, serviceID string) ([]model.
 		users[i].ServiceID = string(service.ID)
 		users[i].Engine = model.DatabaseRedis
 		users[i].ID = databaseUserID(string(service.ID), users[i].Username, "")
-		users[i].PasswordManaged = d.databaseSecretExists(serviceID, users[i].ID)
+		managed, err := d.databaseSecretExists(serviceID, users[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		users[i].PasswordManaged = managed
 	}
 	return users, nil
 }

@@ -75,18 +75,4 @@ func (d *Docker) terminateDatabaseSessions(ctx context.Context, serviceID string
 	return nil
 }
 
-// requireActiveSQLService validates the service and rejects stopped containers
-// before a mutation builds any engine command.
-func (d *Docker) requireActiveSQLService(ctx context.Context, serviceID string) (dbengine.Engine, error) {
-	engine, _, err := d.databaseEngine(serviceID)
-	if err != nil {
-		return nil, err
-	}
-	if engine.ID() == model.DatabaseRedis {
-		return nil, fmt.Errorf("%w: redis has no SQL database operations", dbengine.ErrUnsupported)
-	}
-	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
-		return nil, err
-	}
-	return engine, nil
-}
+

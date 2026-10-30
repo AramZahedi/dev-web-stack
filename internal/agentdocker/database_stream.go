@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -101,6 +102,9 @@ func openRegularBackup(path string) (*os.File, os.FileInfo, error) {
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil, nil, fmt.Errorf("%w: backup is not a regular file", databases.ErrInvalidRequest)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		return nil, nil, fmt.Errorf("%w: backup mode is %04o, want 0600", databases.ErrInvalidRequest, info.Mode().Perm())
 	}
 	file, err := os.Open(path)
 	if err != nil {

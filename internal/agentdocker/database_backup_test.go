@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -340,5 +341,44 @@ func TestFailedReplaceImportReturnsPreImportBackupID(t *testing.T) {
 	}
 	if response.Job.Status != model.JobFailed || response.Job.BackupID == "" {
 		t.Fatalf("job = %+v, want failed with backup_id", response.Job)
+	}
+}
+
+func TestRedisBackupOperationsUnsupported(t *testing.T) {
+	d, _ := newDatabaseTestDocker(t)
+	if _, err := d.DownloadBackup(context.Background(), "redis", "app/x.sql.gz"); !errors.Is(err, databases.ErrUnsupported) {
+		t.Fatalf("DownloadBackup(redis) = %v", err)
+	}
+	if err := d.DeleteBackup(context.Background(), "redis", "app/x.sql.gz"); !errors.Is(err, databases.ErrUnsupported) {
+		t.Fatalf("DeleteBackup(redis) = %v", err)
+	}
+}
+
+func TestImportRejectsNilReader(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	_, err := d.ImportDatabase(context.Background(), "mysql", "app", nil, "dump.sql", databases.ImportRequest{Mode: databases.ImportMerge})
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("nil import invoked Docker: %v", runner.joinedCalls())
+	}
+}
+
+func TestDownloadBackupRejectsInsecureMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not meaningful on Windows")
+	}
+	d, _ := newDatabaseTestDocker(t)
+	dir := filepath.Join(d.root, "backups", "databases", "mysql", "app")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := "20260101T000000.000000000Z.sql.gz"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("dump"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.DownloadBackup(context.Background(), "mysql", "app/"+name); err == nil {
+		t.Fatal("downloaded a backup with insecure permissions")
 	}
 }

@@ -282,3 +282,27 @@ func TestRunInputStreamDiscardsLargeStdout(t *testing.T) {
 		t.Fatalf("RunInputStream buffered large stdout in its error (%d bytes)", len(err.Error()))
 	}
 }
+
+func TestDatabaseSecretRejectsInsecureDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory modes are not meaningful on Windows")
+	}
+	d, _ := newDatabaseTestDocker(t)
+	secrets := filepath.Join(d.root, "services", "mysql", "secrets")
+	dir := filepath.Join(secrets, "database-users")
+	if err := os.MkdirAll(secrets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "usr_app"), []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.readDatabaseSecret("mysql", "usr_app"); err == nil {
+		t.Fatal("read a secret from an insecure directory")
+	}
+}
