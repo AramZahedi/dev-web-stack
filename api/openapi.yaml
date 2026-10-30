@@ -2510,6 +2510,155 @@ paths:
         "404":
           description: The asset does not exist.
 
+  /api/v1/services/{id}/databases:
+    get:
+      summary: List service databases
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: Create a service database
+      responses:
+        "201":
+          description: Created
+  /api/v1/services/{id}/databases/{name}:
+    get:
+      summary: Get a service database
+      responses:
+        "200":
+          description: OK
+    patch:
+      summary: Rename a PostgreSQL database
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Drop a service database
+      responses:
+        "204":
+          description: Deleted
+  /api/v1/services/{id}/users:
+    get:
+      summary: List service users
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: Create a service user
+      responses:
+        "201":
+          description: Created
+  /api/v1/services/{id}/users/{userID}:
+    get:
+      summary: Get a service user
+      responses:
+        "200":
+          description: OK
+    patch:
+      summary: Update a service user
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Delete a service user
+      responses:
+        "204":
+          description: Deleted
+  /api/v1/services/{id}/users/{userID}/password:
+    post:
+      summary: Set or rotate a service user password
+      responses:
+        "200":
+          description: OK
+  /api/v1/services/{id}/users/{userID}/reveal:
+    post:
+      summary: Reveal a service user password
+      responses:
+        "200":
+          description: OK
+  /api/v1/services/{id}/backups:
+    get:
+      summary: List database backups
+      responses:
+        "200":
+          description: OK
+  /api/v1/services/{id}/databases/{name}/backups:
+    post:
+      summary: Create a database backup
+      responses:
+        "202":
+          description: Accepted
+  /api/v1/services/{id}/backups/{backupID}:
+    delete:
+      summary: Delete a database backup
+      responses:
+        "204":
+          description: Deleted
+  /api/v1/services/{id}/backups/{backupID}/download:
+    get:
+      summary: Download a database backup
+      responses:
+        "200":
+          description: OK
+  /api/v1/services/{id}/backups/{backupID}/restore:
+    post:
+      summary: Restore a database backup
+      responses:
+        "202":
+          description: Accepted
+  /api/v1/services/{id}/databases/{name}/import:
+    post:
+      summary: Import SQL into a database
+      responses:
+        "202":
+          description: Accepted
+  /api/v1/services/{id}/databases/{name}/export:
+    get:
+      summary: Export a database
+      responses:
+        "200":
+          description: OK
+  /api/v1/services/{id}/password:
+    post:
+      summary: Set the Redis default-user password
+      responses:
+        "200":
+          description: OK
+  /api/v1/jobs/{jobID}:
+    get:
+      summary: Get a database job
+      responses:
+        "200":
+          description: OK
+    delete:
+      summary: Cancel a database job
+      responses:
+        "204":
+          description: Canceled
+  /api/v1/sites/{ref}/databases:
+    get:
+      summary: List site database links
+      responses:
+        "200":
+          description: OK
+    post:
+      summary: Link or create a site database
+      responses:
+        "201":
+          description: Created
+  /api/v1/sites/{ref}/databases/{linkID}:
+    delete:
+      summary: Unlink a site database
+      responses:
+        "204":
+          description: Deleted
+  /api/v1/sites/{ref}/database-env:
+    get:
+      summary: Resolve site database environment
+      responses:
+        "200":
+          description: OK
+
 components:
   securitySchemes:
     sessionCookie:
@@ -2636,6 +2785,197 @@ components:
             $ref: "#/components/schemas/Error"
 
   schemas:
+    Database:
+      type: object
+      properties:
+        name: {type: string}
+        service_id: {type: string}
+        engine: {type: string}
+        size_bytes: {type: integer, format: int64}
+        table_count: {type: integer}
+        linked_sites:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseSiteRef"}
+        managed: {type: boolean}
+        missing: {type: boolean}
+    DatabaseSiteRef:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+    DatabaseGrant:
+      type: object
+      properties:
+        database: {type: string}
+        preset: {type: string}
+        privileges:
+          type: array
+          items: {type: string}
+    DatabaseUser:
+      type: object
+      properties:
+        id: {type: string}
+        service_id: {type: string}
+        engine: {type: string}
+        username: {type: string}
+        host: {type: string}
+        enabled: {type: boolean}
+        managed: {type: boolean}
+        password_managed: {type: boolean}
+        access_level: {type: string}
+        grants:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseGrant"}
+        linked_sites:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseSiteRef"}
+    DatabaseConnection:
+      type: object
+      properties:
+        engine: {type: string}
+        host: {type: string}
+        port: {type: integer}
+        database: {type: string}
+        username: {type: string}
+        password_managed: {type: boolean}
+        url: {type: string}
+        env:
+          type: object
+          additionalProperties: {type: string}
+    DatabaseLink:
+      type: object
+      properties:
+        id: {type: string}
+        site_id: {type: string}
+        site_name: {type: string}
+        service_id: {type: string}
+        engine: {type: string}
+        database: {type: string}
+        user_id: {type: string}
+        username: {type: string}
+        host: {type: string}
+        primary: {type: boolean}
+        password_managed: {type: boolean}
+        available: {type: boolean}
+        error: {type: string}
+        connection: {$ref: "#/components/schemas/DatabaseConnection"}
+    DatabaseBackup:
+      type: object
+      properties:
+        id: {type: string}
+        service_id: {type: string}
+        engine: {type: string}
+        database: {type: string}
+        size_bytes: {type: integer, format: int64}
+        sha256: {type: string}
+        kind: {type: string}
+        status: {type: string}
+        created_at: {type: string, format: date-time}
+        error: {type: string}
+    DatabaseJob:
+      type: object
+      properties:
+        id: {type: string}
+        service_id: {type: string}
+        database: {type: string}
+        kind: {type: string}
+        status: {type: string}
+        progress: {type: integer}
+        message: {type: string}
+        backup_id: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    DatabaseSecret:
+      type: object
+      properties:
+        value: {type: string, writeOnly: true}
+    CreateDatabaseRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        charset: {type: string}
+        collation: {type: string}
+    RenameDatabaseRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+    DropDatabaseRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm: {type: string}
+        backup_first: {type: boolean}
+    CreateDatabaseUserRequest:
+      type: object
+      required: [username]
+      properties:
+        username: {type: string}
+        host: {type: string}
+        grants:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseGrant"}
+        access_level: {type: string}
+    UpdateDatabaseUserRequest:
+      type: object
+      properties:
+        enabled: {type: boolean}
+        grants:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseGrant"}
+        access_level: {type: string}
+    DeleteDatabaseUserRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm: {type: string}
+        reassign_owned: {type: boolean}
+    CreateDatabaseBackupRequest:
+      type: object
+      properties:
+        kind: {type: string}
+    RestoreDatabaseBackupRequest:
+      type: object
+      properties:
+        target: {type: string}
+        overwrite: {type: boolean}
+        confirm: {type: string}
+        pre_restore_backup: {type: boolean}
+    ImportDatabaseRequest:
+      type: object
+      properties:
+        mode: {type: string, enum: [merge, replace]}
+        confirm: {type: string}
+        pre_import_backup: {type: boolean}
+    LinkDatabaseRequest:
+      type: object
+      required: [service_id, database, user_id]
+      properties:
+        service_id: {type: string}
+        database: {type: string}
+        user_id: {type: string}
+        password: {type: string, writeOnly: true}
+        primary: {type: boolean}
+    SiteDatabaseRequest:
+      type: object
+      required: [service_id]
+      properties:
+        service_id: {type: string}
+        database: {type: string}
+        new_database: {$ref: "#/components/schemas/CreateDatabaseRequest"}
+        user_id: {type: string}
+        new_user: {$ref: "#/components/schemas/CreateDatabaseUserRequest"}
+        password: {type: string, writeOnly: true}
+        grant: {type: string}
+        primary: {type: boolean}
+    SiteDatabaseResult:
+      type: object
+      properties:
+        link: {$ref: "#/components/schemas/DatabaseLink"}
+        database: {$ref: "#/components/schemas/Database"}
+        user: {$ref: "#/components/schemas/DatabaseUser"}
+        warning: {type: string}
     Error:
       type: object
       required: [code, message]
@@ -2878,6 +3218,8 @@ components:
           type: object
           additionalProperties:
             type: string
+        database:
+          $ref: "#/components/schemas/SiteDatabaseRequest"
 
     BuildProfile:
       type: object
