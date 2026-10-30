@@ -137,11 +137,14 @@ func (a *App) runInit(cmd *cobra.Command) error {
 		if err := cfg.Save(); err != nil {
 			return wrapError(err, "CONFIG_INVALID", "Fix config.yaml, then rerun `devstack init`.")
 		}
-		// The running daemon loaded the old setting at startup. Stop it here so
-		// ensureRunning starts a daemon that reads the saved config.
-		if _, err := stopDaemon(ctx, home); err != nil {
-			return err
-		}
+	}
+	// Always restart the daemon. Pre-daemon init may have provisioned the agent
+	// token and pin after the daemon started (the clean-install path), and a
+	// running daemon keeps the agent client it loaded at startup. It may also
+	// need to read a newly saved dashboard-auth setting. Restarting here keeps
+	// the running daemon consistent with securestore and config.yaml.
+	if _, err := stopDaemon(ctx, home); err != nil {
+		return err
 	}
 	if err := ensureRunning(ctx, daemon.Options{Home: home, HelperSocket: socket}); err != nil {
 		logPath := filepath.Join(home, "run", "daemon.log")

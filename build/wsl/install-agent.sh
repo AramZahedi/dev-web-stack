@@ -6,8 +6,14 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 2
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_SOURCE="${1:-${SCRIPT_DIR}/agent.service}"
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+SERVICE_SOURCE="${1:-}"
+if [[ -z "${SERVICE_SOURCE}" && -n "${SCRIPT_DIR}" ]]; then
+  SERVICE_SOURCE="${SCRIPT_DIR}/agent.service"
+fi
 
 if [[ ! -f "${SERVICE_SOURCE}" && -f "/etc/systemd/system/devstack-agent.service" ]]; then
   SERVICE_SOURCE="/etc/systemd/system/devstack-agent.service"

@@ -250,11 +250,13 @@ func setupWindowsInitTestEnv(t *testing.T) (*mockWSLRunner, *mockAgentClient, *f
 	prevRunner := wslRunnerFactory
 	prevAgentClient := newAgentClient
 	prevEnsureRunning := ensureRunning
+	prevStopDaemon := stopDaemon
 
 	t.Cleanup(func() {
 		wslRunnerFactory = prevRunner
 		newAgentClient = prevAgentClient
 		ensureRunning = prevEnsureRunning
+		stopDaemon = prevStopDaemon
 	})
 
 	wslRunnerFactory = func() wsl.Runner {
@@ -266,8 +268,44 @@ func setupWindowsInitTestEnv(t *testing.T) (*mockWSLRunner, *mockAgentClient, *f
 	ensureRunning = func(_ context.Context, _ daemon.Options) error {
 		return nil
 	}
+	stopDaemon = func(context.Context, string) (bool, error) {
+		return false, nil
+	}
 
 	return runner, agentClient, fake, home, socket
+}
+
+// A clean install starts the daemon before `devstack init` provisions the
+// agent token and pin. Init must restart that daemon so it reloads the
+// securestore credentials instead of reporting AGENT_UNAUTHENTICATED.
+func TestWindowsInitRestartsDaemonAfterCredentials(t *testing.T) {
+	_, _, _, home, socket := setupWindowsInitTestEnv(t)
+
+	stopped := 0
+	stoppedHome := ""
+	order := []string{}
+	stopDaemon = func(_ context.Context, gotHome string) (bool, error) {
+		stopped++
+		stoppedHome = gotHome
+		order = append(order, "stop")
+		return true, nil
+	}
+	ensureRunning = func(context.Context, daemon.Options) error {
+		order = append(order, "ensure")
+		return nil
+	}
+
+	fake := &fakeClient{doctorReport: doctor.Report{OK: true}}
+	runCLI(t, fake, "init", "--home", home, "--helper-socket", socket, "--json")
+	if stopped != 1 {
+		t.Fatalf("stopDaemon calls = %d, want 1 so the daemon reloads agent credentials", stopped)
+	}
+	if stoppedHome != home {
+		t.Fatalf("stopDaemon home = %q, want %q", stoppedHome, home)
+	}
+	if got := strings.Join(order, ","); got != "stop,ensure" {
+		t.Fatalf("daemon lifecycle order = %q, want stop then ensure", got)
+	}
 }
 
 func TestEnsureAgentCredentialsUsesResolvedHomeNotEnvironment(t *testing.T) {
