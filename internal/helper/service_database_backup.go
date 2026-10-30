@@ -537,6 +537,9 @@ func (c *DockerServiceController) ImportDatabase(ctx context.Context, serviceID,
 
 	// Validate the staged SQL/gzip and resolve the restore command before any
 	// destructive step.
+	if err := validateImportFile(stagedPath); err != nil {
+		return model.DatabaseJob{}, err
+	}
 	stagedReader, err := openSQLFile(stagedPath)
 	if err != nil {
 		return model.DatabaseJob{}, err
@@ -657,6 +660,9 @@ func restoreTargetName(source string, now time.Time) string {
 // openBackupGzip opens and validates the backup stream before a destructive
 // restore. The returned reader replays the validated prefix.
 func openBackupGzip(path string) (io.ReadCloser, error) {
+	if err := validateGzipFile(path); err != nil {
+		return nil, err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open backup: %w", err)
@@ -680,16 +686,60 @@ func openBackupGzip(path string) (io.ReadCloser, error) {
 func validateRestoreReader(reader io.Reader) (io.Reader, error) {
 	prefix := make([]byte, 4096)
 	n, err := reader.Read(prefix)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: validate restore stream: %v", databases.ErrInvalidRequest, err)
+	}
 	if n > 0 {
 		return io.MultiReader(bytes.NewReader(prefix[:n]), reader), nil
 	}
 	if errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w: restore stream is empty", databases.ErrInvalidRequest)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("%w: validate restore stream: %v", databases.ErrInvalidRequest, err)
-	}
 	return reader, nil
+}
+
+// validateGzipFile fully decompresses a gzip file so a truncated trailer or
+// corrupted stream fails before a destructive restore.
+func validateGzipFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open backup gzip: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("open backup gzip: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+	if _, err := io.Copy(io.Discard, gz); err != nil {
+		return fmt.Errorf("%w: backup gzip is invalid: %v", databases.ErrInvalidRequest, err)
+	}
+	return nil
+}
+
+// validateImportFile checks a staged import before the target is touched.
+func validateImportFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open staged import: %w", err)
+	}
+	header := make([]byte, 2)
+	n, readErr := io.ReadFull(file, header)
+	_ = file.Close()
+	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("%w: inspect staged import: %v", databases.ErrInvalidRequest, readErr)
+	}
+	if n == 2 && header[0] == 0x1f && header[1] == 0x8b {
+		return validateGzipFile(path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("inspect staged import: %w", err)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("%w: import stream is empty", databases.ErrInvalidRequest)
+	}
+	return nil
 }
 
 func openSQLFile(path string) (io.ReadCloser, error) {

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"io"
 	"os"
@@ -1018,6 +1019,107 @@ func TestHelperListBackupsHonorsCanceledContext(t *testing.T) {
 	if _, err := c.ListBackups(ctx, "mysql"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v", err)
 	}
+}
+
+func TestHelperRestoreTruncatedGzipDoesNotDrop(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	dir := filepath.Join(root, "backups", "databases", "mysql", "app")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "20261030T120000.000000000Z.manual.sql.gz")
+	if err := os.WriteFile(path, truncatedGzip(t, 32<<10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	_, err := c.RestoreBackup(context.Background(), "mysql", "app--20261030T120000.000000000Z.manual.sql.gz", databases.RestoreBackupRequest{
+		Target: "app", Overwrite: true, Confirm: "app",
+	})
+	if err == nil {
+		t.Fatal("truncated gzip restore succeeded")
+	}
+	if runner.stdinContains("DROP DATABASE") {
+		t.Fatalf("target dropped before full gzip validation: %q", runner.stdin)
+	}
+}
+
+func TestHelperImportTruncatedGzipDoesNotDrop(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	_, err := c.ImportDatabase(context.Background(), "mysql", "app", bytes.NewReader(truncatedGzip(t, 32<<10)), "bad.sql.gz", databases.ImportRequest{
+		Mode: databases.ImportReplace, Confirm: "app",
+	})
+	if err == nil {
+		t.Fatal("truncated gzip import succeeded")
+	}
+	if runner.stdinContains("DROP DATABASE") {
+		t.Fatalf("target dropped before full gzip validation: %q", runner.stdin)
+	}
+}
+
+func TestValidateRestoreReaderRejectsDataWithError(t *testing.T) {
+	reader := &dataErrorReader{}
+	if _, err := validateRestoreReader(reader); err == nil {
+		t.Fatal("validateRestoreReader accepted n>0 with an error")
+	}
+}
+
+type dataErrorReader struct{}
+
+func (r *dataErrorReader) Read(p []byte) (int, error) {
+	copy(p, "partial")
+	return 7, errors.New("truncated stream")
+}
+
+func TestHelperImportFailureCarriesPreImportBackupID(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.streamOutput = []byte("dump")
+	runner.handleInput = func(name string, args []string, input []byte) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "restore") {
+			return nil, errors.New("malformed SQL")
+		}
+		return []byte("OK"), nil
+	}
+	failed, err := c.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("not sql"), "bad.sql", databases.ImportRequest{
+		Mode: databases.ImportReplace, Confirm: "app",
+	})
+	if err == nil || failed.Status != model.JobFailed {
+		t.Fatalf("job=%+v err=%v", failed, err)
+	}
+	list, err := c.ListBackups(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, backup := range list {
+		if backup.ID == failed.BackupID && backup.Kind == model.BackupPreImport {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("failed import backup=%q is not a pre_import backup: %+v", failed.BackupID, list)
+	}
+}
+
+func truncatedGzip(t *testing.T, size int) []byte {
+	t.Helper()
+	payload := make([]byte, size)
+	if _, err := cryptorand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	var buffer bytes.Buffer
+	gz := gzip.NewWriter(&buffer)
+	if _, err := gz.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := buffer.Bytes()
+	return data[:len(data)-8]
 }
 
 func gzipBytes(t *testing.T, value string) []byte {
