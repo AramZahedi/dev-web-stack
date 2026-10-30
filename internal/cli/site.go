@@ -159,7 +159,7 @@ func (a *App) newSiteAddCmd() *cobra.Command {
 	flags.StringVar(&opts.databaseNew, "database-new", "", "new database name")
 	flags.StringVar(&opts.databaseUserID, "database-user", "", "existing opaque database user id")
 	flags.StringVar(&opts.databaseUserNew, "database-user-new", "", "new database username")
-	flags.BoolVar(&opts.databaseUserPasswordStdin, "database-user-password-stdin", false, "read an external user's password from stdin (requires --database-user)")
+	flags.BoolVar(&opts.databaseUserPasswordStdin, "database-user-password-stdin", false, "unsupported in v1: external user passwords are deferred; fails without reading stdin")
 	flags.StringVar(&opts.databaseGrant, "database-grant", "", "grant preset for a new database user (defaults to read_write_schema)")
 	return cmd
 }
@@ -298,11 +298,15 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 // before any daemon call. Existing users are never auto-granted.
 func buildSiteDatabaseRequest(cmd *cobra.Command, opts *siteAddOptions) (*databases.SiteDatabaseRequest, error) {
 	changed := func(name string) bool { return cmd.Flags().Changed(name) }
+	passwordStdin := opts.databaseUserPasswordStdin
 	any := changed("database-service") || changed("database") || changed("database-new") ||
 		changed("database-user") || changed("database-user-new") ||
-		changed("database-user-password-stdin") || changed("database-grant")
+		passwordStdin || changed("database-grant")
 	if !any {
 		return nil, nil
+	}
+	if passwordStdin {
+		return nil, externalPasswordUnsupportedError()
 	}
 	service := strings.TrimSpace(opts.databaseService)
 	if service == "" {
@@ -321,9 +325,6 @@ func buildSiteDatabaseRequest(cmd *cobra.Command, opts *siteAddOptions) (*databa
 	}
 	if userID != "" && newUser != "" {
 		return nil, &Error{Code: "INVALID_FLAGS", Message: "--database-user and --database-user-new are mutually exclusive", Remediation: "Choose an existing user or create a new one."}
-	}
-	if changed("database-user-password-stdin") && userID == "" {
-		return nil, &Error{Code: "INVALID_FLAGS", Message: "--database-user-password-stdin requires --database-user", Remediation: "Pass the existing user id with --database-user."}
 	}
 	if database == "" && newDatabase == "" {
 		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "choose --database or --database-new", Remediation: "Pass an existing database name or a new database name."}
@@ -359,13 +360,6 @@ func buildSiteDatabaseRequest(cmd *cobra.Command, opts *siteAddOptions) (*databa
 		default:
 			return nil, &Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("unsupported --database-grant %q", grant), Remediation: "Use read_only, read_write, read_write_schema, or admin."}
 		}
-	}
-	if changed("database-user-password-stdin") {
-		password, err := readPasswordLine(cmd)
-		if err != nil {
-			return nil, err
-		}
-		request.Password = password
 	}
 	return request, nil
 }

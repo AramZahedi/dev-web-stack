@@ -920,6 +920,29 @@ func newTestRoot(fake *fakeClient) *cobra.Command {
 	})
 }
 
+// trackingReader records whether a command read stdin.
+type trackingReader struct {
+	data string
+	read bool
+}
+
+func (r *trackingReader) Read(p []byte) (int, error) {
+	r.read = true
+	if r.data == "" {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// errorReader fails the test if a command reads stdin.
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) {
+	return 0, errors.New("stdin must not be read")
+}
+
 func runCLI(t *testing.T, fake *fakeClient, args ...string) string {
 	t.Helper()
 	code, stdout, stderr := runCLIExit(t, fake, args...)
@@ -936,11 +959,16 @@ func runCLIExit(t *testing.T, fake *fakeClient, args ...string) (int, string, st
 
 func runCLIExitInput(t *testing.T, fake *fakeClient, input string, args ...string) (int, string, string) {
 	t.Helper()
+	return runCLIExitReader(t, fake, strings.NewReader(input), args...)
+}
+
+func runCLIExitReader(t *testing.T, fake *fakeClient, input io.Reader, args ...string) (int, string, string) {
+	t.Helper()
 	root := newTestRoot(fake)
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetIn(strings.NewReader(input))
+	root.SetIn(input)
 	root.SetArgs(args)
 	err := root.Execute()
 	if err != nil {

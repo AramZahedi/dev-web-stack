@@ -55,15 +55,39 @@ func TestSiteAddExistingUserDoesNotGrant(t *testing.T) {
 	}
 }
 
-func TestSiteAddDatabasePasswordStdin(t *testing.T) {
+func TestSiteAddExternalPasswordStdinUnsupported(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{}
-	code, stdout, stderr := runCLIExitInput(t, fake, "s3cret\n", "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+	reader := &trackingReader{data: "s3cret\n"}
+	code, stdout, stderr := runCLIExitReader(t, fake, reader, "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
 		"--database-service", "mysql", "--database", "app", "--database-user", "usr_app", "--database-user-password-stdin")
+	if code == 0 || !strings.Contains(stderr, "DATABASE_EXTERNAL_PASSWORD_UNSUPPORTED") {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if reader.read {
+		t.Fatal("external password stdin was read")
+	}
+	if strings.Contains(stdout, "s3cret") || strings.Contains(stderr, "s3cret") {
+		t.Fatalf("piped password leaked: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if fake.addReq.Name != "" || fake.lastHome != "" {
+		t.Fatal("site add called the daemon for an unsupported external password")
+	}
+}
+
+func TestSiteAddExplicitFalsePasswordStdinDoesNotRead(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	reader := &trackingReader{data: "s3cret\n"}
+	code, stdout, stderr := runCLIExitReader(t, fake, reader, "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+		"--database-service", "mysql", "--database", "app", "--database-user", "usr_app", "--database-user-password-stdin=false")
 	if code != 0 {
 		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
-	if fake.addReq.Database == nil || fake.addReq.Database.Password != "s3cret" {
+	if reader.read {
+		t.Fatal("explicitly false password-stdin flag still read stdin")
+	}
+	if fake.addReq.Database == nil || fake.addReq.Database.Password != "" {
 		t.Fatalf("database=%+v", fake.addReq.Database)
 	}
 }
@@ -200,6 +224,25 @@ func TestSiteDBLinkPayload(t *testing.T) {
 	runCLI(t, fake, "site", "db", "link", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--primary")
 	if fake.databaseLinkReq.ServiceID != "mysql" || fake.databaseLinkReq.Database != "app" || fake.databaseLinkReq.UserID != "usr_app" || !fake.databaseLinkReq.Primary {
 		t.Fatalf("link req=%+v", fake.databaseLinkReq)
+	}
+}
+
+func TestSiteDBLinkExternalPasswordStdinUnsupported(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	reader := &trackingReader{data: "s3cret\n"}
+	code, stdout, stderr := runCLIExitReader(t, fake, reader, "site", "db", "link", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--password-stdin")
+	if code == 0 || !strings.Contains(stderr, "DATABASE_EXTERNAL_PASSWORD_UNSUPPORTED") {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if reader.read {
+		t.Fatal("external password stdin was read")
+	}
+	if strings.Contains(stdout, "s3cret") || strings.Contains(stderr, "s3cret") {
+		t.Fatalf("piped password leaked: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if fake.databaseLinkReq.UserID != "" || fake.lastHome != "" {
+		t.Fatal("site db link called the daemon for an unsupported external password")
 	}
 }
 

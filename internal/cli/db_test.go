@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
@@ -129,10 +131,18 @@ func TestDBUserPasswordRevealWarnsAndPrintsSecret(t *testing.T) {
 	}
 }
 
+func TestReadPasswordLineRejectsOversizedInput(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.SetIn(strings.NewReader(strings.Repeat("x", maxPasswordLineBytes+1) + "\n"))
+	if _, err := readPasswordLine(cmd); err == nil {
+		t.Fatal("oversized password input was accepted")
+	}
+}
+
 func TestDBUserPasswordSetFailsWithoutAPICallAndDoesNotLeakInput(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{databaseUserSecret: databases.Secret{Value: "generated-secret"}}
-	code, stdout, stderr := runCLIExitInput(t, fake, "s3cret-from-stdin\n",
+	code, stdout, stderr := runCLIExitReader(t, fake, errorReader{},
 		"db", "user", "password", "--service", "mysql", "--user-id", "usr_app", "--set", "--yes")
 	if code == 0 || !strings.Contains(stderr, "DATABASE_PASSWORD_SET_UNSUPPORTED") {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
@@ -142,6 +152,9 @@ func TestDBUserPasswordSetFailsWithoutAPICallAndDoesNotLeakInput(t *testing.T) {
 	}
 	if fake.databaseUserRotated || fake.databaseUserRevealed {
 		t.Fatal("--set made an API call")
+	}
+	if fake.lastHome != "" {
+		t.Fatal("--set called clientReady/client factory")
 	}
 }
 
@@ -398,15 +411,22 @@ func TestDBExportWritesFile(t *testing.T) {
 	}
 }
 
-func TestDBLinkReadsPasswordFromStdin(t *testing.T) {
+func TestDBLinkExternalPasswordStdinUnsupported(t *testing.T) {
 	useTestSeams(t)
-	fake := &fakeClient{databaseLinked: model.DatabaseLink{ID: "lnk_1", Database: "app"}}
-	code, stdout, stderr := runCLIExitInput(t, fake, "s3cret\n", "db", "link", "--site", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--password-stdin")
-	if code != 0 {
+	fake := &fakeClient{}
+	reader := &trackingReader{data: "s3cret\n"}
+	code, stdout, stderr := runCLIExitReader(t, fake, reader, "db", "link", "--site", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--password-stdin")
+	if code == 0 || !strings.Contains(stderr, "DATABASE_EXTERNAL_PASSWORD_UNSUPPORTED") {
 		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
-	if fake.databaseLinkReq.Password != "s3cret" {
-		t.Fatalf("password=%q", fake.databaseLinkReq.Password)
+	if reader.read {
+		t.Fatal("external password stdin was read")
+	}
+	if strings.Contains(stdout, "s3cret") || strings.Contains(stderr, "s3cret") {
+		t.Fatalf("piped password leaked: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if fake.databaseLinkReq.UserID != "" || fake.lastHome != "" {
+		t.Fatal("link called the daemon for an unsupported external password")
 	}
 }
 

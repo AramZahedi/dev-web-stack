@@ -78,16 +78,11 @@ func (a *App) newSiteDBLinkCmd() *cobra.Command {
 			if service == "" || database == "" || userID == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--service, --database, and --user-id are required", Remediation: "For example `devstack site db link blog --service mysql --database blog --user-id usr_blog`."}
 			}
+			if passwordStdin {
+				return externalPasswordUnsupportedError()
+			}
 			if strings.EqualFold(service, "redis") {
 				return &Error{Code: "DATABASE_UNSUPPORTED", Message: "Redis users are not site-linkable in v1", Remediation: "Use `devstack db user` to manage Redis ACL users."}
-			}
-			password := ""
-			if passwordStdin {
-				value, err := readPasswordLine(cmd)
-				if err != nil {
-					return err
-				}
-				password = value
 			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
@@ -95,7 +90,7 @@ func (a *App) newSiteDBLinkCmd() *cobra.Command {
 				return err
 			}
 			link, err := c.LinkSiteDatabase(ctx, ref, databases.LinkDatabaseRequest{
-				ServiceID: service, Database: database, UserID: userID, Password: password, Primary: primary,
+				ServiceID: service, Database: database, UserID: userID, Primary: primary,
 			})
 			if err != nil {
 				return err
@@ -110,7 +105,7 @@ func (a *App) newSiteDBLinkCmd() *cobra.Command {
 	cmd.Flags().StringVar(&database, "database", "", "database name")
 	cmd.Flags().StringVar(&userID, "user-id", "", "opaque database user id")
 	cmd.Flags().BoolVar(&primary, "primary", false, "make this the site's primary database link")
-	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "read an external user's password from stdin (never argv)")
+	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "unsupported in v1: external user passwords are deferred; fails without reading stdin")
 	return cmd
 }
 

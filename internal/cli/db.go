@@ -399,9 +399,8 @@ func (a *App) newDBUserPasswordCmd() *cobra.Command {
 				return &Error{
 					Code:    "DATABASE_PASSWORD_SET_UNSUPPORTED",
 					Message: "setting a user-supplied database password is not supported by the current API contract",
-					Remediation: "Omit --set to rotate a devstack-generated password (or pass --rotate), " +
-						"or set an external user's password at link time with `site db link --password-stdin` " +
-						"or `site add --database-user-password-stdin`.",
+					Remediation: "Omit --set to rotate a devstack-generated password (or pass --rotate). " +
+						"External user password entry is deferred to v1.1.",
 				}
 			}
 			if reveal && rotate {
@@ -851,16 +850,11 @@ func (a *App) newDBLinkCmd() *cobra.Command {
 			if site == "" || service == "" || database == "" || userID == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--site, --service, --database, and --user-id are required", Remediation: "For example `devstack db link --site blog --service mysql --database blog --user-id usr_blog`."}
 			}
+			if passwordStdin {
+				return externalPasswordUnsupportedError()
+			}
 			if strings.EqualFold(service, "redis") {
 				return &Error{Code: "DATABASE_UNSUPPORTED", Message: "Redis users are not site-linkable in v1", Remediation: "Use `devstack db user` to manage Redis ACL users."}
-			}
-			password := ""
-			if passwordStdin {
-				value, err := readPasswordLine(cmd)
-				if err != nil {
-					return err
-				}
-				password = value
 			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
@@ -868,7 +862,7 @@ func (a *App) newDBLinkCmd() *cobra.Command {
 				return err
 			}
 			link, err := c.LinkSiteDatabase(ctx, site, databases.LinkDatabaseRequest{
-				ServiceID: service, Database: database, UserID: userID, Password: password, Primary: primary,
+				ServiceID: service, Database: database, UserID: userID, Primary: primary,
 			})
 			if err != nil {
 				return err
@@ -884,7 +878,7 @@ func (a *App) newDBLinkCmd() *cobra.Command {
 	cmd.Flags().StringVar(&database, "database", "", "database name")
 	cmd.Flags().StringVar(&userID, "user-id", "", "opaque database user id")
 	cmd.Flags().BoolVar(&primary, "primary", false, "make this the site's primary database link")
-	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "read an external user's password from stdin (never argv)")
+	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "unsupported in v1: external user passwords are deferred; fails without reading stdin")
 	return cmd
 }
 
@@ -1012,6 +1006,18 @@ func (a *App) newDBPasswordCmd() *cobra.Command {
 	return cmd
 }
 
+// externalPasswordUnsupportedError is the v1 contract boundary for entering an
+// external user's password at link time. The flags stay registered so scripts
+// fail explicitly instead of silently creating a metadata-only link.
+func externalPasswordUnsupportedError() *Error {
+	return &Error{
+		Code:    "DATABASE_EXTERNAL_PASSWORD_UNSUPPORTED",
+		Message: "external user password entry is deferred to v1.1",
+		Remediation: "Omit the password flag to create a metadata-only link. " +
+			"Link-time password storage will be supported in a future release.",
+	}
+}
+
 // requireDestructiveConfirmation gates a mutation behind --yes or an
 // interactive yes. A declined prompt makes no API call.
 func (a *App) requireDestructiveConfirmation(cmd *cobra.Command, message, remediation string) error {
@@ -1064,13 +1070,19 @@ func (a *App) writeDownload(cmd *cobra.Command, output string, body io.Reader) (
 	return written, closeErr
 }
 
+const maxPasswordLineBytes = 4096
+
 func readPasswordLine(cmd *cobra.Command) (string, error) {
-	reader := bufio.NewReader(cmd.InOrStdin())
+	reader := bufio.NewReader(io.LimitReader(cmd.InOrStdin(), maxPasswordLineBytes+1))
 	line, err := reader.ReadString('\n')
 	if err != nil && err != io.EOF {
 		return "", err
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	line = strings.TrimRight(line, "\r\n")
+	if len(line) > maxPasswordLineBytes {
+		return "", &Error{Code: "INVALID_ARGUMENT", Message: "password input is too long", Remediation: "Use a password shorter than 4096 bytes."}
+	}
+	return line, nil
 }
 
 func resolveDatabaseUserID(ctx context.Context, c Client, serviceID, username, userID string) (string, error) {
