@@ -465,7 +465,7 @@ func (c *DockerServiceController) findUser(ctx context.Context, serviceID, usern
 		return model.DatabaseUser{}, err
 	}
 	for _, user := range users {
-		if user.Username == username && user.Host == host {
+		if user.Username == username && strings.EqualFold(user.Host, host) {
 			return user, nil
 		}
 	}

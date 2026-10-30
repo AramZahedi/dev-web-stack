@@ -80,6 +80,10 @@ func (c *DockerServiceController) ensureDatabaseSecretDir(serviceID string) (str
 	if err := os.MkdirAll(dir, databaseSecretDirMode); err != nil {
 		return "", fmt.Errorf("create database user secret directory: %w", err)
 	}
+	info, err := os.Lstat(dir)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("%w: database user secret directory is not a directory", databases.ErrInvalidRequest)
+	}
 	if err := os.Chmod(dir, databaseSecretDirMode); err != nil {
 		return "", fmt.Errorf("set database user secret directory mode: %w", err)
 	}
@@ -92,8 +96,8 @@ func (c *DockerServiceController) writeDatabaseSecret(serviceID, userID, value s
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%w: database user secret is empty", databases.ErrInvalidRequest)
 	}
-	if strings.ContainsRune(value, 0) {
-		return fmt.Errorf("%w: database user secret contains NUL", databases.ErrInvalidRequest)
+	if strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("%w: database user secret contains a control character", databases.ErrInvalidRequest)
 	}
 	path, err := c.databaseSecretPath(serviceID, userID)
 	if err != nil {

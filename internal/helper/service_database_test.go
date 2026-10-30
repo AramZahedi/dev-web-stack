@@ -411,11 +411,12 @@ func TestHelperCreateUserPasswordOnStdin(t *testing.T) {
 	if !runner.stdinContains("IDENTIFIED BY") {
 		t.Fatal("password SQL not on stdin")
 	}
-	if runner.joinedCallsContains("s3cret") {
-		t.Fatal("password in argv")
-	}
-	if _, err := c.readDatabaseSecret("mysql", user.ID); err != nil {
+	secret, err := c.readDatabaseSecret("mysql", user.ID)
+	if err != nil {
 		t.Fatalf("stored secret: %v", err)
+	}
+	if runner.joinedCallsContains(secret) {
+		t.Fatal("password in argv")
 	}
 }
 
