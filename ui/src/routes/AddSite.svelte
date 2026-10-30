@@ -98,6 +98,7 @@
   let databaseWarning = $state('');
   let createdSite = $state<Site | null>(null);
   let createdLink = $state<SiteDatabaseLink | null>(null);
+  let createdUserManaged = $state(false);
   let createdOpen = $state(false);
   let revealValue = $state('');
   let revealLoading = $state(false);

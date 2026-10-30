@@ -305,11 +305,11 @@
   {:else}
     <div class="db-list">
       {#each links as link (link.id)}
-        {@const isManaged = managedOverrides[link.id] ?? link.password_managed}
+        {@const passwordStored = managedOverrides[link.id] ?? link.password_managed}
         {@const conflict = conflictMessage(link)}
         {@const displayConnection = {
           ...link.connection,
-          password_managed: isManaged,
+          password_managed: passwordStored,
           url: link.connection.url ? sanitizeDatabaseUrl(link.connection.url) : undefined,
         }}
         <article class="db-link" aria-label={`Database ${link.database}`}>
@@ -400,7 +400,7 @@
           {/if}
 
           <div class="db-credentials">
-            {#if isManaged}
+            {#if passwordStored}
               <SecretField
                 label={`password for ${link.database}`}
                 value={secrets[link.id] ?? ''}
@@ -411,17 +411,23 @@
                 onhide={() => hide(link)}
                 oncopy={() => copy('password', secrets[link.id] ?? '', true)}
               />
-              {#if isManagedUser(link)}
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  loading={resettingPassword[link.id]}
-                  onclick={() => resetPassword(link)}
-                >
-                  Reset password
-                </Button>
+            {/if}
+            {#if isManagedUser(link)}
+              {#if !passwordStored}
+                <p class="password-hint">
+                  Password unknown. Reset it to generate a new password.
+                </p>
               {/if}
-            {:else}
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={resettingPassword[link.id]}
+                onclick={() => resetPassword(link)}
+              >
+                Reset password
+              </Button>
+              <span class="password-hint">Replaces the current password.</span>
+            {:else if !passwordStored}
               <p class="password-hint">
                 External password entry is not available in v1. Set the password in the engine,
                 then restart the site.

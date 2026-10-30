@@ -27,6 +27,8 @@
         Password will be generated when the site is created.
       {:else if summary.passwordManaged}
         Password managed by devstack.
+      {:else if summary.userManaged}
+        Password unknown. Reset it from the site's Databases card after creation.
       {:else}
         Password not managed.
       {/if}

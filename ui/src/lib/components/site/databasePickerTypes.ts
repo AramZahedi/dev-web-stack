@@ -9,6 +9,7 @@ export interface DatabasePickerSummary {
   host: string;
   port: number;
   passwordManaged: boolean;
+  userManaged: boolean;
 }
 
 const GRANT_LABELS: Record<GrantPreset, string> = {

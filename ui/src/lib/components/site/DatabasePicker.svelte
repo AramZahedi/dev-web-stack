@@ -129,6 +129,7 @@
         defaultPort(selectedService?.id),
       passwordManaged:
         userMode === 'new' ? true : Boolean(selectedUser?.password_managed),
+      userManaged: userMode === 'new' ? true : Boolean(selectedUser?.managed),
     };
   }
 
@@ -601,10 +602,16 @@
             </div>
           {/if}
           {#if !selectedUser.password_managed}
-            <p class="password-note">
-              External password entry is not available in v1. This link will be metadata-only;
-              set the password in the engine, then restart the site.
-            </p>
+            {#if selectedUser.managed}
+              <p class="password-note">
+                The password is unknown. Reset it after creation from the site's Databases card.
+              </p>
+            {:else}
+              <p class="password-note">
+                External password entry is not available in v1. This link will be metadata-only;
+                set the password in the engine, then restart the site.
+              </p>
+            {/if}
           {/if}
         </div>
       {/if}
