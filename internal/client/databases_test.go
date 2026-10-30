@@ -75,6 +75,47 @@ func TestClientDatabaseCRUDAndReveal(t *testing.T) {
 	api.last(t, http.MethodPost, "/api/v1/services/mysql/users/usr_app/password")
 }
 
+func TestClientDatabaseRejectsMalformedSingleResourceBodies(t *testing.T) {
+	for _, body := range []string{
+		"null",
+		"{}",
+		`{"database":{}}`,
+		`{"database":{"name":"app"},"extra":{}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			home := t.TempDir()
+			api := &fakeAPI{sites: map[string]model.Site{}, databaseResponseBody: body}
+			startFakeAPI(t, home, api)
+			c, err := New(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = c.Close() }()
+			if _, err := c.GetServiceDatabase(context.Background(), "mysql", "app"); err == nil {
+				t.Fatalf("malformed body %s returned a zero database without an error", body)
+			}
+		})
+	}
+}
+
+func TestClientDatabaseAcceptsWrappedResource(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}, databaseResponseBody: `{"database":{"name":"app","engine":"mysql"}}`}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	database, err := c.GetServiceDatabase(context.Background(), "mysql", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if database.Name != "app" {
+		t.Fatalf("database=%+v", database)
+	}
+}
+
 func TestClientDatabaseWrongEnvelopeFailsLoudly(t *testing.T) {
 	home := t.TempDir()
 	api := &fakeAPI{sites: map[string]model.Site{}, wrongDatabaseEnvelope: true}

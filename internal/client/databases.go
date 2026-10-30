@@ -297,7 +297,10 @@ func decodeOne[T any](raw json.RawMessage, key string) (T, error) {
 	var zero T
 	var wrapper map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &wrapper); err == nil {
-		if inner, ok := wrapper[key]; ok && len(inner) > 0 && string(inner) != "null" {
+		if inner, ok := wrapper[key]; ok {
+			if len(wrapper) != 1 {
+				return zero, fmt.Errorf("client: %q envelope must contain exactly one key", key)
+			}
 			return decodeStrict[T](inner)
 		}
 	}
@@ -308,11 +311,23 @@ func decodeOne[T any](raw json.RawMessage, key string) (T, error) {
 	return value, nil
 }
 
-// decodeStrict only accepts fields defined by T, so an unexpected wrapper key
-// cannot silently produce a zero-valued resource.
+// decodeStrict only accepts non-empty fields defined by T, so an unexpected
+// wrapper key, null, or an empty object cannot silently produce a zero-valued
+// resource.
 func decodeStrict[T any](raw json.RawMessage) (T, error) {
 	var value T
-	decoder := json.NewDecoder(bytes.NewReader(raw))
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return value, fmt.Errorf("client: empty response body")
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return value, fmt.Errorf("client: null response body")
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, trimmed); err == nil && compact.String() == "{}" {
+		return value, fmt.Errorf("client: empty object response body")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&value); err != nil {
 		return value, err

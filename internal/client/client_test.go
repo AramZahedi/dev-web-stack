@@ -38,6 +38,7 @@ type fakeAPI struct {
 	buildDelay            time.Duration
 	wrongDatabaseEnvelope bool
 	nullDatabaseEnv       bool
+	databaseResponseBody  string
 }
 
 type recordedRequest struct {
@@ -481,6 +482,12 @@ func (f *fakeAPI) mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/services/{id}/databases/{name}", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
 		f.writeErrorOr(w, func() {
+			if f.databaseResponseBody != "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, f.databaseResponseBody)
+				return
+			}
 			if f.wrongDatabaseEnvelope {
 				writeTestJSON(w, http.StatusOK, map[string]any{"unexpected": map[string]any{"name": "app"}})
 				return
