@@ -21,6 +21,7 @@
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
   [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
 - **Implemented 2026-10-30:** [Per-Site Node Toolchains and Global Node Default](superpowers/specs/2026-10-30-node-toolchain-design.md). The implementation covers live Node discovery with official SHA-256 verification, per-site Node pins for every site kind, a PHP-style global Node default, dashboard/CLI installation, and full live E2E evidence in the [Node toolchain E2E report](superpowers/audits/2026-10-30-node-toolchain-e2e.md). See the [Node toolchain handoff](superpowers/status/2026-10-30-node-toolchain-handoff.md) and [implementation plan](superpowers/plans/2026-10-30-node-toolchain.md).
+- **Pending coverage:** the [remaining full dashboard/CLI E2E plan](superpowers/plans/2026-10-30-dashboard-full-e2e-coverage.md) lists every action not re-tested by the Node run, with fixtures, assertions, cleanup, and destructive-action recovery.
 
 This is the continue-on-another-machine document. Read it first, then
 [architecture](architecture.md), [requirements](requirements.md), [decisions](decisions.md),

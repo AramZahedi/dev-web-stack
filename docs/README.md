@@ -29,6 +29,9 @@ machine, and the design/plan for the next milestone.
   - executed task-by-task TDD plan.
 - [Node toolchain E2E report](superpowers/audits/2026-10-30-node-toolchain-e2e.md)
   - live dashboard/CLI coverage, bugs found and fixed, and remaining caveats.
+- [Remaining full dashboard/CLI E2E coverage plan](superpowers/plans/2026-10-30-dashboard-full-e2e-coverage.md)
+  - executable to-do matrix for every dashboard/CLI action not re-tested by the
+    Node toolchain run, with fixtures, assertions, cleanup, and restore steps.
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
   — Waves 0–2 and the next batch implemented; remaining host gates noted.
 - [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)
