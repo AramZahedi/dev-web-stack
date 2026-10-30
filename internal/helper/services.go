@@ -10,12 +10,12 @@ import (
 	"path"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/dbproto"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
 
 var serviceIDRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -263,6 +263,35 @@ func (s *Server) handleDatabaseCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, dbproto.DatabaseResponse{Database: created})
+}
+
+func (s *Server) handleDatabaseGet(w http.ResponseWriter, r *http.Request) {
+	platform, ok := s.databasePlatform(w)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	name := r.PathValue("name")
+	if err := validateServiceID(id); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if err := validateDatabasePathValue(name); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	list, err := platform.ListDatabases(r.Context(), id)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	for _, database := range list {
+		if database.Name == name {
+			s.writeJSON(w, http.StatusOK, dbproto.DatabaseResponse{Database: database})
+			return
+		}
+	}
+	s.writeServiceError(w, fmt.Errorf("%w: database %q", databases.ErrNotFound, name))
 }
 
 func (s *Server) handleDatabaseRename(w http.ResponseWriter, r *http.Request) {
@@ -710,14 +739,11 @@ func (s *Server) handleDatabaseImport(w http.ResponseWriter, r *http.Request) {
 		Confirm:         query.Get(dbproto.QueryConfirm),
 		PreImportBackup: parseBool(query.Get(dbproto.QueryPreImportBackup)),
 	}
-	filename := strings.TrimSpace(r.Header.Get("X-Devstack-Filename"))
-	if len(filename) > 255 {
-		filename = filename[:255]
-	}
-	filename = strings.NewReplacer("/", "_", "\\", "_").Replace(filename)
 	defer func() { _ = r.Body.Close() }()
 	body := http.MaxBytesReader(w, r.Body, maxDatabaseImportBytes+1)
-	job, err := platform.ImportDatabase(r.Context(), id, name, body, filename, req)
+	// The helper derives the format from the staged bytes; the caller-supplied
+	// filename is not used for paths or format detection.
+	job, err := platform.ImportDatabase(r.Context(), id, name, body, "", req)
 	if err != nil {
 		s.writeServiceError(w, err)
 		return
@@ -841,6 +867,28 @@ func (s *Server) handleDatabaseEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, dbproto.SiteEnvResponse{Env: env})
+}
+
+func (s *Server) handleServicePassword(w http.ResponseWriter, r *http.Request) {
+	platform, ok := s.databasePlatform(w)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if err := validateServiceID(id); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if id != string(services.IDRedis) {
+		s.writeServiceError(w, fmt.Errorf("%w: only Redis has a service-level password", databases.ErrUnsupported))
+		return
+	}
+	secret, err := platform.SetUserPassword(r.Context(), id, redisUserID("default"))
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, dbproto.SecretResponse{Value: secret.Value})
 }
 
 func parseBool(value string) bool {

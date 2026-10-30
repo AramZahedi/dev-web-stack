@@ -57,6 +57,9 @@ func (c *DockerServiceController) ListDatabases(ctx context.Context, serviceID s
 	if err != nil {
 		return nil, err
 	}
+	if list == nil {
+		list = []model.Database{}
+	}
 	for i := range list {
 		list[i].ServiceID = serviceID
 		list[i].Engine = engineID
@@ -227,6 +230,9 @@ func (c *DockerServiceController) ListUsers(ctx context.Context, serviceID strin
 	users, err := engine.ParseUsers(out)
 	if err != nil {
 		return nil, err
+	}
+	if users == nil {
+		users = []model.DatabaseUser{}
 	}
 	for i := range users {
 		users[i].ServiceID = serviceID

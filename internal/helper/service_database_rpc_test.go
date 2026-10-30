@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -33,6 +34,14 @@ type fakeDatabasePlatform struct {
 	env            map[string]string
 	exportReader   io.ReadCloser
 	downloadReader io.ReadCloser
+	passwordUserID string
+}
+
+func (f *fakeDatabasePlatform) SetUserPassword(ctx context.Context, serviceID, userID string) (databases.Secret, error) {
+	f.mu.Lock()
+	f.passwordUserID = userID
+	f.mu.Unlock()
+	return databases.Secret{Value: "service-secret"}, nil
 }
 
 func (f *fakeDatabasePlatform) ExportDatabase(ctx context.Context, serviceID, database string) (io.ReadCloser, error) {
@@ -210,6 +219,62 @@ func TestServiceDatabaseStreamErrorBeforeHeaders(t *testing.T) {
 			t.Fatalf("helper error = %+v", helperErr)
 		}
 	})
+}
+
+func TestServiceDatabaseRejectsProtocolMismatch(t *testing.T) {
+	socketPath, _ := startTestServer(t, helper.Config{
+		AllowUID: os.Getuid(),
+		Service:  helper.Service{DatabasePlatform: &fakeDatabasePlatform{}},
+	})
+	raw := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "unix", socketPath)
+		},
+	}}
+	defer raw.CloseIdleConnections()
+	req, err := http.NewRequest(http.MethodGet, "http://helper/v1/services/mysql/databases", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := raw.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusUpgradeRequired {
+		t.Fatalf("status = %d, want 426", resp.StatusCode)
+	}
+}
+
+func TestServiceDatabaseGetEndpoint(t *testing.T) {
+	platform := &fakeDatabasePlatform{databases: []model.Database{{Name: "app"}}}
+	client := databaseRPCServer(t, platform)
+	got, err := client.GetDatabase(context.Background(), "mysql", "app")
+	if err != nil || got.Name != "app" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if _, err := client.GetDatabase(context.Background(), "mysql", "missing"); !errors.Is(err, databases.ErrNotFound) {
+		t.Fatalf("missing database err=%v", err)
+	}
+}
+
+func TestServiceServicePasswordEndpoint(t *testing.T) {
+	platform := &fakeDatabasePlatform{}
+	client := databaseRPCServer(t, platform)
+	secret, err := client.SetServicePassword(context.Background(), "redis")
+	if err != nil || secret.Value != "service-secret" {
+		t.Fatalf("secret=%+v err=%v", secret, err)
+	}
+	platform.mu.Lock()
+	userID := platform.passwordUserID
+	platform.mu.Unlock()
+	if !strings.HasPrefix(userID, "redis_") {
+		t.Fatalf("default user ID = %q", userID)
+	}
+	if _, err := client.SetServicePassword(context.Background(), "mysql"); !errors.Is(err, databases.ErrUnsupported) {
+		t.Fatalf("non-redis password err=%v", err)
+	}
 }
 
 func TestServiceDatabaseEnvEndpoint(t *testing.T) {

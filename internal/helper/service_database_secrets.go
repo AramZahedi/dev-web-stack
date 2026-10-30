@@ -160,7 +160,7 @@ func (c *DockerServiceController) databaseSecretExists(serviceID, userID string)
 		return false
 	}
 	info, err := os.Lstat(path)
-	return err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0
+	return err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 && info.Mode().Perm()&0o077 == 0
 }
 
 // deleteDatabaseSecret removes a stored password. A missing secret is not an

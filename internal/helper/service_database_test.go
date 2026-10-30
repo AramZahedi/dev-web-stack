@@ -442,6 +442,56 @@ func TestRunInputStreamCapsErrorOutput(t *testing.T) {
 	}
 }
 
+func TestHelperListReturnsNonNilSlices(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.databaseList = "\n"
+	list, err := c.ListDatabases(context.Background(), "mysql")
+	if err != nil || list == nil {
+		t.Fatalf("databases=%v err=%v", list, err)
+	}
+	runner.handle = func(name string, args []string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "list-users") {
+			return nil, nil
+		}
+		return runner.defaultRun(name, args)
+	}
+	users, err := c.ListUsers(context.Background(), "mysql")
+	if err != nil || users == nil {
+		t.Fatalf("users=%v err=%v", users, err)
+	}
+}
+
+func TestHelperDatabaseSecretExistsRejectsBroadMode(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	if err := c.writeDatabaseSecret("mysql", "usr_app", "s3cret"); err != nil {
+		t.Fatal(err)
+	}
+	if !c.databaseSecretExists("mysql", "usr_app") {
+		t.Fatal("private secret was not detected")
+	}
+	path, err := c.databaseSecretPath("mysql", "usr_app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c.databaseSecretExists("mysql", "usr_app") {
+		t.Fatal("world-readable secret was treated as managed")
+	}
+}
+
+func TestDatabaseImportLimitIsOneGiB(t *testing.T) {
+	if maxDatabaseImportBytes != 1<<30 {
+		t.Fatalf("import limit = %d", maxDatabaseImportBytes)
+	}
+	var buffer bytes.Buffer
+	if _, err := copyLimited(&buffer, strings.NewReader("12345"), 4); !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("copyLimited err=%v", err)
+	}
+}
+
 func TestHelperUsesDefaultRegistryFallback(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	c.databaseRegistry = nil

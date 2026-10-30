@@ -61,6 +61,7 @@ const (
 	PathServiceDatabaseExport = "/v1/services/{id}/databases/{name}/export"
 	PathServiceJob            = "/v1/services/{id}/jobs/{jobID}"
 	PathServiceDatabaseEnv    = "/v1/services/{id}/database-env"
+	PathServicePassword       = "/v1/services/{id}/password"
 )
 
 // Additional stable error codes for database operations. They extend the
@@ -80,4 +81,9 @@ const (
 // dbproto has per-database backup paths but no service-wide list path.
 func ServiceBackups(id string) string {
 	return "/v1/services/" + url.PathEscape(id) + "/backups"
+}
+
+// ServicePassword returns the Redis default-user password path.
+func ServicePassword(id string) string {
+	return "/v1/services/" + url.PathEscape(id) + "/password"
 }

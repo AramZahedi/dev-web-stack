@@ -53,6 +53,21 @@ func (c *Client) CreateDatabase(ctx context.Context, serviceID string, req dbpro
 	return resp.Database, err
 }
 
+// GetDatabase returns one database by name. It is a concrete helper method,
+// not part of DatabaseAPI, so the agent/helper interfaces stay identical.
+func (c *Client) GetDatabase(ctx context.Context, serviceID, name string) (dbproto.DatabaseInfo, error) {
+	var resp dbproto.DatabaseResponse
+	err := c.do(ctx, http.MethodGet, dbproto.ServiceDatabase(serviceID, name), nil, &resp)
+	return resp.Database, err
+}
+
+// SetServicePassword rotates the Redis default-user password.
+func (c *Client) SetServicePassword(ctx context.Context, serviceID string) (dbproto.SecretValue, error) {
+	var resp dbproto.SecretResponse
+	err := c.do(ctx, http.MethodPost, helperproto.ServicePassword(serviceID), nil, &resp)
+	return dbproto.SecretValue{Value: resp.Value}, err
+}
+
 func (c *Client) RenameDatabase(ctx context.Context, serviceID, name string, req dbproto.DatabaseRenameRequest) (dbproto.DatabaseInfo, error) {
 	req.ID = serviceID
 	req.Name = name
