@@ -194,6 +194,9 @@
   function envSnippet(link: SiteDatabaseLink): string {
     return Object.entries(link.connection.env ?? {})
       .filter(([key]) => !isSecretEnvKey(key))
+      // A metadata-only link has no managed password, so the environment
+      // omits database URLs rather than exposing a URL without its password.
+      .filter(([key]) => link.password_managed || !isDatabaseUrlEnvKey(key))
       .map(([key, value]) => `${key}=${isDatabaseUrlEnvKey(key) ? sanitizeDatabaseUrl(value) : value}`)
       .join('\n');
   }

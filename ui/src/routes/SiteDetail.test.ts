@@ -314,6 +314,23 @@ const PASSWORD_ENV_LINK: DatabaseLink = {
   },
 };
 
+const METADATA_ONLY_ENV_LINK: DatabaseLink = {
+  ...METADATA_ONLY_LINK,
+  connection: {
+    ...METADATA_ONLY_LINK.connection,
+    env: {
+      DB_CONNECTION: 'mysql',
+      DB_HOST: '127.0.0.1',
+      DB_PORT: '3306',
+      DB_DATABASE: 'app',
+      DB_USERNAME: 'ext',
+      DB_PASSWORD: 'external_secret',
+      DATABASE_URL: 'mysql://ext:external_secret@127.0.0.1:3306/app',
+      DB_APP_DATABASE_URL: 'mysql://ext:external_secret@127.0.0.1:3306/app',
+    },
+  },
+};
+
 const BLOG_DATABASE: Database = {
   name: 'blog',
   service_id: 'mysql',
@@ -1161,7 +1178,16 @@ describe('SiteDetail configuration and builds', () => {
     );
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const copied = writeText.mock.calls[0][0] as string;
-    expect(copied).toContain('DB_APP_DATABASE_URL=mysql://blog_user@127.0.0.1:3306/app');
+    expect(copied).toBe(
+      [
+        'DB_CONNECTION=mysql',
+        'DB_HOST=127.0.0.1',
+        'DB_PORT=3306',
+        'DB_DATABASE=app',
+        'DB_USERNAME=blog_user',
+        'DB_APP_DATABASE_URL=mysql://blog_user@127.0.0.1:3306/app',
+      ].join('\n'),
+    );
     expect(copied).not.toContain('p@ss');
     expect(copied).not.toContain('s3cret');
     expect(copied).not.toContain('DB_APP_PWD');
@@ -1171,5 +1197,21 @@ describe('SiteDetail configuration and builds', () => {
     expect(toast?.message).not.toContain('DB_APP_DATABASE_URL');
     expect(toast?.message).not.toContain('p@ss');
     expect(toast?.message).not.toContain('s3cret');
+  });
+
+  it('omits database URLs from a metadata-only .env snippet', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [METADATA_ONLY_ENV_LINK] });
+    await renderSite('blog');
+
+    await fireEvent.click(
+      await screen.findByRole('button', { name: /copy \.env snippet for app/i }),
+    );
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied).toContain('DB_HOST=127.0.0.1');
+    expect(copied).not.toContain('DATABASE_URL');
+    expect(copied).not.toContain('external_secret');
   });
 });
