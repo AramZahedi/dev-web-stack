@@ -66,13 +66,14 @@ const (
 // Additional stable error codes for database operations. They extend the
 // generic helper codes without changing existing responses.
 const (
-	CodeNotFound        = "NOT_FOUND"
-	CodeConflict        = "CONFLICT"
-	CodeProtected       = "PROTECTED"
-	CodeUnsupported     = "UNSUPPORTED"
-	CodeServiceInactive = "SERVICE_INACTIVE"
-	CodePasswordMissing = "PASSWORD_MISSING"
-	CodeJobNotFound     = "JOB_NOT_FOUND"
+	CodeDatabaseInvalidRequest = "DATABASE_INVALID_REQUEST"
+	CodeNotFound               = "NOT_FOUND"
+	CodeConflict               = "CONFLICT"
+	CodeProtected              = "PROTECTED"
+	CodeUnsupported            = "UNSUPPORTED"
+	CodeServiceInactive        = "SERVICE_INACTIVE"
+	CodePasswordMissing        = "PASSWORD_MISSING"
+	CodeJobNotFound            = "JOB_NOT_FOUND"
 )
 
 // ServiceBackups returns the helper path listing every backup of a service.

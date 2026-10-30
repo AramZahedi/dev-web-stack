@@ -159,6 +159,19 @@ func TestServiceDatabaseErrorMapping(t *testing.T) {
 		}
 	})
 
+	t.Run("database invalid request", func(t *testing.T) {
+		platform := &fakeDatabasePlatform{createErr: fmt.Errorf("%w: bad name", databases.ErrInvalidRequest)}
+		client := databaseRPCServer(t, platform)
+		_, err := client.CreateDatabase(context.Background(), "mysql", dbproto.DatabaseCreateRequest{Name: "app"})
+		if !errors.Is(err, databases.ErrInvalidRequest) {
+			t.Fatalf("err=%v", err)
+		}
+		var helperErr *helperclient.Error
+		if !errors.As(err, &helperErr) || helperErr.Status != http.StatusBadRequest || helperErr.Code != helperproto.CodeDatabaseInvalidRequest {
+			t.Fatalf("helper error = %+v", helperErr)
+		}
+	})
+
 	t.Run("invalid service id", func(t *testing.T) {
 		platform := &fakeDatabasePlatform{}
 		client := databaseRPCServer(t, platform)

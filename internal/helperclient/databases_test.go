@@ -264,6 +264,22 @@ func TestHelperClientResolveSiteEnv(t *testing.T) {
 	}
 }
 
+func TestHelperClientDatabaseInvalidRequestMapping(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(helperproto.ErrorResponse{Code: helperproto.CodeDatabaseInvalidRequest, Message: "bad database request"})
+	})
+	client := newUnixClient(t, handler)
+	_, err := client.CreateDatabase(context.Background(), "mysql", dbproto.DatabaseCreateRequest{Name: "app"})
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+	var helperErr *Error
+	if !errors.As(err, &helperErr) || helperErr.Status != http.StatusBadRequest || helperErr.Code != helperproto.CodeDatabaseInvalidRequest {
+		t.Fatalf("helper error = %+v", helperErr)
+	}
+}
+
 func TestHelperClientDatabaseErrorMapping(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)

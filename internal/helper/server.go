@@ -1337,7 +1337,7 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, databases.ErrConflict), errors.Is(err, databases.ErrLinkedSites):
 		s.writeError(w, http.StatusConflict, helperproto.CodeConflict, err.Error())
 	case errors.Is(err, databases.ErrInvalidRequest):
-		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeDatabaseInvalidRequest, err.Error())
 	default:
 		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
 	}

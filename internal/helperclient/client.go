@@ -86,6 +86,8 @@ func (e *Error) Unwrap() error {
 		return helperproto.ErrVhostSyncBusy
 	case helperproto.CodeToolConflict:
 		return helperproto.ErrToolConflict
+	case helperproto.CodeDatabaseInvalidRequest:
+		return databases.ErrInvalidRequest
 	case helperproto.CodeNotFound:
 		return databases.ErrNotFound
 	case helperproto.CodeConflict:
