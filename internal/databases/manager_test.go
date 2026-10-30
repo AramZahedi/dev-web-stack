@@ -350,6 +350,54 @@ func (f *fakeStore) ListDatabaseJobs(_ context.Context, serviceID string) ([]mod
 	return out, nil
 }
 
+func (f *fakeStore) DeleteServiceMetadata(_ context.Context, serviceID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var links []model.DatabaseLinkRecord
+	for _, link := range f.links {
+		if link.ServiceID != serviceID {
+			links = append(links, link)
+		}
+	}
+	f.links = links
+	var users []model.DatabaseUserRecord
+	for _, user := range f.users {
+		if user.ServiceID != serviceID {
+			users = append(users, user)
+		}
+	}
+	f.users = users
+	var grants []model.DatabaseGrantRecord
+	for _, grant := range f.grants {
+		keep := false
+		for _, user := range f.users {
+			if user.ID == grant.UserID {
+				keep = true
+				break
+			}
+		}
+		if keep {
+			grants = append(grants, grant)
+		}
+	}
+	f.grants = grants
+	var backups []model.DatabaseBackupRecord
+	for _, backup := range f.backups {
+		if backup.ServiceID != serviceID {
+			backups = append(backups, backup)
+		}
+	}
+	f.backups = backups
+	var jobs []model.DatabaseJobRecord
+	for _, job := range f.jobs {
+		if job.ServiceID != serviceID {
+			jobs = append(jobs, job)
+		}
+	}
+	f.jobs = jobs
+	return nil
+}
+
 func (f *fakeStore) AddAuditEvent(_ context.Context, event model.AuditEventRecord) error {
 	f.audit = append(f.audit, event)
 	return nil
@@ -999,6 +1047,53 @@ func TestReconcileJobsMarksOrphansFailed(t *testing.T) {
 	done, _ := m.GetJob(context.Background(), "job_done")
 	if done.Status != model.JobSucceeded {
 		t.Fatalf("terminal job changed to %q", done.Status)
+	}
+}
+
+func TestManagerDeleteServiceMetadataKeepsLinksUntilSeparateCleanup(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app"}}
+	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
+	st.jobs = []model.DatabaseJobRecord{{ID: "job_1", ServiceID: "mysql", DatabaseName: "app", Status: string(model.JobSucceeded)}}
+	if err := m.DeleteServiceMetadata(context.Background(), "mysql"); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.users) != 0 || len(st.backups) != 0 || len(st.jobs) != 0 {
+		t.Fatalf("metadata survived: users=%+v backups=%+v jobs=%+v", st.users, st.backups, st.jobs)
+	}
+	if len(st.links) != 0 {
+		t.Fatalf("links survived metadata cleanup: %+v", st.links)
+	}
+}
+
+func TestGuardSiteBlocksUninstalledLinkedServiceWithConflictingEngine(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	svc := m.deps.Services.(*fakeServices)
+	delete(svc.views, services.IDMySQL)
+	svc.views[services.IDMariaDB] = services.View{ID: services.IDMariaDB, State: services.StateActive, Active: true, Installed: true, Group: services.GroupMySQLFamily}
+	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app"}}
+	if err := m.GuardSite(context.Background(), st.sites[0]); !errors.Is(err, ErrConflict) {
+		t.Fatalf("guard = %v, want conflict", err)
+	}
+}
+
+func TestManagerImpactListsSitesBackupsAndRunningJobs(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", SiteName: "blog", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app"}}
+	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app", CreatedAt: 1}}
+	st.jobs = []model.DatabaseJobRecord{
+		{ID: "job_run", ServiceID: "mysql", DatabaseName: "app", Status: string(model.JobRunning)},
+		{ID: "job_done", ServiceID: "mysql", DatabaseName: "app", Status: string(model.JobSucceeded)},
+	}
+	impact, err := m.Impact(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(impact.LinkedSites) != 1 || impact.LinkedSites[0].Name != "blog" {
+		t.Fatalf("sites = %+v", impact.LinkedSites)
+	}
+	if len(impact.Backups) != 1 || len(impact.RunningJobs) != 1 || impact.RunningJobs[0].ID != "job_run" {
+		t.Fatalf("impact = %+v", impact)
 	}
 }
 

@@ -305,21 +305,30 @@ func (m *Manager) GuardSite(ctx context.Context, site model.Site) error {
 	}
 	for _, record := range records {
 		serviceID := services.ID(canonicalServiceID(record.ServiceID))
-		view, ok := byID[serviceID]
-		if !ok {
-			m.emit(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: database service %s is not installed", site.Name, serviceID))
-			continue
+		view, installed := byID[serviceID]
+		group := view.Group
+		if !installed {
+			// An uninstalled linked service still belongs to its catalog group.
+			// Resolve the group from the catalog so a conflicting active engine
+			// (for example MariaDB while the site links MySQL) blocks the start.
+			if catalogService, ok := services.DefaultCatalog().Get(serviceID); ok {
+				group = catalogService.Group
+			}
 		}
-		if view.Active {
+		if installed && view.Active {
 			continue
 		}
 		for _, other := range views {
-			if other.ID == view.ID || !other.Active {
+			if other.ID == serviceID || !other.Active {
 				continue
 			}
-			if view.Group != "" && other.Group == view.Group && view.Group.Exclusive() {
+			if group != "" && other.Group == group && group.Exclusive() {
 				return fmt.Errorf("%w: site %s links %s but %s is active on the same exclusive port group; deactivate %s or switch the link", ErrConflict, site.Name, serviceID, other.ID, other.ID)
 			}
+		}
+		if !installed {
+			m.emit(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: database service %s is not installed", site.Name, serviceID))
+			continue
 		}
 		m.emit(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: database service %s is stopped", site.Name, serviceID))
 	}

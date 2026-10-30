@@ -197,7 +197,9 @@ type ServiceConfigService interface {
 type DatabaseService interface {
 	databases.Service
 	SetDefaultUserPassword(ctx context.Context, serviceID string) (databases.Secret, error)
+	Impact(ctx context.Context, serviceID string) (databases.ServiceImpact, error)
 	DeleteServiceLinks(ctx context.Context, serviceID string) error
+	DeleteServiceMetadata(ctx context.Context, serviceID string) error
 }
 
 // ToolService is the machine-wide PHP default and managed tool surface used by
@@ -522,6 +524,7 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/services/{id}/credentials/reveal", s.handleRevealServiceCredentials},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/rotate", s.handleRotateServiceCredentials},
 
+		{http.MethodGet, "/api/v1/services/{id}/database-impact", s.handleServiceDatabaseImpact},
 		{http.MethodGet, "/api/v1/services/{id}/databases", s.handleListServiceDatabases},
 		{http.MethodPost, "/api/v1/services/{id}/databases", s.handleCreateServiceDatabase},
 		{http.MethodGet, "/api/v1/services/{id}/databases/{name}", s.handleGetServiceDatabase},

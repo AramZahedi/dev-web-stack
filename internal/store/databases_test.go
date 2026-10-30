@@ -316,6 +316,54 @@ func TestDatabaseBackupAndJobRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDeleteServiceMetadataKeepsAuditAndLinks(t *testing.T) {
+	s := openTemp(t)
+	site := testSite("site_1", "blog")
+	if err := s.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	user := model.DatabaseUserRecord{ID: "usr_app", ServiceID: "mysql", Engine: model.DatabaseMySQL, Username: "app", Host: "%"}
+	if err := s.UpsertDatabaseUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveDatabaseGrant(ctx, model.DatabaseGrantRecord{UserID: user.ID, DatabaseName: "app", Preset: string(model.GrantReadOnly)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDatabaseBackup(ctx, model.DatabaseBackupRecord{ID: "bkp_1", ServiceID: "mysql", Engine: model.DatabaseMySQL, DatabaseName: "app", Kind: string(model.BackupManual), Status: string(model.BackupReady)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDatabaseJob(ctx, model.DatabaseJobRecord{ID: "job_1", ServiceID: "mysql", DatabaseName: "app", Kind: string(model.JobBackup), Status: string(model.JobSucceeded)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDatabaseLink(ctx, model.DatabaseLinkRecord{ID: "lnk_1", SiteID: site.ID, ServiceID: "mysql", DatabaseName: "app", UserID: user.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddAuditEvent(ctx, model.AuditEventRecord{Action: "database.created", Result: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteServiceMetadata(ctx, "mysql"); err != nil {
+		t.Fatal(err)
+	}
+	if users, _ := s.ListDatabaseUsers(ctx, "mysql"); len(users) != 0 {
+		t.Fatalf("users survived: %+v", users)
+	}
+	if grants, _ := s.ListDatabaseGrants(ctx, user.ID); len(grants) != 0 {
+		t.Fatalf("grants survived: %+v", grants)
+	}
+	if backups, _ := s.ListDatabaseBackups(ctx, "mysql"); len(backups) != 0 {
+		t.Fatalf("backups survived: %+v", backups)
+	}
+	if jobs, _ := s.ListDatabaseJobs(ctx, "mysql"); len(jobs) != 0 {
+		t.Fatalf("jobs survived: %+v", jobs)
+	}
+	if links, _ := s.ListDatabaseLinksBySite(ctx, site.ID); len(links) != 0 {
+		t.Fatalf("links survived metadata cleanup: %+v", links)
+	}
+	if count, _ := s.CountAuditEvents(ctx); count != 1 {
+		t.Fatalf("audit rows = %d, want durable 1", count)
+	}
+}
+
 func TestAuditEventRetention(t *testing.T) {
 	s := openTemp(t)
 	for i := 0; i < 10005; i++ {

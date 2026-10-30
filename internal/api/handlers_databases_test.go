@@ -25,13 +25,15 @@ type fakeDatabaseService struct {
 	env           map[string]string
 	err           error
 
-	lastCreate   databases.CreateDatabaseRequest
-	lastRename   databases.RenameDatabaseRequest
-	lastLink     databases.LinkDatabaseRequest
-	lastSiteReq  databases.SiteDatabaseRequest
-	importedFile string
-	importedMode string
-	canceledJob  string
+	lastCreate      databases.CreateDatabaseRequest
+	lastRename      databases.RenameDatabaseRequest
+	lastLink        databases.LinkDatabaseRequest
+	lastSiteReq     databases.SiteDatabaseRequest
+	importedFile    string
+	importedMode    string
+	canceledJob     string
+	deletedLinks    bool
+	deletedMetadata bool
 }
 
 func (f *fakeDatabaseService) ListDatabases(context.Context, string) ([]model.Database, error) {
@@ -135,7 +137,20 @@ func (f *fakeDatabaseService) SiteDatabaseEnv(context.Context, string) (map[stri
 	return f.env, f.err
 }
 func (f *fakeDatabaseService) DeleteServiceLinks(context.Context, string) error {
+	f.deletedLinks = true
 	return f.err
+}
+func (f *fakeDatabaseService) DeleteServiceMetadata(context.Context, string) error {
+	f.deletedMetadata = true
+	return f.err
+}
+func (f *fakeDatabaseService) Impact(_ context.Context, serviceID string) (databases.ServiceImpact, error) {
+	return databases.ServiceImpact{
+		ServiceID:   serviceID,
+		LinkedSites: []model.DatabaseSiteRef{{ID: "site_1", Name: "blog"}},
+		Backups:     []model.DatabaseBackup{{ID: "bkp_1"}},
+		RunningJobs: []model.DatabaseJob{{ID: "job_1", Status: model.JobRunning}},
+	}, f.err
 }
 
 func TestDatabaseRoutes(t *testing.T) {
@@ -331,6 +346,49 @@ func TestRedisDefaultPasswordRoute(t *testing.T) {
 	}
 	if rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("cache=%q", rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestDatabaseImpactRoute(t *testing.T) {
+	fx := newFixture(t, Config{Databases: &fakeDatabaseService{}})
+	rec := fx.request(t, http.MethodGet, "/api/v1/services/mysql/database-impact", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{`"linked_sites"`, `"backups"`, `"running_jobs"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("missing %s in %s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestUninstallDeleteDataCleansDatabaseMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		delete bool
+		want   bool
+	}{
+		{name: "delete-data", delete: true, want: true},
+		{name: "keep-data", delete: false, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &fakeDatabaseService{}
+			fx := newFixture(t, Config{
+				Databases: db,
+				Services:  &fakeServiceCoordinator{},
+			})
+			body := `{"delete_data":false}`
+			if tc.delete {
+				body = `{"delete_data":true}`
+			}
+			rec := fx.request(t, http.MethodDelete, "/api/v1/services/mysql", strings.NewReader(body))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if db.deletedLinks != tc.want || db.deletedMetadata != tc.want {
+				t.Fatalf("cleanup links=%v metadata=%v, want %v", db.deletedLinks, db.deletedMetadata, tc.want)
+			}
+		})
 	}
 }
 

@@ -2510,6 +2510,12 @@ paths:
         "404":
           description: The asset does not exist.
 
+  /api/v1/services/{id}/database-impact:
+    get:
+      summary: Preview sites, backups, and jobs affected by deactivation
+      responses:
+        "200":
+          description: OK
   /api/v1/services/{id}/databases:
     get:
       summary: List service databases
@@ -2859,6 +2865,19 @@ components:
         available: {type: boolean}
         error: {type: string}
         connection: {$ref: "#/components/schemas/DatabaseConnection"}
+    DatabaseServiceImpact:
+      type: object
+      properties:
+        service_id: {type: string}
+        linked_sites:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseSiteRef"}
+        backups:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseBackup"}
+        running_jobs:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseJob"}
     DatabaseBackup:
       type: object
       properties:

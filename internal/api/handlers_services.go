@@ -126,6 +126,10 @@ func (s *Server) handleUninstallService(w http.ResponseWriter, r *http.Request) 
 			s.logger.Warn("api: remove database links after uninstall",
 				"service", id, "error", servicecontrol.RedactSecrets(err.Error()))
 		}
+		if err := s.databases.DeleteServiceMetadata(r.Context(), string(id)); err != nil {
+			s.logger.Warn("api: remove database metadata after uninstall",
+				"service", id, "error", servicecontrol.RedactSecrets(err.Error()))
+		}
 	}
 	writeJSON(w, http.StatusOK, result)
 }

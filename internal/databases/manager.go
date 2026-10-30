@@ -51,6 +51,7 @@ type Store interface {
 	ListDatabaseJobs(ctx context.Context, serviceID string) ([]model.DatabaseJobRecord, error)
 	ListAllDatabaseJobs(ctx context.Context) ([]model.DatabaseJobRecord, error)
 
+	DeleteServiceMetadata(ctx context.Context, serviceID string) error
 	AddAuditEvent(ctx context.Context, event model.AuditEventRecord) error
 	ListAuditEvents(ctx context.Context, limit int) ([]model.AuditEventRecord, error)
 	CountAuditEvents(ctx context.Context) (int64, error)

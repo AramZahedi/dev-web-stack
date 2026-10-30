@@ -22,6 +22,18 @@ func (s *Server) databaseUnavailable(w http.ResponseWriter) bool {
 	return false
 }
 
+func (s *Server) handleServiceDatabaseImpact(w http.ResponseWriter, r *http.Request) {
+	if s.databaseUnavailable(w) {
+		return
+	}
+	impact, err := s.databases.Impact(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, impact)
+}
+
 func (s *Server) handleListServiceDatabases(w http.ResponseWriter, r *http.Request) {
 	if s.databaseUnavailable(w) {
 		return

@@ -510,6 +510,33 @@ func (s *Store) ListDatabaseJobs(ctx context.Context, serviceID string) ([]model
 	return jobs, nil
 }
 
+// DeleteServiceMetadata removes users, grants, backups, and jobs for a service
+// after its data was deleted. Links are removed separately; audit rows are
+// durable and never touched.
+func (s *Store) DeleteServiceMetadata(ctx context.Context, serviceID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete database metadata for service %q: begin transaction: %w", serviceID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, statement := range []string{
+		// Links reference users with ON DELETE RESTRICT, so they must be
+		// removed in the same transaction as the users.
+		`DELETE FROM database_links WHERE service_id = ?`,
+		`DELETE FROM database_users WHERE service_id = ?`,
+		`DELETE FROM database_backups WHERE service_id = ?`,
+		`DELETE FROM database_jobs WHERE service_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement, serviceID); err != nil {
+			return fmt.Errorf("delete database metadata for service %q: %w", serviceID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete database metadata for service %q: commit: %w", serviceID, err)
+	}
+	return nil
+}
+
 // AddAuditEvent appends a durable audit row and prunes the table to the newest
 // 10,000 rows in the same transaction. A zero CreatedAt is replaced with the
 // current UTC time.
