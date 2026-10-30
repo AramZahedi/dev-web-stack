@@ -26,6 +26,7 @@ var (
 	databaseURLEnvPattern      = regexp.MustCompile(`(?i)^(DATABASE_URL|DB_.*_URL)$`)
 	databaseURLUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+):([^@\s/]+)@`)
 	databaseSecretParamPattern = regexp.MustCompile(`(?i)([?&][^=&\s]*(?:password|passwd|pwd|secret|token)[^=&\s]*=)[^&\s]+`)
+	databaseSecretTextPattern  = regexp.MustCompile(`(?i)\b(password|passwd|pwd|secret|token)\b\s*[:=]\s*[^\s,;]+`)
 )
 
 func (a *App) newDBCmd() *cobra.Command {
@@ -1368,7 +1369,8 @@ func redactPasswordText(value string) string {
 		return value
 	}
 	value = databaseURLUserinfoPattern.ReplaceAllString(value, "$1@")
-	return databaseSecretParamPattern.ReplaceAllString(value, "$1REDACTED")
+	value = databaseSecretParamPattern.ReplaceAllString(value, "$1REDACTED")
+	return databaseSecretTextPattern.ReplaceAllString(value, "$1=REDACTED")
 }
 
 func writeDatabaseLinkDetails(cmd *cobra.Command, link model.DatabaseLink) error {

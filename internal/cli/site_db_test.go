@@ -284,7 +284,7 @@ func TestSiteDBListRedactsErrorAndQuerySecrets(t *testing.T) {
 	fake := &fakeClient{databaseLinks: []model.DatabaseLink{{
 		ID: "lnk_1", SiteID: "site-1", SiteName: "blog", ServiceID: "mysql", Engine: model.DatabaseMySQL,
 		Database: "app", Username: "app", PasswordManaged: true, Available: false,
-		Error: "connect failed: mysql://app:" + secret + "@127.0.0.1:3306/app?password=" + secret + "&sslpassword=" + secret + "&sslmode=require",
+		Error: "connect failed: mysql://app:" + secret + "@127.0.0.1:3306/app?password=" + secret + "&sslpassword=" + secret + "&sslmode=require; password: " + secret,
 		Connection: model.DatabaseConnection{
 			Engine: model.DatabaseMySQL, Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
 			URL: "mysql://app:" + secret + "@127.0.0.1:3306/app?password=" + secret + "&sslpassword=" + secret + "&sslmode=require",
