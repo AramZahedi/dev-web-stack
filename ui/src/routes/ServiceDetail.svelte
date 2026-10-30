@@ -14,6 +14,7 @@
   import * as api from '../lib/api';
   import * as dbApi from '../lib/databaseApi';
   import { describeError, type DescribedError } from '../lib/errors';
+  import { formatBytes } from '../lib/format';
   import { addToast, toastError } from '../lib/stores';
   import type {
     Database as DatabaseRecord,
@@ -23,6 +24,7 @@
   import type { ServiceView } from '../lib/types';
   import Badge from '../lib/components/Badge.svelte';
   import Button from '../lib/components/Button.svelte';
+  import ConfirmDialog from '../lib/components/ConfirmDialog.svelte';
   import EmptyState from '../lib/components/EmptyState.svelte';
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
@@ -67,6 +69,9 @@
   let tab = $state<TabID>('databases');
   let selectedUserId = $state('');
   let jobActive = $state(false);
+  let deactivateOpen = $state(false);
+  let deactivating = $state(false);
+  let deactivateError = $state<DescribedError | null>(null);
 
   let loadGeneration = 0;
   let loadedID = '';
@@ -110,6 +115,21 @@
   );
   const transient = $derived(
     Boolean(service && (service.state === 'starting' || service.state === 'stopping')) || jobActive,
+  );
+  const affectedSites = $derived(
+    Array.from(
+      new Map(
+        databases
+          .flatMap((database) => database.linked_sites ?? [])
+          .map((site) => [site.id, site] as const),
+      ).values(),
+    ),
+  );
+  const backupBytes = $derived(
+    backups.reduce((total, backup) => total + backup.size_bytes, 0),
+  );
+  const runningBackups = $derived(
+    backups.filter((backup) => backup.status === 'running').length,
   );
 
   function routeQuery(): { tab: string; user: string } {
@@ -264,6 +284,32 @@
     }
   }
 
+  function openDeactivate(): void {
+    deactivateError = null;
+    deactivateOpen = true;
+  }
+
+  async function confirmDeactivate(): Promise<void> {
+    if (!service || deactivating) return;
+    const target = service;
+    deactivating = true;
+    deactivateError = null;
+    try {
+      await api.deactivateService(target.id);
+      deactivateOpen = false;
+      addToast({
+        kind: 'success',
+        title: `${target.display_name || target.id} deactivated`,
+        message: 'Links, databases, users and backups were preserved.',
+      });
+      await load();
+    } catch (caught) {
+      deactivateError = describeError(caught);
+    } finally {
+      deactivating = false;
+    }
+  }
+
   function refresh(): void {
     void load();
   }
@@ -390,7 +436,7 @@
             variant="secondary"
             loading={busy === 'deactivate'}
             disabled={Boolean(busy)}
-            onclick={() => act('deactivate')}
+            onclick={openDeactivate}
           >
             <PowerOff size={13} strokeWidth={2} aria-hidden="true" />
             Deactivate
@@ -542,6 +588,48 @@
   {/if}
 </div>
 
+<ConfirmDialog
+  open={deactivateOpen}
+  title={service ? `Deactivate ${service.display_name || service.id}?` : 'Deactivate service?'}
+  description="Sites linked to this service keep their links but show a database-offline warning until it is activated again."
+  confirmLabel="Deactivate service"
+  danger
+  busy={deactivating}
+  onconfirm={confirmDeactivate}
+  oncancel={() => {
+    if (!deactivating) deactivateOpen = false;
+  }}
+>
+  {#snippet details()}
+    <div class="deactivate-details">
+      <p>
+        <strong>Linked sites:</strong>
+        {affectedSites.length > 0
+          ? affectedSites.map((site) => site.name).join(', ')
+          : 'None'}
+      </p>
+      <p>
+        <strong>Backups:</strong>
+        {backups.length} backup{backups.length === 1 ? '' : 's'} ({formatBytes(backupBytes)})
+      </p>
+      <p>
+        <strong>Running backup jobs:</strong>
+        {runningBackups}
+        {jobActive ? ' plus an active database job' : ''}
+      </p>
+      <p class="deactivate-note">
+        Links are kept. Databases, users, grants, passwords and backups are not deleted.
+      </p>
+      {#if deactivateError}
+        <p class="deactivate-error" role="alert">
+          <span class="mono">{deactivateError.code}</span>
+          {deactivateError.message}
+        </p>
+      {/if}
+    </div>
+  {/snippet}
+</ConfirmDialog>
+
 <style>
   .page {
     display: flex;
@@ -649,6 +737,40 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .deactivate-details {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.45;
+  }
+
+  .deactivate-details strong {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  .deactivate-note {
+    padding: 8px 9px;
+    border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+    border-radius: var(--radius);
+    background: var(--warning-soft);
+    color: var(--warning-fg);
+  }
+
+  .deactivate-error {
+    padding: 7px 9px;
+    border-radius: var(--radius);
+    background: var(--danger-soft);
+    color: var(--danger-fg);
+  }
+
+  .deactivate-error .mono {
+    margin-right: 5px;
+    font-size: 9.5px;
   }
 
   .offline-note {

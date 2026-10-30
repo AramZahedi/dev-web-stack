@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import ServiceDetail from './ServiceDetail.svelte';
 import * as api from '../lib/api';
 import * as db from '../lib/databaseApi';
@@ -153,6 +153,7 @@ const REDIS_USERS: DatabaseUser[] = [
 
 beforeEach(() => {
   vi.mocked(api.getService).mockResolvedValue(MYSQL_SERVICE);
+  vi.mocked(api.deactivateService).mockResolvedValue(undefined);
   vi.mocked(db.listServiceDatabases).mockResolvedValue({ databases: MYSQL_DATABASES });
   vi.mocked(db.listServiceUsers).mockResolvedValue({ users: MYSQL_USERS });
   vi.mocked(db.listServiceBackups).mockResolvedValue({ backups: MYSQL_BACKUPS });
@@ -223,5 +224,24 @@ describe('ServiceDetail', () => {
     const activate = await screen.findByRole('button', { name: 'Activate' });
     await fireEvent.click(activate);
     await waitFor(() => expect(api.activateService).toHaveBeenCalledWith('mysql'));
+  });
+
+  it('warns about linked sites, backups and running jobs before deactivating', async () => {
+    vi.mocked(db.listServiceBackups).mockResolvedValue({
+      backups: [{ ...MYSQL_BACKUPS[0], status: 'running' }],
+    });
+
+    render(ServiceDetail, { props: { params: { id: 'mysql' } } });
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Deactivate' }));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).getByText(/blog/)).toBeTruthy();
+    expect(within(dialog).getByText(/1 backup/i)).toBeTruthy();
+    expect(within(dialog).getByText(/running backup jobs/i)).toBeTruthy();
+    expect(within(dialog).getByText(/links are kept/i)).toBeTruthy();
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Deactivate service' }));
+    await waitFor(() => expect(api.deactivateService).toHaveBeenCalledWith('mysql'));
   });
 });
