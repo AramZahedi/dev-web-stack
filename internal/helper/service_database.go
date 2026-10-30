@@ -742,7 +742,7 @@ func (c *DockerServiceController) reassignOwned(ctx context.Context, serviceID s
 	}
 	admin, err := dbengine.QuoteIdentifier(model.DatabasePostgreSQL, "devstack")
 	if err != nil {
-		return err
+		return engineError(err)
 	}
 	for _, database := range databasesList {
 		switch database.Name {
