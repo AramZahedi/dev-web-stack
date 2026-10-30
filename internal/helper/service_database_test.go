@@ -1839,6 +1839,67 @@ func TestHelperRedisACLFilePreservesConfigInodeAndMode(t *testing.T) {
 	}
 }
 
+func TestHelperRedisCreateUserConflictsOnExistingName(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.aclList = "user default on nopass ~* &* +@all\nuser cache on #hash ~* +@read\n"
+	runner.reset()
+	_, err := c.CreateUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache"})
+	if !errors.Is(err, databases.ErrConflict) {
+		t.Fatalf("err=%v", err)
+	}
+	if runner.stdinContains("ACL SETUSER cache") {
+		t.Fatalf("existing Redis user was overwritten: %q", runner.stdin)
+	}
+}
+
+func TestHelperRedisCreateUserRuleFailureReturnsShape(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.handle = func(name string, args []string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "ACL SETUSER cache -@all") {
+			return nil, errors.New("ACL rule update failed")
+		}
+		return runner.defaultRun(name, args)
+	}
+	user, err := c.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "read-only"})
+	if err == nil {
+		t.Fatal("SetRedisUser succeeded despite a rule failure")
+	}
+	if user.ID != redisUserID("cache") || user.Username != "cache" || !user.PasswordManaged {
+		t.Fatalf("created user shape = %+v", user)
+	}
+}
+
+func TestHelperRedisEnableOnlyPreservesCustomRules(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.aclList = "user default on nopass ~* &* +@all\nuser custom on #hash ~custom* +get +set\n"
+	runner.reset()
+	enabled := false
+	if _, err := c.UpdateUser(context.Background(), "redis", redisUserID("custom"), databases.UpdateUserRequest{Enabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	joined := runner.joinedCalls()
+	if !strings.Contains(joined, "ACL SETUSER custom off") {
+		t.Fatalf("enable-only update did not toggle the user: %s", joined)
+	}
+	for _, forbidden := range []string{"-@all", "+@read", "+@all", "resetkeys"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("enable-only update reset custom rules %q: %s", forbidden, joined)
+		}
+	}
+	if !strings.Contains(joined, "ACL SAVE") {
+		t.Fatalf("ACL SAVE missing: %s", joined)
+	}
+}
+
 func TestHelperRedisFullExcludesAdmin(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	writeRedisConfig(t, root)

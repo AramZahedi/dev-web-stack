@@ -256,10 +256,26 @@ func (c *DockerServiceController) setRedisUser(ctx context.Context, serviceID st
 			AccessLevel:     accessLevel,
 		}, fmt.Errorf("store generated password: %w", err)
 	}
-	if err := c.redisApplyUserRules(ctx, serviceID, req.Username, accessLevel, true); err != nil {
-		return model.DatabaseUser{}, err
+	created := model.DatabaseUser{
+		ID:              userID,
+		ServiceID:       serviceID,
+		Engine:          model.DatabaseRedis,
+		Username:        req.Username,
+		Enabled:         true,
+		Managed:         true,
+		PasswordManaged: true,
+		AccessLevel:     accessLevel,
 	}
-	return c.findRedisUserByName(ctx, serviceID, req.Username)
+	if err := c.redisApplyUserRules(ctx, serviceID, req.Username, accessLevel, true); err != nil {
+		// The user and its password already exist; return the created shape so
+		// the caller can reconcile the partially applied ACL rules.
+		return created, err
+	}
+	user, err := c.findRedisUserByName(ctx, serviceID, req.Username)
+	if err != nil {
+		return created, err
+	}
+	return user, nil
 }
 
 func redisSetUserPasswordLine(username, password string, enabled bool) string {
@@ -321,12 +337,8 @@ func (c *DockerServiceController) updateRedisUser(ctx context.Context, serviceID
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	accessLevel := user.AccessLevel
-	if req.AccessLevel != "" {
-		accessLevel = req.AccessLevel
-	}
-	if accessLevel != "read-only" && accessLevel != "full" {
-		return model.DatabaseUser{}, fmt.Errorf("%w: unsupported Redis access level %q", databases.ErrInvalidRequest, accessLevel)
+	if req.AccessLevel != "" && req.AccessLevel != "read-only" && req.AccessLevel != "full" {
+		return model.DatabaseUser{}, fmt.Errorf("%w: unsupported Redis access level %q", databases.ErrInvalidRequest, req.AccessLevel)
 	}
 	if err := c.EnableRedisACLFile(ctx); err != nil {
 		return model.DatabaseUser{}, err
@@ -334,7 +346,20 @@ func (c *DockerServiceController) updateRedisUser(ctx context.Context, serviceID
 	lock := c.databaseLock(serviceID)
 	lock.Lock()
 	defer lock.Unlock()
-	if err := c.redisApplyUserRules(ctx, serviceID, user.Username, accessLevel, enabled); err != nil {
+	if req.AccessLevel == "" {
+		// Enable-only updates must not reset custom ACL rules. Toggle the user
+		// state and preserve every existing rule.
+		state := "off"
+		if enabled {
+			state = "on"
+		}
+		if _, err := c.redisExec(ctx, serviceID, "ACL", "SETUSER", user.Username, state); err != nil {
+			return model.DatabaseUser{}, err
+		}
+		if _, err := c.redisExec(ctx, serviceID, "ACL", "SAVE"); err != nil {
+			return model.DatabaseUser{}, err
+		}
+	} else if err := c.redisApplyUserRules(ctx, serviceID, user.Username, req.AccessLevel, enabled); err != nil {
 		return model.DatabaseUser{}, err
 	}
 	return c.findRedisUser(ctx, serviceID, userID)

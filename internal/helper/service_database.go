@@ -301,6 +301,14 @@ func (c *DockerServiceController) CreateUser(ctx context.Context, serviceID stri
 		return model.DatabaseUser{}, err
 	}
 	if engineID == model.DatabaseRedis {
+		if dbengine.SystemUsers[model.DatabaseRedis][req.Username] {
+			return model.DatabaseUser{}, fmt.Errorf("%w: user %q", databases.ErrProtected, req.Username)
+		}
+		if _, err := c.findRedisUserByName(ctx, serviceID, req.Username); err == nil {
+			return model.DatabaseUser{}, fmt.Errorf("%w: Redis user %q already exists", databases.ErrConflict, req.Username)
+		} else if !errors.Is(err, databases.ErrNotFound) {
+			return model.DatabaseUser{}, err
+		}
 		return c.setRedisUser(ctx, serviceID, req)
 	}
 	if engine == nil {
