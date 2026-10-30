@@ -1,0 +1,192 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/AramZahedi/dev-web-stack/internal/client"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
+)
+
+func TestSiteAddDatabasePayload(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	runCLI(t, fake, "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+		"--database-service", "mysql", "--database-new", "blog",
+		"--database-user-new", "blog_user", "--database-grant", "read_write_schema")
+	if fake.addReq.Database == nil {
+		t.Fatal("database payload missing")
+	}
+	if fake.addReq.Database.ServiceID != "mysql" {
+		t.Fatalf("service=%q", fake.addReq.Database.ServiceID)
+	}
+	if fake.addReq.Database.NewDatabase == nil || fake.addReq.Database.NewDatabase.Name != "blog" {
+		t.Fatalf("db=%+v", fake.addReq.Database)
+	}
+	if fake.addReq.Database.NewUser == nil || fake.addReq.Database.NewUser.Username != "blog_user" {
+		t.Fatalf("user=%+v", fake.addReq.Database)
+	}
+	if fake.addReq.Database.Grant != model.GrantReadWriteSchema {
+		t.Fatalf("grant=%q", fake.addReq.Database.Grant)
+	}
+	if !fake.addReq.Database.Primary {
+		t.Fatal("site add database link should be primary")
+	}
+}
+
+func TestSiteAddExistingUserDoesNotGrant(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	runCLI(t, fake, "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+		"--database-service", "mysql", "--database", "app", "--database-user", "usr_app")
+	if fake.addReq.Database == nil {
+		t.Fatal("database payload missing")
+	}
+	if fake.addReq.Database.Grant != "" {
+		t.Fatalf("auto-granted %q", fake.addReq.Database.Grant)
+	}
+	if fake.addReq.Database.NewUser != nil {
+		t.Fatal("created a user for an existing user selection")
+	}
+	if fake.addReq.Database.Database != "app" || fake.addReq.Database.UserID != "usr_app" {
+		t.Fatalf("database=%+v", fake.addReq.Database)
+	}
+}
+
+func TestSiteAddDatabasePasswordStdin(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExitInput(t, fake, "s3cret\n", "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+		"--database-service", "mysql", "--database", "app", "--database-user", "usr_app", "--database-user-password-stdin")
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if fake.addReq.Database == nil || fake.addReq.Database.Password != "s3cret" {
+		t.Fatalf("database=%+v", fake.addReq.Database)
+	}
+}
+
+func TestSiteAddMetadataOnlyDoesNotPromptForPassword(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExitInput(t, fake, "", "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+		"--database-service", "mysql", "--database", "app", "--database-user", "usr_app")
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if fake.addReq.Database == nil || fake.addReq.Database.Password != "" {
+		t.Fatalf("database=%+v", fake.addReq.Database)
+	}
+	if strings.Contains(stdout, "assword") {
+		t.Fatalf("metadata-only add prompted for a password: %s", stdout)
+	}
+}
+
+func TestSiteAddDatabaseFlagsRequireService(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static", "--database", "app")
+	if code == 0 || !strings.Contains(stderr, "database-service") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.addReq.Name != "" {
+		t.Fatal("AddSite API called with an invalid database selection")
+	}
+}
+
+func TestSiteAddExistingUserRejectsGrant(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+		"--database-service", "mysql", "--database", "app", "--database-user", "usr_app", "--database-grant", "read_write_schema")
+	if code == 0 || !strings.Contains(stderr, "grant") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.addReq.Name != "" {
+		t.Fatal("AddSite API called with an auto-grant for an existing user")
+	}
+}
+
+func TestSiteAddDatabaseWarningPrintedToStderr(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{err: &client.Error{
+		Code:    "SITE_CREATE_FAILED",
+		Message: "site creation failed",
+		Details: map[string]any{"warning": "database blog was created and remains available"},
+	}}
+	code, _, stderr := runCLIExit(t, fake, "site", "add", "--name", "blog", "--path", `C:\projects\blog`, "--kind", "static",
+		"--database-service", "mysql", "--database-new", "blog", "--database-user-new", "blog_user")
+	if code == 0 {
+		t.Fatal("site add should preserve the API failure exit code")
+	}
+	if !strings.Contains(stderr, "database blog was created") {
+		t.Fatalf("warning missing from stderr: %s", stderr)
+	}
+}
+
+func TestSiteDBListJSON(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseLinks: []model.DatabaseLink{{
+		ID: "lnk_1", SiteID: "site-1", SiteName: "blog", ServiceID: "mysql", Engine: model.DatabaseMySQL,
+		Database: "app", UserID: "usr_app", Username: "app", Primary: true, PasswordManaged: true, Available: true,
+		Connection: model.DatabaseConnection{Engine: model.DatabaseMySQL, Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app", PasswordManaged: true},
+	}}}
+	out := runCLI(t, fake, "site", "db", "list", "blog", "--json")
+	var got struct {
+		Links []model.DatabaseLink `json:"links"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Links) != 1 || got.Links[0].ID != "lnk_1" {
+		t.Fatalf("links=%+v", got.Links)
+	}
+	if strings.Contains(out, "s3cret") {
+		t.Fatalf("link list leaked a secret: %s", out)
+	}
+}
+
+func TestSiteDBLinkPayload(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseLinked: model.DatabaseLink{ID: "lnk_1", Database: "app"}}
+	runCLI(t, fake, "site", "db", "link", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--primary")
+	if fake.databaseLinkReq.ServiceID != "mysql" || fake.databaseLinkReq.Database != "app" || fake.databaseLinkReq.UserID != "usr_app" || !fake.databaseLinkReq.Primary {
+		t.Fatalf("link req=%+v", fake.databaseLinkReq)
+	}
+}
+
+func TestSiteDBUnlinkRequiresYes(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "site", "db", "unlink", "blog", "link_1")
+	if code == 0 || !strings.Contains(stderr, "CONFIRMATION_REQUIRED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.siteDatabaseUnlinked {
+		t.Fatal("unlink API called without --yes")
+	}
+	runCLI(t, fake, "site", "db", "unlink", "blog", "link_1", "--yes")
+	if !fake.siteDatabaseUnlinked || fake.siteDatabaseUnlinkRef != "blog" || fake.siteDatabaseUnlinkID != "link_1" {
+		t.Fatalf("unlink=%v ref=%q id=%q", fake.siteDatabaseUnlinked, fake.siteDatabaseUnlinkRef, fake.siteDatabaseUnlinkID)
+	}
+}
+
+func TestSiteShellContextMergesDatabaseEnv(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{
+		sites: []model.Site{{ID: "site-1", Name: "blog", Kind: model.SiteStatic, HostPath: "/home/aram/blog", BackendPath: "/home/aram/blog"}},
+		siteDatabaseEnv: map[string]string{
+			"DB_HOST": "127.0.0.1", "DB_DATABASE": "app", "DB_PASSWORD": "s3cret",
+		},
+	}
+	app := &App{home: t.TempDir()}
+	_, env, _, err := app.siteShellContext(context.Background(), fake, "blog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Values["DB_HOST"] != "127.0.0.1" || env.Values["DB_DATABASE"] != "app" || env.Values["DB_PASSWORD"] != "s3cret" {
+		t.Fatalf("env=%v", env.Values)
+	}
+}

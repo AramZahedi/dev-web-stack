@@ -19,6 +19,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/client"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/nodereleases"
@@ -48,6 +49,7 @@ func (a *App) newSiteCmd() *cobra.Command {
 		a.newSiteLogsCmd(),
 		a.newSiteOpenCmd(),
 		a.newSiteBuildCmd(),
+		a.newSiteDBCmd(),
 	)
 	return cmd
 }
@@ -116,6 +118,14 @@ type siteAddOptions struct {
 	forceHTTPS      bool
 	spa             bool
 	env             []string
+
+	databaseService           string
+	database                  string
+	databaseNew               string
+	databaseUserID            string
+	databaseUserNew           string
+	databaseUserPasswordStdin bool
+	databaseGrant             string
 }
 
 func (a *App) newSiteAddCmd() *cobra.Command {
@@ -144,6 +154,13 @@ func (a *App) newSiteAddCmd() *cobra.Command {
 	flags.BoolVar(&opts.forceHTTPS, "force-https", false, "redirect HTTP requests to HTTPS")
 	flags.BoolVar(&opts.spa, "spa", false, "serve index.html for non-file paths")
 	flags.StringArrayVar(&opts.env, "env", nil, "environment variable KEY=VALUE (repeatable)")
+	flags.StringVar(&opts.databaseService, "database-service", "", "database service to create or link a database on")
+	flags.StringVar(&opts.database, "database", "", "existing database name")
+	flags.StringVar(&opts.databaseNew, "database-new", "", "new database name")
+	flags.StringVar(&opts.databaseUserID, "database-user", "", "existing opaque database user id")
+	flags.StringVar(&opts.databaseUserNew, "database-user-new", "", "new database username")
+	flags.BoolVar(&opts.databaseUserPasswordStdin, "database-user-password-stdin", false, "read an external user's password from stdin (requires --database-user)")
+	flags.StringVar(&opts.databaseGrant, "database-grant", "", "grant preset for a new database user (defaults to read_write_schema)")
 	return cmd
 }
 
@@ -171,6 +188,10 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 	}
 	if opts.noHTTPS && opts.forceHTTPS {
 		return &Error{Code: "INVALID_FLAGS", Message: "--no-https and --force-https cannot be used together", Remediation: "Choose one TLS mode."}
+	}
+	databaseRequest, err := buildSiteDatabaseRequest(cmd, opts)
+	if err != nil {
+		return err
 	}
 	if kind == string(model.SitePHP) {
 		if strings.TrimSpace(opts.php) == "" && strings.TrimSpace(opts.phpBuild) == "" {
@@ -252,8 +273,12 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 		PHPVersion:      phpVersion,
 		PHPBuild:        phpBuild,
 		FrontController: opts.frontController,
+		Database:        databaseRequest,
 	})
 	if err != nil {
+		if warning := databaseProvisioningWarning(err); warning != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", warning)
+		}
 		return err
 	}
 
@@ -262,7 +287,116 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 	}
 	status := defaultString(string(site.Status), "unknown")
 	fmt.Fprintf(cmd.OutOrStdout(), "Created site %s\nURL:      %s\nStatus:   %s\n", site.Name, siteURL(site), status)
+	if databaseRequest != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "Database: %s on %s\n", databaseNameForRequest(databaseRequest), databaseRequest.ServiceID)
+		fmt.Fprintf(cmd.OutOrStdout(), "Connection details: devstack site db list %s\n", site.Name)
+	}
 	return nil
+}
+
+// buildSiteDatabaseRequest validates the optional Add Site database panel
+// before any daemon call. Existing users are never auto-granted.
+func buildSiteDatabaseRequest(cmd *cobra.Command, opts *siteAddOptions) (*databases.SiteDatabaseRequest, error) {
+	changed := func(name string) bool { return cmd.Flags().Changed(name) }
+	any := changed("database-service") || changed("database") || changed("database-new") ||
+		changed("database-user") || changed("database-user-new") ||
+		changed("database-user-password-stdin") || changed("database-grant")
+	if !any {
+		return nil, nil
+	}
+	service := strings.TrimSpace(opts.databaseService)
+	if service == "" {
+		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "--database-service is required when using database flags", Remediation: "Pass `--database-service mysql` (or another SQL service)."}
+	}
+	if strings.EqualFold(service, "redis") {
+		return nil, &Error{Code: "DATABASE_UNSUPPORTED", Message: "Redis users are not site-linkable in v1", Remediation: "Use `devstack db user` to manage Redis ACL users."}
+	}
+	database := strings.TrimSpace(opts.database)
+	newDatabase := strings.TrimSpace(opts.databaseNew)
+	userID := strings.TrimSpace(opts.databaseUserID)
+	newUser := strings.TrimSpace(opts.databaseUserNew)
+	grant := strings.TrimSpace(opts.databaseGrant)
+	if database != "" && newDatabase != "" {
+		return nil, &Error{Code: "INVALID_FLAGS", Message: "--database and --database-new are mutually exclusive", Remediation: "Choose an existing database or create a new one."}
+	}
+	if userID != "" && newUser != "" {
+		return nil, &Error{Code: "INVALID_FLAGS", Message: "--database-user and --database-user-new are mutually exclusive", Remediation: "Choose an existing user or create a new one."}
+	}
+	if changed("database-user-password-stdin") && userID == "" {
+		return nil, &Error{Code: "INVALID_FLAGS", Message: "--database-user-password-stdin requires --database-user", Remediation: "Pass the existing user id with --database-user."}
+	}
+	if database == "" && newDatabase == "" {
+		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "choose --database or --database-new", Remediation: "Pass an existing database name or a new database name."}
+	}
+	if userID == "" && newUser == "" {
+		return nil, &Error{Code: "INVALID_ARGUMENT", Message: "choose --database-user or --database-user-new", Remediation: "Pass an existing user id or a new username."}
+	}
+	if userID != "" && grant != "" {
+		return nil, &Error{Code: "INVALID_FLAGS", Message: "existing users are never auto-granted by site add", Remediation: "Link the existing user without --database-grant, then manage access with `devstack db user grant`."}
+	}
+	request := &databases.SiteDatabaseRequest{
+		ServiceID: service,
+		Database:  database,
+		UserID:    userID,
+		Primary:   true,
+	}
+	if newDatabase != "" {
+		request.NewDatabase = &databases.CreateDatabaseRequest{Name: newDatabase}
+	}
+	if newUser != "" {
+		request.NewUser = &databases.CreateUserRequest{Username: newUser}
+		if grant == "" {
+			grant = string(model.GrantReadWriteSchema)
+		}
+	}
+	if grant != "" {
+		preset := model.DatabaseGrantPreset(strings.ToLower(grant))
+		switch preset {
+		case model.GrantReadOnly, model.GrantReadWrite, model.GrantReadWriteSchema, model.GrantAdmin:
+			request.Grant = preset
+		case model.GrantCustom:
+			return nil, &Error{Code: "INVALID_FLAGS", Message: "custom grants are not supported by site add", Remediation: "Create the user, then set custom grants with `devstack db user grant`."}
+		default:
+			return nil, &Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("unsupported --database-grant %q", grant), Remediation: "Use read_only, read_write, read_write_schema, or admin."}
+		}
+	}
+	if changed("database-user-password-stdin") {
+		password, err := readPasswordLine(cmd)
+		if err != nil {
+			return nil, err
+		}
+		request.Password = password
+	}
+	return request, nil
+}
+
+func databaseNameForRequest(request *databases.SiteDatabaseRequest) string {
+	if request == nil {
+		return "-"
+	}
+	if request.NewDatabase != nil {
+		return request.NewDatabase.Name
+	}
+	return defaultString(request.Database, "-")
+}
+
+// databaseProvisioningWarning extracts the warning the daemon attaches when a
+// site creation fails after provisioning a database. The warning never
+// contains a password.
+func databaseProvisioningWarning(err error) string {
+	var apiErr *client.Error
+	if !errors.As(err, &apiErr) {
+		return ""
+	}
+	switch details := apiErr.Details.(type) {
+	case map[string]any:
+		if warning, ok := details["warning"].(string); ok {
+			return strings.TrimSpace(warning)
+		}
+	case map[string]string:
+		return strings.TrimSpace(details["warning"])
+	}
+	return ""
 }
 
 // resolveNode resolves an installed Node version, then falls back to live

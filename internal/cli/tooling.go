@@ -295,36 +295,67 @@ func (a *App) siteShellContext(ctx context.Context, c Client, ref string) (model
 	if err != nil {
 		return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SITE_NOT_FOUND", "Run `devstack site list`, then pass `--site <name>`.")
 	}
+	var env tooling.SiteEnvironment
 	if runtime.GOOS == "windows" {
 		if !strings.HasPrefix(site.BackendPath, "/") {
 			return model.Site{}, tooling.SiteEnvironment{}, "", &Error{Code: "WSL_PATH_INVALID", Message: "site has no absolute WSL backend path", Remediation: "Recreate the site with a validated Windows or WSL source path."}
 		}
-		env := tooling.SiteEnvironment{Site: site, Values: tooling.WindowsSiteEnvironment(site)}
-		return site, env, home, nil
-	}
-	builds, err := c.Runtimes(ctx)
-	if err != nil {
-		return model.Site{}, tooling.SiteEnvironment{}, "", err
-	}
-	var info *sites.PHPInfo
-	if site.Kind == model.SitePHP {
-		value, err := c.PHPInfo(ctx, site.ID)
+		env = tooling.SiteEnvironment{Site: site, Values: tooling.WindowsSiteEnvironment(site)}
+	} else {
+		builds, err := c.Runtimes(ctx)
 		if err != nil {
 			return model.Site{}, tooling.SiteEnvironment{}, "", err
 		}
-		info = &value
+		var info *sites.PHPInfo
+		if site.Kind == model.SitePHP {
+			value, err := c.PHPInfo(ctx, site.ID)
+			if err != nil {
+				return model.Site{}, tooling.SiteEnvironment{}, "", err
+			}
+			info = &value
+		}
+		env, err = tooling.BuildSiteEnv(site, tooling.EnvDeps{
+			Paths:       config.NewPaths(home),
+			Builds:      builds,
+			PHPInfo:     info,
+			NodeDefault: tooling.NodeDefaultBuild(site, builds),
+			BasePATH:    os.Getenv("PATH"),
+		})
+		if err != nil {
+			return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SHELL_ENV_FAILED", "Fix the reported runtime or site configuration, then retry.")
+		}
 	}
-	env, err := tooling.BuildSiteEnv(site, tooling.EnvDeps{
-		Paths:       config.NewPaths(home),
-		Builds:      builds,
-		PHPInfo:     info,
-		NodeDefault: tooling.NodeDefaultBuild(site, builds),
-		BasePATH:    os.Getenv("PATH"),
-	})
-	if err != nil {
-		return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SHELL_ENV_FAILED", "Fix the reported runtime or site configuration, then retry.")
+	if err := mergeSiteDatabaseEnv(ctx, c, site, &env); err != nil {
+		return model.Site{}, tooling.SiteEnvironment{}, "", err
 	}
 	return site, env, home, nil
+}
+
+// mergeSiteDatabaseEnv resolves the dynamic DB_*/DATABASE_URL values and
+// merges them after the site environment so link values win. The values are
+// never printed or logged by this function.
+func mergeSiteDatabaseEnv(ctx context.Context, c Client, site model.Site, env *tooling.SiteEnvironment) error {
+	ref := site.ID
+	if strings.TrimSpace(ref) == "" {
+		ref = site.Name
+	}
+	if strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	dbEnv, err := c.SiteDatabaseEnv(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if len(dbEnv) == 0 {
+		return nil
+	}
+	if env.Values == nil {
+		env.Values = map[string]string{}
+	}
+	for key, value := range dbEnv {
+		env.Values[key] = value
+	}
+	return nil
 }
 
 // newShellCmd starts an interactive project shell as the installing user.
