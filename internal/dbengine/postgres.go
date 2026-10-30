@@ -39,7 +39,9 @@ func (*postgresEngine) ListDatabasesCommand() ([]string, error) {
 	// Table counts are database-local in PostgreSQL, so the fixed script
 	// connects to each connectable database and emits name<TAB>size<TAB>tables.
 	const script = `set -eu
-psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname=postgres --tuples-only --no-align --command="SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname" | while IFS= read -r db; do
+dbs=$(psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname=postgres --tuples-only --no-align --command="SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname") || exit 1
+printf '%s\n' "$dbs" | while IFS= read -r db; do
+  [ -n "$db" ] || continue
   size=$(psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname="$db" --tuples-only --no-align --command="SELECT pg_database_size(current_database())")
   tables=$(psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname="$db" --tuples-only --no-align --command="SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')")
   printf '%s\t%s\t%s\n' "$db" "$size" "$tables"
@@ -160,7 +162,9 @@ func (*postgresEngine) ListGrantsCommand(username, host string) ([]string, error
 	// loops over connectable databases. The role name travels as a psql
 	// variable; it is never interpolated into shell syntax.
 	script := `set -eu
-for db in $(psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname=postgres --tuples-only --no-align --command="SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname"); do
+dbs=$(psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname=postgres --tuples-only --no-align --command="SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname") || exit 1
+printf '%s\n' "$dbs" | while IFS= read -r db; do
+  [ -n "$db" ] || continue
   psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname="$db" --tuples-only --no-align --field-separator="$(printf '\t')" --set=role=` + username + ` --command="SELECT current_database(), privilege_type FROM information_schema.role_table_grants WHERE grantee = :'role' UNION SELECT current_database(), privilege_type FROM information_schema.role_usage_grants WHERE grantee = :'role' UNION SELECT current_database(), 'CONNECT' WHERE has_database_privilege(:'role', current_database(), 'CONNECT')"
 done`
 	return []string{"sh", "-c", script}, nil

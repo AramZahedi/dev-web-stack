@@ -2,6 +2,10 @@ package dbengine
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -339,6 +343,51 @@ func TestExistingUsernamesAllowDotsAndDashes(t *testing.T) {
 	}
 	if err := ValidateExistingUsername(model.DatabaseMySQL, "app;drop"); err == nil {
 		t.Fatal("existing username validation accepted injection")
+	}
+}
+
+func installFailingPsql(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho 'psql: connection refused' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "psql"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func runPostgresScript(t *testing.T, command []string) ([]byte, error) {
+	t.Helper()
+	if len(command) < 3 || command[0] != "sh" || command[1] != "-c" {
+		t.Fatalf("unexpected script command: %v", command)
+	}
+	return exec.Command(command[0], command[1:]...).CombinedOutput()
+}
+
+func TestPostgresInventoryScriptFailsWhenQueryFails(t *testing.T) {
+	installFailingPsql(t)
+	command, err := NewPostgreSQL().ListDatabasesCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := runPostgresScript(t, command)
+	if err == nil {
+		t.Fatalf("inventory script masked the initial psql failure: %s", output)
+	}
+}
+
+func TestPostgresGrantScriptFailsWhenQueryFails(t *testing.T) {
+	installFailingPsql(t)
+	command, err := NewPostgreSQL().ListGrantsCommand("app", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := runPostgresScript(t, command)
+	if err == nil {
+		t.Fatalf("grant script masked the initial psql failure: %s", output)
 	}
 }
 
