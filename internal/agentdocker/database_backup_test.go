@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
+	"github.com/AramZahedi/dev-web-stack/internal/dbproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
@@ -287,5 +289,56 @@ func TestExportHandlerAbortsOnDumpFailure(t *testing.T) {
 	defer func() { _ = response.Body.Close() }()
 	if _, readErr := io.ReadAll(response.Body); readErr == nil {
 		t.Fatal("export returned a clean 200 for a failed dump")
+	}
+}
+
+func TestFailedRestoreReturnsPreRestoreBackupID(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.streamOutput = []byte("CREATE TABLE t (id int);\n")
+	runner.runOutputs["information_schema.SCHEMATA"] = []byte("app\t0\t0\n")
+	job, err := d.CreateBackup(context.Background(), "mysql", "app", databases.CreateBackupRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.failOnStreamInput = "CREATE TABLE"
+	body, _ := json.Marshal(dbproto.BackupRestoreRequest{
+		ID: "mysql", BackupID: job.BackupID, Target: "app", Overwrite: true, Confirm: "app", PreRestoreBackup: true,
+	})
+	recorder := serveDatabase(t, d, http.MethodPost, dbproto.ServiceBackupRestore("mysql", job.BackupID), body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var response dbproto.JobResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Job.Status != model.JobFailed {
+		t.Fatalf("job = %+v, want failed", response.Job)
+	}
+	if response.Job.BackupID == "" {
+		t.Fatal("failed restore dropped the pre-restore backup ID")
+	}
+}
+
+func TestFailedReplaceImportReturnsPreImportBackupID(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.runOutputs["information_schema.PROCESSLIST"] = []byte("KILL 42;\n")
+	runner.streamOutput = []byte("dump")
+	runner.failOnStreamInput = "CREATE TABLE"
+	upload := gzipBytes(t, "CREATE TABLE t (id int);\n")
+	req := httptest.NewRequest(http.MethodPost, "/v1/services/mysql/databases/app/import?mode=replace&confirm=app&pre_import_backup=true", bytes.NewReader(upload))
+	req.Header.Set("X-Devstack-Filename", "dump.sql.gz")
+	req.Header.Set("Content-Type", "application/gzip")
+	recorder := httptest.NewRecorder()
+	d.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var response dbproto.JobResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Job.Status != model.JobFailed || response.Job.BackupID == "" {
+		t.Fatalf("job = %+v, want failed with backup_id", response.Job)
 	}
 }

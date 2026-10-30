@@ -27,10 +27,11 @@ type fakeDatabaseRunner struct {
 	streamOutput   []byte
 	streamErr      error
 	streamCloseErr error
-	inputErr       error
-	failOnInput    string
-	failOnArgs     string
-	state          string
+	inputErr          error
+	failOnInput       string
+	failOnArgs        string
+	failOnStreamInput string
+	state             string
 }
 
 type fakeReadCloser struct {
@@ -101,7 +102,11 @@ func (r *fakeDatabaseRunner) RunInputStream(_ context.Context, input io.Reader, 
 	}
 	r.mu.Lock()
 	r.calls = append(r.calls, databaseCall{args: append([]string{name}, args...), input: data})
+	failOn := r.failOnStreamInput
 	r.mu.Unlock()
+	if failOn != "" && strings.Contains(string(data), failOn) {
+		return errors.New("simulated streamed input failure")
+	}
 	return r.inputErr
 }
 

@@ -209,11 +209,7 @@ func (d *Docker) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 	job, err := d.CreateBackup(r.Context(), request.ID, request.Database, databases.CreateBackupRequest{
 		Kind: model.DatabaseBackupKind(request.Kind),
 	})
-	if err != nil {
-		writeDatabaseError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, dbproto.JobResponse{Job: job})
+	writeDatabaseJob(w, job, err)
 }
 
 func (d *Docker) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
@@ -250,11 +246,7 @@ func (d *Docker) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	job, err := d.RestoreBackup(r.Context(), request.ID, request.BackupID, databases.RestoreBackupRequest{
 		Target: request.Target, Overwrite: request.Overwrite, Confirm: request.Confirm, PreRestoreBackup: request.PreRestoreBackup,
 	})
-	if err != nil {
-		writeDatabaseError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, dbproto.JobResponse{Job: job})
+	writeDatabaseJob(w, job, err)
 }
 
 func (d *Docker) handleDatabaseImport(w http.ResponseWriter, r *http.Request) {
@@ -269,11 +261,7 @@ func (d *Docker) handleDatabaseImport(w http.ResponseWriter, r *http.Request) {
 		Confirm:         query.Get(dbproto.QueryConfirm),
 		PreImportBackup: queryBool(query.Get(dbproto.QueryPreImportBackup)),
 	})
-	if err != nil {
-		writeDatabaseError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, dbproto.JobResponse{Job: job})
+	writeDatabaseJob(w, job, err)
 }
 
 func (d *Docker) handleDatabaseExport(w http.ResponseWriter, r *http.Request) {
@@ -455,6 +443,21 @@ func streamDatabaseBody(w http.ResponseWriter, body io.ReadCloser) {
 	if copyErr != nil || closeErr != nil {
 		panic(http.ErrAbortHandler)
 	}
+}
+
+// writeDatabaseJob returns a failed job as a normal response when it carries a
+// pre-operation backup ID, so the daemon can offer one-click recovery instead
+// of losing the recovery pointer in a plain error.
+func writeDatabaseJob(w http.ResponseWriter, job model.DatabaseJob, err error) {
+	if err != nil {
+		if job.Status == model.JobFailed && job.BackupID != "" {
+			writeJSON(w, http.StatusOK, dbproto.JobResponse{Job: job})
+			return
+		}
+		writeDatabaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dbproto.JobResponse{Job: job})
 }
 
 func queryBool(value string) bool {
