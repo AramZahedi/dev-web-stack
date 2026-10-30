@@ -244,3 +244,31 @@ func TestDatabaseEngineRejectsUnknownService(t *testing.T) {
 		t.Fatalf("engine=%s service=%s", engine.ID(), service.ID)
 	}
 }
+
+func TestLimitedBufferTruncates(t *testing.T) {
+	var buffer limitedBuffer
+	buffer.limit = 10
+	n, err := buffer.Write([]byte("123456789012345"))
+	if err != nil || n != 15 {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	if buffer.String() != "1234567890" {
+		t.Fatalf("buffer = %q", buffer.String())
+	}
+}
+
+func TestRunInputStreamDiscardsLargeStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell")
+	}
+	err := (execRunner{}).RunInputStream(context.Background(), strings.NewReader(""), "sh", "-c", "head -c 2000000 /dev/zero; echo boom >&2; exit 1")
+	if err == nil {
+		t.Fatal("RunInputStream reported success for a failed command")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("stderr missing from error: %v", err)
+	}
+	if len(err.Error()) > 128*1024 {
+		t.Fatalf("RunInputStream buffered large stdout in its error (%d bytes)", len(err.Error()))
+	}
+}

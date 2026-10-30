@@ -71,7 +71,7 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	cmd.WaitDelay = 3 * time.Second
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
+		return output, fmt.Errorf("%s: %w: %s", name, err, truncateOutput(output))
 	}
 	return output, nil
 }
@@ -82,7 +82,7 @@ func (execRunner) RunInput(ctx context.Context, input []byte, name string, args 
 	cmd.Stdin = bytes.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
+		return output, fmt.Errorf("%s: %w: %s", name, err, truncateOutput(output))
 	}
 	return output, nil
 }
@@ -106,11 +106,43 @@ func (execRunner) RunInputStream(ctx context.Context, input io.Reader, name stri
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = 3 * time.Second
 	cmd.Stdin = input
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
+	// A restore/import can emit far more than the client needs. Discard stdout
+	// and keep only a bounded stderr tail for the error message.
+	cmd.Stdout = io.Discard
+	stderr := &limitedBuffer{limit: 64 << 10}
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// limitedBuffer keeps at most limit bytes while accepting the full write.
+type limitedBuffer struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	remaining := b.limit - b.buffer.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			_, _ = b.buffer.Write(p[:remaining])
+		} else {
+			_, _ = b.buffer.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string { return b.buffer.String() }
+
+func truncateOutput(output []byte) string {
+	const limit = 64 << 10
+	if len(output) > limit {
+		output = output[len(output)-limit:]
+	}
+	return strings.TrimSpace(string(output))
 }
 
 // commandStream closes the child's stdout and reaps the process. Close must be
