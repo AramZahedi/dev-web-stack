@@ -7,6 +7,7 @@
   import SiteDetail from './routes/SiteDetail.svelte';
   import Runtimes from './routes/Runtimes.svelte';
   import Services from './routes/Services.svelte';
+  import ServiceDetail from './routes/ServiceDetail.svelte';
   import Doctor from './routes/Doctor.svelte';
   import Settings from './routes/Settings.svelte';
   import NotFound from './routes/NotFound.svelte';
@@ -19,6 +20,7 @@
     '/sites/new': AddSite,
     '/sites/:ref': SiteDetail,
     '/services': Services,
+    '/services/:id': ServiceDetail,
     '/runtimes': Runtimes,
     '/doctor': Doctor,
     '/settings': Settings,
