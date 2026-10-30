@@ -789,6 +789,20 @@ describe('AddSite Wave 2 fields', () => {
     expect(mockApi.createSite).not.toHaveBeenCalled();
   });
 
+  it('rejects protected new database and user names before submit', async () => {
+    await openOptionsStep();
+    await enableDatabase('devstack', 'root');
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+
+    expect(
+      (await screen.findAllByText('That database name is reserved.')).length,
+    ).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText('That username is reserved.')).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
   it('focuses the database picker from the review row', async () => {
     await openOptionsStep();
     await enableDatabase('blog', 'blog_user');

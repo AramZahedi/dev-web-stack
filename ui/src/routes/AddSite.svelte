@@ -47,7 +47,11 @@
   import Toggle from '../lib/components/Toggle.svelte';
   import DatabasePicker from '../lib/components/site/DatabasePicker.svelte';
   import DatabaseReviewRow from '../lib/components/site/DatabaseReviewRow.svelte';
-  import { isDatabaseIdentifier } from '../lib/components/site/databaseIdentifiers';
+  import {
+    isDatabaseIdentifier,
+    isProtectedDatabase,
+    isProtectedUser,
+  } from '../lib/components/site/databaseIdentifiers';
   import {
     sanitizeDatabaseUrl,
     withoutPassword,
@@ -467,6 +471,8 @@
       } else if (dbRequest.new_database && !isDatabaseIdentifier(database)) {
         next.database_name =
           'Use letters, numbers and underscores; start with a letter or underscore.';
+      } else if (dbRequest.new_database && isProtectedDatabase(database)) {
+        next.database_name = 'That database name is reserved.';
       }
       if (dbRequest.new_user) {
         const username = dbRequest.new_user.username.trim();
@@ -475,6 +481,8 @@
         } else if (!isDatabaseIdentifier(username)) {
           next.database_username =
             'Use letters, numbers and underscores; start with a letter or underscore.';
+        } else if (isProtectedUser(username)) {
+          next.database_username = 'That username is reserved.';
         }
       } else if (!dbRequest.user_id) {
         next.database_user = 'Choose an existing user.';

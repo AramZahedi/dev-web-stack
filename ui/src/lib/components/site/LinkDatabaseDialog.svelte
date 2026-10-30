@@ -7,7 +7,11 @@
   import ErrorBanner from '../ErrorBanner.svelte';
   import Modal from '../Modal.svelte';
   import DatabasePicker from './DatabasePicker.svelte';
-  import { isDatabaseIdentifier } from './databaseIdentifiers';
+  import {
+    isDatabaseIdentifier,
+    isProtectedDatabase,
+    isProtectedUser,
+  } from './databaseIdentifiers';
   import { withoutPassword } from './databasePickerTypes';
 
   interface Props {
@@ -70,6 +74,10 @@
       validation = 'Use letters, numbers and underscores; start with a letter or underscore.';
       return;
     }
+    if (value.new_database && isProtectedDatabase(database)) {
+      validation = 'That database name is reserved.';
+      return;
+    }
     if (value.new_user) {
       const username = value.new_user.username.trim();
       if (!username) {
@@ -78,6 +86,10 @@
       }
       if (!isDatabaseIdentifier(username)) {
         validation = 'Use letters, numbers and underscores; start with a letter or underscore.';
+        return;
+      }
+      if (isProtectedUser(username)) {
+        validation = 'That username is reserved.';
         return;
       }
     } else if (!value.user_id) {

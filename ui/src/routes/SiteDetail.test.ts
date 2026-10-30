@@ -986,6 +986,39 @@ describe('SiteDetail configuration and builds', () => {
     );
   });
 
+  it('rejects protected names for a new database and user in the link dialog', async () => {
+    mockDb.listServiceDatabases.mockResolvedValue({ databases: [] });
+    await renderSite('blog');
+    await fireEvent.click(await screen.findByRole('button', { name: 'Link database' }));
+    const dialog = await screen.findByRole('dialog');
+    const service = (await within(dialog).findByLabelText(
+      /Database service/,
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+
+    await fireEvent.input(within(dialog).getByLabelText(/Database name/), {
+      target: { value: 'mysql' },
+    });
+    await fireEvent.input(within(dialog).getByLabelText(/Database username/), {
+      target: { value: 'postgres' },
+    });
+    await fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Link database' }),
+    );
+    expect(
+      await within(dialog).findByText('That database name is reserved.'),
+    ).toBeTruthy();
+
+    await fireEvent.input(within(dialog).getByLabelText(/Database name/), {
+      target: { value: 'fresh_db' },
+    });
+    await fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Link database' }),
+    );
+    expect(await within(dialog).findByText('That username is reserved.')).toBeTruthy();
+    expect(mockDb.createSiteDatabase).not.toHaveBeenCalled();
+  });
+
   it('keeps link-dialog validation visible for an invalid submission', async () => {
     mockDb.listServiceDatabases.mockResolvedValue({ databases: [] });
     await renderSite('blog');
