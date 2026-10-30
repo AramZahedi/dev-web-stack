@@ -129,6 +129,31 @@ func TestDBUserPasswordRevealWarnsAndPrintsSecret(t *testing.T) {
 	}
 }
 
+func TestDBUserPasswordSetFailsWithoutAPICallAndDoesNotLeakInput(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseUserSecret: databases.Secret{Value: "generated-secret"}}
+	code, stdout, stderr := runCLIExitInput(t, fake, "s3cret-from-stdin\n",
+		"db", "user", "password", "--service", "mysql", "--user-id", "usr_app", "--set", "--yes")
+	if code == 0 || !strings.Contains(stderr, "DATABASE_PASSWORD_SET_UNSUPPORTED") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "s3cret-from-stdin") || strings.Contains(stderr, "s3cret-from-stdin") {
+		t.Fatalf("piped password leaked: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if fake.databaseUserRotated || fake.databaseUserRevealed {
+		t.Fatal("--set made an API call")
+	}
+}
+
+func TestDBUserPasswordRotateFlagRotatesGeneratedPassword(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseUserSecret: databases.Secret{Value: "generated-secret"}}
+	runCLI(t, fake, "db", "user", "password", "--service", "mysql", "--user-id", "usr_app", "--rotate", "--yes", "--json")
+	if !fake.databaseUserRotated {
+		t.Fatal("--rotate did not call the rotate API")
+	}
+}
+
 func TestDBUserPasswordRotateJSONNeverLeaksSecret(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{databaseUserSecret: databases.Secret{Value: "s3cret"}}

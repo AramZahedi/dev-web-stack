@@ -378,7 +378,7 @@ func (a *App) newDBUserDeleteCmd() *cobra.Command {
 
 func (a *App) newDBUserPasswordCmd() *cobra.Command {
 	var service, userID string
-	var reveal, set bool
+	var reveal, set, rotate bool
 	cmd := &cobra.Command{
 		Use:   "password",
 		Short: "Reveal or rotate an engine user password",
@@ -389,8 +389,17 @@ func (a *App) newDBUserPasswordCmd() *cobra.Command {
 			if service == "" || userID == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--service and --user-id are required", Remediation: "For example `devstack db user password --service mysql --user-id usr_blog --reveal`."}
 			}
-			if reveal && set {
-				return &Error{Code: "INVALID_FLAGS", Message: "--reveal and --set cannot be used together", Remediation: "Choose one action."}
+			if set {
+				return &Error{
+					Code:    "DATABASE_PASSWORD_SET_UNSUPPORTED",
+					Message: "setting a user-supplied database password is not supported by the current API contract",
+					Remediation: "Omit --set to rotate a devstack-generated password (or pass --rotate), " +
+						"or set an external user's password at link time with `site db link --password-stdin` " +
+						"or `site add --database-user-password-stdin`.",
+				}
+			}
+			if reveal && rotate {
+				return &Error{Code: "INVALID_FLAGS", Message: "--reveal and --rotate cannot be used together", Remediation: "Choose one action."}
 			}
 			if !reveal {
 				if err := a.requireDestructiveConfirmation(cmd,
@@ -433,7 +442,8 @@ func (a *App) newDBUserPasswordCmd() *cobra.Command {
 	cmd.Flags().StringVar(&service, "service", "", "service id")
 	cmd.Flags().StringVar(&userID, "user-id", "", "opaque database user id")
 	cmd.Flags().BoolVar(&reveal, "reveal", false, "reveal the stored password once")
-	cmd.Flags().BoolVar(&set, "set", false, "set a new devstack-generated password (no password on argv)")
+	cmd.Flags().BoolVar(&rotate, "rotate", false, "rotate to a devstack-generated password (default when neither --reveal nor --set is used)")
+	cmd.Flags().BoolVar(&set, "set", false, "unsupported: setting a user-supplied password needs a future API contract; fails without an API call")
 	return cmd
 }
 
