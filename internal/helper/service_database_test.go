@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -27,8 +28,18 @@ type fakeCommandRunner struct {
 	stdin        [][]byte
 	streamOutput []byte
 	psState      string
+	aclList      string
 	handle       func(name string, args []string) ([]byte, error)
 	handleInput  func(name string, args []string, input []byte) ([]byte, error)
+}
+
+func (f *fakeCommandRunner) aclListOutput() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.aclList != "" {
+		return []byte(f.aclList)
+	}
+	return []byte("user default on nopass ~* &* +@all\nuser cache on #hash ~* +@read -@admin -@dangerous\n")
 }
 
 func (f *fakeCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -87,7 +98,7 @@ func (f *fakeCommandRunner) defaultRun(name string, args []string) ([]byte, erro
 	case strings.Contains(joined, "list-grants"):
 		return []byte("app\tread_write_schema\n"), nil
 	case strings.Contains(joined, "ACL LIST"):
-		return []byte("user default on nopass ~* &* +@all\nuser cache on #hash ~* +@read -@admin -@dangerous\n"), nil
+		return f.aclListOutput(), nil
 	case strings.Contains(joined, "restart"):
 		return []byte("ok"), nil
 	default:
@@ -98,8 +109,8 @@ func (f *fakeCommandRunner) defaultRun(name string, args []string) ([]byte, erro
 func (f *fakeCommandRunner) defaultInput(name string, args []string, input []byte) ([]byte, error) {
 	joined := strings.Join(args, " ")
 	switch {
-	case strings.Contains(joined, "ACL LIST"):
-		return []byte("user default on nopass ~* &* +@all\nuser cache on #hash ~* +@read -@admin -@dangerous\n"), nil
+	case strings.Contains(joined, "ACL LIST") || strings.Contains(string(input), "ACL LIST"):
+		return append([]byte("OK\n"), f.aclListOutput()...), nil
 	default:
 		return []byte("OK"), nil
 	}
@@ -739,6 +750,176 @@ func TestHelperResolveSiteEnvMissingSecretFails(t *testing.T) {
 	}})
 	if !errors.Is(err, databases.ErrPasswordMissing) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestHelperRedisDefaultPasswordPreservesACLRules(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.aclList = "user default on nopass ~* &* +@all\nuser cache on #hash ~* +@read -@admin -@dangerous\n"
+	secret, err := c.SetUserPassword(context.Background(), "redis", redisUserID("default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains("ACL SETUSER default resetpass >") {
+		t.Fatalf("default password reset command = %q", runner.stdin)
+	}
+	joined := runner.joinedCalls()
+	for _, forbidden := range []string{"-acl", "-@admin", "-@dangerous", "+@read", "+@all"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("default password reset applied application rules %q: %s", forbidden, joined)
+		}
+	}
+	if !runner.stdinContains("ACL SAVE") {
+		t.Fatalf("ACL SAVE missing: %s", joined)
+	}
+	stored, err := c.readDatabaseSecret("redis", redisUserID("default"))
+	if err != nil || stored != secret.Value {
+		t.Fatalf("stored=%q err=%v", stored, err)
+	}
+	runner.reset()
+	if _, err := c.ListRedisUsers(context.Background(), "redis"); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains("AUTH default " + secret.Value) {
+		t.Fatalf("default AUTH did not use the stored secret: %q", runner.stdin)
+	}
+}
+
+func TestHelperRedisDefaultPasswordSecretCompatibility(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	if err := c.writeDatabaseSecret("redis", "default", "legacy-secret"); err != nil {
+		t.Fatal(err)
+	}
+	value, ok, err := c.redisDefaultPassword("redis")
+	if err != nil || !ok || value != "legacy-secret" {
+		t.Fatalf("legacy default secret = %q/%v/%v", value, ok, err)
+	}
+	if err := c.writeDatabaseSecret("redis", redisUserID("default"), "has space"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.redisDefaultPassword("redis"); !errors.Is(err, databases.ErrPasswordMissing) {
+		t.Fatalf("whitespace default secret err=%v", err)
+	}
+}
+
+func TestHelperRedisExternalUserFlags(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.aclList = "user default on nopass ~* &* +@all\nuser external on #hash ~* +@read\n"
+	users, err := c.ListRedisUsers(context.Background(), "redis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var external model.DatabaseUser
+	for _, user := range users {
+		if user.Username == "external" {
+			external = user
+		}
+	}
+	if external.ID == "" || external.Managed || external.PasswordManaged {
+		t.Fatalf("external user flags = %+v", external)
+	}
+	if err := c.writeDatabaseSecret("redis", redisUserID("external"), "s3cret"); err != nil {
+		t.Fatal(err)
+	}
+	users, err = c.ListRedisUsers(context.Background(), "redis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range users {
+		if user.Username == "external" {
+			if !user.Managed || !user.PasswordManaged {
+				t.Fatalf("managed external user flags = %+v", user)
+			}
+			return
+		}
+	}
+	t.Fatal("external user missing after secret write")
+}
+
+func TestHelperRedisPasswordResetPreservesCustomRules(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.aclList = "user default on nopass ~* &* +@all\nuser custom on #hash ~custom* +get +set\n"
+	if _, err := c.SetUserPassword(context.Background(), "redis", redisUserID("custom")); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains("ACL SETUSER custom resetpass >") {
+		t.Fatalf("custom password command = %q", runner.stdin)
+	}
+	joined := runner.joinedCalls()
+	for _, forbidden := range []string{"+@all", "+@read", "-acl", "-@admin"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("custom reset broadened rules %q: %s", forbidden, joined)
+		}
+	}
+	if !strings.Contains(joined, "ACL SAVE") {
+		t.Fatalf("ACL SAVE missing: %s", joined)
+	}
+}
+
+func TestHelperRedisACLListSkipsUnsafeUsernames(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.aclList = "user default on nopass ~* &* +@all\nuser 123bad on #hash ~* +@read\n"
+	users, err := c.ListRedisUsers(context.Background(), "redis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range users {
+		if user.Username == "123bad" || strings.Contains(user.Username, " ") {
+			t.Fatalf("unsafe ACL username was returned: %+v", user)
+		}
+	}
+}
+
+func TestRedisOutputErrorDoesNotMatchUsername(t *testing.T) {
+	if err := redisOutputError([]byte("user err on #hash ~* +@read\n")); err != nil {
+		t.Fatalf("username false positive: %v", err)
+	}
+	if err := redisOutputError([]byte("(error) ERR unknown command\n")); err == nil {
+		t.Fatal("redis error output was accepted")
+	}
+}
+
+func TestHelperRedisACLFilePreservesConfigInodeAndMode(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	configPath := filepath.Join(root, "services", "redis", "config", "redis.conf")
+	if err := os.Chmod(configPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.EnableRedisACLFile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeStat, ok := before.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("no syscall stat")
+	}
+	afterStat, ok := after.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("no syscall stat")
+	}
+	if beforeStat.Ino != afterStat.Ino {
+		t.Fatalf("redis.conf inode changed: %d -> %d", beforeStat.Ino, afterStat.Ino)
+	}
+	if after.Mode().Perm() != 0o600 {
+		t.Fatalf("redis.conf mode = %o", after.Mode().Perm())
+	}
+	aclInfo, err := os.Stat(filepath.Join(root, "services", "redis", "data", "users.acl"))
+	if err != nil || aclInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("users.acl mode=%v err=%v", aclInfo.Mode(), err)
 	}
 }
 

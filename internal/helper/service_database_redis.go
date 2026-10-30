@@ -81,17 +81,22 @@ func redisOutputError(out []byte) error {
 }
 
 func (c *DockerServiceController) redisDefaultPassword(serviceID string) (string, bool, error) {
-	value, err := c.readDatabaseSecret(serviceID, "default")
-	if err == nil {
-		if strings.ContainsAny(value, "\r\n\t ") {
-			return "", false, fmt.Errorf("%w: Redis default password contains whitespace", databases.ErrPasswordMissing)
-		}
-		return value, true, nil
+	value, err := c.readDatabaseSecret(serviceID, redisUserID("default"))
+	if errors.Is(err, databases.ErrPasswordMissing) {
+		// Compatibility with early lane builds that stored the default user's
+		// password under the literal user name.
+		value, err = c.readDatabaseSecret(serviceID, "default")
 	}
 	if errors.Is(err, databases.ErrPasswordMissing) {
 		return "", false, nil
 	}
-	return "", false, err
+	if err != nil {
+		return "", false, err
+	}
+	if strings.ContainsAny(value, "\r\n\t ") {
+		return "", false, fmt.Errorf("%w: Redis default password contains whitespace", databases.ErrPasswordMissing)
+	}
+	return value, true, nil
 }
 
 // ListRedisUsers parses ACL LIST into the shared user view.
@@ -114,8 +119,12 @@ func (c *DockerServiceController) listRedisUsers(ctx context.Context, serviceID 
 			continue
 		}
 		username := fields[1]
+		if err := dbengine.ValidateIdentifier(username); err != nil {
+			// ACL LIST is external input; never return or manage an unsafe
+			// username. A user with spaces cannot be addressed unambiguously.
+			continue
+		}
 		enabled := false
-		passwordManaged := true
 		accessLevel := "custom"
 		for _, field := range fields[2:] {
 			switch {
@@ -123,22 +132,22 @@ func (c *DockerServiceController) listRedisUsers(ctx context.Context, serviceID 
 				enabled = true
 			case field == "off":
 				enabled = false
-			case field == "nopass":
-				passwordManaged = false
 			case field == "+@all":
 				accessLevel = "full"
 			case field == "+@read":
 				accessLevel = "read-only"
 			}
 		}
+		id := redisUserID(username)
+		stored := c.databaseSecretExists(serviceID, id)
 		users = append(users, model.DatabaseUser{
-			ID:              redisUserID(username),
+			ID:              id,
 			ServiceID:       serviceID,
 			Engine:          model.DatabaseRedis,
 			Username:        username,
 			Enabled:         enabled,
-			Managed:         username != "default",
-			PasswordManaged: passwordManaged,
+			Managed:         stored,
+			PasswordManaged: stored,
 			AccessLevel:     accessLevel,
 		})
 	}
@@ -248,6 +257,12 @@ func redisSetUserPasswordLine(username, password string, enabled bool) string {
 		state = "on"
 	}
 	return fmt.Sprintf("ACL SETUSER %s reset %s >%s", username, state, password)
+}
+
+// redisResetPasswordLine changes only the password. It is used for resets so
+// existing rules and the default user's admin/ACL grants survive.
+func redisResetPasswordLine(username, password string) string {
+	return fmt.Sprintf("ACL SETUSER %s resetpass >%s", username, password)
 }
 
 func (c *DockerServiceController) redisApplyUserRules(ctx context.Context, serviceID, username, accessLevel string, enabled bool) error {
@@ -365,18 +380,16 @@ func (c *DockerServiceController) setRedisPassword(ctx context.Context, serviceI
 	if err != nil {
 		return databases.Secret{}, err
 	}
-	if _, err := c.redisExecInput(ctx, serviceID, []string{redisSetUserPasswordLine(user.Username, password, user.Enabled)}, ""); err != nil {
+	if _, err := c.redisExecInput(ctx, serviceID, []string{redisResetPasswordLine(user.Username, password)}, ""); err != nil {
 		return databases.Secret{}, err
 	}
 	if err := c.writeDatabaseSecret(serviceID, user.ID, password); err != nil {
 		_ = c.deleteDatabaseSecret(serviceID, user.ID)
 		return databases.Secret{}, fmt.Errorf("store generated password: %w", err)
 	}
-	accessLevel := user.AccessLevel
-	if accessLevel == "" || accessLevel == "custom" {
-		accessLevel = "full"
-	}
-	if err := c.redisApplyUserRules(ctx, serviceID, user.Username, accessLevel, user.Enabled); err != nil {
+	// resetpass changes only the password. Existing rules, including the
+	// default user's admin/ACL grants and any custom ACL, are preserved.
+	if _, err := c.redisExec(ctx, serviceID, "ACL", "SAVE"); err != nil {
 		return databases.Secret{}, err
 	}
 	return databases.Secret{Value: password}, nil
@@ -425,7 +438,7 @@ func (c *DockerServiceController) EnableRedisACLFile(ctx context.Context) error 
 			updated += "\n"
 		}
 		updated += redisACLFileLine + "\n"
-		if err := writeAtomicFile(configPath, []byte(updated), 0o644); err != nil {
+		if err := writeFileInPlace(configPath, []byte(updated), 0o644); err != nil {
 			return fmt.Errorf("update redis.conf: %w", err)
 		}
 		changed = true
