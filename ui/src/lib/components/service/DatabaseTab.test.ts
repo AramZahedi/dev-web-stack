@@ -384,6 +384,57 @@ describe('DatabaseTab', () => {
     );
   });
 
+  it('requires the target name before a replace import', async () => {
+    vi.mocked(db.importServiceDatabase).mockResolvedValue({
+      id: 'job_import',
+      service_id: 'mysql',
+      database: 'app',
+      kind: 'import',
+      status: 'succeeded',
+      progress: 100,
+      created_at: '2026-10-29T10:00:00Z',
+      updated_at: '2026-10-29T10:00:02Z',
+    });
+    const { container } = render(DatabaseTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        databases: [UNLINKED_APP, MYSQL_DATABASES[1]],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /import app/i }));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new File(['sql'], 'dump.sql', { type: 'text/plain' })],
+    });
+    await fireEvent.change(input);
+
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.click(within(dialog).getByLabelText(/replace contents/i));
+
+    const importButton = within(dialog).getByRole('button', {
+      name: 'Import database',
+    }) as HTMLButtonElement;
+    expect(importButton.disabled).toBe(true);
+
+    await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    await waitFor(() => expect(importButton.disabled).toBe(false));
+    await fireEvent.click(importButton);
+
+    await waitFor(() =>
+      expect(db.importServiceDatabase).toHaveBeenCalledWith(
+        'mysql',
+        'app',
+        expect.any(File),
+        expect.objectContaining({ mode: 'replace', confirm: 'app' }),
+      ),
+    );
+  });
+
   it('reports a failed backup job as an error toast and keeps the detail', async () => {    const failed: DatabaseJob = {
       id: 'job_failed',
       service_id: 'mysql',

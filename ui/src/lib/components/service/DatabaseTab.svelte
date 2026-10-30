@@ -27,6 +27,7 @@
   import ConfirmDialog from '../ConfirmDialog.svelte';
   import EmptyState from '../EmptyState.svelte';
   import ErrorBanner from '../ErrorBanner.svelte';
+  import Field from '../Field.svelte';
   import Modal from '../Modal.svelte';
   import Toggle from '../Toggle.svelte';
   import DatabaseFormDialog from './DatabaseFormDialog.svelte';
@@ -84,6 +85,7 @@
   let importOpen = $state(false);
   let importMode = $state<'merge' | 'replace'>('merge');
   let importBackup = $state(true);
+  let importConfirm = $state('');
   let importing = $state(false);
   let importError = $state<DescribedError | null>(null);
   let fileInput: HTMLInputElement | undefined = $state();
@@ -326,8 +328,13 @@
 
   function setImportMode(mode: 'merge' | 'replace'): void {
     importMode = mode;
+    importConfirm = '';
     if (mode === 'replace') void prepareLinkedSites(importTarget?.linked_sites);
   }
+
+  const importConfirmationReady = $derived(
+    importMode !== 'replace' || importConfirm.trim() === (importTarget?.name ?? ''),
+  );
 
   function onImportFileSelected(event: Event): void {
     const input = event.currentTarget as HTMLInputElement;
@@ -337,6 +344,7 @@
     importFile = file;
     importMode = 'merge';
     importBackup = true;
+    importConfirm = '';
     importError = null;
     importOpen = true;
   }
@@ -345,6 +353,7 @@
     const target = importTarget;
     const file = importFile;
     if (!target || !file || importing) return;
+    if (importMode === 'replace' && !importConfirmationReady) return;
     if (importMode === 'replace' && !sitesReady(target.linked_sites)) return;
     importing = true;
     importError = null;
@@ -761,6 +770,20 @@
         error={siteStopError}
         onstop={stopLinkedSite}
       />
+      <Field
+        id="import-confirm"
+        label={`Type "${importTarget?.name ?? ''}" to confirm`}
+        hint="Replace mode drops and recreates the target."
+      >
+        <input
+          id="import-confirm"
+          class="input mono"
+          type="text"
+          bind:value={importConfirm}
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </Field>
       <p class="drop-warning" role="alert">
         Replace mode removes the current schema. The pre-import backup is offered as a one-click
         recovery if the job fails.
@@ -781,7 +804,8 @@
       variant="primary"
       onclick={confirmImport}
       loading={importing}
-      disabled={importMode === 'replace' && !sitesReady(importTarget?.linked_sites)}
+      disabled={importMode === 'replace' &&
+        (!importConfirmationReady || !sitesReady(importTarget?.linked_sites))}
     >
       Import database
     </Button>
