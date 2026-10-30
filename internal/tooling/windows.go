@@ -367,7 +367,7 @@ func NewWSLEnvFile(env map[string]string) (*WSLEnvFile, error) {
 	}
 	nativePath := file.Name()
 	cleanup := func() { _ = os.Remove(nativePath) }
-	if err := file.Chmod(0o600); err != nil {
+	if err := secureWSLEnvFile(nativePath); err != nil {
 		_ = file.Close()
 		cleanup()
 		return nil, fmt.Errorf("tooling: secure WSL environment file: %w", err)
