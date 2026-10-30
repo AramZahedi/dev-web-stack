@@ -870,8 +870,15 @@ func (s *Service) MigratePHP(ctx context.Context, req PHPMigrationRequest) ([]PH
 	return results, nil
 }
 
-// CheckRuntimeRemoval reports the sites that still pin a PHP build. It returns
-// store.ErrNotFound when the build is not installed.
+// globalNodeDefaultName is the in-use owner label for the machine-wide Node
+// default setting.
+const globalNodeDefaultName = "global default"
+
+// CheckRuntimeRemoval reports the sites and the global Node default that still
+// reference a runtime build. PHP pins keep their historical build/line rules; a
+// Node build is protected by a pinned site of any kind, a static build
+// profile's node_version, and node_default. It returns store.ErrNotFound when
+// the build is not installed.
 func (s *Service) CheckRuntimeRemoval(ctx context.Context, buildID string) error {
 	ctx = nonNilContext(ctx)
 
@@ -892,32 +899,154 @@ func (s *Service) CheckRuntimeRemoval(ctx context.Context, buildID string) error
 	if err != nil {
 		return fmt.Errorf("sites: list sites for runtime check: %w", err)
 	}
-	line := catalog.LineOf(build.Version)
 	names := make(map[string]bool, len(sites))
-	for _, site := range sites {
-		switch site.Kind {
-		case model.SitePHP:
-			if site.PHPBuild == build.ID || (site.PHPBuild == "" && site.PHPVersion == line) {
-				names[site.Name] = true
-			}
-		case model.SiteNode:
-			version := strings.TrimSpace(site.NodeVersion)
-			if version != "" &&
-				(version == build.ID || version == build.Version || version == line ||
-					strings.HasPrefix(build.Version, version+".")) {
+	if isNodeRuntimeBuild(build) {
+		for _, site := range sites {
+			if nodeBuildMatches(build, site.NodeVersion) ||
+				(site.Build != nil && nodeBuildMatches(build, site.Build.NodeVersion)) {
 				names[site.Name] = true
 			}
 		}
+	} else {
+		line := catalog.LineOf(build.Version)
+		for _, site := range sites {
+			switch site.Kind {
+			case model.SitePHP:
+				if site.PHPBuild == build.ID || (site.PHPBuild == "" && site.PHPVersion == line) {
+					names[site.Name] = true
+				}
+			case model.SiteNode:
+				// Rows written before exact Node pins can still name a line.
+				version := strings.TrimSpace(site.NodeVersion)
+				if version != "" &&
+					(version == build.ID || version == build.Version || version == line ||
+						strings.HasPrefix(build.Version, version+".")) {
+					names[site.Name] = true
+				}
+			}
+		}
 	}
-	if len(names) == 0 {
+	defaultInUse := false
+	if isNodeRuntimeBuild(build) {
+		setting, err := s.deps.Store.GetSetting(ctx, defaultNodeSettingKey)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("sites: read node_default for runtime check: %w", err)
+		}
+		defaultInUse = nodeBuildMatches(build, setting)
+	}
+	if len(names) == 0 && !defaultInUse {
 		return nil
 	}
-	sorted := make([]string, 0, len(names))
+	sorted := make([]string, 0, len(names)+1)
 	for name := range names {
 		sorted = append(sorted, name)
 	}
 	sort.Strings(sorted)
+	if defaultInUse {
+		sorted = append(sorted, globalNodeDefaultName)
+	}
 	return &RuntimeInUseError{BuildID: build.ID, Sites: sorted}
+}
+
+func isNodeRuntimeBuild(build model.RuntimeBuild) bool {
+	return build.Kind == "node" || strings.HasPrefix(build.ID, "node@")
+}
+
+const (
+	nodeVersionFieldName      = "node_version"
+	buildNodeVersionFieldName = "build.node_version"
+)
+
+// NodeVersionNormalization reports one legacy Node selection examined by
+// NormalizeNodeVersions. A rewritten pin is stored as its exact installed build
+// version; an unresolved pin keeps its raw value with Updated false and an
+// empty To.
+type NodeVersionNormalization struct {
+	Site    string `json:"site"`
+	Field   string `json:"field"`
+	From    string `json:"from"`
+	To      string `json:"to,omitempty"`
+	Updated bool   `json:"updated"`
+}
+
+// NormalizeNodeVersions upgrades line-valued site and build-profile Node pins to
+// exact installed build versions. A pin is rewritten only when an installed
+// build satisfies it; unresolved values are reported unchanged so they stay
+// visible and actionable. The global Node default is deliberately untouched: it
+// accepts and re-resolves lines on every use without being stored as a site pin.
+func (s *Service) NormalizeNodeVersions(ctx context.Context) ([]NodeVersionNormalization, error) {
+	ctx = nonNilContext(ctx)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.deps.Store == nil {
+		return nil, errors.New("sites: missing dependencies: store")
+	}
+	sites, err := s.deps.Store.ListSites(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sites: list sites for Node normalization: %w", err)
+	}
+	builds, err := s.installedNodeBuilds(ctx)
+	if err != nil {
+		return nil, err
+	}
+	results := []NodeVersionNormalization{}
+	updates := make([]model.Site, 0, len(sites))
+	for _, site := range sites {
+		changed := false
+		if value := strings.TrimSpace(site.NodeVersion); value != "" {
+			result, exact, rewrite := planNodeNormalization(builds, site.Name, nodeVersionFieldName, value)
+			if result != nil {
+				results = append(results, *result)
+			}
+			if rewrite {
+				site.NodeVersion = exact
+				changed = true
+			}
+		}
+		if site.Build != nil {
+			if value := strings.TrimSpace(site.Build.NodeVersion); value != "" {
+				result, exact, rewrite := planNodeNormalization(builds, site.Name, buildNodeVersionFieldName, value)
+				if result != nil {
+					results = append(results, *result)
+				}
+				if rewrite {
+					profile := *site.Build
+					profile.NodeVersion = exact
+					site.Build = &profile
+					changed = true
+				}
+			}
+		}
+		if changed {
+			site.UpdatedAt = s.currentTime()
+			updates = append(updates, site)
+		}
+	}
+	for _, site := range updates {
+		if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
+			return results, fmt.Errorf("sites: store normalized Node pin for %q: %w", site.Name, err)
+		}
+	}
+	return results, nil
+}
+
+// planNodeNormalization resolves one pin against installed builds, newest
+// first. It reports nil when the pin already is an exact installed version.
+func planNodeNormalization(builds []model.RuntimeBuild, site, field, value string) (*NodeVersionNormalization, string, bool) {
+	for _, build := range builds {
+		if !nodeBuildMatches(build, value) {
+			continue
+		}
+		if build.Version == value {
+			return nil, value, false
+		}
+		return &NodeVersionNormalization{
+			Site: site, Field: field, From: value, To: build.Version, Updated: true,
+		}, build.Version, true
+	}
+	return &NodeVersionNormalization{Site: site, Field: field, From: value}, value, false
 }
 
 // errorText renders a per-site failure without losing nil.
