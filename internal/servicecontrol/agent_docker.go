@@ -20,10 +20,12 @@ type serviceAgentAPI interface {
 
 // AgentDocker adapts the authenticated agent API to servicecontrol's existing
 // lifecycle and preparer interfaces. It performs no filesystem operations;
-// canonical service state stays in WSL ext4.
+// canonical service state stays in WSL ext4. The embedded databasePlatform
+// adds the databases.Platform surface when the agent client supports it.
 type AgentDocker struct {
 	api   serviceAgentAPI
 	paths *AgentPaths
+	*databasePlatform
 }
 
 var (
@@ -31,7 +33,9 @@ var (
 	_ ServiceValidator = (*AgentDocker)(nil)
 )
 
-// NewAgentDocker creates the Windows-to-WSL service adapter.
+// NewAgentDocker creates the Windows-to-WSL service adapter. When api also
+// implements DatabasePlatformAPI (the production agent client does), database
+// operations are enabled automatically.
 func NewAgentDocker(api serviceAgentAPI, wslRoot string) (*AgentDocker, error) {
 	if api == nil {
 		return nil, errors.New("servicecontrol: agent API is required")
@@ -40,7 +44,25 @@ func NewAgentDocker(api serviceAgentAPI, wslRoot string) (*AgentDocker, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AgentDocker{api: api, paths: paths}, nil
+	adapter := &AgentDocker{api: api, paths: paths, databasePlatform: &databasePlatform{}}
+	if databaseAPI, ok := api.(DatabasePlatformAPI); ok {
+		adapter.SetDatabaseProvider(func(context.Context) (DatabasePlatformAPI, error) {
+			return databaseAPI, nil
+		})
+	}
+	return adapter, nil
+}
+
+// SetDatabaseProvider installs the lazily-resolved database transport. The
+// Windows daemon uses it to wake the WSL agent before the first database call.
+func (a *AgentDocker) SetDatabaseProvider(provider DatabaseAPIProvider) {
+	if a == nil {
+		return
+	}
+	if a.databasePlatform == nil {
+		a.databasePlatform = &databasePlatform{}
+	}
+	a.databasePlatform.provider = provider
 }
 
 // Status returns fixed-catalog service status with canonical WSL path metadata.
