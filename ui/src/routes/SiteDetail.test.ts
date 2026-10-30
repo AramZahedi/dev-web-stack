@@ -850,7 +850,7 @@ describe('SiteDetail configuration and builds', () => {
         {
           ...SITE_DB_LINK,
           available: false,
-          error: 'MariaDB is active on port 3306',
+          error: 'exclusive engine conflict: MariaDB is active on port 3306',
         },
       ],
     });
@@ -860,6 +860,62 @@ describe('SiteDetail configuration and builds', () => {
       screen.getByText(/MySQL-family database engine is active on port 3306/i),
     ).toBeTruthy();
     expect(screen.getByRole('link', { name: /activate/i })).toBeTruthy();
+  });
+
+  it('does not treat a generic port 3306 error as an exclusive engine conflict', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({
+      links: [
+        {
+          ...SITE_DB_LINK,
+          available: false,
+          error: 'connection refused on port 3306',
+        },
+      ],
+    });
+    await renderSite('blog');
+    expect(await screen.findByText(/database offline/i)).toBeTruthy();
+    expect(screen.getByText('connection refused on port 3306')).toBeTruthy();
+    expect(
+      screen.queryByText(/MySQL-family database engine is active/i),
+    ).toBeNull();
+  });
+
+  it('shows a stopped-service error without claiming an exclusive engine conflict', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({
+      links: [
+        {
+          ...SITE_DB_LINK,
+          available: false,
+          error: 'service mysql is stopped',
+        },
+      ],
+    });
+    await renderSite('blog');
+    expect(await screen.findByText(/database offline/i)).toBeTruthy();
+    expect(screen.getByText('service mysql is stopped')).toBeTruthy();
+    expect(
+      screen.queryByText(/MySQL-family database engine is active/i),
+    ).toBeNull();
+  });
+
+  it('recognizes a structured exclusive engine error code', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({
+      links: [
+        {
+          ...SITE_DB_LINK,
+          available: false,
+          error: JSON.stringify({
+            code: 'DATABASE_EXCLUSIVE_ENGINE',
+            message: 'MariaDB occupies the MySQL-family port.',
+          }),
+        },
+      ],
+    });
+    await renderSite('blog');
+    expect(
+      await screen.findByText(/MySQL-family database engine is active/i),
+    ).toBeTruthy();
+    expect(screen.queryByText(/DATABASE_EXCLUSIVE_ENGINE/)).toBeNull();
   });
 
   it('links a different existing database as a non-primary link', async () => {

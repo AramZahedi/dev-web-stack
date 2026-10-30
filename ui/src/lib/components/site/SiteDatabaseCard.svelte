@@ -124,12 +124,40 @@
     revealError = {};
   });
 
+  function linkError(link: SiteDatabaseLink): { code: string; message: string } {
+    const raw = link.error ?? '';
+    if (!raw) return { code: '', message: '' };
+    try {
+      const parsed = JSON.parse(raw) as { code?: unknown; message?: unknown };
+      if (parsed && typeof parsed === 'object') {
+        return {
+          code: typeof parsed.code === 'string' ? parsed.code : '',
+          message: typeof parsed.message === 'string' ? parsed.message : raw,
+        };
+      }
+    } catch {
+      // Plain-text errors are the common case.
+    }
+    return { code: '', message: raw };
+  }
+
   function conflictMessage(link: SiteDatabaseLink): string {
-    if (!link.error) return '';
-    if (/3306|exclusive|mysql-family|already active/i.test(link.error)) {
+    const { code, message } = linkError(link);
+    if (
+      code === 'DATABASE_EXCLUSIVE_ENGINE' ||
+      code === 'EXCLUSIVE_ENGINE_CONFLICT' ||
+      code === 'SERVICE_EXCLUSIVE_CONFLICT'
+    ) {
+      return 'Another MySQL-family database engine is active on port 3306. Stop it before starting this site.';
+    }
+    if (/exclusive|mysql-family|already active/i.test(message)) {
       return 'Another MySQL-family database engine is active on port 3306. Stop it before starting this site.';
     }
     return '';
+  }
+
+  function linkErrorText(link: SiteDatabaseLink): string {
+    return linkError(link).message;
   }
 
   async function copy(label: string, value: string, secret = false): Promise<void> {
@@ -345,7 +373,7 @@
             </p>
           {/if}
           {#if link.error}
-            <p class="db-error" role="alert">{conflict || link.error}</p>
+            <p class="db-error" role="alert">{conflict || linkErrorText(link)}</p>
           {/if}
 
           <div class="db-credentials">
