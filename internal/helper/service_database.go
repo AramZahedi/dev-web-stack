@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -47,7 +48,7 @@ func (c *DockerServiceController) ListDatabases(ctx context.Context, serviceID s
 	}
 	command, err := engine.ListDatabasesCommand()
 	if err != nil {
-		return nil, err
+		return nil, engineError(err)
 	}
 	out, err := c.runEngineCommand(ctx, serviceID, command)
 	if err != nil {
@@ -55,7 +56,7 @@ func (c *DockerServiceController) ListDatabases(ctx context.Context, serviceID s
 	}
 	list, err := engine.ParseDatabases(out)
 	if err != nil {
-		return nil, err
+		return nil, engineError(err)
 	}
 	if list == nil {
 		list = []model.Database{}
@@ -94,7 +95,7 @@ func (c *DockerServiceController) CreateDatabase(ctx context.Context, serviceID 
 	}
 	sql, err := engine.CreateDatabaseSQL(req.Name, req.Charset, req.Collation)
 	if err != nil {
-		return model.Database{}, err
+		return model.Database{}, engineError(err)
 	}
 	lock := c.databaseLock(serviceID)
 	lock.Lock()
@@ -138,7 +139,7 @@ func (c *DockerServiceController) RenameDatabase(ctx context.Context, serviceID,
 	}
 	sql, err := engine.RenameDatabaseSQL(name, req.Name)
 	if err != nil {
-		return model.Database{}, err
+		return model.Database{}, engineError(err)
 	}
 	lock := c.databaseLock(serviceID)
 	lock.Lock()
@@ -185,7 +186,7 @@ func (c *DockerServiceController) DropDatabase(ctx context.Context, serviceID, n
 	}
 	sql, err := engine.DropDatabaseSQL(name)
 	if err != nil {
-		return err
+		return engineError(err)
 	}
 	_, err = c.runDatabaseSQL(ctx, serviceID, sql)
 	return err
@@ -194,7 +195,7 @@ func (c *DockerServiceController) DropDatabase(ctx context.Context, serviceID, n
 func (c *DockerServiceController) terminateSessions(ctx context.Context, serviceID string, engine dbengine.Engine, database string) error {
 	sql, err := engine.TerminateSessionsSQL(database)
 	if err != nil {
-		return err
+		return engineError(err)
 	}
 	if strings.TrimSpace(sql) == "" {
 		return nil
@@ -325,7 +326,7 @@ func (c *DockerServiceController) CreateUser(ctx context.Context, serviceID stri
 	}
 	sql, err := engine.CreateUserSQL(req.Username, host, password)
 	if err != nil {
-		return model.DatabaseUser{}, err
+		return model.DatabaseUser{}, engineError(err)
 	}
 	lock := c.databaseLock(serviceID)
 	lock.Lock()
@@ -440,7 +441,7 @@ func (c *DockerServiceController) DeleteUser(ctx context.Context, serviceID, use
 	}
 	sql, err := engine.DeleteUserSQL(user.Username, user.Host)
 	if err != nil {
-		return err
+		return engineError(err)
 	}
 	if _, err := c.runDatabaseSQL(ctx, serviceID, sql); err != nil {
 		return err
@@ -475,7 +476,7 @@ func (c *DockerServiceController) SetUserPassword(ctx context.Context, serviceID
 	}
 	sql, err := engine.SetPasswordSQL(user.Username, user.Host, password)
 	if err != nil {
-		return databases.Secret{}, err
+		return databases.Secret{}, engineError(err)
 	}
 	if err := c.requireActive(ctx, serviceID); err != nil {
 		return databases.Secret{}, err
@@ -536,7 +537,7 @@ func databaseUserID(serviceID string, engine model.DatabaseEngine, username, hos
 func (c *DockerServiceController) rollbackCreatedUser(ctx context.Context, serviceID string, engine dbengine.Engine, username, host string) error {
 	sql, err := engine.DeleteUserSQL(username, host)
 	if err != nil {
-		return err
+		return engineError(err)
 	}
 	lock := c.databaseLock(serviceID)
 	lock.Lock()
@@ -583,7 +584,7 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 	}
 	currentByDB := make(map[string]model.DatabaseGrant, len(current))
 	for _, grant := range current {
-		if isGlobalGrantScope(grant.Database) || engine.ProtectedDatabase(grant.Database) {
+		if !isGrantableScope(engine, grant.Database) || engine.ProtectedDatabase(grant.Database) {
 			continue
 		}
 		currentByDB[grant.Database] = grant
@@ -592,6 +593,9 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 	for _, grant := range desired {
 		if isGlobalGrantScope(grant.Database) {
 			return fmt.Errorf("%w: grant scope %q is not database-scoped", databases.ErrInvalidRequest, grant.Database)
+		}
+		if strings.Contains(grant.Database, "%") {
+			return invalidIdentifier(dbengine.ErrInvalidIdentifier)
 		}
 		if err := engine.ValidateDatabaseName(grant.Database); err != nil {
 			return invalidIdentifier(err)
@@ -609,7 +613,7 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 		if ok {
 			sql, err := engine.RevokeSQL(user.Username, user.Host, database, have)
 			if err != nil {
-				return err
+				return engineError(err)
 			}
 			if _, err := c.runDatabaseSQL(ctx, serviceID, sql); err != nil {
 				return err
@@ -617,7 +621,7 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 		}
 		sql, err := engine.GrantSQL(user.Username, user.Host, database, want)
 		if err != nil {
-			return err
+			return engineError(err)
 		}
 		if _, err := c.runDatabaseSQL(ctx, serviceID, sql); err != nil {
 			return err
@@ -632,7 +636,7 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 		}
 		sql, err := engine.RevokeSQL(user.Username, user.Host, database, have)
 		if err != nil {
-			return err
+			return engineError(err)
 		}
 		if _, err := c.runDatabaseSQL(ctx, serviceID, sql); err != nil {
 			return err
@@ -663,6 +667,28 @@ func isGlobalGrantScope(database string) bool {
 	default:
 		return false
 	}
+}
+
+// engineError maps engine contract validation/unsupported errors to domain
+// errors so the RPC layer never returns a 500 for a rejected identifier.
+func engineError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, dbengine.ErrUnsupported):
+		return fmt.Errorf("%w: %v", databases.ErrUnsupported, err)
+	case errors.Is(err, dbengine.ErrInvalidIdentifier):
+		return fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
+	default:
+		return err
+	}
+}
+
+func isGrantableScope(engine dbengine.Engine, database string) bool {
+	if isGlobalGrantScope(database) || strings.Contains(database, "%") {
+		return false
+	}
+	return engine.ValidateDatabaseName(database) == nil
 }
 
 func grantsEqual(a, b model.DatabaseGrant) bool {

@@ -189,6 +189,7 @@ type fakeDatabaseEngine struct {
 	emptyUserIDs bool
 	userHost     string
 	userHostSet  bool
+	grantErr     error
 }
 
 func (e *fakeDatabaseEngine) ID() model.DatabaseEngine { return e.id }
@@ -318,10 +319,19 @@ func (e *fakeDatabaseEngine) DeleteUserSQL(username, host string) (string, error
 }
 
 func (e *fakeDatabaseEngine) GrantSQL(username, host, database string, grant model.DatabaseGrant) (string, error) {
+	if e.grantErr != nil {
+		return "", e.grantErr
+	}
+	if err := dbengine.ValidateIdentifier(database); err != nil {
+		return "", err
+	}
 	return "GRANT " + string(grant.Preset) + " ON " + database, nil
 }
 
 func (e *fakeDatabaseEngine) RevokeSQL(username, host, database string, grant model.DatabaseGrant) (string, error) {
+	if err := dbengine.ValidateIdentifier(database); err != nil {
+		return "", err
+	}
 	return "REVOKE " + string(grant.Preset) + " ON " + database, nil
 }
 
@@ -1241,6 +1251,49 @@ func TestHelperGrantDiffSkipsGlobalScopes(t *testing.T) {
 	}
 	if runner.stdinContains("ON *") || runner.stdinContains("REVOKE read_write ON *") {
 		t.Fatalf("global grant was revoked: %q", runner.stdin)
+	}
+}
+
+func TestHelperGrantDiffSkipsWildcardScopes(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.grantList = "app%\tread_write\napp\tread_write_schema\n"
+	runner.reset()
+	engine := &fakeDatabaseEngine{id: model.DatabaseMySQL}
+	user := model.DatabaseUser{Username: "app", Host: "%"}
+	if err := c.applyUserGrants(context.Background(), "mysql", engine, user, []model.DatabaseGrant{
+		{Database: "app", Preset: model.GrantReadWrite},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.stdinContains("ON app%") || runner.stdinContains("REVOKE read_write ON app%") {
+		t.Fatalf("wildcard grant was revoked: %q", runner.stdin)
+	}
+}
+
+func TestHelperGrantDiffRejectsDesiredGlobalScope(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	engine := &fakeDatabaseEngine{id: model.DatabaseMySQL}
+	user := model.DatabaseUser{Username: "app", Host: "%"}
+	err := c.applyUserGrants(context.Background(), "mysql", engine, user, []model.DatabaseGrant{
+		{Database: "*", Preset: model.GrantReadWrite},
+	})
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestHelperGrantEngineErrorIsDomainError(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.grantList = "app\tread_write_schema\n"
+	engine := &fakeDatabaseEngine{id: model.DatabaseMySQL, grantErr: dbengine.ErrInvalidIdentifier}
+	user := model.DatabaseUser{Username: "app", Host: "%"}
+	err := c.applyUserGrants(context.Background(), "mysql", engine, user, []model.DatabaseGrant{
+		{Database: "app", Preset: model.GrantReadWrite},
+	})
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
 	}
 }
 
