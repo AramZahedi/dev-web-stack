@@ -327,6 +327,7 @@ func (d *Docker) handleDatabaseEnv(w http.ResponseWriter, r *http.Request) {
 		writeDatabaseError(w, err)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, dbproto.SiteEnvResponse{Env: env})
 }
 

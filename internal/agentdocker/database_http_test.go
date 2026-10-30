@@ -371,6 +371,23 @@ func TestDatabaseEnvRouteRejectsNestedCallerPassword(t *testing.T) {
 	}
 }
 
+func TestDatabaseEnvRouteSetsNoStore(t *testing.T) {
+	d, _ := newDatabaseTestDocker(t)
+	body, _ := json.Marshal(dbproto.SiteEnvRequest{
+		ServiceID: "mysql",
+		Links: []dbproto.LinkInfo{{
+			ServiceID: "mysql", Engine: model.DatabaseMySQL, Database: "app", Username: "app", Primary: true,
+		}},
+	})
+	recorder := serveDatabase(t, d, http.MethodPost, "/v1/services/mysql/database-env", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("env = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", recorder.Header().Get("Cache-Control"))
+	}
+}
+
 // TestCrossLaneMariaDBConnectionNameRoute pins the agent route to the same
 // framework-facing value the daemon lane must emit for MariaDB.
 func TestCrossLaneMariaDBConnectionNameRoute(t *testing.T) {
