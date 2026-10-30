@@ -290,6 +290,22 @@ func TestMySQLListUsersSelectsAccountLocked(t *testing.T) {
 	}
 }
 
+func TestPostgresProtectsPredefinedRoles(t *testing.T) {
+	e := NewPostgreSQL()
+	for _, name := range []string{"pg_monitor", "pg_read_all_data", "pg_signal_backend", "pg_checkpoint"} {
+		if !e.ProtectedUser(name, "") {
+			t.Fatalf("postgres does not protect predefined role %q", name)
+		}
+	}
+	users, err := e.ParseUsers([]byte("pg_monitor\tt\tt\napp\tt\tf\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || users[0].Username != "app" {
+		t.Fatalf("users = %+v, want only app", users)
+	}
+}
+
 func TestPostgresListUsersIncludesDisabledRoles(t *testing.T) {
 	e := NewPostgreSQL()
 	command, err := e.ListUsersCommand()

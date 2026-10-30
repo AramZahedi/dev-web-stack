@@ -30,7 +30,9 @@ func (*postgresEngine) ProtectedDatabase(name string) bool {
 }
 
 func (*postgresEngine) ProtectedUser(username, _ string) bool {
-	return SystemUsers[model.DatabasePostgreSQL][username]
+	// PostgreSQL ships predefined roles (pg_monitor, pg_read_all_data, ...)
+	// that are cluster-wide and must never be dropped or edited by devstack.
+	return strings.HasPrefix(username, "pg_") || SystemUsers[model.DatabasePostgreSQL][username]
 }
 
 func (*postgresEngine) RenameSupported() bool { return true }
@@ -138,7 +140,7 @@ func (*postgresEngine) ParseUsers(output []byte) ([]model.DatabaseUser, error) {
 	users := make([]model.DatabaseUser, 0, len(rows))
 	for _, row := range rows {
 		username := row[0]
-		if SystemUsers[model.DatabasePostgreSQL][username] {
+		if strings.HasPrefix(username, "pg_") || SystemUsers[model.DatabasePostgreSQL][username] {
 			continue
 		}
 		users = append(users, model.DatabaseUser{
