@@ -95,6 +95,8 @@ func (d *Docker) ServiceContent(ctx context.Context, request agentproto.ServiceC
 
 // ServiceApply atomically writes one safe config file. Existing content is
 // backed up under the WSL backups tree before the replacement is published.
+// Active web-server configs are validated and reloaded; a failed validation or
+// reload restores the previous file content.
 func (d *Docker) ServiceApply(ctx context.Context, request agentproto.ServiceConfigRequest) (agentproto.ServiceContentResponse, error) {
 	service, err := d.service(request.ID)
 	if err != nil {
@@ -110,15 +112,18 @@ func (d *Docker) ServiceApply(ctx context.Context, request agentproto.ServiceCon
 	if err != nil {
 		return agentproto.ServiceContentResponse{}, err
 	}
+	var previous []byte
+	existed := false
 	if current, err := os.Lstat(full); err == nil {
 		if current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() {
 			return agentproto.ServiceContentResponse{}, fmt.Errorf("agentdocker: config file %q is not a regular file", rel)
 		}
-		old, err := readConfig(full)
+		previous, err = readConfig(full)
 		if err != nil {
 			return agentproto.ServiceContentResponse{}, err
 		}
-		if _, err := d.backupConfig(service.ID, rel, old, "config"); err != nil {
+		existed = true
+		if _, err := d.backupConfig(service.ID, rel, previous, "config"); err != nil {
 			return agentproto.ServiceContentResponse{}, fmt.Errorf("agentdocker: backup %s config %s: %w", service.ID, rel, err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -127,7 +132,80 @@ func (d *Docker) ServiceApply(ctx context.Context, request agentproto.ServiceCon
 	if err := writeAtomic(full, []byte(request.Content), 0o644); err != nil {
 		return agentproto.ServiceContentResponse{}, err
 	}
+	stage, applyErr := d.applyLiveWebConfig(ctx, service)
+	if applyErr != nil {
+		rollbackErr := d.restoreServiceConfig(full, previous, existed)
+		if stage == "reload" {
+			// The reload may have failed partway; make a best effort to put the
+			// previous config back in front of the running server.
+			_ = d.reloadActiveWebConfig(ctx, service)
+		}
+		if rollbackErr != nil {
+			return agentproto.ServiceContentResponse{}, fmt.Errorf("agentdocker: %s %s config %s: %w (rollback failed: %v)", stage, service.ID, rel, applyErr, rollbackErr)
+		}
+		return agentproto.ServiceContentResponse{}, fmt.Errorf("agentdocker: %s %s config %s: %w", stage, service.ID, rel, applyErr)
+	}
 	return agentproto.ServiceContentResponse{Path: rel, Content: request.Content, Hash: hashBytes([]byte(request.Content))}, nil
+}
+
+// applyLiveWebConfig validates and reloads an active web-server config. It
+// returns the stage that failed so the caller can decide whether the previous
+// config must be reloaded after a rollback. Non-web and inactive services are
+// staged only; their change becomes live on the next activation.
+func (d *Docker) applyLiveWebConfig(ctx context.Context, service services.Service) (string, error) {
+	if service.Group != services.GroupWeb {
+		return "", nil
+	}
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	status, err := d.Status(ctx, string(service.ID))
+	if err != nil {
+		return "inspect", fmt.Errorf("read service state: %w", err)
+	}
+	if status.State != "active" {
+		return "", nil
+	}
+	if err := d.ensureCompose(); err != nil {
+		return "prepare", err
+	}
+	if len(service.ValidateCommand) == 0 {
+		return "validate", errors.New("catalog has no validation command")
+	}
+	if _, err := d.compose(ctx, append([]string{"exec", "-T", string(service.ID)}, service.ValidateCommand...)...); err != nil {
+		return "validate", err
+	}
+	if len(service.ReloadCommand) == 0 {
+		return "reload", errors.New("catalog has no reload command")
+	}
+	if _, err := d.compose(ctx, append([]string{"exec", "-T", string(service.ID)}, service.ReloadCommand...)...); err != nil {
+		return "reload", err
+	}
+	return "", nil
+}
+
+// reloadActiveWebConfig is the best-effort rollback companion for a failed
+// reload. Errors are intentionally ignored by the caller.
+func (d *Docker) reloadActiveWebConfig(ctx context.Context, service services.Service) error {
+	if service.Group != services.GroupWeb || len(service.ReloadCommand) == 0 {
+		return nil
+	}
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	if err := d.ensureCompose(); err != nil {
+		return err
+	}
+	_, err := d.compose(ctx, append([]string{"exec", "-T", string(service.ID)}, service.ReloadCommand...)...)
+	return err
+}
+
+func (d *Docker) restoreServiceConfig(full string, previous []byte, existed bool) error {
+	if !existed {
+		if err := os.Remove(full); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return writeAtomic(full, previous, 0o644)
 }
 
 // ServiceReset restores the newest previous config backup. It first retains

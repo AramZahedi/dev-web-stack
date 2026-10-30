@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -65,6 +66,166 @@ func TestServiceConfigReadApplyResetAndBackupStayAgentSide(t *testing.T) {
 	}
 	if reset.Content != "old configuration\n" {
 		t.Fatalf("ServiceReset() content = %q", reset.Content)
+	}
+}
+
+type serviceApplyRunner struct {
+	calls       [][]string
+	state       string
+	validateErr error
+	reloadErr   error
+}
+
+func (r *serviceApplyRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, append([]string{name}, args...))
+	joined := name + " " + strings.Join(args, " ")
+	switch {
+	case strings.Contains(joined, "ps -a --format json"):
+		return []byte(`{"State":"` + r.state + `"}`), nil
+	case strings.Contains(joined, "exec -T nginx nginx -t"):
+		return nil, r.validateErr
+	case strings.Contains(joined, "exec -T nginx nginx -s reload"):
+		return nil, r.reloadErr
+	default:
+		return nil, nil
+	}
+}
+
+func (r *serviceApplyRunner) called(fragment string) bool {
+	for _, call := range r.calls {
+		if strings.Contains(strings.Join(call, " "), fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestWebServiceApplyValidatesAndReloadsWhenActive(t *testing.T) {
+	root := t.TempDir()
+	runner := &serviceApplyRunner{state: "running"}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "services", "nginx", "config", "conf.d", "custom")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(configDir, "e2e.conf")
+	if err := os.WriteFile(file, []byte("old configuration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := module.ServiceApply(context.Background(), agentproto.ServiceConfigRequest{
+		ID: "nginx", Rel: "conf.d/custom/e2e.conf", Content: "new configuration\n",
+	}); err != nil {
+		t.Fatalf("ServiceApply() = %v", err)
+	}
+	if !runner.called("exec -T nginx nginx -t") {
+		t.Fatalf("ServiceApply() did not validate the active nginx config: %v", runner.calls)
+	}
+	if !runner.called("exec -T nginx nginx -s reload") {
+		t.Fatalf("ServiceApply() did not reload nginx after a valid apply: %v", runner.calls)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || string(data) != "new configuration\n" {
+		t.Fatalf("config after apply = %q, err %v", data, err)
+	}
+}
+
+func TestWebServiceApplyRollsBackWhenValidationFails(t *testing.T) {
+	root := t.TempDir()
+	runner := &serviceApplyRunner{state: "running", validateErr: errors.New("nginx: configuration test failed")}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "services", "nginx", "config", "conf.d", "custom")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(configDir, "e2e.conf")
+	if err := os.WriteFile(file, []byte("old configuration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := module.ServiceApply(context.Background(), agentproto.ServiceConfigRequest{
+		ID: "nginx", Rel: "conf.d/custom/e2e.conf", Content: "invalid configuration\n",
+	}); err == nil {
+		t.Fatal("ServiceApply() accepted a config that failed nginx -t")
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || string(data) != "old configuration\n" {
+		t.Fatalf("config after failed validation = %q, err %v", data, err)
+	}
+	if runner.called("nginx -s reload") {
+		t.Fatalf("failed validation still reloaded nginx: %v", runner.calls)
+	}
+}
+
+func TestWebServiceApplyRestoresPreviousConfigWhenReloadFails(t *testing.T) {
+	root := t.TempDir()
+	runner := &serviceApplyRunner{state: "running", reloadErr: errors.New("nginx: reload failed")}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "services", "nginx", "config", "conf.d", "custom")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(configDir, "e2e.conf")
+	if err := os.WriteFile(file, []byte("old configuration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := module.ServiceApply(context.Background(), agentproto.ServiceConfigRequest{
+		ID: "nginx", Rel: "conf.d/custom/e2e.conf", Content: "new configuration\n",
+	}); err == nil {
+		t.Fatal("ServiceApply() accepted a config that failed to reload")
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || string(data) != "old configuration\n" {
+		t.Fatalf("config after failed reload = %q, err %v", data, err)
+	}
+	reloads := 0
+	for _, call := range runner.calls {
+		if strings.Contains(strings.Join(call, " "), "nginx -s reload") {
+			reloads++
+		}
+	}
+	if reloads < 2 {
+		t.Fatalf("reload attempts = %d, want the failed reload plus a rollback reload", reloads)
+	}
+}
+
+func TestWebServiceApplySkipsValidationWhenInactive(t *testing.T) {
+	root := t.TempDir()
+	runner := &serviceApplyRunner{state: "exited"}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "services", "nginx", "config", "conf.d", "custom")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(configDir, "e2e.conf")
+	if err := os.WriteFile(file, []byte("old configuration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := module.ServiceApply(context.Background(), agentproto.ServiceConfigRequest{
+		ID: "nginx", Rel: "conf.d/custom/e2e.conf", Content: "staged configuration\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.called("nginx -t") || runner.called("nginx -s reload") {
+		t.Fatalf("inactive apply validated or reloaded: %v", runner.calls)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || string(data) != "staged configuration\n" {
+		t.Fatalf("config after inactive apply = %q, err %v", data, err)
 	}
 }
 
