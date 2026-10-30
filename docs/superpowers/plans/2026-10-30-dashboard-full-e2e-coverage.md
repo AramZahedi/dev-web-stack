@@ -192,7 +192,7 @@ Write `task-0/README.md` with commit SHA, dashboard URL, baseline JSON, backup p
 
 **Depends on:** Task 0. **Artifacts:** `task-1/`
 
-- [ ] **Step 1: Add a PHP site in Windows source mode**
+- [x] **Step 1: Add a PHP site in Windows source mode**
 
 Dashboard: Sites → Add site. Fill:
 - Site name: `e2e-full-php`
@@ -213,7 +213,7 @@ curl.exe -k -sS https://e2e-full-php.test
 
 Expected body starts with `php 8.4.27`; JSON `kind=php`, `source_mode=windows`, `node_toolchain.source=global`.
 
-- [ ] **Step 2: Add a PHP site in WSL source mode**
+- [x] **Step 2: Add a PHP site in WSL source mode**
 
 Dashboard: Add site:
 - Name `e2e-full-php-wsl`
@@ -224,7 +224,7 @@ Dashboard: Add site:
 
 Expected: Running; `source_mode=wsl`; `https://e2e-full-php-wsl.test` returns `php 8.4.27 sapi fpm-fcgi`. If the fixture has no PHP file, copy `index.php` into the WSL fixture first.
 
-- [ ] **Step 3: Add static and Node sites in WSL mode**
+- [x] **Step 3: Add static and Node sites in WSL mode**
 
 Static: `e2e-full-static-wsl`, path `\\wsl.localhost\devstack\data\devstack\projects\e2e-full-wsl`, kind static, source WSL, Node inherit. Expected `e2e full wsl`.
 
@@ -239,7 +239,7 @@ EOF"
 
 Expected HTTP `node vX npm Y`; terminal `node -v` matches.
 
-- [ ] **Step 4: Exercise validation and navigation**
+- [x] **Step 4: Exercise validation and navigation**
 
 Attempt each invalid case and assert inline error, no site created:
 - Empty name/folder → `Enter a site name.` / `Choose the project folder.`
@@ -249,11 +249,11 @@ Attempt each invalid case and assert inline error, no site created:
 - Node kind with no Node version/command → `Choose an installed Node version.` / `Enter the command that starts the dev server.`
 - Back buttons preserve entered values; Cancel returns to Sites without creating.
 
-- [ ] **Step 5: Assert no console errors and evidence**
+- [x] **Step 5: Assert no console errors and evidence**
 
 Fresh reload each created Site Detail; capture snapshot/screenshot and console. Expected 0 errors/warnings.
 
-- [ ] **Step 6: Cleanup**
+- [x] **Step 6: Cleanup**
 
 Remove all four fixture sites through the dashboard typed confirmation (or CLI fallback):
 
@@ -824,4 +824,5 @@ Do not commit `dist/`, `.playwright-mcp/`, runtime data, or secrets.
 - [ ] No task weakens a security boundary to pass.
 - [ ] Final gate includes Go, UI, installer, lifecycle, release, vertical slice, and live state.
 - [ ] The final report is committed and linked from `docs/README.md` and `docs/handoff.md`.
+
 
