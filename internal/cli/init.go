@@ -36,7 +36,7 @@ func (a *App) newInitCmd() *cobra.Command {
 			return a.runInit(cmd)
 		},
 	}
-	cmd.Flags().Bool("dashboard-auth", false, "require the per-install token for dashboard API access")
+	cmd.Flags().Bool("dashboard-auth", false, "require the per-install token for dashboard API access (use --dashboard-auth=false to disable)")
 	return cmd
 }
 
@@ -51,17 +51,15 @@ func (a *App) runInit(cmd *cobra.Command) error {
 		return wrapError(err, "CONFIG_INVALID", "Fix config.yaml or choose a different --home.")
 	}
 	dashboardAuthChanged := false
+	dashboardAuthEnabled := cfg.DashboardAuth
 	if cmd.Flags().Changed("dashboard-auth") {
 		enabled, flagErr := cmd.Flags().GetBool("dashboard-auth")
 		if flagErr != nil {
 			return flagErr
 		}
 		if cfg.DashboardAuth != enabled {
-			cfg.DashboardAuth = enabled
-			if err := cfg.Save(); err != nil {
-				return wrapError(err, "CONFIG_INVALID", "Fix config.yaml, then rerun `devstack init`.")
-			}
 			dashboardAuthChanged = true
+			dashboardAuthEnabled = enabled
 		}
 	}
 	userHome, err := userHomeDir()
@@ -132,6 +130,13 @@ func (a *App) runInit(cmd *cobra.Command) error {
 	}
 
 	if dashboardAuthChanged {
+		// Persist only after helper, trust, and hosts setup succeeded so a
+		// failed init cannot leave the config and the running daemon disagreeing
+		// about whether the dashboard requires a token.
+		cfg.DashboardAuth = dashboardAuthEnabled
+		if err := cfg.Save(); err != nil {
+			return wrapError(err, "CONFIG_INVALID", "Fix config.yaml, then rerun `devstack init`.")
+		}
 		// The running daemon loaded the old setting at startup. Stop it here so
 		// ensureRunning starts a daemon that reads the saved config.
 		if _, err := stopDaemon(ctx, home); err != nil {

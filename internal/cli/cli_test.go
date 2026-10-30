@@ -1089,6 +1089,34 @@ func TestCLIInitDashboardAuthFlag(t *testing.T) {
 	}
 }
 
+func TestCLIInitDashboardAuthPersistsOnlyWhenSetupSucceeds(t *testing.T) {
+	useTestSeams(t)
+	home := t.TempDir()
+	if _, err := config.Load(home); err != nil {
+		t.Fatal(err)
+	}
+	oldDial := dialHelper
+	dialHelper = func(string) (*helperclient.Client, error) {
+		return nil, errors.New("helper socket is missing")
+	}
+	t.Cleanup(func() { dialHelper = oldDial })
+
+	code, _, stderr := runCLIExit(t, &fakeClient{}, "init", "--home", home, "--dashboard-auth", "--json")
+	if code == 0 {
+		t.Fatal("want non-zero exit")
+	}
+	if !strings.Contains(stderr, "HELPER_UNAVAILABLE") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DashboardAuth {
+		t.Fatal("dashboard_auth was persisted even though helper setup failed")
+	}
+}
+
 func TestCLIInitWarnsWhenProxyTargetsCannotPersist(t *testing.T) {
 	useTestSeams(t)
 	helper, socket := startFakeHelper(t)
