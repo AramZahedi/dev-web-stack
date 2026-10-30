@@ -13,6 +13,7 @@
   import NotFound from './routes/NotFound.svelte';
   import { initSession, refreshDaemon, session } from './lib/stores';
   import { authenticateFromFragment, openEvents } from './lib/api';
+  import { isRefreshEvent } from './lib/events';
 
   const routes = {
     '/': Sites,
@@ -46,7 +47,7 @@
       // token has established an authenticated session.
       if ($session.authenticated) {
         closeEvents = openEvents((event) => {
-          if (/^(site|runtime|doctor|trust|service)\./.test(event.type)) {
+          if (isRefreshEvent(event.type)) {
             window.dispatchEvent(new CustomEvent('devstack:refresh'));
           }
         });
