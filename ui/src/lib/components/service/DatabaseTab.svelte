@@ -29,6 +29,7 @@
   import Toggle from '../Toggle.svelte';
   import DatabaseFormDialog from './DatabaseFormDialog.svelte';
   import { saveBlob } from './fileDownload';
+  import { jobToastKind } from './jobStatus';
 
   interface Props {
     service: ServiceView;
@@ -109,7 +110,7 @@
     jobError = null;
     if (!jobRunning(next)) {
       addToast({
-        kind: 'success',
+        kind: jobToastKind(next.status),
         title: `${next.kind} ${next.status}`,
         message: next.message || `The ${next.kind} job for ${next.database} finished.`,
       });

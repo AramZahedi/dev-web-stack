@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 import DatabaseTab from './DatabaseTab.svelte';
 import * as db from '../../databaseApi';
-import type { Database } from '../../databaseTypes';
+import { clearToasts, toasts } from '../../stores';
+import type { Database, DatabaseJob } from '../../databaseTypes';
 import type { ServiceView } from '../../types';
 
 vi.mock('../../databaseApi', async (importOriginal) => {
@@ -90,6 +92,7 @@ const POSTGRES_DATABASES: Database[] = [
 ];
 
 beforeEach(() => {
+  clearToasts();
   vi.mocked(db.dropServiceDatabase).mockResolvedValue(undefined);
   vi.mocked(db.createServiceDatabase).mockImplementation(async (_id, body) => ({
     name: body.name,
@@ -198,6 +201,60 @@ describe('DatabaseTab', () => {
       }),
     );
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it('reports a failed backup job as an error toast and keeps the detail', async () => {
+    const failed: DatabaseJob = {
+      id: 'job_failed',
+      service_id: 'mysql',
+      database: 'app',
+      kind: 'backup',
+      status: 'failed',
+      progress: 40,
+      message: 'disk full',
+      created_at: '2026-10-29T10:00:00Z',
+      updated_at: '2026-10-29T10:00:02Z',
+    };
+    vi.mocked(db.createServiceBackup).mockResolvedValue(failed);
+
+    render(DatabaseTab, {
+      props: { service: MYSQL_SERVICE, databases: MYSQL_DATABASES, onRefresh: vi.fn() },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /back up app/i }));
+
+    await waitFor(() => {
+      const toast = get(toasts).find((entry) => entry.title === 'backup failed');
+      expect(toast?.kind).toBe('error');
+    });
+    expect(screen.getByRole('status', { name: 'Database job' }).textContent).toContain('disk full');
+    expect(screen.getByText('failed')).toBeTruthy();
+  });
+
+  it('reports a canceled job as an informational toast', async () => {
+    vi.mocked(db.createServiceBackup).mockResolvedValue({
+      id: 'job_canceled',
+      service_id: 'mysql',
+      database: 'app',
+      kind: 'backup',
+      status: 'canceled',
+      progress: 20,
+      message: 'canceled by user',
+      created_at: '2026-10-29T10:00:00Z',
+      updated_at: '2026-10-29T10:00:02Z',
+    });
+
+    render(DatabaseTab, {
+      props: { service: MYSQL_SERVICE, databases: MYSQL_DATABASES, onRefresh: vi.fn() },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /back up app/i }));
+
+    await waitFor(() => {
+      const toast = get(toasts).find((entry) => entry.title === 'backup canceled');
+      expect(toast?.kind).toBe('info');
+    });
+    expect(screen.getByText('canceled by user')).toBeTruthy();
   });
 
   it('creates a database through the form dialog', async () => {

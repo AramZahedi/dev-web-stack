@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 import BackupsTab from './BackupsTab.svelte';
 import * as db from '../../databaseApi';
+import { clearToasts, toasts } from '../../stores';
 import type { Database, DatabaseBackup, DatabaseJob } from '../../databaseTypes';
 import type { ServiceView } from '../../types';
 
@@ -79,6 +81,7 @@ const RUNNING_JOB: DatabaseJob = {
 };
 
 beforeEach(() => {
+  clearToasts();
   vi.mocked(db.downloadServiceBackup).mockResolvedValue(new Blob(['mock']));
   vi.mocked(db.deleteServiceBackup).mockResolvedValue(undefined);
   vi.mocked(db.cancelDatabaseJob).mockResolvedValue(undefined);
@@ -239,6 +242,36 @@ describe('BackupsTab', () => {
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Delete backup' }));
 
     await waitFor(() => expect(db.deleteServiceBackup).toHaveBeenCalledWith('mysql', 'bkp_1'));
+  });
+
+  it('reports a canceled restore job as an informational toast', async () => {
+    vi.mocked(db.restoreServiceBackup).mockResolvedValue({
+      ...RUNNING_JOB,
+      kind: 'restore',
+      status: 'canceled',
+      message: 'canceled by user',
+    });
+    render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: MYSQL_BACKUPS,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /restore app backup/i }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Restore backup' }));
+
+    await waitFor(() => {
+      const toast = get(toasts).find((entry) => entry.title === 'restore canceled');
+      expect(toast?.kind).toBe('info');
+    });
+    expect(screen.getByText('canceled by user')).toBeTruthy();
   });
 
   it('shows job progress and cancels a running backup job', async () => {
