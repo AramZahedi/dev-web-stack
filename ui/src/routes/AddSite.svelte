@@ -50,6 +50,7 @@
   import { isDatabaseIdentifier } from '../lib/components/site/databaseIdentifiers';
   import {
     sanitizeDatabaseUrl,
+    withoutPassword,
     type DatabasePickerSummary,
   } from '../lib/components/site/databasePickerTypes';
   import type { CreateSiteDatabaseRequest, SiteDatabaseLink } from '../lib/databaseTypes';
@@ -812,7 +813,7 @@
         build,
         env,
       };
-      if (dbRequest) body.database = dbRequest;
+      if (dbRequest) body.database = withoutPassword(dbRequest);
       const site = await api.createSite(body);
       const buildOutputMissing =
         site.kind === 'static' && Boolean(site.build) && site.status === 'stopped';

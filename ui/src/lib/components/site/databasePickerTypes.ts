@@ -1,4 +1,4 @@
-import type { GrantPreset } from '../../databaseTypes';
+import type { CreateSiteDatabaseRequest, GrantPreset } from '../../databaseTypes';
 
 /** Display data derived from the picker selection for review and dialogs. */
 export interface DatabasePickerSummary {
@@ -22,6 +22,14 @@ const GRANT_LABELS: Record<GrantPreset, string> = {
 export function grantLabel(preset: GrantPreset | ''): string {
   if (!preset) return 'No access yet';
   return GRANT_LABELS[preset] ?? preset;
+}
+
+/** Removes a caller-supplied password; v1 never stores external passwords. */
+export function withoutPassword(
+  request: CreateSiteDatabaseRequest,
+): CreateSiteDatabaseRequest {
+  const { password: _password, ...rest } = request;
+  return rest;
 }
 
 /** Removes a password embedded in a database URL before it reaches the DOM. */

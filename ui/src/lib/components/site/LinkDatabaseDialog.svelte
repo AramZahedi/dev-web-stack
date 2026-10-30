@@ -8,6 +8,7 @@
   import Modal from '../Modal.svelte';
   import DatabasePicker from './DatabasePicker.svelte';
   import { isDatabaseIdentifier } from './databaseIdentifiers';
+  import { withoutPassword } from './databasePickerTypes';
 
   interface Props {
     open: boolean;
@@ -85,7 +86,7 @@
     submitting = true;
     try {
       if (value.new_database || value.new_user) {
-        const result = await createSiteDatabase(siteRef, value);
+        const result = await createSiteDatabase(siteRef, withoutPassword(value));
         if (result?.warning) {
           addToast({
             kind: 'info',

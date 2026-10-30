@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeDatabaseUrl } from './databasePickerTypes';
+import { sanitizeDatabaseUrl, withoutPassword } from './databasePickerTypes';
 
 describe('sanitizeDatabaseUrl', () => {
   it('removes a password that contains an @ from the URL', () => {
@@ -20,5 +20,24 @@ describe('sanitizeDatabaseUrl', () => {
     );
     expect(sanitizeDatabaseUrl('not a url')).toBe('not a url');
     expect(sanitizeDatabaseUrl('')).toBe('');
+  });
+});
+
+describe('withoutPassword', () => {
+  it('strips a caller-supplied password from a site database request', () => {
+    expect(
+      withoutPassword({
+        service_id: 'mysql',
+        database: 'app',
+        user_id: 'usr_app',
+        password: 's3cret',
+        primary: true,
+      }),
+    ).toEqual({
+      service_id: 'mysql',
+      database: 'app',
+      user_id: 'usr_app',
+      primary: true,
+    });
   });
 });
