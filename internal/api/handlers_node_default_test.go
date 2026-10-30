@@ -188,6 +188,27 @@ func TestNodeDefaultAPIStatusSetClear(t *testing.T) {
 	assertError(t, rec, http.StatusInternalServerError, codeInternal)
 }
 
+func TestNodeDefaultAPIErrorClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code int
+		kind string
+	}{
+		{name: "configured build missing", err: tooling.ErrNodeDefaultNotInstalled, code: http.StatusConflict, kind: codeRuntimeMissing},
+		{name: "no node installed", err: tooling.ErrNoNodeInstalled, code: http.StatusConflict, kind: codeRuntimeMissing},
+		{name: "malformed default", err: tooling.ErrUnsupportedNodeDefault, code: http.StatusBadRequest, kind: codeInvalidRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			toolSvc := &fakeNodeDefaultToolService{setErr: tc.err}
+			fx := newFixture(t, Config{Tooling: toolSvc})
+			rec := httptest.NewRecorder()
+			fx.server.handleSetNodeDefault(rec, httptest.NewRequest(http.MethodPut, "/api/v1/node/default", strings.NewReader(`{"value":"99.99"}`)))
+			assertError(t, rec, tc.code, tc.kind)
+		})
+	}
+}
+
 func TestNodeDefaultAPIUnavailable(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

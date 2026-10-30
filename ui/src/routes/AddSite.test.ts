@@ -197,6 +197,27 @@ describe('AddSite Wave 2 fields', () => {
     ).toBeTruthy();
   });
 
+  it('keeps windows source mode when a windows path is entered before choosing node', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\Users\\Aram\\.devstack',
+      user_home: 'C:\\Users\\Aram',
+    });
+
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
+    await fireEvent.input(screen.getByLabelText(/Project folder/), {
+      target: { value: 'C:\\Users\\Aram\\projects\\demo' },
+    });
+    await fireEvent.click(screen.getByRole('radio', { name: /Node/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByLabelText(/Node version/)).toBeTruthy();
+    expect(screen.queryByText(/WSL source mode requires/)).toBeNull();
+    expect(screen.queryByText(/Windows source mode requires/)).toBeNull();
+  });
+
   it('requires an explicit version for node sites', async () => {
     render(AddSite);
     await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());

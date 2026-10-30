@@ -90,6 +90,25 @@ func TestResolveNodeToolchainPrefersSiteThenGlobal(t *testing.T) {
 	}
 }
 
+func TestCreateNodeSiteUsesInstalledDiscoveryBuildWithoutCatalogInstall(t *testing.T) {
+	svc, fakes := newTestService(t)
+	build := installSiteNodeBuild(t, fakes, "22.11.0")
+	site := createNodeToolchainSite(t, svc, CreateRequest{
+		Name:        "api",
+		Path:        fakes.root,
+		Kind:        "node",
+		NodeVersion: build.Version,
+		Command:     "node server.js",
+		SourceMode:  "windows",
+	})
+	if site.NodeVersion != build.Version {
+		t.Fatalf("site node version = %q, want %q", site.NodeVersion, build.Version)
+	}
+	if len(fakes.backend.runtimeCalls) != 0 {
+		t.Fatalf("node site creation used the embedded catalog installer: %v", fakes.backend.runtimeCalls)
+	}
+}
+
 func TestBackendSpecResolvesInheritedNodeDefault(t *testing.T) {
 	svc, fakes := newTestService(t)
 	older := installSiteNodeBuild(t, fakes, "20.18.0")

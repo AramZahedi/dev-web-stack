@@ -295,6 +295,12 @@ func Run(ctx context.Context, opts Options) error {
 	d.certs = certManager
 	d.sites = siteService
 
+	if normalized, err := siteService.NormalizeNodeVersions(ctx); err != nil {
+		logger.Warn("daemon: normalize legacy Node pins; continuing so the API can repair them", "error", err)
+	} else if len(normalized) > 0 {
+		logger.Info("daemon: normalized legacy Node pins", "count", len(normalized))
+	}
+
 	webControl := servicecontrol.NewWebServiceControl(serviceManager)
 	webProvider, err := dockerweb.NewProvider(dockerweb.ProviderConfig{
 		State:    siteService,

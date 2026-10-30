@@ -213,6 +213,23 @@ func TestSiteAddAcceptsNodeForStaticAndPHP(t *testing.T) {
 		}
 	})
 
+	t.Run("node", func(t *testing.T) {
+		fake := &fakeClient{runtimes: []model.RuntimeBuild{
+			{ID: "node@22.11.0", Kind: "node", Version: "22.11.0"},
+		}}
+		runCLI(t, fake, "site", "add", "--name", "api", "--path", "/tmp/api",
+			"--kind", "node", "--node", "22.11.0", "--command", "node server.js")
+		if fake.addReq.Kind != "node" {
+			t.Fatalf("kind = %q, want node", fake.addReq.Kind)
+		}
+		if fake.addReq.NodeVersion != "22.11.0" || fake.addReq.Command != "node server.js" {
+			t.Fatalf("node fields = %q/%q", fake.addReq.NodeVersion, fake.addReq.Command)
+		}
+		if len(fake.installs) != 0 {
+			t.Fatalf("node site add used discovery/install: %v", fake.installs)
+		}
+	})
+
 	t.Run("uninstalled", func(t *testing.T) {
 		fake := &fakeClient{}
 		code, _, stderr := runCLIExit(t, fake, "site", "add",

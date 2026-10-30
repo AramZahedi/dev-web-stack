@@ -296,12 +296,6 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		return model.Site{}, s.rollbackCreate(ctx, site, oldHosts, certIssued, port, cause)
 	}
 
-	if site.Kind == model.SiteNode {
-		if _, err := s.deps.Backend.EnsureRuntime(ctx, "node", site.NodeVersion); err != nil {
-			return fail(fmt.Errorf("sites: ensure node %s for %q: %w", site.NodeVersion, site.Name, err), false)
-		}
-	}
-
 	var phpBuild model.RuntimeBuild
 	if site.Kind == model.SitePHP {
 		if err := s.checkPHPBackend(); err != nil {

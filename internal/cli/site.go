@@ -21,6 +21,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/nodereleases"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 )
 
@@ -264,9 +265,21 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 	return nil
 }
 
-// resolveNode picks a catalog build for the requested version and installs it
-// when it is missing. The prompt goes to stderr in JSON mode.
+// resolveNode resolves an installed Node version, then falls back to live
+// discovery for a missing release and finally to the embedded catalog for
+// older daemons. It never creates a site with an uninstalled pin.
 func (a *App) resolveNode(ctx context.Context, c Client, cmd *cobra.Command, requested string) (string, error) {
+	if version, err := resolveInstalledNodeVersion(ctx, c, requested); err == nil {
+		return version, nil
+	}
+	if discovery, ok := c.(interface {
+		NodeRelease(context.Context, string) (nodereleases.Preflight, error)
+	}); ok {
+		preflight, err := discovery.NodeRelease(ctx, requested)
+		if err == nil && preflight.Entry.Kind == "node" && strings.TrimSpace(preflight.Entry.ID) != "" {
+			return a.installNodeEntry(ctx, c, cmd, preflight.Entry)
+		}
+	}
 	available, err := c.AvailableRuntimes(ctx)
 	if err != nil {
 		return "", err
@@ -279,7 +292,10 @@ func (a *App) resolveNode(ctx context.Context, c Client, cmd *cobra.Command, req
 			Remediation: "Run `devstack runtime list` to see available Node versions.",
 		}
 	}
+	return a.installNodeEntry(ctx, c, cmd, entry)
+}
 
+func (a *App) installNodeEntry(ctx context.Context, c Client, cmd *cobra.Command, entry catalog.Entry) (string, error) {
 	installed, err := c.Runtimes(ctx)
 	if err != nil {
 		return "", err

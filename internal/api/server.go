@@ -73,6 +73,7 @@ const (
 	codeHostsSyncFailed     = "HOSTS_SYNC_FAILED"
 	codeRuntimeMissing      = "RUNTIME_MISSING"
 	codePHPVersionInUse     = "PHP_VERSION_IN_USE"
+	codeRuntimeInUse        = "RUNTIME_IN_USE"
 	codePHPConfigInvalid    = "PHP_CONFIG_INVALID"
 	codeTrustMissing        = "TRUST_MISSING"
 	codePortInUse           = "PORT_IN_USE"
@@ -1018,10 +1019,14 @@ func classifyError(err error) (int, string, string, any) {
 	if errors.Is(err, sites.ErrRuntimeInUse) {
 		var inUse *sites.RuntimeInUseError
 		details := any(nil)
+		code := codeRuntimeInUse
 		if errors.As(err, &inUse) {
 			details = map[string]any{"sites": inUse.Sites}
+			if strings.HasPrefix(inUse.BuildID, "php@") {
+				code = codePHPVersionInUse
+			}
 		}
-		return http.StatusConflict, codePHPVersionInUse, err.Error(), details
+		return http.StatusConflict, code, err.Error(), details
 	}
 	if errors.Is(err, sites.ErrRuntimeMissing) {
 		return http.StatusConflict, codeRuntimeMissing, err.Error(), nil
@@ -1154,8 +1159,14 @@ func classifyError(err error) (int, string, string, any) {
 	if errors.Is(err, tooling.ErrHelperUnavailable) {
 		return http.StatusServiceUnavailable, codeHelperUnavailable, err.Error(), nil
 	}
+	if errors.Is(err, tooling.ErrUnsupportedNodeDefault) {
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
+	}
 	if errors.Is(err, tooling.ErrNoPHPInstalled) ||
 		errors.Is(err, tooling.ErrPHPDefaultNotInstalled) ||
+		errors.Is(err, tooling.ErrNoNodeInstalled) ||
+		errors.Is(err, tooling.ErrNodeDefaultNotInstalled) ||
+		errors.Is(err, sites.ErrNodeVersionNotInstalled) ||
 		errors.Is(err, tooling.ErrRuntimeMissing) ||
 		errors.Is(err, build.ErrRuntimeMissing) {
 		return http.StatusConflict, codeRuntimeMissing, err.Error(), nil

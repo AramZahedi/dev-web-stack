@@ -202,6 +202,14 @@
     return siteKind === 'static' ? 'windows' : 'wsl';
   }
 
+  function sourceModeForPath(value: string, siteKind: Kind): SourceMode {
+    const trimmed = value.trim();
+    if (/^[a-z]:[\\/]/i.test(trimmed)) return 'windows';
+    if (/^\\\\wsl(?:\.localhost|\$)\\/i.test(trimmed)) return 'wsl';
+    if (trimmed.startsWith('/')) return isWindowsHost ? 'wsl' : 'local';
+    return defaultSourceMode(siteKind, isWindowsHost);
+  }
+
   const errorItems = $derived(
     Object.entries(errors).map(([key, message]) => ({
       key,
@@ -318,6 +326,15 @@
       next.path = 'Choose the project folder.';
     } else if (!isAbsolutePath(path.trim())) {
       next.path = 'Use an absolute path, for example /home/you/projects/app.';
+    } else if (isWindowsHost && sourceMode === 'windows' && !/^[a-z]:[\\/]/i.test(path.trim())) {
+      next.path = 'Windows source mode requires a drive path such as C:\\projects\\app.';
+    } else if (
+      isWindowsHost &&
+      sourceMode === 'wsl' &&
+      !path.trim().startsWith('/') &&
+      !/^\\\\wsl(?:\.localhost|\$)\\/i.test(path.trim())
+    ) {
+      next.path = 'WSL source mode requires a Linux path or a \\\\wsl.localhost\\... path.';
     }
 
     if (kind === 'static' || kind === 'php') {
@@ -583,7 +600,7 @@
   function setKind(value: Kind): void {
     kind = value;
     if (!sourceModeTouched) {
-      sourceMode = defaultSourceMode(value, isWindowsHost);
+      sourceMode = pathTouched ? sourceModeForPath(path, value) : defaultSourceMode(value, isWindowsHost);
       if (!pathTouched) {
         path = defaultPathFor(slugify(name), sourceMode);
       }

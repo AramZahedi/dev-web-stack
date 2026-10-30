@@ -283,6 +283,8 @@ func apiRemediation(code string) string {
 		return "Install the required runtime with `devstack runtime install <id>`."
 	case "PHP_VERSION_IN_USE":
 		return "Switch the affected site to another runtime build. For PHP sites, use `devstack site php <name> <version>` or migrate with `devstack runtime migrate <from> --to <to>`."
+	case "RUNTIME_IN_USE":
+		return "Switch the affected site to another runtime build, then retry. For Node sites use `devstack site node <name> <version>`."
 	case "PHP_CONFIG_INVALID":
 		return "Inspect the generated configuration with `devstack site ini <name>` and fix the reported line, then retry."
 	case "HELPER_UNAVAILABLE":
