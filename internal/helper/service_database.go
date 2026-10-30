@@ -235,6 +235,14 @@ func (c *DockerServiceController) ListUsers(ctx context.Context, serviceID strin
 		users = []model.DatabaseUser{}
 	}
 	for i := range users {
+		host := users[i].Host
+		if host == "" && (engineID == model.DatabaseMySQL || engineID == model.DatabaseMariaDB) {
+			host = "%"
+		}
+		users[i].Host = host
+		if users[i].ID == "" {
+			users[i].ID = databaseUserID(serviceID, engineID, users[i].Username, host)
+		}
 		users[i].ServiceID = serviceID
 		users[i].Engine = engineID
 		users[i].PasswordManaged = c.databaseSecretExists(serviceID, users[i].ID)
@@ -307,7 +315,7 @@ func (c *DockerServiceController) CreateUser(ctx context.Context, serviceID stri
 		rollbackErr := c.rollbackCreatedUser(ctx, serviceID, engine, req.Username, host)
 		if rollbackErr != nil {
 			return model.DatabaseUser{
-				ID:              derivedUserID(req.Username, host),
+				ID:              databaseUserID(serviceID, engineID, req.Username, host),
 				ServiceID:       serviceID,
 				Engine:          engineID,
 				Username:        req.Username,
@@ -487,9 +495,14 @@ func (c *DockerServiceController) engineID(serviceID string) (model.DatabaseEngi
 	return engineID, err
 }
 
-func derivedUserID(username, host string) string {
-	sum := sha256.Sum256([]byte(username + "\x00" + host))
-	return "usr_" + hex.EncodeToString(sum[:])[:16]
+// databaseUserID matches Lane A's opaque user ID scheme: usr_ plus the first
+// eight bytes of SHA-256 over serviceID, username, and normalized host.
+func databaseUserID(serviceID string, engine model.DatabaseEngine, username, host string) string {
+	if (engine == model.DatabaseMySQL || engine == model.DatabaseMariaDB) && host == "" {
+		host = "%"
+	}
+	sum := sha256.Sum256([]byte(serviceID + "\x00" + username + "\x00" + host))
+	return "usr_" + hex.EncodeToString(sum[:8])
 }
 
 // rollbackCreatedUser deletes a just-created engine user when its parser ID

@@ -181,8 +181,11 @@ func (f *fakeCommandRunner) stdinContains(value string) bool {
 }
 
 type fakeDatabaseEngine struct {
-	id     model.DatabaseEngine
-	rename bool
+	id           model.DatabaseEngine
+	rename       bool
+	emptyUserIDs bool
+	userHost     string
+	userHostSet  bool
 }
 
 func (e *fakeDatabaseEngine) ID() model.DatabaseEngine { return e.id }
@@ -270,7 +273,15 @@ func (e *fakeDatabaseEngine) ParseUsers(data []byte) ([]model.DatabaseUser, erro
 		if len(fields) < 3 || fields[0] == "" {
 			continue
 		}
-		out = append(out, model.DatabaseUser{ID: fields[0], Username: fields[1], Host: fields[2], Enabled: true})
+		host := fields[2]
+		if e.userHostSet {
+			host = e.userHost
+		}
+		id := fields[0]
+		if e.emptyUserIDs {
+			id = ""
+		}
+		out = append(out, model.DatabaseUser{ID: id, Username: fields[1], Host: host, Enabled: true})
 	}
 	return out, nil
 }
@@ -489,6 +500,53 @@ func TestDatabaseImportLimitIsOneGiB(t *testing.T) {
 	var buffer bytes.Buffer
 	if _, err := copyLimited(&buffer, strings.NewReader("12345"), 4); !errors.Is(err, databases.ErrInvalidRequest) {
 		t.Fatalf("copyLimited err=%v", err)
+	}
+}
+
+func TestHelperSQLUserIDsFromDefaultRegistry(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	c.databaseRegistry = nil
+	previous := dbengine.DefaultRegistry
+	dbengine.DefaultRegistry = func() dbengine.Registry {
+		return fakeRegistry{engines: map[model.DatabaseEngine]dbengine.Engine{
+			model.DatabaseMySQL:      &fakeDatabaseEngine{id: model.DatabaseMySQL, emptyUserIDs: true},
+			model.DatabasePostgreSQL: &fakeDatabaseEngine{id: model.DatabasePostgreSQL, rename: true, emptyUserIDs: true, userHostSet: true, userHost: ""},
+		}}
+	}
+	t.Cleanup(func() { dbengine.DefaultRegistry = previous })
+
+	wantID := databaseUserID("mysql", model.DatabaseMySQL, "app", "%")
+	users, err := c.ListUsers(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || users[0].ID != wantID || users[0].Host != "%" {
+		t.Fatalf("users = %+v, want ID %q", users, wantID)
+	}
+	if _, err := c.UpdateUser(context.Background(), "mysql", wantID, databases.UpdateUserRequest{
+		Grants: []model.DatabaseGrant{{Database: "app", Preset: model.GrantReadWrite}},
+	}); err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	secret, err := c.SetUserPassword(context.Background(), "mysql", wantID)
+	if err != nil || secret.Value == "" {
+		t.Fatalf("SetUserPassword secret=%+v err=%v", secret, err)
+	}
+	revealed, err := c.RevealUserPassword(context.Background(), "mysql", wantID)
+	if err != nil || revealed.Value != secret.Value {
+		t.Fatalf("RevealUserPassword secret=%+v err=%v", revealed, err)
+	}
+	if err := c.DeleteUser(context.Background(), "mysql", wantID, databases.DeleteUserRequest{Confirm: "app"}); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+
+	pgWant := databaseUserID("postgresql", model.DatabasePostgreSQL, "app", "")
+	pgUsers, err := c.ListUsers(context.Background(), "postgresql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pgUsers) != 1 || pgUsers[0].ID != pgWant || pgUsers[0].Host != "" {
+		t.Fatalf("postgres users = %+v, want ID %q", pgUsers, pgWant)
 	}
 }
 
