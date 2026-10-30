@@ -331,17 +331,22 @@ Remove `e2e-full-php`; delete `public` fixture; `doctor` green.
 
 **Depends on:** Task 1. **Artifacts:** `task-3/`
 
-- [ ] **Step 1: Create a stopped static site**
+> **Result (2026-10-30):** COMPLETE. Windows -> WSL and WSL -> Windows copies
+> verified byte-for-byte through the dashboard, CLI parity copy succeeded,
+> negatives failed closed, cleanup left doctor green. Evidence:
+> `dist/e2e/full-dashboard/task-3/PROGRESS.md`.
+
+- [x] **Step 1: Create a stopped static site**
 
 `e2e-full-source` in Windows mode with known content. Stop it.
 
-- [ ] **Step 2: Open Change source and inspect the confirmation**
+- [x] **Step 2: Open Change source and inspect the confirmation**
 
 Expected dialog/drawer:
 - explains the copy direction, target path, verification, and that the original is kept;
 - Cancel returns without changes.
 
-- [ ] **Step 3: Run Windows → WSL copy**
+- [x] **Step 3: Run Windows → WSL copy**
 
 Choose WSL target; confirm. Expected:
 - action disabled while running; enabled while stopped;
@@ -350,22 +355,22 @@ Choose WSL target; confirm. Expected:
 - `https://e2e-full-source.test` still returns the content;
 - original Windows folder still exists.
 
-- [ ] **Step 4: Run WSL → Windows copy**
+- [x] **Step 4: Run WSL → Windows copy**
 
 Stop; Change source back to Windows; confirm. Verify path/content and original WSL folder retained.
 
-- [ ] **Step 5: Negative cases**
+- [x] **Step 5: Negative cases**
 
 - Change while running: control disabled and copy explains stopping first.
 - Invalid/escaping target rejected.
 - Missing source/target error is clear; no partial route.
 - If staged removal is unsupported (501 per docs), assert the explicit error and no deletion.
 
-- [ ] **Step 6: CLI parity**
+- [x] **Step 6: CLI parity**
 
 Use `devstack site show --json` after each switch; if a CLI source command exists in this build, run its help and the same copy; otherwise record that the dashboard is the only surface and mark CLI N/A.
 
-- [ ] **Step 7: Cleanup**
+- [x] **Step 7: Cleanup**
 
 Remove the site; remove copied fixture folders; `doctor` green.
 
