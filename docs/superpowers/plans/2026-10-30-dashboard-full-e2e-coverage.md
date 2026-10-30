@@ -667,7 +667,7 @@ Use a sandbox or a reversible drift (for example, stop helper/daemon and start a
 
 Run each command with `--json` where supported; capture stdout/stderr/exit code. For destructive commands, use the restore path from Tasks 5/7/9/14.
 
-- [ ] **Step 1: Trust**
+- [x] **Step 1: Trust**
 
 ```powershell
 & $ds trust status --json
@@ -679,7 +679,7 @@ Run each command with `--json` where supported; capture stdout/stderr/exit code.
 
 Expected: status JSON, repair idempotent, remove/init restore, exit codes 0.
 
-- [ ] **Step 2: Vhost**
+- [x] **Step 2: Vhost**
 
 ```powershell
 & $ds vhost status --json
@@ -692,11 +692,11 @@ Expected: status JSON, repair idempotent, remove/init restore, exit codes 0.
 
 Expected: preview renders, mode switch succeeds/rolls back, sync rebuilds, builtin restored.
 
-- [ ] **Step 3: Service**
+- [x] **Step 3: Service**
 
 Run help and one representative lifecycle/status/config/logs/credentials command for each installed service (Task 5); verify CLI and dashboard agree. Capture `service list --json`.
 
-- [ ] **Step 4: PHP and site PHP/ini/ext**
+- [x] **Step 4: PHP and site PHP/ini/ext**
 
 ```powershell
 & $ds php default --status --json
@@ -711,11 +711,11 @@ Run help and one representative lifecycle/status/config/logs/credentials command
 
 Expected: exact version/directive/extension changes; invalid values rejected; site still serves.
 
-- [ ] **Step 5: Runtime migrate**
+- [x] **Step 5: Runtime migrate**
 
 Create two PHP sites on 8.4; `runtime migrate 8.4 --to 8.5 --yes`; verify both moved; migrate back or remove sites. Restore PHP 8.4 default.
 
-- [ ] **Step 6: UI, completion, uninstall**
+- [x] **Step 6: UI, completion, uninstall**
 
 ```powershell
 & $ds ui --json
@@ -730,7 +730,7 @@ Uninstall is the final destructive CLI gate:
 - `devstack init --yes`; verify daemon/helper/agent, trust, hosts, dashboard, and doctor restored.
 - If uninstall cannot be safely restored in the current environment, record BLOCKED with the exact reason and do not claim coverage.
 
-- [ ] **Step 7: Every other root/help command**
+- [x] **Step 7: Every other root/help command**
 
 Run `devstack --help`, each group's `--help`, `version`, `init --help`, `uninstall --help`, `daemon status/restart/stop/start`, and error paths (`unknown command`, bad flags). Expected non-zero/usage output, no panic.
 
