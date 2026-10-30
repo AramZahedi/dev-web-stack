@@ -501,6 +501,23 @@ func TestDBExportDoesNotTruncateDestinationOnCopyFailure(t *testing.T) {
 	}
 }
 
+func TestDBExportReplacesExistingFileOnSuccess(t *testing.T) {
+	useTestSeams(t)
+	output := filepath.Join(t.TempDir(), "app.sql")
+	if err := os.WriteFile(output, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeClient{databaseExportData: "new dump"}
+	runCLI(t, fake, "db", "export", "--service", "mysql", "--database", "app", "--output", output)
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new dump" {
+		t.Fatalf("export did not replace the destination: %q", data)
+	}
+}
+
 func TestDBExportWritesFile(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{databaseExportData: "dump"}
