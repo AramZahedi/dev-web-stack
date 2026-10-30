@@ -14,6 +14,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"math/big"
 	"net"
 	"net/http"
@@ -516,6 +519,81 @@ func TestWindowsDiagnosticsAndDoctorServices(t *testing.T) {
 	port := freeTCPPort(t)
 	if err := probe.Listenable(net.JoinHostPort("127.0.0.1", fmt.Sprint(port))); err != nil {
 		t.Fatalf("Listenable: %v", err)
+	}
+}
+
+func TestWindowsPerformanceRootBuildsUNCDataRoot(t *testing.T) {
+	tests := []struct {
+		share string
+		want  string
+	}{
+		{wslLocalhostShare, `\\wsl.localhost\devstack\data\devstack`},
+		{wslLegacyShare, `\\wsl$\devstack\data\devstack`},
+		{`\\attacker\`, ""},
+	}
+	for _, tc := range tests {
+		if got := windowsUNCDataRoot(tc.share, "devstack"); got != tc.want {
+			t.Errorf("windowsUNCDataRoot(%q) = %q, want %q", tc.share, got, tc.want)
+		}
+	}
+}
+
+func TestRunUsesWindowsPerformanceServiceConfig(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "windows.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var run *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "Run" {
+			run = fn
+			break
+		}
+	}
+	if run == nil {
+		t.Fatal("Run not found in windows.go")
+	}
+	found := false
+	ast.Inspect(run.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "windowsPerformanceServiceConfig" {
+			found = true
+			return false
+		}
+		return true
+	})
+	if !found {
+		t.Fatal("Run must build the performance service through windowsPerformanceServiceConfig")
+	}
+}
+
+func TestWindowsPerformanceServiceRootUsesWSLDataDir(t *testing.T) {
+	cfg := config.Config{
+		Home:      `C:\Users\Aram\.devstack`,
+		WSLDistro: "devstack",
+	}
+	got := windowsPerformanceServiceConfig(cfg, nil, nil, nil, nil)
+	want := `\\wsl$\devstack\data\devstack`
+	if got.Root != want {
+		t.Fatalf("performance root = %q, want %q", got.Root, want)
+	}
+	if !got.DisableHostTuning {
+		t.Fatal("performance host tuning must stay disabled on Windows")
+	}
+}
+
+func TestWindowsPerformanceServiceRootRejectsUnsafeDistro(t *testing.T) {
+	for _, distro := range []string{"", "dev stack", `dev\stack`, "dev/stack", `dev:stack`} {
+		cfg := config.Config{Home: `C:\Users\Aram\.devstack`, WSLDistro: distro}
+		got := windowsPerformanceServiceConfig(cfg, nil, nil, nil, nil)
+		if got.Root != "" {
+			t.Errorf("distro %q produced performance root %q, want empty", distro, got.Root)
+		}
 	}
 }
 

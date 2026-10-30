@@ -14,12 +14,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/agent"
 	"github.com/AramZahedi/dev-web-stack/internal/agentclient"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/api"
@@ -201,7 +203,7 @@ func Run(ctx context.Context, opts Options) error {
 		SourceCopier: agentServices,
 	})
 
-	agentDocker, err := servicecontrol.NewAgentDocker(agentServices, "/data/devstack")
+	agentDocker, err := servicecontrol.NewAgentDocker(agentServices, agent.DefaultAgentRoot)
 	if err != nil {
 		return fmt.Errorf("daemon: init agent docker: %w", err)
 	}
@@ -239,17 +241,7 @@ func Run(ctx context.Context, opts Options) error {
 		logger.Warn("daemon: service config manager init", "error", err)
 	}
 
-	performanceService := perfservice.NewService(perfservice.ServiceConfig{
-		Root:              cfg.Home,
-		Store:             st,
-		Services:          serviceManager,
-		Sites:             siteService,
-		HTTPPort:          cfg.HTTPPort,
-		HTTPSPort:         cfg.HTTPSPort,
-		ServingMode:       cfg.ServingMode,
-		DisableHostTuning: true,
-		Logger:            logger,
-	})
+	performanceService := perfservice.NewService(windowsPerformanceServiceConfig(cfg, st, serviceManager, siteService, logger))
 
 	runtimeService := &windowsRuntimeService{
 		backend:            wslBackend,
@@ -969,6 +961,53 @@ func (h *helperAdapter) toolShimName(id string) string {
 		return "node.cmd"
 	default:
 		return id + ".cmd"
+	}
+}
+
+var windowsWSLDistroName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+const (
+	wslLegacyShare    = `\\wsl$\`
+	wslLocalhostShare = `\\wsl.localhost\`
+)
+
+// windowsUNCDataRoot builds the UNC view of a WSL share's agent data root.
+func windowsUNCDataRoot(share, distro string) string {
+	if share != wslLegacyShare && share != wslLocalhostShare {
+		return ""
+	}
+	distro = strings.TrimSpace(distro)
+	if !windowsWSLDistroName.MatchString(distro) {
+		return ""
+	}
+	rel := strings.TrimPrefix(filepath.ToSlash(agent.DefaultAgentRoot), "/")
+	return share + distro + `\` + strings.ReplaceAll(rel, "/", `\`)
+}
+
+// windowsPerformanceRoot returns the UNC view of the agent data root where
+// the Docker web servers read their config. The Windows home only holds host
+// state; writing includes there leaves the live containers untouched.
+//
+// The \\wsl$ alias is used because it exists on both the Windows 10 22H2 floor
+// and Windows 11, so the root is valid before WSL starts and needs no probe.
+func windowsPerformanceRoot(distro string) string {
+	return windowsUNCDataRoot(wslLegacyShare, distro)
+}
+
+// windowsPerformanceServiceConfig wires the performance service. Managed
+// includes and performance backups live beside the Docker services inside the
+// WSL agent root, not in the Windows home.
+func windowsPerformanceServiceConfig(cfg config.Config, st perfservice.SettingsStore, web perfservice.WebServices, sites perfservice.Sites, logger *slog.Logger) perfservice.ServiceConfig {
+	return perfservice.ServiceConfig{
+		Root:              windowsPerformanceRoot(cfg.WSLDistro),
+		Store:             st,
+		Services:          web,
+		Sites:             sites,
+		HTTPPort:          cfg.HTTPPort,
+		HTTPSPort:         cfg.HTTPSPort,
+		ServingMode:       cfg.ServingMode,
+		DisableHostTuning: true,
+		Logger:            logger,
 	}
 }
 
