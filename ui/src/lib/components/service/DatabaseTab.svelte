@@ -326,6 +326,7 @@
   async function confirmDrop(): Promise<void> {
     const target = dropTarget;
     if (!target || dropping || isProtectedDatabase(engine, target.name)) return;
+    if (!sitesReady(target.linked_sites)) return;
     dropping = true;
     dropError = null;
     try {
