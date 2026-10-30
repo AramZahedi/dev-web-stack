@@ -984,10 +984,10 @@ try {
 # Test 32: Uninstaller PATH Cleanup Edge Cases (Trailing slashes, quotes, env:Path)
 # -------------------------------------------------------------------------
 Step "Testing uninstaller PATH cleanup edge cases"
-$installerContent = Get-Content -Raw -Path $uninstallerScript
-Require ($installerContent -match 'TrimEnd\(''\\/''\)') "uninstall.ps1 normalizes trailing backslashes and forward slashes in PATH"
-Require ($installerContent -match 'Trim\(''"''\)') "uninstall.ps1 strips quotation marks when comparing PATH entries"
-Require ($installerContent -match '\$env:Path\s*=') "uninstall.ps1 synchronizes current process `$env:Path"
+$uninstallPathContent = Get-Content -Raw -Path $uninstallerScript
+Require ($uninstallPathContent -match 'TrimEnd\(''\\/''\)') "uninstall.ps1 normalizes trailing backslashes and forward slashes in PATH"
+Require ($uninstallPathContent -match 'Trim\(''"''\)') "uninstall.ps1 strips quotation marks when comparing PATH entries"
+Require ($uninstallPathContent -match '\$env:Path\s*=') "uninstall.ps1 synchronizes current process `$env:Path"
 
 # Unit test PATH filtering logic
 $sampleTestBin = "C:\devstack\bin"
@@ -1266,6 +1266,57 @@ $a = Get-Content -Raw -Path $daemonTaskScript
 Require ($a -match 'daemon run --home') "devstack-daemon-task.ps1 passes --home to the daemon"
 Require ($freshInstallContent -match 'Start-ScheduledTask -TaskName "devstack-daemon"') "install.ps1 starts the daemon task in the current session"
 Require ($freshInstallContent -match 'daemon run --home') "install.ps1 fallback task also passes --home"
+
+# -------------------------------------------------------------------------
+# Test 42: Upgrade quiesces WSL services before backup and agent replacement
+# -------------------------------------------------------------------------
+Step "Testing upgrade quiesces WSL agent and Docker before backup and agent copy"
+$agentStopIdx = $installerContent.IndexOf('systemctl stop devstack-agent.service')
+$agentCopyIdx = $installerContent.IndexOf("cp '`$wslAgentSrc' /data/devstack/bin/devstack-agent")
+Require ($agentStopIdx -ge 0) "install.ps1 stops devstack-agent.service during upgrade"
+Require ($agentCopyIdx -ge 0) "install.ps1 still copies the agent into /data/devstack/bin"
+Require ($agentStopIdx -lt $agentCopyIdx) "install.ps1 stops the agent before replacing its binary (prevents ETXTBSY)"
+
+$dockerStopIdx = $installerContent.IndexOf('systemctl stop docker.socket docker.service')
+$backupIdx = $installerContent.IndexOf('Backing up /data/devstack')
+Require ($dockerStopIdx -ge 0) "install.ps1 stops Docker during upgrade"
+Require ($dockerStopIdx -lt $backupIdx) "install.ps1 stops Docker before snapshotting /data/devstack"
+Require (([regex]::Matches($installerContent, 'systemctl stop docker\.socket docker\.service')).Count -ge 2) "install.ps1 quiesces Docker again before rollback restore"
+
+# -------------------------------------------------------------------------
+# Test 43: Rollback stops the helper before restoring locked binaries
+# -------------------------------------------------------------------------
+Step "Testing rollback stops DevstackHelper before restoring its binary"
+$helperRestoreIdx = $installerContent.IndexOf('Move-Item -Path "$dstHelper.bak"')
+Require ($helperRestoreIdx -ge 0) "install.ps1 restores the helper backup on rollback"
+if ($helperRestoreIdx -ge 0) {
+    $rollbackPrefix = $installerContent.Substring(0, $helperRestoreIdx)
+    $rollbackHelperStopIdx = $rollbackPrefix.LastIndexOf('Stop-Service -Name "DevstackHelper"')
+    Require ($rollbackHelperStopIdx -ge 0) "install.ps1 stops DevstackHelper during rollback"
+    Require (($helperRestoreIdx - $rollbackHelperStopIdx) -lt 2500) "install.ps1 stops DevstackHelper immediately before restoring its binary"
+}
+Require ($installerContent -notmatch 'rm -rf /data/devstack\.failed-tmp /data/devstack\.rollback-tmp /data/devstack-backup\.tar\.gz') "rollback keeps recovery data until the agent has been health-checked"
+
+# -------------------------------------------------------------------------
+# Test 44: Health probe uses a text stream, not a byte array
+# -------------------------------------------------------------------------
+Step "Testing agent health probe stdin encoding and rollback start order"
+Require (-not $installerContent.Contains('GetBytes("$probeCmd')) "install.ps1 does not pipe the health probe as raw bytes"
+Require ($installerContent.Contains('$probeCmd -replace "`r`n", "`n" | & wsl.exe -d devstack -u root -- sh')) "install.ps1 pipes the health probe as text to sh"
+Require ($installerContent.Contains('sh -c "tr -d ''\r'' | sh"')) "install.ps1 strips Windows CR from the health probe before sh"
+Require ($installerContent -match '\$env:CGO_ENABLED\s*=\s*"0"') "install.ps1 disables cgo so builds work on hosts without gcc"
+
+$rbStartIdx = $installerContent.IndexOf('Write-InstallerError "Upgrade failed. Initiating rollback..."')
+$rbEndIdx = $installerContent.IndexOf('# 9. Success cleanup and manifest update')
+Require ($rbStartIdx -ge 0 -and $rbEndIdx -gt $rbStartIdx) "install.ps1 contains a bounded rollback block"
+if ($rbStartIdx -ge 0 -and $rbEndIdx -gt $rbStartIdx) {
+    $rollbackBlock = $installerContent.Substring($rbStartIdx, $rbEndIdx - $rbStartIdx)
+    $rollbackHelperStartIdx = $rollbackBlock.IndexOf('Start-Service -Name "DevstackHelper"')
+    $rollbackAgentStartIdx = $rollbackBlock.IndexOf('Starting devstack-agent after the helper is listening')
+    Require ($rollbackHelperStartIdx -ge 0) "rollback starts DevstackHelper"
+    Require ($rollbackAgentStartIdx -ge 0) "rollback restarts the agent after the helper"
+    Require ($rollbackHelperStartIdx -lt $rollbackAgentStartIdx) "rollback starts the helper before the agent (frees Windows 80/443)"
+}
 
 # -------------------------------------------------------------------------
 # Test Summary

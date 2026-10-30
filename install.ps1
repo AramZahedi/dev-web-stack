@@ -39,6 +39,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Installer builds must be self-contained. A clean Windows host may not have a
+# C toolchain, and neither the Windows binaries nor the Linux agent need cgo.
+$env:CGO_ENABLED = "0"
+
 function Remove-ResumeTask {
     if (-not $DryRun -and -not $isSandbox) {
         try {
@@ -676,6 +680,22 @@ if ($Upgrade) {
     }
 
     if (-not $SkipWSL) {
+        if (-not $isSandbox -and ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -ne "true")) {
+            Write-Host "devstack installer: Stopping WSL agent and Docker for a consistent upgrade..."
+            & wsl.exe -d devstack -u root -- systemctl stop devstack-agent.service 2>$null
+            & wsl.exe -d devstack -u root -- systemctl stop docker.socket docker.service containerd.service 2>$null
+            $wslStopDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+                $agentState = try { (& wsl.exe -d devstack -u root -- systemctl is-active devstack-agent.service 2>$null | Out-String).Trim() } catch { "inactive" }
+                $dockerState = try { (& wsl.exe -d devstack -u root -- systemctl is-active docker.service 2>$null | Out-String).Trim() } catch { "inactive" }
+                if ($agentState -ne "active" -and $dockerState -ne "active") { break }
+                Start-Sleep -Milliseconds 500
+            } while ([DateTime]::UtcNow -lt $wslStopDeadline)
+            if ($agentState -eq "active" -or $dockerState -eq "active") {
+                Write-InstallerError "Could not stop WSL services for upgrade (agent=$agentState docker=$dockerState)."
+                exit 1
+            }
+        }
         Write-Host "devstack installer: Backing up /data/devstack to /data/devstack-backup.tar.gz..."
         if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
             if ((Get-TestOverride "DEVSTACK_TEST_BACKUP_FAIL") -eq "true") {
@@ -698,11 +718,15 @@ if ($Upgrade) {
             & wsl.exe -d devstack -u root -- tar -czf /data/devstack-backup.tar.gz -C /data devstack
             if ($LASTEXITCODE -ne 0) {
                 Write-InstallerError "Failed to backup /data/devstack inside WSL distro."
+                & wsl.exe -d devstack -u root -- systemctl start docker.socket docker.service 2>$null
+                & wsl.exe -d devstack -u root -- systemctl start devstack-agent.service 2>$null
                 exit 1
             }
             & wsl.exe -d devstack -u root -- tar -tzf /data/devstack-backup.tar.gz 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 Write-InstallerError "Backup archive verification failed for /data/devstack-backup.tar.gz."
+                & wsl.exe -d devstack -u root -- systemctl start docker.socket docker.service 2>$null
+                & wsl.exe -d devstack -u root -- systemctl start devstack-agent.service 2>$null
                 exit 1
             }
             & wsl.exe -d devstack -u root -- sh -c "cp /data/devstack/bin/devstack-agent /data/devstack/bin/devstack-agent.bak 2>/dev/null || true"
@@ -844,6 +868,12 @@ if ($Upgrade) {
                 $upgradeFailed = $true
             }
         } else {
+            Write-Host "devstack installer: Starting Docker and devstack-agent..."
+            & wsl.exe -d devstack -u root -- systemctl start docker.socket docker.service
+            if ($LASTEXITCODE -ne 0) {
+                Write-InstallerError "Failed to start Docker Engine after upgrade."
+                $upgradeFailed = $true
+            }
             & wsl.exe -d devstack -u root -- systemctl restart devstack-agent.service
             $healthy = $false
             for ($i = 0; $i -lt 10; $i++) {
@@ -859,7 +889,7 @@ if ($Upgrade) {
             } else {
                 # Probe HTTPS health endpoint
                 $probeCmd = "if [ -r /data/devstack/agent.yaml ] && [ -r /data/devstack/agent.token ]; then port=`$(awk '/port:/ {print `$2}' /data/devstack/agent.yaml 2>/dev/null || echo 7443); token=`$(cat /data/devstack/agent.token 2>/dev/null | tr -d '\r\n'); code=`$(curl -k -s -o /dev/null -w '%{http_code}' -H `"Authorization: Bearer `$token`" -H `"X-Devstack-Agent-Protocol: v1`" https://127.0.0.1:`$port/v1/health 2>/dev/null || echo 000); if [ `"`$code`" != `"200`" ]; then exit 1; fi; fi"
-                [System.Text.Encoding]::UTF8.GetBytes("$probeCmd`n") | & wsl.exe -d devstack -u root -- sh
+                $probeCmd -replace "`r`n", "`n" | & wsl.exe -d devstack -u root -- sh -c "tr -d '\r' | sh"
                 if ($LASTEXITCODE -ne 0) {
                     Write-InstallerError "devstack-agent HTTPS health probe failed."
                     $upgradeFailed = $true
@@ -875,6 +905,12 @@ if ($Upgrade) {
         Write-InstallerError "Upgrade failed. Initiating rollback..."
         $rollbackOK = $true
         $rollbackFailure = ""
+        if (-not $SkipWSL -and -not $isSandbox -and ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -ne "true")) {
+            Write-Host "devstack installer: Stopping WSL agent and Docker before rollback restore..."
+            & wsl.exe -d devstack -u root -- systemctl stop devstack-agent.service 2>$null
+            & wsl.exe -d devstack -u root -- systemctl stop docker.socket docker.service containerd.service 2>$null
+            Start-Sleep -Seconds 1
+        }
         if ($SkipWSL) {
             Write-Host "devstack installer: -SkipWSL was specified; skipping WSL data rollback."
         } elseif ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
@@ -933,19 +969,28 @@ test -d /data/devstack.rollback-tmp/devstack
 rm -rf /data/devstack.failed-tmp
 if [ -d /data/devstack ]; then mv /data/devstack /data/devstack.failed-tmp; fi
 mv /data/devstack.rollback-tmp/devstack /data/devstack
-rm -rf /data/devstack.failed-tmp /data/devstack.rollback-tmp /data/devstack-backup.tar.gz
+rm -rf /data/devstack.rollback-tmp
 "@
                 $rollbackScript -replace "`r`n", "`n" | & wsl.exe -d devstack -u root -- sh
                 if ($LASTEXITCODE -ne 0) {
                     $rollbackOK = $false
                     $rollbackFailure = "restore script exited with code $LASTEXITCODE"
                 } else {
-                    & wsl.exe -d devstack -u root -- systemctl restart devstack-agent.service 2>$null
+                    & wsl.exe -d devstack -u root -- systemctl start docker.socket docker.service 2>$null
                     if ($LASTEXITCODE -ne 0) {
                         $rollbackOK = $false
-                        $rollbackFailure = "agent restart failed after restore"
+                        $rollbackFailure = "Docker restart failed after restore"
                     }
                 }
+            }
+        }
+        if (-not $isSandbox) {
+            try { Stop-Service -Name "DevstackHelper" -Force -ErrorAction SilentlyContinue } catch {}
+            try { Get-Process -Name "devstack-helper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+            $helperRestoreDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while ([DateTime]::UtcNow -lt $helperRestoreDeadline) {
+                if (-not (Get-Process -Name "devstack-helper" -ErrorAction SilentlyContinue)) { break }
+                Start-Sleep -Milliseconds 200
             }
         }
         if (Test-Path "$dstDevstack.bak") {
@@ -976,8 +1021,19 @@ rm -rf /data/devstack.failed-tmp /data/devstack.rollback-tmp /data/devstack-back
                 $rollbackFailure = "restart DevstackHelper: $($_.Exception.Message)"
             }
         }
+        if ($rollbackOK -and -not $SkipWSL -and -not $isSandbox -and ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -ne "true")) {
+            Write-Host "devstack installer: Starting devstack-agent after the helper is listening..."
+            & wsl.exe -d devstack -u root -- systemctl start devstack-agent.service 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                $rollbackOK = $false
+                $rollbackFailure = "agent restart after helper failed"
+            }
+        }
         if ($rollbackOK) {
             Write-Host "devstack installer: Upgrade rolled back successfully to previous version."
+            if (-not $SkipWSL -and -not $isSandbox -and ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -ne "true")) {
+                & wsl.exe -d devstack -u root -- sh -c "rm -rf /data/devstack.failed-tmp /data/devstack-backup.tar.gz" 2>$null
+            }
         } else {
             Write-InstallerError "Upgrade rollback FAILED: $rollbackFailure. The previous WSL data may be preserved at /data/devstack.failed-tmp; do not start new work until it is recovered."
         }
@@ -1695,7 +1751,7 @@ if ($DryRun) {
             exit 1
         }
         $probeCmd = "if [ -r /data/devstack/agent.yaml ] && [ -r /data/devstack/agent.token ]; then port=`$(awk '/port:/ {print `$2}' /data/devstack/agent.yaml 2>/dev/null || echo 7443); token=`$(cat /data/devstack/agent.token 2>/dev/null | tr -d '\r\n'); code=`$(curl -k -s -o /dev/null -w '%{http_code}' -H `"Authorization: Bearer `$token`" -H `"X-Devstack-Agent-Protocol: v1`" https://127.0.0.1:`$port/v1/health 2>/dev/null || echo 000); if [ `"`$code`" != `"200`" ]; then exit 1; fi; fi"
-        [System.Text.Encoding]::UTF8.GetBytes("$probeCmd`n") | & wsl.exe -d devstack -u root -- sh
+        $probeCmd -replace "`r`n", "`n" | & wsl.exe -d devstack -u root -- sh -c "tr -d '\r' | sh"
         if ($LASTEXITCODE -ne 0) {
             Write-InstallerError "devstack-agent HTTPS health probe failed."
             exit 1
