@@ -137,8 +137,10 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 			return agentproto.BuildResponse{}, errors.New("agent: build requires an absolute backend path for an unprepared site")
 		}
 	} else {
-		spec = site.spec
-		databaseEnv, err = r.databaseEnvFor(site)
+		r.mu.Lock()
+		spec = cloneAgentSiteSpec(site.spec)
+		r.mu.Unlock()
+		databaseEnv, err = r.databaseEnvFor(spec)
 		if err != nil {
 			return agentproto.BuildResponse{}, err
 		}
@@ -261,16 +263,19 @@ func (r *Runtime) ExecSite(ctx context.Context, id string, req agentproto.SiteEx
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	r.mu.Lock()
+	spec := cloneAgentSiteSpec(site.spec)
+	r.mu.Unlock()
 	cmd := exec.CommandContext(cmdCtx, req.Argv[0], req.Argv[1:]...)
-	cmd.Dir = site.spec.BackendPath
+	cmd.Dir = spec.BackendPath
 	configureBuildCmd(cmd)
 
-	databaseEnv, err := r.databaseEnvFor(site)
+	databaseEnv, err := r.databaseEnvFor(spec)
 	if err != nil {
 		return agentproto.SiteExecResponse{}, err
 	}
 	envMap := make(map[string]string)
-	for k, v := range site.spec.Env {
+	for k, v := range spec.Env {
 		envMap[k] = v
 	}
 	for k, v := range databaseEnv {
@@ -283,7 +288,7 @@ func (r *Runtime) ExecSite(ctx context.Context, id string, req agentproto.SiteEx
 	if err != nil {
 		return agentproto.SiteExecResponse{}, err
 	}
-	caEnv["PATH"] = r.sitePathEnv(site.spec, caEnv["PATH"])
+	caEnv["PATH"] = r.sitePathEnv(spec, caEnv["PATH"])
 	envList := os.Environ()
 	for k, v := range caEnv {
 		envList = append(envList, k+"="+v)

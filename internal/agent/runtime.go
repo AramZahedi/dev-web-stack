@@ -35,11 +35,6 @@ type runtimeSite struct {
 	nodeDone       chan struct{}
 	activeGen      string
 	phpGenerations map[string]*phpGeneration
-	// databaseEnv holds resolved DB_*/DATABASE_URL values for this process
-	// lifetime only. It is deliberately never written to sites.json or
-	// php-fpm.conf; the links are persisted instead and re-resolved from the
-	// agent secret tree after a restart.
-	databaseEnv map[string]string
 }
 
 // Runtime owns site state, backend ports, and process/server reconciliation in
@@ -194,8 +189,7 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 		return agentproto.SitePrepareResponse{}, err
 	}
 	spec.Env = env
-	databaseEnv, err := r.resolveDatabaseEnv(spec)
-	if err != nil {
+	if _, err := r.resolveDatabaseEnv(spec); err != nil {
 		return agentproto.SitePrepareResponse{}, err
 	}
 	port, _, err := r.ports.Allocate(spec.ID, "http", spec.HTTPPort)
@@ -212,7 +206,6 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 		spec:         cloneAgentSiteSpec(spec),
 		documentRoot: docroot,
 		status:       "stopped",
-		databaseEnv:  databaseEnv,
 	}
 	if err := r.saveLocked(); err != nil {
 		delete(r.sites, spec.ID)
@@ -580,14 +573,14 @@ func (r *Runtime) resolveDatabaseEnv(spec agentproto.SiteSpec) (map[string]strin
 // databaseEnvFor returns the in-memory resolved environment, or resolves the
 // persisted links on demand after an agent restart. It never mutates the site,
 // so callers that do not hold r.mu are safe.
-func (r *Runtime) databaseEnvFor(site *runtimeSite) (map[string]string, error) {
-	if site == nil || len(site.spec.DatabaseLinks) == 0 {
+func (r *Runtime) databaseEnvFor(spec agentproto.SiteSpec) (map[string]string, error) {
+	if len(spec.DatabaseLinks) == 0 {
 		return nil, nil
 	}
 	// Resolve on every start/terminal/build so a password rotation applies on
-	// the explicit restart the dashboard prompts for. The cached field is only
-	// an inspection aid for the prepare response.
-	return r.resolveDatabaseEnv(site.spec)
+	// the explicit restart the dashboard prompts for. Callers pass a snapshot
+	// taken under r.mu.
+	return r.resolveDatabaseEnv(spec)
 }
 
 func environmentPairs(values map[string]string) []string {

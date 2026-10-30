@@ -77,7 +77,7 @@ func (r *Runtime) startNodeLocked(site *runtimeSite) (agentproto.SiteActionRespo
 }
 
 func (r *Runtime) nodeEnvironment(site *runtimeSite, nodeRoot string) ([]string, error) {
-	databaseEnv, err := r.databaseEnvFor(site)
+	databaseEnv, err := r.databaseEnvFor(site.spec)
 	if err != nil {
 		return nil, err
 	}

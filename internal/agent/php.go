@@ -32,9 +32,6 @@ type phpGeneration struct {
 	fpmPath      string
 	port         int
 	process      *fpmProcess
-	// databaseEnv is injected into the FPM process environment only; it is
-	// never rendered into php-fpm.conf.
-	databaseEnv map[string]string
 }
 
 // runtimeBinaryPath returns the relative path of the command a runtime build
@@ -421,8 +418,7 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
 	}
-	databaseEnv, err := r.resolveDatabaseEnv(req.Site)
-	if err != nil {
+	if _, err := r.resolveDatabaseEnv(req.Site); err != nil {
 		return agentproto.SitePrepareResponse{}, err
 	}
 
@@ -469,13 +465,11 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 			documentRoot:   docroot,
 			status:         "stopped",
 			phpGenerations: make(map[string]*phpGeneration),
-			databaseEnv:    databaseEnv,
 		}
 		r.sites[id] = site
 	} else {
 		site.spec = cloneAgentSiteSpec(req.Site)
 		site.documentRoot = docroot
-		site.databaseEnv = databaseEnv
 		if site.phpGenerations == nil {
 			site.phpGenerations = make(map[string]*phpGeneration)
 		}
@@ -495,7 +489,6 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 		fpmPath:      fpmPath,
 		port:         port,
 		process:      liveProcess,
-		databaseEnv:  databaseEnv,
 	}
 
 	if err := r.saveLocked(); err != nil {

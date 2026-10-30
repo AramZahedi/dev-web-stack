@@ -1185,7 +1185,10 @@ func TestPrepareSiteInjectsManagedDatabaseEnv(t *testing.T) {
 	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	env := rt.sites[spec.ID].databaseEnv
+	env, err := rt.resolveDatabaseEnv(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if env["DB_PASSWORD"] != "s3cret" || env["DB_DATABASE"] != "app" {
 		t.Fatalf("env=%v", env)
 	}
@@ -1205,7 +1208,10 @@ func TestPrepareSiteOmitsMetadataPassword(t *testing.T) {
 	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	env := rt.sites[spec.ID].databaseEnv
+	env, err := rt.resolveDatabaseEnv(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := env["DB_PASSWORD"]; ok {
 		t.Fatalf("metadata-only env has a password: %v", env)
 	}
@@ -1235,7 +1241,10 @@ func TestPrepareSiteAdditionalLinkUsesNamespacedEnv(t *testing.T) {
 	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	env := rt.sites[spec.ID].databaseEnv
+	env, err := rt.resolveDatabaseEnv(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if env["DB_BLOG_DATABASE"] != "blog" || env["DB_BLOG_PASSWORD"] != "pgsecret" || env["DB_BLOG_PORT"] != "5432" {
 		t.Fatalf("env=%v", env)
 	}
@@ -1288,9 +1297,12 @@ func TestPreparePHPInjectsDatabaseEnvWithoutWritingSecretToFPM(t *testing.T) {
 	if _, err := rt.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-1", Site: spec}); err != nil {
 		t.Fatal(err)
 	}
-	generation := rt.sites[spec.ID].phpGenerations["gen-1"]
-	if generation == nil || generation.databaseEnv["DB_PASSWORD"] != "s3cret" {
-		t.Fatalf("generation env = %+v", generation)
+	if rt.sites[spec.ID].phpGenerations["gen-1"] == nil {
+		t.Fatal("PHP generation was not prepared")
+	}
+	env, err := rt.resolveDatabaseEnv(spec)
+	if err != nil || env["DB_PASSWORD"] != "s3cret" {
+		t.Fatalf("resolved env = %+v, %v", env, err)
 	}
 	fpmData, err := os.ReadFile(filepath.Join(root, "sites", spec.ID, "fpm.conf"))
 	if err != nil {

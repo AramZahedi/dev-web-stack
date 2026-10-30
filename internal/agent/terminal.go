@@ -138,11 +138,14 @@ func (r *Runtime) terminalEnvironment(spec agentproto.SiteSpec, ticket *terminal
 }
 
 func (r *Runtime) terminalEnvironmentForSite(site *runtimeSite, ticket *terminalTicket) (map[string]string, error) {
-	databaseEnv, err := r.databaseEnvFor(site)
+	r.mu.Lock()
+	spec := cloneAgentSiteSpec(site.spec)
+	r.mu.Unlock()
+	databaseEnv, err := r.databaseEnvFor(spec)
 	if err != nil {
 		return nil, err
 	}
-	return r.terminalEnvironmentWith(terminalSiteSpec(site.spec, ticket), databaseEnv, ticket)
+	return r.terminalEnvironmentWith(terminalSiteSpec(spec, ticket), databaseEnv, ticket)
 }
 
 func (r *Runtime) terminalEnvironmentWith(spec agentproto.SiteSpec, databaseEnv map[string]string, ticket *terminalTicket) (map[string]string, error) {
