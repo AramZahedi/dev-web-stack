@@ -172,6 +172,22 @@ func TestSiteDBListJSONRedactsConnectionPasswords(t *testing.T) {
 	}
 }
 
+func TestSiteDBListHumanShowsLinkID(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseLinks: []model.DatabaseLink{{
+		ID: "lnk_1", SiteID: "site-1", SiteName: "blog", ServiceID: "mysql", Engine: model.DatabaseMySQL,
+		Database: "app", Username: "app", Primary: true, PasswordManaged: true, Available: true,
+		Connection: model.DatabaseConnection{Engine: model.DatabaseMySQL, Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app"},
+	}}}
+	out := runCLI(t, fake, "site", "db", "list", "blog")
+	if !strings.Contains(out, "LINK") {
+		t.Fatalf("link column missing: %s", out)
+	}
+	if !strings.Contains(out, "lnk_1") {
+		t.Fatalf("link id missing: %s", out)
+	}
+}
+
 func TestSiteDBLinkPayload(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{databaseLinked: model.DatabaseLink{ID: "lnk_1", Database: "app"}}

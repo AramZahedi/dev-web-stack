@@ -169,6 +169,7 @@ func writeSiteDatabaseLinkTable(cmd *cobra.Command, links []model.DatabaseLink) 
 			status = link.Error
 		}
 		rows = append(rows, []string{
+			link.ID,
 			defaultString(string(link.Engine), "-"),
 			host,
 			link.Database,
@@ -178,5 +179,5 @@ func writeSiteDatabaseLinkTable(cmd *cobra.Command, links []model.DatabaseLink) 
 			status,
 		})
 	}
-	return writeTable(cmd, []string{"ENGINE", "HOST", "DATABASE", "USERNAME", "PRIMARY", "PASSWORD", "STATUS"}, rows)
+	return writeTable(cmd, []string{"LINK", "ENGINE", "HOST", "DATABASE", "USERNAME", "PRIMARY", "PASSWORD", "STATUS"}, rows)
 }
