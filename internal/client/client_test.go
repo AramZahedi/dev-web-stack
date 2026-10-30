@@ -37,6 +37,7 @@ type fakeAPI struct {
 	delay                 time.Duration
 	buildDelay            time.Duration
 	wrongDatabaseEnvelope bool
+	nullDatabaseEnv       bool
 }
 
 type recordedRequest struct {
@@ -623,6 +624,10 @@ func (f *fakeAPI) mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/sites/{ref}/database-env", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
 		f.writeErrorOr(w, func() {
+			if f.nullDatabaseEnv {
+				writeTestJSON(w, http.StatusOK, map[string]any{"env": nil})
+				return
+			}
 			writeTestJSON(w, http.StatusOK, map[string]any{"env": map[string]string{"DB_HOST": "127.0.0.1", "DB_DATABASE": "app"}})
 		})
 	})

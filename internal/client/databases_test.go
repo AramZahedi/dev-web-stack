@@ -11,6 +11,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/sites"
 )
 
 func TestClientDatabaseCRUDAndReveal(t *testing.T) {
@@ -219,6 +220,70 @@ func TestClientImportStreamsMultipart(t *testing.T) {
 		if !strings.Contains(req.body, want) {
 			t.Fatalf("multipart body missing %q: %s", want, req.body)
 		}
+	}
+}
+
+func TestClientAddSiteIncludesDatabasePayload(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if _, err := c.AddSite(context.Background(), sites.CreateRequest{
+		Name: "blog", Path: "/tmp/blog", Kind: "static",
+		Database: &databases.SiteDatabaseRequest{ServiceID: "mysql", Database: "app", UserID: "usr_app", Primary: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := api.last(t, http.MethodPost, "/api/v1/sites")
+	if !strings.Contains(req.body, `"database":{`) || !strings.Contains(req.body, `"service_id":"mysql"`) {
+		t.Fatalf("Add Site database payload missing: %s", req.body)
+	}
+	if strings.Contains(req.body, `"password"`) {
+		t.Fatalf("metadata-only Add Site payload contains a password: %s", req.body)
+	}
+}
+
+func TestClientImportRejectsNilReader(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if _, err := c.ImportServiceDatabase(context.Background(), "mysql", "app", nil, "dump.sql", databases.ImportRequest{}); err == nil {
+		t.Fatal("nil import reader was accepted")
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.routes) != 0 {
+		t.Fatalf("nil import reader made an API call: %+v", api.routes)
+	}
+}
+
+func TestClientSiteDatabaseEnvAcceptsNullEnvelope(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}, nullDatabaseEnv: true}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	env, err := c.SiteDatabaseEnv(context.Background(), "blog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(env) != 0 {
+		t.Fatalf("env=%v", env)
 	}
 }
 
