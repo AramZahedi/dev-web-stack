@@ -144,6 +144,7 @@ func NewRootCmd(newClient func(home string) (Client, error)) *cobra.Command {
 		app.newSiteCmd(),
 		app.newRuntimeCmd(),
 		app.newPHPCmd(),
+		app.newNodeCmd(),
 		app.newToolCmd(),
 		app.newShellCmd(),
 		app.newExecCmd(),

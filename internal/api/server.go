@@ -450,6 +450,8 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPut, "/api/v1/php/default", s.handleSetPHPDefault},
 		{http.MethodGet, "/api/v1/php/default/ini", s.handleGlobalIni},
 		{http.MethodPut, "/api/v1/php/default/ini", s.handleSaveGlobalIni},
+		{http.MethodGet, "/api/v1/node/default", s.handleNodeDefault},
+		{http.MethodPut, "/api/v1/node/default", s.handleSetNodeDefault},
 
 		{http.MethodGet, "/api/v1/tools", s.handleListTools},
 		{http.MethodPost, "/api/v1/tools/{id}/install", s.handleInstallTool},
@@ -459,6 +461,9 @@ func (s *Server) apiRoutes() []route {
 
 		{http.MethodGet, "/api/v1/runtimes", s.handleListRuntimes},
 		{http.MethodGet, "/api/v1/runtimes/available", s.handleAvailableRuntimes},
+		{http.MethodGet, "/api/v1/runtimes/node/releases", s.handleListNodeReleases},
+		{http.MethodGet, "/api/v1/runtimes/node/releases/{version}", s.handleGetNodeRelease},
+		{http.MethodPost, "/api/v1/runtimes/node/refresh", s.handleRefreshNodeReleases},
 		{http.MethodPost, "/api/v1/runtimes/install", s.handleInstallRuntime},
 		{http.MethodDelete, "/api/v1/runtimes/{id}", s.handleRemoveRuntime},
 

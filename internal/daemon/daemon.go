@@ -211,6 +211,11 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("daemon: locate devstack binary: %w", err)
 	}
 	runtimes := runtimemgr.NewManager(st, cfg.Home, nil)
+	nodeReleases, err := newNodeReleaseClient(cfg.Home)
+	if err != nil {
+		return fmt.Errorf("daemon: node release discovery: %w", err)
+	}
+	nodeRuntimes := newLocalNodeRuntimeService(runtimes, nodeReleases)
 	local, err := backend.NewLocal(cfg, st, logStore, runtimes, selfBin)
 	if err != nil {
 		return fmt.Errorf("daemon: local backend: %w", err)
@@ -377,7 +382,7 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	apiServer := api.NewServer(st, siteService, runtimes, doctorService, logStore, helper, api.Config{
+	apiServer := api.NewServer(st, siteService, nodeRuntimes, doctorService, logStore, helper, api.Config{
 		UserHome:     userHome,
 		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
 		AuthToken:    authToken,

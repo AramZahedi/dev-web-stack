@@ -40,6 +40,7 @@ tags:
   - name: session
   - name: sites
   - name: php
+  - name: node
   - name: tools
   - name: events
   - name: runtimes
@@ -754,6 +755,65 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/node/default:
+    get:
+      tags: [node]
+      summary: Get the machine-wide Node CLI default
+      operationId: getNodeDefault
+      security: []
+      responses:
+        "200":
+          description: The configured selection, resolved build, and shim state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeDefaultStatus"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    put:
+      tags: [node]
+      summary: Set or clear the machine-wide Node CLI default
+      operationId: setNodeDefault
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value:
+                  type: string
+                clear:
+                  type: boolean
+                force:
+                  type: boolean
+      responses:
+        "200":
+          description: The updated default and shim state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeDefaultStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: A conflicting state prevents the operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /api/v1/php/default/ini:
     get:
       tags: [php]
@@ -1119,6 +1179,112 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/v1/runtimes/node/releases:
+    get:
+      tags: [runtimes]
+      summary: List available Node releases grouped by major
+      operationId: listNodeReleases
+      security: []
+      parameters:
+        - name: major
+          in: query
+          required: false
+          description: Restrict to one major version.
+          schema:
+            type: string
+        - name: all
+          in: query
+          required: false
+          description: Expand every stable release in each major.
+          schema:
+            type: boolean
+        - name: offline
+          in: query
+          required: false
+          description: Use cache or the embedded catalog without a network call.
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Node release snapshot with source, staleness, and warning state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "502":
+          description: The upstream discovery source failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/runtimes/node/releases/{version}:
+    parameters:
+      - name: version
+        in: path
+        required: true
+        description: Node version selector or exact release.
+        schema:
+          type: string
+    get:
+      tags: [runtimes]
+      summary: Preflight one exact Node release
+      operationId: getNodeRelease
+      security: []
+      responses:
+        "200":
+          description: The pinned catalog entry and release metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodePreflight"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/ForbiddenHost"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          description: The upstream discovery source failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/runtimes/node/refresh:
+    post:
+      tags: [runtimes]
+      summary: Refresh the official Node release index
+      operationId: refreshNodeReleases
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        "200":
+          description: The refreshed snapshot, or a stale/embedded fallback with a warning.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeSnapshot"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "502":
+          description: The upstream discovery source failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/runtimes/{id}:
     parameters:
@@ -2968,6 +3134,88 @@ components:
           type: string
         config_hash:
           type: string
+
+    NodeRelease:
+      type: object
+      required: [version, date, lts, security, npm, modules, file]
+      properties:
+        version:
+          type: string
+          examples: ["22.11.0"]
+        date:
+          type: string
+        lts:
+          type: string
+          description: LTS codename, or an empty string for a non-LTS release.
+        security:
+          type: boolean
+        npm:
+          type: string
+        modules:
+          type: string
+        file:
+          type: string
+
+    NodeMajor:
+      type: object
+      required: [major, latest, releases]
+      properties:
+        major:
+          type: integer
+        latest:
+          $ref: "#/components/schemas/NodeRelease"
+        releases:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeRelease"
+
+    NodeSnapshot:
+      type: object
+      required: [majors, all, source, stale]
+      properties:
+        majors:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeMajor"
+        all:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeRelease"
+        source:
+          type: string
+          enum: [live, cache, embedded]
+        cached_at:
+          type: string
+          format: date-time
+        stale:
+          type: boolean
+        warning:
+          type: string
+
+    NodeDefaultStatus:
+      type: object
+      required: [shim_dir, shim_installed, source]
+      properties:
+        configured:
+          type: string
+        build:
+          $ref: "#/components/schemas/RuntimeBuild"
+        shim_dir:
+          type: string
+        shim_installed:
+          type: boolean
+        source:
+          type: string
+          enum: [setting, newest, ""]
+
+    NodePreflight:
+      type: object
+      required: [entry, release]
+      properties:
+        entry:
+          $ref: "#/components/schemas/CatalogEntry"
+        release:
+          $ref: "#/components/schemas/NodeRelease"
 
     RuntimeBuild:
       type: object
