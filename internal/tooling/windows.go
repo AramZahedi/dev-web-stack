@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -135,17 +136,47 @@ func EnsureGlobalWindowsToolShimsForBuild(home, distro, phpBuildPath string) err
 		}
 	}
 	binDir := filepath.Join(home, "bin")
+	iniPath := filepath.Join(home, "config", "cli", "php.ini")
 	if phpBuildPath = strings.TrimSpace(phpBuildPath); phpBuildPath != "" {
 		if !strings.HasPrefix(phpBuildPath, "/") {
 			return fmt.Errorf("tooling: PHP build path %q is not a WSL path", phpBuildPath)
 		}
 		root := strings.TrimRight(phpBuildPath, "/")
-		return ensureExactWindowsPHPShims(binDir, distro, root+"/bin/php", root+"/bin")
+		return ensureExactWindowsPHPShims(binDir, distro, root+"/bin/php", root+"/bin", iniPath)
 	}
 	if phpBin, phpBinDir, ok := windowsPHPDefaultTarget(home); ok {
-		return ensureExactWindowsPHPShims(binDir, distro, phpBin, phpBinDir)
+		return ensureExactWindowsPHPShims(binDir, distro, phpBin, phpBinDir, iniPath)
 	}
 	return EnsureWindowsToolShims(binDir, distro)
+}
+
+// windowsPathToWSLPath maps an absolute Windows drive path to its WSL mount
+// path. POSIX paths pass through so the shim builder remains testable off
+// Windows.
+func windowsPathToWSLPath(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", errors.New("tooling: path is empty")
+	}
+	normalized := strings.ReplaceAll(value, `\`, "/")
+	if strings.HasPrefix(normalized, "/") && !strings.HasPrefix(normalized, "//") {
+		return path.Clean(normalized), nil
+	}
+	if len(normalized) < 3 || normalized[1] != ':' || normalized[2] != '/' {
+		return "", fmt.Errorf("tooling: %q is not an absolute drive path", value)
+	}
+	drive := normalized[0]
+	if !((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) {
+		return "", fmt.Errorf("tooling: %q has no drive letter", value)
+	}
+	rest := path.Clean(normalized[3:])
+	if rest == "." {
+		rest = ""
+	}
+	if rest == ".." || strings.HasPrefix(rest, "../") {
+		return "", fmt.Errorf("tooling: %q escapes the drive root", value)
+	}
+	return "/mnt/" + strings.ToLower(string(drive)) + "/" + rest, nil
 }
 
 // windowsPHPDefaultTarget reads the registered PHP default and returns the
@@ -165,20 +196,26 @@ func windowsPHPDefaultTarget(home string) (bin, binDir string, ok bool) {
 	return root + "/php", root, true
 }
 
-func ensureExactWindowsPHPShims(binDir, distro, phpBin, phpBinDir string) error {
+func ensureExactWindowsPHPShims(binDir, distro, phpBin, phpBinDir, iniPath string) error {
 	if !wslDistroPattern.MatchString(strings.TrimSpace(distro)) {
 		return fmt.Errorf("tooling: invalid WSL distro name %q", distro)
 	}
 	if strings.TrimSpace(binDir) == "" {
 		return errors.New("tooling: Windows shim directory is empty")
 	}
+	wslIni, err := windowsPathToWSLPath(iniPath)
+	if err != nil {
+		return fmt.Errorf("tooling: map global CLI php.ini path: %w", err)
+	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return fmt.Errorf("tooling: create Windows shim directory: %w", err)
 	}
 	const argTranslate = `args=(); for a in \"$@\"; do a_norm=\"${a//\\//}\"; if [[ \"$a_norm\" =~ ^([a-zA-Z]):/(.*) ]]; then drive=\"${BASH_REMATCH[1],,}\"; rest=\"${BASH_REMATCH[2]}\"; args+=(\"/mnt/$drive/$rest\"); elif [[ \"$a_norm\" =~ ^([a-zA-Z0-9_.-]+)=([a-zA-Z]):/(.*) ]]; then opt=\"${BASH_REMATCH[1]}\"; drive=\"${BASH_REMATCH[2],,}\"; rest=\"${BASH_REMATCH[3]}\"; args+=(\"$opt=/mnt/$drive/$rest\"); elif [[ \"$a_norm\" =~ ^//wsl(\.localhost|\$)/[^/]+/?(.*) ]]; then rest=\"${BASH_REMATCH[2]}\"; if [[ -z \"$rest\" ]]; then args+=(\"/\"); else args+=(\"/$rest\"); fi; elif [[ \"$a_norm\" =~ ^([a-zA-Z0-9_.-]+)=//wsl(\.localhost|\$)/[^/]+/?(.*) ]]; then opt=\"${BASH_REMATCH[1]}\"; rest=\"${BASH_REMATCH[3]}\"; if [[ -z \"$rest\" ]]; then args+=(\"$opt=/\"); else args+=(\"$opt=/$rest\"); fi; elif [[ \"$a_norm\" =~ ^/[uU]sers/(.*) ]]; then rest=\"${BASH_REMATCH[1]}\"; args+=(\"/mnt/c/Users/$rest\"); else args+=(\"$a\"); fi; done;`
-	phpExec := strings.ReplaceAll("export PATH="+posixQuote(phpBinDir)+":\"$PATH\" && exec "+posixQuote(phpBin)+" \"${args[@]}\"", `"`, `\"`)
+	phpExec := strings.ReplaceAll("export PATH="+posixQuote(phpBinDir)+":\"$PATH\" && exec "+posixQuote(phpBin)+
+		" -c "+posixQuote(wslIni)+" \"${args[@]}\"", `"`, `\"`)
 	extDir := strings.TrimSuffix(phpBinDir, "/bin") + "/lib/php/extensions"
 	composerExec := strings.ReplaceAll("exec "+posixQuote(phpBin)+
+		" -c "+posixQuote(wslIni)+
 		" -d extension_dir="+posixQuote(extDir)+
 		" -d extension=phar.so -d extension=mbstring.so -d extension=openssl.so -d extension=curl.so "+
 		posixQuote("/data/devstack/tools/composer/composer.phar")+" \"${args[@]}\"", `"`, `\"`)

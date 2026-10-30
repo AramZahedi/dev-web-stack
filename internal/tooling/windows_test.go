@@ -147,6 +147,56 @@ func TestEnsureGlobalWindowsToolShimsForBuildPinsExactPath(t *testing.T) {
 	}
 }
 
+func TestEnsureGlobalWindowsToolShimsForBuildUsesGlobalCLIIni(t *testing.T) {
+	home := t.TempDir()
+	buildPath := "/data/devstack/runtimes/php@8.4.27-r1"
+	if err := EnsureGlobalWindowsToolShimsForBuild(home, "devstack", buildPath); err != nil {
+		t.Fatal(err)
+	}
+	expectedIni := strings.ReplaceAll(filepath.Join(home, "config", "cli", "php.ini"), `\`, "/")
+	if len(expectedIni) > 1 && expectedIni[1] == ':' {
+		expectedIni = "/mnt/" + strings.ToLower(expectedIni[:1]) + expectedIni[2:]
+	}
+	for _, name := range []string{"php.cmd", "composer.cmd"} {
+		content, err := os.ReadFile(filepath.Join(home, "bin", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(content)
+		if !strings.Contains(text, "-c '"+expectedIni+"'") {
+			t.Fatalf("%s does not load %s via -c:\n%s", name, expectedIni, text)
+		}
+	}
+}
+
+func TestWindowsPathToWSLPath(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{`C:\Users\Aram\.devstack`, "/mnt/c/Users/Aram/.devstack"},
+		{`c:/Users/Aram/.devstack`, "/mnt/c/Users/Aram/.devstack"},
+		{`D:\Data\devstack`, "/mnt/d/Data/devstack"},
+		{`C:\Users\Aram\My Apps\.devstack`, "/mnt/c/Users/Aram/My Apps/.devstack"},
+		{`C:\Users\Aram\.devstack\`, "/mnt/c/Users/Aram/.devstack"},
+		{`/home/dev/.devstack`, "/home/dev/.devstack"},
+	}
+	for _, tc := range tests {
+		got, err := windowsPathToWSLPath(tc.in)
+		if err != nil {
+			t.Fatalf("windowsPathToWSLPath(%q): %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Errorf("windowsPathToWSLPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	for _, bad := range []string{"", "relative\\path", `\\server\share\devstack`, `1:\devstack`, `C:relative`, `C:/a/../../x`} {
+		if _, err := windowsPathToWSLPath(bad); err == nil {
+			t.Errorf("windowsPathToWSLPath(%q) accepted an invalid path", bad)
+		}
+	}
+}
+
 func TestEnsureWindowsToolShimsRejectsUnsafeDistroName(t *testing.T) {
 	if err := EnsureWindowsToolShims(t.TempDir(), `devstack & whoami`); err == nil {
 		t.Fatal("unsafe distro name was accepted")

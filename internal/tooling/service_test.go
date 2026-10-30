@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -246,6 +248,40 @@ func TestServiceGlobalIniReadWrite(t *testing.T) {
 	}
 	if _, err := svc.SaveGlobalIni(ctx, "not ini\n"); err == nil {
 		t.Fatal("invalid ini accepted")
+	}
+}
+
+func TestServiceSaveGlobalIniRefreshesWindowsCLIShims(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows CLI shims are only generated on Windows")
+	}
+	svc, st, paths, _, _ := newToolService(t)
+	ctx := context.Background()
+	build := model.RuntimeBuild{
+		ID: "php@8.4.27-r1", Kind: "php", Version: "8.4.27",
+		Backend: model.BackendWSL, Path: "/data/devstack/runtimes/php@8.4.27-r1",
+	}
+	if err := st.UpsertRuntime(ctx, build); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting(ctx, DefaultPHPSettingKey, build.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.SaveGlobalIni(ctx, "[PHP]\nmemory_limit = 700M\n"); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(paths.Home, "bin", "php.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedIni := strings.ReplaceAll(GlobalIniPath(paths), `\`, "/")
+	if len(expectedIni) > 1 && expectedIni[1] == ':' {
+		expectedIni = "/mnt/" + strings.ToLower(expectedIni[:1]) + expectedIni[2:]
+	}
+	text := string(content)
+	if !strings.Contains(text, "-c '"+expectedIni+"'") {
+		t.Fatalf("SaveGlobalIni did not refresh php.cmd with %s:\n%s", expectedIni, text)
 	}
 }
 

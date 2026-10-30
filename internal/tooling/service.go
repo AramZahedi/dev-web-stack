@@ -219,10 +219,17 @@ func (s *Service) GlobalIni(ctx context.Context) (GlobalIni, error) {
 	return GlobalIni{Path: path, Content: string(data), BuildID: build.ID}, nil
 }
 
-// SaveGlobalIni validates and replaces the global ini.
+// SaveGlobalIni validates and replaces the global ini. The Windows CLI shims
+// are refreshed first so a wrapper created before the ini wiring existed starts
+// loading the file without requiring a PHP-default change.
 func (s *Service) SaveGlobalIni(ctx context.Context, content string) (GlobalIni, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	build, err := ResolveDefault(ctx, s.deps.Store)
 	if err != nil {
+		return GlobalIni{}, err
+	}
+	if err := s.ensureWindowsToolShims(build); err != nil {
 		return GlobalIni{}, err
 	}
 	path := GlobalIniPath(s.deps.Paths)
