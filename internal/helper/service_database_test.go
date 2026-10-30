@@ -397,6 +397,22 @@ func TestHelperUsesItsOwnComposeProject(t *testing.T) {
 	}
 }
 
+func TestHelperUsesDefaultRegistryFallback(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	c.databaseRegistry = nil
+	previous := dbengine.DefaultRegistry
+	dbengine.DefaultRegistry = func() dbengine.Registry {
+		return fakeRegistry{engines: map[model.DatabaseEngine]dbengine.Engine{
+			model.DatabaseMySQL: &fakeDatabaseEngine{id: model.DatabaseMySQL},
+		}}
+	}
+	t.Cleanup(func() { dbengine.DefaultRegistry = previous })
+	list, err := c.ListDatabases(context.Background(), "mysql")
+	if err != nil || len(list) == 0 {
+		t.Fatalf("default registry fallback list=%v err=%v", list, err)
+	}
+}
+
 func TestHelperCreateDatabaseUsesValidatedSQL(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	runner := c.runner.(*fakeCommandRunner)
