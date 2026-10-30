@@ -149,6 +149,16 @@ func TestListDatabasesParsesEngineOutput(t *testing.T) {
 	}
 }
 
+func TestCrossLaneUserIDShape(t *testing.T) {
+	// The daemon lane falls back to a locally-derived ID when a platform
+	// returns an empty one. It must use the same 8-byte digest as this lane,
+	// otherwise the fallback ID never matches a later discovery.
+	id := databaseUserID("mysql", "app", "%")
+	if !strings.HasPrefix(id, "usr_") || len(id) != len("usr_")+16 {
+		t.Fatalf("user ID = %q, want usr_ plus 16 hex characters", id)
+	}
+}
+
 func TestListUsersAddsStableIDsAndGrants(t *testing.T) {
 	d, runner := newDatabaseTestDocker(t)
 	runner.runOutputs["mysql.user"] = []byte("app\t%\tN\nroot\tlocalhost\tY\n")
