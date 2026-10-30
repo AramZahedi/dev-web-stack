@@ -187,6 +187,14 @@ const MANAGED_UNKNOWN_USER: DatabaseUser = {
   password_managed: false,
 };
 
+const MANAGED_PASSWORD_USER: DatabaseUser = {
+  ...EXTERNAL_USER,
+  id: 'usr_stored',
+  username: 'stored_user',
+  managed: true,
+  password_managed: true,
+};
+
 const DISABLED_USER: DatabaseUser = {
   ...EXTERNAL_USER,
   id: 'usr_disabled',
@@ -1151,5 +1159,60 @@ describe('AddSite Wave 2 fields', () => {
       within(dialog).queryByText(/external password entry is not available in v1/i),
     ).toBeNull();
     expect(within(dialog).queryByRole('button', { name: 'Reveal password' })).toBeNull();
+  });
+
+  it('clears an enabled database request when services fail to load', async () => {
+    let rejectServices!: (reason: unknown) => void;
+    mockApi.listServices.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectServices = reject;
+      }),
+    );
+    await openOptionsStep();
+    const toggle = screen.getByLabelText(
+      'Create or link a database',
+    ) as HTMLButtonElement;
+    await fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+
+    rejectServices(new ApiError('SERVICE_LIST_FAILED', 'Services unavailable.', 503));
+    expect(await screen.findByText('Could not load database services')).toBeTruthy();
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    expect(mockApi.createSite).toHaveBeenCalledWith(
+      expect.not.objectContaining({ database: expect.anything() }),
+    );
+  });
+
+  it('reviews an existing user with a stored password without exposing it', async () => {
+    mockDb.listServiceDatabases.mockResolvedValue({ databases: [APP_DATABASE] });
+    mockDb.listServiceUsers.mockResolvedValue({ users: [MANAGED_PASSWORD_USER] });
+    await openOptionsStep();
+
+    await fireEvent.click(screen.getByLabelText('Create or link a database'));
+    const service = (await screen.findByLabelText(/Database service/)) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    await fireEvent.click(screen.getByLabelText('Use existing database'));
+    await fireEvent.change(screen.getByLabelText(/Existing database/), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(screen.getByLabelText('Use existing user'));
+    await fireEvent.change(screen.getByLabelText(/Existing user/), {
+      target: { value: 'usr_stored' },
+    });
+
+    expect(screen.getByText('Password managed by devstack.')).toBeTruthy();
+    expect(screen.queryByLabelText(/Database password/)).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    expect(mockApi.createSite.mock.calls[0][0].database).toEqual({
+      service_id: 'mysql',
+      database: 'app',
+      user_id: 'usr_stored',
+      primary: true,
+    });
   });
 });
