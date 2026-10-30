@@ -4,9 +4,7 @@ package wslbackend
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"path"
 	"strings"
@@ -255,33 +253,30 @@ func toAgentSite(spec backend.SiteSpec) (agentproto.SiteSpec, error) {
 		PHPVersion: spec.PHPVersion, PHPBuild: spec.PHPBuild, PHPBuildPath: toWSLPath(spec.PHPBuildPath),
 		PHPIniPath: toWSLPath(spec.PHPIniPath), FPMConfigPath: toWSLPath(spec.FPMConfigPath), PHPHealthScript: toWSLPath(spec.PHPHealthScript),
 	}
-	if err := applyDatabaseLinks(&site, spec.DatabaseLinks); err != nil {
-		return agentproto.SiteSpec{}, fmt.Errorf("backend/wsl: encode database links: %w", err)
-	}
+	applyDatabaseLinks(&site, spec.DatabaseLinks)
 	return site, nil
 }
 
 // applyDatabaseLinks carries password-free link metadata to the agent. The
-// agent lane owns the SiteSpec.DatabaseLinks field; this JSON bridge lets the
-// daemon branch compile against the frozen foundation and start sending links
-// as soon as that field is merged, without importing a not-yet-landed type.
-func applyDatabaseLinks(site *agentproto.SiteSpec, links []backend.DatabaseLinkSpec) error {
-	if site == nil || len(links) == 0 {
-		return nil
+// agent owns the SiteSpec.DatabaseLinks field; the daemon converts its backend
+// view directly so the wire shape is checked by the compiler.
+func applyDatabaseLinks(site *agentproto.SiteSpec, links []backend.DatabaseLinkSpec) {
+	if site == nil {
+		return
 	}
-	raw, err := databaseLinksPayload(links)
-	if err != nil {
-		return err
+	for _, link := range links {
+		site.DatabaseLinks = append(site.DatabaseLinks, agentproto.DatabaseLinkSpec{
+			ServiceID:       link.ServiceID,
+			Engine:          link.Engine,
+			Database:        link.Database,
+			UserID:          link.UserID,
+			Username:        link.Username,
+			Host:            link.Host,
+			Port:            link.Port,
+			Primary:         link.Primary,
+			PasswordManaged: link.PasswordManaged,
+		})
 	}
-	return json.Unmarshal(raw, site)
-}
-
-// databaseLinksPayload is the wire fragment the agent's SiteSpec field
-// consumes.
-func databaseLinksPayload(links []backend.DatabaseLinkSpec) ([]byte, error) {
-	return json.Marshal(struct {
-		DatabaseLinks []backend.DatabaseLinkSpec `json:"database_links,omitempty"`
-	}{DatabaseLinks: links})
 }
 
 func filepathToSlash(value string) string { return strings.ReplaceAll(value, `\`, "/") }
