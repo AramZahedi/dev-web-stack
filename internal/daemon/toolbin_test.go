@@ -66,6 +66,168 @@ func TestResolveToolBinDirDefaultsWhenUnavailable(t *testing.T) {
 	}
 }
 
+func TestWindowsToolServicePrefersNodeBuildPathMetadata(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	st, err := store.Open(paths.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+
+	modernRoot := filepath.Join(paths.Runtimes, "node", "22.11.0-linux-x64")
+	legacyRoot := filepath.Join(paths.Runtimes, "node@22.11.0")
+	for _, root := range []string{modernRoot, legacyRoot} {
+		if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"node", "npm", "npx"} {
+			if err := os.WriteFile(filepath.Join(root, "bin", name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	modern := model.RuntimeBuild{
+		ID:          "node@22.11.0",
+		Kind:        "node",
+		Version:     "22.11.0",
+		Backend:     model.BackendLocal,
+		Path:        modernRoot,
+		InstalledAt: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+	}
+	legacy := modern
+	legacy.Path = legacyRoot
+	if err := st.UpsertRuntime(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting(ctx, tooling.DefaultNodeSettingKey, modern.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tooling.EnsureNodeShims(paths, modern); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := newWindowsToolService(home, "devstack", st)
+	status, err := svc.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTarget := filepath.Join(modernRoot, "bin", "node")
+	if status.Target != wantTarget {
+		t.Fatalf("target = %q, want the BUILD_PATH target %q", status.Target, wantTarget)
+	}
+	if _, err := svc.Install(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "bin", "node.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), filepath.ToSlash(wantTarget)) {
+		t.Fatalf("node.cmd does not use the BUILD_PATH build:\n%s", data)
+	}
+	if strings.Contains(string(data), filepath.ToSlash(filepath.Join(legacyRoot, "bin", "node"))) {
+		t.Fatalf("node.cmd fell back to the legacy build:\n%s", data)
+	}
+
+	// BUILD_PATH versions that do not match the recorded VERSION are rejected.
+	if err := os.WriteFile(tooling.NodeDefaultVersionPath(paths), []byte("node@24.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Status(ctx); err == nil {
+		t.Fatal("status accepted a BUILD_PATH with a mismatched VERSION")
+	}
+	if _, err := svc.Install(ctx, false); err == nil {
+		t.Fatal("install accepted a BUILD_PATH with a mismatched VERSION")
+	}
+}
+
+func TestWindowsToolServiceRejectsInvalidNodeBuildPath(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	st, err := store.Open(paths.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+
+	modernRoot := filepath.Join(paths.Runtimes, "node", "22.11.0-linux-x64")
+	legacyRoot := filepath.Join(paths.Runtimes, "node@22.11.0")
+	for _, root := range []string{modernRoot, legacyRoot} {
+		if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"node", "npm", "npx"} {
+			if err := os.WriteFile(filepath.Join(root, "bin", name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	legacy := model.RuntimeBuild{
+		ID:          "node@22.11.0",
+		Kind:        "node",
+		Version:     "22.11.0",
+		Backend:     model.BackendLocal,
+		Path:        legacyRoot,
+		InstalledAt: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+	}
+	if err := st.UpsertRuntime(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(tooling.NodeDefaultToolDir(paths), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tooling.NodeDefaultVersionPath(paths), []byte("node@22.11.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(filepath.Join(outside, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := newWindowsToolService(home, "devstack", st)
+	invalid := []string{
+		"",
+		"relative/node@22.11.0",
+		modernRoot + "\x00suffix",
+		modernRoot + "\n/etc/passwd",
+		paths.Runtimes + "/node/../node@22.11.0",
+		outside,
+		filepath.Join(paths.Runtimes, "php", "8.4.12-linux-x64"),
+		filepath.Join(paths.Runtimes, "node", "22.11.0"),
+		filepath.Join(paths.Runtimes, "node", "22.12.0-linux-x64"),
+	}
+	for _, target := range invalid {
+		if err := os.WriteFile(tooling.NodeDefaultBuildPathPath(paths), []byte(target+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.Status(ctx); err == nil {
+			t.Fatalf("status accepted BUILD_PATH %q", target)
+		}
+		if _, err := svc.Install(ctx, false); err == nil {
+			t.Fatalf("install accepted BUILD_PATH %q", target)
+		}
+	}
+
+	if err := os.RemoveAll(modernRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, modernRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.WriteFile(tooling.NodeDefaultBuildPathPath(paths), []byte(modernRoot+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Status(ctx); err == nil {
+		t.Fatal("status accepted a symlink-escaping BUILD_PATH")
+	}
+	if _, err := svc.Install(ctx, false); err == nil {
+		t.Fatal("install accepted a symlink-escaping BUILD_PATH")
+	}
+}
+
 func TestWindowsToolServiceManagesNodeShims(t *testing.T) {
 	home := t.TempDir()
 	paths := config.NewPaths(home)

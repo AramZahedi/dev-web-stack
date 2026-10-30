@@ -251,6 +251,8 @@ func (s *Service) InstallTool(ctx context.Context, id string, force bool) (helpe
 	switch id {
 	case helperproto.ToolPHPDefault:
 		return s.setPHPDefaultLocked(ctx, false, force)
+	case helperproto.ToolNodeDefault:
+		return s.installNodeDefaultLocked(ctx, force)
 	case helperproto.ToolComposer:
 		if err := s.preflight(ctx, id, force); err != nil {
 			return helperproto.ToolStatus{}, err
@@ -304,13 +306,21 @@ func (s *Service) RemoveTool(ctx context.Context, id string) (helperproto.ToolSt
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch id {
-	case helperproto.ToolPHPDefault, helperproto.ToolComposer:
+	case helperproto.ToolPHPDefault, helperproto.ToolComposer, helperproto.ToolNodeDefault:
 	default:
 		return helperproto.ToolStatus{}, fmt.Errorf("%w: %q", ErrUnsupportedTool, id)
 	}
 	status, err := s.helperRemove(ctx, id)
 	if err != nil && !errors.Is(err, helperproto.ErrNotImplemented) {
 		return helperproto.ToolStatus{}, err
+	}
+	if id == helperproto.ToolNodeDefault {
+		// The Linux helper removes the managed directory itself; the Windows
+		// helper only owns the .cmd shims, so clean the WSL shims and VERSION
+		// here for both platforms.
+		if err := os.RemoveAll(NodeDefaultToolDir(s.deps.Paths)); err != nil {
+			return helperproto.ToolStatus{}, fmt.Errorf("tooling: remove Node default artifacts: %w", err)
+		}
 	}
 	return status, nil
 }

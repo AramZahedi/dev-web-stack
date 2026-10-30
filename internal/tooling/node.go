@@ -71,6 +71,89 @@ func NodeDefaultVersionPath(paths config.Paths) string {
 	return filepath.Join(NodeDefaultToolDir(paths), "VERSION")
 }
 
+// NodeDefaultBuildPathPath returns the file recording the exact on-disk path of
+// the installed global Node default build. Runtime installs use
+// <runtimes>/node/<version>-<build>, not the legacy <runtimes>/node@<version>
+// leaf, so the helper resolves the recorded path instead of guessing.
+func NodeDefaultBuildPathPath(paths config.Paths) string {
+	return filepath.Join(NodeDefaultToolDir(paths), "BUILD_PATH")
+}
+
+// ReadNodeDefaultVersion returns the build id recorded in VERSION. The boolean
+// is false when the file does not exist.
+func ReadNodeDefaultVersion(paths config.Paths) (string, bool, error) {
+	return readNodeDefaultMetadata(NodeDefaultVersionPath(paths))
+}
+
+// ReadNodeDefaultBuildPath returns the exact build path recorded in
+// BUILD_PATH. The boolean is false when the file does not exist.
+func ReadNodeDefaultBuildPath(paths config.Paths) (string, bool, error) {
+	return readNodeDefaultMetadata(NodeDefaultBuildPathPath(paths))
+}
+
+func readNodeDefaultMetadata(file string) (string, bool, error) {
+	data, err := os.ReadFile(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("tooling: read %s: %w", file, err)
+	}
+	return strings.TrimSpace(string(data)), true, nil
+}
+
+// ValidateNodeDefaultBuildLayout validates a path relative to the runtimes root
+// for the exact Node build id. The accepted layouts are the legacy
+// node@<version> directory and the current node/<version>-<build> directory.
+func ValidateNodeDefaultBuildLayout(id, relative string) error {
+	parsed, err := catalog.ParseID(id)
+	if err != nil || parsed.Kind != "node" || id != catalog.FormatID("node", parsed.Version, 0) {
+		return fmt.Errorf("node-default build %q is not an exact node@<version> id", id)
+	}
+	if relative == "" || strings.ContainsAny(relative, "\x00\r\n") ||
+		path.IsAbs(relative) || relative != path.Clean(relative) {
+		return fmt.Errorf("node-default build path %q is not a clean relative path", relative)
+	}
+	if relative == id {
+		return nil
+	}
+	prefix := "node/" + parsed.Version + "-"
+	if !strings.HasPrefix(relative, prefix) {
+		return fmt.Errorf("node-default build path %q is not a Node %s build under <runtimes>/node", relative, parsed.Version)
+	}
+	build := strings.TrimPrefix(relative, prefix)
+	if build == "" || build == "." || build == ".." || strings.ContainsAny(build, `/\`) {
+		return fmt.Errorf("node-default build path %q has an invalid build suffix", relative)
+	}
+	return nil
+}
+
+// NodeDefaultBuildRelativePath validates an absolute POSIX build path and
+// returns its path relative to the containing runtimes root. It rejects empty,
+// relative, unclean, and non-Node paths. Callers that can resolve symlinks must
+// additionally verify the real path stays below the real runtimes root.
+func NodeDefaultBuildRelativePath(id, recorded string) (string, error) {
+	if recorded == "" || strings.ContainsAny(recorded, "\x00\r\n") ||
+		!path.IsAbs(recorded) || recorded != path.Clean(recorded) {
+		return "", fmt.Errorf("node-default build path %q is not a clean absolute path", recorded)
+	}
+	base := path.Base(recorded)
+	dir := path.Base(path.Dir(recorded))
+	var relative string
+	switch {
+	case dir == "runtimes" && base == id:
+		relative = id
+	case dir == "node" && path.Base(path.Dir(path.Dir(recorded))) == "runtimes":
+		relative = "node/" + base
+	default:
+		return "", fmt.Errorf("node-default build path %q is not under <runtimes>/node@<version> or <runtimes>/node/<version>-<build>", recorded)
+	}
+	if err := ValidateNodeDefaultBuildLayout(id, relative); err != nil {
+		return "", err
+	}
+	return relative, nil
+}
+
 // ResolveNodeDefault resolves the global Node default from the store. An explicit
 // setting wins; without one the newest installed compatible build is used.
 // The setting may be an exact build id, an exact version, a major line such as
@@ -198,6 +281,15 @@ func EnsureNodeShims(paths config.Paths, build model.RuntimeBuild) error {
 		version = "node@" + strings.TrimSpace(build.Version)
 	}
 	if err := writeAtomicFile(NodeDefaultVersionPath(paths), []byte(version+"\n"), 0o644); err != nil {
+		return err
+	}
+	buildRoot := strings.TrimSpace(build.Path)
+	if strings.HasPrefix(buildRoot, "/") {
+		buildRoot = path.Clean(buildRoot)
+	} else {
+		buildRoot = filepath.Clean(buildRoot)
+	}
+	if err := writeAtomicFile(NodeDefaultBuildPathPath(paths), []byte(buildRoot+"\n"), 0o644); err != nil {
 		return err
 	}
 	return nil
