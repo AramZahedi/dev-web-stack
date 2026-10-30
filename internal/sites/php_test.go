@@ -58,6 +58,10 @@ func TestCreatePHPImplicitBuildIgnoresNonPHPRuntimeRows(t *testing.T) {
 func TestCreatePHPSiteStartsFPMAndPinsBuild(t *testing.T) {
 	svc, fakes := newTestService(t)
 	build := fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	nodeBuild := installSiteNodeBuild(t, fakes, "22.11.0")
+	if err := fakes.store.SetSetting(ctx, "node_default", nodeBuild.ID); err != nil {
+		t.Fatal(err)
+	}
 	site, err := svc.Create(ctx, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php",
 		PHPVersion: "8.4", PHPBuild: build.ID, DocumentRoot: "."})
 	if err != nil {
@@ -81,6 +85,9 @@ func TestCreatePHPSiteStartsFPMAndPinsBuild(t *testing.T) {
 	}
 	if spec.PHPVersion != "8.4" || spec.FastCGIPort != site.FastCGIPort || spec.DocumentRoot != "." {
 		t.Fatalf("spec = %+v", spec)
+	}
+	if spec.RuntimeVersion != nodeBuild.Version {
+		t.Fatalf("PHP spec runtime = %q, want inherited %q", spec.RuntimeVersion, nodeBuild.Version)
 	}
 	if fakes.php.lintCalls == 0 || fakes.php.fpmCalls == 0 {
 		t.Fatal("validation was not run")
@@ -1348,6 +1355,7 @@ func TestUpdatePHPRejectsAnEscapingDocumentRoot(t *testing.T) {
 
 func TestUpdateRejectsFrontControllerOnNonPHPSites(t *testing.T) {
 	svc, fakes := newTestService(t)
+	installSiteNodeBuild(t, fakes, "24.0.0")
 	static := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"})
 	node := mustCreate(t, svc, fakes, CreateRequest{Name: "shop", Path: fakes.root, Kind: "node", NodeVersion: "24", Command: "npm run dev"})
 

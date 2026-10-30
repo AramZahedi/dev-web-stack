@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,10 +18,11 @@ import (
 type nodeToolchainSiteService struct {
 	*fakeSiteService
 	summary model.NodeToolchain
+	err     error
 }
 
 func (s *nodeToolchainSiteService) ResolveNodeToolchain(context.Context, model.Site) (model.NodeToolchain, error) {
-	return s.summary, nil
+	return s.summary, s.err
 }
 
 func TestSiteAPIReturnsNodeToolchainSummary(t *testing.T) {
@@ -76,6 +78,34 @@ func TestSiteAPIReturnsNodeToolchainSummary(t *testing.T) {
 	if len(listed) != 1 || listed[0].NodeToolchain == nil ||
 		listed[0].NodeToolchain.Version != summary.Version {
 		t.Fatalf("listed sites = %+v", listed)
+	}
+}
+
+func TestSiteAPIReturnsMissingNodeToolchainSummary(t *testing.T) {
+	summary := model.NodeToolchain{Version: "99.0.0", Source: model.NodeSourceSite, Installed: false}
+	fake := &nodeToolchainSiteService{
+		fakeSiteService: &fakeSiteService{sites: map[string]model.Site{
+			"s1": {ID: "s1", Name: "api", Kind: model.SiteStatic, NodeVersion: "99.0.0"},
+		}},
+		summary: summary,
+		err:     errors.New("sites: node version is not installed"),
+	}
+	server := &Server{sites: fake}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sites/s1", nil)
+	req.SetPathValue("ref", "s1")
+	rec := httptest.NewRecorder()
+	server.handleGetSite(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get site status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var fetched model.Site
+	if err := json.Unmarshal(rec.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("decode site: %v", err)
+	}
+	if fetched.NodeToolchain == nil || fetched.NodeToolchain.Installed ||
+		fetched.NodeToolchain.Version != summary.Version ||
+		fetched.NodeToolchain.Source != summary.Source {
+		t.Fatalf("missing node toolchain summary = %+v", fetched.NodeToolchain)
 	}
 }
 

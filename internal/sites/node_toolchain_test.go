@@ -1,6 +1,7 @@
 package sites
 
 import (
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -78,10 +79,69 @@ func TestResolveNodeToolchainPrefersSiteThenGlobal(t *testing.T) {
 	if _, err := svc.ResolveNodeToolchain(ctx, model.Site{Kind: model.SiteNode, Name: "empty"}); err == nil {
 		t.Fatal("node site without a pin resolved a toolchain")
 	}
-	if _, err := svc.ResolveNodeToolchain(ctx, model.Site{
+	missing, err := svc.ResolveNodeToolchain(ctx, model.Site{
 		Kind: model.SiteStatic, Name: "missing", NodeVersion: "99.0.0",
-	}); err == nil || !strings.Contains(err.Error(), "not installed") {
+	})
+	if err == nil || !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("uninstalled pin error = %v", err)
+	}
+	if missing.Installed || missing.Version != "99.0.0" || missing.Source != model.NodeSourceSite {
+		t.Fatalf("uninstalled pin summary = %+v", missing)
+	}
+}
+
+func TestBackendSpecResolvesInheritedNodeDefault(t *testing.T) {
+	svc, fakes := newTestService(t)
+	older := installSiteNodeBuild(t, fakes, "20.18.0")
+	installSiteNodeBuild(t, fakes, "22.11.0")
+	if err := fakes.store.SetSetting(ctx, "node_default", older.ID); err != nil {
+		t.Fatalf("set node default: %v", err)
+	}
+
+	for _, kind := range []model.SiteKind{model.SiteStatic, model.SitePHP} {
+		spec := svc.backendSpecFor(ctx, model.Site{ID: string(kind), Kind: kind})
+		if spec.RuntimeVersion != older.Version {
+			t.Fatalf("%s backend runtime = %q, want configured default %q", kind, spec.RuntimeVersion, older.Version)
+		}
+	}
+}
+
+func TestServiceResponseIncludesNodeToolchainSummary(t *testing.T) {
+	svc, fakes := newTestService(t)
+	installSiteNodeBuild(t, fakes, "20.18.0")
+	globalBuild := installSiteNodeBuild(t, fakes, "22.11.0")
+	if err := fakes.store.SetSetting(ctx, "node_default", globalBuild.ID); err != nil {
+		t.Fatalf("set node default: %v", err)
+	}
+
+	created := createNodeToolchainSite(t, svc, CreateRequest{Name: "web", Path: fakes.root, Kind: "static"})
+	if created.NodeToolchain == nil || created.NodeToolchain.Version != globalBuild.Version ||
+		created.NodeToolchain.Source != model.NodeSourceGlobal || !created.NodeToolchain.Installed {
+		t.Fatalf("created node toolchain = %+v", created.NodeToolchain)
+	}
+	fetched := getNodeToolchainSite(t, svc, created.ID)
+	if fetched.NodeToolchain == nil || fetched.NodeToolchain.Version != globalBuild.Version {
+		t.Fatalf("fetched node toolchain = %+v", fetched.NodeToolchain)
+	}
+
+	stored, err := fakes.store.GetSite(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("read stored site: %v", err)
+	}
+	stored.NodeVersion = "99.0.0"
+	if err := fakes.store.UpdateSite(ctx, stored); err != nil {
+		t.Fatalf("persist stale pin: %v", err)
+	}
+	stale := getNodeToolchainSite(t, svc, created.ID)
+	if stale.NodeToolchain == nil {
+		t.Fatal("stale pin dropped its node_toolchain summary")
+	}
+	if stale.NodeToolchain.Installed || stale.NodeToolchain.Version != "99.0.0" ||
+		stale.NodeToolchain.Source != model.NodeSourceSite {
+		t.Fatalf("stale node toolchain = %+v", stale.NodeToolchain)
+	}
+	if _, err := svc.ResolveNodeToolchain(ctx, stale); !errors.Is(err, ErrNodeVersionNotInstalled) {
+		t.Fatalf("stale resolver error = %v, want ErrNodeVersionNotInstalled", err)
 	}
 }
 

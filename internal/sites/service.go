@@ -371,7 +371,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	}
 
 	if site.Kind == model.SitePHP {
-		spec, err := s.phpSiteSpecFromBuildLocked(site, phpBuild)
+		spec, err := s.phpSiteSpecFromBuildLocked(ctx, site, phpBuild)
 		if err != nil {
 			return fail(err, true)
 		}
@@ -925,14 +925,6 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		DesiredState:        model.DesiredRunning,
 	}
 
-	if site.NodeVersion != "" {
-		resolved, err := s.resolveNodePin(ctx, site.NodeVersion)
-		if err != nil {
-			return model.Site{}, err
-		}
-		site.NodeVersion = resolved
-	}
-
 	switch kind {
 	case model.SiteStatic:
 		// A build profile's output is the public document root unless the
@@ -992,6 +984,14 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 			return model.Site{}, err
 		}
 		site.PHPBuild = build.ID
+	}
+
+	if site.NodeVersion != "" {
+		resolved, err := s.resolveNodePin(ctx, site.NodeVersion)
+		if err != nil {
+			return model.Site{}, err
+		}
+		site.NodeVersion = resolved
 	}
 
 	if err := s.ensureDomainsAvailable(ctx, "", siteDomains(site)); err != nil {
@@ -1725,7 +1725,11 @@ func (s *Service) ResolveNodeToolchain(ctx context.Context, site model.Site) (mo
 			return model.NodeToolchain{}, err
 		}
 		if !ok {
-			return model.NodeToolchain{}, fmt.Errorf("sites: node version %q is not installed", pin)
+			return model.NodeToolchain{
+				Version:   strings.TrimPrefix(pin, "node@"),
+				Source:    model.NodeSourceSite,
+				Installed: false,
+			}, &NodeVersionNotInstalledError{Version: strings.TrimPrefix(pin, "node@")}
 		}
 		return model.NodeToolchain{
 			Version:   build.Version,
@@ -1749,24 +1753,44 @@ func (s *Service) ResolveNodeToolchain(ctx context.Context, site model.Site) (mo
 	}, nil
 }
 
-// attachNodeToolchain adds the response-only summary to a site. A missing
-// runtime is not an API response failure; the summary is simply absent.
+// attachNodeToolchain adds the response-only summary to a site. An unresolved
+// inheritance (no default at all) leaves the summary absent; a configured pin
+// that is missing is reported with Installed=false while the resolver error is
+// retained for operations that need an executable toolchain.
 func (s *Service) attachNodeToolchain(ctx context.Context, site *model.Site) {
 	if site == nil {
 		return
 	}
 	toolchain, err := s.ResolveNodeToolchain(ctx, *site)
-	if err != nil {
+	if err != nil && toolchain.Version == "" {
 		site.NodeToolchain = nil
 		return
 	}
 	site.NodeToolchain = &toolchain
 }
 
+// ErrNodeVersionNotInstalled matches a site pin that does not name an installed
+// Node build. Create and update perform read-only validation; installing a
+// runtime is the explicit `runtime install` path, never a site mutation.
+var ErrNodeVersionNotInstalled = errors.New("sites: node version is not installed")
+
+// NodeVersionNotInstalledError reports the exact requested pin that is not
+// installed.
+type NodeVersionNotInstalledError struct {
+	Version string
+}
+
+// Error implements error.
+func (e *NodeVersionNotInstalledError) Error() string {
+	return fmt.Sprintf("sites: node version %q is not installed", e.Version)
+}
+
+// Unwrap makes every not-installed pin match ErrNodeVersionNotInstalled.
+func (e *NodeVersionNotInstalledError) Unwrap() error { return ErrNodeVersionNotInstalled }
+
 // resolveNodePin normalizes a requested site pin to an exact installed version.
-// When the store has no Node inventory at all, the runtime provider is asked to
-// ensure the requested build; a non-empty inventory that lacks the requested
-// build is a hard error.
+// It is strictly read-only and never asks a runtime provider to install a
+// missing build.
 func (s *Service) resolveNodePin(ctx context.Context, pin string) (string, error) {
 	pin = strings.TrimSpace(pin)
 	if pin == "" {
@@ -1781,20 +1805,7 @@ func (s *Service) resolveNodePin(ctx context.Context, pin string) (string, error
 			return build.Version, nil
 		}
 	}
-	if len(builds) == 0 && s.deps.Backend != nil {
-		build, err := s.deps.Backend.EnsureRuntime(ctx, "node", strings.TrimPrefix(pin, "node@"))
-		if err != nil {
-			return "", fmt.Errorf("sites: ensure node %q: %w", pin, err)
-		}
-		if version := strings.TrimSpace(build.Version); version != "" {
-			return version, nil
-		}
-		return pin, nil
-	}
-	if len(builds) == 0 {
-		return pin, nil
-	}
-	return "", fmt.Errorf("sites: node version %q is not installed", pin)
+	return "", &NodeVersionNotInstalledError{Version: strings.TrimPrefix(pin, "node@")}
 }
 
 // findInstalledNodeBuild resolves an exact build id, exact version, major.minor

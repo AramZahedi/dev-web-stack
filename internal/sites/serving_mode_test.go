@@ -173,6 +173,7 @@ func TestExternalStaticStartStopAndObservedStatus(t *testing.T) {
 
 func TestSyncDegradesBrokenSitesInsteadOfFailing(t *testing.T) {
 	svc, fakes := newTestService(t)
+	installSiteNodeBuild(t, fakes, "24.0.0")
 	useServingMode(svc, fakes, config.ServingModeNginx)
 	ctx := context.Background()
 
@@ -265,6 +266,7 @@ func TestSyncDegradesBrokenSitesInsteadOfFailing(t *testing.T) {
 
 func TestStoppedNodeWithStaleBackendPathDoesNotBlockSync(t *testing.T) {
 	svc, fakes := newTestService(t)
+	installSiteNodeBuild(t, fakes, "24.0.0")
 	useServingMode(svc, fakes, config.ServingModeNginx)
 	ctx := context.Background()
 
@@ -312,6 +314,7 @@ func TestStoppedNodeWithStaleBackendPathDoesNotBlockSync(t *testing.T) {
 
 func TestExternalNodeStillStartsBackend(t *testing.T) {
 	svc, fakes := newTestService(t)
+	installSiteNodeBuild(t, fakes, "24.0.0")
 	useServingMode(svc, fakes, config.ServingModeNginx)
 
 	site, err := svc.Create(context.Background(), CreateRequest{
@@ -743,6 +746,7 @@ func TestReconcileServingMode(t *testing.T) {
 
 func TestExternalNodeStartStopSyncFailureRestoresState(t *testing.T) {
 	svc, fakes := newTestService(t)
+	installSiteNodeBuild(t, fakes, "24.0.0")
 	useServingMode(svc, fakes, config.ServingModeNginx)
 	site, err := svc.Create(context.Background(), CreateRequest{
 		Name: "shop", Path: fakes.root, Kind: "node", NodeVersion: "24", Command: "node server.js",

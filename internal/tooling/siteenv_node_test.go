@@ -1,6 +1,7 @@
 package tooling
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/sites"
 )
 
 func TestBuildSiteEnvUsesSitePinThenGlobal(t *testing.T) {
@@ -25,10 +27,11 @@ func TestBuildSiteEnvUsesSitePinThenGlobal(t *testing.T) {
 	phpInfo := fakeSitePHPInfo(t, paths, phpSite, phpBuild)
 
 	cases := []struct {
-		name   string
-		site   model.Site
-		want   model.RuntimeBuild
-		source string
+		name        string
+		site        model.Site
+		nodeDefault *model.RuntimeBuild
+		want        model.RuntimeBuild
+		source      string
 	}{
 		{
 			name:   "node site pin",
@@ -54,16 +57,26 @@ func TestBuildSiteEnvUsesSitePinThenGlobal(t *testing.T) {
 			want:   globalBuild,
 			source: "global",
 		},
+		{
+			name:        "configured older default wins over newest",
+			site:        model.Site{ID: "s3", Name: "legacy", HostPath: project, Kind: model.SiteStatic},
+			nodeDefault: &pinnedBuild,
+			want:        pinnedBuild,
+			source:      "global",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			global := globalBuild
+			selected := globalBuild
+			if tc.nodeDefault != nil {
+				selected = *tc.nodeDefault
+			}
 			env, err := BuildSiteEnv(tc.site, EnvDeps{
 				Paths:       paths,
 				Builds:      []model.RuntimeBuild{pinnedBuild, globalBuild, phpBuild},
 				PHPInfo:     &phpInfo,
-				NodeDefault: &global,
+				NodeDefault: &selected,
 				BasePATH:    "/usr/bin:/bin",
 			})
 			if err != nil {
@@ -77,6 +90,58 @@ func TestBuildSiteEnvUsesSitePinThenGlobal(t *testing.T) {
 			}
 			if env.Values["DEVSTACK_NODE_SOURCE"] != tc.source {
 				t.Fatalf("DEVSTACK_NODE_SOURCE = %q, want %q", env.Values["DEVSTACK_NODE_SOURCE"], tc.source)
+			}
+		})
+	}
+}
+
+func TestBuildSiteEnvFailsWithoutResolvedNodeDefault(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	project := t.TempDir()
+	phpBuild := fakePHPBuild(t, home, "8.4.12")
+	phpSite := model.Site{
+		ID: "p1", Name: "app", HostPath: project, Kind: model.SitePHP,
+		PHPVersion: "8.4", PHPBuild: phpBuild.ID,
+		PHPConfigHash: strings.Repeat("e", 64),
+	}
+	phpInfo := fakeSitePHPInfo(t, paths, phpSite, phpBuild)
+
+	for _, tc := range []struct {
+		name  string
+		site  model.Site
+		build []model.RuntimeBuild
+		info  *sites.PHPInfo
+	}{
+		{
+			name: "static without any node",
+			site: model.Site{ID: "s1", Name: "docs", HostPath: project, Kind: model.SiteStatic},
+		},
+		{
+			name: "static with installed node but no default",
+			site: model.Site{ID: "s2", Name: "site", HostPath: project, Kind: model.SiteStatic},
+			build: []model.RuntimeBuild{
+				fakeNodeBuild(t, home, "22.11.0"),
+			},
+		},
+		{
+			name: "php without any node",
+			site: phpSite,
+			build: []model.RuntimeBuild{
+				phpBuild,
+			},
+			info: &phpInfo,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := BuildSiteEnv(tc.site, EnvDeps{
+				Paths:    paths,
+				Builds:   tc.build,
+				PHPInfo:  tc.info,
+				BasePATH: "/usr/bin:/bin",
+			})
+			if !errors.Is(err, ErrRuntimeMissing) {
+				t.Fatalf("BuildSiteEnv error = %v, want ErrRuntimeMissing", err)
 			}
 		})
 	}
@@ -121,17 +186,13 @@ func TestStaticBuildProfileDoesNotOverrideShellNode(t *testing.T) {
 		t.Fatalf("node shim does not use the global build:\n%s", shim)
 	}
 
-	// With no configured global default, the newest installed Node still wins
-	// over the build profile because the build profile is not a shell setting.
-	env, err = BuildSiteEnv(site, EnvDeps{
+	// Without a resolved default the shell fails closed; the build profile is
+	// never promoted to a shell setting.
+	if _, err := BuildSiteEnv(site, EnvDeps{
 		Paths:    paths,
 		Builds:   []model.RuntimeBuild{buildNode, globalNode},
 		BasePATH: "/usr/bin:/bin",
-	})
-	if err != nil {
-		t.Fatalf("BuildSiteEnv without a configured default: %v", err)
-	}
-	if env.NodeBuild == nil || env.NodeBuild.ID != globalNode.ID {
-		t.Fatalf("shell node build without a default = %+v, want newest %s", env.NodeBuild, globalNode.ID)
+	}); !errors.Is(err, ErrRuntimeMissing) {
+		t.Fatalf("BuildSiteEnv without a configured default error = %v, want ErrRuntimeMissing", err)
 	}
 }

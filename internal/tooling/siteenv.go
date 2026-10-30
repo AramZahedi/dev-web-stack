@@ -261,26 +261,29 @@ func resolveShellNodeBuild(site model.Site, deps EnvDeps) (*model.RuntimeBuild, 
 		build := *deps.NodeDefault
 		return &build, model.NodeSourceGlobal, nil
 	}
-	if build, ok := newestInstalledNodeBuild(deps.Builds); ok {
-		return &build, model.NodeSourceGlobal, nil
-	}
-	return nil, "", nil
+	return nil, "", fmt.Errorf("%w: global Node default is not configured %s", ErrRuntimeMissing, nodeDefaultRemediation)
 }
 
-// newestInstalledNodeBuild mirrors the no-setting fallback of the global Node
-// default: the newest installed compatible build.
-func newestInstalledNodeBuild(builds []model.RuntimeBuild) (model.RuntimeBuild, bool) {
-	var best model.RuntimeBuild
-	found := false
+const nodeDefaultRemediation = "(set a Node default with `devstack node default` or pin the site)"
+
+// NodeDefaultBuild returns the installed build described by a site's global
+// Node toolchain summary. Shell/exec callers use it to pass the resolved
+// default into BuildSiteEnv; a nil result keeps the environment fail-closed.
+func NodeDefaultBuild(site model.Site, builds []model.RuntimeBuild) *model.RuntimeBuild {
+	toolchain := site.NodeToolchain
+	if toolchain == nil || !toolchain.Installed || toolchain.Source != model.NodeSourceGlobal {
+		return nil
+	}
 	for _, build := range builds {
 		if build.Kind != "node" || !isCompatibleBackend(build.Backend) {
 			continue
 		}
-		if !found || compareVersions(build.Version, best.Version) > 0 {
-			best, found = build, true
+		if build.ID == toolchain.BuildID || (toolchain.BuildID == "" && build.Version == toolchain.Version) {
+			selected := build
+			return &selected
 		}
 	}
-	return best, found
+	return nil
 }
 
 func validateHash(hash string) error {

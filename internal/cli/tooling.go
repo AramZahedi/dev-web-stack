@@ -315,10 +315,11 @@ func (a *App) siteShellContext(ctx context.Context, c Client, ref string) (model
 		info = &value
 	}
 	env, err := tooling.BuildSiteEnv(site, tooling.EnvDeps{
-		Paths:    config.NewPaths(home),
-		Builds:   builds,
-		PHPInfo:  info,
-		BasePATH: os.Getenv("PATH"),
+		Paths:       config.NewPaths(home),
+		Builds:      builds,
+		PHPInfo:     info,
+		NodeDefault: tooling.NodeDefaultBuild(site, builds),
+		BasePATH:    os.Getenv("PATH"),
 	})
 	if err != nil {
 		return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SHELL_ENV_FAILED", "Fix the reported runtime or site configuration, then retry.")

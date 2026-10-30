@@ -28,7 +28,7 @@ func (s *Server) siteResponse(r *http.Request, site model.Site) model.Site {
 		return site
 	}
 	summary, err := resolver.ResolveNodeToolchain(r.Context(), site)
-	if err != nil {
+	if err != nil && summary.Version == "" {
 		return site
 	}
 	site.NodeToolchain = &summary

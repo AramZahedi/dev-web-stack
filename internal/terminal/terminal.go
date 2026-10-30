@@ -86,11 +86,15 @@ type Deps struct {
 	Paths    config.Paths
 	Runtimes RuntimeLister
 	PHP      PHPInfoProvider
-	Logger   *slog.Logger
-	UID      int
-	Shell    string
-	BasePATH string
-	Now      func() time.Time
+	// NodeDefault is the resolved machine-wide Node default. The site's
+	// node_toolchain summary normally supplies it; this field is a fallback for
+	// embedders that already hold the resolved build.
+	NodeDefault *model.RuntimeBuild
+	Logger      *slog.Logger
+	UID         int
+	Shell       string
+	BasePATH    string
+	Now         func() time.Time
 
 	TicketTTL   time.Duration
 	MaxTotal    int
@@ -102,13 +106,14 @@ type Deps struct {
 
 // Manager issues tickets and owns the live session table.
 type Manager struct {
-	paths    config.Paths
-	runtimes RuntimeLister
-	php      PHPInfoProvider
-	logger   *slog.Logger
-	uid      int
-	shell    string
-	basePATH string
+	paths       config.Paths
+	runtimes    RuntimeLister
+	php         PHPInfoProvider
+	nodeDefault *model.RuntimeBuild
+	logger      *slog.Logger
+	uid         int
+	shell       string
+	basePATH    string
 
 	tickets     *TicketStore
 	ticketTTL   time.Duration
@@ -161,6 +166,7 @@ func NewManager(deps Deps) *Manager {
 		paths:       deps.Paths,
 		runtimes:    deps.Runtimes,
 		php:         deps.PHP,
+		nodeDefault: deps.NodeDefault,
 		logger:      deps.Logger,
 		uid:         deps.UID,
 		shell:       deps.Shell,
@@ -323,11 +329,16 @@ func (m *Manager) environment(ctx context.Context, site model.Site) ([]string, e
 	if basePATH == "" {
 		basePATH = os.Getenv("PATH")
 	}
+	nodeDefault := tooling.NodeDefaultBuild(site, builds)
+	if nodeDefault == nil {
+		nodeDefault = m.nodeDefault
+	}
 	env, err := tooling.BuildSiteEnv(site, tooling.EnvDeps{
-		Paths:    m.paths,
-		Builds:   builds,
-		PHPInfo:  info,
-		BasePATH: basePATH,
+		Paths:       m.paths,
+		Builds:      builds,
+		PHPInfo:     info,
+		NodeDefault: nodeDefault,
+		BasePATH:    basePATH,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("terminal: build site environment: %w", err)
