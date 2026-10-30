@@ -358,3 +358,15 @@ func TestDatabaseRoutesRejectUnknownFields(t *testing.T) {
 		t.Fatalf("unknown field invoked Docker: %v", runner.joinedCalls())
 	}
 }
+
+func TestDatabaseEnvRouteRejectsNestedCallerPassword(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	body := []byte(`{"service_id":"mysql","links":[{"service_id":"mysql","database":"app","username":"app","password":"s3cret"}]}`)
+	recorder := serveDatabase(t, d, http.MethodPost, "/v1/services/mysql/database-env", body)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("nested caller password invoked Docker: %v", runner.joinedCalls())
+	}
+}

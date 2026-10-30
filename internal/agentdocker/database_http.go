@@ -471,11 +471,9 @@ func decodeDatabaseRequest(w http.ResponseWriter, r *http.Request, out any) erro
 	if err != nil {
 		return err
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err == nil {
-		if _, ok := fields["password"]; ok {
-			return fmt.Errorf("%w: caller-supplied database passwords are not supported", databases.ErrUnsupported)
-		}
+	var payload any
+	if err := json.Unmarshal(data, &payload); err == nil && containsPasswordField(payload) {
+		return fmt.Errorf("%w: caller-supplied database passwords are not supported", databases.ErrUnsupported)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -487,6 +485,24 @@ func decodeDatabaseRequest(w http.ResponseWriter, r *http.Request, out any) erro
 		return errors.New("request contains trailing JSON")
 	}
 	return nil
+}
+
+func containsPasswordField(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if strings.EqualFold(key, "password") || containsPasswordField(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if containsPasswordField(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // streamDatabaseBody copies a dump to the response and aborts the connection
