@@ -31,6 +31,9 @@ func (a *App) newSiteDBListCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref := strings.TrimSpace(args[0])
+			if ref == "" {
+				return &Error{Code: "INVALID_ARGUMENT", Message: "a site name or id is required", Remediation: "For example `devstack site db list blog`."}
+			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
 			if err != nil {
@@ -65,6 +68,9 @@ func (a *App) newSiteDBLinkCmd() *cobra.Command {
 			service = strings.TrimSpace(service)
 			database = strings.TrimSpace(database)
 			userID = strings.TrimSpace(userID)
+			if ref == "" {
+				return &Error{Code: "INVALID_ARGUMENT", Message: "a site name or id is required", Remediation: "For example `devstack site db link blog --service mysql --database blog --user-id usr_blog`."}
+			}
 			if service == "" || database == "" || userID == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--service, --database, and --user-id are required", Remediation: "For example `devstack site db link blog --service mysql --database blog --user-id usr_blog`."}
 			}

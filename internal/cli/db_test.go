@@ -236,3 +236,87 @@ func TestDBPasswordRedisRotateJSONNeverLeaksSecret(t *testing.T) {
 		t.Fatal("service password API not called")
 	}
 }
+
+func TestDBDropYesCallsAPIWithConfirmation(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	runCLI(t, fake, "db", "drop", "--service", "mysql", "--name", "app", "--backup-first", "--yes")
+	if !fake.databaseDropped {
+		t.Fatal("drop API not called")
+	}
+	if fake.databaseDropReq.Confirm != "app" || !fake.databaseDropReq.BackupFirst {
+		t.Fatalf("drop req=%+v", fake.databaseDropReq)
+	}
+}
+
+func TestDBUserDeleteConfirmsWithUsername(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseUser: model.DatabaseUser{ID: "usr_app", Username: "app"}}
+	runCLI(t, fake, "db", "user", "delete", "--service", "mysql", "--user-id", "usr_app", "--yes")
+	if !fake.databaseUserDeleted {
+		t.Fatal("delete API not called")
+	}
+	if fake.databaseUserDeleteReq.Confirm != "app" {
+		t.Fatalf("confirm=%q", fake.databaseUserDeleteReq.Confirm)
+	}
+}
+
+func TestDBBackupRestoreOverwriteRequiresYesAndTarget(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "db", "backup", "restore", "--service", "mysql", "--backup-id", "bkp_1", "--overwrite")
+	if code == 0 || !strings.Contains(stderr, "target") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	code, _, stderr = runCLIExit(t, fake, "db", "backup", "restore", "--service", "mysql", "--backup-id", "bkp_1", "--target", "app", "--overwrite")
+	if code == 0 || !strings.Contains(stderr, "CONFIRMATION_REQUIRED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.databaseRestoreReq.Overwrite {
+		t.Fatal("restore API called without --yes")
+	}
+	runCLI(t, fake, "db", "backup", "restore", "--service", "mysql", "--backup-id", "bkp_1", "--target", "app", "--overwrite", "--yes")
+	if !fake.databaseRestoreReq.Overwrite || fake.databaseRestoreReq.Confirm != "app" || !fake.databaseRestoreReq.PreRestoreBackup {
+		t.Fatalf("restore req=%+v", fake.databaseRestoreReq)
+	}
+}
+
+func TestDBExportWritesFile(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseExportData: "dump"}
+	output := filepath.Join(t.TempDir(), "app.sql")
+	runCLI(t, fake, "db", "export", "--service", "mysql", "--database", "app", "--output", output)
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "dump" {
+		t.Fatalf("export=%q", data)
+	}
+}
+
+func TestDBLinkReadsPasswordFromStdin(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseLinked: model.DatabaseLink{ID: "lnk_1", Database: "app"}}
+	code, stdout, stderr := runCLIExitInput(t, fake, "s3cret\n", "db", "link", "--site", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--password-stdin")
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if fake.databaseLinkReq.Password != "s3cret" {
+		t.Fatalf("password=%q", fake.databaseLinkReq.Password)
+	}
+}
+
+func TestDBUserListJSONNeverLeaksSecret(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseUserList: []model.DatabaseUser{{
+		ID: "usr_app", Username: "app", Engine: model.DatabaseMySQL, PasswordManaged: true,
+	}}}
+	out := runCLI(t, fake, "db", "user", "list", "--service", "mysql", "--json")
+	if strings.Contains(out, "s3cret") {
+		t.Fatalf("user list leaked a secret: %s", out)
+	}
+	if !strings.Contains(out, `"password_managed":true`) {
+		t.Fatalf("user list missing password state: %s", out)
+	}
+}

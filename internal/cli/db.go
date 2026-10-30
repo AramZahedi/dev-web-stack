@@ -288,9 +288,12 @@ func (a *App) newDBUserCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			accessLevel = strings.TrimSpace(accessLevel)
+			accessLevel = strings.ToLower(strings.TrimSpace(accessLevel))
 			if accessLevel != "" && !validRedisAccessLevel(accessLevel) {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--access-level must be read-only or full", Remediation: "Use `--access-level read-only` or `--access-level full`."}
+			}
+			if accessLevel == "read_only" {
+				accessLevel = "read-only"
 			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
@@ -749,6 +752,10 @@ func (a *App) newDBImportCmd() *cobra.Command {
 			if service == "" || database == "" || file == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--service, --database, and --file are required", Remediation: "For example `devstack db import --service mysql --database blog --file blog.sql`."}
 			}
+			lowerFile := strings.ToLower(file)
+			if !strings.HasSuffix(lowerFile, ".sql") && !strings.HasSuffix(lowerFile, ".sql.gz") {
+				return &Error{Code: "INVALID_ARGUMENT", Message: "import file must be a .sql or .sql.gz dump", Remediation: "Pass a .sql or .sql.gz file with --file."}
+			}
 			info, err := os.Stat(file)
 			if err != nil {
 				return &Error{Code: "FILE_NOT_FOUND", Message: err.Error(), Remediation: "Pass an existing .sql or .sql.gz file with --file."}
@@ -999,6 +1006,8 @@ func (a *App) writeDownload(cmd *cobra.Command, output string, body io.Reader) (
 	if err != nil {
 		return 0, err
 	}
+	// Tighten an existing file too; OpenFile's mode only applies on creation.
+	_ = file.Chmod(0o600)
 	written, copyErr := io.Copy(file, body)
 	closeErr := file.Close()
 	if copyErr != nil {
