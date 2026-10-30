@@ -367,7 +367,10 @@ func (d *Docker) ensureRedisACLFileLocked(ctx context.Context, serviceID string,
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("agentdocker: inspect redis ACL file: %w", err)
 	}
-	hasACLFile := redisConfigHasACLFile(original)
+	configuredACLFile, hasACLFile := redisConfigACLFile(original)
+	if hasACLFile && configuredACLFile != dbengine.NewRedisACL().ACLFile() {
+		return fmt.Errorf("%w: redis already uses aclfile %q; manage it outside devstack", databases.ErrUnsupported, configuredACLFile)
+	}
 	if hasACLFile && aclExists {
 		return nil
 	}
@@ -567,17 +570,21 @@ func normalizeRedisAccessLevel(accessLevel string) (string, error) {
 	}
 }
 
-func redisConfigHasACLFile(data []byte) bool {
+// redisConfigACLFile returns the configured aclfile path, if any. The agent
+// only knows how to manage the container path /data/users.acl; a config that
+// points elsewhere must not be silently rewritten.
+func redisConfigACLFile(data []byte) (string, bool) {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		if strings.HasPrefix(line, "aclfile ") {
-			return true
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "aclfile") {
+			return strings.Trim(fields[1], `"'`), true
 		}
 	}
-	return false
+	return "", false
 }
 
 func writeDatabaseFileAtomic(name string, data []byte, mode os.FileMode) error {

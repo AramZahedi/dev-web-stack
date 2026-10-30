@@ -415,6 +415,31 @@ func TestRedisMutationMigratesACLFileBeforeSetUser(t *testing.T) {
 	}
 }
 
+func TestRedisACLFileMigrationRejectsForeignACLFile(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	configDir := filepath.Join(d.root, "services", "redis", "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "redis.conf")
+	if err := os.WriteFile(configPath, []byte("aclfile /etc/redis/custom.acl\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.EnableRedisACLFile(context.Background(), "redis"); !errors.Is(err, databases.ErrUnsupported) {
+		t.Fatalf("err = %v, want ErrUnsupported", err)
+	}
+	if runner.contains("restart redis") {
+		t.Fatalf("foreign aclfile still restarted redis: %s", runner.joinedCalls())
+	}
+	if _, err := os.Stat(filepath.Join(d.root, "services", "redis", "data", "users.acl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("foreign aclfile wrote the managed ACL file: %v", err)
+	}
+	config, err := os.ReadFile(configPath)
+	if err != nil || !strings.Contains(string(config), "/etc/redis/custom.acl") {
+		t.Fatalf("config was rewritten: %s, %v", config, err)
+	}
+}
+
 func TestRedisACLFileMigrationBacksUpExistingACL(t *testing.T) {
 	d, runner := newDatabaseTestDocker(t)
 	configDir := filepath.Join(d.root, "services", "redis", "config")
