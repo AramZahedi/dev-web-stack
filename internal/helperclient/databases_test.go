@@ -280,6 +280,28 @@ func TestHelperClientDatabaseInvalidRequestMapping(t *testing.T) {
 	}
 }
 
+func TestHelperClientBareHTTPErrorsAreNotDatabaseSentinels(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusConflict} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			})
+			client := newUnixClient(t, handler)
+			_, err := client.ListDatabases(context.Background(), "mysql")
+			if err == nil {
+				t.Fatal("request succeeded")
+			}
+			if errors.Is(err, databases.ErrNotFound) || errors.Is(err, databases.ErrConflict) {
+				t.Fatalf("bare HTTP %d was mapped to a database sentinel: %v", status, err)
+			}
+			var helperErr *Error
+			if !errors.As(err, &helperErr) || helperErr.Status != status || helperErr.Code != helperproto.CodeInternal {
+				t.Fatalf("helper error = %+v", helperErr)
+			}
+		})
+	}
+}
+
 func TestHelperClientDatabaseErrorMapping(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)

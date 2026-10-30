@@ -446,10 +446,6 @@ func codeForStatus(status int) string {
 		return helperproto.CodeProtocolMismatch
 	case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
 		return helperproto.CodeInvalidRequest
-	case http.StatusNotFound:
-		return helperproto.CodeNotFound
-	case http.StatusConflict:
-		return helperproto.CodeConflict
 	case http.StatusNotImplemented:
 		return helperproto.CodeNotImplemented
 	default:
