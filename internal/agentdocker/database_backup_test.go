@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,5 +254,38 @@ func TestPostgresBackupUsesAdminUserEnvironment(t *testing.T) {
 	joined := runner.joinedCalls()
 	if !strings.Contains(joined, "PGUSER=postgres") || !strings.Contains(joined, "PGPASSWORD=") {
 		t.Fatalf("postgres backup wrapper = %s", joined)
+	}
+}
+
+func TestCreateBackupFailsWhenDumpProcessFails(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.streamOutput = []byte("partial dump")
+	runner.streamCloseErr = errors.New("mysqldump exited 2: access denied")
+	job, err := d.CreateBackup(context.Background(), "mysql", "app", databases.CreateBackupRequest{})
+	if err == nil {
+		t.Fatal("CreateBackup reported success for a failed dump")
+	}
+	if job.Status != model.JobFailed {
+		t.Fatalf("job = %+v, want failed", job)
+	}
+	matches, _ := filepath.Glob(filepath.Join(d.root, "backups", "databases", "mysql", "app", "*.sql.gz"))
+	if len(matches) != 0 {
+		t.Fatalf("failed dump left a ready backup: %v", matches)
+	}
+}
+
+func TestExportHandlerAbortsOnDumpFailure(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.streamOutput = []byte("partial dump")
+	runner.streamCloseErr = errors.New("pg_dump exited 1")
+	server := httptest.NewServer(d.Handler())
+	defer server.Close()
+	response, err := http.Get(server.URL + "/v1/services/mysql/databases/app/export")
+	if err != nil {
+		return
+	}
+	defer func() { _ = response.Body.Close() }()
+	if _, readErr := io.ReadAll(response.Body); readErr == nil {
+		t.Fatal("export returned a clean 200 for a failed dump")
 	}
 }

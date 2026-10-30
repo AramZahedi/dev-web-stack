@@ -222,12 +222,11 @@ func (d *Docker) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 		writeDatabaseError(w, err)
 		return
 	}
-	defer func() { _ = body.Close() }()
 	filename := path.Base(r.PathValue("backupID"))
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, body)
+	streamDatabaseBody(w, body)
 }
 
 func (d *Docker) handleBackupDelete(w http.ResponseWriter, r *http.Request) {
@@ -283,11 +282,10 @@ func (d *Docker) handleDatabaseExport(w http.ResponseWriter, r *http.Request) {
 		writeDatabaseError(w, err)
 		return
 	}
-	defer func() { _ = body.Close() }()
 	w.Header().Set("Content-Type", "application/sql")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+r.PathValue("name")+`.sql"`)
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, body)
+	streamDatabaseBody(w, body)
 }
 
 func (d *Docker) handleDatabaseEnv(w http.ResponseWriter, r *http.Request) {
@@ -443,6 +441,17 @@ func databaseConnectionURL(engine model.DatabaseEngine, username, password strin
 	}
 	user := url.UserPassword(username, password)
 	return scheme + "://" + user.String() + "@" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/" + url.PathEscape(database)
+}
+
+// streamDatabaseBody copies a dump to the response and aborts the connection
+// if the child process fails or the reader is truncated. A clean 200 with a
+// short body would let a client mistake a failed dump for success.
+func streamDatabaseBody(w http.ResponseWriter, body io.ReadCloser) {
+	_, copyErr := io.Copy(w, body)
+	closeErr := body.Close()
+	if copyErr != nil || closeErr != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func queryBool(value string) bool {

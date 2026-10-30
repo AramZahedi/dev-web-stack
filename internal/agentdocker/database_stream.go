@@ -128,20 +128,23 @@ func copyBackupStream(ctx context.Context, stream io.ReadCloser, target string) 
 	hasher := sha256.New()
 	counter := &countingWriter{writer: io.MultiWriter(tmp, hasher)}
 	gz := gzip.NewWriter(counter)
-	copyErr := func() error {
-		defer func() { _ = stream.Close() }()
-		if _, err := io.Copy(gz, stream); err != nil {
-			_ = gz.Close()
-			return fmt.Errorf("agentdocker: stream backup: %w", err)
-		}
-		if err := gz.Close(); err != nil {
-			return fmt.Errorf("agentdocker: finalize backup: %w", err)
-		}
-		return nil
-	}()
+	_, copyErr := io.Copy(gz, stream)
+	closeErr := stream.Close()
 	if copyErr != nil {
+		_ = gz.Close()
 		_ = tmp.Close()
-		return 0, "", copyErr
+		return 0, "", fmt.Errorf("agentdocker: stream backup: %w", copyErr)
+	}
+	if closeErr != nil {
+		// commandStream.Close waits for the child and is where a failed
+		// mysqldump/pg_dump exit status and stderr surface.
+		_ = gz.Close()
+		_ = tmp.Close()
+		return 0, "", fmt.Errorf("agentdocker: dump command failed: %w", closeErr)
+	}
+	if err := gz.Close(); err != nil {
+		_ = tmp.Close()
+		return 0, "", fmt.Errorf("agentdocker: finalize backup: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		_ = tmp.Close()

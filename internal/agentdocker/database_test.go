@@ -24,12 +24,20 @@ type fakeDatabaseRunner struct {
 	mu           sync.Mutex
 	calls        []databaseCall
 	runOutputs   map[string][]byte
-	streamOutput []byte
-	streamErr    error
-	inputErr     error
-	failOnInput  string
-	state        string
+	streamOutput   []byte
+	streamErr      error
+	streamCloseErr error
+	inputErr       error
+	failOnInput    string
+	state          string
 }
+
+type fakeReadCloser struct {
+	*bytes.Reader
+	closeErr error
+}
+
+func (r *fakeReadCloser) Close() error { return r.closeErr }
 
 func (r *fakeDatabaseRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	r.mu.Lock()
@@ -78,7 +86,7 @@ func (r *fakeDatabaseRunner) RunStream(_ context.Context, name string, args ...s
 	if r.streamErr != nil {
 		return nil, r.streamErr
 	}
-	return io.NopCloser(bytes.NewReader(r.streamOutput)), nil
+	return &fakeReadCloser{Reader: bytes.NewReader(r.streamOutput), closeErr: r.streamCloseErr}, nil
 }
 
 func (r *fakeDatabaseRunner) RunInputStream(_ context.Context, input io.Reader, name string, args ...string) error {
