@@ -42,6 +42,7 @@
   let enabled = $state(true);
   let accessLevel = $state('read-only');
   let grants = $state<DatabaseGrant[]>([]);
+  let skippedGrants = $state<DatabaseGrant[]>([]);
   let validation = $state<Record<string, string>>({});
   let wasOpen = false;
 
@@ -64,9 +65,16 @@
     host = user?.host || (isMySQLFamily ? '%' : '');
     enabled = user?.enabled ?? true;
     accessLevel = user?.access_level === 'full' ? 'full' : 'read-only';
+    const existing = mode === 'edit' ? (user?.grants ?? []) : [];
+    const editable = existing.filter(
+      (grant) =>
+        !isProtectedDatabase(engine, grant.database) &&
+        !databases.find((database) => database.name === grant.database)?.missing,
+    );
+    skippedGrants = existing.filter((grant) => !editable.includes(grant));
     grants =
       mode === 'edit'
-        ? (user?.grants ?? []).map((grant) => ({
+        ? editable.map((grant) => ({
             ...grant,
             privileges: grant.privileges ? [...grant.privileges] : undefined,
           }))
@@ -163,6 +171,12 @@
       </Field>
     {:else}
       <GrantEditor {databases} {grants} {engine} onchange={(next) => (grants = next)} />
+      {#if skippedGrants.length > 0}
+        <p class="grant-warning" role="status">
+          Existing grants on protected or missing databases are read-only and are not changed:
+          {skippedGrants.map((grant) => grant.database).join(', ')}.
+        </p>
+      {/if}
     {/if}
 
     {#if mode === 'edit'}
@@ -204,6 +218,16 @@
     border-radius: var(--radius);
     background: var(--danger-soft);
     color: var(--danger-fg);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .grant-warning {
+    padding: 8px 9px;
+    border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+    border-radius: var(--radius);
+    background: var(--warning-soft);
+    color: var(--warning-fg);
     font-size: 11px;
     line-height: 1.45;
   }

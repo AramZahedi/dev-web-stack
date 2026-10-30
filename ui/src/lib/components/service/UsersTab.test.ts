@@ -435,6 +435,40 @@ describe('UsersTab', () => {
     expect(within(select).queryByRole('option', { name: 'devstack' })).toBeNull();
   });
 
+  it('keeps existing protected database grants read-only and out of the update payload', async () => {
+    const user: DatabaseUser = {
+      ...MYSQL_USERS[0],
+      grants: [
+        { database: 'app', preset: 'read_write_schema' },
+        { database: 'devstack', preset: 'admin' },
+      ],
+    };
+    vi.mocked(db.updateServiceUser).mockResolvedValue(user);
+    render(UsersTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        users: [user],
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /edit app/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/protected or missing databases/i)).toBeTruthy();
+    expect(within(dialog).getByText(/devstack/)).toBeTruthy();
+    expect(within(dialog).queryByLabelText('Grant 2 database')).toBeNull();
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(db.updateServiceUser).toHaveBeenCalledWith('mysql', 'usr_app', {
+        enabled: true,
+        grants: [{ database: 'app', preset: 'read_write_schema' }],
+      }),
+    );
+  });
+
   it('swaps databases instead of duplicating grant rows', async () => {
     const user: DatabaseUser = {
       ...MYSQL_USERS[0],
