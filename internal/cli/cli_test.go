@@ -158,16 +158,18 @@ type fakeClient struct {
 	databaseUserRotated   bool
 	databaseUserRotateID  string
 
-	databaseBackups      []model.DatabaseBackup
-	databaseBackupJob    model.DatabaseJob
-	databaseBackupData   string
-	databaseBackupDelete bool
-	databaseRestoreJob   model.DatabaseJob
-	databaseRestoreReq   databases.RestoreBackupRequest
-	databaseImportJob    model.DatabaseJob
-	databaseImportReq    databases.ImportRequest
-	databaseImportFile   string
-	databaseExportData   string
+	databaseBackups          []model.DatabaseBackup
+	databaseBackupJob        model.DatabaseJob
+	databaseBackupData       string
+	databaseBackupDelete     bool
+	databaseBackupDownloaded bool
+	databaseExported         bool
+	databaseRestoreJob       model.DatabaseJob
+	databaseRestoreReq       databases.RestoreBackupRequest
+	databaseImportJob        model.DatabaseJob
+	databaseImportReq        databases.ImportRequest
+	databaseImportFile       string
+	databaseExportData       string
 
 	databaseJob         model.DatabaseJob
 	databaseJobCanceled bool
@@ -652,6 +654,7 @@ func (f *fakeClient) DownloadServiceBackup(_ context.Context, _, _ string) (io.R
 	if err := f.maybeErr(); err != nil {
 		return nil, err
 	}
+	f.databaseBackupDownloaded = true
 	data := f.databaseBackupData
 	if data == "" {
 		data = "backup-data"
@@ -676,6 +679,7 @@ func (f *fakeClient) ExportServiceDatabase(_ context.Context, _, _ string) (io.R
 	if err := f.maybeErr(); err != nil {
 		return nil, err
 	}
+	f.databaseExported = true
 	data := f.databaseExportData
 	if data == "" {
 		data = "dump"

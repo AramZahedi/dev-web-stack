@@ -190,6 +190,72 @@ func TestDBBackupDownloadWritesFile(t *testing.T) {
 	}
 }
 
+func TestDBBackupDownloadStdoutKeepsBinaryClean(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseBackupData: "backup-data"}
+	code, stdout, stderr := runCLIExit(t, fake, "db", "backup", "download", "--service", "mysql", "--backup-id", "bkp_1", "--output", "-")
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%s", code, stdout, stderr)
+	}
+	if stdout != "backup-data" {
+		t.Fatalf("stdout corrupted: %q", stdout)
+	}
+	if !strings.Contains(stderr, "Downloaded backup") {
+		t.Fatalf("summary missing from stderr: %q", stderr)
+	}
+	if !fake.databaseBackupDownloaded {
+		t.Fatal("download API not called")
+	}
+}
+
+func TestDBExportStdoutKeepsBinaryClean(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseExportData: "dump"}
+	code, stdout, stderr := runCLIExit(t, fake, "db", "export", "--service", "mysql", "--database", "app", "--output", "-")
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%s", code, stdout, stderr)
+	}
+	if stdout != "dump" {
+		t.Fatalf("stdout corrupted: %q", stdout)
+	}
+	if !strings.Contains(stderr, "Exported") {
+		t.Fatalf("summary missing from stderr: %q", stderr)
+	}
+	if !fake.databaseExported {
+		t.Fatal("export API not called")
+	}
+}
+
+func TestDBBackupDownloadJSONStdoutRejectedBeforeAPI(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExit(t, fake, "db", "backup", "download", "--service", "mysql", "--backup-id", "bkp_1", "--output", "-", "--json")
+	if code == 0 || !strings.Contains(stderr, "INVALID_FLAGS") {
+		t.Fatalf("code=%d stdout=%q stderr=%s", code, stdout, stderr)
+	}
+	if fake.databaseBackupDownloaded {
+		t.Fatal("download API called before --output - + --json validation")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout=%q", stdout)
+	}
+}
+
+func TestDBExportJSONStdoutRejectedBeforeAPI(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, stdout, stderr := runCLIExit(t, fake, "db", "export", "--service", "mysql", "--database", "app", "--output", "-", "--json")
+	if code == 0 || !strings.Contains(stderr, "INVALID_FLAGS") {
+		t.Fatalf("code=%d stdout=%q stderr=%s", code, stdout, stderr)
+	}
+	if fake.databaseExported {
+		t.Fatal("export API called before --output - + --json validation")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout=%q", stdout)
+	}
+}
+
 func TestDBImportReplaceRequiresYes(t *testing.T) {
 	useTestSeams(t)
 	input := filepath.Join(t.TempDir(), "dump.sql")

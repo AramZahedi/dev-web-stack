@@ -586,6 +586,9 @@ func (a *App) newDBBackupDownloadCmd() *cobra.Command {
 			if service == "" || backupID == "" || output == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--service, --backup-id, and --output are required", Remediation: "For example `devstack db backup download --service mysql --backup-id bkp_1 --output app.sql.gz`."}
 			}
+			if err := a.validateStreamOutput(output); err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
 			if err != nil {
@@ -608,7 +611,11 @@ func (a *App) newDBBackupDownloadCmd() *cobra.Command {
 					Bytes     int64  `json:"bytes"`
 				}{ServiceID: service, BackupID: backupID, Output: output, Bytes: written})
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Downloaded backup %s to %s (%s).\n", backupID, output, formatBytes(written))
+			summary := cmd.OutOrStdout()
+			if output == "-" {
+				summary = cmd.ErrOrStderr()
+			}
+			_, err = fmt.Fprintf(summary, "Downloaded backup %s to %s (%s).\n", backupID, output, formatBytes(written))
 			return err
 		},
 	}
@@ -717,6 +724,9 @@ func (a *App) newDBExportCmd() *cobra.Command {
 			if service == "" || database == "" || output == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--service, --database, and --output are required", Remediation: "For example `devstack db export --service mysql --database blog --output blog.sql`."}
 			}
+			if err := a.validateStreamOutput(output); err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
 			if err != nil {
@@ -739,7 +749,11 @@ func (a *App) newDBExportCmd() *cobra.Command {
 					Bytes     int64  `json:"bytes"`
 				}{ServiceID: service, Database: database, Output: output, Bytes: written})
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Exported %s to %s (%s).\n", database, output, formatBytes(written))
+			summary := cmd.OutOrStdout()
+			if output == "-" {
+				summary = cmd.ErrOrStderr()
+			}
+			_, err = fmt.Fprintf(summary, "Exported %s to %s (%s).\n", database, output, formatBytes(written))
 			return err
 		},
 	}
@@ -1009,11 +1023,18 @@ func (a *App) warnSecret(cmd *cobra.Command, message string) {
 	fmt.Fprintln(out, message)
 }
 
+func (a *App) validateStreamOutput(output string) error {
+	if output == "-" && a.jsonOutput {
+		return &Error{Code: "INVALID_FLAGS", Message: "--output - cannot be combined with --json", Remediation: "Write to a file, or drop --json for raw output."}
+	}
+	return nil
+}
+
 func (a *App) writeDownload(cmd *cobra.Command, output string, body io.Reader) (int64, error) {
+	if err := a.validateStreamOutput(output); err != nil {
+		return 0, err
+	}
 	if output == "-" {
-		if a.jsonOutput {
-			return 0, &Error{Code: "INVALID_FLAGS", Message: "--output - cannot be combined with --json", Remediation: "Write to a file, or drop --json for raw output."}
-		}
 		return io.Copy(cmd.OutOrStdout(), body)
 	}
 	file, err := os.OpenFile(output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
