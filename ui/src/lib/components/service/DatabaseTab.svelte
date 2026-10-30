@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     Archive,
     Database as DatabaseIcon,
@@ -36,6 +36,12 @@
   import { isProtectedDatabase } from './databaseProtection';
   import { saveBlob } from './fileDownload';
   import { jobToastKind } from './jobStatus';
+  import { isRecoveryJob } from './recovery';
+  import {
+    clearRecoveryJobID,
+    loadRecoveryJobID,
+    saveRecoveryJobID,
+  } from './recoveryStore';
   import {
     allLinkedSitesStopped,
     readLinkedSiteStates,
@@ -94,6 +100,7 @@
 
   let job = $state<DatabaseJob | null>(null);
   let jobError = $state<DescribedError | null>(null);
+  let recoveryJob = $state<DatabaseJob | null>(null);
   let jobTimer: ReturnType<typeof setInterval> | undefined;
 
   function jobRunning(candidate: DatabaseJob | null): boolean {
@@ -123,9 +130,16 @@
     }
   }
 
+  function rememberRecovery(next: DatabaseJob): void {
+    if (!isRecoveryJob(next)) return;
+    recoveryJob = next;
+    saveRecoveryJobID(service.id, next.id);
+  }
+
   function finishJob(next: DatabaseJob): void {
     job = next;
     jobError = null;
+    rememberRecovery(next);
     stopJobPolling();
     addToast({
       kind: jobToastKind(next.status),
@@ -151,7 +165,9 @@
     if (!job) return;
     try {
       await dbApi.cancelDatabaseJob(job.id);
-      job = { ...job, status: 'canceled' };
+      const canceled: DatabaseJob = { ...job, status: 'canceled' };
+      job = canceled;
+      rememberRecovery(canceled);
       stopJobPolling();
       addToast({
         kind: 'info',
@@ -166,6 +182,23 @@
   }
 
   onDestroy(stopJobPolling);
+
+  onMount(() => {
+    const saved = loadRecoveryJobID(service.id);
+    if (!saved) return;
+    void dbApi
+      .getDatabaseJob(saved)
+      .then((next) => {
+        if (isRecoveryJob(next)) {
+          recoveryJob = next;
+        } else {
+          clearRecoveryJobID(service.id);
+        }
+      })
+      .catch(() => {
+        // A missing job simply means there is nothing to recover.
+      });
+  });
 
   async function submitCreate(name: string): Promise<void> {
     if (formBusy) return;
@@ -502,7 +535,6 @@
         <span style:width={`${Math.max(0, Math.min(100, job.progress))}%`}></span>
       </div>
       <p class="job-message">{job.message || 'Waiting for the daemon to report progress.'}</p>
-      <JobRecovery {service} {job} onrecovered={watchJob} />
       {#if jobRunning(job)}
         <Button size="sm" variant="ghost" onclick={cancelJob}>Cancel job</Button>
       {/if}
@@ -515,6 +547,22 @@
       code={jobError.code}
       message={jobError.message}
       ondismiss={() => (jobError = null)}
+    />
+  {/if}
+
+  {#if recoveryJob}
+    <JobRecovery
+      {service}
+      job={recoveryJob}
+      onrecovered={(next) => {
+        recoveryJob = null;
+        clearRecoveryJobID(service.id);
+        watchJob(next);
+      }}
+      ondismiss={() => {
+        recoveryJob = null;
+        clearRecoveryJobID(service.id);
+      }}
     />
   {/if}
 

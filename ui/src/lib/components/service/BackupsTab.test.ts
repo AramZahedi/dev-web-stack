@@ -5,6 +5,7 @@ import BackupsTab from './BackupsTab.svelte';
 import * as api from '../../api';
 import * as db from '../../databaseApi';
 import { clearToasts, toasts } from '../../stores';
+import { clearRecoveryJobID, loadRecoveryJobID } from './recoveryStore';
 import type { Database, DatabaseBackup, DatabaseJob } from '../../databaseTypes';
 import type { ServiceView } from '../../types';
 
@@ -92,6 +93,7 @@ const RUNNING_JOB: DatabaseJob = {
 
 beforeEach(() => {
   clearToasts();
+  clearRecoveryJobID('mysql');
   vi.mocked(api.getSite).mockResolvedValue({
     id: 'site_blog',
     name: 'blog',
@@ -380,6 +382,43 @@ describe('BackupsTab', () => {
         .disabled,
     ).toBe(true);
     expect(db.restoreServiceBackup).not.toHaveBeenCalled();
+  });
+
+  it('restores the recovery card after a simulated reload', async () => {
+    const failedJob: DatabaseJob = {
+      ...RUNNING_JOB,
+      id: 'job_restore_reload',
+      kind: 'restore',
+      status: 'failed',
+      progress: 60,
+      message: 'restore failed midway',
+      backup_id: 'bkp_1',
+    };
+    vi.mocked(db.restoreServiceBackup).mockResolvedValue(failedJob);
+    const props = {
+      service: MYSQL_SERVICE,
+      backups: MYSQL_BACKUPS,
+      databases: MYSQL_DATABASES,
+      onRefresh: vi.fn(),
+    };
+    const first = render(BackupsTab, { props });
+    await fireEvent.click(screen.getByRole('button', { name: /restore app backup/i }));
+    const restoreDialog = await screen.findByRole('dialog');
+    await fireEvent.input(within(restoreDialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(
+      within(restoreDialog).getByRole('button', { name: 'Restore backup' }),
+    );
+
+    expect(await screen.findByText(/restore incomplete/i)).toBeTruthy();
+    expect(loadRecoveryJobID('mysql')).toBe(failedJob.id);
+    first.unmount();
+
+    vi.mocked(db.getDatabaseJob).mockResolvedValue(failedJob);
+    render(BackupsTab, { props });
+
+    expect(await screen.findByText(/restore incomplete/i)).toBeTruthy();
   });
 
   it('reports a canceled restore job as an informational toast', async () => {

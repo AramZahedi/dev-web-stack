@@ -5,25 +5,22 @@
   import type { ServiceView } from '../../types';
   import Button from '../Button.svelte';
   import ConfirmDialog from '../ConfirmDialog.svelte';
-  import { recoveryDatabaseName } from './recovery';
+  import { isRecoveryJob, recoveryDatabaseName } from './recovery';
 
   interface Props {
     service: ServiceView;
     job: DatabaseJob;
     onrecovered: (job: DatabaseJob) => void;
+    ondismiss?: () => void;
   }
 
-  let { service, job, onrecovered }: Props = $props();
+  let { service, job, onrecovered, ondismiss }: Props = $props();
 
   let open = $state(false);
   let busy = $state(false);
   let error = $state<DescribedError | null>(null);
 
-  const eligible = $derived(
-    (job.status === 'failed' || job.status === 'canceled') &&
-      Boolean(job.backup_id) &&
-      (job.kind === 'restore' || job.kind === 'import'),
-  );
+  const eligible = $derived(isRecoveryJob(job));
   const targetName = $derived(recoveryDatabaseName(job.database));
 
   async function confirmRecovery(): Promise<void> {
@@ -65,6 +62,9 @@
     >
       Restore pre-operation backup
     </Button>
+    {#if ondismiss}
+      <Button size="sm" variant="ghost" onclick={ondismiss}>Dismiss recovery</Button>
+    {/if}
   </div>
 
   <ConfirmDialog

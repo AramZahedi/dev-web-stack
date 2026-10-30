@@ -5,6 +5,7 @@ import DatabaseTab from './DatabaseTab.svelte';
 import * as api from '../../api';
 import * as db from '../../databaseApi';
 import { clearToasts, toasts } from '../../stores';
+import { clearRecoveryJobID, loadRecoveryJobID } from './recoveryStore';
 import type { Database, DatabaseJob } from '../../databaseTypes';
 import type { ServiceView } from '../../types';
 
@@ -126,6 +127,8 @@ const RUNNING_JOB: DatabaseJob = {
 
 beforeEach(() => {
   clearToasts();
+  clearRecoveryJobID('mysql');
+  clearRecoveryJobID('postgresql');
   vi.mocked(api.getSite).mockResolvedValue({
     id: 'site_blog',
     name: 'blog',
@@ -382,6 +385,50 @@ describe('DatabaseTab', () => {
 
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Stop site blog' }));
     await waitFor(() => expect(api.stopSite).toHaveBeenCalledWith('site_blog'));
+  });
+
+  it('keeps the recovery card after a simulated reload until dismissed', async () => {
+    const failedJob: DatabaseJob = {
+      id: 'job_import_reload',
+      service_id: 'mysql',
+      database: 'app',
+      kind: 'import',
+      status: 'failed',
+      progress: 60,
+      message: 'import failed midway',
+      backup_id: 'bkp_pre_import',
+      created_at: '2026-10-29T10:00:00Z',
+      updated_at: '2026-10-29T10:00:02Z',
+    };
+    vi.mocked(db.importServiceDatabase).mockResolvedValue(failedJob);
+
+    const props = {
+      service: MYSQL_SERVICE,
+      databases: [UNLINKED_APP, MYSQL_DATABASES[1]],
+      onRefresh: vi.fn(),
+    };
+    const first = render(DatabaseTab, { props });
+    await fireEvent.click(screen.getByRole('button', { name: /import app/i }));
+    const input = first.container.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new File(['sql'], 'dump.sql', { type: 'text/plain' })],
+    });
+    await fireEvent.change(input);
+    const importDialog = await screen.findByRole('dialog');
+    await fireEvent.click(within(importDialog).getByRole('button', { name: 'Import database' }));
+
+    expect(await screen.findByText(/restore incomplete/i)).toBeTruthy();
+    expect(loadRecoveryJobID('mysql')).toBe(failedJob.id);
+    first.unmount();
+
+    vi.mocked(db.getDatabaseJob).mockResolvedValue(failedJob);
+    render(DatabaseTab, { props });
+
+    expect(await screen.findByText(/restore incomplete/i)).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: /dismiss recovery/i }));
+    await waitFor(() => expect(screen.queryByText(/restore incomplete/i)).toBeNull());
+    expect(loadRecoveryJobID('mysql')).toBeNull();
   });
 
   it('offers the pre-operation backup when an import leaves the target incomplete', async () => {
