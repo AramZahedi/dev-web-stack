@@ -16,7 +16,7 @@
 | Merge Lane H | done | `74eb07c` | helper/helperclient/helperproto/dbengine PASS; build + vet PASS |
 | Merge Lane B | done | `ed725a9` | store/databases/servicecontrol/api/sites/tooling/terminal/phpfpm/daemon PASS; build + vet PASS |
 | Windows bridge direct assignment | done | `c40f230` | wsl backend PASS; build + vet PASS |
-| Merge Lane C | pending | — | — |
+| Merge Lane C | done | `18b5194` | svelte-check 0/0; 77 focused tests; 267 full tests; build PASS |
 | Merge Lane D | pending | — | — |
 | Merge Lane E | pending | — | — |
 | Redis ACL confirmation path | pending | — | — |
@@ -57,3 +57,10 @@
 - Merge commit `ed725a9` (`merge: database daemon API and site links`).
 - Gate: `go test ./internal/store ./internal/databases ./internal/servicecontrol ./internal/api ./internal/sites ./internal/tooling ./internal/terminal ./internal/phpfpm ./internal/daemon -count=1` PASS; `go build ./...` PASS; `go vet ./...` PASS.
 - Replaced the JSON `database_links` bridge in `internal/backend/wsl/backend.go` with a direct `agentproto.DatabaseLinkSpec` assignment now that Lane A exposes `SiteSpec.DatabaseLinks`. Commit `c40f230`; `go test ./internal/backend/wsl` PASS; build + vet PASS.
+
+### Step 5 — Lane C targeted review and merge
+
+- Reviewed `045c3dc..34b743e`: rename/drop linked-site gates, protected backup/export handling, fail-closed overwrite restore, `stopping` site handling, persistent restore recovery, forced replace-import backup, job toasts, Redis reveal refresh, page-local restart prompts, and deactivate-dialog reset.
+- No Critical or Important findings in the reviewed range.
+- Merge commit `18b5194` (`merge: database service dashboard`).
+- Gate: `npm run check` 0 errors/0 warnings; focused Vitest 5 files/77 tests PASS; `npm test -- --run` 27 files/267 tests PASS; `npm run build` PASS (existing >500 kB chunk warning only).
