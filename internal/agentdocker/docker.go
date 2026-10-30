@@ -71,7 +71,7 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	cmd.WaitDelay = 3 * time.Second
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", name, err, redactSQLSecrets(truncateOutput(output)))
+		return output, fmt.Errorf("%s: %w: %s", name, err, truncateOutput([]byte(redactSQLSecrets(string(output)))))
 	}
 	return output, nil
 }
@@ -82,7 +82,7 @@ func (execRunner) RunInput(ctx context.Context, input []byte, name string, args 
 	cmd.Stdin = bytes.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", name, err, redactSQLSecrets(truncateOutput(output)))
+		return output, fmt.Errorf("%s: %w: %s", name, err, truncateOutput([]byte(redactSQLSecrets(string(output)))))
 	}
 	return output, nil
 }
