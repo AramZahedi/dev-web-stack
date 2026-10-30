@@ -229,8 +229,8 @@ type ConfigLifecycle interface {
 
 // ConfigValidator is the helper's fixed catalog validation/reload surface.
 type ConfigValidator interface {
-	Validate(ctx context.Context, id string) error
-	Reload(ctx context.Context, id string) error
+	Validate(ctx context.Context, id services.ID) error
+	Reload(ctx context.Context, id services.ID) error
 }
 
 // ConfigEventStore records metadata-only audit events.
@@ -874,7 +874,7 @@ func (s *ConfigService) finalizeWrite(
 		return result, nil
 	}
 
-	if err := s.validator.Validate(ctx, string(svc.ID)); err != nil {
+	if err := s.validator.Validate(ctx, svc.ID); err != nil {
 		rollbackErr := s.rollback(manager, rel, full, previous, previousExists, mode, previousEntry, previousTracked)
 		failure := &ConfigApplyFailure{
 			Kind:          ConfigFailureValidate,
@@ -887,11 +887,11 @@ func (s *ConfigService) finalizeWrite(
 		s.audit(ctx, result.Action, svc.ID, rel, false, "validation=failed rolled_back="+boolString(rollbackErr == nil))
 		return result, failure
 	}
-	if err := s.validator.Reload(ctx, string(svc.ID)); err != nil {
+	if err := s.validator.Reload(ctx, svc.ID); err != nil {
 		rollbackErr := s.rollback(manager, rel, full, previous, previousExists, mode, previousEntry, previousTracked)
 		var reloadRollbackErr error
 		if rollbackErr == nil {
-			reloadRollbackErr = s.validator.Reload(ctx, string(svc.ID))
+			reloadRollbackErr = s.validator.Reload(ctx, svc.ID)
 		}
 		failure := &ConfigApplyFailure{
 			Kind:          ConfigFailureReload,

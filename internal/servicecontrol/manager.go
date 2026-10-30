@@ -595,8 +595,8 @@ func (m *Manager) startForProviderSwitch(ctx context.Context, id services.ID) er
 // ServiceValidator is the optional helper capability used by web-server
 // config checks. The P2 helper client exposes Validate and Reload.
 type ServiceValidator interface {
-	Validate(ctx context.Context, id string) error
-	Reload(ctx context.Context, id string) error
+	Validate(ctx context.Context, id services.ID) error
+	Reload(ctx context.Context, id services.ID) error
 }
 
 // Validate runs the catalog validation command inside a service container.
@@ -612,7 +612,7 @@ func (m *Manager) Validate(ctx context.Context, id services.ID) error {
 	if !ok {
 		return fmt.Errorf("%w: validate is not supported by the service helper", ErrHelperUnavailable)
 	}
-	if err := validator.Validate(ctx, string(id)); err != nil {
+	if err := validator.Validate(ctx, id); err != nil {
 		return helperFailure("validate service", err)
 	}
 	return nil
@@ -631,7 +631,7 @@ func (m *Manager) Reload(ctx context.Context, id services.ID) error {
 	if !ok {
 		return fmt.Errorf("%w: reload is not supported by the service helper", ErrHelperUnavailable)
 	}
-	if err := validator.Reload(ctx, string(id)); err != nil {
+	if err := validator.Reload(ctx, id); err != nil {
 		return helperFailure("reload service", err)
 	}
 	return nil

@@ -26,7 +26,10 @@ type AgentDocker struct {
 	paths *AgentPaths
 }
 
-var _ Helper = (*AgentDocker)(nil)
+var (
+	_ Helper           = (*AgentDocker)(nil)
+	_ ServiceValidator = (*AgentDocker)(nil)
+)
 
 // NewAgentDocker creates the Windows-to-WSL service adapter.
 func NewAgentDocker(api serviceAgentAPI, wslRoot string) (*AgentDocker, error) {

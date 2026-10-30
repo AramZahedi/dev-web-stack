@@ -189,13 +189,13 @@ type validationHelper struct {
 	err       error
 }
 
-func (h *validationHelper) Validate(_ context.Context, id string) error {
-	h.validated = append(h.validated, id)
+func (h *validationHelper) Validate(_ context.Context, id services.ID) error {
+	h.validated = append(h.validated, string(id))
 	return h.err
 }
 
-func (h *validationHelper) Reload(_ context.Context, id string) error {
-	h.reloaded = append(h.reloaded, id)
+func (h *validationHelper) Reload(_ context.Context, id services.ID) error {
+	h.reloaded = append(h.reloaded, string(id))
 	return h.err
 }
 

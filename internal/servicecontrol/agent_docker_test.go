@@ -11,6 +11,8 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 )
 
+var _ servicecontrol.ServiceValidator = (*servicecontrol.AgentDocker)(nil)
+
 type fakeAgentServiceAPI struct {
 	actions     []agentproto.ServiceRequest
 	statuses    map[string]agentproto.ServiceResponse

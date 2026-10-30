@@ -37,13 +37,13 @@ type fakeConfigValidator struct {
 	reloadErr   error
 }
 
-func (f *fakeConfigValidator) Validate(_ context.Context, id string) error {
-	f.calls = append(f.calls, "validate:"+id)
+func (f *fakeConfigValidator) Validate(_ context.Context, id services.ID) error {
+	f.calls = append(f.calls, "validate:"+string(id))
 	return f.validateErr
 }
 
-func (f *fakeConfigValidator) Reload(_ context.Context, id string) error {
-	f.calls = append(f.calls, "reload:"+id)
+func (f *fakeConfigValidator) Reload(_ context.Context, id services.ID) error {
+	f.calls = append(f.calls, "reload:"+string(id))
 	return f.reloadErr
 }
 

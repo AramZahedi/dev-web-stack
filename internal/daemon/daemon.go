@@ -1293,6 +1293,11 @@ type serviceHelper struct {
 	client *helperclient.Client
 }
 
+var (
+	_ servicecontrol.ServiceValidator = serviceHelper{}
+	_ servicecontrol.ConfigValidator  = serviceHelper{}
+)
+
 func (h serviceHelper) Status(ctx context.Context) ([]helperproto.ServiceStatus, error) {
 	return h.client.ServiceStatus(ctx)
 }
@@ -1325,12 +1330,12 @@ func (h serviceHelper) Logs(ctx context.Context, id string, tail int) (string, e
 	return h.client.ServiceLogs(ctx, id, tail)
 }
 
-func (h serviceHelper) Validate(ctx context.Context, id string) error {
-	return h.client.ServiceValidate(ctx, id)
+func (h serviceHelper) Validate(ctx context.Context, id services.ID) error {
+	return h.client.ServiceValidate(ctx, string(id))
 }
 
-func (h serviceHelper) Reload(ctx context.Context, id string) error {
-	return h.client.ServiceReload(ctx, id)
+func (h serviceHelper) Reload(ctx context.Context, id services.ID) error {
+	return h.client.ServiceReload(ctx, string(id))
 }
 
 // dockerWebSyncer adapts the typed dockerweb.Server boundary to the sites
