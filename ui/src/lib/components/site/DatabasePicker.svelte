@@ -71,6 +71,7 @@
   const selectedUserGrant = $derived(
     selectedUser?.grants?.find((candidate) => candidate.database === selectedDatabase) ?? null,
   );
+  const userGrants = $derived(selectedUser?.grants ?? []);
   const accessMissing = $derived(
     userMode === 'existing' &&
       Boolean(selectedUser) &&
@@ -87,7 +88,9 @@
   }
 
   function defaultName(): string {
-    return slugify(siteName) || 'app';
+    const slug = (slugify(siteName) || 'app').replace(/-/g, '_');
+    const safe = /^[A-Za-z_]/.test(slug) ? slug : `db_${slug}`;
+    return safe.slice(0, 63);
   }
 
   function defaultPort(id: string | undefined): number {
@@ -113,7 +116,8 @@
       port:
         selectedService?.ports?.find((port) => port.loopback)?.host ??
         defaultPort(selectedService?.id),
-      passwordManaged: userMode === 'new' ? true : Boolean(selectedUser?.password_managed),
+      passwordManaged:
+        userMode === 'new' ? true : Boolean(selectedUser?.password_managed || password),
       hasAccess: userMode === 'new' || Boolean(selectedUserGrant),
     };
   }
@@ -147,12 +151,14 @@
     summary = buildSummary();
   }
 
-  async function selectService(id: string): Promise<void> {
+  async function selectService(id: string, reset = true): Promise<void> {
     serviceID = id;
-    databaseName = databaseMode === 'new' ? defaultName() : '';
-    userID = '';
-    username = userMode === 'new' ? defaultName() : '';
-    password = '';
+    if (reset) {
+      databaseName = databaseMode === 'new' ? defaultName() : '';
+      userID = '';
+      username = userMode === 'new' ? defaultName() : '';
+      password = '';
+    }
     databases = [];
     users = [];
     dataError = null;
@@ -168,8 +174,15 @@
       if (generation !== dataGeneration) return;
       databases = databaseResult?.databases ?? [];
       users = userResult?.users ?? [];
-      if (databaseMode === 'existing') databaseName = databases[0]?.name ?? '';
-      if (userMode === 'existing') userID = users[0]?.id ?? '';
+      if (
+        databaseMode === 'existing' &&
+        !databases.some((database) => database.name === databaseName)
+      ) {
+        databaseName = databases[0]?.name ?? '';
+      }
+      if (userMode === 'existing' && !users.some((user) => user.id === userID)) {
+        userID = users[0]?.id ?? '';
+      }
       sync();
     } catch (caught) {
       if (generation !== dataGeneration) return;
@@ -189,7 +202,16 @@
         (service) =>
           service.installed && service.active && SQL_SERVICES.includes(service.id),
       );
-      if ((alwaysOn || enabled) && !serviceID && available.length > 0) {
+      if (available.length === 0) {
+        if (!alwaysOn && enabled) enabled = false;
+        sync();
+      } else if ((alwaysOn || enabled) && serviceID) {
+        if (available.some((service) => service.id === serviceID)) {
+          await selectService(serviceID, false);
+        } else {
+          await selectService(available[0].id);
+        }
+      } else if ((alwaysOn || enabled) && !serviceID) {
         await selectService(available[0].id);
       } else {
         sync();
@@ -252,7 +274,17 @@
   }
 
   onMount(() => {
-    if (alwaysOn) {
+    if (value) {
+      enabled = true;
+      serviceID = value.service_id;
+      databaseMode = value.new_database ? 'new' : 'existing';
+      databaseName = value.new_database?.name ?? value.database ?? '';
+      userMode = value.new_user ? 'new' : 'existing';
+      username = value.new_user?.username ?? '';
+      userID = value.user_id ?? '';
+      password = value.password ?? '';
+      grant = value.grant ?? value.new_user?.grants?.[0]?.preset ?? 'read_write_schema';
+    } else if (alwaysOn) {
       enabled = true;
       databaseName = defaultName();
       username = defaultName();
@@ -264,7 +296,7 @@
 <div class="database-picker">
   <div class="panel-label">
     <h3>Database</h3>
-    <span>Optional</span>
+    {#if !alwaysOn}<span>Optional</span>{/if}
   </div>
   {#if !alwaysOn}
     <div class="panel-toggle">
@@ -273,7 +305,7 @@
         description="Provision a database and user, or attach an existing one. Nothing is created until you submit."
         bind:checked={enabled}
         onchange={setEnabled}
-        disabled={servicesLoaded && !servicesError && selectable.length === 0}
+        disabled={!enabled && servicesLoaded && !servicesError && selectable.length === 0}
       />
     </div>
   {/if}
@@ -285,11 +317,7 @@
       message={servicesError.message}
       onretry={loadServices}
     />
-  {:else if !enabled}
-    <p class="empty-hint">No database will be linked. You can add one later from Site Detail.</p>
-  {:else if servicesLoading}
-    <p class="hint">Loading database services…</p>
-  {:else if selectable.length === 0}
+  {:else if servicesLoaded && selectable.length === 0}
     <div class="notice">
       <p>No active SQL service is available.</p>
       <p class="notice-copy">
@@ -298,6 +326,13 @@
         database.
       </p>
     </div>
+    {#if !enabled}
+      <p class="empty-hint">No database will be linked. You can add one later from Site Detail.</p>
+    {/if}
+  {:else if !enabled}
+    <p class="empty-hint">No database will be linked. You can add one later from Site Detail.</p>
+  {:else if servicesLoading}
+    <p class="hint">Loading database services…</p>
   {:else}
     <Field
       id="database-service"
@@ -504,6 +539,21 @@
 
       {#if selectedUser}
         <div class="access">
+          {#if userGrants.length > 0}
+            <table class="grants" aria-label={`Grants for ${selectedUser.username}`}>
+              <thead>
+                <tr><th>Database</th><th>Grant</th></tr>
+              </thead>
+              <tbody>
+                {#each userGrants as userGrant (userGrant.database)}
+                  <tr class:selected={userGrant.database === selectedDatabase}>
+                    <td class="mono">{userGrant.database}</td>
+                    <td>{grantLabel(userGrant.preset)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
           <p>
             Grant on {selectedDatabase || 'the selected database'}:
             <strong>{selectedUserGrant ? grantLabel(selectedUserGrant.preset) : 'No access'}</strong>
@@ -516,7 +566,7 @@
               </p>
               <a
                 class="link"
-                href={`#/services/${serviceID}?tab=users&user=${selectedUser.id}`}
+                href={`#/services/${encodeURIComponent(serviceID)}?tab=users&user=${encodeURIComponent(selectedUser.id)}`}
                 onclick={() => onmanageuser?.(serviceID, selectedUser.id)}
               >
                 Manage database user
@@ -642,6 +692,41 @@
   .access strong {
     color: var(--fg);
     font-weight: 600;
+  }
+
+  .grants {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    font-size: 11.5px;
+  }
+
+  .grants th,
+  .grants td {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+  }
+
+  .grants thead th {
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .grants tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .grants tr.selected td {
+    background: var(--accent-soft);
+    color: var(--fg);
+    font-weight: 500;
   }
 
   .warning {

@@ -47,7 +47,10 @@
   import Toggle from '../lib/components/Toggle.svelte';
   import DatabasePicker from '../lib/components/site/DatabasePicker.svelte';
   import DatabaseReviewRow from '../lib/components/site/DatabaseReviewRow.svelte';
-  import type { DatabasePickerSummary } from '../lib/components/site/databasePickerTypes';
+  import {
+    sanitizeDatabaseUrl,
+    type DatabasePickerSummary,
+  } from '../lib/components/site/databasePickerTypes';
   import type { CreateSiteDatabaseRequest, SiteDatabaseLink } from '../lib/databaseTypes';
 
   type Kind = 'static' | 'php' | 'node';
@@ -458,10 +461,17 @@
         next.database_name = dbRequest.new_database
           ? 'Enter a database name.'
           : 'Choose an existing database.';
+      } else if (dbRequest.new_database && !isDatabaseIdentifier(database)) {
+        next.database_name =
+          'Use letters, numbers and underscores; start with a letter or underscore.';
       }
       if (dbRequest.new_user) {
-        if (!dbRequest.new_user.username.trim()) {
+        const username = dbRequest.new_user.username.trim();
+        if (!username) {
           next.database_username = 'Enter a database username.';
+        } else if (!isDatabaseIdentifier(username)) {
+          next.database_username =
+            'Use letters, numbers and underscores; start with a letter or underscore.';
         }
       } else if (!dbRequest.user_id) {
         next.database_user = 'Choose an existing user.';
@@ -469,6 +479,10 @@
     }
 
     return next;
+  }
+
+  function isDatabaseIdentifier(value: string): boolean {
+    return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(value);
   }
 
   function isRelativeFile(value: string): boolean {
@@ -686,6 +700,12 @@
       const value = raw[key];
       if (typeof value === 'string' && value.trim()) return value.trim();
     }
+    if (Array.isArray(raw.warnings)) {
+      const first = raw.warnings.find(
+        (warning): warning is string => typeof warning === 'string' && warning.trim().length > 0,
+      );
+      if (first) return first.trim();
+    }
     return '';
   }
 
@@ -801,7 +821,7 @@
         let link: SiteDatabaseLink | null = null;
         try {
           const result = await db.listSiteDatabases(site.id);
-          link = result.links?.[0] ?? null;
+          link = result?.links?.[0] ?? null;
         } catch (caught) {
           const described = describeError(caught);
           addToast({
@@ -1813,7 +1833,14 @@
     onclose={continueAfterCreate}
   >
     <div class="created-database">
-      <DatabaseConnectionCard connection={createdLink.connection} />
+      <DatabaseConnectionCard
+        connection={{
+          ...createdLink.connection,
+          url: createdLink.connection.url
+            ? sanitizeDatabaseUrl(createdLink.connection.url)
+            : undefined,
+        }}
+      />
       {#if createdLink.password_managed}
         <SecretField
           label="password"

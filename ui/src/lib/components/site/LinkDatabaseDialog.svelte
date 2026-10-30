@@ -31,6 +31,10 @@
     onclose();
   }
 
+  function isDatabaseIdentifier(value: string): boolean {
+    return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(value);
+  }
+
   async function submit(): Promise<void> {
     if (!value) {
       validation = 'Choose a database and user.';
@@ -45,9 +49,18 @@
       validation = value.new_database ? 'Enter a database name.' : 'Choose an existing database.';
       return;
     }
+    if (value.new_database && !isDatabaseIdentifier(database)) {
+      validation = 'Use letters, numbers and underscores; start with a letter or underscore.';
+      return;
+    }
     if (value.new_user) {
-      if (!value.new_user.username.trim()) {
+      const username = value.new_user.username.trim();
+      if (!username) {
         validation = 'Enter a database username.';
+        return;
+      }
+      if (!isDatabaseIdentifier(username)) {
+        validation = 'Use letters, numbers and underscores; start with a letter or underscore.';
         return;
       }
     } else if (!value.user_id) {
@@ -60,7 +73,14 @@
     submitting = true;
     try {
       if (value.new_database || value.new_user) {
-        await createSiteDatabase(siteRef, value);
+        const result = await createSiteDatabase(siteRef, value);
+        if (result?.warning) {
+          addToast({
+            kind: 'info',
+            title: 'Database linked with a warning',
+            message: result.warning,
+          });
+        }
       } else {
         await linkSiteDatabase(siteRef, {
           service_id: value.service_id,

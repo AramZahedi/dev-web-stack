@@ -349,7 +349,7 @@
       ]);
       if (generation !== loadGeneration || siteRef !== ref) return;
       site = next;
-      siteLinks = linksResult.links ?? [];
+      siteLinks = linksResult?.links ?? [];
       phpRuntimes = builds;
       nodeDefault = defaultStatus;
       if (next.kind === 'php') await loadPHP(siteRef, generation);

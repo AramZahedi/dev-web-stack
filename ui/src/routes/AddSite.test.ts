@@ -653,6 +653,66 @@ describe('AddSite Wave 2 fields', () => {
     expect(pathInput.value).toBe('/data/devstack/projects/my-awesome-blog');
   });
 
+  it('keeps the database selection when navigating back to Options', async () => {
+    await openOptionsStep();
+    await enableDatabase('blog', 'blog_user');
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const toggle = screen.getByLabelText('Create or link a database');
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    const databaseName = (await screen.findByLabelText(/Database name/)) as HTMLInputElement;
+    const username = (await screen.findByLabelText(/Database username/)) as HTMLInputElement;
+    expect(databaseName.value).toBe('blog');
+    expect(username.value).toBe('blog_user');
+  });
+
+  it('defaults database identifiers to safe engine names', async () => {
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'My Blog' } });
+    await fireEvent.input(screen.getByLabelText(/Project folder/), {
+      target: { value: '/home/dev/projects/my-blog' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await fireEvent.click(screen.getByLabelText('Create or link a database'));
+
+    const databaseName = (await screen.findByLabelText(/Database name/)) as HTMLInputElement;
+    const username = (await screen.findByLabelText(/Database username/)) as HTMLInputElement;
+    expect(databaseName.value).toBe('my_blog');
+    expect(username.value).toBe('my_blog');
+  });
+
+  it('rejects an unsafe new database name before submit', async () => {
+    await openOptionsStep();
+    await enableDatabase('blog-db', 'blog_user');
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+
+    expect(
+      (await screen.findAllByText(/Use letters, numbers and underscores/)).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
+  it('does not block site creation when no SQL service is active', async () => {
+    mockApi.listServices.mockResolvedValue([]);
+    await openOptionsStep();
+
+    const toggle = screen.getByLabelText('Create or link a database') as HTMLButtonElement;
+    await waitFor(() => expect(toggle.disabled).toBe(true));
+    expect(screen.getByText(/no active SQL service/i)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Services' })).toBeTruthy();
+    expect(screen.getByText(/no database will be linked/i)).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    expect(mockApi.createSite).toHaveBeenCalledWith(
+      expect.not.objectContaining({ database: expect.anything() }),
+    );
+  });
+
   it('adds an optional database panel in the Options step', async () => {
     await openOptionsStep();
     expect(await screen.findByText('Database')).toBeTruthy();

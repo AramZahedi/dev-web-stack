@@ -19,6 +19,7 @@
   import EmptyState from '../EmptyState.svelte';
   import SecretField from '../SecretField.svelte';
   import LinkDatabaseDialog from './LinkDatabaseDialog.svelte';
+  import { sanitizeDatabaseUrl } from './databasePickerTypes';
 
   interface Props {
     site: Site;
@@ -90,11 +91,14 @@
   function envSnippet(link: SiteDatabaseLink): string {
     return Object.entries(link.connection.env ?? {})
       .filter(([key]) => !isSecretKey(key))
-      .map(([key, value]) => `${key}=${value}`)
+      .map(([key, value]) => `${key}=${key === 'DATABASE_URL' ? sanitizeDatabaseUrl(value) : value}`)
       .join('\n');
   }
 
   async function reveal(link: SiteDatabaseLink): Promise<void> {
+    const cleared = { ...secrets };
+    delete cleared[link.id];
+    secrets = cleared;
     revealLoading = { ...revealLoading, [link.id]: true };
     revealError = { ...revealError, [link.id]: '' };
     try {
@@ -182,7 +186,11 @@
       {#each links as link (link.id)}
         {@const isManaged = managedOverrides[link.id] ?? link.password_managed}
         {@const conflict = conflictMessage(link)}
-        {@const displayConnection = { ...link.connection, password_managed: isManaged }}
+        {@const displayConnection = {
+          ...link.connection,
+          password_managed: isManaged,
+          url: link.connection.url ? sanitizeDatabaseUrl(link.connection.url) : undefined,
+        }}
         <article class="db-link" aria-label={`Database ${link.database}`}>
           <div class="db-head">
             <div class="badges">
@@ -195,7 +203,7 @@
             <div class="db-actions">
               <a
                 class="manage"
-                href={`#/services/${link.service_id}?tab=users&user=${link.user_id}`}
+                href={`#/services/${encodeURIComponent(link.service_id)}?tab=users&user=${encodeURIComponent(link.user_id)}`}
               >
                 Manage user
               </a>
@@ -203,10 +211,19 @@
                 size="sm"
                 variant="ghost"
                 ariaLabel={`Copy host for ${link.database}`}
-                onclick={() => copy('host', `${link.connection.host}:${link.connection.port}`)}
+                onclick={() => copy('host', link.connection.host)}
               >
                 <Copy size={12} strokeWidth={2} aria-hidden="true" />
                 Host
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                ariaLabel={`Copy port for ${link.database}`}
+                onclick={() => copy('port', String(link.connection.port))}
+              >
+                <Copy size={12} strokeWidth={2} aria-hidden="true" />
+                Port
               </Button>
               <Button
                 size="sm"
@@ -252,7 +269,7 @@
           {#if !link.available}
             <p class="offline" role="status">
               <strong>Database offline.</strong>
-              <a class="manage" href={`#/services/${link.service_id}`}>
+              <a class="manage" href={`#/services/${encodeURIComponent(link.service_id)}`}>
                 Activate {link.service_id}
               </a>
             </p>
@@ -292,7 +309,14 @@
   {#if restartNeeded}
     <div class="restart-notice" role="status">
       <p>Restart site to apply the database changes.</p>
-      <Button size="sm" variant="primary" onclick={onRestart}>
+      <Button
+        size="sm"
+        variant="primary"
+        onclick={() => {
+          restartNeeded = false;
+          onRestart();
+        }}
+      >
         <RotateCw size={12} strokeWidth={2} aria-hidden="true" />
         Restart site
       </Button>
