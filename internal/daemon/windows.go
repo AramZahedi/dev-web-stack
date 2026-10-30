@@ -325,6 +325,11 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 
+	// The listeners are bound but not serving yet. Mirror the effective
+	// settings before the dashboard can accept requests so a concurrent port
+	// save cannot be overwritten by this startup snapshot.
+	persistEffectiveSettings(ctx, st, cfg, cfg.ServingMode, "", logger)
+
 	stopChan := make(chan struct{}, 1)
 	controlHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && (r.URL.Path == "/control/stop" || r.URL.Path == "/api/v1/daemon/stop") {

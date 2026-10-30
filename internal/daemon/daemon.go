@@ -622,27 +622,7 @@ func (d *daemon) persistSettings(ctx context.Context) {
 	if d.reconcileErr != nil {
 		servingModeError = d.reconcileErr.Error()
 	}
-	values := map[string]string{
-		"home":                  d.cfg.Home,
-		"wsl_distro":            d.cfg.WSLDistro,
-		"http_port":             strconv.Itoa(d.cfg.HTTPPort),
-		"https_port":            strconv.Itoa(d.cfg.HTTPSPort),
-		"ui_port":               strconv.Itoa(d.cfg.UIPort),
-		"auto_start_sites":      strconv.FormatBool(d.cfg.AutoStartSites),
-		"serving_mode":          servingMode,
-		"serving_provider":      d.cfg.ServingProvider,
-		"serving_mode_error":    servingModeError,
-		"graceful_stop_seconds": strconv.Itoa(d.cfg.GracefulStopSeconds),
-		"max_request_body_mb":   strconv.Itoa(d.cfg.MaxRequestBodyMB),
-		"log_max_mb":            strconv.Itoa(d.cfg.LogMaxMB),
-		"log_keep":              strconv.Itoa(d.cfg.LogKeep),
-		"restart_required":      "false",
-	}
-	for key, value := range values {
-		if err := d.store.SetSetting(ctx, key, value); err != nil {
-			d.logger.Warn("daemon: persist setting", "key", key, "error", err)
-		}
-	}
+	persistEffectiveSettings(ctx, d.store, d.cfg, servingMode, servingModeError, d.logger)
 }
 
 // startDesiredSites reconciles the persisted desired state. A failure in one

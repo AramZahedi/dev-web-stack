@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Microsoft/go-winio"
 
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
@@ -85,6 +88,192 @@ func TestWindowsRunOpensSQLiteWritesLogAndCleansReadiness(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWindowsRunPersistsAppliedPortsAndClearsRestartRequired(t *testing.T) {
+	home := t.TempDir()
+	seed, err := store.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := seed.SetSetting(ctx, "restart_required", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.SetSetting(ctx, "ui_port", "7070"); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	httpPort, httpsPort, uiPort := freeTCPPort(t), freeTCPPort(t), freeTCPPort(t)
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(runCtx, Options{Home: home, HTTPPort: httpPort, HTTPSPort: httpsPort, UIPort: uiPort})
+	}()
+	ready := filepath.Join(home, "run", "daemon.ready")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Run returned before readiness: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("daemon did not publish readiness")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/v1/settings", uiPort))
+	if err != nil {
+		cancel()
+		<-done
+		t.Fatalf("GET settings: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		cancel()
+		<-done
+		t.Fatalf("GET settings status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var settings struct {
+		HTTPPort        int  `json:"http_port"`
+		HTTPSPort       int  `json:"https_port"`
+		UIPort          int  `json:"ui_port"`
+		RestartRequired bool `json:"restart_required"`
+	}
+	decodeErr := json.NewDecoder(resp.Body).Decode(&settings)
+	_ = resp.Body.Close()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run after cancellation: %v", err)
+	}
+	if decodeErr != nil {
+		t.Fatalf("decode settings: %v", decodeErr)
+	}
+	if settings.HTTPPort != httpPort {
+		t.Errorf("settings http_port = %d, want running port %d", settings.HTTPPort, httpPort)
+	}
+	if settings.HTTPSPort != httpsPort {
+		t.Errorf("settings https_port = %d, want running port %d", settings.HTTPSPort, httpsPort)
+	}
+	if settings.UIPort != uiPort {
+		t.Errorf("settings ui_port = %d, want running port %d", settings.UIPort, uiPort)
+	}
+	if settings.RestartRequired {
+		t.Error("settings restart_required = true after startup with the saved ports applied")
+	}
+}
+
+func TestWindowsSettingsArePersistedBeforeDashboardServes(t *testing.T) {
+	home := t.TempDir()
+	seed, err := store.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := seed.SetSetting(ctx, "restart_required", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.SetSetting(ctx, "ui_port", "7070"); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	pipePath := fmt.Sprintf(`\\.\pipe\devstack-settings-%d`, time.Now().UnixNano())
+	pipe, err := winio.ListenPipe(pipePath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pipe.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := pipe.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+
+	httpPort, httpsPort, uiPort := freeTCPPort(t), freeTCPPort(t), freeTCPPort(t)
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(runCtx, Options{
+			Home:         home,
+			HelperSocket: pipePath,
+			HTTPPort:     httpPort,
+			HTTPSPort:    httpsPort,
+			UIPort:       uiPort,
+		})
+	}()
+
+	var helperConn net.Conn
+	select {
+	case helperConn = <-accepted:
+		defer helperConn.Close()
+	case err := <-done:
+		t.Fatalf("Run returned before dialing the helper: %v", err)
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("daemon did not dial the helper pipe")
+	}
+
+	// The helper call hangs, so the daemon is still in bootstrap. The dashboard
+	// must already expose the applied ports and cleared restart_required; a
+	// post-bootstrap mirror write would instead return the stale seeded values
+	// here and could overwrite a concurrent settings save.
+	client := &http.Client{Timeout: time.Second}
+	var settings struct {
+		UIPort          int  `json:"ui_port"`
+		RestartRequired bool `json:"restart_required"`
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/v1/settings", uiPort))
+		if err == nil {
+			decodeErr := json.NewDecoder(resp.Body).Decode(&settings)
+			_ = resp.Body.Close()
+			if decodeErr != nil {
+				cancel()
+				<-done
+				t.Fatalf("decode settings: %v", decodeErr)
+			}
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Run returned before the dashboard served: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("dashboard did not serve during the blocked helper bootstrap")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run after cancellation: %v", err)
+	}
+	if settings.UIPort != uiPort {
+		t.Errorf("settings ui_port = %d, want running port %d while bootstrap is blocked", settings.UIPort, uiPort)
+	}
+	if settings.RestartRequired {
+		t.Error("settings restart_required = true while the dashboard is already serving")
 	}
 }
 
