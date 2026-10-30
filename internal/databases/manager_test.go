@@ -33,6 +33,8 @@ type fakeStore struct {
 }
 
 func (f *fakeStore) GetSite(_ context.Context, id string) (model.Site, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, site := range f.sites {
 		if site.ID == id {
 			return site, nil
@@ -42,6 +44,8 @@ func (f *fakeStore) GetSite(_ context.Context, id string) (model.Site, error) {
 }
 
 func (f *fakeStore) GetSiteByName(_ context.Context, name string) (model.Site, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, site := range f.sites {
 		if site.Name == name {
 			return site, nil
@@ -51,6 +55,8 @@ func (f *fakeStore) GetSiteByName(_ context.Context, name string) (model.Site, e
 }
 
 func (f *fakeStore) ListSites(context.Context) ([]model.Site, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return append([]model.Site(nil), f.sites...), nil
 }
 
@@ -81,6 +87,8 @@ func (f *fakeStore) CreateDatabaseLink(_ context.Context, link model.DatabaseLin
 }
 
 func (f *fakeStore) GetDatabaseLink(_ context.Context, id string) (model.DatabaseLinkRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, link := range f.links {
 		if link.ID == id {
 			return link, nil
@@ -90,6 +98,8 @@ func (f *fakeStore) GetDatabaseLink(_ context.Context, id string) (model.Databas
 }
 
 func (f *fakeStore) ListDatabaseLinksBySite(_ context.Context, siteID string) ([]model.DatabaseLinkRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []model.DatabaseLinkRecord
 	for _, link := range f.links {
 		if link.SiteID == siteID {
@@ -100,6 +110,8 @@ func (f *fakeStore) ListDatabaseLinksBySite(_ context.Context, siteID string) ([
 }
 
 func (f *fakeStore) ListDatabaseLinksByService(_ context.Context, serviceID string) ([]model.DatabaseLinkRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []model.DatabaseLinkRecord
 	for _, link := range f.links {
 		if link.ServiceID == serviceID {
@@ -200,6 +212,8 @@ func (f *fakeStore) UpsertDatabaseUser(_ context.Context, user model.DatabaseUse
 }
 
 func (f *fakeStore) GetDatabaseUser(_ context.Context, id string) (model.DatabaseUserRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, user := range f.users {
 		if user.ID == id {
 			return user, nil
@@ -209,6 +223,8 @@ func (f *fakeStore) GetDatabaseUser(_ context.Context, id string) (model.Databas
 }
 
 func (f *fakeStore) ListDatabaseUsers(_ context.Context, serviceID string) ([]model.DatabaseUserRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []model.DatabaseUserRecord
 	for _, user := range f.users {
 		if user.ServiceID == serviceID {
@@ -236,6 +252,8 @@ func (f *fakeStore) DeleteDatabaseUser(_ context.Context, id string) error {
 }
 
 func (f *fakeStore) SetDatabaseUserPasswordState(_ context.Context, id string, managed bool, rotatedAt int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.passwordStateErr != nil {
 		return f.passwordStateErr
 	}
@@ -250,6 +268,8 @@ func (f *fakeStore) SetDatabaseUserPasswordState(_ context.Context, id string, m
 }
 
 func (f *fakeStore) SaveDatabaseGrant(_ context.Context, grant model.DatabaseGrantRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for i := range f.grants {
 		if f.grants[i].UserID == grant.UserID && f.grants[i].DatabaseName == grant.DatabaseName {
 			f.grants[i] = grant
@@ -261,6 +281,8 @@ func (f *fakeStore) SaveDatabaseGrant(_ context.Context, grant model.DatabaseGra
 }
 
 func (f *fakeStore) ListDatabaseGrants(_ context.Context, userID string) ([]model.DatabaseGrantRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []model.DatabaseGrantRecord
 	for _, grant := range f.grants {
 		if grant.UserID == userID {
@@ -271,6 +293,8 @@ func (f *fakeStore) ListDatabaseGrants(_ context.Context, userID string) ([]mode
 }
 
 func (f *fakeStore) DeleteDatabaseGrant(_ context.Context, userID, databaseName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for i, grant := range f.grants {
 		if grant.UserID == userID && grant.DatabaseName == databaseName {
 			f.grants = append(f.grants[:i], f.grants[i+1:]...)
@@ -281,11 +305,15 @@ func (f *fakeStore) DeleteDatabaseGrant(_ context.Context, userID, databaseName 
 }
 
 func (f *fakeStore) CreateDatabaseBackup(_ context.Context, backup model.DatabaseBackupRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.backups = append(f.backups, backup)
 	return nil
 }
 
 func (f *fakeStore) GetDatabaseBackup(_ context.Context, id string) (model.DatabaseBackupRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, backup := range f.backups {
 		if backup.ID == id {
 			return backup, nil
@@ -295,6 +323,8 @@ func (f *fakeStore) GetDatabaseBackup(_ context.Context, id string) (model.Datab
 }
 
 func (f *fakeStore) ListDatabaseBackups(_ context.Context, serviceID string) ([]model.DatabaseBackupRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []model.DatabaseBackupRecord
 	for _, backup := range f.backups {
 		if backup.ServiceID == serviceID {
@@ -305,6 +335,8 @@ func (f *fakeStore) ListDatabaseBackups(_ context.Context, serviceID string) ([]
 }
 
 func (f *fakeStore) UpdateDatabaseBackup(_ context.Context, backup model.DatabaseBackupRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for i := range f.backups {
 		if f.backups[i].ID == backup.ID {
 			f.backups[i] = backup
@@ -315,6 +347,8 @@ func (f *fakeStore) UpdateDatabaseBackup(_ context.Context, backup model.Databas
 }
 
 func (f *fakeStore) DeleteDatabaseBackup(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for i, backup := range f.backups {
 		if backup.ID == id {
 			f.backups = append(f.backups[:i], f.backups[i+1:]...)
@@ -325,11 +359,15 @@ func (f *fakeStore) DeleteDatabaseBackup(_ context.Context, id string) error {
 }
 
 func (f *fakeStore) CreateDatabaseJob(_ context.Context, job model.DatabaseJobRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.jobs = append(f.jobs, job)
 	return nil
 }
 
 func (f *fakeStore) GetDatabaseJob(_ context.Context, id string) (model.DatabaseJobRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, job := range f.jobs {
 		if job.ID == id {
 			return job, nil
@@ -339,6 +377,8 @@ func (f *fakeStore) GetDatabaseJob(_ context.Context, id string) (model.Database
 }
 
 func (f *fakeStore) UpdateDatabaseJob(_ context.Context, job model.DatabaseJobRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for i := range f.jobs {
 		if f.jobs[i].ID == job.ID {
 			f.jobs[i] = job
@@ -349,10 +389,14 @@ func (f *fakeStore) UpdateDatabaseJob(_ context.Context, job model.DatabaseJobRe
 }
 
 func (f *fakeStore) ListAllDatabaseJobs(context.Context) ([]model.DatabaseJobRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return append([]model.DatabaseJobRecord(nil), f.jobs...), nil
 }
 
 func (f *fakeStore) ListDatabaseJobs(_ context.Context, serviceID string) ([]model.DatabaseJobRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []model.DatabaseJobRecord
 	for _, job := range f.jobs {
 		if job.ServiceID == serviceID {
@@ -411,11 +455,15 @@ func (f *fakeStore) DeleteServiceMetadata(_ context.Context, serviceID string) e
 }
 
 func (f *fakeStore) AddAuditEvent(_ context.Context, event model.AuditEventRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.audit = append(f.audit, event)
 	return nil
 }
 
 func (f *fakeStore) ListAuditEvents(_ context.Context, limit int) ([]model.AuditEventRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := append([]model.AuditEventRecord(nil), f.audit...)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
@@ -424,6 +472,8 @@ func (f *fakeStore) ListAuditEvents(_ context.Context, limit int) ([]model.Audit
 }
 
 func (f *fakeStore) CountAuditEvents(context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return int64(len(f.audit)), nil
 }
 
@@ -680,19 +730,25 @@ func (f *fakeServices) List(context.Context) ([]services.View, error) {
 }
 
 type fakeAudit struct {
+	mu     sync.Mutex
 	events []model.AuditEventRecord
 }
 
 func (f *fakeAudit) AddAuditEvent(_ context.Context, event model.AuditEventRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.events = append(f.events, event)
 	return nil
 }
 
 type fakeEvents struct {
+	mu     sync.Mutex
 	events []model.Event
 }
 
 func (f *fakeEvents) AddEvent(_ context.Context, event model.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.events = append(f.events, event)
 	return nil
 }
@@ -731,6 +787,7 @@ func waitJob(t *testing.T, m *Manager, id string) model.DatabaseJob {
 	for time.Now().Before(deadline) {
 		job, err := m.GetJob(context.Background(), id)
 		if err == nil && job.Status != model.JobQueued && job.Status != model.JobRunning {
+			waitJobGoroutine(t, m, id)
 			return job
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -738,6 +795,25 @@ func waitJob(t *testing.T, m *Manager, id string) model.DatabaseJob {
 	job, _ := m.GetJob(context.Background(), id)
 	t.Fatalf("job %s did not finish: %+v", id, job)
 	return model.DatabaseJob{}
+}
+
+// waitJobGoroutine waits until runJob has finished its deferred cleanup. The
+// store marks a job terminal before the goroutine emits events and writes audit
+// rows; waiting for the cancellation entry to disappear makes those writes
+// happen-before the test's assertions.
+func waitJobGoroutine(t *testing.T, m *Manager, id string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		m.jobsMu.Lock()
+		_, running := m.cancels[id]
+		m.jobsMu.Unlock()
+		if !running {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("job %s goroutine did not exit", id)
 }
 
 func waitAuditAction(t *testing.T, audit *fakeAudit, action string) {
