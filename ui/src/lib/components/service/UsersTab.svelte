@@ -1,5 +1,6 @@
 <script lang="ts">
   import { KeyRound, UserPlus } from 'lucide-svelte';
+  import * as api from '../../api';
   import * as dbApi from '../../databaseApi';
   import { copyText } from '../../clipboard';
   import { describeError, type DescribedError } from '../../errors';
@@ -8,6 +9,7 @@
     CreateDatabaseUserRequest,
     Database,
     DatabaseEngine,
+    DatabaseSiteRef,
     DatabaseUser,
     UpdateDatabaseUserRequest,
   } from '../../databaseTypes';
@@ -77,6 +79,8 @@
   let revealErrors = $state<Record<string, string>>({});
   let secretBusy = $state<string | null>(null);
   let actionError = $state<DescribedError | null>(null);
+  let restartPrompt = $state<{ label: string; sites: DatabaseSiteRef[] } | null>(null);
+  let restartingSite = $state<string | null>(null);
 
   let secretDialog = $state<{ user: DatabaseUser; value: string; revealed: boolean } | null>(null);
 
@@ -93,6 +97,32 @@
 
   function protectedUser(user: DatabaseUser): boolean {
     return isProtectedUsername(engine, user.username);
+  }
+
+  function promptRestart(label: string, sites: DatabaseSiteRef[] | undefined): void {
+    if (!sites?.length) return;
+    restartPrompt = { label, sites: [...sites] };
+  }
+
+  async function restartLinkedSite(site: DatabaseSiteRef): Promise<void> {
+    if (restartingSite) return;
+    restartingSite = site.id;
+    try {
+      await api.restartSite(site.id);
+      addToast({
+        kind: 'success',
+        title: `${site.name} restarted`,
+        message: 'The site now uses the updated database credentials or grants.',
+      });
+      if (restartPrompt) {
+        const remaining = restartPrompt.sites.filter((entry) => entry.id !== site.id);
+        restartPrompt = remaining.length > 0 ? { ...restartPrompt, sites: remaining } : null;
+      }
+    } catch (caught) {
+      actionError = describeError(caught);
+    } finally {
+      restartingSite = null;
+    }
   }
 
   function openCreate(): void {
@@ -137,6 +167,7 @@
           title: `User ${target.username} updated`,
           message: 'Restart linked sites to apply the new grants or state.',
         });
+        promptRestart(`Grants for ${target.username}`, target.linked_sites);
       }
       formOpen = false;
       onRefresh();
@@ -194,6 +225,7 @@
         title: `Password ${user.password_managed ? 'reset' : 'set'} for ${user.username}`,
         message: 'The platform stored the new password; copy it before closing the dialog.',
       });
+      promptRestart(`Password for ${user.username}`, user.linked_sites);
       onRefresh();
     } catch (caught) {
       actionError = describeError(caught);
@@ -257,6 +289,31 @@
       message={actionError.message}
       ondismiss={() => (actionError = null)}
     />
+  {/if}
+
+  {#if restartPrompt}
+    <div class="restart-prompt" role="status">
+      <div class="restart-copy">
+        <strong>Restart linked sites to apply.</strong>
+        <p>{restartPrompt.label} changed. Restart each site so it reconnects.</p>
+      </div>
+      <div class="restart-actions">
+        {#each restartPrompt.sites as site (site.id)}
+          <Button
+            size="sm"
+            variant="secondary"
+            ariaLabel={`Restart site ${site.name}`}
+            loading={restartingSite === site.id}
+            onclick={() => restartLinkedSite(site)}
+          >
+            Restart {site.name}
+          </Button>
+        {/each}
+        <Button size="sm" variant="ghost" onclick={() => (restartPrompt = null)}>
+          Dismiss
+        </Button>
+      </div>
+    </div>
   {/if}
 
   <Card
@@ -630,6 +687,41 @@
     color: var(--warning-fg);
     font-size: 11.5px;
     line-height: 1.5;
+  }
+
+  .restart-prompt {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--info) 35%, var(--border));
+    border-left: 3px solid var(--info);
+    border-radius: var(--radius);
+    background: var(--info-soft);
+    color: var(--info-fg);
+  }
+
+  .restart-copy {
+    min-width: 0;
+    font-size: 11.5px;
+    line-height: 1.45;
+  }
+
+  .restart-copy strong {
+    font-weight: 600;
+  }
+
+  .restart-copy p {
+    margin-top: 2px;
+  }
+
+  .restart-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
   }
 
   .loading-copy {

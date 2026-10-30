@@ -69,6 +69,8 @@
   let linkedStates = $state<Record<string, LinkedSiteState>>({});
   let stoppingSites = $state<Record<string, boolean>>({});
   let siteStopError = $state('');
+  let restartPrompt = $state<{ label: string; sites: DatabaseSiteRef[] } | null>(null);
+  let restartingSite = $state<string | null>(null);
 
   let createOpen = $state(false);
   let renameTarget = $state<Database | null>(null);
@@ -191,6 +193,12 @@
         title: `Database renamed to ${name}`,
         message: 'Restart linked sites so they reconnect to the renamed database.',
       });
+      if (target.linked_sites?.length) {
+        restartPrompt = {
+          label: `Database renamed to ${name}`,
+          sites: [...target.linked_sites],
+        };
+      }
       onRefresh();
     } catch (caught) {
       formError = describeError(caught).message;
@@ -245,6 +253,27 @@
       siteStopError = describeError(caught).message;
     } finally {
       stoppingSites = { ...stoppingSites, [site.id]: false };
+    }
+  }
+
+  async function restartLinkedSite(site: DatabaseSiteRef): Promise<void> {
+    if (restartingSite) return;
+    restartingSite = site.id;
+    try {
+      await api.restartSite(site.id);
+      addToast({
+        kind: 'success',
+        title: `${site.name} restarted`,
+        message: 'The site now uses the renamed database.',
+      });
+      if (restartPrompt) {
+        const remaining = restartPrompt.sites.filter((entry) => entry.id !== site.id);
+        restartPrompt = remaining.length > 0 ? { ...restartPrompt, sites: remaining } : null;
+      }
+    } catch (caught) {
+      actionError = describeError(caught).message;
+    } finally {
+      restartingSite = null;
     }
   }
 
@@ -400,6 +429,31 @@
 
   {#if actionError}
     <p class="action-error" role="alert">{actionError}</p>
+  {/if}
+
+  {#if restartPrompt}
+    <div class="restart-prompt" role="status">
+      <div class="restart-copy">
+        <strong>Restart linked sites to apply.</strong>
+        <p>{restartPrompt.label}. Restart each site so it reconnects.</p>
+      </div>
+      <div class="restart-actions">
+        {#each restartPrompt.sites as site (site.id)}
+          <Button
+            size="sm"
+            variant="secondary"
+            ariaLabel={`Restart site ${site.name}`}
+            loading={restartingSite === site.id}
+            onclick={() => restartLinkedSite(site)}
+          >
+            Restart {site.name}
+          </Button>
+        {/each}
+        <Button size="sm" variant="ghost" onclick={() => (restartPrompt = null)}>
+          Dismiss
+        </Button>
+      </div>
+    </div>
   {/if}
 
   {#if job}
@@ -837,6 +891,41 @@
     color: var(--danger-fg);
     font-size: 11.5px;
     line-height: 1.45;
+  }
+
+  .restart-prompt {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--info) 35%, var(--border));
+    border-left: 3px solid var(--info);
+    border-radius: var(--radius);
+    background: var(--info-soft);
+    color: var(--info-fg);
+  }
+
+  .restart-copy {
+    min-width: 0;
+    font-size: 11.5px;
+    line-height: 1.45;
+  }
+
+  .restart-copy strong {
+    font-weight: 600;
+  }
+
+  .restart-copy p {
+    margin-top: 2px;
+  }
+
+  .restart-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
   }
 
   .job-card {

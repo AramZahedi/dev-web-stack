@@ -1,9 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import UsersTab from './UsersTab.svelte';
+import * as api from '../../api';
 import * as db from '../../databaseApi';
 import type { Database, DatabaseUser } from '../../databaseTypes';
 import type { ServiceView } from '../../types';
+
+vi.mock('../../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api')>();
+  return {
+    ...actual,
+    restartSite: vi.fn(),
+  };
+});
 
 vi.mock('../../databaseApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../databaseApi')>();
@@ -155,6 +164,7 @@ const REDIS_USERS: DatabaseUser[] = [
 ];
 
 beforeEach(() => {
+  vi.mocked(api.restartSite).mockResolvedValue(undefined);
   vi.mocked(db.revealServiceUserPassword).mockResolvedValue({ value: 's3cret' });
   vi.mocked(db.setServiceUserPassword).mockResolvedValue({ value: 'n3w-secret' });
   vi.mocked(db.deleteServiceUser).mockResolvedValue(undefined);
@@ -356,6 +366,48 @@ describe('UsersTab', () => {
 
     expect(select.value).toBe('app');
     expect(within(select).queryByRole('option', { name: 'devstack' })).toBeNull();
+  });
+
+  it('prompts to restart linked sites after a grant change', async () => {
+    const linked = { ...MYSQL_USERS[0], linked_sites: [{ id: 'site_blog', name: 'blog' }] };
+    vi.mocked(db.updateServiceUser).mockResolvedValue(linked);
+    render(UsersTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        users: [linked],
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /edit app/i }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.change(within(dialog).getByLabelText('Grant 1 preset'), {
+      target: { value: 'read_only' },
+    });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText(/restart linked sites to apply/i)).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: /restart site blog/i }));
+    await waitFor(() => expect(api.restartSite).toHaveBeenCalledWith('site_blog'));
+  });
+
+  it('prompts to restart linked sites after a password reset', async () => {
+    const linked = { ...MYSQL_USERS[0], linked_sites: [{ id: 'site_blog', name: 'blog' }] };
+    render(UsersTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        users: [linked],
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /reset password for app/i }));
+
+    expect(await screen.findByText(/restart linked sites to apply/i)).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: /restart site blog/i }));
+    await waitFor(() => expect(api.restartSite).toHaveBeenCalledWith('site_blog'));
   });
 
   it('hides host and grants for Redis and shows the access level', () => {

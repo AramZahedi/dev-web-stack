@@ -488,6 +488,38 @@ describe('DatabaseTab', () => {
     expect(screen.getByText('canceled by user')).toBeTruthy();
   });
 
+  it('prompts to restart linked sites after a PostgreSQL rename', async () => {
+    vi.mocked(api.getSite).mockResolvedValue({
+      id: 'site_blog',
+      name: 'blog',
+      status: 'stopped',
+      desired_state: 'stopped',
+    } as never);
+    render(DatabaseTab, {
+      props: {
+        service: POSTGRES_SERVICE,
+        databases: [
+          {
+            ...POSTGRES_DATABASES[0],
+            linked_sites: [{ id: 'site_blog', name: 'blog' }],
+          },
+        ],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /rename app/i }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.input(within(dialog).getByLabelText(/database name/i), {
+      target: { value: 'app_v2' },
+    });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Rename database' }));
+
+    expect(await screen.findByText(/restart linked sites to apply/i)).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: /restart site blog/i }));
+    await waitFor(() => expect(api.restartSite).toHaveBeenCalledWith('site_blog'));
+  });
+
   it('creates a database through the form dialog', async () => {
     const refresh = vi.fn();
     render(DatabaseTab, {
