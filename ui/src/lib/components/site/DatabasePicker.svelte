@@ -58,6 +58,7 @@
   let username = $state('');
   let grant = $state<GrantPreset>('read_write_schema');
   let dataGeneration = 0;
+  let servicesGeneration = 0;
 
   const SQL_SERVICES = ['mysql', 'mariadb', 'postgres', 'postgresql'];
 
@@ -214,10 +215,13 @@
   }
 
   async function loadServices(): Promise<void> {
+    const generation = ++servicesGeneration;
     servicesLoading = true;
     servicesError = null;
     try {
-      services = (await listServices()) ?? [];
+      const loaded = (await listServices()) ?? [];
+      if (generation !== servicesGeneration) return;
+      services = loaded;
       const available = services.filter(
         (service) =>
           service.installed && service.active && SQL_SERVICES.includes(service.id),
@@ -237,14 +241,17 @@
         sync();
       }
     } catch (caught) {
+      if (generation !== servicesGeneration) return;
       services = [];
       servicesError = describeError(caught);
       if (!alwaysOn) enabled = false;
       invalidateData();
       sync();
     } finally {
-      servicesLoading = false;
-      servicesLoaded = true;
+      if (generation === servicesGeneration) {
+        servicesLoading = false;
+        servicesLoaded = true;
+      }
     }
   }
 
@@ -394,7 +401,7 @@
         title="Could not load databases"
         code={dataError.code}
         message={dataError.message}
-        onretry={() => void selectService(serviceID)}
+        onretry={() => void selectService(serviceID, false)}
       />
     {/if}
 

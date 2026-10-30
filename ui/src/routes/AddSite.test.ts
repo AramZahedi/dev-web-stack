@@ -803,6 +803,33 @@ describe('AddSite Wave 2 fields', () => {
     expect(mockApi.createSite).not.toHaveBeenCalled();
   });
 
+  it('preserves typed database names when retrying a failed data load', async () => {
+    mockDb.listServiceDatabases.mockRejectedValueOnce(
+      new ApiError('DATABASE_LOAD_FAILED', 'Could not load databases.', 503),
+    );
+    await openOptionsStep();
+    await fireEvent.click(screen.getByLabelText('Create or link a database'));
+    const service = (await screen.findByLabelText(/Database service/)) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    expect(await screen.findByText('Could not load databases')).toBeTruthy();
+
+    await fireEvent.input(screen.getByLabelText(/Database name/), {
+      target: { value: 'custom_db' },
+    });
+    await fireEvent.input(screen.getByLabelText(/Database username/), {
+      target: { value: 'custom_user' },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText('Could not load databases')).toBeNull());
+    expect(
+      (screen.getByLabelText(/Database name/) as HTMLInputElement).value,
+    ).toBe('custom_db');
+    expect(
+      (screen.getByLabelText(/Database username/) as HTMLInputElement).value,
+    ).toBe('custom_user');
+  });
+
   it('focuses the database picker from the review row', async () => {
     await openOptionsStep();
     await enableDatabase('blog', 'blog_user');
