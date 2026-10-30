@@ -467,11 +467,20 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 		}
 	}
 
+	var liveProcess *fpmProcess
+	if existing := site.phpGenerations[gen]; existing != nil && existing.port == port &&
+		existing.process != nil && existing.process.running() {
+		// A re-prepare of the active generation (for example devstack php --site)
+		// must keep the live master attached. Replacing the generation object
+		// would orphan the process and make the site report stopped.
+		liveProcess = existing.process
+	}
 	site.phpGenerations[gen] = &phpGeneration{
 		spec:         cloneAgentSiteSpec(req.Site),
 		documentRoot: docroot,
 		fpmPath:      fpmPath,
 		port:         port,
+		process:      liveProcess,
 	}
 
 	if err := r.saveLocked(); err != nil {

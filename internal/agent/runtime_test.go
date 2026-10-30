@@ -798,6 +798,78 @@ func TestAgentPHPStopDrainedGenerationKeepsDesiredRunning(t *testing.T) {
 	}
 }
 
+func TestAgentPHPStopDefaultAfterHashSwapKeepsSiteRunning(t *testing.T) {
+	runtime, _ := newTestRuntimeOnly(t)
+	project := filepath.Join(t.TempDir(), "swap-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:          "swap-site",
+		Kind:        "php",
+		BackendPath: project,
+		PHPVersion:  "8.4",
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "default", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "hash-2", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "hash-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StopPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "default"}); err != nil {
+		t.Fatalf("StopPHP(default) = %v", err)
+	}
+	status, err := runtime.SiteStatus(spec.ID)
+	if err != nil || status.Status != "running" {
+		t.Fatalf("SiteStatus after draining default = %+v, %v", status, err)
+	}
+}
+
+func TestAgentPHPPreparePreservesRunningGeneration(t *testing.T) {
+	runtime, _ := newTestRuntimeOnly(t)
+	project := filepath.Join(t.TempDir(), "exec-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:          "exec-site",
+		Kind:        "php",
+		BackendPath: project,
+		PHPVersion:  "8.4",
+		FastCGIPort: 43060,
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "default", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := runtime.SiteStatus(spec.ID)
+	if err != nil || status.Status != "running" {
+		t.Fatalf("SiteStatus after start = %+v, %v", status, err)
+	}
+	startedPID := status.PID
+
+	// devstack php --site re-prepares the active generation before running the
+	// CLI. Re-preparing the same generation must not detach its live process.
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "default", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	status, err = runtime.SiteStatus(spec.ID)
+	if err != nil || status.Status != "running" {
+		t.Fatalf("SiteStatus after re-prepare = %+v, %v", status, err)
+	}
+	if status.PID != startedPID {
+		t.Fatalf("re-prepare replaced the master: pid %d -> %d", startedPID, status.PID)
+	}
+}
+
 func TestAgentNodeBuildDetectionAndExecution(t *testing.T) {
 	runtime, root := newTestRuntimeOnly(t)
 	project := filepath.Join(root, "node-app")
