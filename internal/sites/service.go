@@ -2211,6 +2211,14 @@ func (s *Service) databaseEnv(ctx context.Context, site model.Site) map[string]s
 	if s.deps.DatabaseEnv == nil {
 		return nil
 	}
+	// During Create, PHP config is composed before the site row exists. There
+	// cannot be a link for a brand-new ID, and resolving it would emit a
+	// spurious "database service offline" event.
+	if s.deps.Store != nil && strings.TrimSpace(site.ID) != "" {
+		if _, err := s.deps.Store.GetSite(ctx, site.ID); errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+	}
 	env, err := s.deps.DatabaseEnv(ctx, site)
 	if err != nil {
 		s.emitEvent(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: resolve database environment: %s", site.Name, databases.RedactError(err)))

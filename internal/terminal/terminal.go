@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
@@ -343,9 +344,16 @@ func (m *Manager) environment(ctx context.Context, site model.Site) ([]string, e
 	if m.databaseEnv != nil {
 		values, err := m.databaseEnv(ctx, site)
 		if err != nil {
-			return nil, fmt.Errorf("terminal: resolve database environment: %w", err)
+			// A database service can be offline while the site's shell still
+			// works. Start the terminal without the dynamic variables instead
+			// of failing the whole session.
+			if m.logger != nil {
+				m.logger.Warn("terminal: resolve database environment; continuing without it",
+					"site", site.ID, "error", databases.RedactError(err))
+			}
+		} else {
+			extraEnv = values
 		}
-		extraEnv = values
 	}
 	env, err := tooling.BuildSiteEnv(site, tooling.EnvDeps{
 		Paths:       m.paths,

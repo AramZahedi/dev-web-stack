@@ -1244,6 +1244,20 @@ func TestListDatabasesDeduplicatesMissingLinkedDatabase(t *testing.T) {
 	}
 }
 
+func TestListSiteLinksUsesLivePasswordManagedState(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", SiteName: "blog", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app"}}
+	st.users[0].PasswordManaged = false
+	platform.users[0].PasswordManaged = true
+	links, err := m.ListSiteLinks(context.Background(), "blog")
+	if err != nil || len(links) != 1 {
+		t.Fatalf("links=%+v err=%v", links, err)
+	}
+	if !links[0].PasswordManaged || !links[0].Connection.PasswordManaged {
+		t.Fatalf("stored PasswordManaged overrode the engine: %+v", links[0])
+	}
+}
+
 func TestLinkFromRecordIncludesSafeConnectionURL(t *testing.T) {
 	m, _, _, _, _ := testManagerWithFakes(t)
 	link := m.linkFromRecord(context.Background(), model.DatabaseLinkRecord{
@@ -1286,7 +1300,12 @@ func TestSiteDatabaseEnvUsesGlobalPrimaryAcrossServices(t *testing.T) {
 		}
 	}
 	st.users[0].PasswordManaged = true
+	platform.users[0].PasswordManaged = true
 	st.users = append(st.users, model.DatabaseUserRecord{
+		ID: "usr_analytics", ServiceID: "postgresql", Engine: model.DatabasePostgreSQL,
+		Username: "analytics", Enabled: true, PasswordManaged: true,
+	})
+	platform.users = append(platform.users, model.DatabaseUser{
 		ID: "usr_analytics", ServiceID: "postgresql", Engine: model.DatabasePostgreSQL,
 		Username: "analytics", Enabled: true, PasswordManaged: true,
 	})
@@ -1324,6 +1343,7 @@ func TestSiteDatabaseEnvAuditsOnlyAfterResolution(t *testing.T) {
 	m, st, platform, audit, _ := testManagerWithFakes(t)
 	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app", Primary: true}}
 	st.users[0].PasswordManaged = true
+	platform.users[0].PasswordManaged = true
 	platform.envErr = errors.New("resolve failed")
 	if _, err := m.SiteDatabaseEnv(context.Background(), "blog"); err == nil {
 		t.Fatal("expected resolve failure")
@@ -1829,6 +1849,7 @@ func TestSiteDatabaseEnvUsesPlatformForManagedLink(t *testing.T) {
 	platform.env = map[string]string{"DB_DATABASE": "app", "DB_PASSWORD": "s3cret"}
 	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app", Primary: true}}
 	st.users[0].PasswordManaged = true
+	platform.users[0].PasswordManaged = true
 	env, err := m.SiteDatabaseEnv(context.Background(), "blog")
 	if err != nil {
 		t.Fatal(err)

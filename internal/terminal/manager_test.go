@@ -116,6 +116,31 @@ func TestPrepareAddsDatabaseEnvironment(t *testing.T) {
 	}
 }
 
+func TestPrepareSurvivesDatabaseEnvironmentFailure(t *testing.T) {
+	home := t.TempDir()
+	paths, site, build := testNodeFixture(t, home)
+	site.Env = map[string]string{"APP_ENV": "local"}
+	deps := testDeps(paths)
+	deps.Runtimes = staticRuntimes{build}
+	deps.DatabaseEnv = func(context.Context, model.Site) (map[string]string, error) {
+		return nil, errors.New("database service offline: password=supersecret")
+	}
+	manager := NewManager(deps)
+	t.Cleanup(manager.Close)
+
+	prepared, err := manager.prepare(context.Background(), site)
+	if err != nil {
+		t.Fatalf("prepare failed because database env was unavailable: %v", err)
+	}
+	env := envMap(t, prepared.Env)
+	if env["APP_ENV"] != "local" {
+		t.Fatalf("site env was not forwarded: %q", env["APP_ENV"])
+	}
+	if _, ok := env["DB_PASSWORD"]; ok {
+		t.Fatalf("failed database env leaked into terminal: %q", env["DB_PASSWORD"])
+	}
+}
+
 func TestPrepareRejectsSymlinkedProject(t *testing.T) {
 	home := t.TempDir()
 	paths, site, build, info := testPHPFixture(t, home)

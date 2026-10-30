@@ -3,6 +3,7 @@
 package sites
 
 import (
+	"context"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -251,6 +252,40 @@ func TestCreatePHPValidatesVersionDocumentRootAndConfiguration(t *testing.T) {
 				t.Fatalf("validators ran for an invalid request: %d/%d", lint, fpm)
 			}
 		})
+	}
+}
+
+func TestCreatePHPDoesNotResolveDatabaseEnvBeforeSiteRow(t *testing.T) {
+	svc, fakes := newTestService(t)
+	build := fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	beforeRow, afterRow := 0, 0
+	svc.deps.DatabaseEnv = func(ctx context.Context, site model.Site) (map[string]string, error) {
+		if _, err := fakes.store.GetSite(ctx, site.ID); err != nil {
+			beforeRow++
+			return nil, err
+		}
+		afterRow++
+		return map[string]string{"DB_DATABASE": "app"}, nil
+	}
+	if _, err := svc.Create(ctx, CreateRequest{
+		Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4", PHPBuild: build.ID, DocumentRoot: ".",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if beforeRow != 0 {
+		t.Fatalf("database env resolved before the site row existed: %d", beforeRow)
+	}
+	if afterRow == 0 {
+		t.Fatal("database env was never resolved after the site row was created")
+	}
+	events, err := fakes.store.ListEvents(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == "database.service.offline" {
+			t.Fatalf("spurious database offline event during create: %+v", event)
+		}
 	}
 }
 

@@ -33,6 +33,7 @@ func (m *Manager) ListSiteLinks(ctx context.Context, siteRef string) ([]model.Da
 		return nil, err
 	}
 	databasesByService := make(map[string]map[string]model.Database)
+	usersByService := make(map[string]map[string]model.DatabaseUser)
 	views := make(map[string]services.View)
 	for _, record := range records {
 		serviceID := canonicalServiceID(record.ServiceID)
@@ -55,11 +56,20 @@ func (m *Manager) ListSiteLinks(ctx context.Context, siteRef string) ([]model.Da
 				}
 				databasesByService[serviceID] = byName
 			}
+			if _, ok := usersByService[serviceID]; !ok {
+				byID := make(map[string]model.DatabaseUser)
+				if list, listErr := m.deps.Platform.ListUsers(ctx, serviceID); listErr == nil {
+					for _, user := range list {
+						byID[user.ID] = user
+					}
+				}
+				usersByService[serviceID] = byID
+			}
 		}
 	}
 	links := make([]model.DatabaseLink, 0, len(records))
 	for _, record := range records {
-		link, _ := m.buildLink(ctx, record, views, databasesByService)
+		link, _ := m.buildLink(ctx, record, views, databasesByService, usersByService)
 		links = append(links, link)
 	}
 	sort.SliceStable(links, func(i, j int) bool {
@@ -73,7 +83,7 @@ func (m *Manager) ListSiteLinks(ctx context.Context, siteRef string) ([]model.Da
 
 // buildLink assembles one link view. Errors are reported on the link rather
 // than failing the list.
-func (m *Manager) buildLink(ctx context.Context, record model.DatabaseLinkRecord, views map[string]services.View, databases map[string]map[string]model.Database) (model.DatabaseLink, error) {
+func (m *Manager) buildLink(ctx context.Context, record model.DatabaseLinkRecord, views map[string]services.View, databases map[string]map[string]model.Database, users map[string]map[string]model.DatabaseUser) (model.DatabaseLink, error) {
 	serviceID := canonicalServiceID(record.ServiceID)
 	engine := engineForService(serviceID)
 	link := model.DatabaseLink{
@@ -94,6 +104,13 @@ func (m *Manager) buildLink(ctx context.Context, record model.DatabaseLinkRecord
 		link.Username = user.Username
 		link.Host = user.Host
 		link.PasswordManaged = user.PasswordManaged
+	}
+	if live, ok := users[serviceID][record.UserID]; ok {
+		// The engine is authoritative for whether the password is managed;
+		// the stored row can lag after an external password change.
+		link.Username = live.Username
+		link.Host = live.Host
+		link.PasswordManaged = live.PasswordManaged
 	}
 	view, serviceKnown := views[serviceID]
 	if !serviceKnown {
