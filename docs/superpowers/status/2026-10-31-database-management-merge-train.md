@@ -1,0 +1,41 @@
+# Database management merge train — live status
+
+- **Branch:** `integration/database-management`
+- **Base:** `1464451` (`master`, after the lane completion handoff)
+- **Started:** 2026-10-31
+- **Flow:** controller-only; targeted review of each lane's final fix commits; no new subagents.
+- **Exception:** A, B, C, and D have no fresh independent audit; the user authorized the cheaper targeted-review flow.
+
+## Progress
+
+| Step | State | Commit | Gate |
+|---|---|---|---|
+| Lane B cross-lane fixes (`mariadb`, `digest[:8]`) | done on `lane/db-daemon` | `2588655` | `go test ./internal/databases` PASS |
+| Targeted review Lane A | done | — | no Critical/Important |
+| Merge Lane A | done | `768cb73` | agent/dbengine packages PASS; build + vet PASS |
+| Merge Lane H | pending | — | — |
+| Merge Lane B | pending | — | — |
+| Merge Lane C | pending | — | — |
+| Merge Lane D | pending | — | — |
+| Merge Lane E | pending | — | — |
+| Redis ACL confirmation path | pending | — | — |
+| Windows bridge direct assignment | pending | — | — |
+| Merged registry verification | pending | — | — |
+| Full merged-tree gate | pending | — | — |
+| Full E2E plan | pending | — | — |
+
+## Step log
+
+### Step 1 — Lane B cross-lane fixes
+
+- `dbConnectionValue` now returns `mariadb` for MariaDB.
+- `stableUserID` now uses `digest[:8]`, matching Lane A's `usr_` + 16-hex shape.
+- New `internal/databases/audit_test.go` covers both; RED first, then GREEN.
+- Commit `2588655` on `lane/db-daemon`.
+
+### Step 2 — Lane A targeted review and merge
+
+- Reviewed `8b77457..9edb8a2`: target-database PostgreSQL grants/revokes, dotted/dashed roles, symlink-safe backup paths, failing `psql` propagation, Redis custom-rule preservation, SQL secret redaction, Redis `-x` rule retention, and MariaDB connection pinning.
+- No Critical or Important findings in the reviewed range.
+- Merge commit `768cb73` (`merge: database agent adapters`).
+- Gate: `go test ./internal/dbengine ./internal/agentdocker ./internal/agentclient ./internal/agentproto ./internal/agent -count=1` PASS; `go build ./...` PASS; `go vet ./...` PASS.
