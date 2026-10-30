@@ -358,6 +358,16 @@ describe('DatabaseTab', () => {
   });
 
   it('requires linked sites to be stopped for a replace import', async () => {
+    vi.mocked(db.importServiceDatabase).mockResolvedValue({
+      id: 'job_replace',
+      service_id: 'mysql',
+      database: 'app',
+      kind: 'import',
+      status: 'succeeded',
+      progress: 100,
+      created_at: '2026-10-29T10:00:00Z',
+      updated_at: '2026-10-29T10:00:02Z',
+    });
     const { container } = render(DatabaseTab, {
       props: {
         service: MYSQL_SERVICE,
@@ -376,6 +386,9 @@ describe('DatabaseTab', () => {
 
     const dialog = await screen.findByRole('dialog');
     await fireEvent.click(within(dialog).getByLabelText(/replace contents/i));
+    await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
 
     expect(within(dialog).getByText('blog')).toBeTruthy();
     const importButton = within(dialog).getByRole('button', {
@@ -385,6 +398,21 @@ describe('DatabaseTab', () => {
 
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Stop site blog' }));
     await waitFor(() => expect(api.stopSite).toHaveBeenCalledWith('site_blog'));
+    await waitFor(() => expect(importButton.disabled).toBe(false));
+    await fireEvent.click(importButton);
+
+    await waitFor(() =>
+      expect(db.importServiceDatabase).toHaveBeenCalledWith(
+        'mysql',
+        'app',
+        expect.any(File),
+        {
+          mode: 'replace',
+          confirm: 'app',
+          pre_import_backup: true,
+        },
+      ),
+    );
   });
 
   it('keeps the recovery card after a simulated reload until dismissed', async () => {

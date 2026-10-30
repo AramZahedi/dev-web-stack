@@ -172,6 +172,16 @@ describe('BackupsTab', () => {
       target: { value: 'app' },
     });
     await waitFor(() => expect(confirm.disabled).toBe(false));
+    await fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(db.restoreServiceBackup).toHaveBeenCalledWith('mysql', 'bkp_1', {
+        overwrite: true,
+        pre_restore_backup: true,
+        target: 'app',
+        confirm: 'app',
+      }),
+    );
   });
 
   it('restores into a new database with no pre-restore backup by default', async () => {
