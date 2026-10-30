@@ -457,7 +457,7 @@ func databaseSetEnabledSQL(engine dbengine.Engine, username, host string, enable
 		}
 		return fmt.Sprintf("ALTER USER %s ACCOUNT LOCK;", user), nil
 	case model.DatabasePostgreSQL:
-		quoted, err := dbengine.QuoteIdentifier(engine.ID(), username)
+		quoted, err := dbengine.QuoteExistingIdentifier(engine.ID(), username)
 		if err != nil {
 			return "", err
 		}

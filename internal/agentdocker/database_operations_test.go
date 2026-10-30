@@ -323,6 +323,25 @@ func postgresDatabaseFromSQL(t *testing.T, sql string) string {
 	return match[1]
 }
 
+func TestPostgresEnableDisableSupportsDottedAndDashedRoles(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.runOutputs["pg_roles"] = []byte("app-user\tf\tf\napp.user\tt\tf\n")
+	enabled := true
+	if _, err := d.UpdateUser(context.Background(), "postgres", databaseUserID("postgres", "app-user", ""), databases.UpdateUserRequest{Enabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains(`ALTER ROLE "app-user" WITH LOGIN;`) {
+		t.Fatalf("dashed role enable SQL missing: %s", runner.joinedCalls())
+	}
+	disabled := false
+	if _, err := d.UpdateUser(context.Background(), "postgres", databaseUserID("postgres", "app.user", ""), databases.UpdateUserRequest{Enabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.stdinContains(`ALTER ROLE "app.user" WITH NOLOGIN;`) {
+		t.Fatalf("dotted role disable SQL missing: %s", runner.joinedCalls())
+	}
+}
+
 func TestSetUserPasswordRejectsProtected(t *testing.T) {
 	d, _ := newDatabaseTestDocker(t)
 	rootID := databaseUserID("mysql", "root", "localhost")
