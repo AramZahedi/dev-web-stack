@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -61,7 +63,16 @@ func (s *Server) handleInstallRuntime(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, r, err)
 		return
 	}
+	s.recordEvent(r.Context(), "runtime.installed", fmt.Sprintf("runtime %s installed", build.ID))
 	writeJSON(w, http.StatusCreated, build)
+}
+
+// recordEvent persists a best-effort diagnostic event for dashboard clients.
+func (s *Server) recordEvent(ctx context.Context, typ, message string) {
+	if s.store == nil {
+		return
+	}
+	_ = s.store.AddEvent(ctx, model.Event{Type: typ, Message: message})
 }
 
 // validateRuntimeID rejects transport-level path syntax before the ID reaches a
@@ -104,5 +115,6 @@ func (s *Server) handleRemoveRuntime(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, r, err)
 		return
 	}
+	s.recordEvent(r.Context(), "runtime.removed", fmt.Sprintf("runtime %s removal completed", buildID))
 	w.WriteHeader(http.StatusNoContent)
 }

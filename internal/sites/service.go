@@ -356,10 +356,17 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
 	}
 
+	createdMessage := fmt.Sprintf("site %s created", site.Name)
 	if buildOutputMissing {
-		s.emitEvent(ctx, site.ID, "site.created", fmt.Sprintf(
+		createdMessage = fmt.Sprintf(
 			"site %s: build output %s is missing; site created stopped until the first successful build",
-			site.Name, site.Build.Output))
+			site.Name, site.Build.Output)
+	}
+	emitCreated := func() {
+		s.emitEvent(ctx, site.ID, "site.created", createdMessage)
+	}
+	if buildOutputMissing {
+		emitCreated()
 		s.attachNodeToolchain(ctx, &site)
 		return site, nil
 	}
@@ -389,6 +396,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		if err := s.syncVhostsLocked(ctx, ""); err != nil {
 			return fail(fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err), true)
 		}
+		emitCreated()
 		s.emitStatus(ctx, site, "", model.StatusRunning, "")
 		s.attachNodeToolchain(ctx, &site)
 		return site, nil
@@ -408,6 +416,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		if err := s.rebuildRoutesLocked(ctx); err != nil {
 			return fail(fmt.Errorf("sites: publish routes for %q: %w", site.Name, err), true)
 		}
+		emitCreated()
 		s.emitStatus(ctx, site, "", model.StatusRunning, "")
 		s.attachNodeToolchain(ctx, &site)
 		return site, nil
@@ -435,6 +444,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		return fail(fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err), true)
 	}
 
+	emitCreated()
 	s.emitStatus(ctx, site, "", model.StatusRunning, "")
 	s.attachNodeToolchain(ctx, &site)
 	return site, nil
