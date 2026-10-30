@@ -8,6 +8,13 @@ import (
 	"strings"
 )
 
+// EnsurePHPBaseIni rewrites an installed PHP build's base php.ini so its
+// compiled-in temporary extension_dir is replaced with the installed path.
+// Callers pass the build root; the function is safe to call more than once.
+func EnsurePHPBaseIni(root string) error {
+	return ensurePHPBaseIni(root, root)
+}
+
 // ensurePHPBaseIni makes the build's base php.ini usable on its own. The
 // upstream build records a compiled-in extension_dir under the temporary build
 // directory; devstack composes per-site configs, but doctor also expects the

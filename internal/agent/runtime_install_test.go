@@ -46,6 +46,58 @@ func stageNodeBuild(t *testing.T, root, id string) {
 	}
 }
 
+func TestAgentInstallPHPRuntimeWritesCompensatingBaseIni(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	buildDir := filepath.Join(root, "runtimes", "php@8.5.12-r1")
+	for _, binary := range []string{"bin/php", "sbin/php-fpm"} {
+		path := filepath.Join(buildDir, filepath.FromSlash(binary))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	extDir := filepath.Join(buildDir, "lib", "php", "extensions")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extDir, "opcache.so"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	iniPath := filepath.Join(buildDir, "etc", "php.ini")
+	if err := os.MkdirAll(filepath.Dir(iniPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(iniPath, []byte("[PHP]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runtime.InstallRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "php@8.5.12-r1"}); err != nil {
+		t.Fatalf("InstallRuntime(php@8.5.12-r1) = %v", err)
+	}
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `extension_dir = "` + filepath.ToSlash(extDir) + `"`
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("base php.ini = %q, missing %q", data, want)
+	}
+
+	// A second install must not append a duplicate directive.
+	if _, err := runtime.InstallRuntime(context.Background(), agentproto.RuntimeRequest{BuildID: "php@8.5.12-r1"}); err != nil {
+		t.Fatalf("InstallRuntime second call = %v", err)
+	}
+	data, err = os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), "extension_dir ="); got != 1 {
+		t.Fatalf("base php.ini has %d extension_dir lines:\n%s", got, data)
+	}
+}
+
 func TestAgentInstallRuntimeAcceptsPinnedArtifact(t *testing.T) {
 	t.Setenv("DEVSTACK_NO_DOWNLOAD", "1")
 	agentRuntime, root := newTestRuntimeOnly(t)

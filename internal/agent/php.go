@@ -23,6 +23,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
+	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
 )
 
 type phpGeneration struct {
@@ -260,6 +261,9 @@ func (r *Runtime) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequ
 		}
 	}
 	if match.Kind == "php" {
+		if err := runtimemgr.EnsurePHPBaseIni(targetDir); err != nil {
+			return agentproto.RuntimeResponse{}, fmt.Errorf("agent: install runtime %q: write PHP base config: %w", match.ID, err)
+		}
 		if _, err := os.Stat(filepath.Join(targetDir, "bin", "php")); err == nil {
 			if err := CheckDebian12PHPCompatibility(ctx, targetDir); err != nil {
 				return agentproto.RuntimeResponse{}, err
