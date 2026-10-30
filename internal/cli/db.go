@@ -1151,6 +1151,9 @@ func databaseGrant(database, preset string, privileges []string) (model.Database
 	if value == model.GrantCustom && len(cleaned) == 0 {
 		return model.DatabaseGrant{}, &Error{Code: "INVALID_ARGUMENT", Message: "--preset custom requires at least one non-empty --privilege", Remediation: "Pass a whitelisted privilege, for example `--privilege SELECT`."}
 	}
+	if value != model.GrantCustom && len(cleaned) > 0 {
+		return model.DatabaseGrant{}, &Error{Code: "INVALID_FLAGS", Message: "--privilege is only valid with --preset custom", Remediation: "Remove --privilege, or use `--preset custom` with explicit privileges."}
+	}
 	return model.DatabaseGrant{Database: database, Preset: value, Privileges: cleaned}, nil
 }
 
