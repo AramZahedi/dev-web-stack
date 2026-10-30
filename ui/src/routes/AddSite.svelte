@@ -17,27 +17,38 @@
     Trash2,
   } from 'lucide-svelte';
   import * as api from '../lib/api';
+  import * as db from '../lib/databaseApi';
+  import { copyText } from '../lib/clipboard';
   import { describeError } from '../lib/errors';
   import { isAbsolutePath } from '../lib/format';
   import { addToast } from '../lib/stores';
   import type {
     ApacheAllowOverride,
     BuildProfile,
+    CreateSiteRequest,
     FrontControllerMode,
     NodeDefaultStatus,
     RuntimeBuild,
+    Site,
     SourceMode,
     Settings,
   } from '../lib/types';
   import Button from '../lib/components/Button.svelte';
+  import DatabaseConnectionCard from '../lib/components/DatabaseConnectionCard.svelte';
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
   import Field from '../lib/components/Field.svelte';
   import IconButton from '../lib/components/IconButton.svelte';
+  import Modal from '../lib/components/Modal.svelte';
   import NodeVersionPicker from '../lib/components/NodeVersionPicker.svelte';
   import PathBrowser from '../lib/components/PathBrowser.svelte';
   import ProjectSourceMode from '../lib/components/ProjectSourceMode.svelte';
+  import SecretField from '../lib/components/SecretField.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
   import Toggle from '../lib/components/Toggle.svelte';
+  import DatabasePicker from '../lib/components/site/DatabasePicker.svelte';
+  import DatabaseReviewRow from '../lib/components/site/DatabaseReviewRow.svelte';
+  import type { DatabasePickerSummary } from '../lib/components/site/databasePickerTypes';
+  import type { CreateSiteDatabaseRequest, SiteDatabaseLink } from '../lib/databaseTypes';
 
   type Kind = 'static' | 'php' | 'node';
   interface EnvRow {
@@ -77,6 +88,15 @@
   let forceHttps = $state(false);
   let www = $state(false);
   let envRows = $state<EnvRow[]>([{ key: '', value: '' }]);
+  let dbRequest = $state<CreateSiteDatabaseRequest | null>(null);
+  let dbSummary = $state<DatabasePickerSummary | null>(null);
+  let databaseWarning = $state('');
+  let createdSite = $state<Site | null>(null);
+  let createdLink = $state<SiteDatabaseLink | null>(null);
+  let createdOpen = $state(false);
+  let revealValue = $state('');
+  let revealLoading = $state(false);
+  let revealError = $state<string | null>(null);
   let errors = $state<Record<string, string>>({});
   let showErrors = $state(false);
   let submitting = $state(false);
@@ -284,6 +304,10 @@
     if (key === 'build_node_version') return 'Build Node version';
     if (key === 'build_command') return 'Build command';
     if (key === 'build_output') return 'Build output';
+    if (key === 'database_service') return 'Database service';
+    if (key === 'database_name') return 'Database name';
+    if (key === 'database_user') return 'Database user';
+    if (key === 'database_username') return 'Database username';
     if (key.startsWith('build-env-')) {
       return `Build environment variable ${Number(key.slice(10)) + 1}`;
     }
@@ -425,6 +449,25 @@
       });
     }
 
+    if (dbRequest) {
+      if (!dbRequest.service_id) {
+        next.database_service = 'Choose a database service.';
+      }
+      const database = dbRequest.new_database?.name?.trim() ?? dbRequest.database ?? '';
+      if (!database) {
+        next.database_name = dbRequest.new_database
+          ? 'Enter a database name.'
+          : 'Choose an existing database.';
+      }
+      if (dbRequest.new_user) {
+        if (!dbRequest.new_user.username.trim()) {
+          next.database_username = 'Enter a database username.';
+        }
+      } else if (!dbRequest.user_id) {
+        next.database_user = 'Choose an existing user.';
+      }
+    }
+
     return next;
   }
 
@@ -455,6 +498,14 @@
     if (target === 2 && kind === 'node') fields.push(...envRows.map((_, index) => `env-${index}`));
     if (target === 2 && kind === 'static' && buildEnabled) {
       fields.push(...buildEnvRows.map((_, index) => `build-env-${index}`));
+    }
+    if (target === 3) {
+      fields.push(
+        'database_service',
+        'database_name',
+        'database_user',
+        'database_username',
+      );
     }
     return fields.filter((key) => fieldStep(key) === target);
   }
@@ -624,11 +675,64 @@
     errors = next;
   }
 
+  function manageDatabaseUser(serviceID: string, userID: string): void {
+    push(`/services/${encodeURIComponent(serviceID)}?tab=users&user=${encodeURIComponent(userID)}`);
+  }
+
+  function warningFromDetails(details: unknown): string {
+    if (!details || typeof details !== 'object') return '';
+    const raw = details as Record<string, unknown>;
+    for (const key of ['warning', 'database_warning']) {
+      const value = raw[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return '';
+  }
+
+  async function revealCreatedPassword(): Promise<void> {
+    if (!createdLink || revealLoading) return;
+    revealLoading = true;
+    revealError = null;
+    try {
+      const secret = await db.revealServiceUserPassword(
+        createdLink.service_id,
+        createdLink.user_id,
+      );
+      revealValue = secret.value;
+    } catch (caught) {
+      revealError = describeError(caught).message;
+    } finally {
+      revealLoading = false;
+    }
+  }
+
+  async function copyCreatedPassword(): Promise<void> {
+    const ok = await copyText(revealValue);
+    if (!ok) {
+      addToast({
+        kind: 'error',
+        title: 'Could not copy the password',
+        message: 'Select the value and copy it manually.',
+      });
+    }
+  }
+
+  function continueAfterCreate(): void {
+    const target = createdSite;
+    createdOpen = false;
+    createdLink = null;
+    createdSite = null;
+    revealValue = '';
+    revealError = null;
+    if (target) push(`/sites/${encodeURIComponent(target.id)}`);
+  }
+
   async function create(): Promise<void> {
     const found = validateAll();
     errors = found;
     showErrors = true;
     apiError = null;
+    databaseWarning = '';
     if (Object.keys(found).length > 0) {
       const first = Object.keys(found)[0];
       await focusField(first);
@@ -658,7 +762,7 @@
               env: buildEnv,
             }
           : undefined;
-      const site = await api.createSite({
+      const body: CreateSiteRequest = {
         name: name.trim(),
         path: path.trim(),
         kind,
@@ -681,7 +785,9 @@
         spa_fallback_file: kind === 'static' && spaFallback ? spaFallbackFile.trim() : undefined,
         build,
         env,
-      });
+      };
+      if (dbRequest) body.database = dbRequest;
+      const site = await api.createSite(body);
       const buildOutputMissing =
         site.kind === 'static' && Boolean(site.build) && site.status === 'stopped';
       addToast({
@@ -691,9 +797,39 @@
           ? `${site.domain} was created stopped because ${site.build?.output || 'the build output'} does not exist yet. Run Build on the detail page, then Start the site.`
           : `${site.domain} is starting. Logs are live on the detail page.`,
       });
+      if (dbRequest) {
+        let link: SiteDatabaseLink | null = null;
+        try {
+          const result = await db.listSiteDatabases(site.id);
+          link = result.links?.[0] ?? null;
+        } catch (caught) {
+          const described = describeError(caught);
+          addToast({
+            kind: 'info',
+            title: 'Database link not loaded',
+            message: described.message,
+          });
+        }
+        if (link) {
+          createdSite = site;
+          createdLink = link;
+          revealValue = '';
+          revealError = null;
+          createdOpen = true;
+          return;
+        }
+        addToast({
+          kind: 'info',
+          title: 'Database created',
+          message:
+            'The site was created, but its database link could not be loaded. Open the site to check the Databases card.',
+        });
+      }
       push(`/sites/${encodeURIComponent(site.id)}`);
     } catch (caught) {
-      apiError = describeError(caught);
+      const described = describeError(caught);
+      apiError = { code: described.code, message: described.message };
+      databaseWarning = warningFromDetails(described.details);
     } finally {
       submitting = false;
     }
@@ -740,6 +876,14 @@
                 message={apiError.message}
                 ondismiss={() => (apiError = null)}
               />
+            </div>
+          {/if}
+
+          {#if databaseWarning}
+            <div class="banner">
+              <div class="notice" role="status">
+                <p>{databaseWarning}</p>
+              </div>
             </div>
           {/if}
 
@@ -1468,6 +1612,15 @@
                 {/if}
               </div>
 
+              <DatabasePicker
+                bind:value={dbRequest}
+                bind:summary={dbSummary}
+                siteName={name}
+                {errors}
+                onclearerror={clearError}
+                onmanageuser={manageDatabaseUser}
+              />
+
               <div class="review">
                 <div class="review-head">
                   <h3>Review</h3>
@@ -1508,6 +1661,13 @@
                     </dd>
                     <button type="button" class="edit" onclick={() => goToStep(3)}>Edit</button>
                   </div>
+                  {#if dbRequest && dbSummary}
+                    <DatabaseReviewRow
+                      value={dbRequest}
+                      summary={dbSummary}
+                      onedit={() => goToStep(3)}
+                    />
+                  {/if}
                   {#if kind === 'node'}
                     <div class="review-row">
                       <dt>Environment</dt>
@@ -1643,6 +1803,39 @@
   }}
   onclose={() => (pathOpen = false)}
 />
+
+{#if createdLink}
+  <Modal
+    open={createdOpen}
+    title="Database created"
+    description="The site and its database are ready. Reveal the generated password once now, or from the site's Databases card later."
+    size="md"
+    onclose={continueAfterCreate}
+  >
+    <div class="created-database">
+      <DatabaseConnectionCard connection={createdLink.connection} showEnv />
+      {#if createdLink.password_managed}
+        <SecretField
+          label="password"
+          value={revealValue}
+          revealed={Boolean(revealValue)}
+          loading={revealLoading}
+          error={revealError ?? undefined}
+          onreveal={revealCreatedPassword}
+          onhide={() => (revealValue = '')}
+          oncopy={copyCreatedPassword}
+        />
+      {:else}
+        <p class="hint">
+          This link has no managed password. Set one from the site's Databases card.
+        </p>
+      {/if}
+    </div>
+    {#snippet footer()}
+      <Button variant="primary" onclick={continueAfterCreate}>Continue</Button>
+    {/snippet}
+  </Modal>
+{/if}
 
 <style>
   .page {
@@ -2387,6 +2580,12 @@
   .error-summary strong {
     color: var(--danger-fg);
     font-weight: 600;
+  }
+
+  .created-database {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
   }
 
   @media (max-width: 1080px) {

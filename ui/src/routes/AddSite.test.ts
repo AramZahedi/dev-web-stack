@@ -3,13 +3,16 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 import AddSite from './AddSite.svelte';
 import * as api from '../lib/api';
+import * as db from '../lib/databaseApi';
 import { ApiError } from '../lib/errors';
 import { clearToasts, toasts } from '../lib/stores';
+import type { Database, DatabaseLink, DatabaseUser } from '../lib/databaseTypes';
 import type {
   NodeRelease,
   NodeReleasePreflight,
   NodeReleaseSnapshot,
   RuntimeBuild,
+  ServiceView,
   Settings,
 } from '../lib/types';
 
@@ -22,6 +25,18 @@ vi.mock('../lib/api', () => ({
   getNodeRelease: vi.fn(),
   installRuntime: vi.fn(),
   createSite: vi.fn(),
+  listServices: vi.fn(),
+}));
+
+vi.mock('../lib/databaseApi', () => ({
+  listServiceDatabases: vi.fn(),
+  listServiceUsers: vi.fn(),
+  listSiteDatabases: vi.fn(),
+  linkSiteDatabase: vi.fn(),
+  unlinkSiteDatabase: vi.fn(),
+  createSiteDatabase: vi.fn(),
+  revealServiceUserPassword: vi.fn(),
+  setServiceUserPassword: vi.fn(),
 }));
 
 const NODE_BUILD: RuntimeBuild = {
@@ -109,7 +124,74 @@ const SETTINGS: Settings = {
   log_keep: 5,
 };
 
+const MYSQL_SERVICE: ServiceView = {
+  id: 'mysql',
+  display_name: 'MySQL 8.4',
+  group: 'mysql-family',
+  state: 'active',
+  active: true,
+  installed: true,
+  health: 'healthy',
+  container_id: 'container_mysql',
+  image: 'mysql:8.4',
+  ports: [{ host: 3306, container: 3306, protocol: 'tcp', loopback: true }],
+};
+
+const APP_DATABASE: Database = {
+  name: 'app',
+  service_id: 'mysql',
+  engine: 'mysql',
+  size_bytes: 1024,
+  table_count: 1,
+  linked_sites: [],
+  managed: true,
+};
+
+const EXTERNAL_USER: DatabaseUser = {
+  id: 'usr_ext',
+  service_id: 'mysql',
+  engine: 'mysql',
+  username: 'ext',
+  host: '%',
+  enabled: true,
+  managed: false,
+  password_managed: false,
+  grants: [],
+  linked_sites: [],
+};
+
+const SITE_DB_LINK: DatabaseLink = {
+  id: 'lnk_1',
+  site_id: 's_new',
+  service_id: 'mysql',
+  engine: 'mysql',
+  database: 'app',
+  user_id: 'usr_app',
+  username: 'blog_user',
+  host: '%',
+  primary: true,
+  password_managed: true,
+  available: true,
+  connection: {
+    engine: 'mysql',
+    host: '127.0.0.1',
+    port: 3306,
+    database: 'app',
+    username: 'blog_user',
+    password_managed: true,
+    url: 'mysql://blog_user@127.0.0.1:3306/app',
+    env: {
+      DB_CONNECTION: 'mysql',
+      DB_HOST: '127.0.0.1',
+      DB_PORT: '3306',
+      DB_DATABASE: 'app',
+      DB_USERNAME: 'blog_user',
+    },
+  },
+};
+
 const mockApi = vi.mocked(api);
+const mockDb = vi.mocked(db);
 
 beforeEach(() => {
   mockApi.listRuntimes.mockResolvedValue([NODE_BUILD, PHP_BUILD]);
@@ -121,6 +203,10 @@ beforeEach(() => {
     source: 'newest',
   });
   mockApi.listNodeReleases.mockResolvedValue(NODE_RELEASES);
+  mockApi.listServices.mockResolvedValue([MYSQL_SERVICE]);
+  mockDb.listServiceDatabases.mockResolvedValue({ databases: [] });
+  mockDb.listServiceUsers.mockResolvedValue({ users: [] });
+  mockDb.listSiteDatabases.mockResolvedValue({ links: [] });
   mockApi.createSite.mockImplementation(async (request) => ({
     id: 's_new',
     name: request.name,
@@ -166,6 +252,25 @@ async function fillProject(): Promise<void> {
   await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
   await fireEvent.input(screen.getByLabelText(/Project folder/), {
     target: { value: '/home/dev/projects/demo' },
+  });
+}
+
+async function openOptionsStep(): Promise<void> {
+  render(AddSite);
+  await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+  await fillProject();
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(await screen.findByText('Domain and options')).toBeTruthy();
+}
+
+async function enableDatabase(database = 'blog', username = 'blog_user'): Promise<void> {
+  await fireEvent.click(screen.getByLabelText('Create or link a database'));
+  const service = (await screen.findByLabelText(/Database service/)) as HTMLSelectElement;
+  await waitFor(() => expect(service.value).toBe('mysql'));
+  await fireEvent.input(screen.getByLabelText(/Database name/), { target: { value: database } });
+  await fireEvent.input(screen.getByLabelText(/Database username/), {
+    target: { value: username },
   });
 }
 
@@ -546,5 +651,128 @@ describe('AddSite Wave 2 fields', () => {
     // Switch to PHP (which switches to WSL mode on Windows)
     await fireEvent.click(screen.getByRole('radio', { name: /PHP/ }));
     expect(pathInput.value).toBe('/data/devstack/projects/my-awesome-blog');
+  });
+
+  it('adds an optional database panel in the Options step', async () => {
+    await openOptionsStep();
+    expect(await screen.findByText('Database')).toBeTruthy();
+    const toggle = screen.getByLabelText('Create or link a database');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByText(/no database will be linked/i)).toBeTruthy();
+  });
+
+  it('builds a new database and new user selection', async () => {
+    mockApi.listServices.mockResolvedValue([MYSQL_SERVICE]);
+    mockDb.listServiceDatabases.mockResolvedValue({ databases: [] });
+    mockDb.listServiceUsers.mockResolvedValue({ users: [] });
+    await openOptionsStep();
+
+    await fireEvent.click(screen.getByLabelText('Create or link a database'));
+    const service = (await screen.findByLabelText(/Database service/)) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    await fireEvent.click(screen.getByLabelText('Create new database'));
+    await fireEvent.input(screen.getByLabelText(/Database name/), { target: { value: 'blog' } });
+    await fireEvent.click(screen.getByLabelText('Create new user'));
+    await fireEvent.input(screen.getByLabelText(/Database username/), {
+      target: { value: 'blog_user' },
+    });
+    expect(screen.getByText('Read/write + schema')).toBeTruthy();
+  });
+
+  it('omits the database payload when the panel is disabled', async () => {
+    await openOptionsStep();
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    expect(mockApi.createSite).toHaveBeenCalledWith(
+      expect.not.objectContaining({ database: expect.anything() }),
+    );
+  });
+
+  it('sends the exact new database and user payload', async () => {
+    await openOptionsStep();
+    await enableDatabase('blog', 'blog_user');
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    expect(mockApi.createSite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        database: {
+          service_id: 'mysql',
+          new_database: { name: 'blog' },
+          new_user: {
+            username: 'blog_user',
+            grants: [{ database: 'blog', preset: 'read_write_schema' }],
+          },
+          grant: 'read_write_schema',
+          primary: true,
+        },
+      }),
+    );
+  });
+
+  it('shows connection values but never a password in review', async () => {
+    await openOptionsStep();
+    await enableDatabase('blog', 'blog_user');
+    expect(
+      screen.getByText('Password will be generated when the site is created.'),
+    ).toBeTruthy();
+    expect(screen.getByText(/blog on MySQL 8\.4/)).toBeTruthy();
+    expect(
+      screen.getByText(/blog_user · Read\/write \+ schema · 127\.0\.0\.1:3306/),
+    ).toBeTruthy();
+    expect(screen.queryByText('s3cret')).toBeNull();
+  });
+
+  it('reveals the new password only after creation', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [SITE_DB_LINK] });
+    mockDb.revealServiceUserPassword.mockResolvedValue({ value: 'generated' });
+    await openOptionsStep();
+    await enableDatabase('blog', 'blog_user');
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+
+    expect(await screen.findByText('Database created')).toBeTruthy();
+    expect(screen.queryByText('generated')).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Reveal password' }));
+    expect(await screen.findByText('generated')).toBeTruthy();
+    expect(mockDb.revealServiceUserPassword).toHaveBeenCalledWith('mysql', 'usr_app');
+  });
+
+  it('warns about an existing user without access and never adds a grant', async () => {
+    mockDb.listServiceDatabases.mockResolvedValue({ databases: [APP_DATABASE] });
+    mockDb.listServiceUsers.mockResolvedValue({ users: [EXTERNAL_USER] });
+    await openOptionsStep();
+
+    await fireEvent.click(screen.getByLabelText('Create or link a database'));
+    const service = (await screen.findByLabelText(/Database service/)) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    await fireEvent.click(screen.getByLabelText('Use existing database'));
+    await fireEvent.change(screen.getByLabelText(/Existing database/), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(screen.getByLabelText('Use existing user'));
+    await fireEvent.change(screen.getByLabelText(/Existing user/), {
+      target: { value: 'usr_ext' },
+    });
+
+    expect(screen.getByText(/does not have access to app/i)).toBeTruthy();
+    const manage = screen.getByRole('link', { name: 'Manage database user' });
+    expect(manage.getAttribute('href')).toBe('#/services/mysql?tab=users&user=usr_ext');
+    await fireEvent.input(screen.getByLabelText(/Database password/), {
+      target: { value: 's3cret' },
+    });
+    expect(screen.queryByText('s3cret')).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    expect(mockApi.createSite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        database: {
+          service_id: 'mysql',
+          database: 'app',
+          user_id: 'usr_ext',
+          password: 's3cret',
+          primary: true,
+        },
+      }),
+    );
   });
 });
