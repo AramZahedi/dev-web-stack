@@ -19,7 +19,7 @@
 | Merge Lane C | done | `18b5194` | svelte-check 0/0; 77 focused tests; 267 full tests; build PASS |
 | Merge Lane D | done | `f0c5e0f` | svelte-check 0/0; 79 focused tests; 329 full tests; build PASS |
 | Merge Lane E | done | `d6af29a` | CLI/client/tooling PASS; full Go suite PASS; vet + build PASS |
-| Redis ACL confirmation path | pending | — | — |
+| Redis ACL confirmation path | done | `c948272` | manager/servicecontrol/API tests PASS; UI 330 tests PASS; build + vet PASS |
 | Merged registry verification | pending | — | — |
 | Full merged-tree gate | pending | — | — |
 | Full E2E plan | pending | — | — |
@@ -78,3 +78,13 @@
 - Lane E already passed its final independent audit (`44c9d68..bb063ed`, code `80a41fc`).
 - Merge commit `d6af29a` (`merge: database CLI`).
 - Gate: `go test ./internal/cli ./internal/client ./internal/tooling -count=1` PASS; `go test ./... -count=1` PASS; `go vet ./...` PASS; `go build ./...` PASS.
+
+### Step 8 — Redis ACL persistence confirmation path
+
+- Added `Manager.EnableRedisACLFile(ctx, serviceID, confirm)` with an optional platform interface; it validates Redis/active state, audits, and emits.
+- Added `databasePlatform.EnableRedisACLFile`: the helper uses the confirmed RPC; the Windows agent requires `confirm=true` before its migration call; unsupported platforms fail closed.
+- Added `POST /api/v1/services/{id}/redis/acl-file` with `{confirm}` and `CONFIRMATION_REQUIRED`/HTTP 409 mapping; documented in `api/openapi.yaml`.
+- UI: `databaseApi.enableRedisACLFile`, an ACL persistence card in the Redis Users tab with an explicit confirm dialog, and a clear “open the Redis tab and enable it” message when a user mutation hits the confirmation gate.
+- Tests: manager confirmation test, helper/agent adapter tests, API route test, RedisTab confirm-dialog test. RED→GREEN for each new behavior.
+- Commit `c948272`.
+- Gate: `go test ./internal/databases ./internal/servicecontrol ./internal/api -count=1` PASS; `go build ./...` PASS; `go vet ./...` PASS; `npm run check` 0/0; `npm test -- --run` 30 files/330 tests PASS; `npm run build` PASS.
