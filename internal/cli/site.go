@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
+	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
@@ -35,6 +37,7 @@ func (a *App) newSiteCmd() *cobra.Command {
 		a.newSiteListCmd(),
 		a.newSiteShowCmd(),
 		a.newSitePHPShowCmd(),
+		a.newSiteNodeCmd(),
 		a.newSiteIniCmd(),
 		a.newSiteExtCmd(),
 		a.newSiteActionCmd("start"),
@@ -129,7 +132,7 @@ func (a *App) newSiteAddCmd() *cobra.Command {
 	flags.StringVar(&opts.path, "path", "", "project directory")
 	flags.StringVar(&opts.kind, "kind", "static", "site kind: static, php, or node")
 	flags.StringVar(&opts.sourceMode, "source-mode", "", "project source mode: local, windows, or wsl")
-	flags.StringVar(&opts.node, "node", "", "Node version (for example 22 or 24)")
+	flags.StringVar(&opts.node, "node", "", "Node version or line (for example 22, 22.11, or 22.11.0); optional for static and PHP sites")
 	flags.StringVar(&opts.php, "php", "", "PHP version line (for example 8.4)")
 	flags.StringVar(&opts.phpBuild, "php-build", "", "exact PHP build id (for example php@8.4.4-r1)")
 	flags.BoolVar(&opts.frontController, "front-controller", false, "route requests to the site's index.php")
@@ -181,15 +184,15 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "PHP sites require --php", Remediation: "Pass `--php 8.4` (or another supported line)."}
 			}
 		}
-		if strings.TrimSpace(opts.node) != "" || strings.TrimSpace(opts.command) != "" || opts.spa {
-			return &Error{Code: "INVALID_FLAGS", Message: "--node, --command, and --spa are only valid for node sites", Remediation: "Remove the Node flags, or use `--kind node`."}
+		if strings.TrimSpace(opts.command) != "" || opts.spa {
+			return &Error{Code: "INVALID_FLAGS", Message: "--command and --spa are only valid for node sites", Remediation: "Remove the Node flags, or use `--kind node`."}
 		}
 	} else if strings.TrimSpace(opts.php) != "" || strings.TrimSpace(opts.phpBuild) != "" || opts.frontController {
 		return &Error{Code: "INVALID_FLAGS", Message: "--php, --php-build, and --front-controller are only valid for PHP sites", Remediation: "Use `--kind php`, or remove the PHP flags."}
 	}
 	if kind == string(model.SiteStatic) {
-		if strings.TrimSpace(opts.node) != "" || strings.TrimSpace(opts.command) != "" {
-			return &Error{Code: "INVALID_FLAGS", Message: "--node and --command are only valid for node sites", Remediation: "Use `--kind node`, or remove the Node flags."}
+		if strings.TrimSpace(opts.command) != "" {
+			return &Error{Code: "INVALID_FLAGS", Message: "--command is only valid for node sites", Remediation: "Use `--kind node`, or remove the flag."}
 		}
 	}
 	if kind == string(model.SiteNode) {
@@ -214,6 +217,11 @@ func (a *App) runSiteAdd(cmd *cobra.Command, opts *siteAddOptions) error {
 	nodeVersion := ""
 	if kind == string(model.SiteNode) {
 		nodeVersion, err = a.resolveNode(ctx, c, cmd, opts.node)
+		if err != nil {
+			return err
+		}
+	} else if strings.TrimSpace(opts.node) != "" {
+		nodeVersion, err = resolveInstalledNodeVersion(ctx, c, opts.node)
 		if err != nil {
 			return err
 		}
@@ -443,6 +451,190 @@ func (a *App) newSiteShowCmd() *cobra.Command {
 			return writeTable(cmd, []string{"FIELD", "VALUE"}, rows)
 		},
 	}
+}
+
+// newSiteNodeCmd prints, changes, or clears a site's Node pin. Versions resolve
+// against installed builds only; a missing build is an install-first error.
+func (a *App) newSiteNodeCmd() *cobra.Command {
+	var clear bool
+	cmd := &cobra.Command{
+		Use:   "node <name> [version]",
+		Short: "Show or change a site's Node version",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if clear && len(args) == 2 {
+				return &Error{Code: "INVALID_FLAGS", Message: "--clear does not take a version", Remediation: "Run `devstack site node <name> --clear`, or pass the version without --clear."}
+			}
+			if len(args) == 1 && !clear {
+				return a.printSiteNode(cmd, args[0])
+			}
+			ctx := cmd.Context()
+			c, _, err := a.clientReady(ctx)
+			if err != nil {
+				return err
+			}
+			var pin *string
+			if clear {
+				empty := ""
+				pin = &empty
+			} else {
+				version, err := resolveInstalledNodeVersion(ctx, c, args[1])
+				if err != nil {
+					return err
+				}
+				pin = &version
+			}
+			updated, err := c.UpdateSite(ctx, args[0], sites.UpdateRequest{NodeVersion: pin})
+			if err != nil {
+				if clear && isNodePinRequiredError(err) {
+					return wrapError(err, "NODE_VERSION_REQUIRED", "Node sites require an explicit Node version. Choose one with `devstack site node <name> <version>`.")
+				}
+				return err
+			}
+			if a.jsonOutput {
+				return a.writeJSON(cmd, updated)
+			}
+			if clear {
+				if updated.NodeToolchain != nil && updated.NodeToolchain.Version != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Cleared the Node pin for %s; shells inherit the global default (node %s).\n", updated.Name, updated.NodeToolchain.Version)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Cleared the Node pin for %s; no global Node default is configured.\n", updated.Name)
+				}
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Set the Node pin for %s to %s.\n", updated.Name, updated.NodeVersion)
+			}
+			return writeSiteNodeTable(cmd, updated)
+		},
+	}
+	cmd.Flags().BoolVar(&clear, "clear", false, "remove the pin and inherit the global Node default")
+	return cmd
+}
+
+// isNodePinRequiredError reports the API's rejection of a clear for Node-kind
+// sites so the CLI can add a kind-specific remediation.
+func isNodePinRequiredError(err error) bool {
+	var apiErr *client.Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(apiErr.Message), "node site requires a version")
+}
+
+// printSiteNode renders the current pin and resolved toolchain.
+func (a *App) printSiteNode(cmd *cobra.Command, ref string) error {
+	ctx := cmd.Context()
+	c, _, err := a.clientReady(ctx)
+	if err != nil {
+		return err
+	}
+	site, err := c.GetSite(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if a.jsonOutput {
+		return a.writeJSON(cmd, site)
+	}
+	return writeSiteNodeTable(cmd, site)
+}
+
+func writeSiteNodeTable(cmd *cobra.Command, site model.Site) error {
+	pin := defaultString(site.NodeVersion, "-")
+	if site.NodeVersion == "" && site.Kind != model.SiteNode {
+		pin = "inherit"
+	}
+	version, source, installed := "-", "-", "false"
+	if site.NodeToolchain != nil {
+		version = defaultString(site.NodeToolchain.Version, "-")
+		source = defaultString(site.NodeToolchain.Source, "-")
+		installed = fmt.Sprintf("%t", site.NodeToolchain.Installed)
+	}
+	return writeTable(cmd, []string{"FIELD", "VALUE"}, [][]string{
+		{"Name", site.Name},
+		{"Kind", defaultString(string(site.Kind), "-")},
+		{"Node pin", pin},
+		{"Node version", version},
+		{"Node source", source},
+		{"Installed", installed},
+		{"Status", defaultString(string(site.Status), "-")},
+	})
+}
+
+var nodeVersionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,2}$`)
+
+// resolveInstalledNodeVersion resolves a major, major.minor, exact version, or
+// build id against installed Node builds. It never installs or discovers.
+func resolveInstalledNodeVersion(ctx context.Context, c Client, requested string) (string, error) {
+	version := strings.ToLower(strings.TrimSpace(requested))
+	version = strings.TrimPrefix(version, "node@")
+	if !nodeVersionPattern.MatchString(version) {
+		return "", &Error{
+			Code:        "INVALID_ARGUMENT",
+			Message:     fmt.Sprintf("invalid Node version %q (want a version such as 22, 22.11, or 22.11.0)", requested),
+			Remediation: "Pass an installed Node version or line, for example `devstack site node <name> 22`.",
+		}
+	}
+	builds, err := c.Runtimes(ctx)
+	if err != nil {
+		return "", err
+	}
+	if build, ok := newestInstalledNode(builds, version); ok {
+		return build.Version, nil
+	}
+	return "", &Error{
+		Code:        "RUNTIME_MISSING",
+		Message:     fmt.Sprintf("node %s is required but is not installed", version),
+		Remediation: fmt.Sprintf("Run `devstack runtime install node@%s`, then retry.", version),
+		cause:       &sites.NodeVersionNotInstalledError{Version: version},
+	}
+}
+
+func newestInstalledNode(builds []model.RuntimeBuild, requested string) (model.RuntimeBuild, bool) {
+	var newest model.RuntimeBuild
+	found := false
+	for _, build := range builds {
+		if build.Kind != "node" || strings.TrimSpace(build.Version) == "" || !nodeVersionMatches(build, requested) {
+			continue
+		}
+		if !found || compareNodeVersion(build.Version, newest.Version) > 0 {
+			newest = build
+			found = true
+		}
+	}
+	return newest, found
+}
+
+func nodeVersionMatches(build model.RuntimeBuild, requested string) bool {
+	if build.ID == requested || build.ID == "node@"+requested || build.Version == requested {
+		return true
+	}
+	switch strings.Count(requested, ".") {
+	case 0:
+		return strings.HasPrefix(build.Version, requested+".")
+	case 1:
+		return catalog.LineOf(build.Version) == requested
+	default:
+		return false
+	}
+}
+
+func compareNodeVersion(a, b string) int {
+	left, right := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(left) || i < len(right); i++ {
+		var lv, rv int
+		if i < len(left) {
+			lv, _ = strconv.Atoi(left[i])
+		}
+		if i < len(right) {
+			rv, _ = strconv.Atoi(right[i])
+		}
+		switch {
+		case lv < rv:
+			return -1
+		case lv > rv:
+			return 1
+		}
+	}
+	return 0
 }
 
 func (a *App) newSiteActionCmd(action string) *cobra.Command {

@@ -212,6 +212,7 @@ func (c *Client) UpdateSite(ctx context.Context, ref string, req sites.UpdateReq
 		FrontController: req.FrontController,
 		Command:         req.Command,
 		DocumentRoot:    req.DocumentRoot,
+		NodeVersion:     nodeVersionPayload(req.NodeVersion),
 	}
 	if req.Env != nil {
 		env := req.Env
@@ -805,6 +806,23 @@ type updateSitePayload struct {
 	Command         string             `json:"command,omitempty"`
 	DocumentRoot    string             `json:"document_root,omitempty"`
 	Env             *map[string]string `json:"env,omitempty"`
+	NodeVersion     json.RawMessage    `json:"node_version,omitempty"`
+}
+
+// nodeVersionPayload distinguishes an omitted pin (nil) from an explicit clear
+// (JSON null) and an exact version string.
+func nodeVersionPayload(pin *string) json.RawMessage {
+	if pin == nil {
+		return nil
+	}
+	if strings.TrimSpace(*pin) == "" {
+		return json.RawMessage("null")
+	}
+	value, err := json.Marshal(*pin)
+	if err != nil {
+		return nil
+	}
+	return value
 }
 
 // phpSettingsPayload is the transport shape of sites.PHPChange. Nil maps and
