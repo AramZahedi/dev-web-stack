@@ -522,23 +522,23 @@ Set back to 8080/8443/7070; restart; verify dashboard and sites; `config.yaml` b
 
 **Depends on:** Task 0. **Artifacts:** `task-7/`
 
-- [ ] **Step 1: Baseline trust**
+- [x] **Step 1: Baseline trust**
 
 `devstack trust status --json`, Settings → Trust; all targets ok. Capture.
 
-- [ ] **Step 2: Repair**
+- [x] **Step 2: Repair**
 
 Dashboard Trust → Repair; CLI `devstack trust repair --yes`; expected all targets ok, no host changes; `doctor` green. Run repair twice to prove idempotence.
 
-- [ ] **Step 3: Remove trust**
+- [x] **Step 3: Remove trust**
 
 Dashboard Trust → Remove; typed confirmation if required; CLI `devstack trust remove --yes`. Expected OS/browser trust removed; `trust status` reports missing; `doctor` reports trust failure; HTTPS browser warning (use `curl -k` for assertions).
 
-- [ ] **Step 4: Restore**
+- [x] **Step 4: Restore**
 
 `devstack init --yes` or `trust repair`; expected trust restored, hosts intact, daemon/helper healthy, `doctor` green. Re-open dashboard without TLS warning.
 
-- [ ] **Step 5: Negative/edge**
+- [x] **Step 5: Negative/edge**
 
 Helper stopped → clear error, no partial trust mutation; foreign CA conflict → backup/force behavior. Restore.
 
