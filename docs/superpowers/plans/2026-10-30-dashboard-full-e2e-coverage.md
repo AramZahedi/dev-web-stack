@@ -576,23 +576,23 @@ PHP `php@8.4.27-r1`, Node `24.22.1`, Composer installed, shims exact; `doctor` g
 
 **Depends on:** Task 5. **Artifacts:** `task-9/`
 
-- [ ] **Step 1: Baseline**
+- [x] **Step 1: Baseline**
 
 Settings → Serving = Built-in; `vhost status` builtin; sites serve.
 
-- [ ] **Step 2: Switch to nginx**
+- [x] **Step 2: Switch to nginx**
 
 Install/activate nginx service. Settings → Serving → nginx; confirm impact dialog. Expected: native nginx owns 80/443; builtin proxy/forwarders stopped; fixture site serves through nginx; dashboard vhost preview renders nginx; `vhost status` nginx.
 
-- [ ] **Step 3: Switch to Apache**
+- [x] **Step 3: Switch to Apache**
 
 Deactivate nginx, install/activate Apache. Switch Serving → Apache; verify same. Attempt switching while the other server is active → conflict/disabled with clear copy.
 
-- [ ] **Step 4: Restore builtin**
+- [x] **Step 4: Restore builtin**
 
 Settings → Built-in; confirm. Expected builtin proxy returns, helper forwarders own 80/443, sites serve, vhosts removed. `doctor` green.
 
-- [ ] **Step 5: CLI parity**
+- [x] **Step 5: CLI parity**
 
 `vhost status`, `vhost use nginx|apache|builtin`, `vhost sync`, `vhost preview <site> --server nginx|apache`, `vhost path`; verify exit codes and output. Restore builtin.
 
