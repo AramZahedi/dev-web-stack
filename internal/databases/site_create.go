@@ -201,5 +201,5 @@ func (m *Manager) existingUser(ctx context.Context, serviceID, userID string) (m
 		}
 		return model.DatabaseUser{}, storeErr
 	}
-	return m.userView(ctx, serviceID, record, nil), nil
+	return m.userView(ctx, serviceID, record, m.storedGrants(ctx, record.ID)), nil
 }

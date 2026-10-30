@@ -403,7 +403,10 @@ func (m *Manager) ListUsers(ctx context.Context, serviceID string) ([]model.Data
 		record.Enabled = engineUser.Enabled
 		record.AccessLevel = engineUser.AccessLevel
 		record.ManagedByDevstack = record.ManagedByDevstack || engineUser.Managed
-		record.PasswordManaged = record.PasswordManaged || engineUser.PasswordManaged
+		// The live engine is authoritative for password state and grants. Stored
+		// intent is display-only and must not resurrect a secret or grant the
+		// engine has revoked.
+		record.PasswordManaged = engineUser.PasswordManaged
 		record.LastSeenAt = now
 		if record.CreatedAt == 0 {
 			record.CreatedAt = now
@@ -412,9 +415,6 @@ func (m *Manager) ListUsers(ctx context.Context, serviceID string) ([]model.Data
 			return nil, err
 		}
 		grants := engineUser.Grants
-		if len(grants) == 0 {
-			grants = m.storedGrants(ctx, id)
-		}
 		user := model.DatabaseUser{
 			ID:              id,
 			ServiceID:       serviceID,
@@ -531,6 +531,9 @@ func (m *Manager) CreateUser(ctx context.Context, serviceID string, req CreateUs
 	user.Enabled = record.Enabled
 	m.audit(ctx, "database.user.created", serviceID, "", "user", record.Username, "ok", nil)
 	m.emit(ctx, "", "database.user.created", fmt.Sprintf("database user %s created on %s", record.Username, serviceID))
+	if isRedisService(serviceID) {
+		m.emit(ctx, "", "redis.user.created", fmt.Sprintf("Redis user %s created", record.Username))
+	}
 	return user, nil
 }
 
@@ -597,6 +600,9 @@ func (m *Manager) UpdateUser(ctx context.Context, serviceID, userID string, req 
 	}
 	m.audit(ctx, "database.user.grants_changed", serviceID, "", "user", record.Username, "ok", nil)
 	m.emit(ctx, "", "database.user.grants_changed", fmt.Sprintf("database user %s grants updated on %s", record.Username, serviceID))
+	if isRedisService(serviceID) {
+		m.emit(ctx, "", "redis.user.updated", fmt.Sprintf("Redis user %s updated", record.Username))
+	}
 	return m.userView(ctx, serviceID, record, user.Grants), nil
 }
 
@@ -608,9 +614,6 @@ func (m *Manager) userView(ctx context.Context, serviceID string, record model.D
 		if link.UserID == record.ID {
 			linked = append(linked, model.DatabaseSiteRef{ID: link.SiteID, Name: link.SiteName})
 		}
-	}
-	if len(grants) == 0 {
-		grants = m.storedGrants(ctx, record.ID)
 	}
 	user := model.DatabaseUser{
 		ID:              record.ID,
@@ -678,6 +681,9 @@ func (m *Manager) DeleteUser(ctx context.Context, serviceID, userID string, req 
 	}
 	m.audit(ctx, "database.user.deleted", serviceID, "", "user", record.Username, "ok", nil)
 	m.emit(ctx, "", "database.user.deleted", fmt.Sprintf("database user %s deleted on %s", record.Username, serviceID))
+	if isRedisService(serviceID) {
+		m.emit(ctx, "", "redis.user.deleted", fmt.Sprintf("Redis user %s deleted", record.Username))
+	}
 	return nil
 }
 
@@ -700,9 +706,15 @@ func (m *Manager) SetUserPassword(ctx context.Context, serviceID, userID string)
 		}
 		m.audit(ctx, "database.user.password_changed", serviceID, "", "user", record.Username, "ok", nil)
 		m.emit(ctx, "", "database.user.password_changed", fmt.Sprintf("database user %s password changed on %s", record.Username, serviceID))
+		if isRedisService(serviceID) {
+			m.emit(ctx, "", "redis.password.changed", fmt.Sprintf("Redis user %s password changed", record.Username))
+		}
 	} else {
 		m.audit(ctx, "database.user.password_changed", serviceID, "", "user", userID, "ok", nil)
 		m.emit(ctx, "", "database.user.password_changed", fmt.Sprintf("database user %s password changed on %s", userID, serviceID))
+		if isRedisService(serviceID) {
+			m.emit(ctx, "", "redis.password.changed", fmt.Sprintf("Redis user %s password changed", userID))
+		}
 	}
 	return secret, nil
 }
@@ -873,7 +885,9 @@ func (m *Manager) GetJob(ctx context.Context, jobID string) (model.DatabaseJob, 
 				record.UpdatedAt = m.now().Unix()
 				_ = m.deps.Store.UpdateDatabaseJob(ctx, record)
 				if record.Status != string(model.JobRunning) && record.Status != string(model.JobQueued) {
-					m.auditJob(ctx, recordToJob(record), string(record.Status))
+					job := recordToJob(record)
+					m.auditJob(ctx, job, string(record.Status))
+					m.emitJobEvent(ctx, job)
 				}
 			}
 		}

@@ -163,7 +163,7 @@ func (m *Manager) audit(ctx context.Context, action, serviceID, siteID, objectTy
 	detailJSON := "{}"
 	if len(detail) > 0 {
 		if raw, err := json.Marshal(detail); err == nil {
-			detailJSON = string(raw)
+			detailJSON = RedactString(string(raw))
 		}
 	}
 	_ = m.deps.Audit.AddAuditEvent(ctx, model.AuditEventRecord{
@@ -187,7 +187,7 @@ func (m *Manager) emit(ctx context.Context, siteID, typ, message string) {
 	_ = m.deps.Events.AddEvent(ctx, model.Event{
 		SiteID:    siteID,
 		Type:      typ,
-		Message:   message,
+		Message:   RedactString(message),
 		CreatedAt: m.now(),
 	})
 }
@@ -301,10 +301,7 @@ func backupToView(rec model.DatabaseBackupRecord) model.DatabaseBackup {
 // Secret-looking values are redacted by the API layer; job messages contain
 // only engine diagnostics.
 func safeErrorMessage(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
+	return RedactError(err)
 }
 
 // unixTime converts persisted Unix seconds to UTC.

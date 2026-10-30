@@ -776,6 +776,84 @@ func TestManagerSetPasswordUpdatesState(t *testing.T) {
 	}
 }
 
+func TestManagerRedactsSecretsFromAuditAndJobs(t *testing.T) {
+	m, _, platform, audit, events := testManagerWithFakes(t)
+	platform.createErr = errors.New("connect mysql://app:s3cret@127.0.0.1/app password=s3cret")
+	if _, err := m.CreateDatabase(context.Background(), "mysql", CreateDatabaseRequest{Name: "blog"}); err == nil {
+		t.Fatal("expected create failure")
+	}
+	for _, event := range audit.events {
+		if strings.Contains(event.DetailJSON, "s3cret") {
+			t.Fatalf("audit leaked secret: %+v", event)
+		}
+	}
+	for _, event := range events.events {
+		if strings.Contains(event.Message, "s3cret") {
+			t.Fatalf("event leaked secret: %+v", event)
+		}
+	}
+
+	platform.createErr = nil
+	platform.restoreErr = errors.New("restore failed for mysql://app:s3cret@127.0.0.1/app")
+	st := m.deps.Store.(*fakeStore)
+	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
+	job, err := m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{Target: "app", Confirm: "app"})
+	if err == nil {
+		t.Fatal("expected restore failure")
+	}
+	if strings.Contains(job.Message, "s3cret") {
+		t.Fatalf("job leaked secret: %+v", job)
+	}
+}
+
+func TestListUsersUsesLiveGrantsAndPasswordState(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.users = []model.DatabaseUserRecord{{
+		ID: "usr_app", ServiceID: "mysql", Engine: model.DatabaseMySQL,
+		Username: "app", Host: "%", Enabled: true, ManagedByDevstack: true,
+		PasswordManaged: true,
+	}}
+	st.grants = []model.DatabaseGrantRecord{{UserID: "usr_app", DatabaseName: "app", Preset: string(model.GrantReadWriteSchema)}}
+	platform.users = []model.DatabaseUser{{
+		ID: "usr_app", ServiceID: "mysql", Engine: model.DatabaseMySQL,
+		Username: "app", Host: "%", Enabled: true, Managed: true,
+		PasswordManaged: false, Grants: nil,
+	}}
+	users, err := m.ListUsers(context.Background(), "mysql")
+	if err != nil || len(users) != 1 {
+		t.Fatalf("users=%+v err=%v", users, err)
+	}
+	if users[0].PasswordManaged {
+		t.Fatal("stored password state overrode the live engine state")
+	}
+	if len(users[0].Grants) != 0 {
+		t.Fatalf("stored grants overrode an empty live grant set: %+v", users[0].Grants)
+	}
+}
+
+func TestManagerEmitsDatabaseAndRedisSSENames(t *testing.T) {
+	m, _, platform, _, events := testManagerWithFakes(t)
+	platform.job = model.DatabaseJob{ID: "job_1", Status: model.JobSucceeded, BackupID: "bkp_1"}
+	if _, err := m.CreateBackup(context.Background(), "mysql", "app", CreateBackupRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	svc := m.deps.Services.(*fakeServices)
+	svc.views[services.IDRedis] = services.View{ID: services.IDRedis, State: services.StateActive, Active: true, Installed: true}
+	platform.users = []model.DatabaseUser{{ID: "usr_cache", ServiceID: "redis", Engine: model.DatabaseRedis, Username: "cache", Enabled: true}}
+	if _, err := m.CreateUser(context.Background(), "redis", CreateUserRequest{Username: "cache"}); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events.events {
+		seen[event.Type] = true
+	}
+	for _, want := range []string{"database.backup.created", "redis.user.created", "database.job.updated"} {
+		if !seen[want] {
+			t.Fatalf("missing SSE %q in %+v", want, events.events)
+		}
+	}
+}
+
 func TestManagerRejectsRedisDatabasesAndBackups(t *testing.T) {
 	m, _, _, _, _ := testManagerWithFakes(t)
 	svc := m.deps.Services.(*fakeServices)

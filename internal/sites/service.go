@@ -1796,7 +1796,7 @@ func (s *Service) backendSpecFor(ctx context.Context, site model.Site) backend.S
 				})
 			}
 		} else {
-			s.emitEvent(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: resolve database links: %v", site.Name, err))
+			s.emitEvent(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: resolve database links: %s", site.Name, databases.RedactError(err)))
 		}
 	}
 	return spec
@@ -2184,7 +2184,7 @@ func (s *Service) linkProvisionedDatabase(ctx context.Context, site model.Site, 
 		return
 	}
 	if _, err := s.deps.Database.LinkProvisioned(ctx, site.ID, *provisioned); err != nil {
-		s.emitEvent(ctx, site.ID, "database.link.changed", fmt.Sprintf("site %s: link database: %v", site.Name, err))
+		s.emitEvent(ctx, site.ID, "database.link.changed", fmt.Sprintf("site %s: link database: %s", site.Name, databases.RedactError(err)))
 	}
 }
 
@@ -2205,7 +2205,7 @@ func (s *Service) databaseEnv(ctx context.Context, site model.Site) map[string]s
 	}
 	env, err := s.deps.DatabaseEnv(ctx, site)
 	if err != nil {
-		s.emitEvent(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: resolve database environment: %v", site.Name, err))
+		s.emitEvent(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: resolve database environment: %s", site.Name, databases.RedactError(err)))
 		return nil
 	}
 	return env

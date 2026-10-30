@@ -216,7 +216,7 @@ func (m *Manager) executeJob(ctx context.Context, record model.DatabaseJobRecord
 		job.Progress = result.Progress
 	}
 	if result.Message != "" {
-		job.Message = result.Message
+		job.Message = RedactString(result.Message)
 	}
 	if result.BackupID != "" {
 		job.BackupID = result.BackupID
@@ -234,6 +234,7 @@ func (m *Manager) executeJob(ctx context.Context, record model.DatabaseJobRecord
 		record = jobToRecord(job)
 		_ = m.deps.Store.UpdateDatabaseJob(context.Background(), record)
 		m.emit(context.Background(), "", "database.job.updated", fmt.Sprintf("database job %s %s", job.ID, job.Status))
+		m.emitJobEvent(context.Background(), job)
 		m.auditJob(context.Background(), job, string(job.Status))
 		if err == nil {
 			err = fmt.Errorf("%w: database job %s %s: %s", ErrConflict, job.ID, job.Status, job.Message)
@@ -258,8 +259,22 @@ func (m *Manager) executeJob(ctx context.Context, record model.DatabaseJobRecord
 		m.recordBackupMetadata(ctx, record.ServiceID, record.DatabaseName, job.BackupID, backupKind)
 	}
 	m.emit(context.Background(), "", "database.job.updated", fmt.Sprintf("database job %s succeeded", job.ID))
+	m.emitJobEvent(context.Background(), job)
 	m.auditJob(context.Background(), job, "ok")
 	return job, nil
+}
+
+// emitJobEvent publishes the domain-specific SSE name in addition to the
+// generic job update.
+func (m *Manager) emitJobEvent(ctx context.Context, job model.DatabaseJob) {
+	switch job.Kind {
+	case model.JobBackup:
+		m.emit(ctx, "", "database.backup.created", fmt.Sprintf("database backup %s for %s on %s", job.BackupID, job.Database, job.ServiceID))
+	case model.JobRestore:
+		m.emit(ctx, "", "database.backup.restored", fmt.Sprintf("database %s restored on %s", job.Database, job.ServiceID))
+	case model.JobImport:
+		m.emit(ctx, "", "database.import.completed", fmt.Sprintf("database %s import completed on %s", job.Database, job.ServiceID))
+	}
 }
 
 // auditJob writes the durable audit row for one terminal job state.
