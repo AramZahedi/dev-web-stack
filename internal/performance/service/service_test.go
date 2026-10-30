@@ -416,6 +416,34 @@ func TestServiceApplyRollsBackManagedFilesOnReloadFailure(t *testing.T) {
 	}
 }
 
+func TestServiceResetSkipsMissingInactiveServerIncludes(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, servicesFake, _, root := newPerformanceTestService(t)
+	servicesFake.views = nil // no active catalog web server
+
+	apacheInclude := filepath.Join(root, "services", "apache", "config", "conf.d", "performance.conf")
+	if err := os.MkdirAll(filepath.Dir(apacheInclude), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(apacheInclude, []byte("# tuned\nMaxRequestWorkers 1000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Reset(ctx, ResetRequest{Confirm: true}); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	data, err := os.ReadFile(apacheInclude)
+	if err != nil {
+		t.Fatalf("read stale apache include: %v", err)
+	}
+	if !strings.Contains(string(data), "reset") || strings.Contains(string(data), "MaxRequestWorkers") {
+		t.Fatalf("stale apache include was not reset: %q", data)
+	}
+	if _, err := os.Stat(filepath.Join(root, "services", "nginx")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reset created a missing nginx scaffold: %v", err)
+	}
+}
+
 func TestServiceResetRestoresSafeIncludes(t *testing.T) {
 	ctx := context.Background()
 	svc, st, helper, _, _, root := newPerformanceTestService(t)

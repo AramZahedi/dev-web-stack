@@ -511,6 +511,7 @@ func (s *Service) Reset(ctx context.Context, req ResetRequest) (ResetResult, err
 		step("render-reset", "failed", err.Error())
 		return result, &ResetError{Err: err, Result: result}
 	}
+	resetFiles = filterResetFiles(resetFiles, active)
 	for _, file := range resetFiles {
 		if err := writeFileAtomic(file.Path, file.Content, file.Mode); err != nil {
 			step("write-reset", "failed", err.Error())
@@ -1429,6 +1430,22 @@ func filterApplyFiles(files []ManagedFile, active services.ID) []ManagedFile {
 		}
 		if strings.Contains(file.Path, string(filepath.Separator)+"services"+string(filepath.Separator)+"apache"+string(filepath.Separator)) && active != services.IDApache {
 			continue
+		}
+		out = append(out, file)
+	}
+	return out
+}
+
+// filterResetFiles keeps reset markers for the active server and for any
+// inactive server file that already exists. This clears stale tuning without
+// creating scaffolds for services that were never installed.
+func filterResetFiles(files []ManagedFile, active services.ID) []ManagedFile {
+	out := make([]ManagedFile, 0, len(files))
+	for _, file := range files {
+		if !managedFileActive(file.Path, active) {
+			if _, err := os.Stat(file.Path); errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 		}
 		out = append(out, file)
 	}
