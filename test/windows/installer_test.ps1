@@ -1130,6 +1130,21 @@ $res = Invoke-Installer @("-DryRun", "-InstallDir", "C:\")
 Require ($res.ExitCode -eq 1) "Dry-run refuses the protected drive root (got $($res.ExitCode))"
 Require ($res.Output -match "protected path") "Protected-install error is explicit"
 
+Step "Testing install refuses a reparse-point target"
+$junctionRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("devstack-junction-" + [Guid]::NewGuid().ToString("N"))
+$junctionTarget = Join-Path $junctionRoot "target"
+$junctionPath = Join-Path $junctionRoot "link"
+New-Item -ItemType Directory -Force -Path $junctionTarget | Out-Null
+New-Item -ItemType Junction -Path $junctionPath -Target $junctionTarget | Out-Null
+try {
+    $res = Invoke-Installer @("-TestSandbox", $junctionPath, "-DryRun")
+    Require ($res.ExitCode -ne 0) "install.ps1 rejects a reparse-point target"
+    Require ($res.Output -match 'reparse point|junction') "install.ps1 explains the reparse-point refusal"
+} finally {
+    Remove-Item -LiteralPath $junctionPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $junctionRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # -------------------------------------------------------------------------
 # Test 38: Incomplete release payload fails closed
 # -------------------------------------------------------------------------
