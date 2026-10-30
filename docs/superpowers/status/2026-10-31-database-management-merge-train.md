@@ -14,12 +14,12 @@
 | Targeted review Lane A | done | — | no Critical/Important |
 | Merge Lane A | done | `768cb73` | agent/dbengine packages PASS; build + vet PASS |
 | Merge Lane H | done | `74eb07c` | helper/helperclient/helperproto/dbengine PASS; build + vet PASS |
-| Merge Lane B | pending | — | — |
+| Merge Lane B | done | `ed725a9` | store/databases/servicecontrol/api/sites/tooling/terminal/phpfpm/daemon PASS; build + vet PASS |
+| Windows bridge direct assignment | done | `c40f230` | wsl backend PASS; build + vet PASS |
 | Merge Lane C | pending | — | — |
 | Merge Lane D | pending | — | — |
 | Merge Lane E | pending | — | — |
 | Redis ACL confirmation path | pending | — | — |
-| Windows bridge direct assignment | pending | — | — |
 | Merged registry verification | pending | — | — |
 | Full merged-tree gate | pending | — | — |
 | Full E2E plan | pending | — | — |
@@ -48,3 +48,12 @@
 - **Documentation conflict resolution:** every lane writes `docs/superpowers/recovery/FINAL-STATUS.md`; kept A as `FINAL-STATUS-agent.md` and H as `FINAL-STATUS-helper.md`.
 - Merge commit `74eb07c` (`merge: database Linux helper adapters`).
 - Gate: `go test ./internal/helper ./internal/helperclient ./internal/helperproto ./internal/dbengine -count=1` PASS; `go build ./...` PASS; `go vet ./...` PASS.
+
+### Step 4 — Lane B targeted review and merge; Windows bridge
+
+- Reviewed `2d76a84..2588655`: transactional uninstall cleanup, async backup/restore/import jobs with service locking, env persistence through `RuntimeEnv`, ownership checks, protected links, import validation, backup pruning, live `PasswordManaged`, rename rollback, terminal degradation, and the two cross-lane fixes.
+- No Critical or Important findings in the reviewed range.
+- **Documentation conflict resolution:** kept H as `RECOVERY-helper.md` and B as `RECOVERY-daemon.md`.
+- Merge commit `ed725a9` (`merge: database daemon API and site links`).
+- Gate: `go test ./internal/store ./internal/databases ./internal/servicecontrol ./internal/api ./internal/sites ./internal/tooling ./internal/terminal ./internal/phpfpm ./internal/daemon -count=1` PASS; `go build ./...` PASS; `go vet ./...` PASS.
+- Replaced the JSON `database_links` bridge in `internal/backend/wsl/backend.go` with a direct `agentproto.DatabaseLinkSpec` assignment now that Lane A exposes `SiteSpec.DatabaseLinks`. Commit `c40f230`; `go test ./internal/backend/wsl` PASS; build + vet PASS.
