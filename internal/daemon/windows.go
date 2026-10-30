@@ -136,6 +136,11 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("daemon: load PHP catalog: %w", err)
 	}
 
+	nodeReleases, err := newNodeReleaseClient(cfg.Home)
+	if err != nil {
+		return fmt.Errorf("daemon: init node release discovery: %w", err)
+	}
+
 	var helper *helperclient.Client
 	var agentClient *agentclient.Client
 	var rootPEM []byte
@@ -245,7 +250,12 @@ func Run(ctx context.Context, opts Options) error {
 		Logger:            logger,
 	})
 
-	runtimeService := &windowsRuntimeService{backend: wslBackend, store: st, agent: agentServices}
+	runtimeService := &windowsRuntimeService{
+		backend:            wslBackend,
+		store:              st,
+		agent:              agentServices,
+		nodeReleaseService: newNodeReleaseService(nodeReleases),
+	}
 
 	buildService := newWindowsBuildService(agentServices, paths)
 
@@ -1706,6 +1716,8 @@ type windowsRuntimeService struct {
 	backend *wslbackend.Backend
 	store   *store.Store
 	agent   *windowsAgentServiceAdapter
+	nodeReleaseService
+	installAgent runtimeInstallAgent
 }
 
 func (s *windowsRuntimeService) ensureClient() {
@@ -1773,6 +1785,9 @@ func (s *windowsRuntimeService) List(ctx context.Context) ([]model.RuntimeBuild,
 }
 
 func (s *windowsRuntimeService) Install(ctx context.Context, id string) (model.RuntimeBuild, error) {
+	if selector, ok := nodeReleaseSelector(id); ok {
+		return s.installPinnedNode(ctx, selector)
+	}
 	s.ensureClient()
 	if s.backend == nil || s.backend.Client == nil {
 		return model.RuntimeBuild{}, errors.New("WSL agent not connected")
@@ -1785,6 +1800,51 @@ func (s *windowsRuntimeService) Install(ctx context.Context, id string) (model.R
 		_ = s.store.UpsertRuntime(ctx, build)
 	}
 	return build, nil
+}
+
+// installPinnedNode resolves a Node selector through discovery and preflight,
+// then asks the WSL agent to install that exact artifact. Preflight failures
+// return before the agent is contacted or the store is touched.
+func (s *windowsRuntimeService) installPinnedNode(ctx context.Context, selector string) (model.RuntimeBuild, error) {
+	preflight, err := s.NodeRelease(ctx, selector)
+	if err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	artifact, err := nodeReleaseArtifact(preflight.Entry)
+	if err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	agent, err := s.pinnedNodeInstaller()
+	if err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	resp, err := agent.InstallRuntime(ctx, agentproto.RuntimeRequest{Artifact: &artifact})
+	if err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	build := model.RuntimeBuild{
+		ID:       resp.ID,
+		Kind:     resp.Kind,
+		Version:  resp.Version,
+		Backend:  model.BackendWSL,
+		Path:     resp.Path,
+		Checksum: resp.Checksum,
+	}
+	if s.store != nil {
+		_ = s.store.UpsertRuntime(ctx, build)
+	}
+	return build, nil
+}
+
+func (s *windowsRuntimeService) pinnedNodeInstaller() (runtimeInstallAgent, error) {
+	if s.installAgent != nil {
+		return s.installAgent, nil
+	}
+	s.ensureClient()
+	if s.backend == nil || s.backend.Client == nil {
+		return nil, errors.New("WSL agent not connected")
+	}
+	return s.backend.Client, nil
 }
 
 func (s *windowsRuntimeService) Remove(ctx context.Context, buildID string) error {
