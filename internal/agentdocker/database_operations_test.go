@@ -419,6 +419,28 @@ func TestUpdateUserRollsBackGrantsOnPartialFailure(t *testing.T) {
 	}
 }
 
+func TestUpdateUserRollsBackEnabledOnGrantFailure(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	userID := databaseUserID("mysql", "app", "%")
+	runner.runOutputs["mysql.user"] = []byte("app\t%\tN\n")
+	runner.runOutputs["SHOW GRANTS"] = []byte("GRANT SELECT ON `app`.* TO `app`@`%`\n")
+	runner.failOnInput = "GRANT SELECT, INSERT, UPDATE, DELETE ON `blog`"
+	enabled := false
+	_, err := d.UpdateUser(context.Background(), "mysql", userID, databases.UpdateUserRequest{
+		Enabled: &enabled,
+		Grants: []model.DatabaseGrant{
+			{Database: "app", Preset: model.GrantReadOnly},
+			{Database: "blog", Preset: model.GrantReadWrite},
+		},
+	})
+	if err == nil {
+		t.Fatal("UpdateUser ignored a grant failure")
+	}
+	if !runner.stdinContains("ALTER USER 'app'@'%' ACCOUNT UNLOCK;") {
+		t.Fatalf("enabled change was not rolled back: %s", runner.joinedCalls())
+	}
+}
+
 func TestSetUserPasswordDeletesStaleSecretOnWriteFailure(t *testing.T) {
 	d, runner := newDatabaseTestDocker(t)
 	userID := databaseUserID("mysql", "app", "%")
