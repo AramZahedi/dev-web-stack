@@ -986,6 +986,27 @@ describe('SiteDetail configuration and builds', () => {
     );
   });
 
+  it('keeps link-dialog validation visible for an invalid submission', async () => {
+    mockDb.listServiceDatabases.mockResolvedValue({ databases: [] });
+    await renderSite('blog');
+    await fireEvent.click(await screen.findByRole('button', { name: 'Link database' }));
+    const dialog = await screen.findByRole('dialog');
+    const service = (await within(dialog).findByLabelText(
+      /Database service/,
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    await fireEvent.click(within(dialog).getByLabelText('Use existing database'));
+    await fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Link database' }),
+    );
+
+    expect(
+      await within(dialog).findByText('Choose an existing database.'),
+    ).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(within(dialog).getByText('Choose an existing database.')).toBeTruthy();
+  });
+
   it('keeps previous links and offers retry when link loading fails', async () => {
     await renderSite('blog');
     expect(await screen.findByText('app')).toBeTruthy();

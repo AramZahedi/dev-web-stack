@@ -43,9 +43,13 @@
     onclose();
   }
 
+  let lastValidationValue: CreateSiteDatabaseRequest | null = null;
+
   $effect(() => {
-    value;
-    if (validation) validation = '';
+    const current = value;
+    if (current === lastValidationValue) return;
+    lastValidationValue = current;
+    validation = '';
   });
 
   async function submit(): Promise<void> {
