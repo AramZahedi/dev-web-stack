@@ -359,6 +359,20 @@ func TestSetRedisUserDeliversEveryRule(t *testing.T) {
 	}
 }
 
+func TestSetRedisUserRejectsGrants(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	_, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{
+		Username: "cache",
+		Grants:   []model.DatabaseGrant{{Database: "app", Preset: model.GrantReadOnly}},
+	})
+	if !errors.Is(err, databases.ErrUnsupported) {
+		t.Fatalf("err = %v, want ErrUnsupported", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("redis create with grants invoked Docker: %v", runner.joinedCalls())
+	}
+}
+
 func TestUpdateRedisUserRejectsGrants(t *testing.T) {
 	d, _ := newDatabaseTestDocker(t)
 	created, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache"})

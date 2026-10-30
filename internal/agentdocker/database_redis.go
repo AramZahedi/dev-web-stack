@@ -66,6 +66,9 @@ func (d *Docker) SetRedisUser(ctx context.Context, serviceID string, req databas
 	if req.Username == "default" || engine.ProtectedUser(req.Username, "") {
 		return model.DatabaseUser{}, databases.ErrProtected
 	}
+	if req.Grants != nil {
+		return model.DatabaseUser{}, databases.ErrUnsupported
+	}
 	accessLevel, err := normalizeRedisAccessLevel(req.AccessLevel)
 	if err != nil {
 		return model.DatabaseUser{}, err
