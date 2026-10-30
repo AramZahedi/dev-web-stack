@@ -207,7 +207,16 @@ func (d *Docker) UpdateRedisUser(ctx context.Context, serviceID, userID string, 
 	if accessLevel != "" {
 		level = accessLevel
 	}
-	if _, err := d.runRedisCommand(ctx, serviceID, dbengine.SetUserRulesCommand(user.Username, level, enabled), ""); err != nil {
+	var command []string
+	if accessLevel == "" && user.AccessLevel == "custom" {
+		// A custom user has rules the agent cannot reconstruct. Changing only
+		// the on/off flag preserves them; rewriting would replace the rules
+		// with the read-only preset.
+		command = dbengine.SetUserEnabledCommand(user.Username, enabled)
+	} else {
+		command = dbengine.SetUserRulesCommand(user.Username, level, enabled)
+	}
+	if _, err := d.runRedisCommand(ctx, serviceID, command, ""); err != nil {
 		return model.DatabaseUser{}, err
 	}
 	acl := dbengine.NewRedisACL()

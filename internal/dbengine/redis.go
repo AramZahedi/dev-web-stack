@@ -41,7 +41,7 @@ func (*redisEngine) ParseDatabases([]byte) ([]model.Database, error) {
 func (*redisEngine) CreateDatabaseSQL(string, string, string) (string, error) {
 	return "", ErrUnsupported
 }
-func (*redisEngine) DropDatabaseSQL(string) (string, error)     { return "", ErrUnsupported }
+func (*redisEngine) DropDatabaseSQL(string) (string, error) { return "", ErrUnsupported }
 func (*redisEngine) RenameDatabaseSQL(string, string) (string, error) {
 	return "", ErrUnsupported
 }
@@ -98,6 +98,19 @@ func (*redisACL) SetUserCommand(username, password, accessLevel string, enabled 
 	rules = append(rules, ">"+password)
 	args := []string{"redis-cli", "ACL", "SETUSER", username}
 	return append(args, rules...)
+}
+
+// SetUserEnabledCommand changes only the on/off flag. Custom ACL users must use
+// this so an enable/disable does not replace their hand-written rules with the
+// read-only preset.
+func SetUserEnabledCommand(username string, enabled bool) []string {
+	args := []string{"redis-cli", "ACL", "SETUSER", username}
+	if enabled {
+		args = append(args, "on")
+	} else {
+		args = append(args, "off")
+	}
+	return args
 }
 
 // SetUserRulesCommand changes on/off state and access level without resetting

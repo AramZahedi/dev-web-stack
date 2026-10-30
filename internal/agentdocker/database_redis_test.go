@@ -252,6 +252,41 @@ func TestUpdateRedisUserChangesAccessLevelWithoutRotatingPassword(t *testing.T) 
 	}
 }
 
+func TestUpdateRedisUserCustomRulesPreservedOnDisable(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	created, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "read-only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := d.readDatabaseSecret("redis", created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.runOutputs["ACL LIST"] = []byte("user cache on #abc ~* +get +set\n")
+	runner.calls = nil
+	enabled := false
+	updated, err := d.UpdateRedisUser(context.Background(), "redis", created.ID, databases.UpdateUserRequest{Enabled: &enabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Enabled || updated.AccessLevel != "custom" {
+		t.Fatalf("updated = %+v", updated)
+	}
+	joined := runner.joinedCalls()
+	if !strings.Contains(joined, "ACL SETUSER cache off") {
+		t.Fatalf("custom user disable missing: %s", joined)
+	}
+	for _, rewrite := range []string{"-@all", "+@read", "reset"} {
+		if strings.Contains(joined, rewrite) {
+			t.Fatalf("custom user rules were rewritten (%s): %s", rewrite, joined)
+		}
+	}
+	after, err := d.readDatabaseSecret("redis", created.ID)
+	if err != nil || after != before {
+		t.Fatalf("password changed on custom enable/disable: %q -> %q, %v", before, after, err)
+	}
+}
+
 func TestUpdateRedisUserRejectsGrants(t *testing.T) {
 	d, _ := newDatabaseTestDocker(t)
 	created, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache"})
