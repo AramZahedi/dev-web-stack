@@ -29,6 +29,8 @@ machine, and the design/plan for the next milestone.
   - executed task-by-task TDD plan.
 - [Node toolchain E2E report](superpowers/audits/2026-10-30-node-toolchain-e2e.md)
   - live dashboard/CLI coverage, bugs found and fixed, and remaining caveats.
+- [Full dashboard/CLI E2E audit](superpowers/audits/2026-10-30-dashboard-full-e2e.md)
+  - completed 2026-10-30; all 15 tasks, 19 fixes, final gates, and baseline restore.
 - [Remaining full dashboard/CLI E2E coverage plan](superpowers/plans/2026-10-30-dashboard-full-e2e-coverage.md)
   - executable to-do matrix for every dashboard/CLI action not re-tested by the
     Node toolchain run, with fixtures, assertions, cleanup, and restore steps.
