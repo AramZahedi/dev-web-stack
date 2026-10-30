@@ -10,6 +10,7 @@ vi.mock('../lib/api', () => ({
   isMockMode: false,
   listRuntimes: vi.fn(),
   getSettings: vi.fn(),
+  getNodeDefault: vi.fn(),
   createSite: vi.fn(),
 }));
 
@@ -54,6 +55,12 @@ const mockApi = vi.mocked(api);
 beforeEach(() => {
   mockApi.listRuntimes.mockResolvedValue([NODE_BUILD, PHP_BUILD]);
   mockApi.getSettings.mockResolvedValue(SETTINGS);
+  mockApi.getNodeDefault.mockResolvedValue({
+    build: NODE_BUILD,
+    shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+    shim_installed: true,
+    source: 'newest',
+  });
   mockApi.createSite.mockImplementation(async (request) => ({
     id: 's_new',
     name: request.name,
@@ -103,6 +110,37 @@ async function fillProject(): Promise<void> {
 }
 
 describe('AddSite Wave 2 fields', () => {
+  it('defaults static sites to inherit and shows the global version', async () => {
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getNodeDefault).toHaveBeenCalled());
+    await fillProject();
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const picker = (await screen.findByLabelText(/Node toolchain/)) as HTMLSelectElement;
+    expect(picker.value).toBe('');
+    expect(
+      await screen.findByRole('option', { name: 'Inherit global default (v24.9.0)' }),
+    ).toBeTruthy();
+  });
+
+  it('requires an explicit version for node sites', async () => {
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+    await fillProject();
+    await fireEvent.click(screen.getByRole('radio', { name: /Node/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const picker = (await screen.findByLabelText(/Node version/)) as HTMLSelectElement;
+    expect(picker.value).toBe('');
+    expect(screen.queryByRole('option', { name: /Inherit global default/ })).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(
+      (await screen.findAllByText('Choose an installed Node version.')).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
   it('defaults Windows static sources to NTFS and PHP/Node sources to WSL', async () => {
     mockApi.getSettings.mockResolvedValue({
       ...SETTINGS,

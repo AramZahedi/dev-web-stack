@@ -12,6 +12,9 @@ import type {
   Health,
   ListServicesResponse,
   LogLine,
+  NodeDefaultStatus,
+  NodeReleasePreflight,
+  NodeReleaseSnapshot,
   PHPChange,
   PHPDefaults,
   PHPDefaultsResult,
@@ -333,6 +336,39 @@ export async function removeRuntime(buildID: string): Promise<void> {
     method: 'DELETE',
     voidResponse: true,
   });
+}
+
+export interface NodeReleaseQuery {
+  major?: number;
+  all?: boolean;
+  offline?: boolean;
+}
+
+/** Discover Node releases. The default snapshot only lists the newest patch per major. */
+export async function listNodeReleases(
+  query: NodeReleaseQuery = {},
+): Promise<NodeReleaseSnapshot> {
+  if (isMockMode) return mockApi.listNodeReleases(query);
+  const params = new URLSearchParams();
+  if (query.major !== undefined) params.set('major', String(query.major));
+  if (query.all) params.set('all', 'true');
+  if (query.offline) params.set('offline', 'true');
+  const suffix = params.size > 0 ? `?${params.toString()}` : '';
+  return request<NodeReleaseSnapshot>(`/runtimes/node/releases${suffix}`);
+}
+
+/** Load the fully pinned entry for one exact Node release before installing it. */
+export async function getNodeRelease(version: string): Promise<NodeReleasePreflight> {
+  if (isMockMode) return mockApi.getNodeRelease(version);
+  return request<NodeReleasePreflight>(
+    `/runtimes/node/releases/${encodeURIComponent(version)}`,
+  );
+}
+
+/** The machine-wide CLI Node default, inherited by sites without a pin. */
+export async function getNodeDefault(): Promise<NodeDefaultStatus> {
+  if (isMockMode) return mockApi.getNodeDefault();
+  return request<NodeDefaultStatus>('/node/default');
 }
 
 // Older daemons omit the container runtime fields. Normalize them so the

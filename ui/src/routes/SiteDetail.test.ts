@@ -8,6 +8,7 @@ vi.mock('../lib/api', () => ({
   isMockMode: false,
   getSite: vi.fn(),
   listRuntimes: vi.fn(),
+  getNodeDefault: vi.fn(),
   getPHPInfo: vi.fn(),
   startSite: vi.fn(),
   stopSite: vi.fn(),
@@ -120,10 +121,17 @@ const mockApi = vi.mocked(api);
 beforeEach(() => {
   mockApi.getSite.mockResolvedValue({ ...STATIC_SITE });
   mockApi.listRuntimes.mockResolvedValue([NODE_BUILD, PHP_BUILD]);
+  mockApi.getNodeDefault.mockResolvedValue({
+    build: NODE_BUILD,
+    shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+    shim_installed: true,
+    source: 'newest',
+  });
   mockApi.getPHPInfo.mockResolvedValue(PHP_INFO);
   mockApi.updateSite.mockImplementation(async (ref, body: UpdateSiteRequest) => ({
     ...STATIC_SITE,
     ...body,
+    node_version: body.node_version ?? STATIC_SITE.node_version,
     build: body.build ?? STATIC_SITE.build,
   }));
   mockApi.getBuildLogs.mockResolvedValue({
@@ -153,6 +161,67 @@ async function renderSite(name = 'blog'): Promise<void> {
 }
 
 describe('SiteDetail configuration and builds', () => {
+  it('shows the resolved toolchain source on site detail', async () => {
+    mockApi.getSite.mockResolvedValue({
+      ...STATIC_SITE,
+      node_version: '',
+      node_toolchain: {
+        version: '24.9.0',
+        build_id: 'node@24.9.0',
+        source: 'global',
+        installed: true,
+      },
+    });
+    await renderSite();
+
+    expect(screen.getAllByText(/Inherited from the global default/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/node -v uses v24\.9\.0/)).toBeTruthy();
+  });
+
+  it('warns about the ABI rebuild when a stopped node site changes version', async () => {
+    const nodeSite: Site = {
+      ...STATIC_SITE,
+      id: 's_shop',
+      name: 'shop',
+      domain: 'shop.test',
+      kind: 'node',
+      node_version: '22.20.0',
+      node_toolchain: {
+        version: '22.20.0',
+        build_id: 'node-22.20.0',
+        source: 'site',
+        installed: true,
+      },
+      command: 'npm run dev',
+      document_root: '',
+      build: undefined,
+      status: 'stopped',
+      desired_state: 'stopped',
+      http_port: 41002,
+    };
+    mockApi.getSite.mockResolvedValue(nodeSite);
+
+    await renderSite('shop');
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
+
+    const picker = (await screen.findByLabelText(/Node version/)) as HTMLSelectElement;
+    expect(picker.value).toBe('22.20.0');
+    expect(screen.queryByRole('option', { name: /Inherit global default/ })).toBeNull();
+
+    await fireEvent.change(picker, { target: { value: '24.9.0' } });
+
+    expect(screen.getByText(/Native modules are compiled against the Node ABI/)).toBeTruthy();
+    expect(screen.getByText(/switching from v22\.20\.0 to v24\.9\.0/)).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    await waitFor(() =>
+      expect(mockApi.updateSite).toHaveBeenCalledWith(
+        's_shop',
+        expect.objectContaining({ node_version: '24.9.0' }),
+      ),
+    );
+  });
+
   it('edits the document root, SPA fallback file and static build profile', async () => {
     await renderSite();
     await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
@@ -241,6 +310,7 @@ describe('SiteDetail configuration and builds', () => {
     mockApi.updateSite.mockImplementation(async (ref, body: UpdateSiteRequest) => ({
       ...PHP_SITE,
       ...body,
+      node_version: body.node_version ?? PHP_SITE.node_version,
     }));
 
     await renderSite('app');

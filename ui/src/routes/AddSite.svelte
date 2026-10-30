@@ -24,6 +24,7 @@
     ApacheAllowOverride,
     BuildProfile,
     FrontControllerMode,
+    NodeDefaultStatus,
     RuntimeBuild,
     SourceMode,
     Settings,
@@ -32,6 +33,7 @@
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
   import Field from '../lib/components/Field.svelte';
   import IconButton from '../lib/components/IconButton.svelte';
+  import NodeVersionPicker from '../lib/components/NodeVersionPicker.svelte';
   import PathBrowser from '../lib/components/PathBrowser.svelte';
   import ProjectSourceMode from '../lib/components/ProjectSourceMode.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
@@ -82,6 +84,7 @@
   let runtimes = $state<RuntimeBuild[]>([]);
   let runtimesLoading = $state(true);
   let runtimesError = $state<{ code: string; message: string } | null>(null);
+  let nodeDefault = $state<NodeDefaultStatus | null>(null);
   let settings = $state<Settings | null>(null);
   let pathOpen = $state(false);
   let headingEl: HTMLHeadingElement | undefined = $state();
@@ -112,6 +115,16 @@
           b.version.localeCompare(a.version, undefined, { numeric: true }) ||
           phpRevision(b.id) - phpRevision(a.id),
       ),
+  );
+
+  const globalNodeBuild = $derived(
+    nodeDefault?.build?.kind === 'node' ? nodeDefault.build : nodeRuntimes[0],
+  );
+  const globalNodeVersion = $derived(globalNodeBuild?.version ?? '');
+  const nodeInheritLabel = $derived(
+    globalNodeVersion
+      ? `Inherit global default (v${globalNodeVersion})`
+      : 'Inherit global default',
   );
 
   const phpLines = $derived(
@@ -205,7 +218,7 @@
         runtimes = [];
         runtimesError = describeError(caught);
       }
-      if (!nodeVersion && nodeRuntimes.length > 0) nodeVersion = nodeRuntimes[0].version;
+      nodeDefault = await api.getNodeDefault().catch(() => null);
       if (!buildNodeVersion && nodeRuntimes.length > 0) buildNodeVersion = nodeRuntimes[0].version;
       if (!phpBuild && phpRuntimes.length > 0) phpBuild = phpRuntimes[0].id;
     } finally {
@@ -216,6 +229,31 @@
   onMount(() => {
     void loadRuntimeData();
   });
+
+  async function installNodeVersion(
+    version: string,
+    target: 'site' | 'build',
+  ): Promise<void> {
+    // Preflight pins the exact archive before the existing runtime install
+    // endpoint registers it; a site never stores an uninstalled version.
+    const preflight = await api.getNodeRelease(version);
+    await api.installRuntime(preflight.entry.id);
+    const installed = preflight.entry.version;
+    if (target === 'build') {
+      buildNodeVersion = installed;
+    } else {
+      nodeVersion = installed;
+    }
+    await loadRuntimeData();
+    addToast({
+      kind: 'success',
+      title: `Node ${installed} installed`,
+      message:
+        target === 'build'
+          ? 'The build profile now uses this exact version.'
+          : 'The site toolchain now uses this exact version.',
+    });
+  }
 
   function fieldLabel(key: string): string {
     if (key === 'name') return 'Site name';
@@ -291,9 +329,16 @@
         }
       }
     }
-    if (kind === 'node') {
-      if (!nodeVersion) next.node_version = 'Install a Node build before adding a Node site.';
-      if (!command.trim()) next.command = 'Enter the command that starts the dev server.';
+    if (kind === 'node' && !nodeVersion.trim()) {
+      next.node_version = 'Choose an installed Node version.';
+    } else if (
+      nodeVersion.trim() &&
+      !nodeRuntimes.some((runtime) => runtime.version === nodeVersion.trim())
+    ) {
+      next.node_version = `Node ${nodeVersion.trim()} is not installed. Install it first.`;
+    }
+    if (kind === 'node' && !command.trim()) {
+      next.command = 'Enter the command that starts the dev server.';
     }
 
     if (kind === 'static') {
@@ -594,7 +639,7 @@
         path: path.trim(),
         kind,
         source_mode: sourceMode,
-        node_version: kind === 'node' ? nodeVersion : undefined,
+        node_version: nodeVersion.trim() || undefined,
         command: kind === 'node' ? command.trim() : undefined,
         document_root: kind === 'static' || kind === 'php' ? documentRoot.trim() : undefined,
         php_version:
@@ -859,6 +904,24 @@
                   />
                 </Field>
 
+                <div class="build-fields">
+                  <NodeVersionPicker
+                    id="node-version"
+                    label="Node toolchain"
+                    hint="Shells, terminals and tools use this Node build. Inherit the machine-wide default unless this project needs a pinned version."
+                    value={nodeVersion}
+                    builds={nodeRuntimes}
+                    inheritLabel={nodeInheritLabel}
+                    loading={runtimesLoading}
+                    error={errors.node_version}
+                    onchange={(value) => {
+                      nodeVersion = value;
+                      clearError('node_version');
+                    }}
+                    oninstall={(version) => installNodeVersion(version, 'site')}
+                  />
+                </div>
+
                 <div class="options-box">
                   <Toggle
                     label="SPA fallback"
@@ -922,22 +985,20 @@
                           </p>
                         </div>
                       {:else}
-                        <Field id="build-node-version" label="Build Node version" required error={errors.build_node_version}>
-                          <div class="select-wrap">
-                            <select
-                              id="build-node-version"
-                              class="input mono"
-                              bind:value={buildNodeVersion}
-                              aria-invalid={Boolean(errors.build_node_version)}
-                              onchange={() => clearError('build_node_version')}
-                            >
-                              {#each nodeRuntimes as runtime (runtime.id)}
-                                <option value={runtime.version}>Node {runtime.version} · {runtime.backend}</option>
-                              {/each}
-                            </select>
-                            <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
-                          </div>
-                        </Field>
+                        <NodeVersionPicker
+                          id="build-node-version"
+                          label="Build Node version"
+                          required
+                          hint="Builds run with this exact installed Node version, independent of the site shell toolchain."
+                          value={buildNodeVersion}
+                          builds={nodeRuntimes}
+                          error={errors.build_node_version}
+                          onchange={(value) => {
+                            buildNodeVersion = value;
+                            clearError('build_node_version');
+                          }}
+                          oninstall={(version) => installNodeVersion(version, 'build')}
+                        />
                       {/if}
 
                       <Field
@@ -1103,6 +1164,24 @@
                   </Field>
                 {/if}
 
+                <div class="build-fields">
+                  <NodeVersionPicker
+                    id="node-version"
+                    label="Node toolchain"
+                    hint="Shells, terminals and tools use this Node build. Inherit the machine-wide default unless this project needs a pinned version."
+                    value={nodeVersion}
+                    builds={nodeRuntimes}
+                    inheritLabel={nodeInheritLabel}
+                    loading={runtimesLoading}
+                    error={errors.node_version}
+                    onchange={(value) => {
+                      nodeVersion = value;
+                      clearError('node_version');
+                    }}
+                    oninstall={(version) => installNodeVersion(version, 'site')}
+                  />
+                </div>
+
                 <Field
                   id="php-document-root"
                   label="Document root"
@@ -1226,23 +1305,20 @@
                     </p>
                   </div>
                 {:else}
-                  <Field id="node-version" label="Node version" required error={errors.node_version}>
-                    <div class="select-wrap">
-                      <select
-                        id="node-version"
-                        class="input mono"
-                        bind:value={nodeVersion}
-                        aria-invalid={Boolean(errors.node_version)}
-                        aria-describedby={errors.node_version ? 'node-version-error' : undefined}
-                        onchange={() => clearError('node_version')}
-                      >
-                        {#each nodeRuntimes as runtime (runtime.id)}
-                          <option value={runtime.version}>Node {runtime.version} · {runtime.backend}</option>
-                        {/each}
-                      </select>
-                      <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
-                    </div>
-                  </Field>
+                  <NodeVersionPicker
+                    id="node-version"
+                    label="Node version"
+                    required
+                    hint="Node server sites store an exact installed version. The global default is not inherited."
+                    value={nodeVersion}
+                    builds={nodeRuntimes}
+                    error={errors.node_version}
+                    onchange={(value) => {
+                      nodeVersion = value;
+                      clearError('node_version');
+                    }}
+                    oninstall={(version) => installNodeVersion(version, 'site')}
+                  />
                 {/if}
 
                 <Field

@@ -25,6 +25,59 @@ export interface BuildProfile {
   env?: Record<string, string>;
 }
 
+export type NodeToolchainSource = 'site' | 'global' | string;
+
+/** The exact Node runtime a site shell or exec session will use. */
+export interface NodeToolchain {
+  version: string;
+  build_id?: string;
+  source?: NodeToolchainSource;
+  installed: boolean;
+}
+
+/** One stable official Node.js release with a Linux x64 archive. */
+export interface NodeRelease {
+  version: string;
+  date: string;
+  lts: string;
+  security: boolean;
+  npm: string;
+  modules: string;
+  file: string;
+}
+
+/** One major release line; releases are newest first. */
+export interface NodeReleaseMajor {
+  major: number;
+  latest: NodeRelease;
+  releases: NodeRelease[];
+}
+
+/** A cached or freshly discovered Node release index. */
+export interface NodeReleaseSnapshot {
+  majors: NodeReleaseMajor[];
+  all: NodeRelease[];
+  source: 'live' | 'cache' | 'embedded' | string;
+  cached_at: string;
+  stale: boolean;
+  warning?: string;
+}
+
+/** Fully pinned install metadata loaded for one exact release. */
+export interface NodeReleasePreflight {
+  entry: CatalogEntry;
+  release: NodeRelease;
+}
+
+/** Machine-wide CLI Node default state. */
+export interface NodeDefaultStatus {
+  configured?: string;
+  build?: RuntimeBuild;
+  shim_dir: string;
+  shim_installed: boolean;
+  source: 'setting' | 'newest' | string;
+}
+
 export interface VhostTLSFile {
   name: string;
   mode: number;
@@ -84,6 +137,8 @@ export interface Site {
   php_config_hash: string;
   php_fpm?: SitePHPFPMBudget;
   node_version: string;
+  /** Response-only summary resolved by the daemon; never persisted. */
+  node_toolchain?: NodeToolchain;
   command: string;
   env: Record<string, string>;
   document_root: string;
@@ -139,7 +194,8 @@ export interface UpdateSiteRequest {
   name?: string;
   domain?: string;
   www?: boolean;
-  node_version?: string;
+  /** Omit to keep the pin; null or '' clears it (static/PHP only). */
+  node_version?: string | null;
   command?: string;
   document_root?: string;
   front_controller?: boolean;
