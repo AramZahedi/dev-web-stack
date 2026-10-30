@@ -271,6 +271,8 @@ Expected: `site list` empty; `doctor` green.
 
 **Depends on:** Task 1 (recreate `e2e-full-php`). **Artifacts:** `task-2/`
 
+> **Progress at pause (2026-10-30):** IN PROGRESS. `e2e-full-php` recreated; document root `.` -> `public` verified; front controller on (`/does-not-exist` 200) and off (404) verified; console clean. Remaining: AllowOverride, invalid docroot, directives/ini/extensions/preview, restart behavior, dashboard-confirm removal. Live site is intentionally left running with docroot `public`; see `dist/e2e/full-dashboard/task-2/PROGRESS.md`.
+
 - [ ] **Step 1: Open Configuration and edit safe fields**
 
 Site Detail → Configuration → Edit configuration:
