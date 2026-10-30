@@ -428,7 +428,8 @@ func (d *Docker) waitRedisHealthy(ctx context.Context, serviceID string) error {
 		status, statusErr := d.Status(ctx, serviceID)
 		if statusErr == nil && status.State == "active" {
 			out, composeErr := d.compose(ctx, "ps", "-a", "--format", "json", string(service.ID))
-			if composeErr == nil && !strings.Contains(strings.ToLower(string(out)), `"health":"starting"`) {
+			lower := strings.ToLower(string(out))
+			if composeErr == nil && !strings.Contains(lower, `"health":"starting"`) && !strings.Contains(lower, `"health":"unhealthy"`) {
 				return nil
 			}
 		}
