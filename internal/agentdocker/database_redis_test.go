@@ -162,3 +162,29 @@ func TestRevealRedisPassword(t *testing.T) {
 		t.Fatalf("missing secret err = %v", err)
 	}
 }
+
+func TestSetRedisPasswordDeletesStaleSecretOnWriteFailure(t *testing.T) {
+	d, _ := newDatabaseTestDocker(t)
+	defaultID := databaseUserID("redis", "default", "")
+	if err := d.writeDatabaseSecret("redis", defaultID, "old-secret"); err != nil {
+		t.Fatal(err)
+	}
+	d.secretWriter = func(string, string, string) error { return errors.New("disk full") }
+	if _, err := d.SetRedisPassword(context.Background(), "redis"); err == nil {
+		t.Fatal("SetRedisPassword ignored a secret write failure")
+	}
+	if _, err := d.readDatabaseSecret("redis", defaultID); !errors.Is(err, databases.ErrPasswordMissing) {
+		t.Fatalf("stale redis secret is still revealable: %v", err)
+	}
+}
+
+func TestSetRedisUserDeletesStaleSecretOnWriteFailure(t *testing.T) {
+	d, _ := newDatabaseTestDocker(t)
+	d.secretWriter = func(string, string, string) error { return errors.New("disk full") }
+	if _, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "read-only"}); err == nil {
+		t.Fatal("SetRedisUser ignored a secret write failure")
+	}
+	if _, err := d.readDatabaseSecret("redis", databaseUserID("redis", "cache", "")); !errors.Is(err, databases.ErrPasswordMissing) {
+		t.Fatalf("failed redis create left a secret: %v", err)
+	}
+}

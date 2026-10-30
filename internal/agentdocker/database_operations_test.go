@@ -329,3 +329,33 @@ func TestUpdateUserRollsBackGrantsOnPartialFailure(t *testing.T) {
 		t.Fatalf("existing app grant was not restored: %s", runner.joinedCalls())
 	}
 }
+
+func TestSetUserPasswordDeletesStaleSecretOnWriteFailure(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	userID := databaseUserID("mysql", "app", "%")
+	if err := d.writeDatabaseSecret("mysql", userID, "old-secret"); err != nil {
+		t.Fatal(err)
+	}
+	runner.runOutputs["mysql.user"] = []byte("app\t%\tN\n")
+	d.secretWriter = func(string, string, string) error { return errors.New("disk full") }
+	if _, err := d.SetUserPassword(context.Background(), "mysql", userID); err == nil {
+		t.Fatal("SetUserPassword ignored a secret write failure")
+	}
+	if _, err := d.readDatabaseSecret("mysql", userID); !errors.Is(err, databases.ErrPasswordMissing) {
+		t.Fatalf("stale secret is still revealable: %v", err)
+	}
+}
+
+func TestCreateUserRollsBackOnSecretWriteFailure(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	d.secretWriter = func(string, string, string) error { return errors.New("disk full") }
+	if _, err := d.CreateUser(context.Background(), "mysql", databases.CreateUserRequest{Username: "app", Host: "%"}); err == nil {
+		t.Fatal("CreateUser ignored a secret write failure")
+	}
+	if !runner.stdinContains("DROP USER 'app'@'%'") {
+		t.Fatalf("failed create did not drop the engine user: %s", runner.joinedCalls())
+	}
+	if _, err := d.readDatabaseSecret("mysql", databaseUserID("mysql", "app", "%")); !errors.Is(err, databases.ErrPasswordMissing) {
+		t.Fatalf("failed create left a secret: %v", err)
+	}
+}

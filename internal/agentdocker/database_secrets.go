@@ -119,6 +119,13 @@ func (d *Docker) writeDatabaseSecret(serviceID, userID, value string) error {
 	return nil
 }
 
+func (d *Docker) storeDatabaseSecret(serviceID, userID, value string) error {
+	if d.secretWriter != nil {
+		return d.secretWriter(serviceID, userID, value)
+	}
+	return d.writeDatabaseSecret(serviceID, userID, value)
+}
+
 func (d *Docker) readDatabaseSecret(serviceID, userID string) (string, error) {
 	path, err := d.databaseSecretPath(serviceID, userID)
 	if err != nil {

@@ -93,7 +93,8 @@ func (d *Docker) SetRedisUser(ctx context.Context, serviceID string, req databas
 	if _, err := d.runRedisCommand(ctx, serviceID, command, secretArg); err != nil {
 		return model.DatabaseUser{}, err
 	}
-	if err := d.writeDatabaseSecret(serviceID, userID, password); err != nil {
+	if err := d.storeDatabaseSecret(serviceID, userID, password); err != nil {
+		_ = d.deleteDatabaseSecret(serviceID, userID)
 		user.PasswordManaged = false
 		return user, fmt.Errorf("agentdocker: redis user created but its password could not be stored: %w", err)
 	}
@@ -172,7 +173,8 @@ func (d *Docker) SetRedisPassword(ctx context.Context, serviceID string) (databa
 	if _, err := d.runRedisCommand(ctx, serviceID, command, secretArg); err != nil {
 		return databases.Secret{}, err
 	}
-	if err := d.writeDatabaseSecret(serviceID, defaultID, password); err != nil {
+	if err := d.storeDatabaseSecret(serviceID, defaultID, password); err != nil {
+		_ = d.deleteDatabaseSecret(serviceID, defaultID)
 		return databases.Secret{}, fmt.Errorf("agentdocker: redis password changed but the new secret could not be stored: %w", err)
 	}
 	// Persist after the new secret exists so the follow-up ACL SAVE can

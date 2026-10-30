@@ -139,9 +139,9 @@ func (d *Docker) CreateUser(ctx context.Context, serviceID string, req databases
 	if _, err := d.runDatabaseSQL(ctx, serviceID, command, []byte(statement)); err != nil {
 		return model.DatabaseUser{}, err
 	}
-	if err := d.writeDatabaseSecret(serviceID, userID, password); err != nil {
-		user.PasswordManaged = false
-		return user, fmt.Errorf("agentdocker: database user created but its password could not be stored: %w", err)
+	if err := d.storeDatabaseSecret(serviceID, userID, password); err != nil {
+		d.rollbackCreatedUser(ctx, serviceID, engine, command, req.Username, host, userID)
+		return model.DatabaseUser{}, fmt.Errorf("agentdocker: database user created but its password could not be stored: %w", err)
 	}
 	for _, grant := range req.Grants {
 		grantStatement, err := engine.GrantSQL(req.Username, host, grant.Database, grant)
@@ -357,7 +357,10 @@ func (d *Docker) SetUserPassword(ctx context.Context, serviceID, userID string) 
 	if _, err := d.runDatabaseSQL(ctx, serviceID, command, []byte(statement)); err != nil {
 		return databases.Secret{}, err
 	}
-	if err := d.writeDatabaseSecret(serviceID, userID, password); err != nil {
+	if err := d.storeDatabaseSecret(serviceID, userID, password); err != nil {
+		// The engine now has a password we could not persist. Remove the old
+		// secret so reveal fails closed instead of returning a stale password.
+		_ = d.deleteDatabaseSecret(serviceID, userID)
 		return databases.Secret{}, fmt.Errorf("agentdocker: database password changed but the new secret could not be stored: %w", err)
 	}
 	return databases.Secret{Value: password}, nil

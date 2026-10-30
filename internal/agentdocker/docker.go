@@ -180,6 +180,9 @@ type Docker struct {
 	opMu             sync.Mutex
 	databaseRegistry dbengine.Registry
 	databaseLocks    sync.Map
+	// secretWriter is a test seam for the failure path after an engine
+	// password change. Production leaves it nil and uses writeDatabaseSecret.
+	secretWriter func(serviceID, userID, value string) error
 }
 
 var _ agentapi.Module = (*Docker)(nil)
