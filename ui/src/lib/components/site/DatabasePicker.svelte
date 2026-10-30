@@ -273,22 +273,22 @@
         description="Provision a database and user, or attach an existing one. Nothing is created until you submit."
         bind:checked={enabled}
         onchange={setEnabled}
-        disabled={servicesLoaded && selectable.length === 0}
+        disabled={servicesLoaded && !servicesError && selectable.length === 0}
       />
     </div>
   {/if}
 
-  {#if !enabled}
-    <p class="empty-hint">No database will be linked. You can add one later from Site Detail.</p>
-  {:else if servicesLoading}
-    <p class="hint">Loading database services…</p>
-  {:else if servicesError}
+  {#if servicesError}
     <ErrorBanner
       title="Could not load database services"
       code={servicesError.code}
       message={servicesError.message}
       onretry={loadServices}
     />
+  {:else if !enabled}
+    <p class="empty-hint">No database will be linked. You can add one later from Site Detail.</p>
+  {:else if servicesLoading}
+    <p class="hint">Loading database services…</p>
   {:else if selectable.length === 0}
     <div class="notice">
       <p>No active SQL service is available.</p>

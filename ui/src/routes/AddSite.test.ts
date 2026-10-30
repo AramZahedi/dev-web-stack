@@ -775,4 +775,36 @@ describe('AddSite Wave 2 fields', () => {
       }),
     );
   });
+
+  it('omits the password for a metadata-only existing user link', async () => {
+    mockDb.listServiceDatabases.mockResolvedValue({ databases: [APP_DATABASE] });
+    mockDb.listServiceUsers.mockResolvedValue({ users: [EXTERNAL_USER] });
+    await openOptionsStep();
+
+    await fireEvent.click(screen.getByLabelText('Create or link a database'));
+    const service = (await screen.findByLabelText(/Database service/)) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    await fireEvent.click(screen.getByLabelText('Use existing database'));
+    await fireEvent.change(screen.getByLabelText(/Existing database/), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(screen.getByLabelText('Use existing user'));
+    await fireEvent.change(screen.getByLabelText(/Existing user/), {
+      target: { value: 'usr_ext' },
+    });
+
+    expect(screen.getByText('Password not managed.')).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    expect(mockApi.createSite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        database: {
+          service_id: 'mysql',
+          database: 'app',
+          user_id: 'usr_ext',
+          primary: true,
+        },
+      }),
+    );
+  });
 });

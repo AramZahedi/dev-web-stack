@@ -1813,7 +1813,7 @@
     onclose={continueAfterCreate}
   >
     <div class="created-database">
-      <DatabaseConnectionCard connection={createdLink.connection} showEnv />
+      <DatabaseConnectionCard connection={createdLink.connection} />
       {#if createdLink.password_managed}
         <SecretField
           label="password"
