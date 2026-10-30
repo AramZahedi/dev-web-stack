@@ -542,9 +542,14 @@ func (a *App) newDBBackupListCmd() *cobra.Command {
 				backups = []model.DatabaseBackup{}
 			}
 			if a.jsonOutput {
+				clean := make([]model.DatabaseBackup, 0, len(backups))
+				for _, backup := range backups {
+					backup.Error = redactPasswordText(backup.Error)
+					clean = append(clean, backup)
+				}
 				return a.writeJSON(cmd, struct {
 					Backups []model.DatabaseBackup `json:"backups"`
-				}{Backups: backups})
+				}{Backups: clean})
 			}
 			return writeBackupTable(cmd, backups)
 		},
@@ -1286,12 +1291,14 @@ func writeBackupTable(cmd *cobra.Command, backups []model.DatabaseBackup) error 
 			formatBytes(backup.SizeBytes),
 			formatDatabaseTime(backup.CreatedAt),
 			shortDatabaseSHA(backup.SHA256),
+			defaultString(redactPasswordText(backup.Error), "-"),
 		})
 	}
-	return writeTable(cmd, []string{"ID", "DATABASE", "KIND", "STATUS", "SIZE", "CREATED", "SHA256"}, rows)
+	return writeTable(cmd, []string{"ID", "DATABASE", "KIND", "STATUS", "SIZE", "CREATED", "SHA256", "ERROR"}, rows)
 }
 
 func writeDatabaseJob(cmd *cobra.Command, app *App, job model.DatabaseJob) error {
+	job.Message = redactPasswordText(job.Message)
 	if app.jsonOutput {
 		return app.writeJSON(cmd, job)
 	}

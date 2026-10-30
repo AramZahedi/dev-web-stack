@@ -228,6 +228,36 @@ func TestDBBackupDownloadWritesFile(t *testing.T) {
 	}
 }
 
+func TestDBBackupListRedactsError(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseBackups: []model.DatabaseBackup{{
+		ID: "bkp_1", ServiceID: "mysql", Database: "app", Status: model.BackupFailed,
+		Error: "dump failed DB_PASSWORD=s3cret-backup",
+	}}}
+	jsonOut := runCLI(t, fake, "db", "backup", "list", "--service", "mysql", "--json")
+	humanOut := runCLI(t, fake, "db", "backup", "list", "--service", "mysql")
+	for name, out := range map[string]string{"json": jsonOut, "human": humanOut} {
+		if strings.Contains(out, "s3cret-backup") {
+			t.Fatalf("%s backup output leaked an error secret: %s", name, out)
+		}
+	}
+}
+
+func TestDBBackupJobRedactsMessage(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseBackupJob: model.DatabaseJob{
+		ID: "job_1", ServiceID: "mysql", Database: "app", Kind: model.JobBackup, Status: model.JobFailed,
+		Message: "restore failed password=s3cret-job",
+	}}
+	jsonOut := runCLI(t, fake, "db", "backup", "create", "--service", "mysql", "--database", "app", "--json")
+	humanOut := runCLI(t, fake, "db", "backup", "create", "--service", "mysql", "--database", "app")
+	for name, out := range map[string]string{"json": jsonOut, "human": humanOut} {
+		if strings.Contains(out, "s3cret-job") {
+			t.Fatalf("%s job output leaked a message secret: %s", name, out)
+		}
+	}
+}
+
 func TestDBBackupDownloadStdoutKeepsBinaryClean(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{databaseBackupData: "backup-data"}
