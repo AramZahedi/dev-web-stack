@@ -1204,24 +1204,67 @@ func TestListUsersUsesLiveGrantsAndPasswordState(t *testing.T) {
 }
 
 func TestManagerEmitsDatabaseAndRedisSSENames(t *testing.T) {
-	m, _, platform, _, events := testManagerWithFakes(t)
+	m, st, platform, _, events := testManagerWithFakes(t)
+	counter := 0
+	m.deps.NewID = func() string {
+		counter++
+		return fmt.Sprintf("id_%d", counter)
+	}
 	platform.job = model.DatabaseJob{ID: "job_1", Status: model.JobSucceeded, BackupID: "bkp_1"}
 	job, err := m.CreateBackup(context.Background(), "mysql", "app", CreateBackupRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitJob(t, m, job.ID)
+
+	st.backups = append(st.backups, model.DatabaseBackupRecord{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app", Kind: string(model.BackupManual), Status: string(model.BackupReady)})
+	job, err = m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{Target: "app_restored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitJob(t, m, job.ID)
+	job, err = m.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("select 1;"), "dump.sql", ImportRequest{Mode: ImportMerge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitJob(t, m, job.ID)
+
+	if _, err := m.LinkDatabase(context.Background(), "blog", LinkDatabaseRequest{ServiceID: "mysql", Database: "app", UserID: "usr_app"}); err != nil {
+		t.Fatal(err)
+	}
+
 	svc := m.deps.Services.(*fakeServices)
 	svc.views[services.IDRedis] = services.View{ID: services.IDRedis, State: services.StateActive, Active: true, Installed: true}
 	platform.users = []model.DatabaseUser{{ID: "usr_cache", ServiceID: "redis", Engine: model.DatabaseRedis, Username: "cache", Enabled: true}}
-	if _, err := m.CreateUser(context.Background(), "redis", CreateUserRequest{Username: "cache"}); err != nil {
+	cacheUser, err := m.CreateUser(context.Background(), "redis", CreateUserRequest{Username: "cache"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := m.UpdateUser(context.Background(), "redis", cacheUser.ID, UpdateUserRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SetUserPassword(context.Background(), "redis", cacheUser.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteUser(context.Background(), "redis", cacheUser.ID, DeleteUserRequest{Confirm: "cache"}); err != nil {
+		t.Fatal(err)
+	}
+
 	seen := map[string]bool{}
 	for _, event := range events.events {
 		seen[event.Type] = true
 	}
-	for _, want := range []string{"database.backup.created", "redis.user.created", "database.job.updated"} {
+	for _, want := range []string{
+		"database.backup.created",
+		"database.backup.restored",
+		"database.import.completed",
+		"database.link.changed",
+		"database.job.updated",
+		"redis.user.created",
+		"redis.user.updated",
+		"redis.user.deleted",
+		"redis.password.changed",
+	} {
 		if !seen[want] {
 			t.Fatalf("missing SSE %q in %+v", want, events.events)
 		}
