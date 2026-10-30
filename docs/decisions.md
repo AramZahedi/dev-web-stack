@@ -20,7 +20,7 @@ are tracked in [known issues](known-issues.md).
 | C5 | Helper owns privileged operations | Root CA, trust, hosts, 80/443 forwarding, native vhosts, uninstall. Peer UID checked; no arbitrary commands/paths. |
 | C6 | SQLite via `modernc.org/sqlite` | Pure-Go, no CGO, local single-user state. |
 | C7 | Per-site PHP-FPM masters | Isolation, per-site PHP version/ini/extensions, safe generation swap and rollback. |
-| C8 | Checksum-pinned PHP/Node runtime catalog | Reproducible downloads; no floating versions; SHA-256 and size verified. Node discovery is amended by proposed C19; embedded entries remain the offline fallback. |
+| C8 | Checksum-pinned PHP/Node runtime catalog | Reproducible downloads; no floating versions; SHA-256 and size verified. Amended by C19: Node installs use the live official index plus the release `SHASUMS256.txt`; embedded entries remain the offline fallback. |
 | C9 | Local CA + OS/browser trust | Trusted `.test` HTTPS without external DNS/certs; helper holds CA key. |
 | C10 | Managed hosts block | Exact `.test` hostname routing with unrelated lines preserved. |
 | C11 | No HSTS | Avoid poisoning local browser state; safe local development. |
@@ -31,8 +31,8 @@ are tracked in [known issues](known-issues.md).
 | C16 | Static/Node/PHP site kinds | Clear runtime model; PHP front controller and Node process supervision are separate. |
 | C17 | Standalone devstack Docker image retired | Removed on 2026-10-25. Docker is reserved for the planned separate service containers. Generic public-port URL/redirect support and the mounted-hosts fallback were retained because they are useful outside the old image. |
 | C18 | Automatic GitHub Actions disabled | Pushes, pull requests, and tags do not start workflows; `ci.yml`, `php.yml`, and `release.yml` are manual dispatch only. Local verification is authoritative. |
-| C19 | Live Node discovery with official checksum verification (proposed 2026-10-30) | Fetch the official Node index, require the release's official `SHASUMS256.txt`, and keep the embedded catalog as offline fallback. Solves “all Node versions” without embedding hundreds of archives; shifts the Node trust root to nodejs.org + SHA-256. See [design](superpowers/specs/2026-10-30-node-toolchain-design.md). |
-| C20 | Global Node CLI default, mirroring PHP (proposed 2026-10-30) | Persist `node_default`, resolve explicit build then newest installed, and publish helper-managed `/usr/local/bin` wrappers on Linux plus `.cmd` shims on Windows and WSL shims. Gives `node`/`npm`/`npx` the same machine-wide behavior as `php`. |
+| C19 | Live Node discovery with official checksum verification (implemented 2026-10-30) | Fetch the official Node index, require the release's official `SHASUMS256.txt`, and keep the embedded catalog as offline fallback. Solves “all Node versions” without embedding hundreds of archives; shifts the Node trust root to nodejs.org + SHA-256. See [design](superpowers/specs/2026-10-30-node-toolchain-design.md). |
+| C20 | Global Node CLI default, mirroring PHP (implemented 2026-10-30) | Persist `node_default`, resolve explicit build then newest installed, and publish helper-managed `/usr/local/bin` wrappers on Linux plus `.cmd` shims on Windows and WSL shims. Gives `node`/`npm`/`npx` the same machine-wide behavior as `php`. |
 
 ## 2. Service-platform decisions (implemented)
 

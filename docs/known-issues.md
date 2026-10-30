@@ -125,8 +125,9 @@ config file for these two keys.
 - Descendants that deliberately create a new session/process group can escape process
   group teardown; normal shell jobs are killed.
 - There is no background ticket janitor; expired tickets are pruned on issuance/consumption.
-- Live host acceptance used a real PTY through the API/WebSocket test; it did not exercise
-  installed PHP/Node shims on a real site.
+- Live host acceptance now exercises a real PTY with installed PHP/Node shims on real
+  static, PHP, and Node sites; see the
+  [Node toolchain E2E report](superpowers/audits/2026-10-30-node-toolchain-e2e.md).
 
 ### K9 — ImageMagick CLI descoped
 
@@ -175,6 +176,22 @@ acceptance run exists yet.
 - `install.sh` adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
   existing helper config and restarts it. A manually managed config without
   `service_root` leaves the service API at helper NOT_IMPLEMENTED until fixed.
+
+### Node toolchain notes
+
+- Node releases are Linux x64 only. Very old releases can fail the post-extract
+  `node --version` smoke on a newer glibc/OpenSSL distro; installs fail closed rather
+  than registering a broken build.
+- Switching Node versions can invalidate native addons; run `npm rebuild` in the project
+  after a switch. devstack does not run it automatically.
+- The embedded catalog is intentionally limited to shipped LTS entries; use
+  `devstack runtime available` for the full official release list and `--offline` for the
+  fallback.
+- `build.node_version` is build-only. A site shell uses the site pin, then the global
+  default; it never silently falls back to an arbitrary installed build.
+- Upgrading a WSL install requires the installer to copy the new `devstack-agent` binary
+  into `/data/devstack/bin` and restart the service. `devstack init` refreshes
+  credentials/hosts/trust but does not replace an already-running agent binary.
 
 ## 4. Deferred/parked work
 

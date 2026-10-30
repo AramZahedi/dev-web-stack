@@ -53,11 +53,21 @@ devstack site add --name app --path "$HOME/projects/app" --document-root dist --
 Add `--www` to serve `www.blog.test` as an alias, `--no-https` for HTTP only, or
 `--force-https` to redirect HTTP requests to HTTPS.
 
-## Add a Node site
+## Node toolchains
 
-Node sites must expose an HTTP server on the port provided in `PORT` and bind
-to loopback. devstack injects `PORT`, a runtime-specific `PATH`, and
-`NODE_EXTRA_CA_CERTS` pointing at the machine CA bundle.
+Every site kind has a Node toolchain. Node server sites require an explicit
+version; static and PHP sites may inherit the machine-wide default. `node`,
+`npm`, and `npx` in `devstack shell`, `devstack exec`, and the dashboard
+terminal resolve in this order:
+
+1. the site's exact `node_version`;
+2. the global Node CLI default;
+3. a clear "no Node toolchain" error.
+
+The build profile's `build.node_version` is build-only and never overrides a
+site shell. Node server sites must expose an HTTP server on the port provided in
+`PORT` and bind to loopback. devstack injects `PORT`, a runtime-specific
+`PATH`, and `NODE_EXTRA_CA_CERTS` pointing at the machine CA bundle.
 
 ```sh
 cd "$HOME/projects/api"
@@ -69,24 +79,58 @@ devstack site add \
   --name api \
   --kind node \
   --path "$HOME/projects/api" \
-  --node 22 \
+  --node 22.11.0 \
   --command "npm run dev"
 ```
 
-`--node` accepts a catalog prefix such as `22` or `24` (Plan 1 ships Node
-22.23.4 and 24.22.1) or an exact version. If the runtime is not installed,
-`site add` prompts to download it; pass `--yes` to install without prompting:
+`--node` accepts an installed exact version, `major.minor`, or major. If the
+release is not installed, `site add` resolves it against the live official
+Node index, verifies the official SHA-256, installs it after confirmation, and
+stores the exact installed version. Pass `--yes` to install without prompting:
 
 ```sh
 devstack site add --name api --kind node --path "$HOME/projects/api" \
-  --node 24 --command "npm run dev" --yes
+  --node 22 --command "npm run dev" --yes
 ```
+
+Static and PHP sites may omit `--node` and inherit the global default:
+
+```sh
+devstack site add --name docs --kind static --path "$HOME/projects/docs"
+devstack site node docs 22.11.0      # pin an installed version
+devstack site node docs --clear      # return to the global default
+```
+
+Node server sites reject `--clear`. Site version changes take effect in the
+next shell/build; restart a running Node server site after changing its pin.
 
 Node's HMR WebSocket traffic is proxied by the same host route. devstack sets
 `PORT` after applying `--env` values, so a site environment entry named `PORT`
 has no effect. Make the dev server read `process.env.PORT`; a command that
 hard-codes another port (for example `PORT=3000 npm run dev`) bypasses the
 allocated route and will not be reachable through devstack.
+
+## Node releases and the global default
+
+`devstack runtime available --kind node` shows the newest patch of each major
+from `https://nodejs.org/dist/index.json`. Add `--all` to reveal older minors
+and patches, `--major N` to filter, `--refresh` to force a fetch, or `--offline`
+to use the cache/embedded fallback. `devstack runtime install node@22`,
+`node@22.11`, or `node@22.11.0` resolves against the live index and verifies the
+official `SHASUMS256.txt` before installing.
+
+The global default mirrors PHP:
+
+```sh
+devstack node default --status
+devstack node default 22.11.0
+devstack node default --clear
+```
+
+It publishes helper-managed `node`, `npm`, and `npx` wrappers in
+`/usr/local/bin` on Linux, `.cmd` shims in the user bin directory on Windows,
+and WSL shims under `tools/node-default/bin`. Installing a build never changes
+an explicit default.
 
 ## Commands
 
@@ -101,6 +145,9 @@ allocated route and will not be reachable through devstack.
 | `devstack site remove <name>` | Unregister and stop a site; project files stay |
 | `devstack site logs <name> [--tail N] [--follow]` | Read or stream site output |
 | `devstack site open <name>` | Open the site URL in the default browser |
+| `devstack site node <name> [<version>|--clear]` | Show, pin, or clear the site's Node toolchain |
+| `devstack node default [<version>|--status|--clear]` | Manage the machine-wide Node CLI default |
+| `devstack runtime available [--kind node] [--major N] [--all] [--refresh] [--offline]` | List official Node releases and other catalog builds |
 
 `--json` is available on the management commands and prints JSON on stdout.
 `site logs --json` emits one JSON object per line rather than a single document;
@@ -121,7 +168,8 @@ daemon restart.
 | `--php` | PHP version line, for example `8.4` (PHP sites only) |
 | `--php-build` | Exact PHP build id, for example `php@8.4.27-r1` (PHP sites only) |
 | `--front-controller` | Route non-file requests to `index.php` (PHP sites only) |
-| `--node` | Node version or catalog prefix (Node sites only) |
+| `--node` | Exact installed Node version or line (`22`, `22.11`); optional for static/PHP |
+| `--source-mode` | `windows` or `wsl`; Node/PHP default to WSL on Windows |
 | `--command` | Start command (Node sites only) |
 | `--document-root` | Document root relative to `--path`, or absolute within `--path` |
 | `--www` | Also serve `www.<name>.test` |
@@ -131,9 +179,9 @@ daemon restart.
 | `--env KEY=VALUE` | Site environment variable; repeatable |
 | `--yes` | Install a missing PHP or Node runtime without prompting |
 
-Changing a site's flags is not exposed as a separate Plan 1 command; remove and
-re-add the site if you need different options. Removing never deletes project
-files.
+Use `devstack site node` to change the Node pin. Other flags are not exposed as
+a separate update command; remove and re-add the site if you need different
+options. Removing never deletes project files.
 
 ## Add a PHP site
 

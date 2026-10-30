@@ -21,12 +21,14 @@ machine, and the design/plan for the next milestone.
 ## Current design and plans
 
 - [Per-Site Node Toolchains and Global Node Default](superpowers/specs/2026-10-30-node-toolchain-design.md)
-  - proposed 2026-10-30; live Node discovery, per-site Node for every kind,
+  - implemented 2026-10-30; live Node discovery, per-site Node for every kind,
     global Node default, and dashboard/CLI installation.
 - [Node toolchain handoff](superpowers/status/2026-10-30-node-toolchain-handoff.md)
-  - current code findings, builder review, risks, and implementation phases.
+  - implementation status, findings, risks, and verification evidence.
 - [Node toolchain implementation plan](superpowers/plans/2026-10-30-node-toolchain.md)
-  - task-by-task TDD plan; execution not started.
+  - executed task-by-task TDD plan.
+- [Node toolchain E2E report](superpowers/audits/2026-10-30-node-toolchain-e2e.md)
+  - live dashboard/CLI coverage, bugs found and fixed, and remaining caveats.
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
   — Waves 0–2 and the next batch implemented; remaining host gates noted.
 - [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)

@@ -1,7 +1,7 @@
 # Project handoff
 
 - **Date:** 2026-10-26
-- **Revised:** 2026-10-27 (Windows/WSL Wave 0, Wave 1, and Wave 2 Lanes F, G, H, I, J implemented; integration acceptance in progress)
+- **Revised:** 2026-10-30 (per-site Node toolchains, live Node discovery, global Node default, and the dashboard/CLI Node surfaces implemented and live-E2E tested)
 - **Repository:** `https://github.com/AramZahedi/dev-web-stack`
 - **Handoff commit:** the commit containing this file; run `git rev-parse HEAD` for the exact SHA.
 - **Branch:** `master`
@@ -20,7 +20,7 @@
   [Wave 1 plan](superpowers/plans/2026-10-25-service-platform-wave1.md),
   [Wave 0 review](superpowers/status/2026-10-25-wave0-review.md), and
   [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
-- **Proposed next milestone (not implemented):** [Per-Site Node Toolchains and Global Node Default](superpowers/specs/2026-10-30-node-toolchain-design.md); current findings and builder review are recorded in the [Node toolchain handoff](superpowers/status/2026-10-30-node-toolchain-handoff.md), and the task-by-task plan is [here](superpowers/plans/2026-10-30-node-toolchain.md).
+- **Implemented 2026-10-30:** [Per-Site Node Toolchains and Global Node Default](superpowers/specs/2026-10-30-node-toolchain-design.md). The implementation covers live Node discovery with official SHA-256 verification, per-site Node pins for every site kind, a PHP-style global Node default, dashboard/CLI installation, and full live E2E evidence in the [Node toolchain E2E report](superpowers/audits/2026-10-30-node-toolchain-e2e.md). See the [Node toolchain handoff](superpowers/status/2026-10-30-node-toolchain-handoff.md) and [implementation plan](superpowers/plans/2026-10-30-node-toolchain.md).
 
 This is the continue-on-another-machine document. Read it first, then
 [architecture](architecture.md), [requirements](requirements.md), [decisions](decisions.md),

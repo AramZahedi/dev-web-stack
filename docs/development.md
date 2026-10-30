@@ -144,14 +144,22 @@ checks; `--skip-playwright` is available for a faster run but is not a pass.
 - Do not edit an existing migration after release; add a new one.
 - Test both fresh creation and upgrade from the previous schema.
 
-## 9. Runtime catalog
+## 9. Runtime catalog and Node discovery
 
-- Node/PHP entries are embedded in `internal/catalog/catalog.json`.
-- Every entry must have a real HTTPS URL, size, and SHA-256 from a published artifact.
-- Never invent versions, checksums, or URLs.
+- PHP entries are embedded in `internal/catalog/catalog.json`; every entry has a real
+  HTTPS URL, size, and SHA-256 from a published artifact. Never invent versions,
+  checksums, or URLs.
+- Node releases are discovered from the official live `index.json` and cached for six
+  hours under `<home>/cache/node/`. The embedded Node entries remain the offline
+  fallback; live entries win for the same version.
+- Every Node install requires the release's official `SHASUMS256.txt`; the index alone
+  never authorizes a download. Checksums and sizes are lazy preflight metadata, cached
+  atomically with private permissions.
+- Tests use local fixtures and injected HTTP transports; no test, daemon startup, or
+  normal site operation may call `nodejs.org`.
 - PHP extension manifest is `internal/catalog/php.json`.
-- New PHP artifacts require the manually dispatched PHP workflow and a new devstack release to embed the
-  catalog entry.
+- New PHP artifacts require the manually dispatched PHP workflow and a new devstack
+  release to embed the catalog entry. Node releases do not require a devstack release.
 
 ## 10. Release
 

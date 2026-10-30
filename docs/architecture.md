@@ -190,8 +190,10 @@ Unrelated hosts lines are preserved.
   to builtin stops the container and restores the proxy/forwarders.
 - Service credentials are random, mode 0600, revealed only through explicit API/CLI; the
   `devstack` database accounts have admin DDL grants.
-- Managed Composer and global PHP/Composer shims live under `tools/` and `/usr/local/bin`;
-  static builds run as the user with a selected Node runtime.
+- Managed Composer and global PHP/Composer/Node shims live under `tools/` and
+  `/usr/local/bin`; static builds run as the user with a selected Node runtime.
+- Node releases are discovered from the official live index and verified against the
+  official per-release SHA-256; the embedded catalog remains the offline fallback.
 
 ## 5. TLS and trust
 
@@ -222,11 +224,25 @@ Unrelated hosts lines are preserved.
 
 ### Node
 
-- Node LTS builds are checksum-pinned and installed under `runtimes/`.
+- The daemon discovers official Linux x64 Node releases from
+  `https://nodejs.org/dist/index.json`, caches the index for six hours under
+  `cache/node/`, and resolves exact versions, `major.minor`, and major selectors.
+- Installs fetch the release’s official `SHASUMS256.txt`, require exactly one matching
+  lowercase SHA-256 line, verify the archive size, and revalidate the checksum on the WSL
+  agent before extraction. The embedded catalog is the offline fallback; live entries win
+  for the same version.
+- Every site kind has a Node toolchain. Node server sites require an explicit exact pin;
+  static and PHP sites may inherit `node_default`. Shells, terminals, and `exec` resolve
+  site pin → global default → explicit error. Build profiles resolve
+  `build.node_version` → legacy site pin → global default and never override the shell.
 - A Node site runs a user-defined command; the daemon supervises it and proxies HTTP and
   WebSocket traffic.
+- The global default publishes helper-managed `node`, `npm`, and `npx` wrappers in
+  `/usr/local/bin` on Linux, `.cmd` shims on Windows, and WSL shims under
+  `tools/node-default/bin`. `tools/node-default/BUILD_PATH` records the registered build
+  path so both the local runtime layout and the legacy WSL `node@<version>` layout work.
 - Node package managers are the project’s responsibility; devstack provides the Node
-  runtime.
+  runtime and per-site `node`/`npm`/`npx` resolution.
 
 ### Static
 
@@ -257,7 +273,8 @@ The daemon exposes the following route groups under `/api/v1`:
 - sites: list/create/get/update/delete/start/stop/restart
 - PHP: info/apply/exec/extensions/defaults/migrate
 - logs/event stream
-- runtimes: list/available/install/remove
+- runtimes: list/available/install/remove; Node release list/preflight/refresh
+- Node: status/default/set/clear
 - trust: status/repair/remove
 - doctor: status/run/repair
 - filesystem browser: directory listing only
@@ -292,7 +309,9 @@ devstack php --site <name> -- <args...>
 devstack php <name> [version]
 devstack php ini <name> ...
 devstack php ext <name> ...
-devstack runtime list|install|remove|migrate
+devstack runtime list|available|install|remove|migrate
+devstack node default [<version>|--status|--clear]
+devstack site node <name> [<version>|--clear]
 devstack vhost status|use|sync|preview|path
 devstack service list|status <id>|install|activate|deactivate|restart|uninstall|logs|credentials
 devstack service config list|show|diff|apply|reset <id> ...

@@ -1,11 +1,12 @@
 # Node Toolchain Handoff - Design Knowledge and Current State
 
 - **Date:** 2026-10-30
-- **Status:** Design accepted for planning; implementation plan written; **no implementation started**
+- **Status:** Implemented and live-E2E tested 2026-10-30
 - **Base commit:** `a36c6b6` (`fix: harden WSL browsing, lifecycle, and startup paths`)
 - **Design:** [Per-Site Node Toolchains and Global Node Default](../specs/2026-10-30-node-toolchain-design.md)
 - **Plan:** [Node toolchain implementation plan](../plans/2026-10-30-node-toolchain.md)
-- **Next gate:** plan review and execution-mode choice
+- **E2E evidence:** [Node toolchain E2E report](../audits/2026-10-30-node-toolchain-e2e.md)
+- **Next gate:** final commit and push
 
 This handoff records everything learned while shaping the design so a fresh
 agent can plan or implement without re-discovering the codebase.
