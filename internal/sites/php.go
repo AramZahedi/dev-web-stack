@@ -517,13 +517,17 @@ func (s *Service) stopPHPLocked(ctx context.Context, site model.Site) (model.Sit
 	return site, nil
 }
 
-// stopPHPProcessLocked stops the default generation and any supervisor
-// record that predates this daemon's in-memory staging.
+// stopPHPProcessLocked stops the default generation, then every remaining
+// generation so a hash-named master staged by a PHP apply cannot survive a
+// user-requested site stop.
 func (s *Service) stopPHPProcessLocked(ctx context.Context, siteID string) error {
 	if err := s.checkPHPBackend(); err != nil {
 		return err
 	}
 	if err := s.deps.PHPBackend.StopPHP(ctx, siteID, phpDefaultGeneration); err != nil {
+		return err
+	}
+	if err := s.deps.PHPBackend.StopPHP(ctx, siteID, ""); err != nil {
 		return err
 	}
 	if s.deps.Backend != nil {

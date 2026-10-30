@@ -565,7 +565,10 @@ func (r *Runtime) StartPHP(ctx context.Context, id string, req agentproto.PHPAct
 	}, nil
 }
 
-// StopPHP stops the running PHP-FPM process for a site.
+// StopPHP stops the requested PHP-FPM generation. An explicit generation that
+// was never prepared is a no-op: a drain after a swap must never stop the newly
+// published master. An empty generation stops every generation for the site.
+// Only stopping the active generation can change the site's desired state.
 func (r *Runtime) StopPHP(ctx context.Context, id string, req agentproto.PHPActionRequest) (agentproto.SiteActionResponse, error) {
 	if err := ctxErr(ctx); err != nil {
 		return agentproto.SiteActionResponse{}, err
@@ -579,10 +582,25 @@ func (r *Runtime) StopPHP(ctx context.Context, id string, req agentproto.PHPActi
 	}
 	var processesToStop []*fpmProcess
 	gen := strings.TrimSpace(req.Generation)
-	if gen != "" && site.phpGenerations[gen] != nil {
-		if proc := site.phpGenerations[gen].process; proc != nil {
+	if gen != "" {
+		target := site.phpGenerations[gen]
+		if target == nil {
+			status := activePHPStatusLocked(site)
+			r.mu.Unlock()
+			return agentproto.SiteActionResponse{Status: status}, nil
+		}
+		if proc := target.process; proc != nil {
 			processesToStop = append(processesToStop, proc)
-			site.phpGenerations[gen].process = nil
+			target.process = nil
+		}
+		if site.activeGen == gen {
+			if next := nextRunningPHPGenerationLocked(site); next != "" {
+				site.activeGen = next
+				site.status = "running"
+			} else {
+				site.status = "stopped"
+				site.desiredRunning = false
+			}
 		}
 	} else {
 		for _, g := range site.phpGenerations {
@@ -591,18 +609,51 @@ func (r *Runtime) StopPHP(ctx context.Context, id string, req agentproto.PHPActi
 				g.process = nil
 			}
 		}
+		site.status = "stopped"
+		site.desiredRunning = false
 	}
-	site.status = "stopped"
-	site.desiredRunning = false
 	_ = r.saveLocked()
+	status := activePHPStatusLocked(site)
 	r.mu.Unlock()
 
 	for _, p := range processesToStop {
 		p.stop()
 	}
 
-	r.logs.append(id, "stopped PHP-FPM processes")
-	return agentproto.SiteActionResponse{Status: "stopped"}, nil
+	if len(processesToStop) > 0 {
+		r.logs.append(id, "stopped PHP-FPM processes")
+	}
+	return agentproto.SiteActionResponse{Status: status}, nil
+}
+
+// activePHPStatusLocked reports the state of the generation that backs the
+// site. The caller must hold r.mu.
+func activePHPStatusLocked(site *runtimeSite) string {
+	gen := site.activeGen
+	if gen == "" {
+		gen = "default"
+	}
+	if target := site.phpGenerations[gen]; target != nil && target.process != nil && target.process.running() {
+		return "running"
+	}
+	return "stopped"
+}
+
+// nextRunningPHPGenerationLocked returns another running generation to promote
+// after the active one stops. The caller must hold r.mu.
+func nextRunningPHPGenerationLocked(site *runtimeSite) string {
+	names := make([]string, 0, len(site.phpGenerations))
+	for name, gen := range site.phpGenerations {
+		if name == site.activeGen || gen.process == nil || !gen.process.running() {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return names[len(names)-1]
 }
 
 func resolvePHPDocumentRoot(spec agentproto.SiteSpec) (string, error) {

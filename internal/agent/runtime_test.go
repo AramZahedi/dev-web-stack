@@ -708,6 +708,96 @@ func TestAgentPHPStartStopAndSwapGenerations(t *testing.T) {
 	}
 }
 
+func TestAgentPHPStopUnknownGenerationDoesNotStopActiveMaster(t *testing.T) {
+	runtime, _ := newTestRuntimeOnly(t)
+	project := filepath.Join(t.TempDir(), "swap-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:          "swap-site",
+		Kind:        "php",
+		BackendPath: project,
+		PHPVersion:  "8.4",
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-1", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "gen-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-2", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "gen-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runtime.StopPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "never-prepared"}); err != nil {
+		t.Fatalf("StopPHP(unknown generation) = %v", err)
+	}
+	status, err := runtime.SiteStatus(spec.ID)
+	if err != nil || status.Status != "running" {
+		t.Fatalf("SiteStatus after stopping an unknown generation = %+v, %v", status, err)
+	}
+	runtime.mu.Lock()
+	active := runtime.sites[spec.ID].activeGen
+	gen := runtime.sites[spec.ID].phpGenerations[active]
+	runtime.mu.Unlock()
+	if active != "gen-2" || gen == nil || gen.process == nil || !gen.process.running() {
+		t.Fatalf("active generation after stopping an unknown generation = %q", active)
+	}
+}
+
+func TestAgentPHPStopDrainedGenerationKeepsDesiredRunning(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	project := filepath.Join(t.TempDir(), "swap-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := agentproto.SiteSpec{
+		ID:          "swap-site",
+		Kind:        "php",
+		BackendPath: project,
+		PHPVersion:  "8.4",
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-1", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "gen-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-2", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "gen-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drain the previous generation after the swap; the site must stay desired-running.
+	if _, err := runtime.StopPHP(context.Background(), spec.ID, agentproto.PHPActionRequest{Generation: "gen-1"}); err != nil {
+		t.Fatalf("StopPHP(drained generation) = %v", err)
+	}
+	// Model an agent process restart: the child dies but the persisted desired
+	// state must still ask for a restart.
+	runtime.mu.Lock()
+	if gen := runtime.sites[spec.ID].phpGenerations["gen-2"]; gen != nil && gen.process != nil {
+		gen.process.stop()
+	}
+	runtime.mu.Unlock()
+	restarted, err := NewRuntime(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := restarted.SiteStatus(spec.ID)
+	if err != nil || status.Status != "running" {
+		t.Fatalf("reconciled status after draining an old generation = %+v, %v", status, err)
+	}
+}
+
 func TestAgentNodeBuildDetectionAndExecution(t *testing.T) {
 	runtime, root := newTestRuntimeOnly(t)
 	project := filepath.Join(root, "node-app")
