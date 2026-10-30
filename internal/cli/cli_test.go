@@ -2059,6 +2059,39 @@ func TestCLIHumanErrorIncludesCodeMessageRemediation(t *testing.T) {
 	}
 }
 
+func TestCLIDatabaseErrorRemediations(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{"DATABASE_NOT_FOUND", "devstack db list"},
+		{"DATABASE_CONFLICT", "another name"},
+		{"DATABASE_PROTECTED", "protected"},
+		{"DATABASE_IN_USE", "Unlink"},
+		{"DATABASE_SERVICE_INACTIVE", "service activate"},
+		{"DATABASE_PASSWORD_MISSING", "db user password"},
+		{"DATABASE_JOB_NOT_FOUND", "job id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			converted := asError(&client.Error{Code: tc.code, Message: "failed"})
+			if !strings.Contains(converted.Remediation, tc.want) {
+				t.Fatalf("remediation = %q, want %q", converted.Remediation, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrintErrorDatabaseRemediation(t *testing.T) {
+	cmd := &cobra.Command{}
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	PrintError(cmd, &client.Error{Code: "DATABASE_SERVICE_INACTIVE", Message: "service is inactive"})
+	if !strings.Contains(stderr.String(), "DATABASE_SERVICE_INACTIVE") || !strings.Contains(stderr.String(), "service activate") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestCLIHomeResolution(t *testing.T) {
 	useTestSeams(t)
 	base := t.TempDir()

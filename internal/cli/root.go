@@ -330,6 +330,20 @@ func apiRemediation(code string) string {
 		return "Run `devstack trust repair` to install the local CA."
 	case "PAYLOAD_TOO_LARGE":
 		return "Reduce the request size and try again."
+	case "DATABASE_NOT_FOUND":
+		return "Run `devstack db list --service <id>` to see the database inventory, then retry with the correct name."
+	case "DATABASE_CONFLICT":
+		return "Choose another name or resolve the existing database/user, then retry."
+	case "DATABASE_PROTECTED":
+		return "System databases and users are protected; choose a different object."
+	case "DATABASE_IN_USE":
+		return "Unlink the affected sites or stop them before retrying."
+	case "DATABASE_SERVICE_INACTIVE":
+		return "Activate the service with `devstack service activate <id>`, then retry."
+	case "DATABASE_PASSWORD_MISSING":
+		return "Rotate a managed password with `devstack db user password --service <id> --user-id <id> --rotate`."
+	case "DATABASE_JOB_NOT_FOUND":
+		return "Check the job id or run `devstack db backup list --service <id>` to see recent backups."
 	case helperproto.CodeServingModeUnavailable:
 		return "Install nginx or Apache and start its service, then run `devstack vhost sync`."
 	case helperproto.CodeVhostConfigInvalid:
