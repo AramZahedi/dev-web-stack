@@ -78,29 +78,65 @@ describe('RedisTab', () => {
     expect(screen.queryByText(/superuser/i)).toBeNull();
   });
 
-  it('resets the default Redis password through the service user endpoint', async () => {
+  it('resets the default Redis password through the discovered user id', async () => {
     render(RedisTab, {
-      props: { service: REDIS_SERVICE, users: REDIS_USERS, onRefresh: vi.fn() },
+      props: {
+        service: REDIS_SERVICE,
+        users: REDIS_USERS,
+        onRefresh: vi.fn(),
+        section: 'password',
+      },
     });
 
     expect(screen.queryByText('newredis')).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: /reset default password/i }));
 
     await waitFor(() =>
-      expect(db.setServiceUserPassword).toHaveBeenCalledWith('redis', 'default'),
+      expect(db.setServiceUserPassword).toHaveBeenCalledWith('redis', 'usr_default'),
     );
     expect(await screen.findByText('newredis')).toBeTruthy();
   });
 
   it('reveals the default Redis password only through the audited endpoint', async () => {
     render(RedisTab, {
-      props: { service: REDIS_SERVICE, users: REDIS_USERS, onRefresh: vi.fn() },
+      props: {
+        service: REDIS_SERVICE,
+        users: REDIS_USERS,
+        onRefresh: vi.fn(),
+        section: 'password',
+      },
     });
 
     expect(screen.queryByText('redissecret')).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: /reveal default password/i }));
 
     expect(await screen.findByText('redissecret')).toBeTruthy();
-    expect(db.revealServiceUserPassword).toHaveBeenCalledWith('redis', 'default');
+    expect(db.revealServiceUserPassword).toHaveBeenCalledWith('redis', 'usr_default');
+  });
+
+  it('shows an unavailable state when no default ACL user is discovered', () => {
+    render(RedisTab, {
+      props: {
+        service: REDIS_SERVICE,
+        users: [REDIS_USERS[0]],
+        onRefresh: vi.fn(),
+        section: 'password',
+      },
+    });
+
+    expect(screen.getByText(/default ACL user was not discovered/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /reset default password/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /reveal default password/i })).toBeNull();
+    expect(db.setServiceUserPassword).not.toHaveBeenCalled();
+    expect(db.revealServiceUserPassword).not.toHaveBeenCalled();
+  });
+
+  it('does not duplicate the default password card on the users tab', () => {
+    render(RedisTab, {
+      props: { service: REDIS_SERVICE, users: REDIS_USERS, onRefresh: vi.fn() },
+    });
+
+    expect(screen.getByText('cache')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /reset default password/i })).toBeNull();
   });
 });

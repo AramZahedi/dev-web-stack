@@ -37,11 +37,12 @@
   const defaultUser = $derived(users.find((user) => user.username === 'default') ?? null);
 
   async function revealDefault(): Promise<void> {
+    if (!defaultUser) return;
     revealLoading = true;
     revealError = '';
     actionError = null;
     try {
-      const secret = await dbApi.revealServiceUserPassword(service.id, 'default');
+      const secret = await dbApi.revealServiceUserPassword(service.id, defaultUser.id);
       revealed = secret.value;
       revealedVisible = true;
     } catch (caught) {
@@ -56,12 +57,12 @@
   }
 
   async function resetDefault(): Promise<void> {
-    if (resetLoading) return;
+    if (resetLoading || !defaultUser) return;
     resetLoading = true;
     actionError = null;
     revealError = '';
     try {
-      const secret = await dbApi.setServiceUserPassword(service.id, 'default');
+      const secret = await dbApi.setServiceUserPassword(service.id, defaultUser.id);
       revealed = secret.value;
       revealedVisible = true;
       addToast({
@@ -105,46 +106,52 @@
       {loading}
       onRefresh={onRefresh}
     />
+    <p class="default-hint">The protected default password is managed on the Password tab.</p>
   {:else}
     <p class="password-intro">
       Redis has no logical database management. This tab manages the protected default user's
       password only.
     </p>
-  {/if}
 
-  <Card
-    title="Default password"
-    subtitle="The Redis default user is protected. Full access means all data commands; admin and dangerous commands stay blocked."
-  >
-    <div class="default-password">
-      <SecretField
-        label="default password"
-        value={revealed}
-        revealed={revealedVisible}
-        loading={revealLoading}
-        error={revealError}
-        onreveal={revealDefault}
-        onhide={hideDefault}
-        oncopy={copyDefault}
-      />
-      <div class="default-actions">
-        <Button
-          size="sm"
-          variant="secondary"
-          loading={resetLoading}
-          disabled={!service.active}
-          onclick={resetDefault}
-        >
-          Reset default password
-        </Button>
-        {#if !defaultUser}
-          <span class="muted">The default ACL user was not discovered on this service.</span>
-        {:else if !defaultUser.password_managed}
-          <span class="muted">No password is stored for the default user yet.</span>
-        {/if}
-      </div>
-    </div>
-  </Card>
+    <Card
+      title="Default password"
+      subtitle="The Redis default user is protected. Full access means all data commands; admin and dangerous commands stay blocked."
+    >
+      {#if !defaultUser}
+        <p class="unavailable" role="status">
+          The default ACL user was not discovered on this service. Password management is
+          unavailable.
+        </p>
+      {:else}
+        <div class="default-password">
+          <SecretField
+            label="default password"
+            value={revealed}
+            revealed={revealedVisible}
+            loading={revealLoading}
+            error={revealError}
+            onreveal={revealDefault}
+            onhide={hideDefault}
+            oncopy={copyDefault}
+          />
+          <div class="default-actions">
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={resetLoading}
+              disabled={!service.active}
+              onclick={resetDefault}
+            >
+              Reset default password
+            </Button>
+            {#if !defaultUser.password_managed}
+              <span class="muted">No password is stored for the default user yet.</span>
+            {/if}
+          </div>
+        </div>
+      {/if}
+    </Card>
+  {/if}
 </div>
 
 <style>
@@ -157,6 +164,22 @@
   .password-intro {
     color: var(--muted);
     font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .default-hint {
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.45;
+  }
+
+  .unavailable {
+    padding: 9px 11px;
+    border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+    border-radius: var(--radius);
+    background: var(--warning-soft);
+    color: var(--warning-fg);
+    font-size: 11.5px;
     line-height: 1.5;
   }
 
