@@ -109,12 +109,16 @@ func (*mysqlEngine) RenameDatabaseSQL(string, string) (string, error) {
 }
 
 func (e *mysqlEngine) ListUsersCommand() ([]string, error) {
-	const query = `SELECT User, Host, Super_priv FROM mysql.user ORDER BY User, Host;`
+	// MariaDB's mysql.user has no account_locked column; MySQL 8 does.
+	query := `SELECT User, Host, Super_priv FROM mysql.user ORDER BY User, Host;`
+	if e.id == model.DatabaseMySQL {
+		query = `SELECT User, Host, Super_priv, account_locked FROM mysql.user ORDER BY User, Host;`
+	}
 	return []string{e.client, "--batch", "--skip-column-names", "--execute", query}, nil
 }
 
 func (e *mysqlEngine) ParseUsers(output []byte) ([]model.DatabaseUser, error) {
-	rows, err := parseTabRows(output, 3)
+	rows, err := parseTabRowsAtLeast(output, 3)
 	if err != nil {
 		return nil, err
 	}
@@ -124,12 +128,16 @@ func (e *mysqlEngine) ParseUsers(output []byte) ([]model.DatabaseUser, error) {
 		if e.ProtectedUser(username, host) {
 			continue
 		}
+		enabled := true
+		if len(row) >= 4 {
+			enabled = !strings.EqualFold(strings.TrimSpace(row[3]), "Y")
+		}
 		users = append(users, model.DatabaseUser{
 			ServiceID: string(e.id),
 			Engine:    e.id,
 			Username:  username,
 			Host:      host,
-			Enabled:   true,
+			Enabled:   enabled,
 		})
 	}
 	return users, nil
@@ -402,6 +410,17 @@ func splitPrivileges(value string) []string {
 }
 
 func parseTabRows(output []byte, columns int) ([][]string, error) {
+	rows, err := parseTabRowsAtLeast(output, columns)
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i] = rows[i][:columns]
+	}
+	return rows, nil
+}
+
+func parseTabRowsAtLeast(output []byte, columns int) ([][]string, error) {
 	var rows [][]string
 	for _, line := range strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -409,9 +428,9 @@ func parseTabRows(output []byte, columns int) ([][]string, error) {
 		}
 		fields := strings.Split(line, "\t")
 		if len(fields) < columns {
-			return nil, fmt.Errorf("dbengine: expected %d columns, got %d in %q", columns, len(fields), line)
+			return nil, fmt.Errorf("dbengine: expected at least %d columns, got %d in %q", columns, len(fields), line)
 		}
-		rows = append(rows, fields[:columns])
+		rows = append(rows, fields)
 	}
 	return rows, nil
 }

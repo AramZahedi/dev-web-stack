@@ -251,3 +251,59 @@ func TestRedisDefaultAdminKeepsACL(t *testing.T) {
 		}
 	}
 }
+
+func TestMySQLParseUsersHonorsAccountLocked(t *testing.T) {
+	e := NewMySQL()
+	users, err := e.ParseUsers([]byte("app\t%\tN\tY\nopen\t%\tN\tN\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("users = %+v", users)
+	}
+	if users[0].Enabled {
+		t.Fatalf("locked user reported enabled: %+v", users[0])
+	}
+	if !users[1].Enabled {
+		t.Fatalf("unlocked user reported disabled: %+v", users[1])
+	}
+}
+
+func TestMySQLListUsersSelectsAccountLocked(t *testing.T) {
+	mysqlCmd, err := NewMySQL().ListUsersCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(mysqlCmd, " "), "account_locked") {
+		t.Fatalf("mysql user query omits account_locked: %v", mysqlCmd)
+	}
+	mariaCmd, err := NewMariaDB().ListUsersCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(mariaCmd, " "), "account_locked") {
+		t.Fatalf("mariadb user query uses a mysql-only column: %v", mariaCmd)
+	}
+}
+
+func TestPostgresListUsersIncludesDisabledRoles(t *testing.T) {
+	e := NewPostgreSQL()
+	command, err := e.ListUsersCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(command, " ")
+	if strings.Contains(joined, "WHERE rolcanlogin") {
+		t.Fatalf("postgres user query hides disabled roles: %s", joined)
+	}
+	users, err := e.ParseUsers([]byte("app\tt\tf\nolduser\tf\tf\npostgres\tt\tt\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 || users[0].Username != "app" || !users[0].Enabled {
+		t.Fatalf("users = %+v", users)
+	}
+	if users[1].Username != "olduser" || users[1].Enabled {
+		t.Fatalf("disabled role = %+v", users[1])
+	}
+}

@@ -117,7 +117,7 @@ func (*postgresEngine) RenameDatabaseSQL(name, newName string) (string, error) {
 }
 
 func (*postgresEngine) ListUsersCommand() ([]string, error) {
-	const query = `SELECT rolname, rolcanlogin, rolsuper FROM pg_roles WHERE rolcanlogin ORDER BY rolname;`
+	const query = `SELECT rolname, rolcanlogin, rolsuper FROM pg_roles ORDER BY rolname;`
 	return []string{
 		"psql", "--no-psqlrc", "--set=ON_ERROR_STOP=1",
 		"--username=postgres", "--dbname=postgres",
