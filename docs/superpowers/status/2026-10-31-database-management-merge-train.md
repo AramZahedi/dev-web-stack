@@ -1,6 +1,7 @@
 # Database management merge train — live status
 
 - **Branch:** `integration/database-management`
+- **Merged to:** `master` at `8411b56` (local only; not pushed)
 - **Base:** `1464451` (`master`, after the lane completion handoff)
 - **Started:** 2026-10-31
 - **Flow:** controller-only; targeted review of each lane's final fix commits; no new subagents.
@@ -22,6 +23,7 @@
 | Redis ACL confirmation path | done | `c948272` | manager/servicecontrol/API tests PASS; UI 330 tests PASS; build + vet PASS |
 | Merged registry verification | done | — | dbengine/helper/helperclient/agentdocker/agentclient + databases/servicecontrol + API + sites PASS |
 | Full merged-tree gate | done | `f60e1a8` | Go race/vet/build PASS; UI 0/0 + 330 tests + build PASS; 5 binaries built |
+| Merge to `master` | done | `8411b56` | trees identical; databases/api/sites + build PASS; not pushed |
 | Full E2E plan | pending | — | — |
 
 ## Step log
@@ -107,3 +109,10 @@
 - `go test ./internal/api -run 'TestOpenAPI|TestEveryAPIRouteRequiresTheInstallToken|TestSecurity|TestDatabase' -count=1` PASS.
 - UI: `npm run check` 0 errors/0 warnings; `npm test -- --run` 30 files/330 tests PASS; `npm run build` PASS (existing >500 kB chunk warning only).
 - Deployable binaries built: `dist/gate/devstack.exe`, `dist/gate/devstack-helper.exe`, `dist/gate/devstack-linux-amd64`, `dist/gate/devstack-helper-linux-amd64`, `dist/gate/devstack-agent-linux-amd64`.
+
+### Step 11 — Merge to `master`
+
+- Merged `integration/database-management` into `master` with `--no-ff`; merge commit `8411b56` (`merge: database management`).
+- Tree equality confirmed: `master^{tree}` = `integration/database-management^{tree}` = `6c4e19e488baa5db883eb55f64de4f1fab79138e`.
+- Post-merge sanity: `go test ./internal/databases ./internal/api ./internal/sites -count=1` PASS; `go build ./...` PASS.
+- Local only; `master` is ahead of `origin/master` and nothing was pushed.
