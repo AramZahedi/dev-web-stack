@@ -219,12 +219,26 @@ func TestSiteDBUnlinkRequiresYes(t *testing.T) {
 	}
 }
 
+func shellContextSite() model.Site {
+	return model.Site{
+		ID: "site-1", Name: "blog", Kind: model.SiteStatic, HostPath: "/home/aram/blog", BackendPath: "/home/aram/blog",
+		NodeToolchain: &model.NodeToolchain{
+			Version: "22.11.0", BuildID: "node@22.11.0", Source: model.NodeSourceGlobal, Installed: true,
+		},
+	}
+}
+
+func shellContextRuntimes() []model.RuntimeBuild {
+	return []model.RuntimeBuild{{ID: "node@22.11.0", Kind: "node", Version: "22.11.0"}}
+}
+
 func TestSiteShellContextDegradesWhenDatabaseEnvUnavailable(t *testing.T) {
 	useTestSeams(t)
 	for _, code := range []string{"NOT_FOUND", "DATABASE_PASSWORD_MISSING", "DATABASE_SERVICE_INACTIVE"} {
 		t.Run(code, func(t *testing.T) {
 			fake := &fakeClient{
-				sites:              []model.Site{{ID: "site-1", Name: "blog", Kind: model.SiteStatic, HostPath: "/home/aram/blog", BackendPath: "/home/aram/blog"}},
+				sites:              []model.Site{shellContextSite()},
+				runtimes:           shellContextRuntimes(),
 				siteDatabaseEnvErr: &client.Error{Code: code, Message: "database environment unavailable"},
 			}
 			app := &App{home: t.TempDir()}
@@ -249,7 +263,8 @@ func TestSiteShellContextDegradesWhenDatabaseEnvUnavailable(t *testing.T) {
 func TestSiteShellContextPropagatesUnexpectedDatabaseEnvErrors(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{
-		sites:              []model.Site{{ID: "site-1", Name: "blog", Kind: model.SiteStatic, HostPath: "/home/aram/blog", BackendPath: "/home/aram/blog"}},
+		sites:              []model.Site{shellContextSite()},
+		runtimes:           shellContextRuntimes(),
 		siteDatabaseEnvErr: &client.Error{Code: "INTERNAL", Message: "unexpected failure"},
 	}
 	app := &App{home: t.TempDir()}
@@ -261,7 +276,8 @@ func TestSiteShellContextPropagatesUnexpectedDatabaseEnvErrors(t *testing.T) {
 func TestSiteShellContextMergesDatabaseEnv(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{
-		sites: []model.Site{{ID: "site-1", Name: "blog", Kind: model.SiteStatic, HostPath: "/home/aram/blog", BackendPath: "/home/aram/blog"}},
+		sites:    []model.Site{shellContextSite()},
+		runtimes: shellContextRuntimes(),
 		siteDatabaseEnv: map[string]string{
 			"DB_HOST": "127.0.0.1", "DB_DATABASE": "app", "DB_PASSWORD": "s3cret",
 		},
