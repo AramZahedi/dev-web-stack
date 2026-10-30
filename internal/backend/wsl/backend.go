@@ -4,6 +4,7 @@ package wslbackend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"path"
@@ -237,7 +238,7 @@ func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 	case len(spec.HostPath) >= 3 && spec.HostPath[1] == ':' && (spec.HostPath[2] == '\\' || spec.HostPath[2] == '/'):
 		mode = string(model.SourceWindows)
 	}
-	return agentproto.SiteSpec{
+	site := agentproto.SiteSpec{
 		ID: spec.ID, Kind: spec.Kind, Domain: spec.Domain, HostPath: spec.HostPath, BackendPath: toWSLPath(spec.BackendPath),
 		DocumentRoot: toWSLPath(backendDocumentRoot), ProxyDocumentRoot: proxyRoot, SourceMode: mode,
 		Command: spec.Command, Env: cloneMap(spec.Env), HTTPPort: spec.HTTPPort, FastCGIPort: spec.FastCGIPort,
@@ -245,6 +246,31 @@ func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 		PHPVersion: spec.PHPVersion, PHPBuild: spec.PHPBuild, PHPBuildPath: toWSLPath(spec.PHPBuildPath),
 		PHPIniPath: toWSLPath(spec.PHPIniPath), FPMConfigPath: toWSLPath(spec.FPMConfigPath), PHPHealthScript: toWSLPath(spec.PHPHealthScript),
 	}
+	applyDatabaseLinks(&site, spec.DatabaseLinks)
+	return site
+}
+
+// applyDatabaseLinks carries password-free link metadata to the agent. The
+// agent lane owns the SiteSpec.DatabaseLinks field; this JSON bridge lets the
+// daemon branch compile against the frozen foundation and start sending links
+// as soon as that field is merged, without importing a not-yet-landed type.
+func applyDatabaseLinks(site *agentproto.SiteSpec, links []backend.DatabaseLinkSpec) {
+	if site == nil || len(links) == 0 {
+		return
+	}
+	raw, err := databaseLinksPayload(links)
+	if err != nil {
+		return
+	}
+	_ = json.Unmarshal(raw, site)
+}
+
+// databaseLinksPayload is the wire fragment the agent's SiteSpec field
+// consumes.
+func databaseLinksPayload(links []backend.DatabaseLinkSpec) ([]byte, error) {
+	return json.Marshal(struct {
+		DatabaseLinks []backend.DatabaseLinkSpec `json:"database_links,omitempty"`
+	}{DatabaseLinks: links})
 }
 
 func filepathToSlash(value string) string { return strings.ReplaceAll(value, `\`, "/") }

@@ -2,6 +2,7 @@ package wslbackend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -208,5 +209,25 @@ func TestToAgentSiteSourceMode(t *testing.T) {
 		if spec.SourceMode != tc.wantMode {
 			t.Errorf("toAgentSite(%q).SourceMode = %q, want %q", tc.hostPath, spec.SourceMode, tc.wantMode)
 		}
+	}
+}
+
+func TestDatabaseLinksPayloadMatchesAgentWireShape(t *testing.T) {
+	links := []backend.DatabaseLinkSpec{{
+		ServiceID: "mysql", Engine: "mysql", Database: "app", UserID: "usr_app",
+		Username: "app", Host: "127.0.0.1", Port: 3306, Primary: true, PasswordManaged: true,
+	}}
+	raw, err := databaseLinksPayload(links)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		DatabaseLinks []backend.DatabaseLinkSpec `json:"database_links"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.DatabaseLinks) != 1 || decoded.DatabaseLinks[0].UserID != "usr_app" || !decoded.DatabaseLinks[0].Primary {
+		t.Fatalf("decoded = %+v", decoded.DatabaseLinks)
 	}
 }

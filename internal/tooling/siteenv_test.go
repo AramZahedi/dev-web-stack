@@ -220,6 +220,42 @@ func TestBuildSiteEnvNodeAndStaticBuild(t *testing.T) {
 	}
 }
 
+func TestBuildSiteEnvExtraEnvWinsOverSiteEnv(t *testing.T) {
+	home := t.TempDir()
+	paths := config.NewPaths(home)
+	nodeBuild := fakeNodeBuild(t, home, "22.11.0")
+	project := filepath.Join(home, "projects", "web")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	site := model.Site{
+		ID: "s1", Name: "static-app", HostPath: project, Kind: model.SiteStatic,
+		Env: map[string]string{"DB_DATABASE": "old", "ONLY_SITE": "yes", "DEVSTACK_SITE": "hacked"},
+	}
+	env, err := BuildSiteEnv(site, EnvDeps{
+		Paths:       paths,
+		Builds:      []model.RuntimeBuild{nodeBuild},
+		NodeDefault: &nodeBuild,
+		BasePATH:    "/usr/bin:/bin",
+		ExtraEnv:    map[string]string{"DB_DATABASE": "new", "ONLY_EXTRA": "yes", "DEVSTACK_SITE": "hacked-again"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Values["DB_DATABASE"] != "new" {
+		t.Fatalf("DB_DATABASE = %q, want new", env.Values["DB_DATABASE"])
+	}
+	if env.Values["ONLY_SITE"] != "yes" || env.Values["ONLY_EXTRA"] != "yes" {
+		t.Fatalf("values = %+v", env.Values)
+	}
+	if env.Values["DEVSTACK_SITE"] != site.Name {
+		t.Fatalf("DEVSTACK_SITE = %q, want %q", env.Values["DEVSTACK_SITE"], site.Name)
+	}
+	if site.Env["DB_DATABASE"] != "old" {
+		t.Fatalf("BuildSiteEnv mutated site.Env: %+v", site.Env)
+	}
+}
+
 func TestBuildSiteEnvRequiresInstalledRuntimesAndConfig(t *testing.T) {
 	home := t.TempDir()
 	paths := config.NewPaths(home)

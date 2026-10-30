@@ -11,17 +11,35 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
+// DatabaseLinkSpec is the password-free metadata the Windows agent needs to
+// resolve a linked database's secret at prepare/terminal time.
+type DatabaseLinkSpec struct {
+	ServiceID       string
+	Engine          string
+	Database        string
+	UserID          string
+	Username        string
+	Host            string
+	Port            int
+	Primary         bool
+	PasswordManaged bool
+}
+
 // SiteSpec describes one site as the backend needs to see it. Paths are
 // expressed in the backend's namespace.
 type SiteSpec struct {
-	ID              string
-	Kind            string
-	Domain          string
-	HostPath        string
-	BackendPath     string
-	DocumentRoot    string
-	Command         string
-	Env             map[string]string
+	ID           string
+	Kind         string
+	Domain       string
+	HostPath     string
+	BackendPath  string
+	DocumentRoot string
+	Command      string
+	Env          map[string]string
+	// RuntimeEnv carries process-only values (for example database passwords on
+	// Linux) that must not be written into generated configuration files.
+	RuntimeEnv      map[string]string
+	DatabaseLinks   []DatabaseLinkSpec
 	HTTPPort        int
 	FastCGIPort     int
 	SPAFallback     bool

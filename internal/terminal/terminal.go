@@ -94,6 +94,10 @@ type Deps struct {
 	UID         int
 	Shell       string
 	BasePATH    string
+	// DatabaseEnv resolves dynamic database-link environment values for a site.
+	// The values may include passwords and are passed straight to the process
+	// environment; they are never persisted or logged.
+	DatabaseEnv func(context.Context, model.Site) (map[string]string, error)
 	Now         func() time.Time
 
 	TicketTTL   time.Duration
@@ -114,6 +118,7 @@ type Manager struct {
 	uid         int
 	shell       string
 	basePATH    string
+	databaseEnv func(context.Context, model.Site) (map[string]string, error)
 
 	tickets     *TicketStore
 	ticketTTL   time.Duration
@@ -171,6 +176,7 @@ func NewManager(deps Deps) *Manager {
 		uid:         deps.UID,
 		shell:       deps.Shell,
 		basePATH:    deps.BasePATH,
+		databaseEnv: deps.DatabaseEnv,
 		tickets:     NewTicketStore(deps.TicketTTL, deps.Now),
 		ticketTTL:   deps.TicketTTL,
 		maxTotal:    deps.MaxTotal,
@@ -333,12 +339,21 @@ func (m *Manager) environment(ctx context.Context, site model.Site) ([]string, e
 	if nodeDefault == nil {
 		nodeDefault = m.nodeDefault
 	}
+	var extraEnv map[string]string
+	if m.databaseEnv != nil {
+		values, err := m.databaseEnv(ctx, site)
+		if err != nil {
+			return nil, fmt.Errorf("terminal: resolve database environment: %w", err)
+		}
+		extraEnv = values
+	}
 	env, err := tooling.BuildSiteEnv(site, tooling.EnvDeps{
 		Paths:       m.paths,
 		Builds:      builds,
 		PHPInfo:     info,
 		NodeDefault: nodeDefault,
 		BasePATH:    basePATH,
+		ExtraEnv:    extraEnv,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("terminal: build site environment: %w", err)

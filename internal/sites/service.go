@@ -151,6 +151,13 @@ type DockerStatusProvider interface {
 	DockerStatus() (lastSync time.Time, configOK bool, lastError string)
 }
 
+// DatabaseProvisioner creates or links the optional Add Site database. The
+// daemon's databases.Manager implements it.
+type DatabaseProvisioner interface {
+	ProvisionSiteDatabase(ctx context.Context, req databases.SiteDatabaseRequest) (databases.ProvisionedDatabase, error)
+	LinkProvisioned(ctx context.Context, siteID string, provisioned databases.ProvisionedDatabase) (databases.SiteDatabaseResult, error)
+}
+
 // Deps is the complete set of service dependencies. Now and NewID are optional
 // and default to the wall clock and a random 128-bit hex id.
 type Deps struct {
@@ -180,6 +187,17 @@ type Deps struct {
 	// WaitReady probes the host-visible loopback port after a backend starts.
 	// Nil disables the probe (tests and platforms without a proxy boundary).
 	WaitReady func(context.Context, model.Site) error
+	// DatabaseEnv resolves dynamic database-link environment values. It may
+	// return passwords on Linux; they are passed only to process environments.
+	DatabaseEnv func(context.Context, model.Site) (map[string]string, error)
+	// DatabaseLinks returns password-free link metadata for the Windows agent.
+	DatabaseLinks func(context.Context, model.Site) ([]model.DatabaseLink, error)
+	// DatabaseGuard blocks a start when a conflicting exclusive-group engine is
+	// active. A stopped exact service is reported as a warning instead.
+	DatabaseGuard func(context.Context, model.Site) error
+	// Database provisions the optional Add Site database before the site row
+	// exists and links it afterwards.
+	Database DatabaseProvisioner
 }
 
 // Service owns site lifecycle operations. Mutating operations and status
@@ -260,6 +278,17 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	if err != nil {
 		return model.Site{}, err
 	}
+	var provisioned *databases.ProvisionedDatabase
+	if req.Database != nil {
+		if s.deps.Database == nil {
+			return model.Site{}, errors.New("sites: database provisioning is not configured")
+		}
+		result, err := s.deps.Database.ProvisionSiteDatabase(ctx, *req.Database)
+		if err != nil {
+			return model.Site{}, fmt.Errorf("sites: provision database for %q: %w", site.Name, err)
+		}
+		provisioned = &result
+	}
 
 	oldHosts, err := s.hostsFor(ctx, "", nil)
 	if err != nil {
@@ -295,6 +324,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	}
 
 	fail := func(cause error, certIssued bool) (model.Site, error) {
+		if provisioned != nil {
+			cause = fmt.Errorf("%w (database %q and user %q were created and kept)", cause, provisioned.Database.Name, provisioned.User.Username)
+		}
 		return model.Site{}, s.rollbackCreate(ctx, site, oldHosts, certIssued, port, cause)
 	}
 
@@ -354,8 +386,12 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		if err := s.deps.Store.CreateSiteWithPHPConfig(ctx, site, cfg); err != nil {
 			return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
 		}
-	} else if err := s.deps.Store.CreateSite(ctx, site); err != nil {
-		return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
+		s.linkProvisionedDatabase(ctx, site, provisioned)
+	} else {
+		if err := s.deps.Store.CreateSite(ctx, site); err != nil {
+			return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
+		}
+		s.linkProvisionedDatabase(ctx, site, provisioned)
 	}
 
 	createdMessage := fmt.Sprintf("site %s created", site.Name)
@@ -374,6 +410,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	}
 
 	if site.Kind == model.SitePHP {
+		if err := s.checkDatabaseGuard(ctx, site); err != nil {
+			return fail(err, true)
+		}
 		spec, err := s.phpSiteSpecFromBuildLocked(ctx, site, phpBuild)
 		if err != nil {
 			return fail(err, true)
@@ -407,6 +446,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	// External static sites are served directly by nginx/Apache: no backend
 	// process and no proxy port.
 	if s.externalServing() && site.Kind == model.SiteStatic {
+		if err := s.checkDatabaseGuard(ctx, site); err != nil {
+			return fail(err, true)
+		}
 		site.Status = model.StatusRunning
 		site.UpdatedAt = s.currentTime()
 		if err := s.deps.Store.UpdateSite(ctx, site); err != nil {
@@ -424,6 +466,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		return site, nil
 	}
 
+	if err := s.checkDatabaseGuard(ctx, site); err != nil {
+		return fail(err, true)
+	}
 	prepared, err := s.deps.Backend.Prepare(ctx, s.backendSpecFor(ctx, site))
 	if err != nil {
 		return fail(fmt.Errorf("sites: prepare %q: %w", site.Name, err), true)
@@ -728,6 +773,9 @@ func (s *Service) Restart(ctx context.Context, ref string) error {
 	if err != nil {
 		return err
 	}
+	if err := s.checkDatabaseGuard(ctx, site); err != nil {
+		return err
+	}
 	previous := site
 	site, err = s.stopLocked(ctx, site)
 	if err != nil {
@@ -799,6 +847,7 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 		return fmt.Errorf("sites: delete %q: %w", site.Name, err)
 	}
 	s.emitEvent(ctx, site.ID, "site.deleted", fmt.Sprintf("site %s deleted", site.Name))
+	s.emitEvent(ctx, site.ID, "database.link.changed", fmt.Sprintf("site %s deleted; database links removed", site.Name))
 
 	s.releasePort(ctx, site.ID, site.HTTPPort)
 	if site.FastCGIPort != 0 {
@@ -1192,6 +1241,9 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 // startLocked allocates a port if the row has none, prepares and starts the
 // backend, and persists the running state. The caller must hold s.mu.
 func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	if err := s.checkDatabaseGuard(ctx, site); err != nil {
+		return site, err
+	}
 	if site.Kind == model.SitePHP {
 		return s.startPHPLocked(ctx, site)
 	}
@@ -1715,6 +1767,38 @@ func (s *Service) backendSpecFor(ctx context.Context, site model.Site) backend.S
 	if toolchain, err := s.ResolveNodeToolchain(ctx, site); err == nil {
 		spec.RuntimeVersion = toolchain.Version
 	}
+	if env := s.databaseEnv(ctx, site); len(env) > 0 {
+		if spec.Env == nil {
+			spec.Env = make(map[string]string, len(env))
+		}
+		for key, value := range env {
+			spec.Env[key] = value
+		}
+	}
+	if s.deps.DatabaseLinks != nil {
+		if links, err := s.deps.DatabaseLinks(ctx, site); err == nil {
+			spec.DatabaseLinks = make([]backend.DatabaseLinkSpec, 0, len(links))
+			for _, link := range links {
+				host := link.Connection.Host
+				if host == "" {
+					host = "127.0.0.1"
+				}
+				spec.DatabaseLinks = append(spec.DatabaseLinks, backend.DatabaseLinkSpec{
+					ServiceID:       link.ServiceID,
+					Engine:          string(link.Engine),
+					Database:        link.Database,
+					UserID:          link.UserID,
+					Username:        link.Username,
+					Host:            host,
+					Port:            link.Connection.Port,
+					Primary:         link.Primary,
+					PasswordManaged: link.PasswordManaged,
+				})
+			}
+		} else {
+			s.emitEvent(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: resolve database links: %v", site.Name, err))
+		}
+	}
 	return spec
 }
 
@@ -2090,6 +2174,41 @@ func (s *Service) emitStatus(ctx context.Context, site model.Site, old, current 
 		message += ": " + detail
 	}
 	s.emitEvent(ctx, site.ID, "site."+string(current), message)
+}
+
+// linkProvisionedDatabase links the Add Site database after the site row
+// exists. A link failure keeps the site and records a warning; the database and
+// user remain service-wide.
+func (s *Service) linkProvisionedDatabase(ctx context.Context, site model.Site, provisioned *databases.ProvisionedDatabase) {
+	if provisioned == nil || s.deps.Database == nil {
+		return
+	}
+	if _, err := s.deps.Database.LinkProvisioned(ctx, site.ID, *provisioned); err != nil {
+		s.emitEvent(ctx, site.ID, "database.link.changed", fmt.Sprintf("site %s: link database: %v", site.Name, err))
+	}
+}
+
+// checkDatabaseGuard blocks a start when a linked service has a conflicting
+// exclusive-group engine active.
+func (s *Service) checkDatabaseGuard(ctx context.Context, site model.Site) error {
+	if s.deps.DatabaseGuard == nil {
+		return nil
+	}
+	return s.deps.DatabaseGuard(ctx, site)
+}
+
+// databaseEnv resolves dynamic database-link environment values. Resolver
+// failures become a diagnostic warning and never fail a lifecycle operation.
+func (s *Service) databaseEnv(ctx context.Context, site model.Site) map[string]string {
+	if s.deps.DatabaseEnv == nil {
+		return nil
+	}
+	env, err := s.deps.DatabaseEnv(ctx, site)
+	if err != nil {
+		s.emitEvent(ctx, site.ID, "database.service.offline", fmt.Sprintf("site %s: resolve database environment: %v", site.Name, err))
+		return nil
+	}
+	return env
 }
 
 // emitEvent records a diagnostic event. Event persistence is best effort and

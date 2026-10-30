@@ -305,10 +305,14 @@ func (l *Local) awaitPHPHealth(ctx context.Context, siteID, processID string, sp
 func (l *Local) phpProcessSpec(siteID, generation string, p preparedSite) (supervisor.ProcessSpec, error) {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(p.spec.FastCGIPort))
 	fpmBin := filepath.Join(p.spec.PHPBuildPath, "sbin", "php-fpm")
+	env := phpEnvironment(p.spec.PHPBuildPath, p.spec.Env)
+	for key, value := range p.spec.RuntimeEnv {
+		env[key] = value
+	}
 	return supervisor.ProcessSpec{
 		ID:      generationProcessID(siteID, generation),
 		Argv:    phpfpm.Argv(fpmBin, p.spec.FPMConfigPath, p.spec.PHPIniPath),
-		Env:     phpEnvironment(p.spec.PHPBuildPath, p.spec.Env),
+		Env:     env,
 		Dir:     p.workingDir,
 		Ready:   supervisor.ReadyCheck{TCPAddr: addr, Timeout: phpReadyTimeout},
 		Restart: defaultRestartPolicy,

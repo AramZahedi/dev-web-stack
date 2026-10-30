@@ -56,6 +56,22 @@ func TestRenderFPMConfigMatchesSpec(t *testing.T) {
 	}
 }
 
+func TestRenderFPMConfigDoesNotWriteRuntimeEnv(t *testing.T) {
+	cfg := validConfig()
+	cfg.RuntimeEnv = map[string]string{"DB_DATABASE": "app", "DB_PASSWORD": "s3cret"}
+	got, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "s3cret") || strings.Contains(text, "DB_PASSWORD") {
+		t.Fatalf("runtime secret rendered into php-fpm.conf:\n%s", text)
+	}
+	if !strings.Contains(text, `env[APP_ENV] = "local"`) {
+		t.Fatalf("site env missing from php-fpm.conf:\n%s", text)
+	}
+}
+
 func TestRenderFPMConfigUsesPersistedPoolBudget(t *testing.T) {
 	cfg := validConfig()
 	cfg.Pool = &model.PHPFPMBudget{
