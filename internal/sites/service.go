@@ -26,6 +26,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
@@ -53,6 +54,7 @@ type CreateRequest struct {
 	ApacheAllowOverride                                  string
 	SPAFallbackFile                                      string
 	Build                                                *model.BuildProfile
+	Database                                             *databases.SiteDatabaseRequest
 }
 
 // UpdateRequest describes a partial site update. Empty strings and nil
