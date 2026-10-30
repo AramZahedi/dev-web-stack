@@ -428,6 +428,28 @@ func TestUninstallDeleteDataWarnsWhenMetadataCleanupFails(t *testing.T) {
 	}
 }
 
+func TestOptionalBodiesAcceptEmptyChunkedRequests(t *testing.T) {
+	db := &fakeDatabaseService{}
+	fx := newFixture(t, Config{Databases: db, Services: &fakeServiceCoordinator{}})
+	request := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "http://127.0.0.1"+path, nil)
+		req.Body = io.NopCloser(strings.NewReader(""))
+		req.ContentLength = -1
+		req.RemoteAddr = "127.0.0.1:54321"
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: fx.session})
+		req.Header.Set("X-CSRF-Token", fx.server.csrfFor(fx.session))
+		rec := httptest.NewRecorder()
+		fx.raw.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := request(http.MethodDelete, "/api/v1/services/mysql"); rec.Code != http.StatusOK {
+		t.Fatalf("uninstall empty chunked body = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(http.MethodPost, "/api/v1/services/mysql/databases/app/backups"); rec.Code != http.StatusAccepted {
+		t.Fatalf("backup empty chunked body = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMissingSiteUsesGenericNotFound(t *testing.T) {
 	fx := newFixture(t, Config{Databases: &fakeDatabaseService{err: databases.ErrSiteNotFound}})
 	rec := fx.request(t, http.MethodGet, "/api/v1/sites/missing/databases", nil)

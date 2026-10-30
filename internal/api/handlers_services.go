@@ -114,10 +114,8 @@ func (s *Server) handleUninstallService(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		DeleteData bool `json:"delete_data"`
 	}
-	if r.Body != nil && r.ContentLength != 0 {
-		if !decodeJSONBody(w, r, &req) {
-			return
-		}
+	if !decodeOptionalJSONBody(w, r, &req) {
+		return
 	}
 	id := services.ID(strings.TrimSpace(r.PathValue("id")))
 	if id == "" {

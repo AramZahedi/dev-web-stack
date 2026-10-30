@@ -1012,14 +1012,37 @@ func writeError(w http.ResponseWriter, status int, code, message string, details
 // decodeJSONBody decodes one JSON value and writes a stable 400/413 error on
 // failure. It returns false when the caller should stop.
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSON(w, r, dst, false)
+}
+
+// decodeOptionalJSONBody is decodeJSONBody for endpoints whose body may be
+// omitted. An empty body, including a chunked request with no bytes, leaves the
+// destination at its zero value instead of returning 400.
+func decodeOptionalJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSON(w, r, dst, true)
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any, allowEmpty bool) bool {
+	if r.Body == nil {
+		if allowEmpty {
+			return true
+		}
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "request body is required", nil)
+		return false
+	}
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			if allowEmpty {
+				return true
+			}
+			writeError(w, http.StatusBadRequest, codeInvalidRequest, "request body is required", nil)
+			return false
+		}
 		var tooLarge *http.MaxBytesError
 		switch {
 		case errors.As(err, &tooLarge):
 			writeError(w, http.StatusRequestEntityTooLarge, codePayloadTooLarge, "request body is too large", nil)
-		case errors.Is(err, io.EOF):
-			writeError(w, http.StatusBadRequest, codeInvalidRequest, "request body is required", nil)
 		default:
 			writeError(w, http.StatusBadRequest, codeInvalidRequest, "invalid JSON: "+err.Error(), nil)
 		}

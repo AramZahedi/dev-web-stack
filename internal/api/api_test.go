@@ -1435,6 +1435,8 @@ type fakeSiteService struct {
 	actions []string
 	err     error
 
+	createWarnings []string
+
 	phpErr          error
 	phpInfo         sites.PHPInfo
 	phpChange       sites.PHPChange
@@ -1536,6 +1538,7 @@ func (f *fakeSiteService) Create(_ context.Context, req sites.CreateRequest) (mo
 		Build:               req.Build,
 		DesiredState:        model.DesiredRunning,
 		Status:              model.StatusRunning,
+		Warnings:            append([]string(nil), f.createWarnings...),
 		CreatedAt:           time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
 		UpdatedAt:           time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
 	}

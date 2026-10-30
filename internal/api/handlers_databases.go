@@ -258,10 +258,8 @@ func (s *Server) handleCreateServiceBackup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var req databases.CreateBackupRequest
-	if r.Body != nil && r.ContentLength != 0 {
-		if !decodeJSONBody(w, r, &req) {
-			return
-		}
+	if !decodeOptionalJSONBody(w, r, &req) {
+		return
 	}
 	job, err := s.databases.CreateBackup(r.Context(), r.PathValue("id"), r.PathValue("name"), req)
 	if err != nil {

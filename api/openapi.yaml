@@ -2516,6 +2516,10 @@ paths:
       responses:
         "200":
           description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatabaseServiceImpact"
   /api/v1/services/{id}/databases:
     get:
       summary: List service databases
