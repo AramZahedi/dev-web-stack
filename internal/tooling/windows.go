@@ -15,6 +15,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
 )
@@ -507,6 +508,9 @@ func RemoveWSLComposerFiles(wslDataDir string) error {
 	return nil
 }
 
+// composerLinkState is a test seam around the WSL link inspection.
+var composerLinkState = wslComposerLinkState
+
 // wslComposerLinkState reports whether /usr/local/bin/composer is absent, the
 // devstack-managed link, or a foreign command that must not be deleted.
 func wslComposerLinkState(ctx context.Context, distro string) (string, error) {
@@ -535,12 +539,12 @@ func RemoveWSLComposer(ctx context.Context, distro string) error {
 	if !wslDistroPattern.MatchString(distro) {
 		return fmt.Errorf("tooling: invalid WSL distro name %q", distro)
 	}
-	linkState, err := wslComposerLinkState(ctx, distro)
+	linkState, err := composerLinkState(ctx, distro)
 	if err != nil {
 		return err
 	}
 	if linkState == "foreign" {
-		return errors.New("tooling: refusing to remove a foreign /usr/local/bin/composer")
+		return fmt.Errorf("%w: refusing to remove a foreign /usr/local/bin/composer", helperproto.ErrToolConflict)
 	}
 	dir, err := wslDataDir(distro)
 	if err != nil {

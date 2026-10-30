@@ -1,6 +1,8 @@
 package tooling
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
@@ -229,6 +232,22 @@ func TestRemoveWSLComposerFilesRemovesOnlyComposerArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "tools", "php-default", "bin", "php")); err != nil {
 		t.Errorf("sibling tool was removed: %v", err)
+	}
+}
+
+func TestRemoveWSLComposerRefusesForeignLink(t *testing.T) {
+	old := composerLinkState
+	composerLinkState = func(context.Context, string) (string, error) {
+		return "foreign", nil
+	}
+	t.Cleanup(func() { composerLinkState = old })
+
+	err := RemoveWSLComposer(context.Background(), "devstack")
+	if !errors.Is(err, helperproto.ErrToolConflict) {
+		t.Fatalf("RemoveWSLComposer foreign link error = %v, want ErrToolConflict", err)
+	}
+	if !strings.Contains(err.Error(), "foreign /usr/local/bin/composer") {
+		t.Fatalf("error = %v, want a foreign-link message", err)
 	}
 }
 
