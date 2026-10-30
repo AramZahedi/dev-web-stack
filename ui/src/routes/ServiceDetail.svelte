@@ -19,6 +19,7 @@
   import type {
     Database as DatabaseRecord,
     DatabaseBackup,
+    DatabaseJob,
     DatabaseUser,
   } from '../lib/databaseTypes';
   import type { ServiceView } from '../lib/types';
@@ -68,7 +69,7 @@
 
   let tab = $state<TabID>('databases');
   let selectedUserId = $state('');
-  let jobActive = $state(false);
+  let activeJob = $state<DatabaseJob | null>(null);
   let deactivateOpen = $state(false);
   let deactivating = $state(false);
   let deactivateError = $state<DescribedError | null>(null);
@@ -113,8 +114,10 @@
     tabs.find((entry) => entry.id === tab)?.label ?? 'Database management',
   );
   const transient = $derived(
-    Boolean(service && (service.state === 'starting' || service.state === 'stopping')) || jobActive,
+    Boolean(service && (service.state === 'starting' || service.state === 'stopping')) ||
+      Boolean(activeJob),
   );
+  const inventoryUnavailable = $derived(Boolean(databasesError || backupsError));
   const affectedSites = $derived(
     Array.from(
       new Map(
@@ -211,7 +214,9 @@
       error = null;
       notFound = false;
       busy = null;
-      jobActive = false;
+      activeJob = null;
+      deactivateOpen = false;
+      deactivateError = null;
       queryApplied = false;
     }
     error = null;
@@ -327,8 +332,8 @@
     document.getElementById(`tab-${next.id}`)?.focus();
   }
 
-  function onJobChange(active: boolean): void {
-    jobActive = active;
+  function onJobChange(active: boolean, job: DatabaseJob | null = null): void {
+    activeJob = active ? (job ?? activeJob) : null;
   }
 
   $effect(() => {
@@ -600,6 +605,7 @@
   confirmLabel="Deactivate service"
   danger
   busy={deactivating}
+  confirmDisabled={inventoryUnavailable}
   onconfirm={confirmDeactivate}
   oncancel={() => {
     if (!deactivating) deactivateOpen = false;
@@ -609,18 +615,24 @@
     <div class="deactivate-details">
       <p>
         <strong>Linked sites:</strong>
-        {affectedSites.length > 0
-          ? affectedSites.map((site) => site.name).join(', ')
-          : 'None'}
+        {databasesError
+          ? 'Unavailable (database inventory failed to load)'
+          : affectedSites.length > 0
+            ? affectedSites.map((site) => site.name).join(', ')
+            : 'None'}
       </p>
       <p>
         <strong>Backups:</strong>
-        {backups.length} backup{backups.length === 1 ? '' : 's'} ({formatBytes(backupBytes)})
+        {backupsError
+          ? 'Unavailable (backup inventory failed to load)'
+          : `${backups.length} backup${backups.length === 1 ? '' : 's'} (${formatBytes(backupBytes)})`}
       </p>
       <p>
         <strong>Running backup jobs:</strong>
-        {runningBackups}
-        {jobActive ? ' plus an active database job' : ''}
+        {backupsError ? 'Unavailable' : runningBackups}
+        {#if activeJob}
+          plus {activeJob.kind} on {activeJob.database}
+        {/if}
       </p>
       <p class="deactivate-note">
         Links are kept. Databases, users, grants, passwords and backups are not deleted.

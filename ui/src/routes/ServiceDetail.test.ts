@@ -29,6 +29,7 @@ vi.mock('../lib/databaseApi', async (importOriginal) => {
     listServiceDatabases: vi.fn(),
     listServiceUsers: vi.fn(),
     listServiceBackups: vi.fn(),
+    createServiceBackup: vi.fn(),
   };
 });
 
@@ -279,5 +280,47 @@ describe('ServiceDetail', () => {
 
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Deactivate service' }));
     await waitFor(() => expect(api.deactivateService).toHaveBeenCalledWith('mysql'));
+  });
+
+  it('keeps a running job visible to the deactivate warning after switching tabs', async () => {
+    vi.mocked(db.createServiceBackup).mockResolvedValue({
+      id: 'job_route',
+      service_id: 'mysql',
+      database: 'app',
+      kind: 'backup',
+      status: 'running',
+      progress: 40,
+      message: 'Dumping tables',
+      created_at: '2026-10-29T10:00:00Z',
+      updated_at: '2026-10-29T10:00:02Z',
+    });
+
+    render(ServiceDetail, { props: { params: { id: 'mysql' } } });
+    await screen.findByRole('heading', { name: 'MySQL 8.4' });
+
+    await fireEvent.click(await screen.findByRole('button', { name: /back up app/i }));
+    await screen.findByRole('status', { name: 'Database job' });
+
+    await fireEvent.click(screen.getByRole('tab', { name: 'Users' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Deactivate' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/backup on app/i)).toBeTruthy();
+  });
+
+  it('fails closed on deactivate when the backup inventory is unavailable', async () => {
+    vi.mocked(db.listServiceBackups).mockRejectedValue(new Error('backup index unavailable'));
+
+    render(ServiceDetail, { props: { params: { id: 'mysql' } } });
+    await screen.findByRole('heading', { name: 'MySQL 8.4' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Deactivate' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/backup inventory failed to load/i)).toBeTruthy();
+    expect(
+      (within(dialog).getByRole('button', { name: 'Deactivate service' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(api.deactivateService).not.toHaveBeenCalled();
   });
 });

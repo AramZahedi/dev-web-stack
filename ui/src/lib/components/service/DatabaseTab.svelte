@@ -53,7 +53,7 @@
     databases: Database[];
     loading?: boolean;
     onRefresh: () => void;
-    onjobchange?: (active: boolean) => void;
+    onjobchange?: (active: boolean, job?: DatabaseJob | null) => void;
   }
 
   let { service, databases, loading = false, onRefresh, onjobchange }: Props = $props();
@@ -112,7 +112,6 @@
       clearInterval(jobTimer);
       jobTimer = undefined;
     }
-    onjobchange?.(false);
   }
 
   async function pollJob(id: string): Promise<void> {
@@ -127,6 +126,7 @@
     } catch (caught) {
       jobError = describeError(caught);
       stopJobPolling();
+      onjobchange?.(false, null);
     }
   }
 
@@ -141,6 +141,7 @@
     jobError = null;
     rememberRecovery(next);
     stopJobPolling();
+    onjobchange?.(false, null);
     addToast({
       kind: jobToastKind(next.status),
       title: `${next.kind} ${next.status}`,
@@ -157,7 +158,7 @@
       return;
     }
     stopJobPolling();
-    onjobchange?.(true);
+    onjobchange?.(true, next);
     jobTimer = setInterval(() => void pollJob(next.id), 1200);
   }
 
@@ -169,6 +170,7 @@
       job = canceled;
       rememberRecovery(canceled);
       stopJobPolling();
+      onjobchange?.(false, null);
       addToast({
         kind: 'info',
         title: 'Job canceled',
