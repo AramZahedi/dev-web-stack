@@ -5,6 +5,7 @@ import * as api from '../lib/api';
 import { ApiError } from '../lib/errors';
 import type {
   GlobalIni,
+  NodeDefaultStatus,
   PHPDefaultStatus,
   RuntimeBuild,
   Settings as SettingsType,
@@ -29,6 +30,9 @@ vi.mock('../lib/api', () => ({
   saveGlobalIni: vi.fn(),
   setPHPDefault: vi.fn(),
   clearPHPDefault: vi.fn(),
+  getNodeDefault: vi.fn(),
+  setNodeDefault: vi.fn(),
+  clearNodeDefault: vi.fn(),
   listTools: vi.fn(),
   installTool: vi.fn(),
   removeTool: vi.fn(),
@@ -90,6 +94,41 @@ const DEFAULT_STATUS: PHPDefaultStatus = {
   shim_installed: true,
 };
 
+const NODE_24: RuntimeBuild = {
+  id: 'node@24.9.0',
+  kind: 'node',
+  version: '24.9.0',
+  backend: 'local',
+  path: '/home/dev/.devstack/runtimes/node/24.9.0-linux-x64',
+  checksum: 'd'.repeat(64),
+  installed_at: '2026-10-29T10:00:00Z',
+};
+
+const NODE_22: RuntimeBuild = {
+  id: 'node@22.11.0',
+  kind: 'node',
+  version: '22.11.0',
+  backend: 'local',
+  path: '/home/dev/.devstack/runtimes/node/22.11.0-linux-x64',
+  checksum: 'e'.repeat(64),
+  installed_at: '2026-10-10T10:00:00Z',
+};
+
+const NODE_DEFAULT_STATUS: NodeDefaultStatus = {
+  configured: NODE_24.version,
+  build: NODE_24,
+  shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+  shim_installed: true,
+  source: 'setting',
+};
+
+const NODE_24_WSL: RuntimeBuild = {
+  ...NODE_24,
+  id: 'node@24.9.0-wsl',
+  backend: 'wsl',
+  path: '/home/dev/.devstack/runtimes/node/24.9.0-wsl',
+};
+
 const INI: GlobalIni = {
   path: '/home/dev/.devstack/tools/php-default/php.ini',
   content: '[PHP]\nmemory_limit = 512M\n',
@@ -113,7 +152,7 @@ beforeEach(() => {
   mockApi.getTrust.mockResolvedValue([]);
   mockApi.getVhostStatus.mockResolvedValue(VHOSTS);
   mockApi.getPHPDefault.mockResolvedValue(DEFAULT_STATUS);
-  mockApi.listRuntimes.mockResolvedValue([PHP_84, PHP_83]);
+  mockApi.listRuntimes.mockResolvedValue([PHP_84, PHP_83, NODE_24, NODE_22]);
   mockApi.getGlobalIni.mockResolvedValue(INI);
   mockApi.saveGlobalIni.mockResolvedValue(INI);
   mockApi.setPHPDefault.mockResolvedValue({
@@ -125,6 +164,18 @@ beforeEach(() => {
     ...DEFAULT_STATUS,
     configured: undefined,
     build: PHP_84,
+  });
+  mockApi.getNodeDefault.mockResolvedValue(NODE_DEFAULT_STATUS);
+  mockApi.setNodeDefault.mockResolvedValue({
+    ...NODE_DEFAULT_STATUS,
+    configured: NODE_22.id,
+    build: NODE_22,
+  });
+  mockApi.clearNodeDefault.mockResolvedValue({
+    ...NODE_DEFAULT_STATUS,
+    configured: undefined,
+    build: NODE_24,
+    source: 'newest',
   });
   mockApi.listTools.mockResolvedValue([COMPOSER]);
   mockApi.installTool.mockResolvedValue(COMPOSER);
@@ -255,6 +306,114 @@ describe('Settings tooling', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Clear default' }));
     await waitFor(() => expect(mockApi.clearPHPDefault).toHaveBeenCalledTimes(1));
     expect(phpCard?.textContent).toContain('Newest installed');
+  });
+
+  it('saves and clears the node cli default', async () => {
+    render(Settings);
+    const heading = await screen.findByRole('heading', { name: 'Node CLI default' });
+    const card = heading.closest('section') as HTMLElement;
+    const select = (await screen.findByLabelText('Default Node build')) as HTMLSelectElement;
+    expect(select.value).toBe(NODE_24.id);
+
+    await fireEvent.change(select, { target: { value: NODE_22.id } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save Node default' }));
+
+    await waitFor(() => expect(mockApi.setNodeDefault).toHaveBeenCalledWith(NODE_22.id));
+    await waitFor(() => {
+      expect((screen.getByLabelText('Default Node build') as HTMLSelectElement).value).toBe(
+        NODE_22.id,
+      );
+    });
+    expect(card.textContent).toContain('Node 22.11.0');
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Clear Node default' }));
+    await waitFor(() => expect(mockApi.clearNodeDefault).toHaveBeenCalledTimes(1));
+    expect(card.textContent).toContain('Newest installed (Node 24.9.0)');
+    expect(within(card).getByRole('link', { name: 'Install more Node versions' })).toBeTruthy();
+  });
+
+  it('shows a configured node default that is not installed', async () => {
+    mockApi.getNodeDefault.mockResolvedValue({
+      configured: NODE_22.version,
+      build: undefined,
+      shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+      shim_installed: false,
+      source: 'setting',
+    });
+    render(Settings);
+
+    const card = (await screen.findByRole('heading', { name: 'Node CLI default' })).closest(
+      'section',
+    ) as HTMLElement;
+
+    expect(
+      await within(card).findByText(/Configured Node 22\.11\.0 is not installed/i),
+    ).toBeTruthy();
+    expect(
+      within(card).getByText(
+        /Choose another installed build, clear the default, or install Node 22\.11\.0/i,
+      ),
+    ).toBeTruthy();
+    const select = within(card).getByLabelText('Default Node build') as HTMLSelectElement;
+    expect(select.value).toBe('');
+    expect(
+      (within(card).getByRole('button', { name: 'Save Node default' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(card.textContent).toContain('Configured · Node 22.11.0 (not installed)');
+  });
+
+  it('uses exact build ids for duplicate node versions', async () => {
+    mockApi.listRuntimes.mockResolvedValue([NODE_24, NODE_24_WSL, NODE_22]);
+    render(Settings);
+
+    const card = (await screen.findByRole('heading', { name: 'Node CLI default' })).closest(
+      'section',
+    ) as HTMLElement;
+    const select = within(card).getByLabelText('Default Node build') as HTMLSelectElement;
+    const values = Array.from(select.options).map((option) => option.value);
+    expect(values).toContain(NODE_24.id);
+    expect(values).toContain(NODE_24_WSL.id);
+
+    await fireEvent.change(select, { target: { value: NODE_24_WSL.id } });
+    await fireEvent.click(within(card).getByRole('button', { name: 'Save Node default' }));
+    await waitFor(() => expect(mockApi.setNodeDefault).toHaveBeenCalledWith(NODE_24_WSL.id));
+  });
+
+  it('shows a neutral loading badge before node default status arrives', async () => {
+    let resolveNode!: (value: NodeDefaultStatus) => void;
+    mockApi.getNodeDefault.mockReturnValue(
+      new Promise<NodeDefaultStatus>((resolve) => {
+        resolveNode = resolve;
+      }),
+    );
+    render(Settings);
+
+    const card = (await screen.findByRole('heading', { name: 'Node CLI default' })).closest(
+      'section',
+    ) as HTMLElement;
+    expect(within(card).getByText('Loading')).toBeTruthy();
+
+    resolveNode(NODE_DEFAULT_STATUS);
+    expect(await within(card).findByText('Explicit')).toBeTruthy();
+  });
+
+  it('clears a stale node default error after a successful save', async () => {
+    render(Settings);
+    await screen.findByRole('heading', { name: 'Node CLI default' });
+    mockApi.getNodeDefault.mockRejectedValue(
+      new ApiError('INTERNAL', 'node default unavailable', 500),
+    );
+    window.dispatchEvent(new Event('devstack:refresh'));
+    expect(await screen.findByText('Node CLI state is out of date')).toBeTruthy();
+
+    const select = screen.getByLabelText('Default Node build') as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: NODE_22.id } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save Node default' }));
+
+    await waitFor(() => expect(mockApi.setNodeDefault).toHaveBeenCalledWith(NODE_22.id));
+    await waitFor(() =>
+      expect(screen.queryByText('Node CLI state is out of date')).toBeNull(),
+    );
   });
 
   it('saves the global CLI php.ini content', async () => {

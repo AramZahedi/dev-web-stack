@@ -11,6 +11,11 @@ import type {
   GlobalIni,
   Health,
   LogLine,
+  NodeDefaultStatus,
+  NodeRelease,
+  NodeReleasePreflight,
+  NodeReleaseSnapshot,
+  NodeToolchain,
   PHPChange,
   PHPDefaults,
   PHPDefaultsResult,
@@ -208,6 +213,7 @@ export function resetMockServiceStateForTests(): void {
   mockServices = clone(seedMockServices);
   toolStatuses = clone(seedToolStatuses);
   settings = clone(seedSettings);
+  nodeDefaultConfigured = '';
   mockPerformance = {
     profile: 'balanced',
     values: mockPerformanceValues('balanced'),
@@ -648,6 +654,38 @@ const catalog: CatalogEntry[] = [
     size: 79_958_016,
   },
 ];
+
+function nodeRelease(
+  version: string,
+  date: string,
+  npm: string,
+  lts = '',
+  security = false,
+): NodeRelease {
+  return {
+    version,
+    date,
+    lts,
+    security,
+    npm,
+    modules: version.startsWith('24') ? '137' : version.startsWith('22') ? '127' : '115',
+    file: 'linux-x64',
+  };
+}
+
+const nodeReleases: NodeRelease[] = [
+  nodeRelease('24.9.0', '2026-10-15', '11.6.0', 'Krypton'),
+  nodeRelease('24.8.1', '2026-09-24', '11.5.2', 'Krypton'),
+  nodeRelease('24.8.0', '2026-09-10', '11.5.1', 'Krypton'),
+  nodeRelease('24.1.2', '2026-04-08', '11.0.0', 'Krypton'),
+  nodeRelease('22.20.0', '2026-10-08', '10.9.4', 'Jod', true),
+  nodeRelease('22.19.0', '2026-09-18', '10.9.0', 'Jod'),
+  nodeRelease('22.11.0', '2025-10-28', '10.2.0', 'Jod'),
+  nodeRelease('20.19.5', '2026-07-22', '10.8.2', 'Iron'),
+  nodeRelease('20.18.1', '2025-11-20', '10.8.1', 'Iron'),
+].sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }));
+
+let nodeDefaultConfigured = '';
 
 let doctorChecks: DoctorCheck[] = [
   {
@@ -1240,6 +1278,120 @@ function findSite(ref: string): Site {
   return site;
 }
 
+function nodeMajorOf(version: string): number {
+  return Number.parseInt(version.split('.')[0] ?? '0', 10);
+}
+
+function exactNodeVersion(value: string): string {
+  return value.trim().replace(/^node@/, '').replace(/-linux-x64$/, '');
+}
+
+function findNodeBuild(value: string): RuntimeBuild | undefined {
+  const wanted = exactNodeVersion(value);
+  return runtimes.find(
+    (entry) =>
+      entry.kind === 'node' &&
+      (entry.version === wanted || entry.id === value || exactNodeVersion(entry.id) === wanted),
+  );
+}
+
+function newestNodeBuild(): RuntimeBuild | undefined {
+  return runtimes
+    .filter((entry) => entry.kind === 'node')
+    .slice()
+    .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))[0];
+}
+
+function nodeDefaultBuild(): RuntimeBuild | undefined {
+  // Mirror ResolveNodeDefaultStatus: a configured default that is not
+  // installed reports no build instead of falling back to the newest one.
+  if (!nodeDefaultConfigured) return newestNodeBuild();
+  return findNodeBuild(nodeDefaultConfigured);
+}
+
+function nodeDefaultStatus(): NodeDefaultStatus {
+  const build = nodeDefaultBuild();
+  return {
+    configured: nodeDefaultConfigured || undefined,
+    build: build ? clone(build) : undefined,
+    shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+    shim_installed: Boolean(build),
+    source: nodeDefaultConfigured ? 'setting' : 'newest',
+  };
+}
+
+/** Test fixture hook for the configured default, including stale values. */
+export function setMockNodeDefaultForTests(value: string): void {
+  nodeDefaultConfigured = value.trim();
+}
+
+function nodeToolchainFor(site: Site): NodeToolchain | undefined {
+  const pin = site.node_version.trim();
+  if (pin) {
+    const build = findNodeBuild(pin);
+    if (build) {
+      return {
+        version: build.version,
+        build_id: build.id,
+        source: 'site',
+        installed: true,
+      };
+    }
+    return { version: exactNodeVersion(pin), source: 'site', installed: false };
+  }
+  if (site.kind === 'node') return undefined;
+  const build = nodeDefaultBuild();
+  if (!build) return undefined;
+  return { version: build.version, build_id: build.id, source: 'global', installed: true };
+}
+
+/** Sites carry a response-only toolchain summary, like the real daemon. */
+function cloneSite(site: Site): Site {
+  const copy = clone(site);
+  copy.node_toolchain = nodeToolchainFor(site);
+  return copy;
+}
+
+function nodeReleaseEntry(version: string): CatalogEntry | undefined {
+  const wanted = exactNodeVersion(version);
+  const release = nodeReleases.find((entry) => entry.version === wanted);
+  if (!release) return undefined;
+  return {
+    id: `node@${release.version}`,
+    kind: 'node',
+    version: release.version,
+    build: 'linux-x64',
+    url: `https://nodejs.org/dist/v${release.version}/node-v${release.version}-linux-x64.tar.xz`,
+    sha256: mockHash(`node-${release.version}`),
+    size: 50_000_000 + nodeMajorOf(release.version) * 100_000,
+  };
+}
+
+function nodeReleaseSnapshot(all = false, major?: number): NodeReleaseSnapshot {
+  const selected = major
+    ? nodeReleases.filter((entry) => nodeMajorOf(entry.version) === major)
+    : nodeReleases;
+  const groups = new Map<number, NodeRelease[]>();
+  for (const release of selected) {
+    const key = nodeMajorOf(release.version);
+    groups.set(key, [...(groups.get(key) ?? []), release]);
+  }
+  const majors = Array.from(groups.entries())
+    .sort(([a], [b]) => b - a)
+    .map(([key, releases]) => ({
+      major: key,
+      latest: releases[0],
+      releases: all ? releases : [releases[0]],
+    }));
+  return {
+    majors,
+    all: selected,
+    source: 'cache',
+    cached_at: iso(-1000 * 60 * 12),
+    stale: false,
+  };
+}
+
 function findService(id: string): ServiceView {
   const service = mockServices.find((entry) => entry.id === id);
   if (!service) throw new ApiError('NOT_FOUND', `service “${id}” not found`, 404);
@@ -1343,12 +1495,12 @@ export const mockApi = {
 
   async listSites(): Promise<Site[]> {
     await wait();
-    return clone(sites);
+    return sites.map((site) => cloneSite(site));
   },
 
   async getSite(ref: string): Promise<Site> {
     await wait();
-    return clone(findSite(ref));
+    return cloneSite(findSite(ref));
   },
 
   async createSite(request: CreateSiteRequest): Promise<Site> {
@@ -1372,17 +1524,24 @@ export const mockApi = {
       throw new ApiError('INVALID_REQUEST', 'Project path must be an existing readable directory.', 400);
     }
     let phpBuild: RuntimeBuild | undefined;
-    if (request.kind === 'node') {
-      const runtime = runtimes.find(
-        (entry) => entry.kind === 'node' && entry.version === request.node_version,
-      );
+    let nodePin = '';
+    if (request.node_version?.trim()) {
+      const runtime = findNodeBuild(request.node_version);
       if (!runtime) {
         throw new ApiError(
-          'RUNTIME_MISSING',
-          `Node ${request.node_version ?? ''} is not installed. Install it from the Runtimes page first.`,
+          'NODE_VERSION_NOT_INSTALLED',
+          `Node ${exactNodeVersion(request.node_version)} is not installed. Install it first.`,
           409,
         );
       }
+      nodePin = runtime.version;
+    }
+    if (request.kind === 'node' && !nodePin) {
+      throw new ApiError(
+        'NODE_VERSION_REQUIRED',
+        'Node sites require an explicit Node version.',
+        400,
+      );
     }
     if (request.kind === 'php') {
       phpBuild = request.php_build
@@ -1453,7 +1612,7 @@ export const mockApi = {
       php_ini_raw: request.kind === 'php' ? (request.php_ini_raw ?? '') : '',
       php_config_hash:
         request.kind === 'php' ? mockHash(`${phpBuild?.id ?? ''}${request.php_ini_raw ?? ''}`) : '',
-      node_version: request.kind === 'node' ? (request.node_version ?? '') : '',
+      node_version: nodePin,
       command: request.kind === 'node' ? (request.command ?? '') : '',
       env: request.env ?? {},
       document_root: request.document_root ?? '',
@@ -1497,15 +1656,32 @@ export const mockApi = {
         }
       }, 900);
     }
-    return clone(site);
+    return cloneSite(site);
   },
 
   async updateSite(ref: string, request: UpdateSiteRequest): Promise<Site> {
     await wait();
     const site = findSite(ref);
+    if (request.node_version !== undefined) {
+      const pin = (request.node_version ?? '').trim();
+      if (!pin && site.kind === 'node') {
+        throw new ApiError('INVALID_REQUEST', 'Node sites require an explicit Node version.', 400);
+      }
+      if (pin && !findNodeBuild(pin)) {
+        throw new ApiError(
+          'NODE_VERSION_NOT_INSTALLED',
+          `Node ${exactNodeVersion(pin)} is not installed. Install it first.`,
+          409,
+        );
+      }
+    }
     Object.assign(site, request, { updated_at: new Date().toISOString() });
+    if (request.node_version !== undefined) {
+      const pin = (request.node_version ?? '').trim();
+      site.node_version = pin ? (findNodeBuild(pin)?.version ?? pin) : '';
+    }
     emitEvent('site.updated', site.id, `${site.name} was updated`);
-    return clone(site);
+    return cloneSite(site);
   },
 
   async changeSiteSource(ref: string, mode: SourceMode, path: string): Promise<Site> {
@@ -1525,7 +1701,7 @@ export const mockApi = {
     }
     site.updated_at = new Date().toISOString();
     emitEvent('site.updated', site.id, `${site.name} source mode changed`);
-    return clone(site);
+    return cloneSite(site);
   },
 
   async deleteSite(ref: string): Promise<void> {
@@ -1571,9 +1747,70 @@ export const mockApi = {
     return clone(catalog);
   },
 
+  async listNodeReleases(query: {
+    major?: number;
+    all?: boolean;
+    offline?: boolean;
+  } = {}): Promise<NodeReleaseSnapshot> {
+    await wait();
+    return clone(nodeReleaseSnapshot(query.all === true, query.major));
+  },
+
+  async getNodeRelease(version: string): Promise<NodeReleasePreflight> {
+    await wait();
+    const wanted = exactNodeVersion(version);
+    const entry = nodeReleaseEntry(wanted);
+    const release = nodeReleases.find((item) => item.version === wanted);
+    if (!entry || !release) {
+      throw new ApiError('NOT_FOUND', `Node ${wanted} is not a known release.`, 404);
+    }
+    return clone({ entry, release });
+  },
+
+  async getNodeDefault(): Promise<NodeDefaultStatus> {
+    await wait();
+    return clone(nodeDefaultStatus());
+  },
+
+  async refreshNodeReleases(): Promise<NodeReleaseSnapshot> {
+    await wait(250, 450);
+    return clone({
+      ...nodeReleaseSnapshot(false),
+      source: 'live',
+      cached_at: new Date().toISOString(),
+      stale: false,
+      warning: undefined,
+    });
+  },
+
+  async setNodeDefault(value: string, _force = false): Promise<NodeDefaultStatus> {
+    await wait();
+    const wanted = value.trim();
+    if (!wanted) {
+      nodeDefaultConfigured = '';
+      return clone(nodeDefaultStatus());
+    }
+    const build = findNodeBuild(wanted);
+    if (!build) {
+      throw new ApiError(
+        'NODE_DEFAULT_NOT_INSTALLED',
+        `Node ${exactNodeVersion(wanted)} is not installed.`,
+        409,
+      );
+    }
+    nodeDefaultConfigured = wanted;
+    return clone(nodeDefaultStatus());
+  },
+
+  async clearNodeDefault(): Promise<NodeDefaultStatus> {
+    await wait();
+    nodeDefaultConfigured = '';
+    return clone(nodeDefaultStatus());
+  },
+
   async installRuntime(id: string): Promise<RuntimeBuild> {
     await wait(250, 450);
-    const entry = catalog.find((item) => item.id === id);
+    const entry = catalog.find((item) => item.id === id) ?? nodeReleaseEntry(id);
     if (!entry) throw new ApiError('NOT_FOUND', `Runtime “${id}” is not in the catalog.`, 404);
     const installed =
       entry.kind === 'php'

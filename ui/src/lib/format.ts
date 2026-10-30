@@ -19,6 +19,13 @@ const dateFormat = new Intl.DateTimeFormat('en', {
   year: 'numeric',
 });
 
+const dateOnlyFormat = new Intl.DateTimeFormat('en', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+
 const dateTimeFormat = new Intl.DateTimeFormat('en', {
   month: 'short',
   day: 'numeric',
@@ -39,6 +46,14 @@ export function formatDate(value: string | Date | undefined): string {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
   return dateFormat.format(date);
+}
+
+/** Formats a date-only value in UTC so it never shifts a day west of UTC. */
+export function formatDateOnly(value: string | Date | undefined): string {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return dateOnlyFormat.format(date);
 }
 
 export function formatDateTime(value: string | Date | undefined): string {

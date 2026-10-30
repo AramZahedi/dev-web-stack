@@ -11,6 +11,8 @@
     full?: boolean;
     title?: string;
     ariaLabel?: string;
+    ariaExpanded?: boolean;
+    ariaControls?: string;
     onclick?: (event: MouseEvent) => void;
     children: Snippet;
   }
@@ -24,6 +26,8 @@
     full = false,
     title,
     ariaLabel,
+    ariaExpanded,
+    ariaControls,
     onclick,
     children,
   }: Props = $props();
@@ -37,6 +41,8 @@
   disabled={disabled || loading}
   aria-busy={loading || undefined}
   aria-label={ariaLabel}
+  aria-expanded={ariaExpanded}
+  aria-controls={ariaControls}
   {title}
   {onclick}
 >

@@ -2,12 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import SiteDetail from './SiteDetail.svelte';
 import * as api from '../lib/api';
-import type { PHPInfo, RuntimeBuild, Site, UpdateSiteRequest } from '../lib/types';
+import { ApiError } from '../lib/errors';
+import type {
+  NodeReleasePreflight,
+  PHPInfo,
+  RuntimeBuild,
+  Site,
+  UpdateSiteRequest,
+} from '../lib/types';
 
 vi.mock('../lib/api', () => ({
   isMockMode: false,
   getSite: vi.fn(),
   listRuntimes: vi.fn(),
+  getNodeDefault: vi.fn(),
+  getNodeRelease: vi.fn(),
+  installRuntime: vi.fn(),
   getPHPInfo: vi.fn(),
   startSite: vi.fn(),
   stopSite: vi.fn(),
@@ -101,6 +111,60 @@ const PHP_SITE: Site = {
   http_port: 0,
 };
 
+const NODE_22_11_BUILD: RuntimeBuild = {
+  id: 'node@22.11.0',
+  kind: 'node',
+  version: '22.11.0',
+  backend: 'local',
+  path: '/home/dev/.devstack/runtimes/node/22.11.0',
+  checksum: 'c'.repeat(64),
+  installed_at: '2026-10-30T10:00:00Z',
+};
+
+const NODE_22_11_PREFLIGHT: NodeReleasePreflight = {
+  entry: {
+    id: 'node@22.11.0',
+    kind: 'node',
+    version: '22.11.0',
+    build: 'linux-x64',
+    url: 'https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.xz',
+    sha256: 'c'.repeat(64),
+    size: 49_807_360,
+  },
+  release: {
+    version: '22.11.0',
+    date: '2025-10-28',
+    lts: 'Jod',
+    security: false,
+    npm: '10.2.0',
+    modules: '127',
+    file: 'linux-x64',
+  },
+};
+
+function staleNodeSite(overrides: Partial<Site> = {}): Site {
+  return {
+    ...STATIC_SITE,
+    id: 's_shop',
+    name: 'shop',
+    domain: 'shop.test',
+    kind: 'node',
+    node_version: '22.11.0',
+    node_toolchain: {
+      version: '22.11.0',
+      source: 'site',
+      installed: false,
+    },
+    command: 'npm run dev',
+    document_root: '',
+    build: undefined,
+    status: 'stopped',
+    desired_state: 'stopped',
+    http_port: 41002,
+    ...overrides,
+  };
+}
+
 const PHP_INFO: PHPInfo = {
   site: PHP_SITE,
   build: PHP_BUILD,
@@ -120,10 +184,17 @@ const mockApi = vi.mocked(api);
 beforeEach(() => {
   mockApi.getSite.mockResolvedValue({ ...STATIC_SITE });
   mockApi.listRuntimes.mockResolvedValue([NODE_BUILD, PHP_BUILD]);
+  mockApi.getNodeDefault.mockResolvedValue({
+    build: NODE_BUILD,
+    shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+    shim_installed: true,
+    source: 'newest',
+  });
   mockApi.getPHPInfo.mockResolvedValue(PHP_INFO);
   mockApi.updateSite.mockImplementation(async (ref, body: UpdateSiteRequest) => ({
     ...STATIC_SITE,
     ...body,
+    node_version: body.node_version ?? STATIC_SITE.node_version,
     build: body.build ?? STATIC_SITE.build,
   }));
   mockApi.getBuildLogs.mockResolvedValue({
@@ -153,6 +224,175 @@ async function renderSite(name = 'blog'): Promise<void> {
 }
 
 describe('SiteDetail configuration and builds', () => {
+  it('shows the resolved toolchain source on site detail', async () => {
+    mockApi.getSite.mockResolvedValue({
+      ...STATIC_SITE,
+      node_version: '',
+      node_toolchain: {
+        version: '24.9.0',
+        build_id: 'node@24.9.0',
+        source: 'global',
+        installed: true,
+      },
+    });
+    await renderSite();
+
+    expect(screen.getAllByText(/Inherited from the global default/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/node -v uses v24\.9\.0/)).toBeTruthy();
+  });
+
+  it('warns about the ABI rebuild when a stopped node site changes version', async () => {
+    const nodeSite: Site = {
+      ...STATIC_SITE,
+      id: 's_shop',
+      name: 'shop',
+      domain: 'shop.test',
+      kind: 'node',
+      node_version: '22.20.0',
+      node_toolchain: {
+        version: '22.20.0',
+        build_id: 'node-22.20.0',
+        source: 'site',
+        installed: true,
+      },
+      command: 'npm run dev',
+      document_root: '',
+      build: undefined,
+      status: 'stopped',
+      desired_state: 'stopped',
+      http_port: 41002,
+    };
+    mockApi.getSite.mockResolvedValue(nodeSite);
+
+    await renderSite('shop');
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
+
+    const picker = (await screen.findByLabelText(/Node version/)) as HTMLSelectElement;
+    expect(picker.value).toBe('22.20.0');
+    expect(screen.queryByRole('option', { name: /Inherit global default/ })).toBeNull();
+
+    await fireEvent.change(picker, { target: { value: '24.9.0' } });
+
+    expect(screen.getByText(/Native modules are compiled against the Node ABI/)).toBeTruthy();
+    expect(screen.getByText(/switching from v22\.20\.0 to v24\.9\.0/)).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
+    await waitFor(() =>
+      expect(mockApi.updateSite).toHaveBeenCalledWith(
+        's_shop',
+        expect.objectContaining({ node_version: '24.9.0' }),
+      ),
+    );
+  });
+
+  it('shows an unversioned inherit option when the configured default is not installed', async () => {
+    mockApi.getNodeDefault.mockResolvedValue({
+      configured: '22.11.0',
+      build: undefined,
+      shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+      shim_installed: false,
+      source: 'setting',
+    });
+
+    await renderSite();
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
+
+    const picker = (await screen.findByLabelText(/Node toolchain/)) as HTMLSelectElement;
+    expect(picker.value).toBe('');
+    expect(screen.getByRole('option', { name: 'Inherit global default' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: /Inherit global default \(v/ })).toBeNull();
+    expect(
+      screen.getByText(
+        /configured global Node default \(v22\.11\.0\) is not installed/,
+      ),
+    ).toBeTruthy();
+  });
+
+  it('omits the inherit version without a warning when the default request fails', async () => {
+    mockApi.getNodeDefault.mockRejectedValue(
+      new ApiError('NOT_FOUND', 'Node default is not available.', 404),
+    );
+
+    await renderSite();
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
+
+    const picker = (await screen.findByLabelText(/Node toolchain/)) as HTMLSelectElement;
+    expect(picker.value).toBe('');
+    expect(screen.getByRole('option', { name: 'Inherit global default' })).toBeTruthy();
+    expect(screen.queryByText(/configured global Node default/)).toBeNull();
+  });
+
+  it('preflights and installs a stale pin, then selects the exact installed build', async () => {
+    mockApi.getSite.mockResolvedValue(staleNodeSite());
+    mockApi.listRuntimes
+      .mockResolvedValueOnce([NODE_BUILD])
+      .mockResolvedValueOnce([NODE_BUILD, NODE_22_11_BUILD]);
+    mockApi.getNodeRelease.mockResolvedValue(NODE_22_11_PREFLIGHT);
+    mockApi.installRuntime.mockResolvedValue(NODE_22_11_BUILD);
+
+    await renderSite('shop');
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
+
+    const picker = (await screen.findByLabelText(/Node version/)) as HTMLSelectElement;
+    expect(picker.value).toBe('22.11.0');
+    await fireEvent.click(screen.getByRole('button', { name: 'Install Node 22.11.0' }));
+
+    await waitFor(() => expect(mockApi.getNodeRelease).toHaveBeenCalledWith('22.11.0'));
+    expect(mockApi.installRuntime).toHaveBeenCalledWith('node@22.11.0');
+    await waitFor(() =>
+      expect(mockApi.listRuntimes.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+    await waitFor(() => expect(picker.value).toBe('22.11.0'));
+    expect(screen.getByRole('option', { name: /Node 22\.11\.0/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Install Node 22.11.0' })).toBeNull();
+  });
+
+  it('keeps install-first enabled for a stale pin on a running node site', async () => {
+    mockApi.getSite.mockResolvedValue(
+      staleNodeSite({ status: 'running', desired_state: 'running' }),
+    );
+    mockApi.listRuntimes
+      .mockResolvedValueOnce([NODE_BUILD])
+      .mockResolvedValueOnce([NODE_BUILD, NODE_22_11_BUILD]);
+    mockApi.getNodeRelease.mockResolvedValue(NODE_22_11_PREFLIGHT);
+    mockApi.installRuntime.mockResolvedValue(NODE_22_11_BUILD);
+
+    await renderSite('shop');
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
+
+    const picker = (await screen.findByLabelText(/Node version/)) as HTMLSelectElement;
+    expect(picker.disabled).toBe(true);
+    const install = screen.getByRole('button', {
+      name: 'Install Node 22.11.0',
+    }) as HTMLButtonElement;
+    expect(install.disabled).toBe(false);
+
+    await fireEvent.click(install);
+    await waitFor(() => expect(mockApi.installRuntime).toHaveBeenCalledWith('node@22.11.0'));
+    await waitFor(() => expect(picker.value).toBe('22.11.0'));
+    expect(screen.getByRole('option', { name: /Node 22\.11\.0/ })).toBeTruthy();
+  });
+
+  it('shows the preflight error for a stale pin and does not install', async () => {
+    mockApi.getSite.mockResolvedValue(staleNodeSite());
+    mockApi.getNodeRelease.mockRejectedValue(
+      new ApiError(
+        'NODE_RELEASE_UNAVAILABLE',
+        'Node release metadata is unavailable.',
+        503,
+      ),
+    );
+
+    await renderSite('shop');
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Install Node 22.11.0' }));
+
+    expect(
+      await screen.findByText('Node release metadata is unavailable.'),
+    ).toBeTruthy();
+    expect(mockApi.installRuntime).not.toHaveBeenCalled();
+  });
+
   it('edits the document root, SPA fallback file and static build profile', async () => {
     await renderSite();
     await fireEvent.click(screen.getByRole('button', { name: 'Edit configuration' }));
@@ -241,6 +481,7 @@ describe('SiteDetail configuration and builds', () => {
     mockApi.updateSite.mockImplementation(async (ref, body: UpdateSiteRequest) => ({
       ...PHP_SITE,
       ...body,
+      node_version: body.node_version ?? PHP_SITE.node_version,
     }));
 
     await renderSite('app');

@@ -3,13 +3,24 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 import AddSite from './AddSite.svelte';
 import * as api from '../lib/api';
+import { ApiError } from '../lib/errors';
 import { clearToasts, toasts } from '../lib/stores';
-import type { RuntimeBuild, Settings } from '../lib/types';
+import type {
+  NodeRelease,
+  NodeReleasePreflight,
+  NodeReleaseSnapshot,
+  RuntimeBuild,
+  Settings,
+} from '../lib/types';
 
 vi.mock('../lib/api', () => ({
   isMockMode: false,
   listRuntimes: vi.fn(),
   getSettings: vi.fn(),
+  getNodeDefault: vi.fn(),
+  listNodeReleases: vi.fn(),
+  getNodeRelease: vi.fn(),
+  installRuntime: vi.fn(),
   createSite: vi.fn(),
 }));
 
@@ -33,6 +44,55 @@ const PHP_BUILD: RuntimeBuild = {
   installed_at: '2026-10-20T10:00:00Z',
 };
 
+const NODE_24_8_1_BUILD: RuntimeBuild = {
+  id: 'node@24.8.1',
+  kind: 'node',
+  version: '24.8.1',
+  backend: 'local',
+  path: '/home/dev/.devstack/runtimes/node/24.8.1',
+  checksum: 'c'.repeat(64),
+  installed_at: '2026-10-30T10:00:00Z',
+};
+
+function nodeRelease(version: string, npm = '11.6.0'): NodeRelease {
+  return {
+    version,
+    date: '2026-10-15',
+    lts: 'Krypton',
+    security: false,
+    npm,
+    modules: '137',
+    file: 'linux-x64',
+  };
+}
+
+const NODE_24_8_1_PREFLIGHT: NodeReleasePreflight = {
+  entry: {
+    id: 'node@24.8.1',
+    kind: 'node',
+    version: '24.8.1',
+    build: 'linux-x64',
+    url: 'https://nodejs.org/dist/v24.8.1/node-v24.8.1-linux-x64.tar.xz',
+    sha256: 'c'.repeat(64),
+    size: 52_000_000,
+  },
+  release: nodeRelease('24.8.1', '11.5.2'),
+};
+
+const NODE_RELEASES: NodeReleaseSnapshot = {
+  source: 'cache',
+  cached_at: '2026-10-30T09:00:00Z',
+  stale: false,
+  majors: [
+    {
+      major: 24,
+      latest: nodeRelease('24.9.0'),
+      releases: [nodeRelease('24.9.0'), nodeRelease('24.8.1', '11.5.2')],
+    },
+  ],
+  all: [nodeRelease('24.9.0'), nodeRelease('24.8.1', '11.5.2')],
+};
+
 const SETTINGS: Settings = {
   home: '/home/dev/.devstack',
   user_home: '/home/dev',
@@ -54,6 +114,13 @@ const mockApi = vi.mocked(api);
 beforeEach(() => {
   mockApi.listRuntimes.mockResolvedValue([NODE_BUILD, PHP_BUILD]);
   mockApi.getSettings.mockResolvedValue(SETTINGS);
+  mockApi.getNodeDefault.mockResolvedValue({
+    build: NODE_BUILD,
+    shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+    shim_installed: true,
+    source: 'newest',
+  });
+  mockApi.listNodeReleases.mockResolvedValue(NODE_RELEASES);
   mockApi.createSite.mockImplementation(async (request) => ({
     id: 's_new',
     name: request.name,
@@ -102,7 +169,132 @@ async function fillProject(): Promise<void> {
   });
 }
 
+async function openNodeReleaseList(): Promise<void> {
+  render(AddSite);
+  await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+  await fillProject();
+  await fireEvent.click(screen.getByRole('radio', { name: /Node/ }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  await fireEvent.click(
+    await screen.findByRole('button', { name: 'Install another version' }),
+  );
+  await fireEvent.click(
+    await screen.findByRole('button', { name: 'Show all Node 24 versions' }),
+  );
+}
+
 describe('AddSite Wave 2 fields', () => {
+  it('defaults static sites to inherit and shows the global version', async () => {
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getNodeDefault).toHaveBeenCalled());
+    await fillProject();
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const picker = (await screen.findByLabelText(/Node toolchain/)) as HTMLSelectElement;
+    expect(picker.value).toBe('');
+    expect(
+      await screen.findByRole('option', { name: 'Inherit global default (v24.9.0)' }),
+    ).toBeTruthy();
+  });
+
+  it('requires an explicit version for node sites', async () => {
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+    await fillProject();
+    await fireEvent.click(screen.getByRole('radio', { name: /Node/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const picker = (await screen.findByLabelText(/Node version/)) as HTMLSelectElement;
+    expect(picker.value).toBe('');
+    expect(screen.queryByRole('option', { name: /Inherit global default/ })).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(
+      (await screen.findAllByText('Choose an installed Node version.')).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
+  it('shows an unversioned inherit label when the configured default is not installed', async () => {
+    mockApi.getNodeDefault.mockResolvedValue({
+      configured: '22.11.0',
+      build: undefined,
+      shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+      shim_installed: false,
+      source: 'setting',
+    });
+
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getNodeDefault).toHaveBeenCalled());
+    await fillProject();
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const picker = (await screen.findByLabelText(/Node toolchain/)) as HTMLSelectElement;
+    expect(picker.value).toBe('');
+    expect(screen.getByRole('option', { name: 'Inherit global default' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: /Inherit global default \(v/ })).toBeNull();
+    expect(
+      screen.getByText(
+        /configured global Node default \(v22\.11\.0\) is not installed/,
+      ),
+    ).toBeTruthy();
+  });
+
+  it('omits the inherit version without a warning when the default request fails', async () => {
+    mockApi.getNodeDefault.mockRejectedValue(
+      new ApiError('NOT_FOUND', 'Node default is not available.', 404),
+    );
+
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getNodeDefault).toHaveBeenCalled());
+    await fillProject();
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const picker = (await screen.findByLabelText(/Node toolchain/)) as HTMLSelectElement;
+    expect(picker.value).toBe('');
+    expect(screen.getByRole('option', { name: 'Inherit global default' })).toBeTruthy();
+    expect(screen.queryByText(/configured global Node default/)).toBeNull();
+  });
+
+  it('preflights and installs the exact selected build, then refreshes runtimes', async () => {
+    mockApi.listRuntimes
+      .mockResolvedValueOnce([NODE_BUILD])
+      .mockResolvedValueOnce([NODE_BUILD, NODE_24_8_1_BUILD]);
+    mockApi.getNodeRelease.mockResolvedValue(NODE_24_8_1_PREFLIGHT);
+    mockApi.installRuntime.mockResolvedValue(NODE_24_8_1_BUILD);
+
+    await openNodeReleaseList();
+    await fireEvent.click(screen.getByRole('button', { name: 'Install 24.8.1' }));
+
+    await waitFor(() => expect(mockApi.getNodeRelease).toHaveBeenCalledWith('24.8.1'));
+    expect(mockApi.installRuntime).toHaveBeenCalledWith('node@24.8.1');
+    await waitFor(() =>
+      expect(mockApi.listRuntimes.mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+
+    const picker = screen.getByLabelText(/Node version/) as HTMLSelectElement;
+    await waitFor(() => expect(picker.value).toBe('24.8.1'));
+    expect(screen.getByRole('option', { name: /Node 24\.8\.1/ })).toBeTruthy();
+  });
+
+  it('shows the preflight error and does not install a missing build', async () => {
+    mockApi.getNodeRelease.mockRejectedValue(
+      new ApiError(
+        'NODE_RELEASE_UNAVAILABLE',
+        'Node release metadata is unavailable.',
+        503,
+      ),
+    );
+
+    await openNodeReleaseList();
+    await fireEvent.click(screen.getByRole('button', { name: 'Install 24.8.1' }));
+
+    expect(
+      await screen.findByText('Node release metadata is unavailable.'),
+    ).toBeTruthy();
+    expect(mockApi.installRuntime).not.toHaveBeenCalled();
+  });
+
   it('defaults Windows static sources to NTFS and PHP/Node sources to WSL', async () => {
     mockApi.getSettings.mockResolvedValue({
       ...SETTINGS,

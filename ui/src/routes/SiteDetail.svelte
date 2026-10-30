@@ -40,6 +40,8 @@
     ApacheAllowOverride,
     BuildResult,
     FrontControllerMode,
+    NodeDefaultStatus,
+    NodeToolchain,
     PHPChange,
     PHPInfo,
     PHPRuntimeBuild,
@@ -58,6 +60,7 @@
   import Field from '../lib/components/Field.svelte';
   import IconButton from '../lib/components/IconButton.svelte';
   import LogsPanel from '../lib/components/LogsPanel.svelte';
+  import NodeVersionPicker from '../lib/components/NodeVersionPicker.svelte';
   import PHPIniEditor from '../lib/components/PHPIniEditor.svelte';
   import ProjectSourceMode from '../lib/components/ProjectSourceMode.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
@@ -96,6 +99,7 @@
   let phpApplyError = $state<PHPErrorDescription | null>(null);
   let phpSwitchError = $state<PHPErrorDescription | null>(null);
   let phpRuntimes = $state<RuntimeBuild[]>([]);
+  let nodeDefault = $state<NodeDefaultStatus | null>(null);
   let switchOpen = $state(false);
   let switchBuild = $state('');
 
@@ -110,6 +114,7 @@
   let configValidation = $state<Record<string, string>>({});
   let editDocumentRoot = $state('');
   let editCommand = $state('');
+  let editNodeVersion = $state('');
   let editFrontController = $state(false);
   let editFrontControllerFile = $state('index.php');
   let editFrontControllerMode = $state<FrontControllerMode>('auto');
@@ -193,6 +198,63 @@
       .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true })),
   );
 
+  // The daemon never substitutes another build for a configured default that
+  // is no longer installed. Only a resolved build (or an installed global
+  // summary reported for this site) may appear in the inherit label.
+  const defaultNodeBuild = $derived(
+    nodeDefault?.build?.kind === 'node' ? nodeDefault.build : null,
+  );
+  const configuredNodeDefault = $derived(nodeDefault?.configured?.trim() ?? '');
+  const nodeDefaultMissing = $derived(
+    Boolean(configuredNodeDefault) && !defaultNodeBuild,
+  );
+  const globalNodeVersion = $derived(
+    defaultNodeBuild?.version ??
+      (site?.node_toolchain?.source === 'global' && site.node_toolchain.installed
+        ? site.node_toolchain.version
+        : ''),
+  );
+
+  const nodeInheritLabel = $derived(
+    globalNodeVersion
+      ? `Inherit global default (v${globalNodeVersion})`
+      : 'Inherit global default',
+  );
+
+  /**
+   * The daemon resolves the exact shell toolchain. Older daemons omitted the
+   * summary; fall back to the site pin so the page still explains itself.
+   */
+  const nodeToolchain = $derived.by<NodeToolchain | null>(() => {
+    if (site?.node_toolchain) return site.node_toolchain;
+    const pin = site?.node_version?.trim();
+    if (!pin) return null;
+    return {
+      version: pin,
+      source: 'site',
+      installed: nodeBuilds.some((build) => build.version === pin),
+    };
+  });
+
+  function nodeSourceLabel(toolchain: NodeToolchain): string {
+    switch (toolchain.source) {
+      case 'global':
+        return 'Inherited from the global default';
+      case 'site':
+        return 'Pinned for this site';
+      case 'build':
+        return 'Build profile version';
+      default:
+        return 'Resolved by the daemon';
+    }
+  }
+
+  const nodeVersionChanged = $derived(
+    Boolean(site) &&
+      editNodeVersion !== (site?.node_version ?? '') &&
+      (site?.kind !== 'node' || Boolean(editNodeVersion)),
+  );
+
   const switchCandidates = $derived(
     phpBuilds.filter((runtime) => runtime.id !== (site?.php_build || phpInfo?.build.id)),
   );
@@ -230,6 +292,7 @@
       site = null;
       phpInfo = null;
       phpRuntimes = [];
+      nodeDefault = null;
       phpLoading = false;
       phpError = null;
       phpApplyError = null;
@@ -273,13 +336,15 @@
       return;
     }
     try {
-      const [next, builds] = await Promise.all([
+      const [next, builds, defaultStatus] = await Promise.all([
         api.getSite(siteRef),
         api.listRuntimes().catch(() => [] as RuntimeBuild[]),
+        api.getNodeDefault().catch(() => null),
       ]);
       if (generation !== loadGeneration || siteRef !== ref) return;
       site = next;
       phpRuntimes = builds;
+      nodeDefault = defaultStatus;
       if (next.kind === 'php') await loadPHP(siteRef, generation);
     } catch (caught) {
       if (generation !== loadGeneration || siteRef !== ref) return;
@@ -537,6 +602,7 @@
     if (!site) return;
     editDocumentRoot = site.document_root || (site.kind === 'static' ? '.' : '');
     editCommand = site.command;
+    editNodeVersion = site.node_version || '';
     editFrontController = site.front_controller;
     editFrontControllerFile = site.front_controller_file || 'index.php';
     editFrontControllerMode = site.front_controller_mode || 'auto';
@@ -571,6 +637,20 @@
 
   function validateConfig(): Record<string, string> {
     const next: Record<string, string> = {};
+    const pin = editNodeVersion.trim();
+    if (site?.kind === 'node' && !pin) {
+      next.node_version = 'Choose an installed Node version.';
+    } else if (pin && !nodeBuilds.some((build) => build.version === pin)) {
+      next.node_version = `Node ${pin} is not installed. Install it first.`;
+    }
+    if (
+      site?.kind === 'node' &&
+      pin &&
+      pin !== (site.node_version || '') &&
+      !stopped
+    ) {
+      next.node_version = 'Stop the site before changing its Node version.';
+    }
     if ((site?.kind === 'static' || site?.kind === 'php') && !editDocumentRoot.trim()) {
       next.document_root = 'Enter a document root. Use . to serve the project root.';
     }
@@ -629,6 +709,11 @@
     if (Object.keys(found).length > 0) return;
 
     const body: UpdateSiteRequest = {};
+    const pin = editNodeVersion.trim();
+    if (pin !== (site.node_version || '')) {
+      // Clearing is an explicit null, and only static/PHP sites may inherit.
+      body.node_version = pin || (site.kind === 'node' ? site.node_version : null);
+    }
     if (site.kind === 'static' || site.kind === 'php') {
       body.document_root = editDocumentRoot.trim();
     }
@@ -673,6 +758,27 @@
     } finally {
       savingConfig = false;
     }
+  }
+
+  async function installNodeVersion(
+    version: string,
+    target: 'site' | 'build',
+  ): Promise<void> {
+    const preflight = await api.getNodeRelease(version);
+    await api.installRuntime(preflight.entry.id);
+    const builds = await api.listRuntimes();
+    phpRuntimes = builds;
+    const installed = preflight.entry.version;
+    if (target === 'build') {
+      editBuildNodeVersion = installed;
+    } else {
+      editNodeVersion = installed;
+    }
+    addToast({
+      kind: 'success',
+      title: `Node ${installed} installed`,
+      message: 'The exact build is ready. Save the configuration to use it.',
+    });
   }
 
   function addBuildEnvRow(): void {
@@ -880,6 +986,27 @@
               <dt>Runtime</dt>
               <dd class="mono">{runtimeLabel(site)}</dd>
             </div>
+            {#if nodeToolchain}
+              <div class="row">
+                <dt>Node toolchain</dt>
+                <dd class="mono">
+                  Node {nodeToolchain.version}
+                  <span class="toolchain-source">{nodeSourceLabel(nodeToolchain)}</span>
+                </dd>
+              </div>
+              <div class="row">
+                <dt>Shell node</dt>
+                <dd class="mono">node -v uses v{nodeToolchain.version}</dd>
+              </div>
+              {#if !nodeToolchain.installed}
+                <div class="row">
+                  <dt>Node warning</dt>
+                  <dd class="toolchain-warning">
+                    This build is not installed. Install it before starting the site.
+                  </dd>
+                </div>
+              {/if}
+            {/if}
             {#if site.kind === 'php'}
               <div class="row">
                 <dt>PHP build</dt>
@@ -1081,6 +1208,57 @@
             </p>
           {/if}
 
+          <div class="node-toolchain-field">
+            <NodeVersionPicker
+              id="edit-node-version"
+              label={site.kind === 'node' ? 'Node version' : 'Node toolchain'}
+              required={site.kind === 'node'}
+              hint={site.kind === 'node'
+                ? 'Node server sites store an exact installed version.'
+                : 'Leave this on the global default unless this project needs a specific Node build.'}
+              value={editNodeVersion}
+              builds={nodeBuilds}
+              inheritLabel={site.kind === 'node' ? undefined : nodeInheritLabel}
+              error={configValidation.node_version}
+              disabled={site.kind === 'node' && !stopped}
+              onchange={(value) => {
+                editNodeVersion = value;
+                const next = { ...configValidation };
+                delete next.node_version;
+                configValidation = next;
+              }}
+              oninstall={(version) => installNodeVersion(version, 'site')}
+            />
+            {#if nodeDefaultMissing && site.kind !== 'node' && !editNodeVersion}
+              <p class="profile-note node-default-warning" role="status">
+                The configured global Node default (v{configuredNodeDefault}) is not installed.
+                This site inherits no Node toolchain until the default is fixed.
+              </p>
+            {/if}
+            {#if nodeVersionChanged}
+              <div class="abi-warning" role="status">
+                <TriangleAlert size={14} strokeWidth={2} aria-hidden="true" />
+                <div>
+                  <p>
+                    Native modules are compiled against the Node ABI. Reinstall project
+                    dependencies after switching from v{site.node_version || 'the global default'}
+                    to v{editNodeVersion || 'the global default'}.
+                  </p>
+                  <p>
+                    Run <code>npm rebuild</code> or a fresh <code>npm install</code> in the
+                    project folder{#if site.kind === 'node'}, then restart the site{/if}.
+                  </p>
+                </div>
+              </div>
+            {/if}
+            {#if site.kind === 'node' && !stopped}
+              <p class="profile-note">
+                Stop the site before changing its Node version. The shell toolchain is pinned
+                for this site.
+              </p>
+            {/if}
+          </div>
+
           {#if site.kind === 'static' || site.kind === 'php'}
             <Field
               id="edit-document-root"
@@ -1224,29 +1402,22 @@
             {/if}
             {#if site.build || editBuildEnabled}
               <div class="config-grid">
-                <Field
+                <NodeVersionPicker
                   id="edit-build-node"
                   label="Build Node version"
                   required
+                  hint="The build runs with this exact installed version."
+                  value={editBuildNodeVersion}
+                  builds={nodeBuilds}
                   error={configValidation.build_node_version}
-                >
-                  <div class="select-wrap">
-                    <select
-                      id="edit-build-node"
-                      class="input mono"
-                      bind:value={editBuildNodeVersion}
-                      aria-invalid={Boolean(configValidation.build_node_version)}
-                    >
-                      {#if nodeBuilds.length === 0}
-                        <option value="">No Node build installed</option>
-                      {/if}
-                      {#each nodeBuilds as runtime (runtime.id)}
-                        <option value={runtime.version}>Node {runtime.version} · {runtime.backend}</option>
-                      {/each}
-                    </select>
-                    <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
-                  </div>
-                </Field>
+                  onchange={(value) => {
+                    editBuildNodeVersion = value;
+                    const next = { ...configValidation };
+                    delete next.build_node_version;
+                    configValidation = next;
+                  }}
+                  oninstall={(version) => installNodeVersion(version, 'build')}
+                />
                 <Field
                   id="edit-build-output"
                   label="Output directory"
@@ -1353,6 +1524,18 @@
         </div>
       {:else}
         <dl class="config-summary">
+          <div>
+            <dt>Node toolchain</dt>
+            <dd class="mono">
+              {#if nodeToolchain}
+                Node {nodeToolchain.version} · {nodeToolchain.source === 'global'
+                  ? 'global default'
+                  : 'site pin'}
+              {:else}
+                Inherit global default
+              {/if}
+            </dd>
+          </div>
           {#if site.kind === 'static' || site.kind === 'php'}
             <div>
               <dt>Document root</dt>
@@ -2336,6 +2519,66 @@
     color: var(--muted);
     font-size: 10.5px;
     line-height: 1.5;
+  }
+
+  .node-toolchain-field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .node-default-warning {
+    border-color: color-mix(in srgb, var(--warning) 36%, var(--border));
+    background: var(--warning-soft);
+    color: var(--warning-fg);
+  }
+
+  .abi-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--warning) 36%, var(--border));
+    border-radius: var(--radius-lg);
+    background: var(--warning-soft);
+  }
+
+  .abi-warning :global(svg) {
+    flex: none;
+    margin-top: 2px;
+    color: var(--warning-fg, var(--fg));
+  }
+
+  .abi-warning p {
+    margin: 0;
+    color: var(--fg);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .abi-warning p + p {
+    margin-top: 2px;
+    color: var(--muted);
+  }
+
+  .abi-warning code {
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
+  .toolchain-source {
+    display: block;
+    margin-top: 1px;
+    color: var(--muted);
+    font-family: var(--font-sans);
+    font-size: 10px;
+    font-weight: 400;
+  }
+
+  .toolchain-warning {
+    color: var(--danger-fg);
+    font-size: 10px;
+    line-height: 1.45;
   }
 
   .build-env {

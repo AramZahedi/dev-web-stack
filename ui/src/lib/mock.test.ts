@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mockApi, resetMockServiceStateForTests } from './mock';
+import {
+  mockApi,
+  resetMockServiceStateForTests,
+  setMockNodeDefaultForTests,
+} from './mock';
 
 const BLOG = 's_blog';
 
@@ -319,5 +323,58 @@ describe('mock service actions', () => {
     await expect(mockApi.buildSite('api')).rejects.toMatchObject({
       code: 'INVALID_REQUEST',
     });
+  });
+});
+
+describe('mock node release discovery', () => {
+  it('includes every stable release in list and refresh snapshots', async () => {
+    const listed = await mockApi.listNodeReleases();
+    const node24 = listed.majors.find((entry) => entry.major === 24);
+    expect(node24?.releases.map((entry) => entry.version)).toEqual(['24.9.0']);
+    expect(listed.all.map((entry) => entry.version)).toEqual([
+      '24.9.0',
+      '24.8.1',
+      '24.8.0',
+      '24.1.2',
+      '22.20.0',
+      '22.19.0',
+      '22.11.0',
+      '20.19.5',
+      '20.18.1',
+    ]);
+
+    const refreshed = await mockApi.refreshNodeReleases();
+    expect(refreshed.source).toBe('live');
+    expect(refreshed.all.map((entry) => entry.version)).toEqual(
+      listed.all.map((entry) => entry.version),
+    );
+    expect(refreshed.all.some((entry) => entry.version === '24.8.1')).toBe(true);
+    expect(refreshed.all.some((entry) => entry.version === '22.11.0')).toBe(true);
+  });
+});
+
+describe('mock node default', () => {
+  afterEach(() => {
+    setMockNodeDefaultForTests('');
+  });
+
+  it('does not substitute the newest build for a configured default that is not installed', async () => {
+    setMockNodeDefaultForTests('22.11.0');
+
+    const status = await mockApi.getNodeDefault();
+    expect(status.configured).toBe('22.11.0');
+    expect(status.source).toBe('setting');
+    expect(status.build).toBeUndefined();
+    expect(status.shim_installed).toBe(false);
+
+    expect((await mockApi.getSite('blog')).node_toolchain).toBeUndefined();
+  });
+
+  it('reports the newest installed build only when no default is configured', async () => {
+    const status = await mockApi.getNodeDefault();
+    expect(status.configured).toBeUndefined();
+    expect(status.source).toBe('newest');
+    expect(status.build?.version).toBe('24.9.0');
+    expect(status.shim_installed).toBe(true);
   });
 });

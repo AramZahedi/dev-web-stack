@@ -12,6 +12,9 @@ import type {
   Health,
   ListServicesResponse,
   LogLine,
+  NodeDefaultStatus,
+  NodeReleasePreflight,
+  NodeReleaseSnapshot,
   PHPChange,
   PHPDefaults,
   PHPDefaultsResult,
@@ -332,6 +335,63 @@ export async function removeRuntime(buildID: string): Promise<void> {
   await request<void>(`/runtimes/${encodeURIComponent(buildID)}`, {
     method: 'DELETE',
     voidResponse: true,
+  });
+}
+
+export interface NodeReleaseQuery {
+  major?: number;
+  all?: boolean;
+  offline?: boolean;
+}
+
+/** Discover Node releases. The default snapshot only lists the newest patch per major. */
+export async function listNodeReleases(
+  query: NodeReleaseQuery = {},
+): Promise<NodeReleaseSnapshot> {
+  if (isMockMode) return mockApi.listNodeReleases(query);
+  const params = new URLSearchParams();
+  if (query.major !== undefined) params.set('major', String(query.major));
+  if (query.all) params.set('all', 'true');
+  if (query.offline) params.set('offline', 'true');
+  const suffix = params.size > 0 ? `?${params.toString()}` : '';
+  return request<NodeReleaseSnapshot>(`/runtimes/node/releases${suffix}`);
+}
+
+/** Load the fully pinned entry for one exact Node release before installing it. */
+export async function getNodeRelease(version: string): Promise<NodeReleasePreflight> {
+  if (isMockMode) return mockApi.getNodeRelease(version);
+  return request<NodeReleasePreflight>(
+    `/runtimes/node/releases/${encodeURIComponent(version)}`,
+  );
+}
+
+/** The machine-wide CLI Node default, inherited by sites without a pin. */
+export async function getNodeDefault(): Promise<NodeDefaultStatus> {
+  if (isMockMode) return mockApi.getNodeDefault();
+  return request<NodeDefaultStatus>('/node/default');
+}
+
+/** Force one Node release index fetch and return the refreshed snapshot. */
+export async function refreshNodeReleases(): Promise<NodeReleaseSnapshot> {
+  if (isMockMode) return mockApi.refreshNodeReleases();
+  return request<NodeReleaseSnapshot>('/runtimes/node/refresh', { method: 'POST' });
+}
+
+/** Set the machine-wide Node CLI default to an installed build. */
+export async function setNodeDefault(value: string, force = false): Promise<NodeDefaultStatus> {
+  if (isMockMode) return mockApi.setNodeDefault(value, force);
+  return request<NodeDefaultStatus>('/node/default', {
+    method: 'PUT',
+    body: { value, force },
+  });
+}
+
+/** Clear the Node CLI default and re-resolve the newest installed fallback. */
+export async function clearNodeDefault(): Promise<NodeDefaultStatus> {
+  if (isMockMode) return mockApi.clearNodeDefault();
+  return request<NodeDefaultStatus>('/node/default', {
+    method: 'PUT',
+    body: { clear: true },
   });
 }
 
