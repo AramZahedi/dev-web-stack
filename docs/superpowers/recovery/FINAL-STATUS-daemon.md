@@ -1,4 +1,4 @@
-# Lane B final status — implementation complete, fresh audit not dispatched
+# Lane B final status ÔÇö implementation complete, fresh audit not dispatched
 
 - **Branch:** `lane/db-daemon`
 - **Base:** `44c9d6812439a27c4e3ba060e364a197a781e929`
@@ -20,13 +20,13 @@ Remaining Minors fixed across `764b825`, `78d8b48`, `53e89cc`, `d516df4`, `c389e
 
 ## Gate
 
-- `go test ./internal/store ./internal/databases ./internal/servicecontrol ./internal/api ./internal/sites ./internal/tooling ./internal/terminal ./internal/phpfpm ./internal/daemon -count=1` — PASS
-- `go test ./... -count=1` — PASS
-- `go vet ./...` — PASS
-- `go build ./...` — PASS
-- `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/daemon ./internal/terminal ./internal/backend/...` — PASS
-- `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c ./internal/backend` — PASS
-- `git status --short` — clean
+- `go test ./internal/store ./internal/databases ./internal/servicecontrol ./internal/api ./internal/sites ./internal/tooling ./internal/terminal ./internal/phpfpm ./internal/daemon -count=1` ÔÇö PASS
+- `go test ./... -count=1` ÔÇö PASS
+- `go vet ./...` ÔÇö PASS
+- `go build ./...` ÔÇö PASS
+- `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./internal/daemon ./internal/terminal ./internal/backend/...` ÔÇö PASS
+- `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c ./internal/backend` ÔÇö PASS
+- `git status --short` ÔÇö clean
 
 ## Open items
 

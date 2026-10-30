@@ -1,7 +1,7 @@
-# Lane C recovery — interrupted service dashboard fixer
+# Lane C recovery ÔÇö interrupted service dashboard fixer
 
 - **Session:** `ses_e719a01dfffegm5gvPgEfSBPby`
-- **Outcome:** failed — provider quota `429 GoUsageLimitError` (`retryAfterMs` 768000)
+- **Outcome:** failed ÔÇö provider quota `429 GoUsageLimitError` (`retryAfterMs` 768000)
 - **Branch:** `lane/db-ui-service`
 - **HEAD at interruption:** `1a4adc6f47f206586030e86637391434bf0e5c93` plus uncommitted WIP
 - **Base:** `44c9d6812439a27c4e3ba060e364a197a781e929`
@@ -47,12 +47,12 @@ The intended implementation (from the transcript reasoning):
 1. Implement the RedisTab reveal-refresh minor above; make both tests green; commit.
 2. Work through the remaining Minor findings from the C re-audit:
    - Deactivate warning under-reports when inventory failed (partially addressed by `be967ee`; verify).
-   - Deactivate warning only sees the active tab’s job.
+   - Deactivate warning only sees the active tabÔÇÖs job.
    - Restart prompt is session-local (persist or clearly label).
    - Terminal new job can leave a previous poll timer running.
    - Backup fallback options do not filter missing databases.
    - `confirmDrop` lacks a function-level gate re-check.
-   - Reset dialog “Reveal” after Hide is not a new audited reveal (document).
+   - Reset dialog ÔÇ£RevealÔÇØ after Hide is not a new audited reveal (document).
    - Deactivate dialog persists across service change.
    - Initial skeleton waits for all inventory calls (partially addressed by `1a4adc6`).
 3. Run the full gate from `ui/`:
