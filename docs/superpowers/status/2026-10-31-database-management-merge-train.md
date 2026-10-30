@@ -13,7 +13,7 @@
 | Lane B cross-lane fixes (`mariadb`, `digest[:8]`) | done on `lane/db-daemon` | `2588655` | `go test ./internal/databases` PASS |
 | Targeted review Lane A | done | — | no Critical/Important |
 | Merge Lane A | done | `768cb73` | agent/dbengine packages PASS; build + vet PASS |
-| Merge Lane H | pending | — | — |
+| Merge Lane H | done | `74eb07c` | helper/helperclient/helperproto/dbengine PASS; build + vet PASS |
 | Merge Lane B | pending | — | — |
 | Merge Lane C | pending | — | — |
 | Merge Lane D | pending | — | — |
@@ -39,3 +39,12 @@
 - No Critical or Important findings in the reviewed range.
 - Merge commit `768cb73` (`merge: database agent adapters`).
 - Gate: `go test ./internal/dbengine ./internal/agentdocker ./internal/agentclient ./internal/agentproto ./internal/agent -count=1` PASS; `go build ./...` PASS; `go vet ./...` PASS.
+
+### Step 3 — Lane H targeted review and merge
+
+- Reviewed `2611c2e..bcc7bba`: helper-side SQL user IDs, MySQL/MariaDB `KILL` execution, full gzip validation, partial-stream rejection, wildcard grant handling, Redis ACL migration confirmation, structural Redis errors, existing `users.acl` mode checks, and strict JSON decoding.
+- No Critical or Important findings in the reviewed range.
+- **Foundation resolution:** accepted the additive `databases.ErrConfirmationRequired` and `databases.RedisACLFilePlatform` in `internal/databases/contracts.go`. The change adds a typed error and an optional interface; it does not alter existing signatures. Cost if wrong: contract drift, mitigated by the additive-only shape and the confirmation tests.
+- **Documentation conflict resolution:** every lane writes `docs/superpowers/recovery/FINAL-STATUS.md`; kept A as `FINAL-STATUS-agent.md` and H as `FINAL-STATUS-helper.md`.
+- Merge commit `74eb07c` (`merge: database Linux helper adapters`).
+- Gate: `go test ./internal/helper ./internal/helperclient ./internal/helperproto ./internal/dbengine -count=1` PASS; `go build ./...` PASS; `go vet ./...` PASS.
