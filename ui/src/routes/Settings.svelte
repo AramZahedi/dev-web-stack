@@ -181,6 +181,15 @@
     }
     return 'Not configured';
   });
+  const nodeDefaultBadge = $derived.by(
+    (): { label: string; variant: 'neutral' | 'accent' | 'warning' | 'info' } => {
+      if (nodeDefaultLoading && !nodeDefault) return { label: 'Loading', variant: 'neutral' };
+      if (nodeDefaultMissing) return { label: 'Missing', variant: 'warning' };
+      if (nodeDefault?.configured) return { label: 'Explicit', variant: 'accent' };
+      if (nodeDefault?.build) return { label: 'Fallback', variant: 'info' };
+      return { label: 'Not set', variant: 'neutral' };
+    },
+  );
   const composerTool = $derived(tools.find((tool) => tool.id === 'composer'));
   const phpDefaultLabel = $derived(
     phpDefault?.configured
@@ -340,9 +349,9 @@
       toolingRuntimes = builds;
       const available = builds
         .filter((runtime) => runtime.kind === 'node')
-        .map((runtime) => runtime.version);
+        .map((runtime) => runtime.id);
       if (!nodeDefaultChoice || !available.includes(nodeDefaultChoice)) {
-        nodeDefaultChoice = status.build?.version ?? '';
+        nodeDefaultChoice = status.build?.id ?? '';
       }
     } catch (caught) {
       nodeDefaultError = describeError(caught);
@@ -616,7 +625,7 @@
 
   async function saveNodeDefault(): Promise<void> {
     if (!nodeDefaultChoice || nodeDefaultBusy) return;
-    if (!nodeBuilds.some((build) => build.version === nodeDefaultChoice)) {
+    if (!nodeBuilds.some((build) => build.id === nodeDefaultChoice)) {
       nodeDefaultActionError = {
         code: 'NODE_DEFAULT_NOT_INSTALLED',
         message: 'Choose an installed Node build before saving the default.',
@@ -627,7 +636,8 @@
     nodeDefaultActionError = null;
     try {
       nodeDefault = await api.setNodeDefault(nodeDefaultChoice);
-      nodeDefaultChoice = nodeDefault.build?.version ?? nodeDefaultChoice;
+      nodeDefaultError = null;
+      nodeDefaultChoice = nodeDefault.build?.id ?? nodeDefaultChoice;
       addToast({
         kind: 'success',
         title: 'Node CLI default saved',
@@ -651,7 +661,8 @@
     nodeDefaultActionError = null;
     try {
       nodeDefault = await api.clearNodeDefault();
-      nodeDefaultChoice = nodeDefault.build?.version ?? '';
+      nodeDefaultError = null;
+      nodeDefaultChoice = nodeDefault.build?.id ?? '';
       addToast({
         kind: 'success',
         title: 'Node CLI default cleared',
@@ -1296,23 +1307,7 @@
         subtitle="Machine-wide node, npm and npx shims outside a site shell"
       >
         {#snippet actions()}
-          <Badge
-            variant={nodeDefaultMissing
-              ? 'warning'
-              : nodeDefault?.configured
-                ? 'accent'
-                : nodeDefault?.build
-                  ? 'info'
-                  : 'neutral'}
-          >
-            {nodeDefaultMissing
-              ? 'Missing'
-              : nodeDefault?.configured
-                ? 'Explicit'
-                : nodeDefault?.build
-                  ? 'Fallback'
-                  : 'Not set'}
-          </Badge>
+          <Badge variant={nodeDefaultBadge.variant}>{nodeDefaultBadge.label}</Badge>
         {/snippet}
 
         {#if nodeDefaultLoading && !nodeDefault}
@@ -1343,8 +1338,8 @@
 
           {#if nodeDefaultMissing}
             <p class="node-default-warning" role="status">
-              Configured Node {configuredNodeDefaultDisplay} is not installed. Clear the default or install
-              that build before saving a new one.
+              Configured Node {configuredNodeDefaultDisplay} is not installed. Choose another
+              installed build, clear the default, or install Node {configuredNodeDefaultDisplay}.
             </p>
           {/if}
 
@@ -1408,7 +1403,7 @@
                 <option value="">No Node build installed</option>
               {/if}
               {#each nodeBuilds as build (build.id)}
-                <option value={build.version}>
+                <option value={build.id}>
                   Node {build.version} · {build.backend}
                 </option>
               {/each}

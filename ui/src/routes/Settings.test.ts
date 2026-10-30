@@ -122,6 +122,13 @@ const NODE_DEFAULT_STATUS: NodeDefaultStatus = {
   source: 'setting',
 };
 
+const NODE_24_WSL: RuntimeBuild = {
+  ...NODE_24,
+  id: 'node@24.9.0-wsl',
+  backend: 'wsl',
+  path: '/home/dev/.devstack/runtimes/node/24.9.0-wsl',
+};
+
 const INI: GlobalIni = {
   path: '/home/dev/.devstack/tools/php-default/php.ini',
   content: '[PHP]\nmemory_limit = 512M\n',
@@ -161,7 +168,7 @@ beforeEach(() => {
   mockApi.getNodeDefault.mockResolvedValue(NODE_DEFAULT_STATUS);
   mockApi.setNodeDefault.mockResolvedValue({
     ...NODE_DEFAULT_STATUS,
-    configured: NODE_22.version,
+    configured: NODE_22.id,
     build: NODE_22,
   });
   mockApi.clearNodeDefault.mockResolvedValue({
@@ -306,15 +313,15 @@ describe('Settings tooling', () => {
     const heading = await screen.findByRole('heading', { name: 'Node CLI default' });
     const card = heading.closest('section') as HTMLElement;
     const select = (await screen.findByLabelText('Default Node build')) as HTMLSelectElement;
-    expect(select.value).toBe(NODE_24.version);
+    expect(select.value).toBe(NODE_24.id);
 
-    await fireEvent.change(select, { target: { value: NODE_22.version } });
+    await fireEvent.change(select, { target: { value: NODE_22.id } });
     await fireEvent.click(screen.getByRole('button', { name: 'Save Node default' }));
 
-    await waitFor(() => expect(mockApi.setNodeDefault).toHaveBeenCalledWith(NODE_22.version));
+    await waitFor(() => expect(mockApi.setNodeDefault).toHaveBeenCalledWith(NODE_22.id));
     await waitFor(() => {
       expect((screen.getByLabelText('Default Node build') as HTMLSelectElement).value).toBe(
-        NODE_22.version,
+        NODE_22.id,
       );
     });
     expect(card.textContent).toContain('Node 22.11.0');
@@ -342,12 +349,71 @@ describe('Settings tooling', () => {
     expect(
       await within(card).findByText(/Configured Node 22\.11\.0 is not installed/i),
     ).toBeTruthy();
+    expect(
+      within(card).getByText(
+        /Choose another installed build, clear the default, or install Node 22\.11\.0/i,
+      ),
+    ).toBeTruthy();
     const select = within(card).getByLabelText('Default Node build') as HTMLSelectElement;
     expect(select.value).toBe('');
     expect(
       (within(card).getByRole('button', { name: 'Save Node default' }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(card.textContent).toContain('Configured · Node 22.11.0 (not installed)');
+  });
+
+  it('uses exact build ids for duplicate node versions', async () => {
+    mockApi.listRuntimes.mockResolvedValue([NODE_24, NODE_24_WSL, NODE_22]);
+    render(Settings);
+
+    const card = (await screen.findByRole('heading', { name: 'Node CLI default' })).closest(
+      'section',
+    ) as HTMLElement;
+    const select = within(card).getByLabelText('Default Node build') as HTMLSelectElement;
+    const values = Array.from(select.options).map((option) => option.value);
+    expect(values).toContain(NODE_24.id);
+    expect(values).toContain(NODE_24_WSL.id);
+
+    await fireEvent.change(select, { target: { value: NODE_24_WSL.id } });
+    await fireEvent.click(within(card).getByRole('button', { name: 'Save Node default' }));
+    await waitFor(() => expect(mockApi.setNodeDefault).toHaveBeenCalledWith(NODE_24_WSL.id));
+  });
+
+  it('shows a neutral loading badge before node default status arrives', async () => {
+    let resolveNode!: (value: NodeDefaultStatus) => void;
+    mockApi.getNodeDefault.mockReturnValue(
+      new Promise<NodeDefaultStatus>((resolve) => {
+        resolveNode = resolve;
+      }),
+    );
+    render(Settings);
+
+    const card = (await screen.findByRole('heading', { name: 'Node CLI default' })).closest(
+      'section',
+    ) as HTMLElement;
+    expect(within(card).getByText('Loading')).toBeTruthy();
+
+    resolveNode(NODE_DEFAULT_STATUS);
+    expect(await within(card).findByText('Explicit')).toBeTruthy();
+  });
+
+  it('clears a stale node default error after a successful save', async () => {
+    render(Settings);
+    await screen.findByRole('heading', { name: 'Node CLI default' });
+    mockApi.getNodeDefault.mockRejectedValue(
+      new ApiError('INTERNAL', 'node default unavailable', 500),
+    );
+    window.dispatchEvent(new Event('devstack:refresh'));
+    expect(await screen.findByText('Node CLI state is out of date')).toBeTruthy();
+
+    const select = screen.getByLabelText('Default Node build') as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: NODE_22.id } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save Node default' }));
+
+    await waitFor(() => expect(mockApi.setNodeDefault).toHaveBeenCalledWith(NODE_22.id));
+    await waitFor(() =>
+      expect(screen.queryByText('Node CLI state is out of date')).toBeNull(),
+    );
   });
 
   it('saves the global CLI php.ini content', async () => {

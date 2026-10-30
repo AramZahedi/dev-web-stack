@@ -87,6 +87,26 @@ const NODE_24_8_0: NodeRelease = {
   file: 'linux-x64',
 };
 
+const NODE_24_1_2: NodeRelease = {
+  version: '24.1.2',
+  date: '2026-04-08',
+  lts: 'Krypton',
+  security: false,
+  npm: '11.0.0',
+  modules: '137',
+  file: 'linux-x64',
+};
+
+const NODE_23_5_0: NodeRelease = {
+  version: '23.5.0',
+  date: '2026-01-14',
+  lts: '',
+  security: false,
+  npm: '10.9.2',
+  modules: '131',
+  file: 'linux-x64',
+};
+
 const NODE_22_20_0: NodeRelease = {
   version: '22.20.0',
   date: '2026-10-08',
@@ -110,9 +130,18 @@ const NODE_22_19_0: NodeRelease = {
 const NODE_RELEASES: NodeReleaseSnapshot = {
   majors: [
     { major: 24, latest: NODE_24_9_0, releases: [NODE_24_9_0] },
+    { major: 23, latest: NODE_23_5_0, releases: [NODE_23_5_0] },
     { major: 22, latest: NODE_22_20_0, releases: [NODE_22_20_0] },
   ],
-  all: [NODE_24_9_0, NODE_24_8_1, NODE_24_8_0, NODE_22_20_0, NODE_22_19_0],
+  all: [
+    NODE_24_9_0,
+    NODE_24_8_1,
+    NODE_24_8_0,
+    NODE_24_1_2,
+    NODE_23_5_0,
+    NODE_22_20_0,
+    NODE_22_19_0,
+  ],
   source: 'live',
   cached_at: '2026-10-30T09:00:00Z',
   stale: false,
@@ -226,6 +255,7 @@ beforeEach(() => {
   mockApi.listNodeReleases.mockResolvedValue(NODE_RELEASES);
   mockApi.getNodeRelease.mockResolvedValue(NODE_24_PREFLIGHT);
   mockApi.refreshNodeReleases.mockResolvedValue(NODE_RELEASES);
+  mockApi.installRuntime.mockResolvedValue(NODE_24_BUILD);
 });
 
 afterEach(() => {
@@ -539,16 +569,23 @@ describe('Runtimes Node discovery', () => {
     const node24 = (await screen.findByRole('heading', { name: 'Node 24' })).closest(
       'article',
     ) as HTMLElement;
+    const node23 = screen.getByRole('heading', { name: 'Node 23' }).closest(
+      'article',
+    ) as HTMLElement;
     const node22 = screen.getByRole('heading', { name: 'Node 22' }).closest(
       'article',
     ) as HTMLElement;
 
     expect(within(node24).getAllByText(/24\.9\.0/).length).toBeGreaterThan(0);
     expect(within(node24).queryByText(/24\.8\.1/)).toBeNull();
+    expect(within(node24).queryByText(/24\.1\.2/)).toBeNull();
     expect(within(node22).queryByText(/22\.19\.0/)).toBeNull();
     expect(within(node24).getByText('LTS Krypton')).toBeTruthy();
     expect(within(node22).getByText('Security')).toBeTruthy();
     expect(within(node24).getByText('Installed')).toBeTruthy();
+    expect(within(node24).getByText(/released Oct 15, 2026/)).toBeTruthy();
+    expect(within(node23).getByText(/Non-LTS/)).toBeTruthy();
+    expect(screen.getByLabelText('3 Node major release lines').textContent).toBe('3');
     expect(mockApi.listNodeReleases).toHaveBeenCalledWith();
   });
 
@@ -559,17 +596,22 @@ describe('Runtimes Node discovery', () => {
       'article',
     ) as HTMLElement;
     expect(within(node24).queryByText(/24\.8\.1/)).toBeNull();
+    const toggle = within(node24).getByRole('button', {
+      name: 'Show all Node 24 versions',
+    });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.getAttribute('aria-controls')).toBeNull();
 
-    await fireEvent.click(
-      within(node24).getByRole('button', { name: 'Show all Node 24 versions' }),
-    );
+    await fireEvent.click(toggle);
 
     expect(await within(node24).findByText(/24\.8\.1/)).toBeTruthy();
     expect(within(node24).getByText(/24\.8\.0/)).toBeTruthy();
+    expect(within(node24).getByText(/24\.1\.2/)).toBeTruthy();
     expect(within(node24).getByText('Node 24.8')).toBeTruthy();
-    expect(
-      within(node24).getByRole('button', { name: 'Hide Node 24 versions' }),
-    ).toBeTruthy();
+    expect(within(node24).getByText('Node 24.1')).toBeTruthy();
+    const hide = within(node24).getByRole('button', { name: 'Hide Node 24 versions' });
+    expect(hide.getAttribute('aria-expanded')).toBe('true');
+    expect(hide.getAttribute('aria-controls')).toBe('node-major-24-older');
     expect(screen.queryByText(/22\.19\.0/)).toBeNull();
   });
 
@@ -592,6 +634,13 @@ describe('Runtimes Node discovery', () => {
     expect(await within(dialog).findByText('49.5 MB')).toBeTruthy();
     expect(within(dialog).getByText('npm 11.6.0')).toBeTruthy();
     expect(within(dialog).getByText(/9a4f7c02e1d8b63a…/)).toBeTruthy();
+
+    await fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Install Node 24.9.0' }),
+    );
+    await waitFor(() =>
+      expect(mockApi.installRuntime).toHaveBeenCalledWith(NODE_24_PREFLIGHT.entry.id),
+    );
   });
 
   it('warns about older patch releases before installing', async () => {

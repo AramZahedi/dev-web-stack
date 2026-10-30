@@ -16,7 +16,7 @@
   } from 'lucide-svelte';
   import * as api from '../lib/api';
   import { describeError } from '../lib/errors';
-  import { checksumPrefix, formatBytes, formatDate, formatRelative } from '../lib/format';
+  import { checksumPrefix, formatBytes, formatDate, formatDateOnly, formatRelative } from '../lib/format';
   import { addToast, toastError } from '../lib/stores';
   import type {
     CatalogEntry,
@@ -117,8 +117,8 @@
   );
 
   const nodeMajors = $derived<NodeReleaseMajor[]>(nodeSnapshot?.majors ?? []);
+  const nodeMajorCount = $derived(nodeMajors.length);
   const installedNodeVersions = $derived(new Set(nodeRuntimes.map((runtime) => runtime.version)));
-  const nodeReleaseCount = $derived(nodeSnapshot?.all.length ?? 0);
 
   const availablePHP = $derived(
     catalog
@@ -130,7 +130,7 @@
       ),
   );
 
-  const availableCount = $derived(nodeReleaseCount + availablePHP.length);
+  const availableCount = $derived(nodeMajorCount + availablePHP.length);
   const migrationCandidates = $derived(
     migration ? phpRuntimes.filter((runtime) => runtime.id !== migration?.runtime.id) : [],
   );
@@ -746,7 +746,10 @@
           <div class="catalog-group" aria-label="Available Node releases">
             <div class="group-head node-group-head">
               <span class="group-label">Node</span>
-              <span class="group-count mono">{nodeReleaseCount}</span>
+              <span
+                class="group-count mono"
+                aria-label={`${nodeMajorCount} Node major release lines`}
+              >{nodeMajorCount}</span>
               <span class="node-source">
                 <Badge variant={sourceVariant(nodeSnapshot.source, nodeSnapshot.stale)}>
                   {sourceLabel(nodeSnapshot.source)}
@@ -811,7 +814,9 @@
                           size="sm"
                           variant="ghost"
                           ariaExpanded={expandedMajors[entry.major] === true}
-                          ariaControls={`node-major-${entry.major}-older`}
+                          ariaControls={expandedMajors[entry.major]
+                            ? `node-major-${entry.major}-older`
+                            : undefined}
                           onclick={() => toggleMajor(entry.major)}
                         >
                           {expandedMajors[entry.major]
@@ -838,9 +843,9 @@
                   <div class="node-release">
                     <span class="node-version mono">Node {entry.latest.version}</span>
                     <span class="release-meta">
-                      {entry.latest.lts ? `LTS ${entry.latest.lts}` : 'Current'}
+                      {entry.latest.lts ? `LTS ${entry.latest.lts}` : 'Non-LTS'}
                       {' · '}npm {entry.latest.npm}
-                      {' · '}released {formatDate(entry.latest.date)}
+                      {' · '}released {formatDateOnly(entry.latest.date)}
                       {' · '}{entry.latest.file}
                     </span>
                   </div>
@@ -855,9 +860,9 @@
                             <div class="release-copy">
                               <span class="node-version mono">Node {release.version}</span>
                               <span class="release-meta">
-                                {release.lts ? `LTS ${release.lts}` : 'Current'}
+                                {release.lts ? `LTS ${release.lts}` : 'Non-LTS'}
                                 {' · '}npm {release.npm}
-                                {' · '}released {formatDate(release.date)}
+                                {' · '}released {formatDateOnly(release.date)}
                               </span>
                             </div>
                             {#if installed}
@@ -1145,7 +1150,7 @@
         </div>
         <div>
           <dt>Released</dt>
-          <dd class="mono">{formatDate(releasePreflight.release.date)}</dd>
+          <dd class="mono">{formatDateOnly(releasePreflight.release.date)}</dd>
         </div>
       </dl>
 

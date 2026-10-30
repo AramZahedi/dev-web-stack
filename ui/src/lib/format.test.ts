@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, formatRelative, checksumPrefix, daysUntil, siteUrl, isAbsolutePath, sourceModeLabel } from './format';
+import { formatBytes, formatDateOnly, formatRelative, checksumPrefix, daysUntil, siteUrl, isAbsolutePath, sourceModeLabel } from './format';
 
 describe('format helpers', () => {
   it('accepts only Linux, C-drive, and WSL UNC absolute project paths', () => {
@@ -19,6 +19,12 @@ describe('format helpers', () => {
     expect(formatBytes(1536)).toBe('1.5 KB');
     expect(formatBytes(5 * 1024 * 1024)).toBe('5 MB');
     expect(formatBytes(52_428_800)).toBe('50 MB');
+  });
+
+  it('formats release date-only strings without a timezone shift', () => {
+    expect(formatDateOnly('2026-10-15')).toBe('Oct 15, 2026');
+    expect(formatDateOnly('2026-01-01')).toBe('Jan 1, 2026');
+    expect(formatDateOnly('')).toBe('—');
   });
 
   it('formats relative time in human units', () => {

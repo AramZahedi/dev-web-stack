@@ -1385,7 +1385,7 @@ function nodeReleaseSnapshot(all = false, major?: number): NodeReleaseSnapshot {
     }));
   return {
     majors,
-    all: majors.map((entry) => entry.latest),
+    all: selected,
     source: 'cache',
     cached_at: iso(-1000 * 60 * 12),
     stale: false,
