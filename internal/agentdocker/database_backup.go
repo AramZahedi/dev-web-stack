@@ -494,7 +494,7 @@ func newDatabaseJob(serviceID, database string, kind model.DatabaseJobKind) mode
 
 func failDatabaseJob(job model.DatabaseJob, err error) (model.DatabaseJob, error) {
 	job.Status = model.JobFailed
-	job.Message = err.Error()
+	job.Message = redactSQLSecrets(err.Error())
 	job.UpdatedAt = time.Now().UTC()
-	return job, err
+	return job, redactSQLError(err)
 }

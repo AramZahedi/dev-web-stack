@@ -566,5 +566,5 @@ func writeDatabaseError(w http.ResponseWriter, err error) {
 		status = http.StatusUnprocessableEntity
 		code = agentproto.CodeUnsupported
 	}
-	writeJSON(w, status, agentproto.ErrorResponse{Code: code, Message: err.Error()})
+	writeJSON(w, status, agentproto.ErrorResponse{Code: code, Message: redactSQLSecrets(err.Error())})
 }

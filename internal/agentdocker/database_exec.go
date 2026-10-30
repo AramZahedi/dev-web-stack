@@ -53,15 +53,26 @@ func databaseSQLCommandFor(engine model.DatabaseEngine, database string) ([]stri
 }
 
 func (d *Docker) runDatabaseSQL(ctx context.Context, serviceID string, command []string, input []byte) ([]byte, error) {
-	return d.composeExecSQL(ctx, serviceID, input, command)
+	output, err := d.composeExecSQL(ctx, serviceID, input, command)
+	if err != nil {
+		return output, redactSQLError(err)
+	}
+	return output, nil
 }
 
 func (d *Docker) runDatabaseStream(ctx context.Context, serviceID string, command []string) (io.ReadCloser, error) {
-	return d.composeExecStream(ctx, serviceID, command)
+	stream, err := d.composeExecStream(ctx, serviceID, command)
+	if err != nil {
+		return nil, redactSQLError(err)
+	}
+	return stream, nil
 }
 
 func (d *Docker) runDatabaseInput(ctx context.Context, serviceID string, command []string, input io.Reader) error {
-	return d.composeExecInput(ctx, serviceID, input, command)
+	if err := d.composeExecInput(ctx, serviceID, input, command); err != nil {
+		return redactSQLError(err)
+	}
+	return nil
 }
 
 // terminateDatabaseSessions asks the engine for its fixed session-termination

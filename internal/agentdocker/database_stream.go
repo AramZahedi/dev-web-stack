@@ -188,7 +188,7 @@ func copyBackupStream(ctx context.Context, stream io.ReadCloser, target string) 
 		// mysqldump/pg_dump exit status and stderr surface.
 		_ = gz.Close()
 		_ = tmp.Close()
-		return 0, "", fmt.Errorf("agentdocker: dump command failed: %w", closeErr)
+		return 0, "", fmt.Errorf("agentdocker: dump command failed: %w", redactSQLError(closeErr))
 	}
 	if err := gz.Close(); err != nil {
 		_ = tmp.Close()

@@ -71,7 +71,7 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	cmd.WaitDelay = 3 * time.Second
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", name, err, truncateOutput(output))
+		return output, fmt.Errorf("%s: %w: %s", name, err, redactSQLSecrets(truncateOutput(output)))
 	}
 	return output, nil
 }
@@ -82,7 +82,7 @@ func (execRunner) RunInput(ctx context.Context, input []byte, name string, args 
 	cmd.Stdin = bytes.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", name, err, truncateOutput(output))
+		return output, fmt.Errorf("%s: %w: %s", name, err, redactSQLSecrets(truncateOutput(output)))
 	}
 	return output, nil
 }
@@ -112,7 +112,7 @@ func (execRunner) RunInputStream(ctx context.Context, input io.Reader, name stri
 	stderr := &limitedBuffer{limit: 64 << 10}
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%s: %w: %s", name, err, redactSQLSecrets(strings.TrimSpace(stderr.String())))
 	}
 	return nil
 }
@@ -158,7 +158,7 @@ func (s *commandStream) Close() error {
 	readErr := s.ReadCloser.Close()
 	waitErr := s.cmd.Wait()
 	if waitErr != nil {
-		return fmt.Errorf("%s: %w: %s", s.name, waitErr, strings.TrimSpace(s.stderr.String()))
+		return fmt.Errorf("%s: %w: %s", s.name, waitErr, redactSQLSecrets(strings.TrimSpace(s.stderr.String())))
 	}
 	return readErr
 }
