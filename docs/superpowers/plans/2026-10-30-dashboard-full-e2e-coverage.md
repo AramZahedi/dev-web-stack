@@ -445,12 +445,12 @@ Services and order:
 6. Redis (already tested; retest install/activate only if needed)
 7. phpMyAdmin (requires active MySQL)
 
-- [ ] **Step 1: Install nginx through dashboard and CLI**
+- [x] **Step 1: Install nginx through dashboard and CLI**
 
 Dashboard Services → nginx → Install. Expected: installed, inactive; image digest shown; ports 80/443 ownership; no console errors.
 CLI parity: `devstack service install nginx --yes`, `service status nginx --json`, `service list`.
 
-- [ ] **Step 2: Activate, logs, config, restart, deactivate**
+- [x] **Step 2: Activate, logs, config, restart, deactivate**
 
 - Activate nginx; wait for active; verify `https://devstack.test` and a fixture site still serve.
 - Logs: open, assert nginx access/error lines; close.
@@ -458,28 +458,28 @@ CLI parity: `devstack service install nginx --yes`, `service status nginx --json
 - Restart; verify active; Deactivate; verify inactive.
 - `service logs nginx --tail 50`, `service config list nginx`, `service config show nginx <path>`, `service config diff/apply/reset` CLI parity.
 
-- [ ] **Step 3: Web-server exclusivity**
+- [x] **Step 3: Web-server exclusivity**
 
 Install Apache; attempt Activate Apache while nginx active → conflict error naming nginx; deactivate/uninstall or keep installed; activate Apache only after nginx deactivated. Verify built-in/native serving behavior. Restore nginx or builtin.
 
-- [ ] **Step 4: MySQL lifecycle and credentials**
+- [x] **Step 4: MySQL lifecycle and credentials**
 
 Install MySQL; activate; verify port 3306; logs; configuration safe edit/apply/reset; credentials reveal, rotate, reveal again (new value); connect with `mysql` CLI or Docker exec? Use `devstack service credentials mysql --json` and helper output; verify connection with returned credentials from WSL Docker.
 Attempt MariaDB activation while MySQL active → exclusive-group conflict. Uninstall MariaDB/keep data.
 
-- [ ] **Step 5: PostgreSQL lifecycle and credentials**
+- [x] **Step 5: PostgreSQL lifecycle and credentials**
 
 Install/activate PostgreSQL; logs; config diff/apply/reset; credentials reveal/rotate; connect with `psql` from WSL if available; deactivate; uninstall keep data then install again and verify data retained; uninstall with delete data and verify backup/removal.
 
-- [ ] **Step 6: phpMyAdmin activation**
+- [x] **Step 6: phpMyAdmin activation**
 
 With MySQL active, install/activate phpMyAdmin; verify port 8082, dashboard link, HTTP 200/cookie challenge; credentials reveal/rotate if exposed; deactivate. Without MySQL active, attempt activation → clear dependency error.
 
-- [ ] **Step 7: Redis recheck (optional)**
+- [x] **Step 7: Redis recheck (optional)**
 
 If not already installed during this run, install/activate/deactivate/uninstall Redis; expected behavior already proven in the Node E2E report.
 
-- [ ] **Step 8: Uninstall matrix**
+- [x] **Step 8: Uninstall matrix**
 
 For each service:
 - uninstall keeping data → data directory remains;
@@ -487,7 +487,7 @@ For each service:
 - uninstall with delete data → typed `redis`/service ID confirmation, backup/removal, data gone.
 Expected: no containers, no active services, config/data dirs removed only with delete data.
 
-- [ ] **Step 9: Final service state**
+- [x] **Step 9: Final service state**
 
 `service list --json` all `not_installed`; remove any leftover directories manually only if the uninstaller left them and evidence confirms they are test data. `doctor` green.
 
