@@ -51,9 +51,12 @@ func TestBackendSpecKeepsResolvedDatabaseEnvOutOfSiteEnv(t *testing.T) {
 		return map[string]string{"DB_DATABASE": "app", "DB_PASSWORD": "s3cret"}, nil
 	}
 	site := model.Site{
-		ID: "site", Name: "blog", Kind: model.SiteStatic,
+		ID: "site", Name: "blog", Domain: "blog.test", Kind: model.SiteStatic,
 		HostPath: fakes.root, BackendPath: fakes.root,
 		Env: map[string]string{"DB_DATABASE": "old", "APP_ENV": "local"},
+	}
+	if err := fakes.store.CreateSite(context.Background(), site); err != nil {
+		t.Fatal(err)
 	}
 	spec := svc.backendSpecFor(context.Background(), site)
 	if spec.RuntimeEnv["DB_DATABASE"] != "app" || spec.RuntimeEnv["DB_PASSWORD"] != "s3cret" {
