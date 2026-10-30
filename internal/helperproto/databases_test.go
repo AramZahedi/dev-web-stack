@@ -30,6 +30,7 @@ func TestDatabaseRoutePatternsCarryWildcards(t *testing.T) {
 		"export":          PathServiceDatabaseExport,
 		"job":             PathServiceJob,
 		"database env":    PathServiceDatabaseEnv,
+		"password":        PathServicePassword,
 	} {
 		if !strings.Contains(pattern, "{id}") {
 			t.Errorf("%s pattern %q has no service wildcard", name, pattern)
