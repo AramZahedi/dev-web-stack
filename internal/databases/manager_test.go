@@ -28,6 +28,7 @@ type fakeStore struct {
 	jobs             []model.DatabaseJobRecord
 	audit            []model.AuditEventRecord
 	passwordStateErr error
+	renameRefsErr    error
 	linkStarted      chan struct{}
 }
 
@@ -167,6 +168,9 @@ func (f *fakeStore) SetPrimaryDatabaseLink(_ context.Context, siteID, linkID str
 }
 
 func (f *fakeStore) RenameDatabaseReferences(_ context.Context, serviceID, oldName, newName string) error {
+	if f.renameRefsErr != nil {
+		return f.renameRefsErr
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.links {
@@ -436,6 +440,8 @@ type fakePlatform struct {
 	grantCalls       []model.DatabaseGrant
 	dropCalls        []string
 	restoreCalls     []string
+	renameCalls      []string
+	deleteBackupIDs  []string
 	lastPasswordUser string
 	lastRestoreReq   RestoreBackupRequest
 	lastImportReq    ImportRequest
@@ -444,6 +450,7 @@ type fakePlatform struct {
 	envErr           error
 	resolveEnv       func(serviceID string, links []model.DatabaseLink) map[string]string
 	passwordStateErr error
+	passwordErr      error
 	createStarted    chan struct{}
 	createRelease    chan struct{}
 	restoreStarted   chan struct{}
@@ -466,6 +473,7 @@ func (f *fakePlatform) CreateDatabase(_ context.Context, serviceID string, req C
 }
 
 func (f *fakePlatform) RenameDatabase(_ context.Context, serviceID, name string, req RenameDatabaseRequest) (model.Database, error) {
+	f.renameCalls = append(f.renameCalls, name+"->"+req.Name)
 	return model.Database{Name: req.Name, ServiceID: serviceID}, nil
 }
 
@@ -510,6 +518,9 @@ func (f *fakePlatform) DeleteUser(context.Context, string, string, DeleteUserReq
 }
 
 func (f *fakePlatform) SetUserPassword(_ context.Context, _ string, userID string) (Secret, error) {
+	if f.passwordErr != nil {
+		return Secret{}, f.passwordErr
+	}
 	f.lastPasswordUser = userID
 	return Secret{Value: "generated-secret"}, nil
 }
@@ -569,7 +580,10 @@ func (f *fakePlatform) CreateBackup(ctx context.Context, serviceID, database str
 	return job, nil
 }
 
-func (f *fakePlatform) DeleteBackup(context.Context, string, string) error { return nil }
+func (f *fakePlatform) DeleteBackup(_ context.Context, _ string, backupID string) error {
+	f.deleteBackupIDs = append(f.deleteBackupIDs, backupID)
+	return nil
+}
 
 func (f *fakePlatform) RestoreBackup(ctx context.Context, serviceID, backupID string, req RestoreBackupRequest) (model.DatabaseJob, error) {
 	signalTest(f.restoreStarted)
@@ -923,6 +937,152 @@ func TestManagerDeleteUserBlockedWhileLinked(t *testing.T) {
 	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app"}}
 	if err := m.DeleteUser(context.Background(), "mysql", "usr_app", DeleteUserRequest{Confirm: "app"}); !errors.Is(err, ErrLinkedSites) {
 		t.Fatalf("delete linked user = %v", err)
+	}
+}
+
+func TestSetDefaultUserPasswordRejectsNonRedisService(t *testing.T) {
+	m, _, _, _, _ := testManagerWithFakes(t)
+	if _, err := m.SetDefaultUserPassword(context.Background(), "mysql"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("default password on mysql = %v, want unsupported", err)
+	}
+}
+
+func TestSetUserPasswordAuditsPlatformFailureWithoutSecrets(t *testing.T) {
+	m, _, platform, audit, _ := testManagerWithFakes(t)
+	platform.passwordErr = errors.New("rotate failed: password=supersecret")
+	if _, err := m.SetUserPassword(context.Background(), "mysql", "usr_app"); err == nil {
+		t.Fatal("SetUserPassword succeeded despite platform failure")
+	}
+	var failed *model.AuditEventRecord
+	for i := range audit.events {
+		if audit.events[i].Action == "database.user.password_changed" && audit.events[i].Result == "failed" {
+			failed = &audit.events[i]
+		}
+	}
+	if failed == nil {
+		t.Fatal("platform failure was not audited")
+	}
+	if strings.Contains(failed.DetailJSON, "supersecret") {
+		t.Fatalf("audit detail leaked a password: %s", failed.DetailJSON)
+	}
+}
+
+func TestUserMutationsRejectForeignServiceUser(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.users = append(st.users, model.DatabaseUserRecord{
+		ID: "usr_foreign", ServiceID: "postgres", Engine: model.DatabasePostgreSQL, Username: "foreign",
+	})
+	if _, err := m.UpdateUser(context.Background(), "mysql", "usr_foreign", UpdateUserRequest{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("update foreign user = %v, want not found", err)
+	}
+	if err := m.DeleteUser(context.Background(), "mysql", "usr_foreign", DeleteUserRequest{Confirm: "foreign"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete foreign user = %v, want not found", err)
+	}
+	if _, err := m.SetUserPassword(context.Background(), "mysql", "usr_foreign"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("password foreign user = %v, want not found", err)
+	}
+	if _, err := m.RevealUserPassword(context.Background(), "mysql", "usr_foreign"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reveal foreign user = %v, want not found", err)
+	}
+	if platform.lastPasswordUser != "" {
+		t.Fatalf("platform rotated a foreign user: %q", platform.lastPasswordUser)
+	}
+}
+
+func TestDeleteBackupRejectsForeignServiceBackup(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_foreign", ServiceID: "postgres", DatabaseName: "app"}}
+	if err := m.DeleteBackup(context.Background(), "mysql", "bkp_foreign"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete foreign backup = %v, want not found", err)
+	}
+	if len(platform.deleteBackupIDs) != 0 {
+		t.Fatalf("platform deleted a foreign backup: %v", platform.deleteBackupIDs)
+	}
+}
+
+func TestListBackupsPrunesMetadataDeletedExternally(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.backups = []model.DatabaseBackupRecord{
+		{ID: "bkp_live", ServiceID: "mysql", DatabaseName: "app"},
+		{ID: "bkp_stale", ServiceID: "mysql", DatabaseName: "app"},
+	}
+	platform.backups = []model.DatabaseBackup{{ID: "bkp_live", ServiceID: "mysql", Database: "app"}}
+	if _, err := m.ListBackups(context.Background(), "mysql"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetDatabaseBackup(context.Background(), "bkp_stale"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("stale backup metadata survived: %v", err)
+	}
+	if _, err := st.GetDatabaseBackup(context.Background(), "bkp_live"); err != nil {
+		t.Fatalf("live backup metadata missing: %v", err)
+	}
+}
+
+func TestRecordBackupMetadataPreservesPathAndKind(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.backups = []model.DatabaseBackupRecord{{
+		ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app",
+		Path: "/var/backups/app.sql.gz", Kind: string(model.BackupPreDrop),
+	}}
+	platform.backups = []model.DatabaseBackup{{ID: "bkp_1", ServiceID: "mysql", Database: "app"}}
+	m.recordBackupMetadata(context.Background(), "mysql", "app", "bkp_1", model.BackupPreDrop)
+	record, err := st.GetDatabaseBackup(context.Background(), "bkp_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Path != "/var/backups/app.sql.gz" || record.Kind != string(model.BackupPreDrop) {
+		t.Fatalf("backup metadata lost path/kind: %+v", record)
+	}
+}
+
+func TestRecordBackupMetadataSurvivesCanceledRequestContext(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	platform.backups = []model.DatabaseBackup{{ID: "bkp_1", ServiceID: "mysql", Database: "app"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.recordBackupMetadata(ctx, "mysql", "app", "bkp_1", model.BackupManual)
+	if _, err := st.GetDatabaseBackup(context.Background(), "bkp_1"); err != nil {
+		t.Fatalf("backup metadata not recorded after request cancellation: %v", err)
+	}
+}
+
+func TestRenameReferenceFailureRollsBackPlatformRename(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	svc := m.deps.Services.(*fakeServices)
+	svc.views[services.IDPostgreSQL] = services.View{ID: services.IDPostgreSQL, State: services.StateActive, Active: true, Installed: true}
+	st.renameRefsErr = errors.New("store unavailable")
+	_, err := m.RenameDatabase(context.Background(), "postgres", "app", RenameDatabaseRequest{Name: "app2", Confirm: "app"})
+	if err == nil {
+		t.Fatal("rename succeeded despite reference update failure")
+	}
+	if len(platform.renameCalls) != 2 || platform.renameCalls[0] != "app->app2" || platform.renameCalls[1] != "app2->app" {
+		t.Fatalf("rename calls = %v", platform.renameCalls)
+	}
+}
+
+func TestLinkDatabaseRejectsProtectedDatabase(t *testing.T) {
+	m, _, _, _, _ := testManagerWithFakes(t)
+	if _, err := m.LinkDatabase(context.Background(), "blog", LinkDatabaseRequest{
+		ServiceID: "mysql", Database: "mysql", UserID: "usr_app",
+	}); !errors.Is(err, ErrProtected) {
+		t.Fatalf("link protected database = %v, want protected", err)
+	}
+}
+
+func TestImportRejectsUnknownFileExtension(t *testing.T) {
+	m, _, _, _, _ := testManagerWithFakes(t)
+	if _, err := m.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("x"), "dump.txt", ImportRequest{Mode: ImportMerge}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("import .txt = %v, want invalid request", err)
+	}
+}
+
+func TestManagerRejectsNonSQLInventoryAndCreate(t *testing.T) {
+	m, _, _, _, _ := testManagerWithFakes(t)
+	if _, err := m.ListDatabases(context.Background(), "phpmyadmin"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("list phpmyadmin databases = %v, want unsupported", err)
+	}
+	if _, err := m.CreateDatabase(context.Background(), "phpmyadmin", CreateDatabaseRequest{Name: "app"}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("create phpmyadmin database = %v, want unsupported", err)
 	}
 }
 

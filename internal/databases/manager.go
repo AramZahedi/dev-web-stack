@@ -190,11 +190,11 @@ func (m *Manager) requireInstalled(ctx context.Context, serviceID string) (servi
 // databases that no longer exist are returned with Missing set.
 func (m *Manager) ListDatabases(ctx context.Context, serviceID string) ([]model.Database, error) {
 	serviceID = canonicalServiceID(serviceID)
+	if !isSQLService(serviceID) {
+		return nil, fmt.Errorf("%w: service %q has no logical database inventory", ErrUnsupported, serviceID)
+	}
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return nil, err
-	}
-	if isRedisService(serviceID) {
-		return nil, fmt.Errorf("%w: Redis has no logical database inventory", ErrUnsupported)
 	}
 	databases, err := m.deps.Platform.ListDatabases(ctx, serviceID)
 	if err != nil {
@@ -249,8 +249,8 @@ func (m *Manager) CreateDatabase(ctx context.Context, serviceID string, req Crea
 	if protectedDatabase(name) {
 		return model.Database{}, fmt.Errorf("%w: database %q is protected", ErrProtected, name)
 	}
-	if isRedisService(serviceID) {
-		return model.Database{}, fmt.Errorf("%w: Redis has no logical databases", ErrUnsupported)
+	if !isSQLService(serviceID) {
+		return model.Database{}, fmt.Errorf("%w: service %q has no logical databases", ErrUnsupported, serviceID)
 	}
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return model.Database{}, err
@@ -317,7 +317,20 @@ func (m *Manager) RenameDatabase(ctx context.Context, serviceID, name string, re
 		db.Engine = model.DatabasePostgreSQL
 	}
 	if err := m.deps.Store.RenameDatabaseReferences(ctx, serviceID, name, newName); err != nil {
-		return model.Database{}, err
+		// The engine rename already committed. Try to put the engine back so
+		// links and grants keep pointing at a real database. If the rollback
+		// also fails, surface a diagnostic event because metadata is stale.
+		rollback := RenameDatabaseRequest{Name: name, Confirm: newName}
+		_, rollbackErr := m.deps.Platform.RenameDatabase(ctx, serviceID, newName, rollback)
+		detail := map[string]any{"error": safeErrorMessage(err)}
+		if rollbackErr != nil {
+			detail["rollback_error"] = safeErrorMessage(rollbackErr)
+			m.audit(ctx, "database.renamed", serviceID, "", "database", name, "failed", detail)
+			m.emit(ctx, "", "database.rename.metadata_stale", fmt.Sprintf("database %s was renamed to %s but link metadata could not be updated", name, newName))
+			return model.Database{}, fmt.Errorf("rename metadata update failed and the platform rename could not be rolled back: %w", err)
+		}
+		m.audit(ctx, "database.renamed", serviceID, "", "database", name, "failed", detail)
+		return model.Database{}, fmt.Errorf("rename metadata update failed; platform rename rolled back: %w", err)
 	}
 	m.audit(ctx, "database.renamed", serviceID, "", "database", name, "ok", map[string]any{"new_name": newName})
 	m.emit(ctx, "", "database.renamed", fmt.Sprintf("database %s renamed to %s on %s", name, newName, serviceID))
@@ -557,17 +570,32 @@ func (m *Manager) CreateUser(ctx context.Context, serviceID string, req CreateUs
 	return user, nil
 }
 
+// userForService returns a stored user only when it belongs to serviceID.
+// Opaque user IDs are stable across services in tests and externally managed
+// engines, so every mutation must verify ownership before touching the engine.
+func (m *Manager) userForService(ctx context.Context, serviceID, userID string) (model.DatabaseUserRecord, error) {
+	serviceID = canonicalServiceID(serviceID)
+	record, err := m.deps.Store.GetDatabaseUser(ctx, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return model.DatabaseUserRecord{}, fmt.Errorf("%w: user %q", ErrNotFound, userID)
+		}
+		return model.DatabaseUserRecord{}, err
+	}
+	if canonicalServiceID(record.ServiceID) != serviceID {
+		return model.DatabaseUserRecord{}, fmt.Errorf("%w: user %q", ErrNotFound, userID)
+	}
+	return record, nil
+}
+
 // UpdateUser applies enabled/grants/access-level changes and records intent.
 func (m *Manager) UpdateUser(ctx context.Context, serviceID, userID string, req UpdateUserRequest) (model.DatabaseUser, error) {
 	serviceID = canonicalServiceID(serviceID)
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return model.DatabaseUser{}, err
 	}
-	record, err := m.deps.Store.GetDatabaseUser(ctx, userID)
+	record, err := m.userForService(ctx, serviceID, userID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return model.DatabaseUser{}, fmt.Errorf("%w: user %q", ErrNotFound, userID)
-		}
 		return model.DatabaseUser{}, err
 	}
 	if protectedUser(record.Username) {
@@ -666,11 +694,8 @@ func (m *Manager) userView(ctx context.Context, serviceID string, record model.D
 // DeleteUser deletes an unlinked engine user.
 func (m *Manager) DeleteUser(ctx context.Context, serviceID, userID string, req DeleteUserRequest) error {
 	serviceID = canonicalServiceID(serviceID)
-	record, err := m.deps.Store.GetDatabaseUser(ctx, userID)
+	record, err := m.userForService(ctx, serviceID, userID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return fmt.Errorf("%w: user %q", ErrNotFound, userID)
-		}
 		return err
 	}
 	if protectedUser(record.Username) {
@@ -718,31 +743,28 @@ func (m *Manager) SetUserPassword(ctx context.Context, serviceID, userID string)
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return Secret{}, err
 	}
+	record, err := m.userForService(ctx, serviceID, userID)
+	if err != nil {
+		return Secret{}, err
+	}
 	unlock := m.lockService(serviceID)
 	defer unlock()
 
 	secret, err := m.deps.Platform.SetUserPassword(ctx, serviceID, userID)
 	if err != nil {
+		m.audit(ctx, "database.user.password_changed", serviceID, "", "user", record.Username, "failed", map[string]any{"error": safeErrorMessage(err)})
 		return Secret{}, err
 	}
-	if record, err := m.deps.Store.GetDatabaseUser(ctx, userID); err == nil {
-		if stateErr := m.deps.Store.SetDatabaseUserPasswordState(ctx, userID, true, m.now().Unix()); stateErr != nil {
-			// The engine rotation already succeeded. Report the secret and make
-			// the metadata gap visible instead of turning a successful rotation
-			// into an API failure.
-			m.emit(ctx, "", "database.user.password_state_unknown", fmt.Sprintf("database user %s password rotated but metadata was not updated: %s", record.Username, safeErrorMessage(stateErr)))
-		}
-		m.audit(ctx, "database.user.password_changed", serviceID, "", "user", record.Username, "ok", nil)
-		m.emit(ctx, "", "database.user.password_changed", fmt.Sprintf("database user %s password changed on %s", record.Username, serviceID))
-		if isRedisService(serviceID) {
-			m.emit(ctx, "", "redis.password.changed", fmt.Sprintf("Redis user %s password changed", record.Username))
-		}
-	} else {
-		m.audit(ctx, "database.user.password_changed", serviceID, "", "user", userID, "ok", nil)
-		m.emit(ctx, "", "database.user.password_changed", fmt.Sprintf("database user %s password changed on %s", userID, serviceID))
-		if isRedisService(serviceID) {
-			m.emit(ctx, "", "redis.password.changed", fmt.Sprintf("Redis user %s password changed", userID))
-		}
+	if stateErr := m.deps.Store.SetDatabaseUserPasswordState(ctx, userID, true, m.now().Unix()); stateErr != nil {
+		// The engine rotation already succeeded. Report the secret and make
+		// the metadata gap visible instead of turning a successful rotation
+		// into an API failure.
+		m.emit(ctx, "", "database.user.password_state_unknown", fmt.Sprintf("database user %s password rotated but metadata was not updated: %s", record.Username, safeErrorMessage(stateErr)))
+	}
+	m.audit(ctx, "database.user.password_changed", serviceID, "", "user", record.Username, "ok", nil)
+	m.emit(ctx, "", "database.user.password_changed", fmt.Sprintf("database user %s password changed on %s", record.Username, serviceID))
+	if isRedisService(serviceID) {
+		m.emit(ctx, "", "redis.password.changed", fmt.Sprintf("Redis user %s password changed", record.Username))
 	}
 	return secret, nil
 }
@@ -751,6 +773,9 @@ func (m *Manager) SetUserPassword(ctx context.Context, serviceID, userID string)
 // rotates its password through the opaque user ID.
 func (m *Manager) SetDefaultUserPassword(ctx context.Context, serviceID string) (Secret, error) {
 	serviceID = canonicalServiceID(serviceID)
+	if !isRedisService(serviceID) {
+		return Secret{}, fmt.Errorf("%w: service %q has no Redis default user", ErrUnsupported, serviceID)
+	}
 	users, err := m.ListUsers(ctx, serviceID)
 	if err != nil {
 		return Secret{}, err
@@ -770,16 +795,16 @@ func (m *Manager) RevealUserPassword(ctx context.Context, serviceID, userID stri
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return Secret{}, err
 	}
-	secret, err := m.deps.Platform.RevealUserPassword(ctx, serviceID, userID)
+	record, err := m.userForService(ctx, serviceID, userID)
 	if err != nil {
-		m.audit(ctx, "database.user.password_revealed", serviceID, "", "user", userID, "failed", map[string]any{"error": safeErrorMessage(err)})
 		return Secret{}, err
 	}
-	objectName := userID
-	if record, err := m.deps.Store.GetDatabaseUser(ctx, userID); err == nil {
-		objectName = record.Username
+	secret, err := m.deps.Platform.RevealUserPassword(ctx, serviceID, userID)
+	if err != nil {
+		m.audit(ctx, "database.user.password_revealed", serviceID, "", "user", record.Username, "failed", map[string]any{"error": safeErrorMessage(err)})
+		return Secret{}, err
 	}
-	m.audit(ctx, "database.user.password_revealed", serviceID, "", "user", objectName, "ok", nil)
+	m.audit(ctx, "database.user.password_revealed", serviceID, "", "user", record.Username, "ok", nil)
 	return secret, nil
 }
 
@@ -796,6 +821,7 @@ func (m *Manager) ListBackups(ctx context.Context, serviceID string) ([]model.Da
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]struct{}, len(backups))
 	for i := range backups {
 		if backups[i].ServiceID == "" {
 			backups[i].ServiceID = serviceID
@@ -804,6 +830,7 @@ func (m *Manager) ListBackups(ctx context.Context, serviceID string) ([]model.Da
 			backups[i].Engine = engineForService(serviceID)
 		}
 		backups[i].Error = RedactString(backups[i].Error)
+		seen[backups[i].ID] = struct{}{}
 		record := backupFromView(backups[i])
 		existing, err := m.deps.Store.GetDatabaseBackup(ctx, record.ID)
 		switch {
@@ -830,6 +857,18 @@ func (m *Manager) ListBackups(ctx context.Context, serviceID string) ([]model.Da
 			}
 		}
 	}
+	stored, err := m.deps.Store.ListDatabaseBackups(ctx, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range stored {
+		if _, ok := seen[record.ID]; ok {
+			continue
+		}
+		if err := m.deps.Store.DeleteDatabaseBackup(ctx, record.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+	}
 	sort.SliceStable(backups, func(i, j int) bool { return backups[i].CreatedAt.After(backups[j].CreatedAt) })
 	return backups, nil
 }
@@ -841,6 +880,9 @@ func (m *Manager) DeleteBackup(ctx context.Context, serviceID, backupID string) 
 		return fmt.Errorf("%w: service %q has no SQL backups", ErrUnsupported, serviceID)
 	}
 	if _, err := m.requireInstalled(ctx, serviceID); err != nil {
+		return err
+	}
+	if _, err := m.backupRecord(ctx, serviceID, backupID); err != nil {
 		return err
 	}
 	unlock := m.lockService(serviceID)
@@ -883,6 +925,9 @@ func (m *Manager) DownloadBackup(ctx context.Context, serviceID, backupID string
 		return nil, fmt.Errorf("%w: service %q has no SQL backups", ErrUnsupported, serviceID)
 	}
 	if _, err := m.requireInstalled(ctx, serviceID); err != nil {
+		return nil, err
+	}
+	if _, err := m.backupRecord(ctx, serviceID, backupID); err != nil {
 		return nil, err
 	}
 	return m.deps.Platform.DownloadBackup(ctx, serviceID, backupID)

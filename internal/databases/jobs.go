@@ -127,6 +127,9 @@ func (m *Manager) ImportDatabase(ctx context.Context, serviceID, database string
 	if protectedDatabase(database) {
 		return model.DatabaseJob{}, fmt.Errorf("%w: database %q is protected", ErrProtected, database)
 	}
+	if !validImportFilename(filename) {
+		return model.DatabaseJob{}, fmt.Errorf("%w: import file must be .sql or .sql.gz", ErrInvalidRequest)
+	}
 	if req.Mode == "" {
 		req.Mode = ImportMerge
 	}
@@ -186,6 +189,12 @@ func (m *Manager) ImportDatabase(ctx context.Context, serviceID, database string
 		}
 		return result, err
 	}, model.BackupPreImport), nil
+}
+
+// validImportFilename accepts the SQL dump formats the platform can restore.
+func validImportFilename(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.HasSuffix(name, ".sql") || strings.HasSuffix(name, ".sql.gz")
 }
 
 // stageImport copies an upload into a private temporary file so the background
@@ -399,6 +408,11 @@ func (m *Manager) ReconcileJobs(ctx context.Context) error {
 // does not return metadata for a just-created backup, a minimal ready record is
 // stored so the backup remains addressable.
 func (m *Manager) recordBackupMetadata(ctx context.Context, serviceID, database, backupID string, kind model.DatabaseBackupKind) {
+	if ctx == nil {
+		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
+	}
 	backups, err := m.deps.Platform.ListBackups(ctx, serviceID)
 	if err == nil {
 		for _, backup := range backups {
@@ -406,9 +420,23 @@ func (m *Manager) recordBackupMetadata(ctx context.Context, serviceID, database,
 				continue
 			}
 			record := backupFromView(backup)
-			if _, getErr := m.deps.Store.GetDatabaseBackup(ctx, backupID); errors.Is(getErr, store.ErrNotFound) {
+			existing, getErr := m.deps.Store.GetDatabaseBackup(ctx, backupID)
+			switch {
+			case errors.Is(getErr, store.ErrNotFound):
+				if record.Kind == "" {
+					record.Kind = string(kind)
+				}
 				_ = m.deps.Store.CreateDatabaseBackup(ctx, record)
-			} else if getErr == nil {
+			case getErr == nil:
+				if record.Path == "" {
+					record.Path = existing.Path
+				}
+				if record.Kind == "" {
+					record.Kind = existing.Kind
+				}
+				if record.CreatedAt == 0 {
+					record.CreatedAt = existing.CreatedAt
+				}
 				_ = m.deps.Store.UpdateDatabaseBackup(ctx, record)
 			}
 			return
@@ -431,8 +459,12 @@ func (m *Manager) recordBackupMetadata(ctx context.Context, serviceID, database,
 // backupRecord resolves a backup from metadata, falling back to the platform
 // inventory for backups created outside this daemon process.
 func (m *Manager) backupRecord(ctx context.Context, serviceID, backupID string) (model.DatabaseBackupRecord, error) {
+	serviceID = canonicalServiceID(serviceID)
 	record, err := m.deps.Store.GetDatabaseBackup(ctx, backupID)
 	if err == nil {
+		if record.ServiceID != "" && canonicalServiceID(record.ServiceID) != serviceID {
+			return model.DatabaseBackupRecord{}, fmt.Errorf("%w: backup %q", ErrNotFound, backupID)
+		}
 		return record, nil
 	}
 	if !errors.Is(err, store.ErrNotFound) {
@@ -443,11 +475,15 @@ func (m *Manager) backupRecord(ctx context.Context, serviceID, backupID string) 
 		return model.DatabaseBackupRecord{}, listErr
 	}
 	for _, backup := range backups {
-		if backup.ID == backupID {
-			record = backupFromView(backup)
-			_ = m.deps.Store.CreateDatabaseBackup(ctx, record)
-			return record, nil
+		if backup.ID != backupID {
+			continue
 		}
+		if backup.ServiceID != "" && canonicalServiceID(backup.ServiceID) != serviceID {
+			continue
+		}
+		record = backupFromView(backup)
+		_ = m.deps.Store.CreateDatabaseBackup(ctx, record)
+		return record, nil
 	}
 	return model.DatabaseBackupRecord{}, fmt.Errorf("%w: backup %q", ErrNotFound, backupID)
 }

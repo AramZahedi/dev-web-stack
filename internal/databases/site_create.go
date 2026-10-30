@@ -14,8 +14,8 @@ import (
 // row exists. It never grants access to an existing user.
 func (m *Manager) ProvisionSiteDatabase(ctx context.Context, req SiteDatabaseRequest) (ProvisionedDatabase, error) {
 	serviceID := canonicalServiceID(req.ServiceID)
-	if isRedisService(serviceID) {
-		return ProvisionedDatabase{}, fmt.Errorf("%w: Redis users cannot be linked to sites", ErrUnsupported)
+	if !isSQLService(serviceID) {
+		return ProvisionedDatabase{}, fmt.Errorf("%w: service %q has no SQL databases", ErrUnsupported, serviceID)
 	}
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return ProvisionedDatabase{}, err
@@ -163,6 +163,9 @@ func (m *Manager) existingDatabase(ctx context.Context, serviceID, name string) 
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return model.Database{}, fmt.Errorf("%w: database is required", ErrInvalidRequest)
+	}
+	if protectedDatabase(name) {
+		return model.Database{}, fmt.Errorf("%w: database %q is protected", ErrProtected, name)
 	}
 	databases, err := m.deps.Platform.ListDatabases(ctx, serviceID)
 	if err != nil {

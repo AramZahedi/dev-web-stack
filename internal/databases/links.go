@@ -150,6 +150,9 @@ func (m *Manager) LinkDatabase(ctx context.Context, siteRef string, req LinkData
 	if database == "" {
 		return model.DatabaseLink{}, fmt.Errorf("%w: database is required", ErrInvalidRequest)
 	}
+	if protectedDatabase(database) {
+		return model.DatabaseLink{}, fmt.Errorf("%w: database %q is protected", ErrProtected, database)
+	}
 	user, err := m.deps.Store.GetDatabaseUser(ctx, req.UserID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
