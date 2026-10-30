@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status (2026-10-30):** executed natively. All tasks verified complete except Task 9 Step 2, which intentionally retains the renamed legacy tree and WSL export until user sign-off.
+
 **Goal:** Move the live devstack installation root from `C:\devstack` to `C:\Users\Aram\.devstack`, make every registration point at the profile path, and leave `C:\devstack` as an optional compatibility junction.
 
 **Architecture:** The profile home becomes the only real install root: binaries, helper config, CA, manifest, state, and the managed WSL VHDX all live under `C:\Users\Aram\.devstack`. The WSL distro is exported and re-imported at the profile path so its registry `BasePath` is real, not a reparse point. The helper service, daemon task, PATH, and manifest are updated to the profile path. Only after verification is `C:\devstack` renamed away and replaced with a directory junction to the profile root for legacy path compatibility.
@@ -47,7 +49,7 @@
 - Produces: `install.ps1` exits non-zero with a reparse-point error when `-InstallDir` or `-TestSandbox` names a junction/symlink.
 - Consumes: existing `$isSandbox`, `$fullTarget`, `Write-InstallerError`.
 
-- [ ] **Step 1: Write the failing regression check**
+- [x] **Step 1: Write the failing regression check**
 
 Add a test after the existing target-path validation tests in `test/windows/installer_test.ps1`:
 
@@ -68,12 +70,12 @@ try {
 }
 ```
 
-- [ ] **Step 2: Run the installer suite and confirm the new check fails**
+- [x] **Step 2: Run the installer suite and confirm the new check fails**
 
 Run: `pwsh -NoProfile -File test/windows/installer_test.ps1`
 Expected: FAIL on the new reparse-point check.
 
-- [ ] **Step 3: Implement the guard**
+- [x] **Step 3: Implement the guard**
 
 After `$targetDir = $fullTarget` and before any directory creation, add:
 
@@ -87,7 +89,7 @@ if ($null -ne $targetItem -and (($targetItem.Attributes -band [System.IO.FileAtt
 }
 ```
 
-- [ ] **Step 4: Run the installer suite in both engines**
+- [x] **Step 4: Run the installer suite in both engines**
 
 Run:
 ```powershell
@@ -96,7 +98,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File test/windows/installer_t
 ```
 Expected: 261 checks, 0 failures, in both.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add install.ps1 test/windows/installer_test.ps1
@@ -115,7 +117,7 @@ git commit -m "fix: refuse installs through reparse-point targets"
 - Produces: `$backup` path, `windows\` copy, `wsl\devstack-pre-migration.tar`, `lxss.reg`, `machine-env.reg`, `user-env.reg`, `doctor-before.json`, `sites-before.json`, `services-before.json`, `task-before.xml`, `path-machine-before.txt`, `path-user-before.txt`.
 - Consumes: current live install.
 
-- [ ] **Step 1: Set the backup root and create directories**
+- [x] **Step 1: Set the backup root and create directories**
 
 ```powershell
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -123,7 +125,7 @@ $backup = "C:\Users\Aram\devstack-migration-$stamp"
 New-Item -ItemType Directory -Force "$backup\windows", "$backup\wsl" | Out-Null
 ```
 
-- [ ] **Step 2: Capture registrations and live state while the daemon is still running**
+- [x] **Step 2: Capture registrations and live state while the daemon is still running**
 
 ```powershell
 reg.exe export "HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss" "$backup\lxss.reg" /y | Out-Null
@@ -139,7 +141,7 @@ devstack site list --json --home "C:\Users\Aram\.devstack" | Set-Content "$backu
 devstack service list --json --home "C:\Users\Aram\.devstack" | Set-Content "$backup\services-before.json" -Encoding utf8
 ```
 
-- [ ] **Step 3: Quiesce the daemon, helper, and WSL before copying state**
+- [x] **Step 3: Quiesce the daemon, helper, and WSL before copying state**
 
 ```powershell
 devstack daemon stop --home "C:\Users\Aram\.devstack" 2>$null
@@ -150,7 +152,7 @@ Get-Process devstack, devstack-helper -ErrorAction SilentlyContinue
 
 Expected: no devstack or devstack-helper process remains.
 
-- [ ] **Step 4: Copy Windows state without the 11.7 GB VHDX**
+- [x] **Step 4: Copy Windows state without the 11.7 GB VHDX**
 
 ```powershell
 robocopy C:\devstack "$backup\windows\legacy-root" /E /XD wsl /R:1 /W:1 | Out-Null
@@ -158,7 +160,7 @@ robocopy C:\Users\Aram\.devstack "$backup\windows\profile-home" /E /XD wsl /R:1 
 Copy-Item C:\Windows\System32\drivers\etc\hosts "$backup\windows\hosts" -Force
 ```
 
-- [ ] **Step 5: Export the WSL distro while it is still intact**
+- [x] **Step 5: Export the WSL distro while it is still intact**
 
 ```powershell
 wsl.exe --export devstack "$backup\wsl\devstack-pre-migration.tar"
@@ -168,7 +170,7 @@ Get-Item "$backup\wsl\devstack-pre-migration.tar" | Select-Object FullName, Leng
 
 Expected: tar exists; length is roughly 3–5 GB.
 
-- [ ] **Step 6: Record checksums and confirm the backup is complete**
+- [x] **Step 6: Record checksums and confirm the backup is complete**
 
 ```powershell
 Get-ChildItem "$backup\windows\legacy-root", "$backup\windows\profile-home" -Recurse -File |
@@ -191,7 +193,7 @@ Expected: backup contains `legacy-root`, `profile-home`, `lxss.reg`, and the WSL
 - Produces: distro `devstack` registered at `C:\Users\Aram\.devstack\wsl\devstack`, `/data/devstack` intact.
 - Consumes: `$backup\wsl\devstack-pre-migration.tar`.
 
-- [ ] **Step 1: Ensure the old distro is stopped and remove only its registration**
+- [x] **Step 1: Ensure the old distro is stopped and remove only its registration**
 
 ```powershell
 wsl.exe --shutdown
@@ -199,7 +201,7 @@ wsl.exe --unregister devstack
 if ($LASTEXITCODE -ne 0) { throw "WSL unregister failed" }
 ```
 
-- [ ] **Step 2: Import into the profile path**
+- [x] **Step 2: Import into the profile path**
 
 ```powershell
 New-Item -ItemType Directory -Force "C:\Users\Aram\.devstack\wsl\devstack" | Out-Null
@@ -207,7 +209,7 @@ wsl.exe --import devstack "C:\Users\Aram\.devstack\wsl\devstack" "$backup\wsl\de
 if ($LASTEXITCODE -ne 0) { throw "WSL import failed" }
 ```
 
-- [ ] **Step 3: Verify the registry and distro contents**
+- [x] **Step 3: Verify the registry and distro contents**
 
 ```powershell
 $lx = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" |
@@ -223,7 +225,7 @@ Expected:
 - `docker.service` and `devstack-agent.service` are enabled.
 - Runtimes include `php@8.4.27-r1`, `node@22.23.4`, `node@24.22.1`.
 
-- [ ] **Step 4: Start the distro and verify the agent TLS identity survived**
+- [x] **Step 4: Start the distro and verify the agent TLS identity survived**
 
 ```powershell
 wsl.exe -d devstack -u root -- sh -c "systemctl start docker.socket docker.service devstack-agent.service; sleep 3; systemctl is-active docker.service devstack-agent.service; docker info --format 'root={{.DockerRootDir}} images={{.Images}}'"
@@ -246,7 +248,7 @@ If import fails, immediately run the rollback in Task 8 before touching Windows 
 - Produces: profile root that the installer can upgrade.
 - Consumes: legacy files under `C:\devstack`.
 
-- [ ] **Step 1: Copy binaries and helper state without touching active secrets**
+- [x] **Step 1: Copy binaries and helper state without touching active secrets**
 
 ```powershell
 $profile = "C:\Users\Aram\.devstack"
@@ -263,7 +265,7 @@ if (Test-Path C:\devstack\system\firefox-policy-managed) {
 }
 ```
 
-- [ ] **Step 2: Prove active secrets and state were not overwritten**
+- [x] **Step 2: Prove active secrets and state were not overwritten**
 
 ```powershell
 $before = Get-FileHash "$backup\windows\profile-home\system\secrets\agent-pin", "$backup\windows\profile-home\system\secrets\agent-token", "$backup\windows\profile-home\state.db" -Algorithm SHA256
@@ -274,7 +276,7 @@ $after.Hash
 
 Expected: hashes match pairwise.
 
-- [ ] **Step 3: Verify the CA is the same one currently trusted**
+- [x] **Step 3: Verify the CA is the same one currently trusted**
 
 ```powershell
 (Get-FileHash C:\devstack\system\pki\root.crt -Algorithm SHA256).Hash
@@ -295,7 +297,7 @@ Expected: both `0FB871C56D201A90DC90B7EEC08310665B745F434D5462704764D843EF6493B6
 - Produces: helper service and binaries registered against the profile root; manifest stage `complete`.
 - Consumes: profile root staged in Task 4.
 
-- [ ] **Step 1: Build and stage the current binaries**
+- [x] **Step 1: Build and stage the current binaries**
 
 ```powershell
 $env:CGO_ENABLED = "0"
@@ -313,7 +315,7 @@ Copy-Item dist\devstack.exe, dist\devstack-helper.exe build\windows\ -Force
 Copy-Item dist\devstack-agent build\wsl\devstack-agent -Force
 ```
 
-- [ ] **Step 2: Run the upgrade against the profile root**
+- [x] **Step 2: Run the upgrade against the profile root**
 
 ```powershell
 $log = "$backup\upgrade-profile.log"
@@ -324,7 +326,7 @@ if ($LASTEXITCODE -ne 0) { throw "Profile upgrade failed; see $log" }
 
 Expected: exit 0, `Agent health verified successfully`, `Upgrade completed successfully`.
 
-- [ ] **Step 3: Verify service, binaries, and manifest**
+- [x] **Step 3: Verify service, binaries, and manifest**
 
 ```powershell
 sc.exe qc DevstackHelper
@@ -353,7 +355,7 @@ Expected:
 - Produces: `devstack` resolves to the profile binary; task runs the profile binary with `--home`.
 - Consumes: profile install from Task 5.
 
-- [ ] **Step 1: Replace the legacy machine PATH entry**
+- [x] **Step 1: Replace the legacy machine PATH entry**
 
 Use the registry directly so `PATH` keeps its original `REG_EXPAND_SZ` type and does not expand `%SystemRoot%`-style entries:
 
@@ -376,7 +378,7 @@ $env:Path = "$profileBin;$env:Path"
 
 Open a new terminal after this step; existing shells keep their inherited `PATH`.
 
-- [ ] **Step 2: Re-register the logon task against the profile binary**
+- [x] **Step 2: Re-register the logon task against the profile binary**
 
 ```powershell
 & .\build\windows\devstack-daemon-task.ps1 `
@@ -385,7 +387,7 @@ Open a new terminal after this step; existing shells keep their inherited `PATH`
     -UserId "ARAM-PC\Aram"
 ```
 
-- [ ] **Step 3: Verify resolution and task action**
+- [x] **Step 3: Verify resolution and task action**
 
 ```powershell
 Get-Command devstack -All | Select-Object Source
@@ -410,7 +412,7 @@ Expected:
 - Produces: green live install on the profile root.
 - Consumes: Tasks 3–6.
 
-- [ ] **Step 1: Run init and doctor**
+- [x] **Step 1: Run init and doctor**
 
 ```powershell
 $env:DEVSTACK_HOME = "C:\Users\Aram\.devstack"
@@ -422,7 +424,7 @@ devstack doctor --json --home "C:\Users\Aram\.devstack" |
 
 Expected: `ok: True`, 0 failures, 0 warnings.
 
-- [ ] **Step 2: Verify the dashboard and auth bootstrap**
+- [x] **Step 2: Verify the dashboard and auth bootstrap**
 
 ```powershell
 $ui = devstack ui --json | ConvertFrom-Json
@@ -434,7 +436,7 @@ curl.exe -k -sS -o NUL -w "sites=%{http_code}`n" -H "X-Devstack-Token: $token" "
 
 Expected: HTTPS 200, fallback 200, sites 200.
 
-- [ ] **Step 3: Verify WSL, Docker, runtimes, and defaults**
+- [x] **Step 3: Verify WSL, Docker, runtimes, and defaults**
 
 ```powershell
 wsl.exe -d devstack -u root -- sh -c "systemctl is-active docker.service devstack-agent.service; docker info --format 'root={{.DockerRootDir}} images={{.Images}}'; ls /data/devstack/runtimes"
@@ -450,7 +452,7 @@ Expected:
 - PHP `php@8.4.27-r1`; Node `24.22.1`.
 - No sites; all services `not_installed`.
 
-- [ ] **Step 4: Verify the agent pin still matches**
+- [x] **Step 4: Verify the agent pin still matches**
 
 ```powershell
 wsl.exe -d devstack -u root -- sh -c "openssl x509 -in /data/devstack/agent-tls/agent.crt -noout -fingerprint -sha256"
@@ -470,7 +472,7 @@ Expected: `B4:5B:9A:58:...:F7:1D`, matching the active profile pin.
 - Produces: legacy path resolves to the profile root; no live data remains in the old tree.
 - Consumes: fully verified profile install from Task 7.
 
-- [ ] **Step 1: Prove no process or registration still uses the legacy root**
+- [x] **Step 1: Prove no process or registration still uses the legacy root**
 
 ```powershell
 Get-CimInstance Win32_Process |
@@ -482,7 +484,7 @@ sc.exe qc DevstackHelper
 
 Expected: no process with a legacy executable path; service and task both point to the profile.
 
-- [ ] **Step 2: Rename the old tree, then create the junction**
+- [x] **Step 2: Rename the old tree, then create the junction**
 
 ```powershell
 $legacyOld = "C:\devstack.pre-junction-$stamp"
@@ -490,7 +492,7 @@ Rename-Item -LiteralPath "C:\devstack" -NewName (Split-Path $legacyOld -Leaf)
 New-Item -ItemType Junction -Path "C:\devstack" -Target "C:\Users\Aram\.devstack"
 ```
 
-- [ ] **Step 3: Verify the junction and legacy-path compatibility**
+- [x] **Step 3: Verify the junction and legacy-path compatibility**
 
 ```powershell
 $link = Get-Item "C:\devstack" -Force
@@ -505,7 +507,7 @@ Expected:
 - Both legacy paths resolve.
 - Manifest stage is `complete`.
 
-- [ ] **Step 4: Verify WSL and uninstall safety**
+- [x] **Step 4: Verify WSL and uninstall safety**
 
 ```powershell
 $lx = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" |
@@ -525,7 +527,7 @@ if ($LASTEXITCODE -eq 0) { throw "uninstaller accepted a reparse point" }
 
 Expected: non-zero exit with the reparse-point refusal.
 
-- [ ] **Step 5: Run the final doctor and dashboard check**
+- [x] **Step 5: Run the final doctor and dashboard check**
 
 ```powershell
 devstack doctor --json | ConvertFrom-Json | Select-Object ok
@@ -534,7 +536,7 @@ curl.exe -k -sS -o NUL -w "%{http_code}`n" https://devstack.test/
 
 Expected: `ok: True`, HTTP 200.
 
-- [ ] **Step 6: Commit the installer guard and documentation**
+- [x] **Step 6: Commit the installer guard and documentation**
 
 ```powershell
 git add install.ps1 test/windows/installer_test.ps1
@@ -554,7 +556,7 @@ git commit -m "fix: refuse installs through reparse-point targets"
 - Produces: documentation matches the profile-home behavior and the optional junction.
 - Consumes: verified migration.
 
-- [ ] **Step 1: Update the stale default-path text**
+- [x] **Step 1: Update the stale default-path text**
 
 Replace:
 - `install.ps1` header `provisions C:\devstack` and `Defaults to C:\devstack`.
@@ -580,7 +582,10 @@ refuses to uninstall through a reparse point; run it without `-InstallDir` so it
 uses the profile manifest, then remove the junction manually.
 ````
 
-- [ ] **Step 2: Remove the renamed legacy tree after verification**
+- [ ] **Step 2: Remove the renamed legacy tree after verification** — deferred until user sign-off.
+
+The verified migration keeps the renamed tree and WSL export tar as rollback points.
+After sign-off, remove them with:
 
 ```powershell
 Remove-Item -LiteralPath "C:\devstack.pre-junction-$stamp" -Recurse -Force
@@ -588,7 +593,7 @@ Remove-Item -LiteralPath "C:\devstack.pre-junction-$stamp" -Recurse -Force
 
 Expected: the junction remains, the old physical tree is gone, and `Test-Path C:\devstack\bin\devstack.exe` still returns true.
 
-- [ ] **Step 3: Run the final gates**
+- [x] **Step 3: Run the final gates**
 
 ```powershell
 pwsh -NoProfile -File test/windows/installer_test.ps1
@@ -600,7 +605,7 @@ devstack doctor --json
 
 Expected: 261 installer checks pass in both engines; Go tests pass; doctor `ok: True`.
 
-- [ ] **Step 4: Commit documentation**
+- [x] **Step 4: Commit documentation**
 
 ```powershell
 git add install.ps1 README.md docs/install-windows.md docs/wsl.md docs/troubleshooting.md docs/windows-paths.md docs/windows-networking.md
