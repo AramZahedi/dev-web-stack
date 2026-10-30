@@ -1338,7 +1338,7 @@ func TestHelperGrantEngineErrorIsDomainError(t *testing.T) {
 	err := c.applyUserGrants(context.Background(), "mysql", engine, user, []model.DatabaseGrant{
 		{Database: "app", Preset: model.GrantReadWrite},
 	})
-	if !errors.Is(err, databases.ErrInvalidRequest) {
+	if !errors.Is(err, databases.ErrInvalidRequest) || !errors.Is(err, dbengine.ErrInvalidIdentifier) {
 		t.Fatalf("err=%v", err)
 	}
 }

@@ -695,9 +695,9 @@ func engineError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, dbengine.ErrUnsupported):
-		return fmt.Errorf("%w: %v", databases.ErrUnsupported, err)
+		return fmt.Errorf("%w: %w", databases.ErrUnsupported, err)
 	case errors.Is(err, dbengine.ErrInvalidIdentifier):
-		return fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
+		return fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err)
 	default:
 		return err
 	}
