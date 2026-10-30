@@ -166,7 +166,7 @@
   }
 </script>
 
-<Card title="Databases">
+<Card title="Databases" headerWrap>
   {#snippet actions()}
     <Button size="sm" variant="secondary" onclick={() => (linkOpen = true)}>
       <Link2 size={13} strokeWidth={2} aria-hidden="true" />
