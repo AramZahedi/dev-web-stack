@@ -583,7 +583,7 @@ func resolveInstalledNodeVersion(ctx context.Context, c Client, requested string
 	return "", &Error{
 		Code:        "RUNTIME_MISSING",
 		Message:     fmt.Sprintf("node %s is required but is not installed", version),
-		Remediation: fmt.Sprintf("Run `devstack runtime install node@%s`, then retry.", version),
+		Remediation: "Run `devstack runtime list` to see available Node builds, then `devstack runtime install <id>` and retry.",
 		cause:       &sites.NodeVersionNotInstalledError{Version: version},
 	}
 }

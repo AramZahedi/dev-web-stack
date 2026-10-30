@@ -217,8 +217,13 @@ func TestSiteAddAcceptsNodeForStaticAndPHP(t *testing.T) {
 		fake := &fakeClient{}
 		code, _, stderr := runCLIExit(t, fake, "site", "add",
 			"--name", "docs", "--path", "/tmp/docs", "--node", "22")
-		if code == 0 || !strings.Contains(stderr, "not installed") || !strings.Contains(stderr, "runtime install") {
-			t.Fatalf("code=%d stderr=%q, want install-first remediation", code, stderr)
+		for _, want := range []string{"not installed", "runtime list", "runtime install <id>"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("code=%d stderr=%q, want %q", code, stderr, want)
+			}
+		}
+		if strings.Contains(stderr, "runtime install node@22") {
+			t.Fatalf("stderr suggests the invalid line id node@22: %q", stderr)
 		}
 		if fake.addReq.Name != "" {
 			t.Fatalf("uninstalled pin created a site: %+v", fake.addReq)
