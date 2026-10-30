@@ -227,7 +227,7 @@ function Repair-HelperServiceConfiguration([string]$HelperPath, [string]$ConfigP
 
     Write-Host "devstack installer: Repairing DevstackHelper service configuration (registered: $registered)..."
     try { Stop-Service -Name "DevstackHelper" -Force -ErrorAction SilentlyContinue } catch {}
-    & sc.exe config DevstackHelper "binPath= $expectedCommand" | Out-Null
+    & sc.exe config DevstackHelper "binPath=" $expectedCommand | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "devstack installer: sc.exe config DevstackHelper failed with exit code $LASTEXITCODE."
         return $false
@@ -621,6 +621,11 @@ $mockRollbackTmp = Join-Path $mockWSLRoot "data\devstack.rollback-tmp"
 $mockFailedTmp = Join-Path $mockWSLRoot "data\devstack.failed-tmp"
 
 if ($Upgrade) {
+    # wsl.exe emits benign systemd-session warnings on stderr. Windows
+    # PowerShell 5.1 turns native stderr into a terminating error under the
+    # script-wide Stop preference, aborting an otherwise healthy upgrade. The
+    # upgrade flow checks $LASTEXITCODE and handles failures explicitly.
+    $ErrorActionPreference = "Continue"
     Write-Host "devstack installer: Starting upgrade flow..."
     # Track every staging/provisioning failure in this flag. It must never be
     # reset after a failure: an upgrade that cannot stage all binaries or

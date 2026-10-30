@@ -608,6 +608,18 @@ try {
     Remove-Item -Path $tempFailAgentDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Step "Testing upgrade tolerates benign WSL stderr"
+$installerRaw = Get-Content $installerScript -Raw
+$upgradeStart = $installerRaw.IndexOf('if ($Upgrade) {')
+$upgradeEnd = $installerRaw.IndexOf('# 9. Binary Staging & System PATH (Fresh Install)')
+Require ($upgradeStart -ge 0 -and $upgradeEnd -gt $upgradeStart) "install.ps1 has a bounded upgrade block"
+$upgradeBlock = $installerRaw.Substring($upgradeStart, $upgradeEnd - $upgradeStart)
+Require ($upgradeBlock -match '\$ErrorActionPreference\s*=\s*"Continue"') "upgrade block tolerates native stderr under PowerShell 5.1"
+
+Step "Testing helper service repair keeps binPath exact"
+Require ($installerRaw -match 'sc\.exe config DevstackHelper "binPath=" \$expectedCommand') "install.ps1 passes binPath and value as separate sc.exe arguments"
+Require ($installerRaw -notmatch '"binPath= \$expectedCommand"') "install.ps1 does not fold the binPath value into one argument"
+
 # -------------------------------------------------------------------------
 # Test 22: Upgrade WSL Backup Failure Detection (C3)
 # -------------------------------------------------------------------------
