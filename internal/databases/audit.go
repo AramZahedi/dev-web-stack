@@ -126,8 +126,10 @@ func connectionScheme(engine model.DatabaseEngine) string {
 // dbConnectionValue returns the Laravel-style DB_CONNECTION value.
 func dbConnectionValue(engine model.DatabaseEngine) string {
 	switch engine {
-	case model.DatabaseMySQL, model.DatabaseMariaDB:
+	case model.DatabaseMySQL:
 		return "mysql"
+	case model.DatabaseMariaDB:
+		return "mariadb"
 	case model.DatabasePostgreSQL:
 		return "pgsql"
 	case model.DatabaseRedis:
@@ -141,7 +143,7 @@ func dbConnectionValue(engine model.DatabaseEngine) string {
 // identity. The same externally-created user always receives the same ID.
 func stableUserID(serviceID, username, host string) string {
 	digest := sha256.Sum256([]byte(canonicalServiceID(serviceID) + "\x00" + username + "\x00" + host))
-	return "usr_" + hex.EncodeToString(digest[:12])
+	return "usr_" + hex.EncodeToString(digest[:8])
 }
 
 // protectedDatabase reports whether a name is a system database.
