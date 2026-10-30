@@ -298,6 +298,11 @@
     // Trust depends on the privileged helper. A stopped helper must not turn
     // the whole settings page into an error: the remaining settings are local
     // to the daemon and still actionable.
+    await refreshTrust();
+    loading = false;
+  }
+
+  async function refreshTrust(): Promise<void> {
     try {
       trust = await api.getTrust();
       trustError = null;
@@ -305,7 +310,6 @@
       trust = [];
       trustError = describeError(caught);
     }
-    loading = false;
   }
 
   async function loadVhosts(initial = false): Promise<void> {
@@ -559,8 +563,10 @@
     if (trustAction) return;
     trustAction = 'remove';
     try {
-      trust = await api.removeTrust();
-      trustError = null;
+      // The helper's remove response reports that the operation ran, not the
+      // resulting trust state. Reload status so the panel shows Not trusted.
+      await api.removeTrust();
+      await refreshTrust();
       removeTrustOpen = false;
       addToast({
         kind: 'success',

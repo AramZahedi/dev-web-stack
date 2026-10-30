@@ -223,6 +223,82 @@ describe('Settings tooling', () => {
     expect(screen.getByLabelText('HTTP proxy port')).toBeTruthy();
   });
 
+  it('refreshes trust status after removing the CA instead of trusting the action response', async () => {
+    const trusted = [
+      { name: 'Windows machine root store', ok: true, detail: 'installed' },
+      { name: 'Firefox enterprise policy', ok: true, detail: 'enabled' },
+    ];
+    const untrusted = [
+      { name: 'Windows machine root store', ok: false, detail: 'not installed' },
+      { name: 'Firefox enterprise policy', ok: false, detail: 'not configured' },
+    ];
+    mockApi.getTrust.mockResolvedValueOnce(trusted).mockResolvedValueOnce(untrusted);
+    // The remove action reports the operation succeeded, not that the CA is
+    // still trusted. The page must reload status instead of rendering this.
+    mockApi.removeTrust.mockResolvedValue([
+      { name: 'Windows machine root store', ok: true, detail: 'removed' },
+      { name: 'Firefox enterprise policy', ok: true, detail: 'removed' },
+    ]);
+
+    render(Settings);
+    const card = (await screen.findByRole('heading', { name: 'Trust' })).closest(
+      'section',
+    ) as HTMLElement;
+    expect(
+      await within(card).findByText('All 2 available targets trust the devstack CA.'),
+    ).toBeTruthy();
+
+    await fireEvent.click(
+      within(card).getAllByRole('button', { name: 'Remove CA from all trust stores' })[0],
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'Remove the devstack CA?' });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Remove trust' }));
+
+    await waitFor(() => expect(mockApi.getTrust).toHaveBeenCalledTimes(2));
+    expect(mockApi.removeTrust).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Remove the devstack CA?' })).toBeNull(),
+    );
+    expect(await within(card).findByText('2 of 2 targets need attention.')).toBeTruthy();
+    expect(within(card).getAllByText('Not trusted')).toHaveLength(2);
+    expect(within(card).queryByText('All 2 available targets trust the devstack CA.')).toBeNull();
+    expect(within(card).queryByText('removed')).toBeNull();
+  });
+
+  it('keeps the removal success toast and shows a status error when the refresh fails', async () => {
+    mockApi.getTrust
+      .mockResolvedValueOnce([
+        { name: 'Windows machine root store', ok: true, detail: 'installed' },
+        { name: 'Firefox enterprise policy', ok: true, detail: 'enabled' },
+      ])
+      .mockRejectedValueOnce(
+        new ApiError('HELPER_UNAVAILABLE', 'devstack-helper is not running', 502),
+      );
+    mockApi.removeTrust.mockResolvedValue([
+      { name: 'Windows machine root store', ok: true, detail: 'removed' },
+      { name: 'Firefox enterprise policy', ok: true, detail: 'removed' },
+    ]);
+
+    render(Settings);
+    const card = (await screen.findByRole('heading', { name: 'Trust' })).closest(
+      'section',
+    ) as HTMLElement;
+    await within(card).findByText('All 2 available targets trust the devstack CA.');
+
+    await fireEvent.click(
+      within(card).getAllByRole('button', { name: 'Remove CA from all trust stores' })[0],
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'Remove the devstack CA?' });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Remove trust' }));
+
+    await waitFor(() => expect(mockApi.getTrust).toHaveBeenCalledTimes(2));
+    expect(mockApi.removeTrust).toHaveBeenCalledTimes(1);
+    expect(await within(card).findByText('Could not read trust status')).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Remove the devstack CA?' })).toBeNull(),
+    );
+  });
+
   it('shows the global PHP default, shim status, editable ini and Composer tools', async () => {
     render(Settings);
 
