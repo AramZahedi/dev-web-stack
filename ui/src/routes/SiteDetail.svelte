@@ -198,12 +198,21 @@
       .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true })),
   );
 
+  // The daemon never substitutes another build for a configured default that
+  // is no longer installed. Only a resolved build (or an installed global
+  // summary reported for this site) may appear in the inherit label.
+  const defaultNodeBuild = $derived(
+    nodeDefault?.build?.kind === 'node' ? nodeDefault.build : null,
+  );
+  const configuredNodeDefault = $derived(nodeDefault?.configured?.trim() ?? '');
+  const nodeDefaultMissing = $derived(
+    Boolean(configuredNodeDefault) && !defaultNodeBuild,
+  );
   const globalNodeVersion = $derived(
-    nodeDefault?.build?.kind === 'node'
-      ? nodeDefault.build.version
-      : site?.node_toolchain?.source === 'global'
+    defaultNodeBuild?.version ??
+      (site?.node_toolchain?.source === 'global' && site.node_toolchain.installed
         ? site.node_toolchain.version
-        : (nodeBuilds[0]?.version ?? ''),
+        : ''),
   );
 
   const nodeInheritLabel = $derived(
@@ -1220,6 +1229,12 @@
               }}
               oninstall={(version) => installNodeVersion(version, 'site')}
             />
+            {#if nodeDefaultMissing && site.kind !== 'node' && !editNodeVersion}
+              <p class="profile-note node-default-warning" role="status">
+                The configured global Node default (v{configuredNodeDefault}) is not installed.
+                This site inherits no Node toolchain until the default is fixed.
+              </p>
+            {/if}
             {#if nodeVersionChanged}
               <div class="abi-warning" role="status">
                 <TriangleAlert size={14} strokeWidth={2} aria-hidden="true" />
@@ -2510,6 +2525,12 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .node-default-warning {
+    border-color: color-mix(in srgb, var(--warning) 36%, var(--border));
+    background: var(--warning-soft);
+    color: var(--warning-fg);
   }
 
   .abi-warning {

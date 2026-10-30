@@ -183,7 +183,7 @@
             size="sm"
             variant="secondary"
             loading={installBusy === value}
-            disabled={Boolean(installBusy) || disabled}
+            disabled={Boolean(installBusy)}
             onclick={() => install(value)}
           >
             <PackagePlus size={13} strokeWidth={2} aria-hidden="true" />

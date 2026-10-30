@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mockApi, resetMockServiceStateForTests } from './mock';
+import {
+  mockApi,
+  resetMockServiceStateForTests,
+  setMockNodeDefaultForTests,
+} from './mock';
 
 const BLOG = 's_blog';
 
@@ -319,5 +323,31 @@ describe('mock service actions', () => {
     await expect(mockApi.buildSite('api')).rejects.toMatchObject({
       code: 'INVALID_REQUEST',
     });
+  });
+});
+
+describe('mock node default', () => {
+  afterEach(() => {
+    setMockNodeDefaultForTests('');
+  });
+
+  it('does not substitute the newest build for a configured default that is not installed', async () => {
+    setMockNodeDefaultForTests('22.11.0');
+
+    const status = await mockApi.getNodeDefault();
+    expect(status.configured).toBe('22.11.0');
+    expect(status.source).toBe('setting');
+    expect(status.build).toBeUndefined();
+    expect(status.shim_installed).toBe(false);
+
+    expect((await mockApi.getSite('blog')).node_toolchain).toBeUndefined();
+  });
+
+  it('reports the newest installed build only when no default is configured', async () => {
+    const status = await mockApi.getNodeDefault();
+    expect(status.configured).toBeUndefined();
+    expect(status.source).toBe('newest');
+    expect(status.build?.version).toBe('24.9.0');
+    expect(status.shim_installed).toBe(true);
   });
 });

@@ -117,8 +117,15 @@
       ),
   );
 
+  // Only the resolved build may appear in the inherit label. A configured
+  // default that is no longer installed has no build, and the daemon never
+  // substitutes another version, so the dashboard must not either.
   const globalNodeBuild = $derived(
-    nodeDefault?.build?.kind === 'node' ? nodeDefault.build : nodeRuntimes[0],
+    nodeDefault?.build?.kind === 'node' ? nodeDefault.build : null,
+  );
+  const configuredNodeDefault = $derived(nodeDefault?.configured?.trim() ?? '');
+  const nodeDefaultMissing = $derived(
+    Boolean(configuredNodeDefault) && !globalNodeBuild,
   );
   const globalNodeVersion = $derived(globalNodeBuild?.version ?? '');
   const nodeInheritLabel = $derived(
@@ -905,6 +912,13 @@
                 </Field>
 
                 <div class="build-fields">
+                  {#if nodeDefaultMissing}
+                    <p class="toolchain-warning" role="status">
+                      The configured global Node default (v{configuredNodeDefault}) is not
+                      installed. Sites that inherit it will have no Node toolchain until it is
+                      installed.
+                    </p>
+                  {/if}
                   <NodeVersionPicker
                     id="node-version"
                     label="Node toolchain"
@@ -1165,6 +1179,13 @@
                 {/if}
 
                 <div class="build-fields">
+                  {#if nodeDefaultMissing}
+                    <p class="toolchain-warning" role="status">
+                      The configured global Node default (v{configuredNodeDefault}) is not
+                      installed. Sites that inherit it will have no Node toolchain until it is
+                      installed.
+                    </p>
+                  {/if}
                   <NodeVersionPicker
                     id="node-version"
                     label="Node toolchain"
@@ -1916,6 +1937,13 @@
 
   .build-hint {
     color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
+  .toolchain-warning {
+    margin: 0;
+    color: var(--warning-fg);
     font-size: 11.5px;
     line-height: 1.5;
   }

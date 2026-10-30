@@ -213,6 +213,7 @@ export function resetMockServiceStateForTests(): void {
   mockServices = clone(seedMockServices);
   toolStatuses = clone(seedToolStatuses);
   settings = clone(seedSettings);
+  nodeDefaultConfigured = '';
   mockPerformance = {
     profile: 'balanced',
     values: mockPerformanceValues('balanced'),
@@ -1302,8 +1303,15 @@ function newestNodeBuild(): RuntimeBuild | undefined {
 }
 
 function nodeDefaultBuild(): RuntimeBuild | undefined {
+  // Mirror ResolveNodeDefaultStatus: a configured default that is not
+  // installed reports no build instead of falling back to the newest one.
   if (!nodeDefaultConfigured) return newestNodeBuild();
-  return findNodeBuild(nodeDefaultConfigured) ?? newestNodeBuild();
+  return findNodeBuild(nodeDefaultConfigured);
+}
+
+/** Test fixture hook for the configured default, including stale values. */
+export function setMockNodeDefaultForTests(value: string): void {
+  nodeDefaultConfigured = value.trim();
 }
 
 function nodeToolchainFor(site: Site): NodeToolchain | undefined {
