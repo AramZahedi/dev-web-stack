@@ -33,6 +33,8 @@ var runWSL = func(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	return exitStatus(command.Run())
 }
 
+var newWSLEnvFile = tooling.NewWSLEnvFile
+
 // ExitError carries the exact exit status of a shell or exec command.
 type ExitError struct {
 	Code int
@@ -479,7 +481,19 @@ func (a *App) newExecCmd() *cobra.Command {
 }
 
 func execWSLSite(ctx context.Context, distro string, site model.Site, env map[string]string, argv []string, interactive bool, stdin io.Reader, stdout, stderr io.Writer) error {
-	args, err := tooling.BuildWSLExecArgs(distro, site.BackendPath, env, argv, interactive)
+	if len(env) == 0 {
+		args, err := tooling.BuildWSLExecArgs(distro, site.BackendPath, nil, argv, interactive)
+		if err != nil {
+			return wrapError(err, "WSL_SITE_ENV_FAILED", "Check the site's backend path and runtime environment, then retry.")
+		}
+		return runWSL(ctx, args, stdin, stdout, stderr)
+	}
+	envFile, err := newWSLEnvFile(env)
+	if err != nil {
+		return wrapError(err, "WSL_SITE_ENV_FAILED", "Check the site's backend path and runtime environment, then retry.")
+	}
+	defer envFile.Cleanup()
+	args, err := tooling.BuildWSLExecArgsWithEnvFile(distro, site.BackendPath, envFile.WSLPath, argv, interactive)
 	if err != nil {
 		return wrapError(err, "WSL_SITE_ENV_FAILED", "Check the site's backend path and runtime environment, then retry.")
 	}
