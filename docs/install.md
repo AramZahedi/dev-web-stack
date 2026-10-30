@@ -271,6 +271,12 @@ the file with defaults on first start. The dashboard PATCH validates new listene
 ports and returns `restart_required`; `devstack daemon restart` applies them and
 synchronizes the helper targets.
 
+`dashboard_auth` controls the install-token gate for dashboard API requests and
+defaults to `false`. Enable it with `devstack init --dashboard-auth` (or set
+`dashboard_auth: true` and restart the daemon). When enabled, `devstack ui`
+opens the dashboard with the token fragment; when disabled, the dashboard opens
+directly. The API remains loopback-only and CSRF-protected either way.
+
 ## Logs
 
 - Helper: `journalctl -u devstack-helper`

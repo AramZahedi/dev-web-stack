@@ -290,7 +290,8 @@ The daemon exposes the following route groups under `/api/v1`:
 - builds: run a site build and read build logs
 
 The dashboard is embedded from `ui/dist` and served by the daemon. API mutations use a
-session cookie and CSRF token.
+session cookie and CSRF token. The install-token gate is opt-in via
+`dashboard_auth` (default `false`); `devstack init --dashboard-auth` enables it.
 
 The dashboard exposes service lifecycle/credential/phpMyAdmin actions, service
 configuration editing/diff/apply/reset, performance preview/apply/reset/benchmarks,
@@ -300,7 +301,7 @@ editable listener ports, and the site-scoped terminal.
 ## 8. CLI surface (current)
 
 ```text
-devstack init
+devstack init [--dashboard-auth]
 devstack doctor [--repair] [--json]
 devstack trust install|repair|remove|status
 devstack daemon run|status|stop|restart

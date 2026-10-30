@@ -98,7 +98,7 @@ devstack enforces an explicit execution and permission model across the Windows-
 2. **Runtime Worker Privilege Inside the Distro:**
    - The daemon agent and the site runtimes it starts (PHP-FPM, Node, static, builds, and terminals) currently execute as `root` inside the managed distro. Docker service containers run with their image-defined users.
    - Script execution (PHP scripts, Node processes) therefore has the same access as the agent; treat the managed distro as a full-power local development environment.
-   - `/data/devstack/system/` remains restricted to mode `0600` owned by `root`; the API still requires the install token, loopback access, and CSRF for mutations.
+   - `/data/devstack/system/` remains restricted to mode `0600` owned by `root`; the API is loopback-only and mutations require a session cookie and CSRF token. Install-token authentication is opt-in: set `dashboard_auth: true` in `config.yaml` or run `devstack init --dashboard-auth`.
 
 3. **Project File Permissions Across Storage Models:**
    - **WSL-Mode Projects (ext4 container at `/data/devstack/projects/`):**
