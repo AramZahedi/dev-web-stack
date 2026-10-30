@@ -588,6 +588,17 @@
                         <KeyRound size={13} strokeWidth={2} aria-hidden="true" />
                         Credentials
                       </Button>
+                      <a class="manage-link" href={`#/services/${service.id}`}>
+                        <Database size={13} strokeWidth={2} aria-hidden="true" />
+                        Manage databases
+                      </a>
+                    {/if}
+
+                    {#if installed && service.id === 'redis'}
+                      <a class="manage-link" href={`#/services/${service.id}`}>
+                        <KeyRound size={13} strokeWidth={2} aria-hidden="true" />
+                        Manage users
+                      </a>
                     {/if}
 
                     {#if service.id === 'phpmyadmin' && active}
@@ -1124,7 +1135,8 @@
     padding-top: 2px;
   }
 
-  .external-link {
+  .external-link,
+  .manage-link {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -1140,7 +1152,8 @@
     white-space: nowrap;
   }
 
-  .external-link:hover {
+  .external-link:hover,
+  .manage-link:hover {
     background: var(--surface-3);
     border-color: var(--control-border);
   }
@@ -1393,7 +1406,8 @@
     }
 
     .service-actions :global(.btn),
-    .external-link {
+    .external-link,
+    .manage-link {
       flex: 1 1 auto;
     }
 

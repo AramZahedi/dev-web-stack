@@ -125,6 +125,7 @@ export interface CreateDatabaseRequest {
 
 export interface RenameDatabaseRequest {
   name: string;
+  confirm?: string;
 }
 
 export interface DropDatabaseRequest {
