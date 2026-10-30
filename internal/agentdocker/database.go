@@ -59,6 +59,23 @@ func databaseEngineID(id services.ID) (model.DatabaseEngine, bool) {
 	}
 }
 
+// mapEngineError converts engine sentinels into daemon-facing domain errors.
+func mapEngineError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, dbengine.ErrProtected):
+		return databases.ErrProtected
+	case errors.Is(err, dbengine.ErrUnsupported):
+		return databases.ErrUnsupported
+	case errors.Is(err, dbengine.ErrInvalidIdentifier):
+		return fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
+	default:
+		return err
+	}
+}
+
 // requireDatabaseActive rejects engine mutations while the service container
 // is stopped. Backup listing/download/deletion intentionally do not call this.
 func (d *Docker) requireDatabaseActive(ctx context.Context, serviceID string) error {

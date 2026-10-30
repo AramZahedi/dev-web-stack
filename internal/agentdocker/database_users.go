@@ -100,6 +100,9 @@ func (d *Docker) CreateUser(ctx context.Context, serviceID string, req databases
 		if err := engine.ValidateDatabaseName(grant.Database); err != nil {
 			return model.DatabaseUser{}, mapEngineError(err)
 		}
+		if engine.ProtectedDatabase(grant.Database) {
+			return model.DatabaseUser{}, databases.ErrProtected
+		}
 	}
 	password, err := credentials.NewSecret()
 	if err != nil {
@@ -173,10 +176,21 @@ func (d *Docker) UpdateUser(ctx context.Context, serviceID, userID string, req d
 	}
 	user, err := d.findDatabaseUser(ctx, serviceID, userID)
 	if err != nil {
+		if errors.Is(err, databases.ErrNotFound) && d.isProtectedUserID(engine, string(service.ID), userID) {
+			return model.DatabaseUser{}, databases.ErrProtected
+		}
 		return model.DatabaseUser{}, err
 	}
 	if engine.ProtectedUser(user.Username, user.Host) {
 		if req.Enabled != nil || req.Grants != nil {
+			return model.DatabaseUser{}, databases.ErrProtected
+		}
+	}
+	for _, grant := range req.Grants {
+		if err := engine.ValidateDatabaseName(grant.Database); err != nil {
+			return model.DatabaseUser{}, mapEngineError(err)
+		}
+		if engine.ProtectedDatabase(grant.Database) {
 			return model.DatabaseUser{}, databases.ErrProtected
 		}
 	}

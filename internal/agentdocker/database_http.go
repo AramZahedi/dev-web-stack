@@ -330,12 +330,16 @@ func (d *Docker) resolveSiteEnv(ctx context.Context, serviceID string, links []d
 		if linkService != "" && !sameDatabaseService(linkService, serviceID) {
 			return nil, fmt.Errorf("%w: link service %q does not match %q", databases.ErrInvalidRequest, linkService, serviceID)
 		}
+		expectedEngine := databaseEngineForService(serviceID)
 		engine := link.Engine
 		if engine == "" {
-			engine = databaseEngineForService(serviceID)
+			engine = expectedEngine
+		}
+		if expectedEngine == "" || engine != expectedEngine {
+			return nil, fmt.Errorf("%w: link engine %q does not match service %q", databases.ErrInvalidRequest, engine, serviceID)
 		}
 		port := link.Connection.Port
-		if port == 0 {
+		if port <= 0 || port > 65535 {
 			port = defaultDatabasePort(engine)
 		}
 		prefix := "DB_"

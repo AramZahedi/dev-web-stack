@@ -26,9 +26,14 @@ func (d *Docker) databaseSecretDir(serviceID string, create bool) (string, error
 	if _, ok := databaseEngineID(service.ID); !ok {
 		return "", fmt.Errorf("agentdocker: %s is not a database service", service.ID)
 	}
-	secrets := filepath.Join(d.root, "services", string(service.ID), "secrets")
+	servicesRoot := filepath.Join(d.root, "services")
+	serviceRoot := filepath.Join(servicesRoot, string(service.ID))
+	secrets := filepath.Join(serviceRoot, "secrets")
 	dir := filepath.Join(secrets, "database-users")
 	if create {
+		if err := ensureRealDirectory(serviceRoot, 0o755); err != nil {
+			return "", fmt.Errorf("agentdocker: secure %s service tree: %w", service.ID, err)
+		}
 		if err := ensureRealDirectory(secrets, 0o700); err != nil {
 			return "", fmt.Errorf("agentdocker: secure %s secrets: %w", service.ID, err)
 		}
@@ -37,7 +42,7 @@ func (d *Docker) databaseSecretDir(serviceID string, create bool) (string, error
 		}
 		return dir, nil
 	}
-	for _, path := range []string{secrets, dir} {
+	for _, path := range []string{servicesRoot, serviceRoot, secrets, dir} {
 		info, err := os.Lstat(path)
 		if err != nil {
 			return "", err
@@ -66,7 +71,7 @@ func (d *Docker) writeDatabaseSecret(serviceID, userID, value string) error {
 	if !databaseUserIDPattern.MatchString(userID) {
 		return fmt.Errorf("agentdocker: invalid database user ID %q", userID)
 	}
-	if strings.ContainsAny(value, "\r\n") || value == "" {
+	if strings.ContainsAny(value, "\r\n\x00") || value == "" {
 		return errors.New("agentdocker: database secret contains control characters")
 	}
 	dir, err := d.databaseSecretDir(serviceID, true)

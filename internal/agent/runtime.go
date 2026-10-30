@@ -503,12 +503,16 @@ func (r *Runtime) resolveDatabaseEnv(spec agentproto.SiteSpec) (map[string]strin
 		if !validAgentDatabaseService(serviceID) {
 			return nil, fmt.Errorf("agent: invalid database service %q", link.ServiceID)
 		}
+		expectedEngine := agentEngineForService(serviceID)
 		engine := strings.TrimSpace(link.Engine)
 		if engine == "" {
-			engine = agentEngineForService(serviceID)
+			engine = expectedEngine
+		}
+		if expectedEngine == "" || engine != expectedEngine {
+			return nil, fmt.Errorf("agent: link engine %q does not match service %q", engine, serviceID)
 		}
 		port := link.Port
-		if port == 0 {
+		if port <= 0 || port > 65535 {
 			port = agentDefaultDatabasePort(engine)
 		}
 		prefix := "DB_"
@@ -557,9 +561,9 @@ func (r *Runtime) databaseEnvFor(site *runtimeSite) (map[string]string, error) {
 	if site == nil || len(site.spec.DatabaseLinks) == 0 {
 		return nil, nil
 	}
-	if site.databaseEnv != nil {
-		return site.databaseEnv, nil
-	}
+	// Resolve on every start/terminal/build so a password rotation applies on
+	// the explicit restart the dashboard prompts for. The cached field is only
+	// an inspection aid for the prepare response.
 	return r.resolveDatabaseEnv(site.spec)
 }
 
@@ -580,9 +584,11 @@ func (r *Runtime) readAgentDatabaseSecret(serviceID, userID string) (string, err
 	if !validAgentDatabaseService(serviceID) {
 		return "", errors.New("agent: invalid database service")
 	}
-	secretsDir := filepath.Join(r.root, "services", serviceID, "secrets")
+	servicesRoot := filepath.Join(r.root, "services")
+	serviceRoot := filepath.Join(servicesRoot, serviceID)
+	secretsDir := filepath.Join(serviceRoot, "secrets")
 	dir := filepath.Join(secretsDir, "database-users")
-	for _, candidate := range []string{secretsDir, dir} {
+	for _, candidate := range []string{servicesRoot, serviceRoot, secretsDir, dir} {
 		info, err := os.Lstat(candidate)
 		if err != nil {
 			return "", err

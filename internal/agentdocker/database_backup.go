@@ -235,10 +235,24 @@ func (d *Docker) RestoreBackup(ctx context.Context, serviceID, backupID string, 
 		return failDatabaseJob(job, fmt.Errorf("%w: target %q already exists", databases.ErrConflict, target))
 	}
 	if req.PreRestoreBackup && exists {
-		if _, err := d.createBackupLocked(ctx, serviceID, engine, target, model.BackupPreRestore); err != nil {
+		preJob, err := d.createBackupLocked(ctx, serviceID, engine, target, model.BackupPreRestore)
+		if err != nil {
 			return failDatabaseJob(job, err)
 		}
+		job.BackupID = preJob.BackupID
 	}
+	// Validate the backup before dropping anything: a corrupt file must not
+	// destroy the target it was supposed to replace.
+	file, _, err := openRegularBackup(path)
+	if err != nil {
+		return failDatabaseJob(job, err)
+	}
+	defer func() { _ = file.Close() }()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return failDatabaseJob(job, fmt.Errorf("agentdocker: open backup %s: %w", backupID, err))
+	}
+	defer func() { _ = gz.Close() }()
 	command, err := databaseSQLCommand(engine.ID())
 	if err != nil {
 		return failDatabaseJob(job, err)
@@ -264,16 +278,6 @@ func (d *Docker) RestoreBackup(ctx context.Context, serviceID, backupID string, 
 			return failDatabaseJob(job, err)
 		}
 	}
-	file, _, err := openRegularBackup(path)
-	if err != nil {
-		return failDatabaseJob(job, err)
-	}
-	defer func() { _ = file.Close() }()
-	gz, err := gzip.NewReader(file)
-	if err != nil {
-		return failDatabaseJob(job, fmt.Errorf("agentdocker: open backup %s: %w", backupID, err))
-	}
-	defer func() { _ = gz.Close() }()
 	restoreCommand, err := engine.RestoreCommand(target)
 	if err != nil {
 		return failDatabaseJob(job, mapEngineError(err))
@@ -377,9 +381,11 @@ func (d *Docker) ImportDatabase(ctx context.Context, serviceID, database string,
 	}
 	if mode == databases.ImportReplace {
 		if req.PreImportBackup {
-			if _, err := d.createBackupLocked(ctx, serviceID, engine, database, model.BackupPreImport); err != nil {
+			preJob, err := d.createBackupLocked(ctx, serviceID, engine, database, model.BackupPreImport)
+			if err != nil {
 				return failDatabaseJob(job, err)
 			}
+			job.BackupID = preJob.BackupID
 		}
 		if err := d.terminateDatabaseSessions(ctx, serviceID, engine, database); err != nil {
 			return failDatabaseJob(job, err)
