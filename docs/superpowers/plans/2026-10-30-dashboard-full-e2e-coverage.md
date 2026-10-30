@@ -271,9 +271,11 @@ Expected: `site list` empty; `doctor` green.
 
 **Depends on:** Task 1 (recreate `e2e-full-php`). **Artifacts:** `task-2/`
 
-> **Progress at pause (2026-10-30):** IN PROGRESS. `e2e-full-php` recreated; document root `.` -> `public` verified; front controller on (`/does-not-exist` 200) and off (404) verified; console clean. Remaining: AllowOverride, invalid docroot, directives/ini/extensions/preview, restart behavior, dashboard-confirm removal. Live site is intentionally left running with docroot `public`; see `dist/e2e/full-dashboard/task-2/PROGRESS.md`.
+> **Result (2026-10-30):** COMPLETE. All six steps passed live. Two agent bugs were found,
+> fixed with regression tests, redeployed, and Task 2 was rerun. Evidence:
+> `dist/e2e/full-dashboard/task-2/PROGRESS.md`.
 
-- [ ] **Step 1: Open Configuration and edit safe fields**
+- [x] **Step 1: Open Configuration and edit safe fields**
 
 Site Detail → Configuration → Edit configuration:
 - Change document root `.` → `public` (create `public/index.php` first), save; verify Document root `public`.
@@ -284,7 +286,7 @@ Site Detail → Configuration → Edit configuration:
 
 Expected: each save produces a toast, detail refresh, no console errors; `devstack site show --json` reflects the value.
 
-- [ ] **Step 2: Open PHP settings and exercise directives**
+- [x] **Step 2: Open PHP settings and exercise directives**
 
 Site Detail → PHP settings:
 - Set `memory_limit=700M` and `max_execution_time=210`.
@@ -301,25 +303,25 @@ CLI parity:
 & $ds php --site e2e-full-php --home $h -- -i
 ```
 
-- [ ] **Step 3: Exercise extensions**
+- [x] **Step 3: Exercise extensions**
 
 - Disable `fileinfo`; save; verify `php -m` lacks it and site still serves.
 - Re-enable `fileinfo`; save; verify present.
 - Try an unknown extension `definitely_missing`; assert a clear rejection and no mutation.
 - `site ext e2e-full-php --inherit fileinfo` restores default.
 
-- [ ] **Step 4: Exercise raw ini and generated preview**
+- [x] **Step 4: Exercise raw ini and generated preview**
 
 - Open Global/site raw ini editor; set `memory_limit=512M` (or append a comment), save; verify applied.
 - Revert to original raw content.
 - Open generated ini preview; assert the expected directives are visible and the preview is read-only.
 - Invalid raw line (`not a directive`) rejected with a line-specific error.
 
-- [ ] **Step 5: Restart/apply behavior**
+- [x] **Step 5: Restart/apply behavior**
 
 Stop the site, change a PHP directive, start; verify FPM applies it. Change while running; verify restart-required or automatic apply behavior matches the UI text.
 
-- [ ] **Step 6: Cleanup**
+- [x] **Step 6: Cleanup**
 
 Remove `e2e-full-php`; delete `public` fixture; `doctor` green.
 
