@@ -497,22 +497,22 @@ Expected: no containers, no active services, config/data dirs removed only with 
 
 **Depends on:** Task 0. **Artifacts:** `task-6/`
 
-- [ ] **Step 1: Capture current ports**
+- [x] **Step 1: Capture current ports**
 
 Settings → Listener ports; record HTTP `8080`, HTTPS `8443`, dashboard `7070`; capture the helper's proxy targets (`devstack vhost status --json`).
 
-- [ ] **Step 2: Save non-default ports**
+- [x] **Step 2: Save non-default ports**
 
 Change to HTTP `18080`, HTTPS `18443`, dashboard `17070`; Save. Expected toast `Ports saved - restart required`; `config.yaml` changes; helper proxy targets update after daemon restart.
 `devstack daemon restart`; verify dashboard on `http://127.0.0.1:17070`, site URLs still on 80/443, `doctor` green.
 
-- [ ] **Step 3: Invalid values**
+- [x] **Step 3: Invalid values**
 
 - Same HTTP/HTTPS/dashboard values → validation error.
 - Out-of-range 0/70000 → validation error.
 - Conflict with an occupied test port → actionable error; no partial write.
 
-- [ ] **Step 4: Restore**
+- [x] **Step 4: Restore**
 
 Set back to 8080/8443/7070; restart; verify dashboard and sites; `config.yaml` baseline. If the dashboard becomes unreachable, use `devstack` CLI/API on the Unix socket or restore `config.yaml` from Task 0 backup and restart.
 
