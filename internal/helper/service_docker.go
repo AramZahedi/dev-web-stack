@@ -8,19 +8,35 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
+	"github.com/AramZahedi/dev-web-stack/internal/dbengine"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
 
 const servicePollInterval = 200 * time.Millisecond
+
+// StreamCommandRunner is an optional CommandRunner extension for commands whose
+// stdout is streamed to the caller (database dumps and exports).
+type StreamCommandRunner interface {
+	RunStream(ctx context.Context, name string, args ...string) (io.ReadCloser, error)
+}
+
+// InputStreamCommandRunner is an optional CommandRunner extension for commands
+// that consume a stream on stdin (database restores and imports).
+type InputStreamCommandRunner interface {
+	RunInputStream(ctx context.Context, input io.Reader, name string, args ...string) error
+}
 
 // ServiceController defines the operations supported by the container control plane.
 type ServiceController interface {
@@ -34,6 +50,7 @@ type ServiceController interface {
 	Reload(ctx context.Context, id services.ID) error
 	Uninstall(ctx context.Context, id services.ID, deleteData bool) error
 	Logs(ctx context.Context, id services.ID, tail int) (string, error)
+	databases.Platform
 }
 
 // DockerServiceController manages service containers via fixed Docker Compose argv calls.
@@ -46,6 +63,12 @@ type DockerServiceController struct {
 
 	mu   sync.Mutex
 	opMu sync.Mutex
+
+	// databaseRegistry resolves SQL engines. It defaults to dbengine.DefaultRegistry
+	// when nil, which the shared engine package installs at init. Tests inject a
+	// registry without touching the frozen foundation.
+	databaseRegistry dbengine.Registry
+	databaseLocks    sync.Map
 
 	// OwnerUID, when nonzero, owns the config and log directories created by Install.
 	OwnerUID int
@@ -803,6 +826,81 @@ func (c *DockerServiceController) Uninstall(ctx context.Context, id services.ID,
 		}
 	}
 	return nil
+}
+
+// RunStream starts a command and returns its stdout as a stream. The returned
+// reader reports the command's exit error after the final bytes are read.
+func (execRunner) RunStream(ctx context.Context, name string, args ...string) (io.ReadCloser, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stream := &commandStream{cmd: cmd, stdout: stdout, stderr: &bytes.Buffer{}}
+	cmd.Stderr = stream.stderr
+	cmd.WaitDelay = 3 * time.Second
+	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		return nil, err
+	}
+	return stream, nil
+}
+
+// RunInputStream runs a command with input streamed on stdin. The command's
+// combined output is retained for error reporting; the input is never buffered
+// by this runner.
+func (execRunner) RunInputStream(ctx context.Context, input io.Reader, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = input
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	cmd.WaitDelay = 3 * time.Second
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(output.String())
+		if message != "" {
+			return fmt.Errorf("%s: %w: %s", cmd.Path, err, message)
+		}
+		return fmt.Errorf("%s: %w", cmd.Path, err)
+	}
+	return nil
+}
+
+type commandStream struct {
+	cmd     *exec.Cmd
+	stdout  io.ReadCloser
+	stderr  *bytes.Buffer
+	once    sync.Once
+	waitErr error
+}
+
+func (s *commandStream) Read(p []byte) (int, error) {
+	n, err := s.stdout.Read(p)
+	if errors.Is(err, io.EOF) {
+		s.finish()
+		if s.waitErr != nil {
+			return n, s.waitErr
+		}
+	}
+	return n, err
+}
+
+func (s *commandStream) Close() error {
+	_ = s.stdout.Close()
+	s.finish()
+	return s.waitErr
+}
+
+func (s *commandStream) finish() {
+	s.once.Do(func() {
+		s.waitErr = s.cmd.Wait()
+		if s.waitErr != nil {
+			message := strings.TrimSpace(s.stderr.String())
+			if message != "" {
+				s.waitErr = fmt.Errorf("%s: %w: %s", s.cmd.Path, s.waitErr, message)
+			}
+		}
+	})
 }
 
 // Logs returns bounded container logs for the specified service.
