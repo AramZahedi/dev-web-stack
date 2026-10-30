@@ -28,6 +28,7 @@ type fakeStore struct {
 	jobs             []model.DatabaseJobRecord
 	audit            []model.AuditEventRecord
 	passwordStateErr error
+	linkStarted      chan struct{}
 }
 
 func (f *fakeStore) GetSite(_ context.Context, id string) (model.Site, error) {
@@ -55,6 +56,7 @@ func (f *fakeStore) ListSites(context.Context) ([]model.Site, error) {
 func (f *fakeStore) CreateDatabaseLink(_ context.Context, link model.DatabaseLinkRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	signalTest(f.linkStarted)
 	for _, existing := range f.links {
 		if existing.SiteID == link.SiteID && existing.ServiceID == link.ServiceID && existing.DatabaseName == link.DatabaseName {
 			return store.ErrConflict
@@ -843,6 +845,51 @@ func TestManagerDropBacksUpFirst(t *testing.T) {
 	m, _, platform, _, _ := testManagerWithFakes(t)
 	platform.job = model.DatabaseJob{ID: "job_1", Status: model.JobSucceeded, BackupID: "bkp_1"}
 	if err := m.DropDatabase(context.Background(), "mysql", "app", DropDatabaseRequest{Confirm: "app", BackupFirst: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(platform.dropCalls) != 1 {
+		t.Fatalf("drop calls = %v", platform.dropCalls)
+	}
+}
+
+func TestDropHoldsServiceLockAcrossGuardBackupAndDrop(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	platform.job = model.DatabaseJob{ID: "job_backup", Status: model.JobSucceeded, BackupID: "bkp_1"}
+	platform.createStarted = make(chan struct{}, 1)
+	platform.createRelease = make(chan struct{})
+	st.linkStarted = make(chan struct{}, 1)
+
+	dropErr := make(chan error, 1)
+	go func() {
+		dropErr <- m.DropDatabase(context.Background(), "mysql", "app", DropDatabaseRequest{Confirm: "app", BackupFirst: true})
+	}()
+	select {
+	case <-platform.createStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drop did not start the pre-drop backup")
+	}
+
+	linkErr := make(chan error, 1)
+	go func() {
+		_, err := m.LinkDatabase(context.Background(), "blog", LinkDatabaseRequest{ServiceID: "mysql", Database: "app", UserID: "usr_app"})
+		linkErr <- err
+	}()
+	select {
+	case <-st.linkStarted:
+		t.Fatal("link entered the critical section while drop held the service lock")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(platform.createRelease)
+	if err := <-dropErr; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-st.linkStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("link did not resume after drop released the service lock")
+	}
+	if err := <-linkErr; err != nil {
 		t.Fatal(err)
 	}
 	if len(platform.dropCalls) != 1 {

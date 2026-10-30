@@ -296,11 +296,11 @@ func (m *Manager) RenameDatabase(ctx context.Context, serviceID, name string, re
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return model.Database{}, err
 	}
+	unlock := m.lockService(serviceID)
+	defer unlock()
 	if err := m.ensureLinkedSitesStopped(ctx, serviceID, name); err != nil {
 		return model.Database{}, err
 	}
-	unlock := m.lockService(serviceID)
-	defer unlock()
 
 	db, err := m.deps.Platform.RenameDatabase(ctx, serviceID, name, req)
 	if err != nil {
