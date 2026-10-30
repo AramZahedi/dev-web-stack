@@ -1,4 +1,4 @@
-# Lane A final status — audit fixes complete, fresh re-audit not dispatched
+# Lane A final status ÔÇö audit fixes complete, fresh re-audit not dispatched
 
 - **Branch:** `lane/db-agent`
 - **Base:** `44c9d6812439a27c4e3ba060e364a197a781e929`
@@ -17,7 +17,7 @@ The second audit of `8b77457` found one new Critical and seven new Important iss
 | N2 symlinked backup parents | `0d75b84` | `ensureNoSymlinkComponents` validates every component from the agent root through the service/database directory and final file. `ListBackups` skips symlinked entries; `databaseBackupPath` rejects them. WSL tests cover symlinked database and service directories. |
 | N3 masked `psql` failures | `e4be0b6` | Inventory and grant scripts capture `dbs=$(psql ...) || exit 1`. WSL tests with a failing fake `psql` assert non-zero exits. |
 | N4 Redis custom ACL rewrite | `541d25f` | Custom users get only `ACL SETUSER <user> on|off` via `dbengine.SetUserEnabledCommand`; test asserts no `-@all`/`+@read`/`reset` rewrite and no password rotation. |
-| N5 password-bearing SQL errors | `18c5fb6`, `9edb8a2` | `redactSQLSecrets` covers `IDENTIFIED BY`, `IDENTIFIED WITH … BY`, and `PASSWORD`; applied at the runner, SQL/input paths, job messages, and HTTP errors before truncation. `redactedError` preserves `errors.Is`. Tests cover failed password set, HTTP body, failed job, and the real `execRunner`. |
+| N5 password-bearing SQL errors | `18c5fb6`, `9edb8a2` | `redactSQLSecrets` covers `IDENTIFIED BY`, `IDENTIFIED WITH ÔÇª BY`, and `PASSWORD`; applied at the runner, SQL/input paths, job messages, and HTTP errors before truncation. `redactedError` preserves `errors.Is`. Tests cover failed password set, HTTP body, failed job, and the real `execRunner`. |
 | N6 Redis `-x` rule loss | `c7da8e1` | `redisCommandWithSecret` keeps every rule and rejects multiple password arguments. Tests assert the post-`-x` argv contains every rule, including the final `-failover`, with the password only on stdin. No placeholder was added because `redis-cli -x` appends stdin to the command. |
 | N7 cross-lane MariaDB name | `0a20402` | Lane A emits `mariadb` from both the agent runtime and `/database-env`; `TestCrossLaneMariaDBConnectionName` and `TestCrossLaneMariaDBConnectionNameRoute` pin it. |
 
@@ -25,13 +25,13 @@ Minors fixed: `/database-env` no-store (`7a13ee4`), bounded `RunStream` stderr (
 
 ## Gate
 
-- Focused lane tests — PASS
-- `go test ./... -count=1` — PASS
-- `go vet ./...` — PASS
-- `go build ./...` — PASS
-- WSL race (`./internal/dbengine ./internal/agentdocker ./internal/agentclient ./internal/agentproto`) — PASS
-- Targeted WSL agent race (`TestPrepareSite|TestTerminal|TestDatabase|TestBuild|TestPHP|TestExec`) — PASS
-- `git status --short` — clean
+- Focused lane tests ÔÇö PASS
+- `go test ./... -count=1` ÔÇö PASS
+- `go vet ./...` ÔÇö PASS
+- `go build ./...` ÔÇö PASS
+- WSL race (`./internal/dbengine ./internal/agentdocker ./internal/agentclient ./internal/agentproto`) ÔÇö PASS
+- Targeted WSL agent race (`TestPrepareSite|TestTerminal|TestDatabase|TestBuild|TestPHP|TestExec`) ÔÇö PASS
+- `git status --short` ÔÇö clean
 
 ## Open items
 
