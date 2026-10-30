@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 )
 
 type provisionRunner struct {
@@ -69,6 +71,13 @@ func testProvisioner(t *testing.T, runner Runner) *Provisioner {
 			MinimumDiskBytes: 1,
 		},
 		FreeDiskBytes: func(string) (uint64, error) { return 1 << 30, nil },
+	}
+}
+
+func TestDefaultInstallDirUsesProfileHome(t *testing.T) {
+	want := platform.Join("windows", platform.DefaultRoot("windows"), "wsl", "devstack")
+	if DefaultInstallDir != want {
+		t.Fatalf("DefaultInstallDir = %q, want %q", DefaultInstallDir, want)
 	}
 }
 

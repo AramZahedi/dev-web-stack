@@ -14,14 +14,19 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/AramZahedi/dev-web-stack/internal/platform"
 )
 
 const (
 	DefaultManagedDistro = "devstack"
-	DefaultInstallDir    = `C:\devstack\wsl\devstack`
 	managedMarkerPath    = "/data/devstack/managed.json"
 	minimumWSLVersion    = "2.0.0"
 )
+
+// DefaultInstallDir follows the profile-home default instead of the legacy
+// C:\devstack location. The installer normally passes an explicit path.
+var DefaultInstallDir = platform.Join("windows", platform.DefaultRoot("windows"), "wsl", "devstack")
 
 var (
 	ErrUnmanagedDistro           = errors.New("wsl: refusing to adopt an unmarked distro")
