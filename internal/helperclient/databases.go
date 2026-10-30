@@ -68,6 +68,14 @@ func (c *Client) SetServicePassword(ctx context.Context, serviceID string) (dbpr
 	return dbproto.SecretValue{Value: resp.Value}, err
 }
 
+// EnableRedisACLFile asks the helper to migrate Redis to ACL-file
+// persistence. confirm must be true after the user approves the restart.
+func (c *Client) EnableRedisACLFile(ctx context.Context, serviceID string, confirm bool) (helperproto.RedisACLFileResponse, error) {
+	var resp helperproto.RedisACLFileResponse
+	err := c.do(ctx, http.MethodPost, helperproto.ServiceRedisACLFile(serviceID), helperproto.RedisACLFileRequest{Confirm: confirm}, &resp)
+	return resp, err
+}
+
 func (c *Client) RenameDatabase(ctx context.Context, serviceID, name string, req dbproto.DatabaseRenameRequest) (dbproto.DatabaseInfo, error) {
 	req.ID = serviceID
 	req.Name = name

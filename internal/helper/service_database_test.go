@@ -682,6 +682,7 @@ func TestHelperCreateUserSecretFailureReturnsUser(t *testing.T) {
 func TestHelperRedisCreateUserSecretFailureReturnsUser(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
 	if err := os.WriteFile(filepath.Join(root, "services", "redis", "secrets"), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1491,6 +1492,7 @@ func TestHelperResolveSiteEnvMissingSecretFails(t *testing.T) {
 func TestHelperRedisDefaultPasswordPreservesACLRules(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
 	runner := c.runner.(*fakeCommandRunner)
 	runner.aclList = "user default on nopass ~* &* +@all\nuser cache on #hash ~* +@read -@admin -@dangerous\n"
 	secret, err := c.SetUserPassword(context.Background(), "redis", redisUserID("default"))
@@ -1577,6 +1579,7 @@ func TestHelperRedisExternalUserFlags(t *testing.T) {
 func TestHelperRedisPasswordResetPreservesCustomRules(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
 	runner := c.runner.(*fakeCommandRunner)
 	runner.aclList = "user default on nopass ~* &* +@all\nuser custom on #hash ~custom* +get +set\n"
 	if _, err := c.SetUserPassword(context.Background(), "redis", redisUserID("custom")); err != nil {
@@ -1620,6 +1623,67 @@ func TestRedisOutputErrorDoesNotMatchUsername(t *testing.T) {
 	}
 }
 
+func TestHelperRedisACLFileRequiresConfirmation(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	configPath := filepath.Join(root, "services", "redis", "config", "redis.conf")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	err = c.EnableRedisACLFile(context.Background())
+	if !errors.Is(err, databases.ErrConfirmationRequired) {
+		t.Fatalf("err=%v, want ErrConfirmationRequired", err)
+	}
+	after, readErr := os.ReadFile(configPath)
+	if readErr != nil || string(after) != string(before) {
+		t.Fatalf("redis.conf changed before confirmation: %q err=%v", after, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "services", "redis", "data", "users.acl")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("users.acl created before confirmation: %v", statErr)
+	}
+	if runner.joinedCallsContains("restart") {
+		t.Fatalf("Redis restarted before confirmation: %s", runner.joinedCalls())
+	}
+}
+
+func TestHelperRedisACLFileConfirmedMigrates(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	if err := c.EnableRedisACLFileConfirmed(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(root, "services", "redis", "config", "redis.conf"))
+	if err != nil || !strings.Contains(string(config), redisACLFileLine) {
+		t.Fatalf("config=%q err=%v", config, err)
+	}
+	aclInfo, err := os.Stat(filepath.Join(root, "services", "redis", "data", "users.acl"))
+	if err != nil || aclInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("users.acl mode=%v err=%v", aclInfo, err)
+	}
+	if !runner.joinedCallsContains("restart") {
+		t.Fatalf("confirmed migration did not restart Redis: %s", runner.joinedCalls())
+	}
+}
+
+func TestHelperRedisMutationFailsClosedBeforeMigration(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	_, err := c.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache"})
+	if !errors.Is(err, databases.ErrConfirmationRequired) {
+		t.Fatalf("err=%v, want ErrConfirmationRequired", err)
+	}
+	if runner.stdinContains("ACL SETUSER") || runner.joinedCallsContains("restart") {
+		t.Fatalf("mutation ran before migration confirmation: %s", runner.joinedCalls())
+	}
+}
+
 func TestHelperRedisACLFilePreservesConfigInodeAndMode(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	writeRedisConfig(t, root)
@@ -1631,7 +1695,7 @@ func TestHelperRedisACLFilePreservesConfigInodeAndMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.EnableRedisACLFile(context.Background()); err != nil {
+	if err := c.EnableRedisACLFileConfirmed(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
 	after, err := os.Stat(configPath)
@@ -1661,6 +1725,7 @@ func TestHelperRedisACLFilePreservesConfigInodeAndMode(t *testing.T) {
 func TestHelperRedisFullExcludesAdmin(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
 	runner := c.runner.(*fakeCommandRunner)
 	_, err := c.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "full"})
 	if err != nil {
@@ -1682,7 +1747,7 @@ func TestHelperRedisACLFileIsIdempotent(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	writeRedisConfig(t, root)
 	runner := c.runner.(*fakeCommandRunner)
-	if err := c.EnableRedisACLFile(context.Background()); err != nil {
+	if err := c.EnableRedisACLFileConfirmed(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
 	before := len(runner.calls)
@@ -1704,6 +1769,7 @@ func TestHelperRedisACLFileIsIdempotent(t *testing.T) {
 func TestHelperRedisPasswordOnStdin(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
 	runner := c.runner.(*fakeCommandRunner)
 	secret, err := c.SetUserPassword(context.Background(), "redis", redisUserID("cache"))
 	if err != nil {
@@ -1724,6 +1790,7 @@ func TestHelperRedisPasswordOnStdin(t *testing.T) {
 func TestHelperRedisUpdateResetsRules(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
 	runner := c.runner.(*fakeCommandRunner)
 	if _, err := c.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "full"}); err != nil {
 		t.Fatal(err)
@@ -1751,6 +1818,13 @@ func TestHelperRedisProtectsDefault(t *testing.T) {
 	}
 	if runner.joinedCallsContains("ACL DELUSER") {
 		t.Fatalf("default user was deleted: %s", runner.joinedCalls())
+	}
+}
+
+func confirmRedisACLFile(t *testing.T, c *DockerServiceController) {
+	t.Helper()
+	if err := c.EnableRedisACLFileConfirmed(context.Background(), true); err != nil {
+		t.Fatal(err)
 	}
 }
 

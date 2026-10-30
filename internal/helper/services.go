@@ -891,6 +891,37 @@ func (s *Server) handleServicePassword(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, dbproto.SecretResponse{Value: secret.Value})
 }
 
+func (s *Server) handleRedisACLFile(w http.ResponseWriter, r *http.Request) {
+	platform, ok := s.databasePlatform(w)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if err := validateServiceID(id); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if id != string(services.IDRedis) {
+		s.writeServiceError(w, fmt.Errorf("%w: only Redis has an ACL file", databases.ErrUnsupported))
+		return
+	}
+	var req helperproto.RedisACLFileRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	migrator, ok := platform.(databases.RedisACLFilePlatform)
+	if !ok {
+		s.notImplemented(w, "RedisACLFilePlatform")
+		return
+	}
+	if err := migrator.EnableRedisACLFileConfirmed(r.Context(), req.Confirm); err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, helperproto.RedisACLFileResponse{Enabled: true})
+}
+
 func parseBool(value string) bool {
 	parsed, err := strconv.ParseBool(value)
 	return err == nil && parsed

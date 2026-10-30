@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/AramZahedi/dev-web-stack/internal/credentials"
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
@@ -404,10 +405,23 @@ func (c *DockerServiceController) setRedisPassword(ctx context.Context, serviceI
 	return databases.Secret{Value: password}, nil
 }
 
-// EnableRedisACLFile makes Redis persist ACL changes in /data/users.acl. It
-// backs up redis.conf, seeds users.acl from ACL LIST, and restarts Redis once.
-// Repeated calls are idempotent.
+// EnableRedisACLFile makes Redis persist ACL changes in /data/users.acl. It is
+// the unconfirmed entry point: if the migration would change redis.conf or
+// restart Redis, it fails closed with ErrConfirmationRequired.
 func (c *DockerServiceController) EnableRedisACLFile(ctx context.Context) error {
+	return c.enableRedisACLFile(ctx, false)
+}
+
+// EnableRedisACLFileConfirmed migrates Redis to ACL-file persistence. The
+// caller must pass confirm=true after the user approves the one-time restart.
+func (c *DockerServiceController) EnableRedisACLFileConfirmed(ctx context.Context, confirm bool) error {
+	return c.enableRedisACLFile(ctx, confirm)
+}
+
+// enableRedisACLFile backs up redis.conf, seeds users.acl from ACL LIST, and
+// restarts Redis once. Repeated calls are idempotent. No config write, ACL
+// seed, or restart happens until the caller confirms the migration.
+func (c *DockerServiceController) enableRedisACLFile(ctx context.Context, confirm bool) error {
 	lock := c.databaseLock(string(services.IDRedis))
 	lock.Lock()
 	defer lock.Unlock()
@@ -429,10 +443,17 @@ func (c *DockerServiceController) EnableRedisACLFile(ctx context.Context) error 
 		return fmt.Errorf("read redis.conf: %w", err)
 	}
 	configHasACL := hasRedisACLFileLine(string(config))
-	aclExists := databaseFileExists(aclPath)
+	aclExists, aclInfo, err := inspectRedisACLFile(aclPath)
+	if err != nil {
+		return err
+	}
 	markerExists := databaseFileExists(markerPath)
-	if configHasACL && aclExists && !markerExists {
-		return nil
+	needsMigration := !configHasACL || !aclExists || markerExists
+	if !needsMigration {
+		return ensureRedisACLFileMode(aclPath, aclInfo)
+	}
+	if !confirm {
+		return fmt.Errorf("%w: Redis ACL file migration requires confirmation", databases.ErrConfirmationRequired)
 	}
 	if err := c.requireActive(ctx, string(services.IDRedis)); err != nil {
 		return err
@@ -474,6 +495,8 @@ func (c *DockerServiceController) EnableRedisACLFile(ctx context.Context) error 
 			return fmt.Errorf("seed users.acl: %w", err)
 		}
 		changed = true
+	} else if err := ensureRedisACLFileMode(aclPath, aclInfo); err != nil {
+		return err
 	}
 	if !changed && !markerExists {
 		return nil
@@ -486,6 +509,31 @@ func (c *DockerServiceController) EnableRedisACLFile(ctx context.Context) error 
 	}
 	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove ACL restart marker: %w", err)
+	}
+	return nil
+}
+
+func inspectRedisACLFile(path string) (bool, os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		return false, nil, nil
+	case err != nil:
+		return false, nil, fmt.Errorf("inspect Redis ACL file: %w", err)
+	case info.Mode()&os.ModeSymlink != 0:
+		return false, nil, fmt.Errorf("%w: Redis ACL file is a symlink", databases.ErrInvalidRequest)
+	case !info.Mode().IsRegular():
+		return false, nil, fmt.Errorf("%w: Redis ACL file is not a regular file", databases.ErrInvalidRequest)
+	}
+	return true, info, nil
+}
+
+func ensureRedisACLFileMode(path string, info os.FileInfo) error {
+	if info != nil && info.Mode().Perm() == 0o600 {
+		return nil
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("set users.acl mode: %w", err)
 	}
 	return nil
 }

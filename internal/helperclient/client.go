@@ -102,6 +102,8 @@ func (e *Error) Unwrap() error {
 		return databases.ErrPasswordMissing
 	case helperproto.CodeJobNotFound:
 		return databases.ErrJobNotFound
+	case helperproto.CodeConfirmationRequired:
+		return databases.ErrConfirmationRequired
 	default:
 		return nil
 	}

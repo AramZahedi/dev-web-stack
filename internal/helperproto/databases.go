@@ -62,7 +62,20 @@ const (
 	PathServiceJob            = "/v1/services/{id}/jobs/{jobID}"
 	PathServiceDatabaseEnv    = "/v1/services/{id}/database-env"
 	PathServicePassword       = "/v1/services/{id}/password"
+	PathServiceRedisACLFile   = "/v1/services/{id}/redis/acl-file"
 )
+
+// RedisACLFileRequest asks the helper to migrate Redis to ACL-file
+// persistence. Confirm must be true when the migration is needed.
+type RedisACLFileRequest struct {
+	Confirm bool `json:"confirm"`
+}
+
+// RedisACLFileResponse reports that Redis now persists ACL changes in its ACL
+// file.
+type RedisACLFileResponse struct {
+	Enabled bool `json:"enabled"`
+}
 
 // Additional stable error codes for database operations. They extend the
 // generic helper codes without changing existing responses.
@@ -75,6 +88,7 @@ const (
 	CodeServiceInactive        = "SERVICE_INACTIVE"
 	CodePasswordMissing        = "PASSWORD_MISSING"
 	CodeJobNotFound            = "JOB_NOT_FOUND"
+	CodeConfirmationRequired   = "CONFIRMATION_REQUIRED"
 )
 
 // ServiceBackups returns the helper path listing every backup of a service.
@@ -86,4 +100,9 @@ func ServiceBackups(id string) string {
 // ServicePassword returns the Redis default-user password path.
 func ServicePassword(id string) string {
 	return "/v1/services/" + url.PathEscape(id) + "/password"
+}
+
+// ServiceRedisACLFile returns the Redis ACL-file migration path.
+func ServiceRedisACLFile(id string) string {
+	return "/v1/services/" + url.PathEscape(id) + "/redis/acl-file"
 }

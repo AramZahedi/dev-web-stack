@@ -948,6 +948,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE "+helperproto.PathServiceJob, s.handleJobCancel)
 	mux.HandleFunc("POST "+helperproto.PathServiceDatabaseEnv, s.handleDatabaseEnv)
 	mux.HandleFunc("POST "+helperproto.PathServicePassword, s.handleServicePassword)
+	mux.HandleFunc("POST "+helperproto.PathServiceRedisACLFile, s.handleRedisACLFile)
 	mux.HandleFunc("GET "+helperproto.PathToolsStatus, s.handleToolsStatus)
 	mux.HandleFunc("POST "+helperproto.PathToolsInstall, s.handleToolsInstall)
 	mux.HandleFunc("POST "+helperproto.PathToolsRemove, s.handleToolsRemove)
@@ -1334,6 +1335,8 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusForbidden, helperproto.CodeProtected, err.Error())
 	case errors.Is(err, databases.ErrUnsupported):
 		s.writeError(w, http.StatusBadRequest, helperproto.CodeUnsupported, err.Error())
+	case errors.Is(err, databases.ErrConfirmationRequired):
+		s.writeError(w, http.StatusConflict, helperproto.CodeConfirmationRequired, err.Error())
 	case errors.Is(err, databases.ErrServiceInactive):
 		s.writeError(w, http.StatusConflict, helperproto.CodeServiceInactive, err.Error())
 	case errors.Is(err, databases.ErrConflict), errors.Is(err, databases.ErrLinkedSites):

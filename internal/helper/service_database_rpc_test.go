@@ -35,6 +35,17 @@ type fakeDatabasePlatform struct {
 	exportReader   io.ReadCloser
 	downloadReader io.ReadCloser
 	passwordUserID string
+	aclConfirm     bool
+}
+
+func (f *fakeDatabasePlatform) EnableRedisACLFileConfirmed(ctx context.Context, confirm bool) error {
+	f.mu.Lock()
+	f.aclConfirm = confirm
+	f.mu.Unlock()
+	if !confirm {
+		return fmt.Errorf("%w: Redis ACL file migration requires confirmation", databases.ErrConfirmationRequired)
+	}
+	return nil
 }
 
 func (f *fakeDatabasePlatform) SetUserPassword(ctx context.Context, serviceID, userID string) (databases.Secret, error) {
@@ -296,6 +307,34 @@ func TestServiceServicePasswordEndpoint(t *testing.T) {
 	}
 	if _, err := client.SetServicePassword(context.Background(), "mysql"); !errors.Is(err, databases.ErrUnsupported) {
 		t.Fatalf("non-redis password err=%v", err)
+	}
+}
+
+func TestServiceRedisACLFileConfirmationEndpoint(t *testing.T) {
+	platform := &fakeDatabasePlatform{}
+	client := databaseRPCServer(t, platform)
+
+	_, err := client.EnableRedisACLFile(context.Background(), "redis", false)
+	if !errors.Is(err, databases.ErrConfirmationRequired) {
+		t.Fatalf("unconfirmed err=%v", err)
+	}
+	var helperErr *helperclient.Error
+	if !errors.As(err, &helperErr) || helperErr.Status != http.StatusConflict || helperErr.Code != helperproto.CodeConfirmationRequired {
+		t.Fatalf("helper error = %+v", helperErr)
+	}
+
+	resp, err := client.EnableRedisACLFile(context.Background(), "redis", true)
+	if err != nil || !resp.Enabled {
+		t.Fatalf("confirmed response=%+v err=%v", resp, err)
+	}
+	platform.mu.Lock()
+	confirmed := platform.aclConfirm
+	platform.mu.Unlock()
+	if !confirmed {
+		t.Fatal("confirmed request was not forwarded")
+	}
+	if _, err := client.EnableRedisACLFile(context.Background(), "mysql", true); !errors.Is(err, databases.ErrUnsupported) {
+		t.Fatalf("non-redis ACL file err=%v", err)
 	}
 }
 
