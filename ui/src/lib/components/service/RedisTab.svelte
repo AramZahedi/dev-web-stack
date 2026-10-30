@@ -7,6 +7,7 @@
   import type { ServiceView } from '../../types';
   import Button from '../Button.svelte';
   import Card from '../Card.svelte';
+  import ConfirmDialog from '../ConfirmDialog.svelte';
   import ErrorBanner from '../ErrorBanner.svelte';
   import SecretField from '../SecretField.svelte';
   import UsersTab from './UsersTab.svelte';
@@ -33,6 +34,9 @@
   let revealError = $state('');
   let resetLoading = $state(false);
   let actionError = $state<DescribedError | null>(null);
+  let aclOpen = $state(false);
+  let aclBusy = $state(false);
+  let aclError = $state('');
   let keepRevealedOnce = false;
 
   const defaultUser = $derived(users.find((user) => user.username === 'default') ?? null);
@@ -86,9 +90,37 @@
       keepRevealedOnce = true;
       onRefresh();
     } catch (caught) {
-      actionError = describeError(caught);
+      const described = describeError(caught);
+      actionError =
+        described.code === 'CONFIRMATION_REQUIRED'
+          ? {
+              ...described,
+              message:
+                'Redis ACL persistence is not enabled. Enable it on the Users tab, then retry the password reset.',
+            }
+          : described;
     } finally {
       resetLoading = false;
+    }
+  }
+
+  async function confirmEnableACL(): Promise<void> {
+    if (aclBusy) return;
+    aclBusy = true;
+    aclError = '';
+    try {
+      await dbApi.enableRedisACLFile(service.id, true);
+      aclOpen = false;
+      addToast({
+        kind: 'success',
+        title: 'Redis ACL persistence enabled',
+        message: 'Redis restarted once. User and password changes are now durable.',
+      });
+      onRefresh();
+    } catch (caught) {
+      aclError = describeError(caught).message;
+    } finally {
+      aclBusy = false;
     }
   }
 
@@ -120,6 +152,25 @@
       {loading}
       onRefresh={onRefresh}
     />
+    <Card
+      title="ACL persistence"
+      subtitle="Redis user changes are durable only after a one-time ACL-file migration. Enabling it restarts Redis once."
+    >
+      <div class="acl-actions">
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={!service.active}
+          onclick={() => (aclOpen = true)}
+        >
+          Enable ACL persistence
+        </Button>
+        <span class="muted">Idempotent; safe if already enabled.</span>
+      </div>
+      {#if aclError}
+        <p class="acl-error" role="alert">{aclError}</p>
+      {/if}
+    </Card>
     <p class="default-hint">The protected default password is managed on the Password tab.</p>
   {:else}
     <p class="password-intro">
@@ -168,6 +219,18 @@
   {/if}
 </div>
 
+<ConfirmDialog
+  open={aclOpen}
+  title="Enable Redis ACL persistence?"
+  description="This updates redis.conf, seeds users.acl, and restarts Redis once. Existing users and passwords are preserved."
+  confirmLabel="Enable and restart"
+  busy={aclBusy}
+  onconfirm={confirmEnableACL}
+  oncancel={() => {
+    if (!aclBusy) aclOpen = false;
+  }}
+/>
+
 <style>
   .redis-tab {
     display: flex;
@@ -203,11 +266,19 @@
     gap: 8px;
   }
 
-  .default-actions {
+  .default-actions,
+  .acl-actions {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 8px;
+  }
+
+  .acl-error {
+    margin: 8px 0 0;
+    color: var(--danger);
+    font-size: 11.5px;
+    line-height: 1.45;
   }
 
   .muted {

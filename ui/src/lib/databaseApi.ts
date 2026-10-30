@@ -87,6 +87,14 @@ export async function revealServiceUserPassword(serviceID: string, userID: strin
   return request<DatabaseSecret>(userPath(serviceID, `/${enc(userID)}/reveal`), { method: 'POST' });
 }
 
+export async function enableRedisACLFile(serviceID: string, confirm: boolean): Promise<{ enabled: boolean }> {
+  if (isMockMode) return { enabled: true };
+  return request<{ enabled: boolean }>(`${servicePath(serviceID)}/redis/acl-file`, {
+    method: 'POST',
+    body: { confirm },
+  });
+}
+
 export async function listServiceBackups(serviceID: string): Promise<{ backups: DatabaseBackup[] }> {
   if (isMockMode) return mockDatabaseApi.listServiceBackups(serviceID);
   return request<{ backups: DatabaseBackup[] }>(`${servicePath(serviceID)}/backups`);

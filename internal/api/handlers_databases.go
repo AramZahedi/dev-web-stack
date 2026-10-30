@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -236,6 +237,30 @@ func (s *Server) handleSetServiceDefaultPassword(w http.ResponseWriter, r *http.
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, secret)
+}
+
+func (s *Server) handleEnableRedisACLFile(w http.ResponseWriter, r *http.Request) {
+	if s.databaseUnavailable(w) {
+		return
+	}
+	var req struct {
+		Confirm bool `json:"confirm"`
+	}
+	if !decodeOptionalJSONBody(w, r, &req) {
+		return
+	}
+	enabler, ok := s.databases.(interface {
+		EnableRedisACLFile(context.Context, string, bool) error
+	})
+	if !ok {
+		writeError(w, http.StatusNotImplemented, codeDatabaseUnsupported, "database service cannot migrate Redis ACL persistence", nil)
+		return
+	}
+	if err := enabler.EnableRedisACLFile(r.Context(), r.PathValue("id"), req.Confirm); err != nil {
+		s.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": true})
 }
 
 func (s *Server) handleListServiceBackups(w http.ResponseWriter, r *http.Request) {

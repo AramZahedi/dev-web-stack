@@ -11,6 +11,7 @@ vi.mock('../../databaseApi', async (importOriginal) => {
     ...actual,
     setServiceUserPassword: vi.fn(),
     revealServiceUserPassword: vi.fn(),
+    enableRedisACLFile: vi.fn(),
   };
 });
 
@@ -59,6 +60,7 @@ const REDIS_USERS: DatabaseUser[] = [
 beforeEach(() => {
   vi.mocked(db.setServiceUserPassword).mockResolvedValue({ value: 'newredis' });
   vi.mocked(db.revealServiceUserPassword).mockResolvedValue({ value: 'redissecret' });
+  vi.mocked(db.enableRedisACLFile).mockResolvedValue({ enabled: true });
 });
 
 afterEach(() => {
@@ -175,6 +177,19 @@ describe('RedisTab', () => {
     });
 
     expect(screen.getByText('newredis')).toBeTruthy();
+  });
+
+  it('enables Redis ACL persistence only after explicit confirmation', async () => {
+    render(RedisTab, {
+      props: { service: REDIS_SERVICE, users: REDIS_USERS, onRefresh: vi.fn() },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /enable acl persistence/i }));
+    expect(screen.getAllByText(/restarts redis once/i).length).toBeGreaterThan(0);
+    expect(db.enableRedisACLFile).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole('button', { name: /enable and restart/i }));
+    await waitFor(() => expect(db.enableRedisACLFile).toHaveBeenCalledWith('redis', true));
   });
 
   it('does not duplicate the default password card on the users tab', () => {

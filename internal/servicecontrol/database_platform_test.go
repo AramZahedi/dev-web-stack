@@ -10,6 +10,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/dbproto"
+	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
@@ -232,5 +233,61 @@ func TestHelperDockerRequiresProvider(t *testing.T) {
 	h := NewHelperDockerAPI(nil)
 	if _, err := h.ListDatabases(context.Background(), "mysql"); !errors.Is(err, databases.ErrUnsupported) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+type fakeRedisACLHelper struct {
+	*fakeDatabaseAPI
+	service string
+	confirm bool
+}
+
+func (f *fakeRedisACLHelper) EnableRedisACLFile(_ context.Context, serviceID string, confirm bool) (helperproto.RedisACLFileResponse, error) {
+	f.service, f.confirm = serviceID, confirm
+	if !confirm {
+		return helperproto.RedisACLFileResponse{}, databases.ErrConfirmationRequired
+	}
+	return helperproto.RedisACLFileResponse{Enabled: true}, nil
+}
+
+type fakeRedisACLAgent struct {
+	*fakeDatabaseAPI
+	called  bool
+	service string
+}
+
+func (f *fakeRedisACLAgent) EnableRedisACLFile(_ context.Context, serviceID string) error {
+	f.called, f.service = true, serviceID
+	return nil
+}
+
+func TestHelperDockerEnablesRedisACLFileWithConfirmation(t *testing.T) {
+	api := &fakeRedisACLHelper{fakeDatabaseAPI: &fakeDatabaseAPI{}}
+	h := NewHelperDockerAPI(api)
+	if err := h.EnableRedisACLFile(context.Background(), "redis", false); !errors.Is(err, databases.ErrConfirmationRequired) {
+		t.Fatalf("unconfirmed err = %v", err)
+	}
+	if err := h.EnableRedisACLFile(context.Background(), "redis", true); err != nil {
+		t.Fatal(err)
+	}
+	if api.service != "redis" || !api.confirm {
+		t.Fatalf("service=%q confirm=%v", api.service, api.confirm)
+	}
+}
+
+func TestAgentDockerEnablesRedisACLFileOnlyAfterConfirmation(t *testing.T) {
+	api := &fakeRedisACLAgent{fakeDatabaseAPI: &fakeDatabaseAPI{}}
+	a, _ := NewAgentDocker(api, "/data/devstack")
+	if err := a.EnableRedisACLFile(context.Background(), "redis", false); !errors.Is(err, databases.ErrConfirmationRequired) {
+		t.Fatalf("unconfirmed err = %v", err)
+	}
+	if api.called {
+		t.Fatal("agent migration ran without confirmation")
+	}
+	if err := a.EnableRedisACLFile(context.Background(), "redis", true); err != nil {
+		t.Fatal(err)
+	}
+	if !api.called || api.service != "redis" {
+		t.Fatalf("called=%v service=%q", api.called, api.service)
 	}
 }

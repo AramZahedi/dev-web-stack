@@ -107,6 +107,7 @@ const (
 
 	codeDatabaseNotFound        = "DATABASE_NOT_FOUND"
 	codeDatabaseConflict        = "DATABASE_CONFLICT"
+	codeConfirmationRequired    = "CONFIRMATION_REQUIRED"
 	codeDatabaseProtected       = "DATABASE_PROTECTED"
 	codeDatabaseUnsupported     = "DATABASE_UNSUPPORTED"
 	codeDatabaseInUse           = "DATABASE_IN_USE"
@@ -538,6 +539,7 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/services/{id}/users/{userID}/password", s.handleSetServiceUserPassword},
 		{http.MethodPost, "/api/v1/services/{id}/users/{userID}/reveal", s.handleRevealServiceUserPassword},
 		{http.MethodPost, "/api/v1/services/{id}/password", s.handleSetServiceDefaultPassword},
+		{http.MethodPost, "/api/v1/services/{id}/redis/acl-file", s.handleEnableRedisACLFile},
 		{http.MethodGet, "/api/v1/services/{id}/backups", s.handleListServiceBackups},
 		{http.MethodPost, "/api/v1/services/{id}/databases/{name}/backups", s.handleCreateServiceBackup},
 		{http.MethodDelete, "/api/v1/services/{id}/backups/{backupID}", s.handleDeleteServiceBackup},
@@ -1099,6 +1101,8 @@ func classifyError(err error) (int, string, string, any) {
 		return http.StatusConflict, codeDatabaseInUse, err.Error(), nil
 	case errors.Is(err, databases.ErrPasswordMissing):
 		return http.StatusConflict, codeDatabasePasswordMissing, err.Error(), nil
+	case errors.Is(err, databases.ErrConfirmationRequired):
+		return http.StatusConflict, codeConfirmationRequired, err.Error(), nil
 	case errors.Is(err, databases.ErrConflict):
 		return http.StatusConflict, codeDatabaseConflict, err.Error(), nil
 	case errors.Is(err, databases.ErrInvalidRequest):

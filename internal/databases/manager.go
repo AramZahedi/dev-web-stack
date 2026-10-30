@@ -769,6 +769,37 @@ func (m *Manager) SetUserPassword(ctx context.Context, serviceID, userID string)
 	return secret, nil
 }
 
+// redisACLFilePlatform is the optional platform extension that migrates Redis
+// to ACL-file persistence. confirm must be true after the user approves the
+// one-time restart.
+type redisACLFilePlatform interface {
+	EnableRedisACLFile(ctx context.Context, serviceID string, confirm bool) error
+}
+
+// EnableRedisACLFile migrates Redis to ACL-file persistence. The call is
+// idempotent; confirm must be true when the migration would change redis.conf
+// or restart Redis.
+func (m *Manager) EnableRedisACLFile(ctx context.Context, serviceID string, confirm bool) error {
+	serviceID = canonicalServiceID(serviceID)
+	if !isRedisService(serviceID) {
+		return fmt.Errorf("%w: service %q has no Redis ACL file", ErrUnsupported, serviceID)
+	}
+	if _, err := m.requireActive(ctx, serviceID); err != nil {
+		return err
+	}
+	platform, ok := m.deps.Platform.(redisACLFilePlatform)
+	if !ok {
+		return fmt.Errorf("%w: platform cannot migrate Redis ACL persistence", ErrUnsupported)
+	}
+	if err := platform.EnableRedisACLFile(ctx, serviceID, confirm); err != nil {
+		m.audit(ctx, "database.redis.acl_file_enabled", serviceID, "", "service", serviceID, "failed", map[string]any{"error": safeErrorMessage(err)})
+		return err
+	}
+	m.audit(ctx, "database.redis.acl_file_enabled", serviceID, "", "service", serviceID, "ok", nil)
+	m.emit(ctx, "", "database.redis.acl_file_enabled", fmt.Sprintf("Redis ACL-file persistence enabled for %s", serviceID))
+	return nil
+}
+
 // SetDefaultUserPassword resolves the Redis default ACL user by username and
 // rotates its password through the opaque user ID.
 func (m *Manager) SetDefaultUserPassword(ctx context.Context, serviceID string) (Secret, error) {

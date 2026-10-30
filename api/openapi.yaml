@@ -2634,6 +2634,14 @@ paths:
       responses:
         "200":
           description: OK
+  /api/v1/services/{id}/redis/acl-file:
+    post:
+      summary: Enable Redis ACL-file persistence
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Confirmation required
   /api/v1/jobs/{jobID}:
     get:
       summary: Get a database job

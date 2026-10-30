@@ -457,6 +457,21 @@ type fakePlatform struct {
 	restoreRelease   chan struct{}
 	importStarted    chan struct{}
 	importRelease    chan struct{}
+	aclService       string
+	aclConfirm       bool
+	aclErr           error
+}
+
+func (f *fakePlatform) EnableRedisACLFile(_ context.Context, serviceID string, confirm bool) error {
+	f.aclService = serviceID
+	f.aclConfirm = confirm
+	if f.aclErr != nil {
+		return f.aclErr
+	}
+	if !confirm {
+		return ErrConfirmationRequired
+	}
+	return nil
 }
 
 func (f *fakePlatform) ListDatabases(context.Context, string) ([]model.Database, error) {
@@ -2024,5 +2039,27 @@ func TestProvisionSiteDatabaseCreatesDefaultGrant(t *testing.T) {
 	}
 	if result.User.Username != "blog_user" {
 		t.Fatalf("user=%+v", result.User)
+	}
+}
+
+func TestManagerEnableRedisACLFileRequiresConfirmation(t *testing.T) {
+	m, _, platform, audit, events := testManagerWithFakes(t)
+	m.deps.Services.(*fakeServices).views[services.IDRedis] = services.View{
+		ID: services.IDRedis, State: services.StateActive, Active: true, Installed: true,
+	}
+	if err := m.EnableRedisACLFile(context.Background(), "redis", false); !errors.Is(err, ErrConfirmationRequired) {
+		t.Fatalf("unconfirmed err = %v, want ErrConfirmationRequired", err)
+	}
+	if platform.aclConfirm {
+		t.Fatal("unconfirmed request reached the platform as confirmed")
+	}
+	if err := m.EnableRedisACLFile(context.Background(), "redis", true); err != nil {
+		t.Fatal(err)
+	}
+	if platform.aclService != "redis" || !platform.aclConfirm {
+		t.Fatalf("platform call = %q confirm=%v", platform.aclService, platform.aclConfirm)
+	}
+	if len(audit.events) == 0 || len(events.events) == 0 {
+		t.Fatalf("audit=%+v events=%+v", audit.events, events.events)
 	}
 }

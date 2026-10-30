@@ -310,6 +310,31 @@ func (p *databasePlatform) SetUserPassword(ctx context.Context, serviceID, userI
 	return databases.Secret{Value: response.Value}, nil
 }
 
+// EnableRedisACLFile migrates Redis to ACL-file persistence. The helper client
+// exposes a confirmed RPC; the Windows agent migrates without a confirm flag,
+// so the daemon enforces the confirmation gate for both transports.
+func (p *databasePlatform) EnableRedisACLFile(ctx context.Context, serviceID string, confirm bool) error {
+	api, err := p.api(ctx)
+	if err != nil {
+		return err
+	}
+	if helper, ok := api.(interface {
+		EnableRedisACLFile(context.Context, string, bool) (helperproto.RedisACLFileResponse, error)
+	}); ok {
+		_, err := helper.EnableRedisACLFile(ctx, databasePlatformServiceID(serviceID), confirm)
+		return mapDatabasePlatformError(err)
+	}
+	if agent, ok := api.(interface {
+		EnableRedisACLFile(context.Context, string) error
+	}); ok {
+		if !confirm {
+			return databases.ErrConfirmationRequired
+		}
+		return mapDatabasePlatformError(agent.EnableRedisACLFile(ctx, databasePlatformServiceID(serviceID)))
+	}
+	return databases.ErrUnsupported
+}
+
 func (p *databasePlatform) RevealUserPassword(ctx context.Context, serviceID, userID string) (databases.Secret, error) {
 	api, err := p.api(ctx)
 	if err != nil {

@@ -36,6 +36,15 @@ type fakeDatabaseService struct {
 	canceledJob     string
 	deletedLinks    bool
 	deletedMetadata bool
+	aclService      string
+	aclConfirm      bool
+	aclErr          error
+}
+
+func (f *fakeDatabaseService) EnableRedisACLFile(_ context.Context, serviceID string, confirm bool) error {
+	f.aclService = serviceID
+	f.aclConfirm = confirm
+	return f.aclErr
 }
 
 func (f *fakeDatabaseService) ListDatabases(context.Context, string) ([]model.Database, error) {
@@ -479,5 +488,26 @@ func TestDatabaseServiceErrorDoesNotLeakSecret(t *testing.T) {
 	rec := fx.request(t, http.MethodGet, "/api/v1/services/mysql/databases", nil)
 	if strings.Contains(rec.Body.String(), "s3cret") {
 		t.Fatalf("response leaked secret: %s", rec.Body.String())
+	}
+}
+
+func TestEnableRedisACLFileRoute(t *testing.T) {
+	db := &fakeDatabaseService{}
+	fx := newFixture(t, Config{Databases: db})
+	rec := fx.request(t, http.MethodPost, "/api/v1/services/redis/redis/acl-file", strings.NewReader(`{"confirm":true}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if db.aclService != "redis" || !db.aclConfirm {
+		t.Fatalf("service=%q confirm=%v", db.aclService, db.aclConfirm)
+	}
+
+	db.aclErr = databases.ErrConfirmationRequired
+	rec = fx.request(t, http.MethodPost, "/api/v1/services/redis/redis/acl-file", strings.NewReader(`{"confirm":false}`))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "CONFIRMATION_REQUIRED") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if db.aclConfirm {
+		t.Fatal("unconfirmed request reached the service as confirmed")
 	}
 }

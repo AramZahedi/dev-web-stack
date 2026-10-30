@@ -105,6 +105,16 @@
     return isProtectedUsername(engine, user.username);
   }
 
+  function confirmationError(caught: unknown): DescribedError | null {
+    const described = describeError(caught);
+    if (described.code !== 'CONFIRMATION_REQUIRED') return null;
+    return {
+      ...described,
+      message:
+        'Redis ACL persistence is not enabled. Open the Redis tab, enable ACL persistence, then retry this action.',
+    };
+  }
+
   function promptRestart(label: string, sites: DatabaseSiteRef[] | undefined): void {
     if (!sites?.length) return;
     restartPrompt = { label, sites: [...sites] };
@@ -178,7 +188,7 @@
       formOpen = false;
       onRefresh();
     } catch (caught) {
-      formError = describeError(caught).message;
+      formError = confirmationError(caught)?.message ?? describeError(caught).message;
     } finally {
       formBusy = false;
     }
@@ -234,7 +244,7 @@
       promptRestart(`Password for ${user.username}`, user.linked_sites);
       onRefresh();
     } catch (caught) {
-      actionError = describeError(caught);
+      actionError = confirmationError(caught) ?? describeError(caught);
     } finally {
       secretBusy = null;
     }
@@ -273,7 +283,7 @@
       });
       onRefresh();
     } catch (caught) {
-      deleteError = describeError(caught);
+      deleteError = confirmationError(caught) ?? describeError(caught);
     } finally {
       deleting = false;
     }
