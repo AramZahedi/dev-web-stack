@@ -491,6 +491,27 @@ describe('BackupsTab', () => {
     expect([...select.options].map((option) => option.value)).toEqual(['app']);
   });
 
+  it('does not fall back to backups when the database inventory is empty', async () => {
+    render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: MYSQL_BACKUPS,
+        databases: [],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create backup' }));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).getByText(/no databases are available to back up/i)).toBeTruthy();
+    const select = within(dialog).getByLabelText('Database') as HTMLSelectElement;
+    expect(select.options.length).toBe(0);
+    expect(
+      (within(dialog).getByRole('button', { name: 'Create backup' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
   it('does not allow overwriting a protected database', async () => {
     const protectedBackup: DatabaseBackup = {
       ...MYSQL_BACKUPS[0],

@@ -89,23 +89,14 @@
   let recoveryJob = $state<DatabaseJob | null>(null);
   let jobTimer: ReturnType<typeof setInterval> | undefined;
 
-  const databaseOptions = $derived.by(() => {
-    if (databases.length > 0) {
-      return databases
-        .filter(
-          (database) =>
-            !database.missing && !isProtectedDatabase(database.engine, database.name),
-        )
-        .map((database) => database.name);
-    }
-    return [
-      ...new Set(
-        backups
-          .filter((backup) => !isProtectedDatabase(backup.engine, backup.database))
-          .map((backup) => backup.database),
-      ),
-    ];
-  });
+  const databaseOptions = $derived(
+    databases
+      .filter(
+        (database) =>
+          !database.missing && !isProtectedDatabase(database.engine, database.name),
+      )
+      .map((database) => database.name),
+  );
 
   const restoreProtected = $derived(
     restoreTarget ? isProtectedDatabase(restoreTarget.engine, restoreTarget.database) : false,
