@@ -950,7 +950,7 @@ describe('AddSite Wave 2 fields', () => {
   });
 
   it('reveals the new password only after creation', async () => {
-    mockDb.listSiteDatabases.mockResolvedValue({ links: [SITE_DB_LINK] });
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [BLOG_DB_LINK] });
     mockDb.revealServiceUserPassword.mockResolvedValue({ value: 'generated' });
     await openOptionsStep();
     await enableDatabase('blog', 'blog_user');
@@ -977,6 +977,20 @@ describe('AddSite Wave 2 fields', () => {
     );
     expect(await within(dialog).findByText('generated')).toBeTruthy();
     expect(mockDb.revealServiceUserPassword).toHaveBeenCalledWith('mysql', 'usr_app');
+  });
+
+  it('reports a missing created database instead of opening another link', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [OTHER_DB_LINK] });
+    await openOptionsStep();
+    await enableDatabase('blog', 'blog_user');
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+
+    await waitFor(() =>
+      expect(
+        get(toasts).some((toast) => toast.title === 'Could not load the created database'),
+      ).toBe(true),
+    );
+    expect(screen.queryByText('Database created')).toBeNull();
   });
 
   it('warns about an existing user without access and never adds a grant', async () => {

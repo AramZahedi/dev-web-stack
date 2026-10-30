@@ -839,6 +839,7 @@
       if (databaseRequest) {
         const request = databaseRequest;
         let link: SiteDatabaseLink | null = null;
+        let linkLoadError = '';
         try {
           const result = await db.listSiteDatabases(site.id);
           const requestedDatabase =
@@ -849,16 +850,9 @@
               (candidate) =>
                 candidate.service_id === request.service_id &&
                 candidate.database === requestedDatabase,
-            ) ??
-            candidates[0] ??
-            null;
+            ) ?? null;
         } catch (caught) {
-          const described = describeError(caught);
-          addToast({
-            kind: 'info',
-            title: 'Database link not loaded',
-            message: described.message,
-          });
+          linkLoadError = describeError(caught).message;
         }
         if (link) {
           createdSite = site;
@@ -871,8 +865,9 @@
         }
         addToast({
           kind: 'info',
-          title: 'Database created',
+          title: 'Could not load the created database',
           message:
+            linkLoadError ||
             'The site was created, but its database link could not be loaded. Open the site to check the Databases card.',
         });
       }
