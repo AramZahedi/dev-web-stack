@@ -319,7 +319,10 @@ func (d *Docker) DeleteUser(ctx context.Context, serviceID, userID string, req d
 	if _, err := d.runDatabaseSQL(ctx, serviceID, command, []byte(statement)); err != nil {
 		return err
 	}
-	return d.deleteDatabaseSecret(serviceID, userID)
+	if err := d.deleteDatabaseSecret(serviceID, userID); err != nil {
+		return fmt.Errorf("agentdocker: user deleted but its secret could not be removed: %w", err)
+	}
+	return nil
 }
 
 func (d *Docker) SetUserPassword(ctx context.Context, serviceID, userID string) (databases.Secret, error) {

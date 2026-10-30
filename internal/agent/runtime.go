@@ -604,13 +604,24 @@ func (r *Runtime) readAgentDatabaseSecret(serviceID, userID string) (string, err
 	serviceRoot := filepath.Join(servicesRoot, serviceID)
 	secretsDir := filepath.Join(serviceRoot, "secrets")
 	dir := filepath.Join(secretsDir, "database-users")
-	for _, candidate := range []string{servicesRoot, serviceRoot, secretsDir, dir} {
-		info, err := os.Lstat(candidate)
+	for _, entry := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{servicesRoot, 0},
+		{serviceRoot, 0},
+		{secretsDir, 0o700},
+		{dir, 0o700},
+	} {
+		info, err := os.Lstat(entry.path)
 		if err != nil {
 			return "", err
 		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return "", errors.New("agent: unsafe database secret directory")
+		}
+		if entry.mode != 0 && runtime.GOOS != "windows" && info.Mode().Perm() != entry.mode {
+			return "", fmt.Errorf("agent: database secret directory %s has mode %04o", entry.path, info.Mode().Perm())
 		}
 	}
 	path := filepath.Join(dir, userID)

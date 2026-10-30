@@ -1372,3 +1372,31 @@ func TestPreparePHPStripsReservedDatabaseEnv(t *testing.T) {
 		t.Fatalf("non-reserved env was lost:\n%s", data)
 	}
 }
+
+func TestPrepareSiteRejectsInsecureSecretDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory modes are not meaningful on Windows")
+	}
+	rt, root, spec := newStaticTestRuntime(t)
+	secrets := filepath.Join(root, "services", "mysql", "secrets")
+	dir := filepath.Join(secrets, "database-users")
+	if err := os.MkdirAll(secrets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "usr_app"), []byte("s3cret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec.DatabaseLinks = []agentproto.DatabaseLinkSpec{{
+		ServiceID: "mysql", Engine: "mysql", Database: "app", UserID: "usr_app",
+		Username: "app", Primary: true, PasswordManaged: true,
+	}}
+	if _, err := rt.PrepareSite(context.Background(), spec); err == nil {
+		t.Fatal("PrepareSite accepted a world-readable secret directory")
+	}
+}
