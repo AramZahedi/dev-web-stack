@@ -304,10 +304,12 @@ type BuildResponse struct {
 	Stderr   string `json:"stderr"`
 }
 
-// TerminalTicketRequest asks for a one-time terminal ticket.
+// TerminalTicketRequest asks for a one-time terminal ticket. NodeVersion, when
+// set, is the exact daemon-resolved Node build the terminal session must use.
 type TerminalTicketRequest struct {
-	Cols int `json:"cols,omitempty"`
-	Rows int `json:"rows,omitempty"`
+	Cols        int    `json:"cols,omitempty"`
+	Rows        int    `json:"rows,omitempty"`
+	NodeVersion string `json:"node_version,omitempty"`
 }
 
 // TerminalTicketResponse is the WebSocket endpoint and one-time ticket.

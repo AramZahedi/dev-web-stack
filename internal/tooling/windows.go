@@ -18,8 +18,9 @@ import (
 )
 
 var (
-	wslDistroPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
-	envNamePattern   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	wslDistroPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	envNamePattern          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	nodeExactVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 )
 
 // EnsureWindowsToolShims creates the managed Windows command wrappers for
@@ -156,9 +157,27 @@ func ReadWSLDistro(home string) (string, error) {
 	return distro, nil
 }
 
-// WindowsSiteEnvironment builds the small, Linux-native environment that the
-// Windows CLI passes into WSL. Runtime-specific setup remains agent-owned.
+// WindowsSiteEnvironmentForNode builds the small, Linux-native environment
+// that the Windows CLI passes into WSL for the daemon-resolved exact Node
+// build. A raw version line such as "22" is ignored rather than converted into
+// a node@22 runtime path that does not exist. build.node_version is never
+// consulted because it selects the build profile, not the shell toolchain.
+func WindowsSiteEnvironmentForNode(site model.Site, nodeVersion string) map[string]string {
+	return windowsSiteEnvironment(site, exactNodeVersion(nodeVersion))
+}
+
+// WindowsSiteEnvironment is the legacy wrapper for callers not yet wired to
+// the daemon resolver. It keeps preferring the site pin, then the build
+// profile, so existing callers continue to resolve a Node runtime.
 func WindowsSiteEnvironment(site model.Site) map[string]string {
+	nodeVersion := strings.TrimPrefix(strings.TrimSpace(site.NodeVersion), "node@")
+	if nodeVersion == "" && site.Build != nil {
+		nodeVersion = strings.TrimPrefix(strings.TrimSpace(site.Build.NodeVersion), "node@")
+	}
+	return windowsSiteEnvironment(site, nodeVersion)
+}
+
+func windowsSiteEnvironment(site model.Site, nodeVersion string) map[string]string {
 	values := make(map[string]string, len(site.Env)+6)
 	for key, value := range site.Env {
 		values[key] = value
@@ -174,10 +193,6 @@ func WindowsSiteEnvironment(site model.Site) map[string]string {
 	if site.PHPBuild != "" {
 		pathDirs = append(pathDirs, "/data/devstack/runtimes/"+site.PHPBuild+"/bin")
 	}
-	nodeVersion := strings.TrimPrefix(strings.TrimSpace(site.NodeVersion), "node@")
-	if nodeVersion == "" && site.Build != nil {
-		nodeVersion = strings.TrimPrefix(strings.TrimSpace(site.Build.NodeVersion), "node@")
-	}
 	if nodeVersion != "" {
 		pathDirs = append(pathDirs, "/data/devstack/runtimes/node@"+nodeVersion+"/bin")
 	}
@@ -187,10 +202,21 @@ func WindowsSiteEnvironment(site model.Site) map[string]string {
 	if site.PHPBuild != "" {
 		values["DEVSTACK_PHP_BUILD"] = site.PHPBuild
 	}
-	if site.NodeVersion != "" {
-		values["DEVSTACK_NODE_VERSION"] = site.NodeVersion
+	if nodeVersion != "" {
+		values["DEVSTACK_NODE_VERSION"] = nodeVersion
 	}
 	return values
+}
+
+// exactNodeVersion returns major.minor.patch or an empty string. The resolver
+// is the only component allowed to turn a version line into a build, so this
+// function refuses anything else instead of guessing.
+func exactNodeVersion(version string) string {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "node@")
+	if !nodeExactVersionPattern.MatchString(version) {
+		return ""
+	}
+	return version
 }
 
 // BuildWSLExecArgs returns arguments for wsl.exe to launch a command in the
