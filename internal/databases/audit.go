@@ -244,7 +244,7 @@ func recordToJob(rec model.DatabaseJobRecord) model.DatabaseJob {
 		Kind:      model.DatabaseJobKind(rec.Kind),
 		Status:    model.DatabaseJobStatus(rec.Status),
 		Progress:  rec.Progress,
-		Message:   rec.Message,
+		Message:   RedactString(rec.Message),
 		BackupID:  rec.BackupID,
 		CreatedAt: time.Unix(rec.CreatedAt, 0).UTC(),
 		UpdatedAt: time.Unix(rec.UpdatedAt, 0).UTC(),
@@ -283,7 +283,7 @@ func backupFromView(backup model.DatabaseBackup) model.DatabaseBackupRecord {
 		Kind:         string(backup.Kind),
 		Status:       string(backup.Status),
 		CreatedAt:    createdAt,
-		Error:        backup.Error,
+		Error:        RedactString(backup.Error),
 	}
 }
 
@@ -299,7 +299,7 @@ func backupToView(rec model.DatabaseBackupRecord) model.DatabaseBackup {
 		Kind:      model.DatabaseBackupKind(rec.Kind),
 		Status:    model.DatabaseBackupStatus(rec.Status),
 		CreatedAt: time.Unix(rec.CreatedAt, 0).UTC(),
-		Error:     rec.Error,
+		Error:     RedactString(rec.Error),
 	}
 }
 

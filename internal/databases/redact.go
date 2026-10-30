@@ -9,8 +9,8 @@ import (
 // strings commonly put in error messages. The manager redacts at its boundary
 // so no secret reaches audit rows, job rows, events, or API responses.
 var redactionPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\b(password|passwd|pwd|secret|token)\s*=\s*[^\s;&"']+`),
-	regexp.MustCompile(`(?i)\b(pgpassword|mysql_pwd)\s*=\s*[^\s;&"']+`),
+	// PASSWORD=..., DB_PASSWORD=..., APP_SECRET: ..., PGPASSWORD=...
+	regexp.MustCompile(`(?i)\b[A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|SECRET|TOKEN)[A-Z0-9_]*\s*[=:]\s*[^\s;&"',}]+`),
 	regexp.MustCompile(`(?i)\b(mysql|mariadb|postgres|postgresql|redis)://[^@\s/]+@`),
 	regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@`),
 }

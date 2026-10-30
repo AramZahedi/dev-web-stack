@@ -803,6 +803,7 @@ func (m *Manager) ListBackups(ctx context.Context, serviceID string) ([]model.Da
 		if backups[i].Engine == "" {
 			backups[i].Engine = engineForService(serviceID)
 		}
+		backups[i].Error = RedactString(backups[i].Error)
 		record := backupFromView(backups[i])
 		existing, err := m.deps.Store.GetDatabaseBackup(ctx, record.ID)
 		switch {

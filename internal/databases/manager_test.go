@@ -945,6 +945,32 @@ func TestManagerRedactsSecretsFromAuditAndJobs(t *testing.T) {
 	}
 }
 
+func TestBackupAndJobViewsRedactStoredErrors(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	platform.backups = []model.DatabaseBackup{{
+		ID: "bkp_1", ServiceID: "mysql", Database: "app",
+		Status: model.BackupFailed, Error: "DB_PASSWORD=s3cret",
+	}}
+	backups, err := m.ListBackups(context.Background(), "mysql")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("backups=%+v err=%v", backups, err)
+	}
+	if strings.Contains(backups[0].Error, "s3cret") {
+		t.Fatalf("backup leaked secret: %+v", backups[0])
+	}
+	st.jobs = []model.DatabaseJobRecord{{
+		ID: "job_1", ServiceID: "mysql", DatabaseName: "app",
+		Status: string(model.JobFailed), Message: "password: s3cret",
+	}}
+	job, err := m.GetJob(context.Background(), "job_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(job.Message, "s3cret") {
+		t.Fatalf("job leaked secret: %+v", job)
+	}
+}
+
 func TestListUsersUsesLiveGrantsAndPasswordState(t *testing.T) {
 	m, st, platform, _, _ := testManagerWithFakes(t)
 	st.users = []model.DatabaseUserRecord{{
