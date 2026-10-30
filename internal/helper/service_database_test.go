@@ -1299,14 +1299,23 @@ func TestHelperGrantDiffSkipsWildcardScopes(t *testing.T) {
 }
 
 func TestHelperGrantDiffRejectsDesiredGlobalScope(t *testing.T) {
-	c, _ := databaseHelperFixture(t)
-	engine := &fakeDatabaseEngine{id: model.DatabaseMySQL}
-	user := model.DatabaseUser{Username: "app", Host: "%"}
-	err := c.applyUserGrants(context.Background(), "mysql", engine, user, []model.DatabaseGrant{
-		{Database: "*", Preset: model.GrantReadWrite},
-	})
-	if !errors.Is(err, databases.ErrInvalidRequest) {
-		t.Fatalf("err=%v", err)
+	for _, scope := range []string{"*", "%", "*.*", "app%"} {
+		t.Run(scope, func(t *testing.T) {
+			c, _ := databaseHelperFixture(t)
+			runner := c.runner.(*fakeCommandRunner)
+			runner.reset()
+			engine := &fakeDatabaseEngine{id: model.DatabaseMySQL}
+			user := model.DatabaseUser{Username: "app", Host: "%"}
+			err := c.applyUserGrants(context.Background(), "mysql", engine, user, []model.DatabaseGrant{
+				{Database: scope, Preset: model.GrantReadWrite},
+			})
+			if !errors.Is(err, databases.ErrInvalidRequest) {
+				t.Fatalf("err=%v", err)
+			}
+			if runner.stdinContains("GRANT") || runner.stdinContains("REVOKE") {
+				t.Fatalf("scope %q reached SQL: %q", scope, runner.stdin)
+			}
+		})
 	}
 }
 
