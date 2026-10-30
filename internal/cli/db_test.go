@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
-
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
@@ -153,14 +151,6 @@ func TestDBUserPasswordRevealWarnsAndPrintsSecret(t *testing.T) {
 	}
 	if !fake.databaseUserRevealed {
 		t.Fatal("reveal API not called")
-	}
-}
-
-func TestReadPasswordLineRejectsOversizedInput(t *testing.T) {
-	cmd := &cobra.Command{}
-	cmd.SetIn(strings.NewReader(strings.Repeat("x", maxPasswordLineBytes+1) + "\n"))
-	if _, err := readPasswordLine(cmd); err == nil {
-		t.Fatal("oversized password input was accepted")
 	}
 }
 

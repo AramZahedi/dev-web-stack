@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -1090,21 +1089,6 @@ func (a *App) writeDownload(cmd *cobra.Command, output string, body io.Reader) (
 		return written, err
 	}
 	return written, nil
-}
-
-const maxPasswordLineBytes = 4096
-
-func readPasswordLine(cmd *cobra.Command) (string, error) {
-	reader := bufio.NewReader(io.LimitReader(cmd.InOrStdin(), maxPasswordLineBytes+1))
-	line, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	line = strings.TrimRight(line, "\r\n")
-	if len(line) > maxPasswordLineBytes {
-		return "", &Error{Code: "INVALID_ARGUMENT", Message: "password input is too long", Remediation: "Use a password shorter than 4096 bytes."}
-	}
-	return line, nil
 }
 
 func resolveDatabaseUserID(ctx context.Context, c Client, serviceID, username, userID string) (string, error) {
