@@ -1,3 +1,5 @@
+import type { CreateSiteDatabaseRequest } from './databaseTypes';
+
 export type SiteKind = 'static' | 'php' | 'node';
 export type SourceMode = 'local' | 'windows' | 'wsl';
 export type BackendKind = 'local' | 'wsl';
@@ -188,6 +190,7 @@ export interface CreateSiteRequest {
   apache_allow_override?: ApacheAllowOverride;
   spa_fallback_file?: string;
   build?: BuildProfile;
+  database?: CreateSiteDatabaseRequest;
 }
 
 export interface UpdateSiteRequest {

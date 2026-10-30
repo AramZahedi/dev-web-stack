@@ -188,7 +188,7 @@ export async function authenticateFromFragment(): Promise<boolean> {
   return true;
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? 'GET';
   const mutation = options.mutation ?? method !== 'GET';
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -247,7 +247,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return (await response.json()) as T;
 }
 
-function sitePath(ref: string): string {
+export function sitePath(ref: string): string {
   return `/sites/${encodeURIComponent(ref)}`;
 }
 
@@ -420,7 +420,7 @@ export async function getService(id: string): Promise<ServiceView> {
   return normalizeService(await request<ServiceView>(`/services/${encodeURIComponent(id)}`));
 }
 
-function servicePath(id: string): string {
+export function servicePath(id: string): string {
   return `/services/${encodeURIComponent(id)}`;
 }
 
