@@ -192,6 +192,7 @@ type fakeDatabaseEngine struct {
 	userHost     string
 	userHostSet  bool
 	grantErr     error
+	listUsersErr error
 }
 
 func (e *fakeDatabaseEngine) ID() model.DatabaseEngine { return e.id }
@@ -269,6 +270,9 @@ func (e *fakeDatabaseEngine) RenameDatabaseSQL(name, newName string) (string, er
 }
 
 func (e *fakeDatabaseEngine) ListUsersCommand() ([]string, error) {
+	if e.listUsersErr != nil {
+		return nil, e.listUsersErr
+	}
 	return []string{"list-users"}, nil
 }
 
@@ -1302,6 +1306,16 @@ func TestHelperGrantDiffRejectsDesiredGlobalScope(t *testing.T) {
 		{Database: "*", Preset: model.GrantReadWrite},
 	})
 	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestHelperListUsersEngineErrorIsDomainError(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	engine := &fakeDatabaseEngine{id: model.DatabaseMySQL, listUsersErr: dbengine.ErrUnsupported}
+	c.databaseRegistry = fakeRegistry{engines: map[model.DatabaseEngine]dbengine.Engine{model.DatabaseMySQL: engine}}
+	_, err := c.ListUsers(context.Background(), "mysql")
+	if !errors.Is(err, databases.ErrUnsupported) {
 		t.Fatalf("err=%v", err)
 	}
 }

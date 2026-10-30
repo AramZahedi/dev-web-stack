@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"sort"
 	"strings"
@@ -247,7 +248,7 @@ func (c *DockerServiceController) ListUsers(ctx context.Context, serviceID strin
 	}
 	command, err := engine.ListUsersCommand()
 	if err != nil {
-		return nil, err
+		return nil, engineError(err)
 	}
 	out, err := c.runEngineCommand(ctx, serviceID, command)
 	if err != nil {
@@ -255,7 +256,7 @@ func (c *DockerServiceController) ListUsers(ctx context.Context, serviceID strin
 	}
 	users, err := engine.ParseUsers(out)
 	if err != nil {
-		return nil, err
+		return nil, engineError(err)
 	}
 	if users == nil {
 		users = []model.DatabaseUser{}
@@ -276,13 +277,17 @@ func (c *DockerServiceController) ListUsers(ctx context.Context, serviceID strin
 			users[i].Managed = true
 		}
 		// Grants are a best-effort enrichment; a failure for one system user
-		// must not make the whole inventory unavailable.
-		if command, grantErr := engine.ListGrantsCommand(users[i].Username, users[i].Host); grantErr == nil {
-			if grantOut, runErr := c.runEngineCommand(ctx, serviceID, command); runErr == nil {
-				if grants, parseErr := engine.ParseGrants(grantOut); parseErr == nil {
-					users[i].Grants = grants
-				}
-			}
+		// must not make the whole inventory unavailable. Log it so a broken
+		// parser is visible instead of silently returning empty grants.
+		command, grantErr := engine.ListGrantsCommand(users[i].Username, users[i].Host)
+		if grantErr != nil {
+			slog.Default().Debug("database grant listing command failed", "service", serviceID, "user", users[i].Username, "error", grantErr)
+		} else if grantOut, runErr := c.runEngineCommand(ctx, serviceID, command); runErr != nil {
+			slog.Default().Debug("database grant listing failed", "service", serviceID, "user", users[i].Username, "error", runErr)
+		} else if grants, parseErr := engine.ParseGrants(grantOut); parseErr != nil {
+			slog.Default().Debug("database grant parsing failed", "service", serviceID, "user", users[i].Username, "error", parseErr)
+		} else {
+			users[i].Grants = grants
 		}
 	}
 	return users, nil
@@ -648,13 +653,17 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 func (c *DockerServiceController) userGrants(ctx context.Context, serviceID string, engine dbengine.Engine, user model.DatabaseUser) ([]model.DatabaseGrant, error) {
 	command, err := engine.ListGrantsCommand(user.Username, user.Host)
 	if err != nil {
-		return nil, err
+		return nil, engineError(err)
 	}
 	out, err := c.runEngineCommand(ctx, serviceID, command)
 	if err != nil {
 		return nil, err
 	}
-	return engine.ParseGrants(out)
+	grants, err := engine.ParseGrants(out)
+	if err != nil {
+		return nil, engineError(err)
+	}
+	return grants, nil
 }
 
 // isGlobalGrantScope reports whether a grant scope is not a single database.

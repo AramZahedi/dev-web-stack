@@ -242,7 +242,7 @@ func (c *DockerServiceController) CreateBackup(ctx context.Context, serviceID, d
 	}
 	command, err := engine.DumpCommand(database)
 	if err != nil {
-		return model.DatabaseJob{}, err
+		return model.DatabaseJob{}, engineError(err)
 	}
 	lock := c.databaseLock(serviceID)
 	lock.Lock()
@@ -427,7 +427,7 @@ func (c *DockerServiceController) RestoreBackup(ctx context.Context, serviceID, 
 	defer func() { _ = reader.Close() }()
 	command, err := engine.RestoreCommand(target)
 	if err != nil {
-		return model.DatabaseJob{}, err
+		return model.DatabaseJob{}, engineError(err)
 	}
 	preBackupID := ""
 	if req.Overwrite && exists {
@@ -563,7 +563,7 @@ func (c *DockerServiceController) ImportDatabase(ctx context.Context, serviceID,
 	}
 	command, err := engine.RestoreCommand(database)
 	if err != nil {
-		return model.DatabaseJob{}, err
+		return model.DatabaseJob{}, engineError(err)
 	}
 	preBackupID := ""
 	if mode == databases.ImportReplace || req.PreImportBackup {
@@ -618,7 +618,7 @@ func (c *DockerServiceController) ExportDatabase(ctx context.Context, serviceID,
 	}
 	command, err := engine.DumpCommand(database)
 	if err != nil {
-		return nil, err
+		return nil, engineError(err)
 	}
 	return c.runEngineStream(ctx, serviceID, command)
 }
@@ -639,7 +639,7 @@ func (c *DockerServiceController) databaseExists(ctx context.Context, serviceID,
 func (c *DockerServiceController) createDatabaseDirect(ctx context.Context, serviceID string, engine dbengine.Engine, database string) error {
 	sql, err := engine.CreateDatabaseSQL(database, "", "")
 	if err != nil {
-		return err
+		return engineError(err)
 	}
 	_, err = c.runDatabaseSQL(ctx, serviceID, sql)
 	return err
@@ -651,7 +651,7 @@ func (c *DockerServiceController) dropDatabaseDirect(ctx context.Context, servic
 	}
 	sql, err := engine.DropDatabaseSQL(database)
 	if err != nil {
-		return err
+		return engineError(err)
 	}
 	_, err = c.runDatabaseSQL(ctx, serviceID, sql)
 	return err
