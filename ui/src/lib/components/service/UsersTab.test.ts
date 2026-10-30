@@ -542,6 +542,9 @@ describe('UsersTab', () => {
 
     await fireEvent.click(screen.getByRole('button', { name: /reset password for app/i }));
 
+    expect(
+      await screen.findByText(/does not make another audited api call/i),
+    ).toBeTruthy();
     expect(await screen.findByText(/restart linked sites to apply/i)).toBeTruthy();
     await fireEvent.click(screen.getByRole('button', { name: /restart site blog/i }));
     await waitFor(() => expect(api.restartSite).toHaveBeenCalledWith('site_blog'));

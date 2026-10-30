@@ -678,6 +678,10 @@
       }}
       oncopy={copyDialogSecret}
     />
+    <p class="secret-note">
+      This is the password returned by the reset. Revealing it again only shows this value; it
+      does not make another audited API call.
+    </p>
   {/if}
 
   {#snippet footer()}
@@ -809,6 +813,13 @@
 
   .muted {
     color: var(--muted-2);
+  }
+
+  .secret-note {
+    margin: 8px 0 0;
+    color: var(--muted-2);
+    font-size: 11px;
+    line-height: 1.45;
   }
 
   .site-links {
