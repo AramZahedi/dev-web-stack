@@ -57,6 +57,7 @@
   );
 
   function submit(): void {
+    if (disabled) return;
     if (!renameConfirmed) {
       validation = 'Type the current database name to confirm the rename.';
       return;

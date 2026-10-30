@@ -304,6 +304,12 @@ describe('DatabaseTab', () => {
     }) as HTMLButtonElement;
     expect(rename.disabled).toBe(true);
 
+    await fireEvent.keyDown(
+      within(dialog).getByLabelText(/type the current name to confirm/i),
+      { key: 'Enter' },
+    );
+    expect(db.renameServiceDatabase).not.toHaveBeenCalled();
+
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Stop site blog' }));
     await waitFor(() => expect(api.stopSite).toHaveBeenCalledWith('site_blog'));
     await waitFor(() => expect(rename.disabled).toBe(false));

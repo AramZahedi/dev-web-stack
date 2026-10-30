@@ -183,6 +183,7 @@
   async function submitRename(name: string): Promise<void> {
     const target = renameTarget;
     if (!target || formBusy || isProtectedDatabase(engine, target.name)) return;
+    if (!sitesReady(target.linked_sites)) return;
     formBusy = true;
     formError = '';
     try {
