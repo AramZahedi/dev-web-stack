@@ -4,12 +4,13 @@
   import { describeError } from '../../errors';
   import { addToast, toastError } from '../../stores';
   import type { Site } from '../../types';
-  import type { SiteDatabaseLink } from '../../databaseTypes';
   import {
+    listServiceUsers,
     revealServiceUserPassword,
     setServiceUserPassword,
     unlinkSiteDatabase,
   } from '../../databaseApi';
+  import type { DatabaseUser, SiteDatabaseLink } from '../../databaseTypes';
   import Badge from '../Badge.svelte';
   import Button from '../Button.svelte';
   import Card from '../Card.svelte';
@@ -42,9 +43,12 @@
   let secrets = $state<Record<string, string>>({});
   let revealLoading = $state<Record<string, boolean>>({});
   let revealError = $state<Record<string, string>>({});
-  let settingPassword = $state<Record<string, boolean>>({});
+  let resettingPassword = $state<Record<string, boolean>>({});
   let managedOverrides = $state<Record<string, boolean>>({});
+  let sharedUsers = $state<Record<string, boolean>>({});
+  let managedUsers = $state<Record<string, boolean>>({});
   let restartNeeded = $state(false);
+  let userGeneration = 0;
 
   const userCounts = $derived.by(() => {
     const counts: Record<string, number> = {};
@@ -52,6 +56,53 @@
       counts[link.user_id] = (counts[link.user_id] ?? 0) + 1;
     }
     return counts;
+  });
+
+  function userKey(link: SiteDatabaseLink): string {
+    return `${link.service_id}:${link.user_id}`;
+  }
+
+  function isSharedUser(link: SiteDatabaseLink): boolean {
+    return sharedUsers[userKey(link)] ?? ((userCounts[link.user_id] ?? 0) > 1);
+  }
+
+  function isManagedUser(link: SiteDatabaseLink): boolean {
+    return managedUsers[userKey(link)] === true;
+  }
+
+  $effect(() => {
+    const serviceIDs = [...new Set(links.map((link) => link.service_id))];
+    const generation = ++userGeneration;
+    if (serviceIDs.length === 0) {
+      sharedUsers = {};
+      managedUsers = {};
+      return;
+    }
+    void Promise.all(
+      serviceIDs.map(async (serviceID) => {
+        try {
+          const result = await listServiceUsers(serviceID);
+          return { serviceID, users: result?.users ?? [] };
+        } catch {
+          return { serviceID, users: [] as DatabaseUser[] };
+        }
+      }),
+    ).then((results) => {
+      if (generation !== userGeneration) return;
+      const nextShared: Record<string, boolean> = {};
+      const nextManaged: Record<string, boolean> = {};
+      for (const { serviceID, users } of results) {
+        for (const user of users) {
+          const key = `${serviceID}:${user.id}`;
+          nextManaged[key] = user.managed;
+          if (Array.isArray(user.linked_sites)) {
+            nextShared[key] = user.linked_sites.length > 1;
+          }
+        }
+      }
+      sharedUsers = nextShared;
+      managedUsers = nextManaged;
+    });
   });
 
   let lastSiteID = '';
@@ -123,9 +174,9 @@
     secrets = next;
   }
 
-  async function setPassword(link: SiteDatabaseLink): Promise<void> {
-    if (settingPassword[link.id]) return;
-    settingPassword = { ...settingPassword, [link.id]: true };
+  async function resetPassword(link: SiteDatabaseLink): Promise<void> {
+    if (resettingPassword[link.id]) return;
+    resettingPassword = { ...resettingPassword, [link.id]: true };
     try {
       const secret = await setServiceUserPassword(link.service_id, link.user_id);
       secrets = { ...secrets, [link.id]: secret.value };
@@ -133,14 +184,14 @@
       restartNeeded = true;
       addToast({
         kind: 'success',
-        title: 'Database password set',
+        title: 'Database password reset',
         message: 'Restart the site to apply the new password.',
       });
       onRefresh();
     } catch (caught) {
-      toastError('Could not set the database password', describeError(caught).message);
+      toastError('Could not reset the database password', describeError(caught).message);
     } finally {
-      settingPassword = { ...settingPassword, [link.id]: false };
+      resettingPassword = { ...resettingPassword, [link.id]: false };
     }
   }
 
@@ -214,7 +265,7 @@
           <div class="db-head">
             <div class="badges">
               {#if link.primary}<Badge variant="accent">Primary</Badge>{/if}
-              {#if (userCounts[link.user_id] ?? 0) > 1}
+              {#if isSharedUser(link)}
                 <Badge variant="neutral">shared user</Badge>
               {/if}
               {#if !link.available}<Badge variant="warning">Offline</Badge>{/if}
@@ -309,15 +360,21 @@
                 onhide={() => hide(link)}
                 oncopy={() => copy('password', secrets[link.id] ?? '', true)}
               />
+              {#if isManagedUser(link)}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={resettingPassword[link.id]}
+                  onclick={() => resetPassword(link)}
+                >
+                  Reset password
+                </Button>
+              {/if}
             {:else}
-              <Button
-                size="sm"
-                variant="secondary"
-                loading={settingPassword[link.id]}
-                onclick={() => setPassword(link)}
-              >
-                Set password
-              </Button>
+              <p class="password-hint">
+                External password entry is not available in v1. Set the password in the engine,
+                then restart the site.
+              </p>
             {/if}
           </div>
         </article>
@@ -427,6 +484,13 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 10px;
+  }
+
+  .password-hint {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.5;
   }
 
   .offline,

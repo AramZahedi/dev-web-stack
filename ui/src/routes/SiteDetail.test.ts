@@ -769,17 +769,71 @@ describe('SiteDetail configuration and builds', () => {
     mockDb.listSiteDatabases.mockResolvedValue({ links: [METADATA_ONLY_LINK] });
     await renderSite('blog');
     expect(await screen.findByText('Password not managed')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /set password/i })).toBeTruthy();
+    expect(
+      screen.getByText(/external password entry is not available in v1/i),
+    ).toBeTruthy();
   });
 
-  it('sets a password for a metadata-only link and asks for a restart', async () => {
+  it('does not offer external password entry for a metadata-only link', async () => {
     mockDb.listSiteDatabases.mockResolvedValue({ links: [METADATA_ONLY_LINK] });
-    mockDb.setServiceUserPassword.mockResolvedValue({ value: 'newpass' });
     await renderSite('blog');
-    await fireEvent.click(await screen.findByRole('button', { name: /set password/i }));
-    expect(await screen.findByText('newpass')).toBeTruthy();
+    expect(await screen.findByText('Password not managed')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /set password/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /reset password/i })).toBeNull();
+    expect(
+      screen.getByText(/external password entry is not available in v1/i),
+    ).toBeTruthy();
+  });
+
+  it('resets a devstack-managed password and asks for a restart', async () => {
+    mockDb.setServiceUserPassword.mockResolvedValue({ value: 'rotated' });
+    await renderSite('blog');
+    await fireEvent.click(await screen.findByRole('button', { name: /reset password/i }));
+    expect(await screen.findByText('rotated')).toBeTruthy();
     expect(await screen.findByText(/restart site to apply/i)).toBeTruthy();
-    expect(mockDb.setServiceUserPassword).toHaveBeenCalledWith('mysql', 'usr_ext');
+    expect(mockDb.setServiceUserPassword).toHaveBeenCalledWith('mysql', 'usr_app');
+  });
+
+  it('does not offer reset for an external user with a stored password', async () => {
+    mockDb.listServiceUsers.mockResolvedValue({
+      users: [{ ...APP_USER, managed: false }],
+    });
+    await renderSite('blog');
+    expect(
+      await screen.findByRole('button', { name: /reveal password for app/i }),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /reset password/i })).toBeNull();
+  });
+
+  it('labels a user shared across sites from linked_sites', async () => {
+    mockDb.listServiceUsers.mockResolvedValue({
+      users: [
+        {
+          ...APP_USER,
+          linked_sites: [
+            { id: 's_blog', name: 'blog' },
+            { id: 's_other', name: 'other' },
+          ],
+        },
+      ],
+    });
+    await renderSite('blog');
+    expect(await screen.findByText('shared user')).toBeTruthy();
+    expect(mockDb.listServiceUsers).toHaveBeenCalledWith('mysql');
+  });
+
+  it('falls back to duplicate link inference when linked_sites is absent', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({
+      links: [
+        SITE_DB_LINK,
+        { ...SITE_DB_LINK, id: 'lnk_2', database: 'blog' },
+      ],
+    });
+    mockDb.listServiceUsers.mockResolvedValue({
+      users: [{ ...APP_USER, linked_sites: undefined }],
+    });
+    await renderSite('blog');
+    expect(await screen.findAllByText('shared user')).toHaveLength(2);
   });
 
   it('says linked databases remain when deleting the site', async () => {
