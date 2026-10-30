@@ -22,6 +22,28 @@ func TestLoadCreatesDefaults(t *testing.T) {
 	}
 }
 
+func TestDashboardAuthDefaultsOffAndRoundTrips(t *testing.T) {
+	home := t.TempDir()
+	cfg, err := Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DashboardAuth {
+		t.Fatal("DashboardAuth = true, want false")
+	}
+	cfg.DashboardAuth = true
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.DashboardAuth {
+		t.Fatal("DashboardAuth = false after round-trip")
+	}
+}
+
 func TestValidateRejectsDuplicatePorts(t *testing.T) {
 	cfg := Default()
 	cfg.HTTPSPort = cfg.HTTPPort

@@ -75,6 +75,7 @@ type Config struct {
 	WSLDistro       string `yaml:"wsl_distro"`
 	ProjectsRoot    string `yaml:"projects_root"`
 	AutoStartSites  bool   `yaml:"auto_start_sites"`
+	DashboardAuth   bool   `yaml:"dashboard_auth"`
 	ServingMode     string `yaml:"serving_mode"`
 	ServingProvider string `yaml:"serving_provider"`
 
@@ -94,6 +95,7 @@ func Default() Config {
 		AgentPort:           7443,
 		WSLDistro:           "devstack",
 		AutoStartSites:      true,
+		DashboardAuth:       false,
 		ServingMode:         ServingModeBuiltin,
 		ServingProvider:     ServingProviderNative,
 		GracefulStopSeconds: 10,
