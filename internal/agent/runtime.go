@@ -539,7 +539,7 @@ func (r *Runtime) resolveDatabaseEnv(spec agentproto.SiteSpec) (map[string]strin
 			}
 			prefix = "DB_" + slug + "_"
 		}
-		env[prefix+"CONNECTION"] = engine
+		env[prefix+"CONNECTION"] = agentConnectionName(engine)
 		env[prefix+"HOST"] = "127.0.0.1"
 		env[prefix+"PORT"] = strconv.Itoa(port)
 		env[prefix+"DATABASE"] = link.Database
@@ -661,6 +661,15 @@ func validAgentDatabaseService(id string) bool {
 	default:
 		return false
 	}
+}
+
+// agentConnectionName is the framework-facing DB_CONNECTION value. The
+// engine/catalog ID stays "postgres"; Laravel-style frameworks expect "pgsql".
+func agentConnectionName(engine string) string {
+	if engine == "postgres" {
+		return "pgsql"
+	}
+	return engine
 }
 
 func agentEngineForService(serviceID string) string {

@@ -366,7 +366,7 @@ func (d *Docker) resolveSiteEnv(ctx context.Context, serviceID string, links []d
 			}
 			prefix = "DB_" + slug + "_"
 		}
-		env[prefix+"CONNECTION"] = string(engine)
+		env[prefix+"CONNECTION"] = databaseConnectionName(engine)
 		env[prefix+"HOST"] = "127.0.0.1"
 		env[prefix+"PORT"] = strconv.Itoa(port)
 		env[prefix+"DATABASE"] = link.Database
@@ -406,6 +406,15 @@ func canonicalDatabaseService(id string) string {
 		return "postgres"
 	}
 	return id
+}
+
+// databaseConnectionName is the framework-facing DB_CONNECTION value. The
+// engine/catalog ID remains "postgres".
+func databaseConnectionName(engine model.DatabaseEngine) string {
+	if engine == model.DatabasePostgreSQL {
+		return "pgsql"
+	}
+	return string(engine)
 }
 
 func databaseEngineForService(serviceID string) model.DatabaseEngine {

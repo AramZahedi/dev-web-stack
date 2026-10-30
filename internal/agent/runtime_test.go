@@ -1400,3 +1400,33 @@ func TestPrepareSiteRejectsInsecureSecretDirectory(t *testing.T) {
 		t.Fatal("PrepareSite accepted a world-readable secret directory")
 	}
 }
+
+func TestResolveDatabaseEnvUsesFrameworkConnectionNames(t *testing.T) {
+	rt, _, _ := newStaticTestRuntime(t)
+	cases := []struct {
+		service string
+		engine  string
+		want    string
+	}{
+		{"mysql", "mysql", "mysql"},
+		{"mariadb", "mariadb", "mariadb"},
+		{"postgres", "postgres", "pgsql"},
+		{"redis", "redis", "redis"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.service, func(t *testing.T) {
+			env, err := rt.resolveDatabaseEnv(agentproto.SiteSpec{
+				ID: "site-" + tc.service,
+				DatabaseLinks: []agentproto.DatabaseLinkSpec{{
+					ServiceID: tc.service, Engine: tc.engine, Database: "app", Username: "app", Primary: true,
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if env["DB_CONNECTION"] != tc.want {
+				t.Fatalf("DB_CONNECTION = %q, want %q (env=%v)", env["DB_CONNECTION"], tc.want, env)
+			}
+		})
+	}
+}

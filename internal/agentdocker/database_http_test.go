@@ -370,3 +370,39 @@ func TestDatabaseEnvRouteRejectsNestedCallerPassword(t *testing.T) {
 		t.Fatalf("nested caller password invoked Docker: %v", runner.joinedCalls())
 	}
 }
+
+func TestDatabaseEnvRouteUsesFrameworkConnectionNames(t *testing.T) {
+	d, _ := newDatabaseTestDocker(t)
+	cases := []struct {
+		service string
+		engine  model.DatabaseEngine
+		want    string
+	}{
+		{"mysql", model.DatabaseMySQL, "mysql"},
+		{"mariadb", model.DatabaseMariaDB, "mariadb"},
+		{"postgres", model.DatabasePostgreSQL, "pgsql"},
+		{"redis", model.DatabaseRedis, "redis"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.service, func(t *testing.T) {
+			request := dbproto.SiteEnvRequest{
+				ServiceID: tc.service,
+				Links: []dbproto.LinkInfo{{
+					ServiceID: tc.service, Engine: tc.engine, Database: "app", Username: "app", Primary: true,
+				}},
+			}
+			body, _ := json.Marshal(request)
+			recorder := serveDatabase(t, d, http.MethodPost, "/v1/services/"+tc.service+"/database-env", body)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("env = %d %s", recorder.Code, recorder.Body.String())
+			}
+			var response dbproto.SiteEnvResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Env["DB_CONNECTION"] != tc.want {
+				t.Fatalf("DB_CONNECTION = %q, want %q (env=%v)", response.Env["DB_CONNECTION"], tc.want, response.Env)
+			}
+		})
+	}
+}

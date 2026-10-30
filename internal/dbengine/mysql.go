@@ -17,7 +17,7 @@ var existingUsernameRegex = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 // quote characters.
 func ValidateExistingUsername(engine model.DatabaseEngine, name string) error {
 	switch engine {
-	case model.DatabaseMySQL, model.DatabaseMariaDB, model.DatabasePostgreSQL:
+	case model.DatabaseMySQL, model.DatabaseMariaDB, model.DatabasePostgreSQL, model.DatabaseRedis:
 		if existingUsernameRegex.MatchString(name) {
 			return nil
 		}
