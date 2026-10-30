@@ -943,6 +943,13 @@ func (a *App) newDBPasswordCmd() *cobra.Command {
 			if service == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--service is required", Remediation: "For example `devstack db password --service redis --reveal`."}
 			}
+			if !strings.EqualFold(service, "redis") {
+				return &Error{
+					Code:        "DATABASE_UNSUPPORTED",
+					Message:     fmt.Sprintf("db password is only supported for the redis service, not %q", service),
+					Remediation: "Use `devstack db user password --service <id> --user-id <id>` for SQL database users.",
+				}
+			}
 			if user == "" {
 				user = "default"
 			}

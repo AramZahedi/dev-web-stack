@@ -301,6 +301,18 @@ func TestDBLinkAndUnlink(t *testing.T) {
 	}
 }
 
+func TestDBPasswordRejectsNonRedisBeforeAPICall(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseUserSecret: databases.Secret{Value: "s3cret"}}
+	code, stdout, stderr := runCLIExit(t, fake, "db", "password", "--service", "mysql", "--reveal")
+	if code == 0 || !strings.Contains(stderr, "DATABASE_UNSUPPORTED") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if fake.databaseUserRevealed || fake.databaseUserRotated || fake.servicePasswordSet {
+		t.Fatal("db password made an API call for a non-Redis service")
+	}
+}
+
 func TestDBPasswordRedisRevealUsesDefaultUser(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{
