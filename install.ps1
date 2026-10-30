@@ -668,12 +668,21 @@ if ($Upgrade) {
         }
     }
 
-    # 3. Back up Windows binaries
-    if (Test-Path $dstDevstack) {
-        Copy-Item -Path $dstDevstack -Destination "$dstDevstack.bak" -Force
-    }
-    if (Test-Path $dstHelper) {
-        Copy-Item -Path $dstHelper -Destination "$dstHelper.bak" -Force
+    # 3. Back up Windows binaries. The upgrade block deliberately runs with
+    # $ErrorActionPreference = "Continue" so benign native stderr cannot abort
+    # it, so each file operation opts into -ErrorAction Stop and is handled
+    # explicitly. A silent backup failure would make rollback claim success
+    # without restoring anything.
+    try {
+        if (Test-Path $dstDevstack) {
+            Copy-Item -Path $dstDevstack -Destination "$dstDevstack.bak" -Force -ErrorAction Stop
+        }
+        if (Test-Path $dstHelper) {
+            Copy-Item -Path $dstHelper -Destination "$dstHelper.bak" -Force -ErrorAction Stop
+        }
+    } catch {
+        Write-InstallerError "Failed to back up existing binaries before upgrade: $($_.Exception.Message)"
+        exit 1
     }
 
     # 4. WSL Backup BEFORE Windows binary staging (C3)
@@ -709,11 +718,11 @@ if ($Upgrade) {
             }
             if (Test-Path $mockData) {
                 if (Test-Path $mockBackupDir) { Remove-Item -Path $mockBackupDir -Recurse -Force }
-                Copy-Item -Path $mockData -Destination $mockBackupDir -Recurse -Force
+                Copy-Item -Path $mockData -Destination $mockBackupDir -Recurse -Force -ErrorAction Stop
                 Set-Content -Path $mockBackupTar -Value "mock-backup-archive" -Encoding utf8
             }
             if (Test-Path (Join-Path $mockDataBin "devstack-agent")) {
-                Copy-Item -Path (Join-Path $mockDataBin "devstack-agent") -Destination (Join-Path $mockDataBin "devstack-agent.bak") -Force
+                Copy-Item -Path (Join-Path $mockDataBin "devstack-agent") -Destination (Join-Path $mockDataBin "devstack-agent.bak") -Force -ErrorAction Stop
             }
             if ((Get-TestOverride "DEVSTACK_TEST_BACKUP_VERIFY_FAIL") -eq "true") {
                 Write-InstallerError "Backup archive verification failed for /data/devstack-backup.tar.gz."
@@ -755,7 +764,12 @@ if ($Upgrade) {
         Push-Location $repoRoot
         try {
             if ($null -ne $prebuiltDevstack) {
-                Copy-Item -Path $prebuiltDevstack -Destination $dstDevstack -Force
+                try {
+                    Copy-Item -Path $prebuiltDevstack -Destination $dstDevstack -Force -ErrorAction Stop
+                } catch {
+                    Write-InstallerError "Failed to stage devstack.exe: $($_.Exception.Message)"
+                    $upgradeFailed = $true
+                }
             } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack\main.go")) {
                 Write-Host "devstack installer: Building devstack.exe..."
                 & go build -o $dstDevstack ./cmd/devstack
@@ -767,7 +781,12 @@ if ($Upgrade) {
 
             if (-not $upgradeFailed) {
                 if ($null -ne $prebuiltHelper) {
-                    Copy-Item -Path $prebuiltHelper -Destination $dstHelper -Force
+                    try {
+                        Copy-Item -Path $prebuiltHelper -Destination $dstHelper -Force -ErrorAction Stop
+                    } catch {
+                        Write-InstallerError "Failed to stage devstack-helper.exe: $($_.Exception.Message)"
+                        $upgradeFailed = $true
+                    }
                 } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack-helper\main.go")) {
                     Write-Host "devstack installer: Building devstack-helper.exe..."
                     & go build -o $dstHelper ./cmd/devstack-helper
@@ -816,7 +835,12 @@ if ($Upgrade) {
     $prebuiltAgentLinux = Select-PrebuiltAgent -Destination $stagedAgentLinux -RepoRoot $repoRoot -BinDir $binDir
 
     if ($null -ne $prebuiltAgentLinux) {
-        Copy-Item -Path $prebuiltAgentLinux -Destination $stagedAgentLinux -Force
+        try {
+            Copy-Item -Path $prebuiltAgentLinux -Destination $stagedAgentLinux -Force -ErrorAction Stop
+        } catch {
+            Write-InstallerError "Failed to stage devstack-agent: $($_.Exception.Message)"
+            $upgradeFailed = $true
+        }
     } elseif (Test-Path (Join-Path $repoRoot "cmd\devstack-agent\main.go")) {
         Push-Location $repoRoot
         try {
@@ -843,7 +867,12 @@ if ($Upgrade) {
 
     if (-not $upgradeFailed) {
         if ($isSandbox -or ((Get-TestOverride "DEVSTACK_TEST_MOCK_WSL") -eq "true")) {
-            Copy-Item -Path $stagedAgentLinux -Destination (Join-Path $mockDataBin "devstack-agent") -Force
+            try {
+                Copy-Item -Path $stagedAgentLinux -Destination (Join-Path $mockDataBin "devstack-agent") -Force -ErrorAction Stop
+            } catch {
+                Write-InstallerError "Failed to stage devstack-agent in the test sandbox: $($_.Exception.Message)"
+                $upgradeFailed = $true
+            }
         } else {
             $cleanAgentPath = $stagedAgentLinux.Replace('\', '/')
             $wslAgentSrc = try {
@@ -931,16 +960,16 @@ if ($Upgrade) {
             } else {
                 try {
                     Remove-Item -Path $mockRollbackTmp -Recurse -Force -ErrorAction SilentlyContinue
-                    New-Item -ItemType Directory -Force -Path $mockRollbackTmp | Out-Null
-                    Copy-Item -Path $mockBackupDir -Destination (Join-Path $mockRollbackTmp "devstack") -Recurse -Force
+                    New-Item -ItemType Directory -Force -Path $mockRollbackTmp -ErrorAction Stop | Out-Null
+                    Copy-Item -Path $mockBackupDir -Destination (Join-Path $mockRollbackTmp "devstack") -Recurse -Force -ErrorAction Stop
                     if (-not (Test-Path (Join-Path $mockRollbackTmp "devstack"))) {
                         throw "staged restore is missing"
                     }
                     Remove-Item -Path $mockFailedTmp -Recurse -Force -ErrorAction SilentlyContinue
                     if (Test-Path $mockData) {
-                        Move-Item -Path $mockData -Destination $mockFailedTmp -Force
+                        Move-Item -Path $mockData -Destination $mockFailedTmp -Force -ErrorAction Stop
                     }
-                    Move-Item -Path (Join-Path $mockRollbackTmp "devstack") -Destination $mockData -Force
+                    Move-Item -Path (Join-Path $mockRollbackTmp "devstack") -Destination $mockData -Force -ErrorAction Stop
                     Remove-Item -Path $mockFailedTmp -Recurse -Force -ErrorAction SilentlyContinue
                     Remove-Item -Path $mockRollbackTmp -Recurse -Force -ErrorAction SilentlyContinue
                     Remove-Item -Path $mockBackupTar -Force -ErrorAction SilentlyContinue
@@ -952,7 +981,7 @@ if ($Upgrade) {
             }
             if ($rollbackOK -and (Test-Path (Join-Path $mockDataBin "devstack-agent.bak"))) {
                 try {
-                    Move-Item -Path (Join-Path $mockDataBin "devstack-agent.bak") -Destination (Join-Path $mockDataBin "devstack-agent") -Force
+                    Move-Item -Path (Join-Path $mockDataBin "devstack-agent.bak") -Destination (Join-Path $mockDataBin "devstack-agent") -Force -ErrorAction Stop
                 } catch {
                     $rollbackOK = $false
                     $rollbackFailure = "restore devstack-agent: $($_.Exception.Message)"
@@ -1000,7 +1029,7 @@ rm -rf /data/devstack.rollback-tmp
         }
         if (Test-Path "$dstDevstack.bak") {
             try {
-                Move-Item -Path "$dstDevstack.bak" -Destination $dstDevstack -Force
+                Move-Item -Path "$dstDevstack.bak" -Destination $dstDevstack -Force -ErrorAction Stop
             } catch {
                 $rollbackOK = $false
                 $rollbackFailure = "restore devstack.exe: $($_.Exception.Message)"
@@ -1008,7 +1037,7 @@ rm -rf /data/devstack.rollback-tmp
         }
         if (Test-Path "$dstHelper.bak") {
             try {
-                Move-Item -Path "$dstHelper.bak" -Destination $dstHelper -Force
+                Move-Item -Path "$dstHelper.bak" -Destination $dstHelper -Force -ErrorAction Stop
             } catch {
                 $rollbackOK = $false
                 $rollbackFailure = "restore devstack-helper.exe: $($_.Exception.Message)"

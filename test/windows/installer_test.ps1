@@ -620,6 +620,13 @@ Step "Testing helper service repair keeps binPath exact"
 Require ($installerRaw -match 'sc\.exe config DevstackHelper "binPath=" \$expectedCommand') "install.ps1 passes binPath and value as separate sc.exe arguments"
 Require ($installerRaw -notmatch '"binPath= \$expectedCommand"') "install.ps1 does not fold the binPath value into one argument"
 
+Step "Testing upgrade file operations fail fast"
+$upgradeFileOps = @($upgradeBlock -split "`r?`n" | Where-Object { $_ -cmatch '\b(Copy-Item|Move-Item)\b' })
+Require ($upgradeFileOps.Count -gt 0) "upgrade block contains file operations to audit"
+foreach ($fileOp in $upgradeFileOps) {
+    Require ($fileOp -match '-ErrorAction\s+Stop') "upgrade file operation fails fast: $($fileOp.Trim())"
+}
+
 # -------------------------------------------------------------------------
 # Test 22: Upgrade WSL Backup Failure Detection (C3)
 # -------------------------------------------------------------------------
