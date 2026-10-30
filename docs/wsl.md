@@ -36,7 +36,7 @@ The managed distribution is named `devstack` and is strictly isolated from user 
 Distribution Name:  devstack
 Base Image:         Debian 12 (Bookworm) minbase
 Filesystem:         ext4 (WSL2 VHDX virtual hard disk)
-Import Location:    C:\devstack\wsl\devstack\ext4.vhdx
+Import Location:    %USERPROFILE%\.devstack\wsl\devstack\ext4.vhdx
 Data Root:          /data/devstack/
 Default Shell:      /bin/bash
 Init System:        systemd (PID 1)
@@ -163,13 +163,13 @@ Communication between the Windows daemon and the WSL agent is secured via mutual
 
 1. **Bearer Token Authentication:**
    Upon installation, a cryptographically secure 256-bit random bearer token is generated.
-   - On Windows: Stored encrypted using Windows Data Protection API (DPAPI) in `C:\devstack\system\agent-token`.
+   - On Windows: Stored encrypted using Windows Data Protection API (DPAPI) in `%USERPROFILE%\.devstack\system\secrets\agent-token`.
    - In WSL: Stored at `/data/devstack/system/token` with mode `0600` owned by `root`.
    - Every request from Windows must supply the header: `Authorization: Bearer <token>`. Unauthenticated requests immediately receive `401 Unauthorized`.
 
 2. **TLS Certificate Pinning:**
    The agent serves traffic over TLS using a self-signed certificate.
-   - The SHA-256 fingerprint of the certificate is pinned and encrypted with DPAPI in `C:\devstack\system\agent-pin`.
+   - The SHA-256 fingerprint of the certificate is pinned and encrypted with DPAPI in `%USERPROFILE%\.devstack\system\secrets\agent-pin`.
    - The Windows client verifies this pin on every TLS handshake, preventing local spoofing or man-in-the-middle attacks.
 
 3. **Subnet & Loopback Isolation:**

@@ -128,9 +128,9 @@ php C:\projects\my-app\artisan migrate
 In Windows environments, dot-prefixed filenames (such as `.devstack` or `.config`) can cause friction with file explorers, backup software, and PowerShell commandlets.
 
 Under Decision S70, **no devstack-created Windows file or directory may start with a dot**:
-- Database: `C:\devstack\data\devstack.db` (never `.devstack.db`)
-- Manifests: `C:\devstack\system\install-manifest.json` (never `.manifest`)
-- User configuration: `C:\devstack\config\config.yaml` (never `.config.yaml`)
+- Database: `%USERPROFILE%\.devstack\state.db` (never `.devstack.db`)
+- Manifests: `%USERPROFILE%\.devstack\system\install-manifest.json` (never `.manifest`)
+- User configuration: `%USERPROFILE%\.devstack\config.yaml` (never `.config.yaml`)
 
 > [!NOTE]
 > Project-owned dot files (such as `.git`, `.env`, `.htaccess`, `.gitignore`) residing inside user code repositories are fully supported and untouched.

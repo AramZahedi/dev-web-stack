@@ -127,8 +127,8 @@ devstack creates and manages an internal, offline Root Certificate Authority
 
 ### Root CA Generation & Custody
 
-- **CA Certificate:** `C:\devstack\data\certs\root-ca.crt`
-- **Private Key:** `C:\devstack\data\certs\root-ca.key` (permission restricted to `SYSTEM` and `Administrators`)
+- **CA Certificate:** `%USERPROFILE%\.devstack\system\pki\root.crt`
+- **Private Key:** `%USERPROFILE%\.devstack\system\pki\root.key` (permission restricted to `SYSTEM` and `Administrators`)
 - **Authority:** The helper service alone possesses the capability to mint site certificates.
 
 ### Multi-Store Trust Installation

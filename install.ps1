@@ -5,11 +5,11 @@
     Elevated system-phase installer for devstack on Windows.
     Validates Windows build (10 22H2 19045+ x64 or Windows 11), checks hardware
     virtualization, enables required Windows features (WSL2 & VirtualMachinePlatform),
-    orchestrates reboot handling if required (exit code 3010), provisions C:\devstack
-    layout with protected DACLs, stages binaries, registers the helper Windows service,
-    and configures inbound WSL proxy firewall rules.
+    orchestrates reboot handling if required (exit code 3010), provisions
+    %USERPROFILE%\.devstack layout with protected DACLs, stages binaries, registers
+    the helper Windows service, and configures inbound WSL proxy firewall rules.
 .PARAMETER InstallDir
-    Root installation directory. Defaults to C:\devstack.
+    Root installation directory. Defaults to %USERPROFILE%\.devstack.
 .PARAMETER RootFSPath
     Path to WSL rootfs archive (reserved for WSL phase).
 .PARAMETER AllowReboot

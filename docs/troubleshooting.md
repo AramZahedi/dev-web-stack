@@ -110,7 +110,7 @@ Daemon logs report:
 `agent HTTPS request rejected: 401 Unauthorized` or `certificate fingerprint mismatch`.
 
 **Cause:**
-The DPAPI-protected secrets in `C:\devstack\system\agent-token` or `agent-pin` are out of sync with the keys stored inside the WSL distro at `/data/devstack/system/`.
+The DPAPI-protected secrets in `%USERPROFILE%\.devstack\system\secrets\agent-token` or `agent-pin` are out of sync with the keys stored inside the WSL distro at `/data/devstack/system/`.
 
 **Resolution:**
 Run the repair tool to resynchronize the DPAPI secrets:

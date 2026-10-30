@@ -23,7 +23,7 @@ trusted `https://<name>.test` URLs, managed by a Go CLI and a local daemon.
 1. Download **[`devstack-installer.exe`](https://github.com/AramZahedi/dev-web-stack/releases/download/v0.2.0/devstack-installer.exe)** (or `devstack-setup.exe`) from the [v0.2.0 Release](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.2.0).
 2. **Double-click** `devstack-installer.exe` (or run `./devstack-installer.exe` from PowerShell / Command Prompt).
    - Prompts for Administrator elevation via standard Windows UAC.
-   - Extracts all embedded components, configures `C:\devstack`, installs the `DevstackHelper` Windows service, imports the Debian 12 WSL2 distribution, and provisions Docker and runtimes.
+   - Extracts all embedded components, configures `%USERPROFILE%\.devstack`, installs the `DevstackHelper` Windows service, imports the Debian 12 WSL2 distribution, and provisions Docker and runtimes.
 3. Open a new PowerShell terminal and verify:
    ```powershell
    devstack version

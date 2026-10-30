@@ -57,13 +57,13 @@ devstack maintains strict separation between Windows host concerns and WSL Linux
 │   └── composer.cmd         # Windows shim forwarding to WSL Composer
 ├── config.yaml              # User-editable daemon configuration
 ├── state.db                 # SQLite database (NTFS-exclusive flock)
-├── certs\                   # Root CA cert/key, generated site leaf certs
+├── pki\                     # Generated dashboard and site leaf certificates
 ├── logs\                    # Windows daemon and helper log files
 ├── system\                  # Protected system state (SYSTEM & Admin only)
 │   ├── helper.yaml          # Helper service configuration and proxy targets
 │   ├── install-manifest.json# Checksummed installation receipt and stage flags
-│   ├── agent-token          # DPAPI-encrypted WSL agent authentication token
-│   └── agent-pin            # DPAPI-encrypted WSL agent TLS certificate pin
+│   ├── pki\                 # Root CA certificate and private key
+│   └── secrets\             # DPAPI-encrypted agent token/pin and API token
 ├── wsl\
 │   └── devstack\            # Managed WSL2 distribution disk
 │       └── ext4.vhdx        # Debian 12 ext4 filesystem container
@@ -84,7 +84,7 @@ Inside the managed WSL distribution (`\\wsl.localhost\devstack` or `/data/devsta
 ```
 
 > [!IMPORTANT]
-> devstack never creates dot-prefixed basenames on Windows (Decision S70). Internal files use explicit names like `config.yaml`, `install-manifest.json`, and `devstack.db`.
+> devstack never creates dot-prefixed basenames on Windows (Decision S70). Internal files use explicit names like `config.yaml`, `install-manifest.json`, and `state.db`.
 
 ### WSL Root Execution Model & Project File Permissions
 
@@ -214,6 +214,20 @@ Pass `-InstallDir` explicitly to choose a different location. A fresh install
 over a completed installation is refused; use `-Upgrade` for the existing
 directory. `-DryRun` never writes to the install directory.
 
+### Optional compatibility junction
+
+Existing scripts that hardcode `C:\devstack` can keep working by replacing the
+old directory with a junction:
+
+```powershell
+New-Item -ItemType Junction -Path C:\devstack -Target $env:USERPROFILE\.devstack
+```
+
+The junction is not a second installation. WSL, the helper service, the daemon
+task, and PATH must all point at `%USERPROFILE%\.devstack`. `uninstall.ps1`
+refuses to uninstall through a reparse point; run it without `-InstallDir` so it
+uses the profile manifest, then remove the junction manually.
+
 ---
 
 ## 4. Verification
@@ -289,8 +303,8 @@ The upgrade workflow:
 ## 6. Uninstallation
 
 Uninstallation is performed using `uninstall.ps1` from an elevated prompt. If no
-`-InstallDir` is supplied, the script detects a legacy `C:\devstack` install;
-otherwise it targets `%USERPROFILE%\.devstack`:
+`-InstallDir` is supplied, the script targets `%USERPROFILE%\.devstack` and only
+falls back to a legacy `C:\devstack` install when no profile install exists:
 
 ```powershell
 cd "$env:USERPROFILE\.devstack"
