@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import SiteDetail from './SiteDetail.svelte';
 import * as api from '../lib/api';
+import * as db from '../lib/databaseApi';
 import { ApiError } from '../lib/errors';
+import type { Database, DatabaseLink, DatabaseUser } from '../lib/databaseTypes';
 import type {
   NodeReleasePreflight,
   PHPInfo,
   RuntimeBuild,
+  ServiceView,
   Site,
   UpdateSiteRequest,
 } from '../lib/types';
@@ -31,6 +34,18 @@ vi.mock('../lib/api', () => ({
   buildSite: vi.fn(),
   getBuildLogs: vi.fn(),
   openLogStream: vi.fn(() => () => undefined),
+  listServices: vi.fn(),
+}));
+
+vi.mock('../lib/databaseApi', () => ({
+  listServiceDatabases: vi.fn(),
+  listServiceUsers: vi.fn(),
+  listSiteDatabases: vi.fn(),
+  linkSiteDatabase: vi.fn(),
+  unlinkSiteDatabase: vi.fn(),
+  createSiteDatabase: vi.fn(),
+  revealServiceUserPassword: vi.fn(),
+  setServiceUserPassword: vi.fn(),
 }));
 
 const NODE_BUILD: RuntimeBuild = {
@@ -179,7 +194,95 @@ const PHP_INFO: PHPInfo = {
   config_hash: 'abc123',
 };
 
+const MYSQL_SERVICE: ServiceView = {
+  id: 'mysql',
+  display_name: 'MySQL 8.4',
+  group: 'mysql-family',
+  state: 'active',
+  active: true,
+  installed: true,
+  health: 'healthy',
+  container_id: 'container_mysql',
+  image: 'mysql:8.4',
+  ports: [{ host: 3306, container: 3306, protocol: 'tcp', loopback: true }],
+};
+
+const APP_DATABASE: Database = {
+  name: 'app',
+  service_id: 'mysql',
+  engine: 'mysql',
+  size_bytes: 1024,
+  table_count: 1,
+  linked_sites: [{ id: 's_blog', name: 'blog' }],
+  managed: true,
+};
+
+const APP_USER: DatabaseUser = {
+  id: 'usr_app',
+  service_id: 'mysql',
+  engine: 'mysql',
+  username: 'blog_user',
+  host: '%',
+  enabled: true,
+  managed: true,
+  password_managed: true,
+  grants: [{ database: 'app', preset: 'read_write_schema' }],
+  linked_sites: [{ id: 's_blog', name: 'blog' }],
+};
+
+const SITE_DB_LINK: DatabaseLink = {
+  id: 'lnk_1',
+  site_id: 's_blog',
+  service_id: 'mysql',
+  engine: 'mysql',
+  database: 'app',
+  user_id: 'usr_app',
+  username: 'blog_user',
+  host: '%',
+  primary: true,
+  password_managed: true,
+  available: true,
+  connection: {
+    engine: 'mysql',
+    host: '127.0.0.1',
+    port: 3306,
+    database: 'app',
+    username: 'blog_user',
+    password_managed: true,
+    url: 'mysql://blog_user@127.0.0.1:3306/app',
+    env: {
+      DB_CONNECTION: 'mysql',
+      DB_HOST: '127.0.0.1',
+      DB_PORT: '3306',
+      DB_DATABASE: 'app',
+      DB_USERNAME: 'blog_user',
+    },
+  },
+};
+
+const METADATA_ONLY_LINK: DatabaseLink = {
+  ...SITE_DB_LINK,
+  id: 'lnk_ext',
+  user_id: 'usr_ext',
+  username: 'ext',
+  password_managed: false,
+  connection: {
+    ...SITE_DB_LINK.connection,
+    username: 'ext',
+    password_managed: false,
+    url: 'mysql://ext@127.0.0.1:3306/app',
+    env: {
+      DB_CONNECTION: 'mysql',
+      DB_HOST: '127.0.0.1',
+      DB_PORT: '3306',
+      DB_DATABASE: 'app',
+      DB_USERNAME: 'ext',
+    },
+  },
+};
+
 const mockApi = vi.mocked(api);
+const mockDb = vi.mocked(db);
 
 beforeEach(() => {
   mockApi.getSite.mockResolvedValue({ ...STATIC_SITE });
@@ -211,6 +314,18 @@ beforeEach(() => {
     output_path: '/home/dev/projects/blog/public',
     restored: false,
     snapshot_skipped: false,
+  });
+  mockApi.listServices.mockResolvedValue([MYSQL_SERVICE]);
+  mockDb.listSiteDatabases.mockResolvedValue({ links: [SITE_DB_LINK] });
+  mockDb.listServiceDatabases.mockResolvedValue({ databases: [APP_DATABASE] });
+  mockDb.listServiceUsers.mockResolvedValue({ users: [APP_USER] });
+  mockDb.revealServiceUserPassword.mockResolvedValue({ value: 'mock_db_password' });
+  mockDb.setServiceUserPassword.mockResolvedValue({ value: 'mock_db_password' });
+  mockDb.linkSiteDatabase.mockResolvedValue(SITE_DB_LINK);
+  mockDb.createSiteDatabase.mockResolvedValue({
+    link: SITE_DB_LINK,
+    database: APP_DATABASE,
+    user: APP_USER,
   });
 });
 
@@ -587,5 +702,97 @@ describe('SiteDetail configuration and builds', () => {
     const change = await screen.findByRole('button', { name: 'Change source' });
     expect((change as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('Stop the site before changing source modes.')).toBeTruthy();
+  });
+
+  it('shows linked database connection details with a masked password', async () => {
+    await renderSite('blog');
+    expect(await screen.findByText('Databases')).toBeTruthy();
+    expect(screen.getByText('app')).toBeTruthy();
+    expect(screen.getByText('127.0.0.1:3306')).toBeTruthy();
+    expect(screen.getByText('blog_user')).toBeTruthy();
+    expect(screen.queryByText('s3cret')).toBeNull();
+  });
+
+  it('reveals a linked password through the audited API', async () => {
+    mockDb.revealServiceUserPassword.mockResolvedValue({ value: 's3cret' });
+    await renderSite('blog');
+    await fireEvent.click(
+      await screen.findByRole('button', { name: /reveal password for app/i }),
+    );
+    expect(await screen.findByText('s3cret')).toBeTruthy();
+    expect(mockDb.revealServiceUserPassword).toHaveBeenCalledWith('mysql', 'usr_app');
+  });
+
+  it('shows password not managed for a metadata-only link', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [METADATA_ONLY_LINK] });
+    await renderSite('blog');
+    expect(await screen.findByText('Password not managed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /set password/i })).toBeTruthy();
+  });
+
+  it('sets a password for a metadata-only link and asks for a restart', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [METADATA_ONLY_LINK] });
+    mockDb.setServiceUserPassword.mockResolvedValue({ value: 'newpass' });
+    await renderSite('blog');
+    await fireEvent.click(await screen.findByRole('button', { name: /set password/i }));
+    expect(await screen.findByText('newpass')).toBeTruthy();
+    expect(await screen.findByText(/restart site to apply/i)).toBeTruthy();
+    expect(mockDb.setServiceUserPassword).toHaveBeenCalledWith('mysql', 'usr_ext');
+  });
+
+  it('says linked databases remain when deleting the site', async () => {
+    await renderSite('blog');
+    await fireEvent.click(await screen.findByRole('button', { name: /remove site/i }));
+    expect(
+      screen.getByText(/databases, users, grants, passwords, backups, and data remain/i),
+    ).toBeTruthy();
+  });
+
+  it('shows database offline and the exclusive engine block', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({
+      links: [
+        {
+          ...SITE_DB_LINK,
+          available: false,
+          error: 'MariaDB is active on port 3306',
+        },
+      ],
+    });
+    await renderSite('blog');
+    expect(await screen.findByText(/database offline/i)).toBeTruthy();
+    expect(
+      screen.getByText(/MySQL-family database engine is active on port 3306/i),
+    ).toBeTruthy();
+    expect(screen.getByRole('link', { name: /activate/i })).toBeTruthy();
+  });
+
+  it('links an existing database from the site card', async () => {
+    await renderSite('blog');
+    await fireEvent.click(await screen.findByRole('button', { name: 'Link database' }));
+    const dialog = await screen.findByRole('dialog');
+    const service = (await within(dialog).findByLabelText(
+      /Database service/,
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    await fireEvent.click(within(dialog).getByLabelText('Use existing database'));
+    const database = within(dialog).getByLabelText(/Existing database/) as HTMLSelectElement;
+    await waitFor(() => expect(database.value).toBe('app'));
+    await fireEvent.change(database, { target: { value: 'app' } });
+    await fireEvent.click(within(dialog).getByLabelText('Use existing user'));
+    const user = within(dialog).getByLabelText(/Existing user/) as HTMLSelectElement;
+    await waitFor(() => expect(user.value).toBe('usr_app'));
+    await fireEvent.change(user, { target: { value: 'usr_app' } });
+    await fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Link database' }),
+    );
+
+    await waitFor(() =>
+      expect(mockDb.linkSiteDatabase).toHaveBeenCalledWith('s_blog', {
+        service_id: 'mysql',
+        database: 'app',
+        user_id: 'usr_app',
+        primary: true,
+      }),
+    );
   });
 });

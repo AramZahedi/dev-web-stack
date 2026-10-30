@@ -20,6 +20,7 @@
     Trash2,
   } from 'lucide-svelte';
   import * as api from '../lib/api';
+  import * as db from '../lib/databaseApi';
   import { copyText } from '../lib/clipboard';
   import {
     describeError,
@@ -68,6 +69,8 @@
   import TerminalPanel from '../lib/components/TerminalPanel.svelte';
   import Toggle from '../lib/components/Toggle.svelte';
   import VhostPreviewDrawer from '../lib/components/VhostPreviewDrawer.svelte';
+  import SiteDatabaseCard from '../lib/components/site/SiteDatabaseCard.svelte';
+  import type { SiteDatabaseLink } from '../lib/databaseTypes';
 
   interface Props {
     params: { ref?: string };
@@ -78,6 +81,7 @@
   type Action = 'start' | 'stop' | 'restart';
 
   let site = $state<Site | null>(null);
+  let siteLinks = $state<SiteDatabaseLink[]>([]);
   let loading = $state(true);
   let notFound = $state(false);
   let error = $state<{ code: string; message: string } | null>(null);
@@ -290,6 +294,7 @@
     if (reset) {
       loading = true;
       site = null;
+      siteLinks = [];
       phpInfo = null;
       phpRuntimes = [];
       nodeDefault = null;
@@ -336,13 +341,15 @@
       return;
     }
     try {
-      const [next, builds, defaultStatus] = await Promise.all([
+      const [next, builds, defaultStatus, linksResult] = await Promise.all([
         api.getSite(siteRef),
         api.listRuntimes().catch(() => [] as RuntimeBuild[]),
         api.getNodeDefault().catch(() => null),
+        db.listSiteDatabases(siteRef).catch(() => ({ links: [] as SiteDatabaseLink[] })),
       ]);
       if (generation !== loadGeneration || siteRef !== ref) return;
       site = next;
+      siteLinks = linksResult.links ?? [];
       phpRuntimes = builds;
       nodeDefault = defaultStatus;
       if (next.kind === 'php') await loadPHP(siteRef, generation);
@@ -1166,6 +1173,13 @@
       </aside>
     </div>
 
+    <SiteDatabaseCard
+      {site}
+      links={siteLinks}
+      onRefresh={() => void load()}
+      onRestart={() => void act('restart')}
+    />
+
     <TerminalPanel {site} />
 
     <section class="config-section" aria-labelledby="config-heading">
@@ -1951,7 +1965,7 @@
   open={deleteOpen}
   title={site ? `Remove ${site.name}?` : 'Remove site?'}
   description={site
-    ? `This stops the site and removes its ${site.domain} domain, certificate and generated configs. Files in ${site.host_path} are never deleted.`
+    ? `This stops the site and removes its ${site.domain} domain, certificate and generated configs. Files in ${site.host_path} are never deleted. Linked databases, users, grants, passwords, backups, and data remain.`
     : ''}
   confirmLabel="Remove site"
   requireText={site?.name}
