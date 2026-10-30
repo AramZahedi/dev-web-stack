@@ -781,7 +781,7 @@ func (s *Server) handleDatabaseExport(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeStream(w http.ResponseWriter, contentType, disposition string, body io.ReadCloser) {
 	prefix := make([]byte, 32<<10)
 	n, err := body.Read(prefix)
-	if n == 0 && err != nil && !errors.Is(err, io.EOF) {
+	if err != nil && !errors.Is(err, io.EOF) {
 		s.writeServiceError(w, err)
 		return
 	}

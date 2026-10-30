@@ -63,6 +63,14 @@ type failingReadCloser struct{}
 func (failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("stream failed") }
 func (failingReadCloser) Close() error             { return nil }
 
+type partialErrorReadCloser struct{}
+
+func (partialErrorReadCloser) Read(p []byte) (int, error) {
+	copy(p, "partial")
+	return 7, errors.New("stream failed after data")
+}
+func (partialErrorReadCloser) Close() error { return nil }
+
 func (f *fakeDatabasePlatform) ListDatabases(ctx context.Context, serviceID string) ([]model.Database, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
@@ -213,6 +221,20 @@ func TestServiceDatabaseStreamErrorBeforeHeaders(t *testing.T) {
 		if err == nil {
 			_ = body.Close()
 			t.Fatal("download stream failure was reported as success")
+		}
+		var helperErr *helperclient.Error
+		if !errors.As(err, &helperErr) || helperErr.Status != http.StatusInternalServerError {
+			t.Fatalf("helper error = %+v", helperErr)
+		}
+	})
+
+	t.Run("export partial data and error", func(t *testing.T) {
+		platform := &fakeDatabasePlatform{exportReader: partialErrorReadCloser{}}
+		client := databaseRPCServer(t, platform)
+		body, err := client.ExportDatabase(context.Background(), "mysql", "app")
+		if err == nil {
+			_ = body.Close()
+			t.Fatal("partial export stream error was reported as success")
 		}
 		var helperErr *helperclient.Error
 		if !errors.As(err, &helperErr) || helperErr.Status != http.StatusInternalServerError {
