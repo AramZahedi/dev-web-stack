@@ -1127,6 +1127,9 @@ func resolveDatabaseUserID(ctx context.Context, c Client, serviceID, username, u
 
 func parseDatabaseGrants(values, privileges []string) ([]model.DatabaseGrant, error) {
 	if len(values) == 0 {
+		if len(privileges) > 0 {
+			return nil, &Error{Code: "INVALID_FLAGS", Message: "--privilege requires --grant", Remediation: "Pass `--grant <database>:custom` with the privileges, or remove --privilege."}
+		}
 		return nil, nil
 	}
 	grants := make([]model.DatabaseGrant, 0, len(values))

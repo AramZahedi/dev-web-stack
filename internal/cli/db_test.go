@@ -91,6 +91,18 @@ func TestDBCreateAndUserCreatePayloads(t *testing.T) {
 	}
 }
 
+func TestDBUserCreateRejectsPrivilegeWithoutGrant(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "db", "user", "create", "--service", "mysql", "--name", "app_user", "--privilege", "SELECT")
+	if code == 0 || !strings.Contains(stderr, "grant") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.databaseUserCreateReq.Username != "" {
+		t.Fatal("user create API called with --privilege but no --grant")
+	}
+}
+
 func TestDBUserCreateRejectsPrivilegesForNonCustomPreset(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{}
