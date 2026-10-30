@@ -27,7 +27,7 @@ type initResult struct {
 }
 
 func (a *App) newInitCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Install and verify the devstack integration",
 		Long:  "init ensures the helper CA, trust stores, managed hosts block, daemon, and diagnostics are ready.",
@@ -36,6 +36,8 @@ func (a *App) newInitCmd() *cobra.Command {
 			return a.runInit(cmd)
 		},
 	}
+	cmd.Flags().Bool("dashboard-auth", false, "require the per-install token for dashboard API access")
+	return cmd
 }
 
 func (a *App) runInit(cmd *cobra.Command) error {
@@ -47,6 +49,20 @@ func (a *App) runInit(cmd *cobra.Command) error {
 	cfg, err := config.Load(home)
 	if err != nil {
 		return wrapError(err, "CONFIG_INVALID", "Fix config.yaml or choose a different --home.")
+	}
+	dashboardAuthChanged := false
+	if cmd.Flags().Changed("dashboard-auth") {
+		enabled, flagErr := cmd.Flags().GetBool("dashboard-auth")
+		if flagErr != nil {
+			return flagErr
+		}
+		if cfg.DashboardAuth != enabled {
+			cfg.DashboardAuth = enabled
+			if err := cfg.Save(); err != nil {
+				return wrapError(err, "CONFIG_INVALID", "Fix config.yaml, then rerun `devstack init`.")
+			}
+			dashboardAuthChanged = true
+		}
 	}
 	userHome, err := userHomeDir()
 	if err != nil {
@@ -115,6 +131,13 @@ func (a *App) runInit(cmd *cobra.Command) error {
 		return err
 	}
 
+	if dashboardAuthChanged {
+		// The running daemon loaded the old setting at startup. Stop it here so
+		// ensureRunning starts a daemon that reads the saved config.
+		if _, err := stopDaemon(ctx, home); err != nil {
+			return err
+		}
+	}
 	if err := ensureRunning(ctx, daemon.Options{Home: home, HelperSocket: socket}); err != nil {
 		logPath := filepath.Join(home, "run", "daemon.log")
 		return wrapError(err, "DAEMON_UNAVAILABLE", fmt.Sprintf("Inspect %s, then rerun `devstack init`.", logPath))

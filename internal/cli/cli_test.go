@@ -1049,6 +1049,46 @@ func TestCLIInit(t *testing.T) {
 	}
 }
 
+func TestCLIInitDashboardAuthFlag(t *testing.T) {
+	useTestSeams(t)
+	_, socket := startFakeHelper(t)
+	home := t.TempDir()
+	oldDial := dialHelper
+	dialHelper = func(string) (*helperclient.Client, error) { return helperclient.Dial(socket) }
+	t.Cleanup(func() { dialHelper = oldDial })
+	oldHome := userHomeDir
+	userHomeDir = func() (string, error) { return t.TempDir(), nil }
+	t.Cleanup(func() { userHomeDir = oldHome })
+
+	stopped := 0
+	stopDaemon = func(context.Context, string) (bool, error) { stopped++; return true, nil }
+
+	fake := &fakeClient{doctorReport: doctor.Report{OK: true}}
+	runCLI(t, fake, "init", "--home", home, "--helper-socket", socket, "--dashboard-auth", "--json")
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DashboardAuth {
+		t.Fatal("DashboardAuth = false after --dashboard-auth")
+	}
+	if stopped != 1 {
+		t.Fatalf("stopDaemon calls = %d, want 1", stopped)
+	}
+
+	runCLI(t, fake, "init", "--home", home, "--helper-socket", socket, "--dashboard-auth=false", "--json")
+	cfg, err = config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DashboardAuth {
+		t.Fatal("DashboardAuth = true after --dashboard-auth=false")
+	}
+	if stopped != 2 {
+		t.Fatalf("stopDaemon calls = %d, want 2", stopped)
+	}
+}
+
 func TestCLIInitWarnsWhenProxyTargetsCannotPersist(t *testing.T) {
 	useTestSeams(t)
 	helper, socket := startFakeHelper(t)
