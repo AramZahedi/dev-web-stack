@@ -183,6 +183,7 @@ type fakeClient struct {
 	siteDatabaseCreated   databases.SiteDatabaseResult
 	siteDatabaseCreateReq databases.SiteDatabaseRequest
 	siteDatabaseEnv       map[string]string
+	siteDatabaseEnvErr    error
 	servicePasswordSet    bool
 }
 
@@ -741,6 +742,9 @@ func (f *fakeClient) CreateSiteDatabase(_ context.Context, _ string, req databas
 func (f *fakeClient) SiteDatabaseEnv(_ context.Context, _ string) (map[string]string, error) {
 	if err := f.maybeErr(); err != nil {
 		return nil, err
+	}
+	if f.siteDatabaseEnvErr != nil {
+		return nil, f.siteDatabaseEnvErr
 	}
 	return f.siteDatabaseEnv, nil
 }

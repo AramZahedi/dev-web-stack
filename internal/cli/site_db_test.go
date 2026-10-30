@@ -197,6 +197,45 @@ func TestSiteDBUnlinkRequiresYes(t *testing.T) {
 	}
 }
 
+func TestSiteShellContextDegradesWhenDatabaseEnvUnavailable(t *testing.T) {
+	useTestSeams(t)
+	for _, code := range []string{"NOT_FOUND", "DATABASE_PASSWORD_MISSING", "DATABASE_SERVICE_INACTIVE"} {
+		t.Run(code, func(t *testing.T) {
+			fake := &fakeClient{
+				sites:              []model.Site{{ID: "site-1", Name: "blog", Kind: model.SiteStatic, HostPath: "/home/aram/blog", BackendPath: "/home/aram/blog"}},
+				siteDatabaseEnvErr: &client.Error{Code: code, Message: "database environment unavailable"},
+			}
+			app := &App{home: t.TempDir()}
+			var warn strings.Builder
+			_, env, _, err := app.siteShellContext(context.Background(), fake, "blog", &warn)
+			if err != nil {
+				t.Fatalf("siteShellContext returned an error for %s: %v", code, err)
+			}
+			if env.Values["DEVSTACK_SITE"] != "blog" {
+				t.Fatalf("base environment missing: %v", env.Values)
+			}
+			if _, ok := env.Values["DB_HOST"]; ok {
+				t.Fatalf("database env leaked into degraded environment: %v", env.Values)
+			}
+			if !strings.Contains(warn.String(), code) {
+				t.Fatalf("warning missing %s: %q", code, warn.String())
+			}
+		})
+	}
+}
+
+func TestSiteShellContextPropagatesUnexpectedDatabaseEnvErrors(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{
+		sites:              []model.Site{{ID: "site-1", Name: "blog", Kind: model.SiteStatic, HostPath: "/home/aram/blog", BackendPath: "/home/aram/blog"}},
+		siteDatabaseEnvErr: &client.Error{Code: "INTERNAL", Message: "unexpected failure"},
+	}
+	app := &App{home: t.TempDir()}
+	if _, _, _, err := app.siteShellContext(context.Background(), fake, "blog", new(strings.Builder)); err == nil {
+		t.Fatal("unexpected database env error was swallowed")
+	}
+}
+
 func TestSiteShellContextMergesDatabaseEnv(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{
@@ -206,7 +245,7 @@ func TestSiteShellContextMergesDatabaseEnv(t *testing.T) {
 		},
 	}
 	app := &App{home: t.TempDir()}
-	_, env, _, err := app.siteShellContext(context.Background(), fake, "blog")
+	_, env, _, err := app.siteShellContext(context.Background(), fake, "blog", new(strings.Builder))
 	if err != nil {
 		t.Fatal(err)
 	}

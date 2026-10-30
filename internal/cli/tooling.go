@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -281,8 +282,10 @@ func (a *App) newToolRemoveCmd() *cobra.Command {
 	}
 }
 
-// siteShellContext resolves a site and builds its project environment.
-func (a *App) siteShellContext(ctx context.Context, c Client, ref string) (model.Site, tooling.SiteEnvironment, string, error) {
+// siteShellContext resolves a site and builds its project environment. A
+// database environment that an older daemon cannot resolve is reported through
+// warn and does not block the base site environment.
+func (a *App) siteShellContext(ctx context.Context, c Client, ref string, warn io.Writer) (model.Site, tooling.SiteEnvironment, string, error) {
 	home, err := resolveHome(a.home)
 	if err != nil {
 		return model.Site{}, tooling.SiteEnvironment{}, "", err
@@ -325,7 +328,7 @@ func (a *App) siteShellContext(ctx context.Context, c Client, ref string) (model
 			return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SHELL_ENV_FAILED", "Fix the reported runtime or site configuration, then retry.")
 		}
 	}
-	if err := mergeSiteDatabaseEnv(ctx, c, site, &env); err != nil {
+	if err := mergeSiteDatabaseEnv(ctx, c, site, &env, warn); err != nil {
 		return model.Site{}, tooling.SiteEnvironment{}, "", err
 	}
 	return site, env, home, nil
@@ -334,7 +337,7 @@ func (a *App) siteShellContext(ctx context.Context, c Client, ref string) (model
 // mergeSiteDatabaseEnv resolves the dynamic DB_*/DATABASE_URL values and
 // merges them after the site environment so link values win. The values are
 // never printed or logged by this function.
-func mergeSiteDatabaseEnv(ctx context.Context, c Client, site model.Site, env *tooling.SiteEnvironment) error {
+func mergeSiteDatabaseEnv(ctx context.Context, c Client, site model.Site, env *tooling.SiteEnvironment, warn io.Writer) error {
 	ref := site.ID
 	if strings.TrimSpace(ref) == "" {
 		ref = site.Name
@@ -344,6 +347,12 @@ func mergeSiteDatabaseEnv(ctx context.Context, c Client, site model.Site, env *t
 	}
 	dbEnv, err := c.SiteDatabaseEnv(ctx, ref)
 	if err != nil {
+		if code, ok := degradedDatabaseEnvCode(err); ok {
+			if warn != nil {
+				fmt.Fprintf(warn, "Warning: database environment is unavailable (%s); continuing without database variables.\n", code)
+			}
+			return nil
+		}
 		return err
 	}
 	if len(dbEnv) == 0 {
@@ -356,6 +365,22 @@ func mergeSiteDatabaseEnv(ctx context.Context, c Client, site model.Site, env *t
 		env.Values[key] = value
 	}
 	return nil
+}
+
+// degradedDatabaseEnvCode reports database-env failures that should not block
+// shell/exec/shell-init: an older daemon without the route, a metadata-only
+// link with no password, or a stopped service.
+func degradedDatabaseEnvCode(err error) (string, bool) {
+	var apiErr *client.Error
+	if !errors.As(err, &apiErr) {
+		return "", false
+	}
+	switch apiErr.Code {
+	case "NOT_FOUND", "DATABASE_PASSWORD_MISSING", "DATABASE_SERVICE_INACTIVE":
+		return apiErr.Code, true
+	default:
+		return "", false
+	}
 }
 
 // newShellCmd starts an interactive project shell as the installing user.
@@ -374,7 +399,7 @@ func (a *App) newShellCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, env, home, err := a.siteShellContext(ctx, c, site)
+			_, env, home, err := a.siteShellContext(ctx, c, site, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -425,7 +450,7 @@ func (a *App) newExecCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, env, home, err := a.siteShellContext(ctx, c, site)
+			_, env, home, err := a.siteShellContext(ctx, c, site, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -474,7 +499,7 @@ func (a *App) newShellInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, env, _, err := a.siteShellContext(ctx, c, site)
+			_, env, _, err := a.siteShellContext(ctx, c, site, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
