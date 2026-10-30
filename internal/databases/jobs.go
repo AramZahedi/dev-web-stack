@@ -56,6 +56,9 @@ func (m *Manager) RestoreBackup(ctx context.Context, serviceID, backupID string,
 		target = fmt.Sprintf("%s_restore_%s", backup.DatabaseName, m.now().Format("20060102-150405"))
 	}
 	req.Target = target
+	if protectedDatabase(target) {
+		return model.DatabaseJob{}, fmt.Errorf("%w: database %q is protected", ErrProtected, target)
+	}
 	targetExists, err := m.databaseExists(ctx, serviceID, target)
 	if err != nil {
 		return model.DatabaseJob{}, fmt.Errorf("check restore target %q: %w", target, err)
@@ -108,6 +111,9 @@ func (m *Manager) ImportDatabase(ctx context.Context, serviceID, database string
 	}
 	if database == "" {
 		return model.DatabaseJob{}, fmt.Errorf("%w: database is required", ErrInvalidRequest)
+	}
+	if protectedDatabase(database) {
+		return model.DatabaseJob{}, fmt.Errorf("%w: database %q is protected", ErrProtected, database)
 	}
 	if req.Mode == "" {
 		req.Mode = ImportMerge

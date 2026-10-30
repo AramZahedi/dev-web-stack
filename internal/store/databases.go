@@ -561,8 +561,8 @@ func (s *Store) AddAuditEvent(ctx context.Context, event model.AuditEventRecord)
 		event.Action, event.Result, detail, createdAt); err != nil {
 		return fmt.Errorf("add audit event %q: %w", event.Action, err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM audit_events WHERE id NOT IN (
-		SELECT id FROM audit_events ORDER BY created_at DESC, id DESC LIMIT 10000)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM audit_events WHERE id <= (
+		SELECT id FROM audit_events ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET 10000)`); err != nil {
 		return fmt.Errorf("prune audit events: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

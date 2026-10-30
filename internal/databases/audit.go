@@ -2,6 +2,7 @@ package databases
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -209,7 +210,12 @@ func (m *Manager) newID(prefix string) string {
 		value = strings.TrimSpace(m.deps.NewID())
 	}
 	if value == "" {
-		value = fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+		var raw [12]byte
+		if _, err := rand.Read(raw[:]); err == nil {
+			value = hex.EncodeToString(raw[:])
+		} else {
+			value = fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+		}
 	}
 	if prefix == "" {
 		return value

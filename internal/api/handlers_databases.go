@@ -200,6 +200,7 @@ func (s *Server) handleSetServiceUserPassword(w http.ResponseWriter, r *http.Req
 	if s.databaseUnavailable(w) {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	secret, err := s.databases.SetUserPassword(r.Context(), r.PathValue("id"), r.PathValue("userID"))
 	if err != nil {
 		s.writeServiceError(w, r, err)
@@ -213,6 +214,7 @@ func (s *Server) handleRevealServiceUserPassword(w http.ResponseWriter, r *http.
 	if s.databaseUnavailable(w) {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	secret, err := s.databases.RevealUserPassword(r.Context(), r.PathValue("id"), r.PathValue("userID"))
 	if err != nil {
 		s.writeServiceError(w, r, err)
@@ -226,6 +228,7 @@ func (s *Server) handleSetServiceDefaultPassword(w http.ResponseWriter, r *http.
 	if s.databaseUnavailable(w) {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	secret, err := s.databases.SetDefaultUserPassword(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeServiceError(w, r, err)
@@ -288,7 +291,9 @@ func (s *Server) handleDownloadServiceBackup(w http.ResponseWriter, r *http.Requ
 		s.writeServiceError(w, r, err)
 		return
 	}
-	streamDownload(w, reader, r.PathValue("backupID")+".sql.gz", "application/gzip")
+	if err := streamDownload(w, reader, r.PathValue("backupID")+".sql.gz", "application/gzip"); err != nil {
+		s.logger.Warn("api: stream database backup download", "error", databases.RedactError(err))
+	}
 }
 
 func (s *Server) handleRestoreServiceBackup(w http.ResponseWriter, r *http.Request) {
@@ -356,7 +361,9 @@ func (s *Server) handleExportServiceDatabase(w http.ResponseWriter, r *http.Requ
 		s.writeServiceError(w, r, err)
 		return
 	}
-	streamDownload(w, reader, database+".sql.gz", "application/gzip")
+	if err := streamDownload(w, reader, database+".sql.gz", "application/gzip"); err != nil {
+		s.logger.Warn("api: stream database export", "error", databases.RedactError(err))
+	}
 }
 
 func (s *Server) handleGetDatabaseJob(w http.ResponseWriter, r *http.Request) {
@@ -443,6 +450,7 @@ func (s *Server) handleSiteDatabaseEnv(w http.ResponseWriter, r *http.Request) {
 	if s.databaseUnavailable(w) {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	env, err := s.databases.SiteDatabaseEnv(r.Context(), r.PathValue("ref"))
 	if err != nil {
 		s.writeServiceError(w, r, err)
@@ -456,10 +464,10 @@ func (s *Server) handleSiteDatabaseEnv(w http.ResponseWriter, r *http.Request) {
 }
 
 // streamDownload writes a database export or backup with attachment headers.
-func streamDownload(w http.ResponseWriter, reader io.ReadCloser, filename, contentType string) {
+func streamDownload(w http.ResponseWriter, reader io.ReadCloser, filename, contentType string) error {
 	if reader == nil {
 		writeError(w, http.StatusInternalServerError, codeInternal, "download stream is unavailable", nil)
-		return
+		return errors.New("download stream is unavailable")
 	}
 	defer func() { _ = reader.Close() }()
 	if strings.TrimSpace(filename) == "" {
@@ -469,5 +477,6 @@ func streamDownload(w http.ResponseWriter, reader io.ReadCloser, filename, conte
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(filename)))
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, reader)
+	_, err := io.Copy(w, reader)
+	return err
 }

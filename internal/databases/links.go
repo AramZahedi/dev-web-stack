@@ -16,6 +16,10 @@ import (
 
 var envSlugPattern = regexp.MustCompile(`[^A-Z0-9]+`)
 
+// ErrSiteNotFound distinguishes a missing site reference from a missing
+// database object so the API can return the generic NOT_FOUND code.
+var ErrSiteNotFound = errors.New("database: site not found")
+
 // ListSiteLinks returns every database link for a site with live connection
 // details. A stopped service or externally dropped database is reported as
 // unavailable rather than failing the whole list.
@@ -118,16 +122,8 @@ func (m *Manager) buildLink(ctx context.Context, record model.DatabaseLinkRecord
 		PasswordManaged: link.PasswordManaged,
 	}
 	link.Connection.Env = metadataEnv(link)
-	if link.PasswordManaged && link.Username != "" {
-		scheme := connectionScheme(engine)
-		if scheme != "" {
-			link.Connection.URL = (&url.URL{
-				Scheme: scheme,
-				User:   url.User(link.Username),
-				Host:   fmt.Sprintf("127.0.0.1:%d", port),
-				Path:   "/" + record.DatabaseName,
-			}).String()
-		}
+	if link.PasswordManaged {
+		link.Connection.URL = safeConnectionURL(engine, port, record.DatabaseName, link.Username)
 	}
 	link.Available = len(problems) == 0
 	if len(problems) > 0 {
@@ -253,8 +249,8 @@ func (m *Manager) SiteDatabaseEnv(ctx context.Context, siteRef string) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "ok", nil)
 	if len(links) == 0 {
+		m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "ok", nil)
 		return map[string]string{}, nil
 	}
 	allMetadataOnly := true
@@ -265,7 +261,13 @@ func (m *Manager) SiteDatabaseEnv(ctx context.Context, siteRef string) (map[stri
 		}
 	}
 	if allMetadataOnly {
-		return SiteEnv(links)
+		env, err := SiteEnv(links)
+		if err != nil {
+			m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "failed", map[string]any{"error": safeErrorMessage(err)})
+			return nil, err
+		}
+		m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "ok", nil)
+		return env, nil
 	}
 	grouped := make(map[string][]model.DatabaseLink)
 	for _, link := range links {
@@ -276,12 +278,14 @@ func (m *Manager) SiteDatabaseEnv(ctx context.Context, siteRef string) (map[stri
 	for serviceID, serviceLinks := range grouped {
 		resolved, err := m.deps.Platform.ResolveSiteEnv(ctx, serviceID, serviceLinks)
 		if err != nil {
+			m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "failed", map[string]any{"error": safeErrorMessage(err)})
 			return nil, err
 		}
 		for key, value := range resolved {
 			env[key] = value
 		}
 	}
+	m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "ok", nil)
 	return env, nil
 }
 
@@ -427,7 +431,7 @@ func (m *Manager) resolveSite(ctx context.Context, ref string) (model.Site, erro
 	if !errors.Is(err, store.ErrNotFound) {
 		return model.Site{}, err
 	}
-	return model.Site{}, fmt.Errorf("%w: site %q", ErrNotFound, ref)
+	return model.Site{}, fmt.Errorf("%w: site %q", ErrSiteNotFound, ref)
 }
 
 // linkFromRecord assembles a link view without querying the engine.
@@ -458,7 +462,24 @@ func (m *Manager) linkFromRecord(_ context.Context, record model.DatabaseLinkRec
 		},
 	}
 	link.Connection.Env = metadataEnv(link)
+	if link.PasswordManaged {
+		link.Connection.URL = safeConnectionURL(engine, port, record.DatabaseName, user.Username)
+	}
 	return link
+}
+
+// safeConnectionURL builds a URL without a password.
+func safeConnectionURL(engine model.DatabaseEngine, port int, database, username string) string {
+	scheme := connectionScheme(engine)
+	if scheme == "" || username == "" {
+		return ""
+	}
+	return (&url.URL{
+		Scheme: scheme,
+		User:   url.User(username),
+		Host:   fmt.Sprintf("127.0.0.1:%d", port),
+		Path:   "/" + database,
+	}).String()
 }
 
 // SiteEnv builds the safe, non-secret part of a site's database environment.
@@ -525,12 +546,16 @@ func metadataEnv(link model.DatabaseLink) map[string]string {
 	if username == "" {
 		username = link.Connection.Username
 	}
+	prefix := "DB_"
+	if !link.Primary {
+		prefix = "DB_" + envSlug(link.Database) + "_"
+	}
 	return map[string]string{
-		"DB_CONNECTION": dbConnectionValue(engine),
-		"DB_HOST":       "127.0.0.1",
-		"DB_PORT":       fmt.Sprintf("%d", port),
-		"DB_DATABASE":   link.Database,
-		"DB_USERNAME":   username,
+		prefix + "CONNECTION": dbConnectionValue(engine),
+		prefix + "HOST":       "127.0.0.1",
+		prefix + "PORT":       fmt.Sprintf("%d", port),
+		prefix + "DATABASE":   link.Database,
+		prefix + "USERNAME":   username,
 	}
 }
 

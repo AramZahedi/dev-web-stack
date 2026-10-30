@@ -17,14 +17,15 @@ import (
 // --- fakes -----------------------------------------------------------------
 
 type fakeStore struct {
-	mu      sync.Mutex
-	sites   []model.Site
-	links   []model.DatabaseLinkRecord
-	users   []model.DatabaseUserRecord
-	grants  []model.DatabaseGrantRecord
-	backups []model.DatabaseBackupRecord
-	jobs    []model.DatabaseJobRecord
-	audit   []model.AuditEventRecord
+	mu               sync.Mutex
+	sites            []model.Site
+	links            []model.DatabaseLinkRecord
+	users            []model.DatabaseUserRecord
+	grants           []model.DatabaseGrantRecord
+	backups          []model.DatabaseBackupRecord
+	jobs             []model.DatabaseJobRecord
+	audit            []model.AuditEventRecord
+	passwordStateErr error
 }
 
 func (f *fakeStore) GetSite(_ context.Context, id string) (model.Site, error) {
@@ -227,6 +228,9 @@ func (f *fakeStore) DeleteDatabaseUser(_ context.Context, id string) error {
 }
 
 func (f *fakeStore) SetDatabaseUserPasswordState(_ context.Context, id string, managed bool, rotatedAt int64) error {
+	if f.passwordStateErr != nil {
+		return f.passwordStateErr
+	}
 	for i := range f.users {
 		if f.users[i].ID == id {
 			f.users[i].PasswordManaged = managed
@@ -432,6 +436,8 @@ type fakePlatform struct {
 	lastRestoreReq   RestoreBackupRequest
 	lastImportReq    ImportRequest
 	listErr          error
+	envErr           error
+	passwordStateErr error
 }
 
 func (f *fakePlatform) ListDatabases(context.Context, string) ([]model.Database, error) {
@@ -564,6 +570,9 @@ func (f *fakePlatform) GetJob(context.Context, string) (model.DatabaseJob, error
 func (f *fakePlatform) CancelJob(context.Context, string) error { return nil }
 
 func (f *fakePlatform) ResolveSiteEnv(context.Context, string, []model.DatabaseLink) (map[string]string, error) {
+	if f.envErr != nil {
+		return nil, f.envErr
+	}
 	if f.env == nil {
 		return map[string]string{}, nil
 	}
@@ -902,6 +911,96 @@ func TestManagerEmitsDatabaseAndRedisSSENames(t *testing.T) {
 	}
 }
 
+func TestListDatabasesDeduplicatesMissingLinkedDatabase(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	platform.databases = nil
+	st.links = []model.DatabaseLinkRecord{
+		{ID: "lnk_1", SiteID: "site_1", SiteName: "blog", ServiceID: "mysql", DatabaseName: "gone", UserID: "usr_app"},
+		{ID: "lnk_2", SiteID: "site_2", SiteName: "shop", ServiceID: "mysql", DatabaseName: "gone", UserID: "usr_app"},
+	}
+	databases, err := m.ListDatabases(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(databases) != 1 || len(databases[0].LinkedSites) != 2 {
+		t.Fatalf("databases = %+v", databases)
+	}
+}
+
+func TestLinkFromRecordIncludesSafeConnectionURL(t *testing.T) {
+	m, _, _, _, _ := testManagerWithFakes(t)
+	link := m.linkFromRecord(context.Background(), model.DatabaseLinkRecord{
+		ID: "lnk_1", SiteID: "site_1", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app",
+	}, model.DatabaseUserRecord{ID: "usr_app", Username: "app", Host: "%", PasswordManaged: true})
+	if link.Connection.URL == "" || strings.Contains(link.Connection.URL, "s3cret") {
+		t.Fatalf("url = %q", link.Connection.URL)
+	}
+	if !strings.Contains(link.Connection.URL, "app@127.0.0.1") {
+		t.Fatalf("url = %q", link.Connection.URL)
+	}
+}
+
+func TestMetadataEnvUsesSlugForNonPrimary(t *testing.T) {
+	env := metadataEnv(model.DatabaseLink{Database: "app", Primary: false, Engine: model.DatabaseMySQL})
+	if env["DB_APP_HOST"] != "127.0.0.1" {
+		t.Fatalf("env = %+v", env)
+	}
+	if _, ok := env["DB_HOST"]; ok {
+		t.Fatalf("non-primary used primary prefix: %+v", env)
+	}
+}
+
+func TestSiteDatabaseEnvAuditsOnlyAfterResolution(t *testing.T) {
+	m, st, platform, audit, _ := testManagerWithFakes(t)
+	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app", Primary: true}}
+	st.users[0].PasswordManaged = true
+	platform.envErr = errors.New("resolve failed")
+	if _, err := m.SiteDatabaseEnv(context.Background(), "blog"); err == nil {
+		t.Fatal("expected resolve failure")
+	}
+	if len(audit.events) != 1 || audit.events[0].Result != "failed" {
+		t.Fatalf("audit = %+v", audit.events)
+	}
+	platform.envErr = nil
+	platform.env = map[string]string{"DB_DATABASE": "app"}
+	if _, err := m.SiteDatabaseEnv(context.Background(), "blog"); err != nil {
+		t.Fatal(err)
+	}
+	if audit.events[len(audit.events)-1].Result != "ok" {
+		t.Fatalf("audit = %+v", audit.events)
+	}
+}
+
+func TestSetUserPasswordReturnsSecretWhenMetadataWriteFails(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	st.passwordStateErr = errors.New("state write failed")
+	secret, err := m.SetUserPassword(context.Background(), "mysql", "usr_app")
+	if err != nil || secret.Value == "" {
+		t.Fatalf("secret=%+v err=%v", secret, err)
+	}
+}
+
+func TestMissingSiteUsesSiteNotFoundSentinel(t *testing.T) {
+	m, _, _, _, _ := testManagerWithFakes(t)
+	if _, err := m.ListSiteLinks(context.Background(), "missing"); !errors.Is(err, ErrSiteNotFound) {
+		t.Fatalf("err = %v, want ErrSiteNotFound", err)
+	}
+}
+
+func TestProtectedDatabaseRejectedForRestoreImportAndGrants(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
+	if _, err := m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{Target: "mysql", Overwrite: true, Confirm: "mysql"}); !errors.Is(err, ErrProtected) {
+		t.Fatalf("restore protected = %v", err)
+	}
+	if _, err := m.ImportDatabase(context.Background(), "mysql", "mysql", strings.NewReader("x"), "x.sql", ImportRequest{Mode: ImportMerge}); !errors.Is(err, ErrProtected) {
+		t.Fatalf("import protected = %v", err)
+	}
+	if _, err := m.CreateUser(context.Background(), "mysql", CreateUserRequest{Username: "app2", Grants: []model.DatabaseGrant{{Database: "mysql", Preset: model.GrantReadOnly}}}); !errors.Is(err, ErrProtected) {
+		t.Fatalf("protected grant = %v", err)
+	}
+}
+
 func TestManagerRejectsRedisDatabasesAndBackups(t *testing.T) {
 	m, _, _, _, _ := testManagerWithFakes(t)
 	svc := m.deps.Services.(*fakeServices)
@@ -1098,7 +1197,8 @@ func TestManagerImpactListsSitesBackupsAndRunningJobs(t *testing.T) {
 }
 
 func TestUnlinkPrimaryPromotesNextLink(t *testing.T) {
-	m, st, _, _, _ := testManagerWithFakes(t)
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	platform.databases = append(platform.databases, model.Database{Name: "blog", ServiceID: "mysql", Engine: model.DatabaseMySQL})
 	st.links = []model.DatabaseLinkRecord{
 		{ID: "lnk_1", SiteID: "site_1", SiteName: "blog", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app", Primary: true, CreatedAt: 1},
 		{ID: "lnk_2", SiteID: "site_1", SiteName: "blog", ServiceID: "mysql", DatabaseName: "blog", UserID: "usr_app", CreatedAt: 2},
@@ -1108,6 +1208,20 @@ func TestUnlinkPrimaryPromotesNextLink(t *testing.T) {
 	}
 	if len(st.links) != 1 || !st.links[0].Primary {
 		t.Fatalf("links = %+v", st.links)
+	}
+	links, err := m.ListSiteLinks(context.Background(), "blog")
+	if err != nil || len(links) != 1 || !links[0].Primary {
+		t.Fatalf("links=%+v err=%v", links, err)
+	}
+	env, err := SiteEnv(links)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["DB_DATABASE"] != "blog" {
+		t.Fatalf("primary env = %+v", env)
+	}
+	if _, ok := env["DB_BLOG_DATABASE"]; ok {
+		t.Fatalf("promoted primary still uses slug prefix: %+v", env)
 	}
 }
 
@@ -1279,6 +1393,36 @@ func TestAddSiteExistingUserWithoutAccessWarns(t *testing.T) {
 	}
 	if len(platform.grantCalls) != 0 {
 		t.Fatalf("auto-granted: %v", platform.grantCalls)
+	}
+}
+
+func TestConcurrentLinkDuplicateReturnsConflict(t *testing.T) {
+	m, _, _, _, _ := testManagerWithFakes(t)
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := m.LinkDatabase(context.Background(), "blog", LinkDatabaseRequest{ServiceID: "mysql", Database: "app", UserID: "usr_app"})
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	var ok, conflict int
+	for err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrConflict):
+			conflict++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if ok != 1 || conflict != 1 {
+		t.Fatalf("ok=%d conflict=%d", ok, conflict)
 	}
 }
 

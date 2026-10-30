@@ -1060,6 +1060,8 @@ func classifyError(err error) (int, string, string, any) {
 		return http.StatusInternalServerError, codeInternal, "internal error", nil
 	}
 	switch {
+	case errors.Is(err, databases.ErrSiteNotFound):
+		return http.StatusNotFound, codeNotFound, err.Error(), nil
 	case errors.Is(err, databases.ErrJobNotFound):
 		return http.StatusNotFound, codeDatabaseJobNotFound, err.Error(), nil
 	case errors.Is(err, databases.ErrNotFound):

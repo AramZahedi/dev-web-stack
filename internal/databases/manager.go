@@ -205,20 +205,25 @@ func (m *Manager) ListDatabases(ctx context.Context, serviceID string) ([]model.
 		}
 		byName[databases[i].Name] = i
 	}
+	missingIndex := make(map[string]int)
 	for _, link := range links {
+		siteRef := model.DatabaseSiteRef{ID: link.SiteID, Name: link.SiteName}
 		if index, ok := byName[link.DatabaseName]; ok {
-			databases[index].LinkedSites = append(databases[index].LinkedSites, model.DatabaseSiteRef{ID: link.SiteID, Name: link.SiteName})
+			databases[index].LinkedSites = append(databases[index].LinkedSites, siteRef)
+			continue
+		}
+		if index, ok := missingIndex[link.DatabaseName]; ok {
+			databases[index].LinkedSites = append(databases[index].LinkedSites, siteRef)
 			continue
 		}
 		databases = append(databases, model.Database{
-			Name:      link.DatabaseName,
-			ServiceID: serviceID,
-			Engine:    engine,
-			Missing:   true,
-			LinkedSites: []model.DatabaseSiteRef{{
-				ID: link.SiteID, Name: link.SiteName,
-			}},
+			Name:        link.DatabaseName,
+			ServiceID:   serviceID,
+			Engine:      engine,
+			Missing:     true,
+			LinkedSites: []model.DatabaseSiteRef{siteRef},
 		})
+		missingIndex[link.DatabaseName] = len(databases) - 1
 	}
 	sort.SliceStable(databases, func(i, j int) bool { return databases[i].Name < databases[j].Name })
 	return databases, nil
@@ -474,6 +479,11 @@ func (m *Manager) CreateUser(ctx context.Context, serviceID string, req CreateUs
 	if protectedUser(username) {
 		return model.DatabaseUser{}, fmt.Errorf("%w: user %q is protected", ErrProtected, username)
 	}
+	for _, grant := range req.Grants {
+		if protectedDatabase(grant.Database) {
+			return model.DatabaseUser{}, fmt.Errorf("%w: database %q is protected", ErrProtected, grant.Database)
+		}
+	}
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return model.DatabaseUser{}, err
 	}
@@ -553,6 +563,11 @@ func (m *Manager) UpdateUser(ctx context.Context, serviceID, userID string, req 
 	}
 	if protectedUser(record.Username) {
 		return model.DatabaseUser{}, fmt.Errorf("%w: user %q is protected", ErrProtected, record.Username)
+	}
+	for _, grant := range req.Grants {
+		if protectedDatabase(grant.Database) {
+			return model.DatabaseUser{}, fmt.Errorf("%w: database %q is protected", ErrProtected, grant.Database)
+		}
 	}
 	unlock := m.lockService(serviceID)
 	defer unlock()
@@ -658,6 +673,8 @@ func (m *Manager) DeleteUser(ctx context.Context, serviceID, userID string, req 
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return err
 	}
+	unlock := m.lockService(serviceID)
+	defer unlock()
 	links, err := m.deps.Store.ListDatabaseLinksByService(ctx, serviceID)
 	if err != nil {
 		return err
@@ -667,8 +684,6 @@ func (m *Manager) DeleteUser(ctx context.Context, serviceID, userID string, req 
 			return fmt.Errorf("%w: user %q is linked to site %q", ErrLinkedSites, record.Username, link.SiteName)
 		}
 	}
-	unlock := m.lockService(serviceID)
-	defer unlock()
 
 	if err := m.deps.Platform.DeleteUser(ctx, serviceID, userID, req); err != nil {
 		m.audit(ctx, "database.user.deleted", serviceID, "", "user", record.Username, "failed", map[string]any{"error": safeErrorMessage(err)})
@@ -702,8 +717,11 @@ func (m *Manager) SetUserPassword(ctx context.Context, serviceID, userID string)
 		return Secret{}, err
 	}
 	if record, err := m.deps.Store.GetDatabaseUser(ctx, userID); err == nil {
-		if err := m.deps.Store.SetDatabaseUserPasswordState(ctx, userID, true, m.now().Unix()); err != nil {
-			return Secret{}, err
+		if stateErr := m.deps.Store.SetDatabaseUserPasswordState(ctx, userID, true, m.now().Unix()); stateErr != nil {
+			// The engine rotation already succeeded. Report the secret and make
+			// the metadata gap visible instead of turning a successful rotation
+			// into an API failure.
+			m.emit(ctx, "", "database.user.password_state_unknown", fmt.Sprintf("database user %s password rotated but metadata was not updated: %s", record.Username, safeErrorMessage(stateErr)))
 		}
 		m.audit(ctx, "database.user.password_changed", serviceID, "", "user", record.Username, "ok", nil)
 		m.emit(ctx, "", "database.user.password_changed", fmt.Sprintf("database user %s password changed on %s", record.Username, serviceID))
@@ -945,6 +963,9 @@ func (m *Manager) ResolveSiteEnv(ctx context.Context, serviceID string, links []
 func (m *Manager) saveGrant(ctx context.Context, userID, database string, preset model.DatabaseGrantPreset, privileges []string) error {
 	if strings.TrimSpace(database) == "" {
 		return fmt.Errorf("%w: grant database is required", ErrInvalidRequest)
+	}
+	if protectedDatabase(database) {
+		return fmt.Errorf("%w: database %q is protected", ErrProtected, database)
 	}
 	custom := "[]"
 	if len(privileges) > 0 {

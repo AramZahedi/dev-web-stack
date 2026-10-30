@@ -392,6 +392,30 @@ func TestUninstallDeleteDataCleansDatabaseMetadata(t *testing.T) {
 	}
 }
 
+func TestMissingSiteUsesGenericNotFound(t *testing.T) {
+	fx := newFixture(t, Config{Databases: &fakeDatabaseService{err: databases.ErrSiteNotFound}})
+	rec := fx.request(t, http.MethodGet, "/api/v1/sites/missing/databases", nil)
+	assertError(t, rec, http.StatusNotFound, "NOT_FOUND")
+}
+
+func TestSecretEndpointErrorsAreNoStore(t *testing.T) {
+	fx := newFixture(t, Config{Databases: &fakeDatabaseService{err: databases.ErrNotFound}})
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/v1/services/mysql/users/usr_app/reveal"},
+		{http.MethodPost, "/api/v1/services/mysql/users/usr_app/password"},
+		{http.MethodPost, "/api/v1/services/redis/password"},
+		{http.MethodGet, "/api/v1/sites/blog/database-env"},
+	} {
+		rec := fx.request(t, tc.method, tc.path, nil)
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s cache=%q", tc.path, rec.Header().Get("Cache-Control"))
+		}
+	}
+}
+
 func TestDatabaseServiceErrorDoesNotLeakSecret(t *testing.T) {
 	fx := newFixture(t, Config{Databases: &fakeDatabaseService{err: errors.New("connection failed with password s3cret")}})
 	rec := fx.request(t, http.MethodGet, "/api/v1/services/mysql/databases", nil)
