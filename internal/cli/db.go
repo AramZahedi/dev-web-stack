@@ -24,6 +24,8 @@ const maxDatabaseImportBytes = 1 << 30
 var (
 	databasePasswordEnvPattern = regexp.MustCompile(`(?i)^DB_.*_PASSWORD$`)
 	databaseURLEnvPattern      = regexp.MustCompile(`(?i)^(DATABASE_URL|DB_.*_URL)$`)
+	databaseURLUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+):([^@\s/]+)@`)
+	databaseSecretParamPattern = regexp.MustCompile(`(?i)([?&][^=&\s]*(?:password|passwd|pwd|secret|token)[^=&\s]*=)[^&\s]+`)
 )
 
 func (a *App) newDBCmd() *cobra.Command {
@@ -1288,6 +1290,7 @@ func writeDatabaseJob(cmd *cobra.Command, app *App, job model.DatabaseJob) error
 // responses must never expose a password, even if a platform adapter includes
 // one in a connection URL or env snippet.
 func sanitizeDatabaseLink(link model.DatabaseLink) model.DatabaseLink {
+	link.Error = redactPasswordText(link.Error)
 	link.Connection.URL = redactDatabaseURL(link.Connection.URL)
 	if len(link.Connection.Env) == 0 {
 		return link
@@ -1311,17 +1314,49 @@ func redactDatabaseURL(value string) string {
 		return value
 	}
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.User == nil {
+	if err != nil {
+		return redactPasswordText(value)
+	}
+	changed := false
+	if parsed.User != nil {
+		if _, ok := parsed.User.Password(); ok {
+			parsed.User = url.User(parsed.User.Username())
+			changed = true
+		}
+	}
+	query := parsed.Query()
+	for key := range query {
+		if isSecretQueryKey(key) {
+			query.Del(key)
+			changed = true
+		}
+	}
+	if changed {
+		parsed.RawQuery = query.Encode()
+		return parsed.String()
+	}
+	return value
+}
+
+func isSecretQueryKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	switch lower {
+	case "password", "passwd", "pwd", "secret", "token", "sslpassword", "ssl_password":
+		return true
+	}
+	return strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token")
+}
+
+func redactPasswordText(value string) string {
+	if value == "" {
 		return value
 	}
-	if _, ok := parsed.User.Password(); !ok {
-		return value
-	}
-	parsed.User = url.User(parsed.User.Username())
-	return parsed.String()
+	value = databaseURLUserinfoPattern.ReplaceAllString(value, "$1@")
+	return databaseSecretParamPattern.ReplaceAllString(value, "$1REDACTED")
 }
 
 func writeDatabaseLinkDetails(cmd *cobra.Command, link model.DatabaseLink) error {
+	link = sanitizeDatabaseLink(link)
 	host := defaultString(link.Host, "-")
 	if link.Connection.Host != "" {
 		host = link.Connection.Host

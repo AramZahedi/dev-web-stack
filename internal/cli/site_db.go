@@ -148,7 +148,8 @@ func (a *App) newSiteDBUnlinkCmd() *cobra.Command {
 
 func writeSiteDatabaseLinkTable(cmd *cobra.Command, links []model.DatabaseLink) error {
 	rows := make([][]string, 0, len(links))
-	for _, link := range links {
+	for _, raw := range links {
+		link := sanitizeDatabaseLink(raw)
 		host := defaultString(link.Host, "-")
 		if link.Connection.Host != "" {
 			host = link.Connection.Host

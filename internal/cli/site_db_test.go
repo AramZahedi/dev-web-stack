@@ -202,6 +202,30 @@ func TestSiteDBListJSONRedactsConnectionPasswords(t *testing.T) {
 	}
 }
 
+func TestSiteDBListRedactsErrorAndQuerySecrets(t *testing.T) {
+	useTestSeams(t)
+	secret := "s3cret-query"
+	fake := &fakeClient{databaseLinks: []model.DatabaseLink{{
+		ID: "lnk_1", SiteID: "site-1", SiteName: "blog", ServiceID: "mysql", Engine: model.DatabaseMySQL,
+		Database: "app", Username: "app", PasswordManaged: true, Available: false,
+		Error: "connect failed: mysql://app:" + secret + "@127.0.0.1:3306/app?password=" + secret + "&sslpassword=" + secret + "&sslmode=require",
+		Connection: model.DatabaseConnection{
+			Engine: model.DatabaseMySQL, Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
+			URL: "mysql://app:" + secret + "@127.0.0.1:3306/app?password=" + secret + "&sslpassword=" + secret + "&sslmode=require",
+		},
+	}}}
+	jsonOut := runCLI(t, fake, "site", "db", "list", "blog", "--json")
+	humanOut := runCLI(t, fake, "site", "db", "list", "blog")
+	for name, out := range map[string]string{"json": jsonOut, "human": humanOut} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("%s output leaked a query/error password: %s", name, out)
+		}
+	}
+	if !strings.Contains(jsonOut, "sslmode=require") {
+		t.Fatalf("non-secret query parameter was lost: %s", jsonOut)
+	}
+}
+
 func TestSiteDBListHumanShowsLinkID(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{databaseLinks: []model.DatabaseLink{{
