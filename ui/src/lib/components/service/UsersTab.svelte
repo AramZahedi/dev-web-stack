@@ -406,7 +406,7 @@
 {#snippet passwordCell(user: DatabaseUser)}
   {#if user.password_managed}
     <SecretField
-      label={`password for ${user.username}`}
+      label={`Password for ${user.username}`}
       value={revealed[user.id] ?? ''}
       revealed={Boolean(revealed[user.id])}
       loading={revealing[user.id] ?? false}
@@ -437,7 +437,8 @@
     size="sm"
     variant="ghost"
     ariaLabel={`Edit ${user.username}`}
-    disabled={!active}
+    disabled={!active || protectedUser(user)}
+    title={protectedUser(user) ? 'Protected engine user' : 'Edit grants and enabled state'}
     onclick={() => openEdit(user)}
   >
     Edit
@@ -447,7 +448,8 @@
       size="sm"
       variant="ghost"
       ariaLabel={`Reset password for ${user.username}`}
-      disabled={!active}
+      disabled={!active || protectedUser(user)}
+      title={protectedUser(user) ? 'Protected engine user' : 'Rotate the stored password'}
       loading={secretBusy === user.id}
       onclick={() => resetPassword(user)}
     >
@@ -475,7 +477,8 @@
     size="sm"
     variant="ghost"
     ariaLabel={`Edit ${user.username}`}
-    disabled={!active}
+    disabled={!active || protectedUser(user)}
+    title={protectedUser(user) ? 'The Redis default user is protected' : 'Edit the access level'}
     onclick={() => openEdit(user)}
   >
     Edit
@@ -485,7 +488,10 @@
       size="sm"
       variant="ghost"
       ariaLabel={`Reset password for ${user.username}`}
-      disabled={!active}
+      disabled={!active || protectedUser(user)}
+      title={protectedUser(user)
+        ? 'Use the Default password card to rotate this password'
+        : 'Rotate the stored password'}
       loading={secretBusy === user.id}
       onclick={() => resetPassword(user)}
     >

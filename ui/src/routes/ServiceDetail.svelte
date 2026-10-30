@@ -268,6 +268,16 @@
     void load();
   }
 
+  function onTabKeydown(event: KeyboardEvent, index: number): void {
+    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+    event.preventDefault();
+    const offset = event.key === 'ArrowRight' ? 1 : -1;
+    const next = tabs[(index + offset + tabs.length) % tabs.length];
+    if (!next) return;
+    tab = next.id;
+    document.getElementById(`tab-${next.id}`)?.focus();
+  }
+
   function onJobChange(active: boolean): void {
     jobActive = active;
   }
@@ -460,16 +470,17 @@
       </div>
     {:else}
       <div class="tabs" role="tablist" aria-label="Database management">
-        {#each tabs as entry (entry.id)}
+        {#each tabs as entry, index (entry.id)}
           <button
             type="button"
             role="tab"
             id={`tab-${entry.id}`}
             class="tab"
             aria-selected={tab === entry.id}
-            aria-controls={`panel-${entry.id}`}
+            aria-controls={tab === entry.id ? `panel-${entry.id}` : undefined}
             tabindex={tab === entry.id ? 0 : -1}
             onclick={() => (tab = entry.id)}
+            onkeydown={(event) => onTabKeydown(event, index)}
           >
             <entry.icon size={14} strokeWidth={1.9} aria-hidden="true" />
             {entry.label}

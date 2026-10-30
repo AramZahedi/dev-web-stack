@@ -104,7 +104,13 @@
 <Modal {open} {title} {description} size="md" onclose={onclose}>
   <div class="user-form">
     <div class="row">
-      <Field id="user-username" label="Username" error={validation.username} required>
+      <Field
+        id="user-username"
+        label="Username"
+        error={validation.username}
+        hint={mode === 'edit' ? 'Usernames cannot be renamed. Create a new user instead.' : undefined}
+        required
+      >
         <input
           id="user-username"
           class="input mono"
@@ -113,6 +119,7 @@
           autocomplete="off"
           spellcheck="false"
           data-autofocus
+          disabled={mode === 'edit'}
         />
       </Field>
       {#if isMySQLFamily}
@@ -120,7 +127,7 @@
           id="user-host"
           label="Host"
           error={validation.host}
-          hint="Devstack-managed users use %."
+          hint={mode === 'edit' ? 'Host scopes cannot be changed.' : 'Devstack-managed users use %.'}
         >
           <input
             id="user-host"
@@ -129,6 +136,7 @@
             bind:value={host}
             autocomplete="off"
             spellcheck="false"
+            disabled={mode === 'edit'}
           />
         </Field>
       {/if}

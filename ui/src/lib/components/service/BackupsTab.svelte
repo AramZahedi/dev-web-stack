@@ -419,6 +419,9 @@
         <option value={option}>{option}</option>
       {/each}
     </select>
+    {#if databaseOptions.length === 0}
+      <p class="dialog-error" role="alert">No databases are available to back up.</p>
+    {/if}
     {#if createError}
       <p class="dialog-error" role="alert">
         <span class="mono">{createError.code}</span>
@@ -431,7 +434,9 @@
     <Button variant="ghost" onclick={() => (createOpen = false)} disabled={creating}>
       Cancel
     </Button>
-    <Button variant="primary" onclick={confirmCreate} loading={creating}>Create backup</Button>
+    <Button variant="primary" onclick={confirmCreate} loading={creating} disabled={databaseOptions.length === 0}>
+      Create backup
+    </Button>
   {/snippet}
 </Modal>
 
