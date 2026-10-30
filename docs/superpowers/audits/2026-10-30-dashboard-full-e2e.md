@@ -183,6 +183,11 @@ $env:PATH = 'C:\Program Files\nodejs;' + $env:PATH
   the reviewed commits for deployment and report `vdev`; release packaging gates
   are independent and green.
 
+A fuller backlog of residual E2E gaps (clean-machine install, real reboot,
+failure injection, load, multi-user, race, security fuzzing, and areas covered
+only by earlier runs) is maintained in the
+[E2E coverage gaps document](2026-10-30-e2e-coverage-gaps.md).
+
 ## Evidence map
 
 - `dist/e2e/full-dashboard/task-0/` — baseline, backup, preflight.
