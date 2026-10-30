@@ -315,6 +315,10 @@
   }
 
   async function backupDatabase(database: Database): Promise<void> {
+    if (isProtectedDatabase(database.engine, database.name)) {
+      actionError = 'Protected system databases cannot be backed up.';
+      return;
+    }
     if (!active) {
       actionError = 'Activate the service to back up databases.';
       return;
@@ -330,6 +334,10 @@
   }
 
   async function exportDatabase(database: Database): Promise<void> {
+    if (isProtectedDatabase(database.engine, database.name)) {
+      actionError = 'Protected system databases cannot be exported.';
+      return;
+    }
     if (!active) {
       actionError = 'Activate the service to export databases.';
       return;
@@ -628,7 +636,7 @@
                       size="sm"
                       variant="ghost"
                       ariaLabel={`Back up ${database.name}`}
-                      disabled={database.missing}
+                      disabled={database.missing || protectedDatabase(database)}
                       onclick={() => backupDatabase(database)}
                     >
                       <Archive size={12} strokeWidth={2} aria-hidden="true" />
@@ -638,7 +646,7 @@
                       size="sm"
                       variant="ghost"
                       ariaLabel={`Export ${database.name}`}
-                      disabled={database.missing}
+                      disabled={database.missing || protectedDatabase(database)}
                       onclick={() => exportDatabase(database)}
                     >
                       <Download size={12} strokeWidth={2} aria-hidden="true" />

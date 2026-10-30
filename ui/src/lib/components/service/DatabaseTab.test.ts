@@ -697,7 +697,8 @@ describe('DatabaseTab', () => {
     expect(screen.getByText('Protected')).toBeTruthy();
     expect((screen.getByRole('button', { name: /drop devstack/i }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: /import devstack/i }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: /back up devstack/i }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: /back up devstack/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /export devstack/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('does not offer rename for a protected PostgreSQL database', () => {
