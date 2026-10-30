@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -384,4 +386,66 @@ func TestNodeReleaseEndpointsRequireAuth(t *testing.T) {
 	if service.refreshCalls != 1 {
 		t.Fatalf("authenticated refresh calls = %d", service.refreshCalls)
 	}
+}
+
+func assertNoNodeReleaseFetchLeak(t *testing.T, label, text string) {
+	t.Helper()
+	for _, detail := range []string{
+		"https://",
+		"http://",
+		"nodejs.org",
+		"dist/index.json",
+		"dial tcp",
+		"104.20.28.92",
+		"connectex",
+		"connection attempt failed",
+		"nodereleases:",
+	} {
+		if strings.Contains(text, detail) {
+			t.Fatalf("%s leaked %q: %s", label, detail, text)
+		}
+	}
+}
+
+func TestNodeReleaseWarningsAndLogsSanitizeFetchDetails(t *testing.T) {
+	const (
+		indexURL  = "https://nodejs.org/dist/index.json"
+		transport = "dial tcp 104.20.28.92:443: connectex: A connection attempt failed because the connected party did not properly respond"
+	)
+	warning := "could not refresh the node release index: nodereleases: GET " + indexURL + ": " + transport
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	service := &fakeNodeReleaseRuntimeService{snapshot: nodereleases.Snapshot{
+		Source:  nodereleases.SourceEmbedded,
+		Stale:   true,
+		Warning: warning,
+	}}
+	fx := newNodeReleaseAPIFixture(t, service, Config{Logger: logger})
+
+	rec := httptest.NewRecorder()
+	fx.server.handleListNodeReleases(rec, httptest.NewRequest(http.MethodGet, "/api/v1/runtimes/node/releases", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var snapshot nodereleases.Snapshot
+	decode(t, rec, &snapshot)
+	if snapshot.Warning != "could not refresh the node release index" {
+		t.Fatalf("warning = %q", snapshot.Warning)
+	}
+	assertNoNodeReleaseFetchLeak(t, "warning", snapshot.Warning)
+
+	// Error logs use the same sanitizer, so transport diagnostics cannot leak
+	// through the daemon log even though the response is already generic.
+	service.refreshErr = errors.New(warning)
+	rec = httptest.NewRecorder()
+	fx.server.handleRefreshNodeReleases(rec, httptest.NewRequest(http.MethodPost, "/api/v1/runtimes/node/refresh", nil))
+	assertError(t, rec, http.StatusBadGateway, codeServiceUnavailable)
+	assertNoNodeReleaseFetchLeak(t, "refresh error response", rec.Body.String())
+
+	logOutput := logs.String()
+	if !strings.Contains(logOutput, "node release request failed") {
+		t.Fatalf("expected a discovery failure log entry, got %q", logOutput)
+	}
+	assertNoNodeReleaseFetchLeak(t, "logs", logOutput)
 }

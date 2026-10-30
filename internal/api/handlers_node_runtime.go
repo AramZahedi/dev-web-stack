@@ -175,17 +175,47 @@ func (s *Server) writeNodeReleaseError(w http.ResponseWriter, r *http.Request, e
 		"node release discovery is unavailable", nil)
 }
 
-// nodeReleaseCachePath matches private cache locations that discovery can
-// mention in warnings, including Windows paths with spaces and POSIX forms.
-var nodeReleaseCachePath = regexp.MustCompile(
-	`(?i)[A-Za-z]:\\[^:*?"<>|\r\n]*\\cache\\node(?:\\[^\\/:*?"<>|\r\n]*)*` +
-		`|(?:[A-Za-z]:)?(?:[\\/][^\s"'<>]+)*[\\/]cache[\\/]node(?:[\\/][^\s"'<>]+)*`,
+var (
+	// nodeReleaseCachePath matches private cache locations that discovery can
+	// mention in warnings, including Windows paths with spaces and POSIX forms.
+	nodeReleaseCachePath = regexp.MustCompile(
+		`(?i)[A-Za-z]:\\[^:*?"<>|\r\n]*\\cache\\node(?:\\[^\\/:*?"<>|\r\n]*)*` +
+			`|(?:[A-Za-z]:)?(?:[\\/][^\s"'<>]+)*[\\/]cache[\\/]node(?:[\\/][^\s"'<>]+)*`,
+	)
+	// nodeReleaseURL matches official and fallback fetch URLs.
+	nodeReleaseURL = regexp.MustCompile(`(?i)https?://\S+`)
+	// nodeReleaseTransportDetail matches the transport diagnostics appended by
+	// net/http and the operating system. The rest of the message is redacted so
+	// host addresses, port numbers, and OS error text cannot leak.
+	nodeReleaseTransportDetail = regexp.MustCompile(
+		`(?i)\b(?:dial\s+(?:tcp|udp)\d*|connectex|no such host|i/o timeout` +
+			`|connection (?:refused|reset|attempt failed)|network is unreachable` +
+			`|tls handshake (?:failure|timeout)|context deadline exceeded` +
+			`|server misbehaving|unexpected EOF)\b.*$`,
+	)
 )
 
 // sanitizeNodeReleaseMessage keeps discovery messages actionable while hiding
-// the daemon's private cache layout.
+// private cache locations, fetch URLs, and transport diagnostics. Discovery
+// errors carry a structured "nodereleases:" detail tail; only the human prefix
+// before it is preserved. The same sanitizer is used for responses and logs.
 func sanitizeNodeReleaseMessage(message string) string {
-	return nodeReleaseCachePath.ReplaceAllString(message, "<cache>")
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	if index := strings.Index(strings.ToLower(message), "nodereleases:"); index >= 0 {
+		prefix := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(message[:index]), ":"))
+		if prefix != "" {
+			message = prefix
+		} else {
+			message = "node release discovery failed"
+		}
+	}
+	message = nodeReleaseCachePath.ReplaceAllString(message, "<cache>")
+	message = nodeReleaseURL.ReplaceAllString(message, "<url>")
+	message = nodeReleaseTransportDetail.ReplaceAllString(message, "transport error")
+	return strings.TrimSpace(message)
 }
 
 // sanitizeNodeReleaseSnapshot applies the same redaction to user-visible
