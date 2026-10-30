@@ -901,10 +901,10 @@ describe('AddSite Wave 2 fields', () => {
     expect(screen.getByText(/does not have access to app/i)).toBeTruthy();
     const manage = screen.getByRole('link', { name: 'Manage database user' });
     expect(manage.getAttribute('href')).toBe('#/services/mysql?tab=users&user=usr_ext');
-    await fireEvent.input(screen.getByLabelText(/Database password/), {
-      target: { value: 's3cret' },
-    });
-    expect(screen.queryByText('s3cret')).toBeNull();
+    expect(screen.queryByLabelText(/Database password/)).toBeNull();
+    expect(
+      screen.getByText(/external password entry is not available in v1/i),
+    ).toBeTruthy();
 
     await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
     await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
@@ -914,14 +914,13 @@ describe('AddSite Wave 2 fields', () => {
           service_id: 'mysql',
           database: 'app',
           user_id: 'usr_ext',
-          password: 's3cret',
           primary: true,
         },
       }),
     );
   });
 
-  it('omits the password for a metadata-only existing user link', async () => {
+  it('links a metadata-only existing user without a password', async () => {
     mockDb.listServiceDatabases.mockResolvedValue({ databases: [APP_DATABASE] });
     mockDb.listServiceUsers.mockResolvedValue({ users: [EXTERNAL_USER] });
     await openOptionsStep();
@@ -939,6 +938,7 @@ describe('AddSite Wave 2 fields', () => {
     });
 
     expect(screen.getByText('Password not managed.')).toBeTruthy();
+    expect(screen.queryByLabelText(/Database password/)).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
     await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
     expect(mockApi.createSite).toHaveBeenCalledWith(

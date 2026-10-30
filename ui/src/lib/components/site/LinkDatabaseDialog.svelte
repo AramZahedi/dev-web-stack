@@ -96,7 +96,6 @@
           service_id: value.service_id,
           database,
           user_id: value.user_id ?? '',
-          ...(value.password ? { password: value.password } : {}),
           primary: value.primary ?? primary,
         });
       }

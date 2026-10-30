@@ -56,7 +56,6 @@
   let userMode = $state<'new' | 'existing'>('new');
   let userID = $state('');
   let username = $state('');
-  let password = $state('');
   let grant = $state<GrantPreset>('read_write_schema');
   let dataGeneration = 0;
 
@@ -133,7 +132,7 @@
         selectedService?.ports?.find((port) => port.loopback)?.host ??
         defaultPort(selectedService?.id),
       passwordManaged:
-        userMode === 'new' ? true : Boolean(selectedUser?.password_managed || password),
+        userMode === 'new' ? true : Boolean(selectedUser?.password_managed),
       hasAccess: userMode === 'new' || Boolean(selectedUserGrant),
     };
   }
@@ -161,7 +160,6 @@
       request.grant = grant;
     } else {
       if (userID) request.user_id = userID;
-      if (password) request.password = password;
     }
     value = request;
     summary = buildSummary();
@@ -173,7 +171,6 @@
       databaseName = databaseMode === 'new' ? defaultName() : '';
       userID = '';
       username = userMode === 'new' ? defaultName() : '';
-      password = '';
     }
     databases = [];
     users = [];
@@ -277,7 +274,6 @@
     userMode = mode;
     username = mode === 'new' ? defaultName() : '';
     userID = mode === 'existing' ? (availableUsers[0]?.id ?? '') : '';
-    password = '';
     onclearerror?.('database_user');
     onclearerror?.('database_username');
     sync();
@@ -305,7 +301,6 @@
       userMode = value.new_user ? 'new' : 'existing';
       username = value.new_user?.username ?? '';
       userID = value.user_id ?? '';
-      password = value.password ?? '';
       grant = value.grant ?? value.new_user?.grants?.[0]?.preset ?? 'read_write_schema';
     } else if (alwaysOn) {
       enabled = true;
@@ -550,7 +545,6 @@
             aria-invalid={Boolean(errors.database_user)}
             onchange={() => {
               onclearerror?.('database_user');
-              password = '';
               sync();
             }}
           >
@@ -604,20 +598,10 @@
             </div>
           {/if}
           {#if !selectedUser.password_managed}
-            <Field
-              id="database-password"
-              label="Database password"
-              hint="Leave blank to link without a password."
-            >
-              <input
-                id="database-password"
-                class="input mono"
-                type="password"
-                autocomplete="new-password"
-                bind:value={password}
-                oninput={sync}
-              />
-            </Field>
+            <p class="password-note">
+              External password entry is not available in v1. This link will be metadata-only;
+              set the password in the engine, then restart the site.
+            </p>
           {/if}
         </div>
       {/if}
@@ -717,6 +701,13 @@
     margin: 0;
     color: var(--muted);
     font-size: 11.5px;
+  }
+
+  .password-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.5;
   }
 
   .access strong {

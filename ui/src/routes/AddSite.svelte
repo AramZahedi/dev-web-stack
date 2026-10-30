@@ -1829,7 +1829,7 @@
   <Modal
     open={createdOpen}
     title="Database created"
-    description="The site and its database are ready. Reveal the generated password once now, or from the site's Databases card later."
+    description="The site and its database are ready. Reveal the database password once now, or from the site's Databases card later."
     size="md"
     onclose={continueAfterCreate}
   >
@@ -1855,7 +1855,8 @@
         />
       {:else}
         <p class="hint">
-          This link has no managed password. Set one from the site's Databases card.
+          This link has no managed password. External password entry is not available in v1;
+          set it in the engine and restart the site.
         </p>
       {/if}
     </div>
