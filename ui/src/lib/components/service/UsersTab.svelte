@@ -84,6 +84,12 @@
 
   let secretDialog = $state<{ user: DatabaseUser; value: string; revealed: boolean } | null>(null);
 
+  const deleteLabel = $derived(
+    deleteTarget
+      ? `${deleteTarget.username}${deleteTarget.host ? `@${deleteTarget.host}` : ''}`
+      : 'user',
+  );
+
   // A refreshed inventory never keeps a previously revealed secret on screen.
   $effect(() => {
     void users;
@@ -355,6 +361,7 @@
           <thead>
             <tr>
               <th scope="col">User</th>
+              <th scope="col">Engine</th>
               <th scope="col">State</th>
               <th scope="col">Access</th>
               <th scope="col">Password</th>
@@ -373,6 +380,7 @@
                     <Badge variant="info">Selected</Badge>
                   {/if}
                 </td>
+                <td class="mono">{user.engine}</td>
                 <td>
                   <Badge variant={user.enabled ? 'accent' : 'neutral'}>
                     {user.enabled ? 'Enabled' : 'Disabled'}
@@ -399,6 +407,7 @@
           <thead>
             <tr>
               <th scope="col">User</th>
+              <th scope="col">Engine</th>
               <th scope="col">Host</th>
               <th scope="col">State</th>
               <th scope="col">Password</th>
@@ -422,6 +431,7 @@
                     <Badge variant="info">Selected</Badge>
                   {/if}
                 </td>
+                <td class="mono">{user.engine}</td>
                 <td class="mono">{user.host || '—'}</td>
                 <td>
                   <Badge variant={user.enabled ? 'accent' : 'neutral'}>
@@ -479,7 +489,8 @@
         size="sm"
         variant="ghost"
         ariaLabel={`Set password for ${user.username}`}
-        disabled={!active}
+        disabled={!active || protectedUser(user)}
+        title={protectedUser(user) ? 'Protected engine user' : 'Set a stored password'}
         loading={secretBusy === user.id}
         onclick={() => resetPassword(user)}
       >
@@ -583,8 +594,8 @@
 
 <ConfirmDialog
   open={deleteTarget !== null}
-  title={deleteTarget ? `Delete user ${deleteTarget.username}?` : 'Delete user?'}
-  description="The engine user and its grants are removed. Databases, backups and site links are not deleted."
+  title={deleteTarget ? `Delete user ${deleteLabel}?` : 'Delete user?'}
+  description={`The engine user ${deleteLabel} and its grants are removed. Databases, backups and site links are not deleted.`}
   confirmLabel="Delete user"
   danger
   busy={deleting}

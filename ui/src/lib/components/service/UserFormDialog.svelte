@@ -43,6 +43,7 @@
   let accessLevel = $state('read-only');
   let grants = $state<DatabaseGrant[]>([]);
   let validation = $state<Record<string, string>>({});
+  let wasOpen = false;
 
   const isRedis = $derived(engine === 'redis');
   const isMySQLFamily = $derived(engine === 'mysql' || engine === 'mariadb');
@@ -53,7 +54,12 @@
   );
 
   $effect(() => {
-    if (!open) return;
+    if (!open) {
+      wasOpen = false;
+      return;
+    }
+    if (wasOpen) return;
+    wasOpen = true;
     username = mode === 'edit' ? (user?.username ?? '') : '';
     host = user?.host || (isMySQLFamily ? '%' : '');
     enabled = user?.enabled ?? true;

@@ -26,6 +26,7 @@
   import { isProtectedDatabase } from './databaseProtection';
   import { saveBlob } from './fileDownload';
   import { jobToastKind } from './jobStatus';
+  import { restoreDatabaseName } from './recovery';
   import {
     allLinkedSitesStopped,
     readLinkedSiteStates,
@@ -103,6 +104,18 @@
     restoreTarget ? (databases.find((database) => database.name === restoreTarget?.database) ?? null) : null,
   );
   const restoreSites = $derived<DatabaseSiteRef[]>(restoreDatabase?.linked_sites ?? []);
+  const totalBackupBytes = $derived(
+    backups.reduce((total, backup) => total + backup.size_bytes, 0),
+  );
+  const restoreNameError = $derived.by(() => {
+    if (restoreMode !== 'new') return '';
+    if (!restoreName) return 'A target database name is required.';
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(restoreName)) {
+      return 'Use letters, numbers and underscores; start with a letter or underscore.';
+    }
+    if (restoreName.length > 63) return 'Database names are limited to 63 characters.';
+    return '';
+  });
 
   async function prepareLinkedSites(sites: DatabaseSiteRef[] | undefined): Promise<void> {
     linkedStates = {};
@@ -225,8 +238,7 @@
   }
 
   function defaultRestoreName(database: string): string {
-    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-    return `${database}_restore_${stamp}`;
+    return restoreDatabaseName(database);
   }
 
   function beginRestore(backup: DatabaseBackup): void {
@@ -390,6 +402,7 @@
         <Archive size={13} strokeWidth={2} aria-hidden="true" />
         Create backup
       </Button>
+      <Badge>{formatBytes(totalBackupBytes)} total</Badge>
     {/snippet}
 
     {#if loading && backups.length === 0}
@@ -526,7 +539,9 @@
   danger={restoreMode === 'overwrite'}
   busy={restoring}
   requireText={restoreTarget?.database}
-  confirmDisabled={restoreMode === 'overwrite' && !sitesReady(restoreSites)}
+  confirmDisabled={restoreMode === 'overwrite'
+    ? !sitesReady(restoreSites)
+    : Boolean(restoreNameError)}
   onconfirm={confirmRestore}
   oncancel={() => {
     if (!restoring) restoreTarget = null;
@@ -575,6 +590,9 @@
       {#if restoreMode === 'new'}
         <label class="field-label" for="restore-target">New database name</label>
         <input id="restore-target" class="input mono" type="text" bind:value={restoreName} />
+        {#if restoreNameError}
+          <p class="dialog-error" role="alert">{restoreNameError}</p>
+        {/if}
       {:else}
         <p class="overwrite-target">
           Target: <code class="mono">{restoreTarget?.database}</code>

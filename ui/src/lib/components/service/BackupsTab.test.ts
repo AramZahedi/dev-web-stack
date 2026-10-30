@@ -131,6 +131,7 @@ describe('BackupsTab', () => {
     });
 
     expect(screen.getByText('app')).toBeTruthy();
+    expect(screen.getByText(/2.3 MB total/i)).toBeTruthy();
     await fireEvent.click(screen.getByRole('button', { name: /download app backup/i }));
 
     await waitFor(() =>

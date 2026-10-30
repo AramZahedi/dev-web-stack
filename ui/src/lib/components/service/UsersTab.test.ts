@@ -203,6 +203,73 @@ describe('UsersTab', () => {
     expect(screen.getByText('read/write + schema on app')).toBeTruthy();
     expect(screen.getByText('Managed')).toBeTruthy();
     expect(screen.getByText('External')).toBeTruthy();
+    expect(screen.getAllByText('mysql').length).toBeGreaterThan(0);
+  });
+
+  it('keeps the user form draft across a background inventory refresh', async () => {
+    const props = {
+      service: MYSQL_SERVICE,
+      users: MYSQL_USERS,
+      databases: MYSQL_DATABASES,
+      onRefresh: vi.fn(),
+    };
+    const { rerender } = render(UsersTab, { props });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create user' }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.input(within(dialog).getByLabelText(/^username/i), {
+      target: { value: 'draft' },
+    });
+
+    rerender({ ...props, databases: MYSQL_DATABASES.map((database) => ({ ...database })) });
+
+    const input = within(screen.getByRole('dialog')).getByLabelText(
+      /^username/i,
+    ) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe('draft'));
+  });
+
+  it('identifies the host scope in the delete dialog', async () => {
+    render(UsersTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        users: MYSQL_USERS,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /delete app/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Delete user app@%?')).toBeTruthy();
+  });
+
+  it('does not offer Set password for a protected metadata-only user', () => {
+    const protectedUser: DatabaseUser = {
+      id: 'usr_devstack',
+      service_id: 'mysql',
+      engine: 'mysql',
+      username: 'devstack',
+      host: '%',
+      enabled: true,
+      managed: false,
+      password_managed: false,
+      grants: [],
+      linked_sites: [],
+    };
+    render(UsersTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        users: [protectedUser],
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    expect(
+      (screen.getByRole('button', { name: /set password for devstack/i }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it('reveals a password only after the audited call', async () => {
