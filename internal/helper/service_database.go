@@ -620,7 +620,7 @@ func (c *DockerServiceController) userGrants(ctx context.Context, serviceID stri
 // update.
 func isGlobalGrantScope(database string) bool {
 	switch strings.ToLower(strings.TrimSpace(database)) {
-	case "", "*", "%", "all", "*.*":
+	case "", "*", "%", "*.*":
 		return true
 	default:
 		return false
