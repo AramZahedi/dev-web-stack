@@ -1,7 +1,9 @@
 package agentdocker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,8 +32,8 @@ func (d *Docker) handleDatabaseList(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleDatabaseCreate(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.DatabaseCreateRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") {
@@ -50,8 +52,8 @@ func (d *Docker) handleDatabaseCreate(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleDatabaseRename(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.DatabaseRenameRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") || request.Name != r.PathValue("name") {
@@ -72,8 +74,8 @@ func (d *Docker) handleDatabaseRename(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleDatabaseDrop(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.DatabaseDropRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") || request.Name != r.PathValue("name") {
@@ -98,8 +100,8 @@ func (d *Docker) handleUserList(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.UserCreateRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") {
@@ -118,8 +120,8 @@ func (d *Docker) handleUserCreate(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.UserUpdateRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") || request.UserID != r.PathValue("userID") {
@@ -138,8 +140,8 @@ func (d *Docker) handleUserUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.UserDeleteRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") || request.UserID != r.PathValue("userID") {
@@ -157,8 +159,8 @@ func (d *Docker) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleUserPassword(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.UserPasswordRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") || request.UserID != r.PathValue("userID") {
@@ -176,8 +178,8 @@ func (d *Docker) handleUserPassword(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleRedisPassword(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.UserPasswordRequest
-	if err := decodeRequest(w, r, &request); err != nil && !errors.Is(err, io.EOF) {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil && !errors.Is(err, io.EOF) {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != "" && request.ID != r.PathValue("id") {
@@ -203,8 +205,8 @@ func (d *Docker) handleRedisEnableACLFile(w http.ResponseWriter, r *http.Request
 
 func (d *Docker) handleUserReveal(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.UserRevealRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") || request.UserID != r.PathValue("userID") {
@@ -231,8 +233,8 @@ func (d *Docker) handleBackupList(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.BackupCreateRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") || request.Database != r.PathValue("name") {
@@ -268,8 +270,8 @@ func (d *Docker) handleBackupDelete(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.BackupRestoreRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	if request.ID != r.PathValue("id") || request.BackupID != r.PathValue("backupID") {
@@ -311,8 +313,8 @@ func (d *Docker) handleDatabaseExport(w http.ResponseWriter, r *http.Request) {
 
 func (d *Docker) handleDatabaseEnv(w http.ResponseWriter, r *http.Request) {
 	var request dbproto.SiteEnvRequest
-	if err := decodeRequest(w, r, &request); err != nil {
-		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+	if err := decodeDatabaseRequest(w, r, &request); err != nil {
+		writeDatabaseError(w, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err))
 		return
 	}
 	serviceID := r.PathValue("id")
@@ -335,7 +337,7 @@ func (d *Docker) resolveSiteEnv(ctx context.Context, serviceID string, links []d
 			continue
 		}
 		if err := dbengine.ValidateIdentifier(link.Database); err != nil {
-			return nil, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
+			return nil, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err)
 		}
 		linkService := strings.TrimSpace(link.ServiceID)
 		if linkService != "" && !sameDatabaseService(linkService, serviceID) {
@@ -350,7 +352,7 @@ func (d *Docker) resolveSiteEnv(ctx context.Context, serviceID string, links []d
 			return nil, fmt.Errorf("%w: link engine %q does not match service %q", databases.ErrInvalidRequest, engine, serviceID)
 		}
 		if err := dbengine.ValidateExistingUsername(engine, link.Username); err != nil {
-			return nil, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
+			return nil, fmt.Errorf("%w: %w", databases.ErrInvalidRequest, err)
 		}
 		port := link.Connection.Port
 		if port <= 0 || port > 65535 {
@@ -457,6 +459,34 @@ func databaseConnectionURL(engine model.DatabaseEngine, username, password strin
 	}
 	user := url.UserPassword(username, password)
 	return scheme + "://" + user.String() + "@" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/" + url.PathEscape(database)
+}
+
+// decodeDatabaseRequest is strict: unknown fields are rejected and a
+// caller-supplied password fails closed. External-password storage is deferred
+// to v1.1, so silently dropping a password would be worse than rejecting it.
+func decodeDatabaseRequest(w http.ResponseWriter, r *http.Request, out any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	defer r.Body.Close()
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err == nil {
+		if _, ok := fields["password"]; ok {
+			return fmt.Errorf("%w: caller-supplied database passwords are not supported", databases.ErrUnsupported)
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err == nil {
+		return errors.New("request contains trailing JSON")
+	}
+	return nil
 }
 
 // streamDatabaseBody copies a dump to the response and aborts the connection

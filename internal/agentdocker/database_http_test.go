@@ -331,3 +331,30 @@ func TestMySQLRenameRouteReturns400(t *testing.T) {
 		t.Fatalf("MySQL rename invoked Docker: %v", runner.joinedCalls())
 	}
 }
+
+func TestDatabaseRoutesRejectCallerPassword(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	body := []byte(`{"id":"mysql","username":"app","password":"s3cret"}`)
+	recorder := serveDatabase(t, d, http.MethodPost, "/v1/services/mysql/users", body)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "unsupported") {
+		t.Fatalf("password was not rejected as unsupported: %s", recorder.Body.String())
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("caller password invoked Docker: %v", runner.joinedCalls())
+	}
+}
+
+func TestDatabaseRoutesRejectUnknownFields(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	body := []byte(`{"id":"mysql","name":"app","unexpected":true}`)
+	recorder := serveDatabase(t, d, http.MethodPost, "/v1/services/mysql/databases", body)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("unknown field invoked Docker: %v", runner.joinedCalls())
+	}
+}
