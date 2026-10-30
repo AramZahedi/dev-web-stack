@@ -26,6 +26,7 @@ vi.mock('../../databaseApi', async (importOriginal) => {
     renameServiceDatabase: vi.fn(),
     dropServiceDatabase: vi.fn(),
     createServiceBackup: vi.fn(),
+    restoreServiceBackup: vi.fn(),
     importServiceDatabase: vi.fn(),
     exportServiceDatabase: vi.fn(),
     getDatabaseJob: vi.fn(),
@@ -315,8 +316,75 @@ describe('DatabaseTab', () => {
     await waitFor(() => expect(api.stopSite).toHaveBeenCalledWith('site_blog'));
   });
 
-  it('reports a failed backup job as an error toast and keeps the detail', async () => {
-    const failed: DatabaseJob = {
+  it('offers the pre-operation backup when an import leaves the target incomplete', async () => {
+    vi.mocked(db.importServiceDatabase).mockResolvedValue({
+      id: 'job_import_failed',
+      service_id: 'mysql',
+      database: 'app',
+      kind: 'import',
+      status: 'failed',
+      progress: 70,
+      message: 'import failed midway',
+      backup_id: 'bkp_pre_import',
+      created_at: '2026-10-29T10:00:00Z',
+      updated_at: '2026-10-29T10:00:02Z',
+    });
+    vi.mocked(db.restoreServiceBackup).mockResolvedValue({
+      id: 'job_recovery',
+      service_id: 'mysql',
+      database: 'app_recovery',
+      kind: 'restore',
+      status: 'succeeded',
+      progress: 100,
+      created_at: '2026-10-29T10:00:00Z',
+      updated_at: '2026-10-29T10:00:03Z',
+    });
+
+    const { container } = render(DatabaseTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        databases: [UNLINKED_APP, MYSQL_DATABASES[1]],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /import app/i }));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new File(['sql'], 'dump.sql', { type: 'text/plain' })],
+    });
+    await fireEvent.change(input);
+    const importDialog = await screen.findByRole('dialog');
+    await fireEvent.click(within(importDialog).getByRole('button', { name: 'Import database' }));
+
+    expect(await screen.findByText(/restore incomplete/i)).toBeTruthy();
+    await fireEvent.click(
+      screen.getByRole('button', { name: /restore pre-operation backup/i }),
+    );
+    const recoveryDialog = await screen.findByRole('dialog');
+    await fireEvent.input(within(recoveryDialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(
+      within(recoveryDialog).getByRole('button', { name: 'Restore backup' }),
+    );
+
+    await waitFor(() =>
+      expect(db.restoreServiceBackup).toHaveBeenCalledWith(
+        'mysql',
+        'bkp_pre_import',
+        expect.objectContaining({
+          overwrite: false,
+          confirm: 'app',
+          pre_restore_backup: false,
+          target: expect.stringMatching(/^app_recovery_/),
+        }),
+      ),
+    );
+  });
+
+  it('reports a failed backup job as an error toast and keeps the detail', async () => {    const failed: DatabaseJob = {
       id: 'job_failed',
       service_id: 'mysql',
       database: 'app',

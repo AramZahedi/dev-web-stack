@@ -294,6 +294,67 @@ describe('BackupsTab', () => {
     await waitFor(() => expect(confirm.disabled).toBe(false));
   });
 
+  it('offers the pre-operation backup after a failed restore', async () => {
+    vi.mocked(db.restoreServiceBackup)
+      .mockResolvedValueOnce({
+        ...RUNNING_JOB,
+        kind: 'restore',
+        status: 'failed',
+        progress: 60,
+        message: 'restore failed midway',
+        backup_id: 'bkp_1',
+      })
+      .mockResolvedValueOnce({
+        ...RUNNING_JOB,
+        kind: 'restore',
+        status: 'succeeded',
+        progress: 100,
+      });
+
+    render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: MYSQL_BACKUPS,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /restore app backup/i }));
+    const restoreDialog = await screen.findByRole('dialog');
+    await fireEvent.input(within(restoreDialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(
+      within(restoreDialog).getByRole('button', { name: 'Restore backup' }),
+    );
+
+    expect(await screen.findByText(/restore incomplete/i)).toBeTruthy();
+    await fireEvent.click(
+      screen.getByRole('button', { name: /restore pre-operation backup/i }),
+    );
+    const recoveryDialog = await screen.findByRole('dialog');
+    await fireEvent.input(within(recoveryDialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(
+      within(recoveryDialog).getByRole('button', { name: 'Restore backup' }),
+    );
+
+    await waitFor(() =>
+      expect(db.restoreServiceBackup).toHaveBeenLastCalledWith(
+        'mysql',
+        'bkp_1',
+        expect.objectContaining({
+          overwrite: false,
+          confirm: 'app',
+          pre_restore_backup: false,
+          target: expect.stringMatching(/^app_recovery_/),
+        }),
+      ),
+    );
+  });
+
   it('reports a canceled restore job as an informational toast', async () => {
     vi.mocked(db.restoreServiceBackup).mockResolvedValue({
       ...RUNNING_JOB,

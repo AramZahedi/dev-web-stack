@@ -21,6 +21,7 @@
   import ErrorBanner from '../ErrorBanner.svelte';
   import Modal from '../Modal.svelte';
   import Toggle from '../Toggle.svelte';
+  import JobRecovery from './JobRecovery.svelte';
   import LinkedSitesStop from './LinkedSitesStop.svelte';
   import { isProtectedDatabase } from './databaseProtection';
   import { saveBlob } from './fileDownload';
@@ -363,6 +364,7 @@
         <span style:width={`${Math.max(0, Math.min(100, job.progress))}%`}></span>
       </div>
       <p class="job-message">{job.message || 'Waiting for the daemon to report progress.'}</p>
+      <JobRecovery {service} {job} onrecovered={watchJob} />
       {#if jobRunning(job)}
         <Button size="sm" variant="ghost" onclick={cancelJob}>Cancel job</Button>
       {/if}
