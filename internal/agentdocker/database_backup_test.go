@@ -242,3 +242,15 @@ func TestDownloadBackupRejectsTraversal(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgresBackupUsesAdminUserEnvironment(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.streamOutput = []byte("dump")
+	if _, err := d.CreateBackup(context.Background(), "postgres", "app", databases.CreateBackupRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	joined := runner.joinedCalls()
+	if !strings.Contains(joined, "PGUSER=postgres") || !strings.Contains(joined, "PGPASSWORD=") {
+		t.Fatalf("postgres backup wrapper = %s", joined)
+	}
+}

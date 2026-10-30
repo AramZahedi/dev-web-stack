@@ -223,3 +223,18 @@ func TestRegistryResolvesEngines(t *testing.T) {
 		t.Fatalf("unknown engine err = %v", err)
 	}
 }
+
+func TestPostgresDumpCommandUsesAdminUser(t *testing.T) {
+	e := NewPostgreSQL()
+	command, err := e.DumpCommand("app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(command, " ")
+	if !strings.Contains(joined, "--username=postgres") {
+		t.Fatalf("pg_dump command does not authenticate as postgres: %s", joined)
+	}
+	if !strings.Contains(joined, "--no-owner") || !strings.Contains(joined, "--no-acl") {
+		t.Fatalf("pg_dump flags changed: %s", joined)
+	}
+}

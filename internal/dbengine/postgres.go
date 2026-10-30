@@ -353,7 +353,7 @@ func (*postgresEngine) DumpCommand(database string) ([]string, error) {
 	if err := ValidateIdentifier(database); err != nil {
 		return nil, err
 	}
-	return []string{"pg_dump", "--no-owner", "--no-acl", "--format=plain", database}, nil
+	return []string{"pg_dump", "--no-owner", "--no-acl", "--format=plain", "--username=postgres", database}, nil
 }
 
 func (*postgresEngine) RestoreCommand(database string) ([]string, error) {

@@ -108,7 +108,7 @@ func databaseShellWrapper(engine model.DatabaseEngine) string {
 	case model.DatabaseMariaDB:
 		return `set -eu; MYSQL_PWD="$(cat /run/secrets/mariadb_root_password)"; export MYSQL_PWD; exec "$@"`
 	case model.DatabasePostgreSQL:
-		return `set -eu; PGPASSWORD="$(cat /run/secrets/postgresql_postgres_password)"; export PGPASSWORD; exec "$@"`
+		return `set -eu; PGPASSWORD="$(cat /run/secrets/postgresql_postgres_password)"; export PGPASSWORD; PGUSER=postgres; export PGUSER; exec "$@"`
 	default:
 		return `set -eu; exec "$@"`
 	}
