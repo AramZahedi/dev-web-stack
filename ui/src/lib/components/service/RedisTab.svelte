@@ -33,8 +33,20 @@
   let revealError = $state('');
   let resetLoading = $state(false);
   let actionError = $state<DescribedError | null>(null);
+  let keepRevealedOnce = false;
 
   const defaultUser = $derived(users.find((user) => user.username === 'default') ?? null);
+
+  $effect(() => {
+    void users;
+    if (keepRevealedOnce) {
+      keepRevealedOnce = false;
+      return;
+    }
+    revealed = '';
+    revealedVisible = false;
+    revealError = '';
+  });
 
   async function revealDefault(): Promise<void> {
     if (!defaultUser) return;
@@ -70,6 +82,8 @@
         title: 'Redis default password reset',
         message: 'Copy the new password now; the platform stored it outside SQLite.',
       });
+      // Keep the freshly reset secret visible through the refresh it triggers.
+      keepRevealedOnce = true;
       onRefresh();
     } catch (caught) {
       actionError = describeError(caught);
@@ -128,7 +142,7 @@
             label="default password"
             value={revealed}
             revealed={revealedVisible}
-            loading={revealLoading}
+            loading={revealLoading || resetLoading}
             error={revealError}
             onreveal={revealDefault}
             onhide={hideDefault}
@@ -139,7 +153,7 @@
               size="sm"
               variant="secondary"
               loading={resetLoading}
-              disabled={!service.active}
+              disabled={!service.active || revealLoading}
               onclick={resetDefault}
             >
               Reset default password
