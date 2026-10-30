@@ -401,14 +401,14 @@ func (d *Docker) ImportDatabase(ctx context.Context, serviceID, database string,
 		defer func() { _ = gz.Close() }()
 		input = gz
 	}
-	if mode == databases.ImportReplace {
-		if req.PreImportBackup {
-			preJob, err := d.createBackupLocked(ctx, serviceID, engine, database, model.BackupPreImport)
-			if err != nil {
-				return failDatabaseJob(job, err)
-			}
-			job.BackupID = preJob.BackupID
+	if req.PreImportBackup {
+		preJob, err := d.createBackupLocked(ctx, serviceID, engine, database, model.BackupPreImport)
+		if err != nil {
+			return failDatabaseJob(job, err)
 		}
+		job.BackupID = preJob.BackupID
+	}
+	if mode == databases.ImportReplace {
 		if err := d.terminateDatabaseSessions(ctx, serviceID, engine, database); err != nil {
 			return failDatabaseJob(job, err)
 		}

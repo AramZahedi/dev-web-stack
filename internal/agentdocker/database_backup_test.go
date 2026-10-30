@@ -201,6 +201,25 @@ func TestImportMergeAndReplace(t *testing.T) {
 	}
 }
 
+func TestImportMergeCreatesPreImportBackup(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.streamOutput = []byte("dump")
+	upload := gzipBytes(t, "CREATE TABLE t (id int);\n")
+	job, err := d.ImportDatabase(context.Background(), "mysql", "app", bytes.NewReader(upload), "dump.sql.gz", databases.ImportRequest{
+		Mode: databases.ImportMerge, PreImportBackup: true,
+	})
+	if err != nil || job.Status != model.JobSucceeded {
+		t.Fatalf("import = %+v, %v", job, err)
+	}
+	if job.BackupID == "" {
+		t.Fatal("merge import did not report the pre-import backup")
+	}
+	path := filepath.Join(d.root, "backups", "databases", "mysql", job.BackupID)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("pre-import backup missing: %v", err)
+	}
+}
+
 func TestListDownloadAndDeleteBackupWorkWhileStopped(t *testing.T) {
 	d, runner := newDatabaseTestDocker(t)
 	runner.streamOutput = []byte("dump")
