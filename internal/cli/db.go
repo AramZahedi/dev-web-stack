@@ -25,8 +25,9 @@ var (
 	databasePasswordEnvPattern = regexp.MustCompile(`(?i)^DB_.*_PASSWORD$`)
 	databaseURLEnvPattern      = regexp.MustCompile(`(?i)^(DATABASE_URL|DB_.*_URL)$`)
 	databaseURLUserinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+):([^@\s/]+)@`)
+	databaseDSNUserinfoPattern = regexp.MustCompile(`(?i)([a-z0-9_.-]+):([^@\s]+)@(tcp\(|unix\(|/)`)
 	databaseSecretParamPattern = regexp.MustCompile(`(?i)([?&][^=&\s]*(?:password|passwd|pwd|secret|token)[^=&\s]*=)[^&\s]+`)
-	databaseSecretTextPattern  = regexp.MustCompile(`(?i)\b(password|passwd|pwd|secret|token)\b\s*[:=]\s*[^\s,;]+`)
+	databaseSecretTextPattern  = regexp.MustCompile(`(?i)(password|passwd|pwd|secret|token)\s*[:=]\s*[^\s,;]+`)
 )
 
 func (a *App) newDBCmd() *cobra.Command {
@@ -1330,6 +1331,9 @@ func redactDatabaseURL(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return value
 	}
+	if !strings.Contains(value, "://") {
+		return redactPasswordText(value)
+	}
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return redactPasswordText(value)
@@ -1348,11 +1352,12 @@ func redactDatabaseURL(value string) string {
 			changed = true
 		}
 	}
+	result := value
 	if changed {
 		parsed.RawQuery = query.Encode()
-		return parsed.String()
+		result = parsed.String()
 	}
-	return value
+	return redactPasswordText(result)
 }
 
 func isSecretQueryKey(key string) bool {
@@ -1369,6 +1374,7 @@ func redactPasswordText(value string) string {
 		return value
 	}
 	value = databaseURLUserinfoPattern.ReplaceAllString(value, "$1@")
+	value = databaseDSNUserinfoPattern.ReplaceAllString(value, "$1@$3")
 	value = databaseSecretParamPattern.ReplaceAllString(value, "$1REDACTED")
 	return databaseSecretTextPattern.ReplaceAllString(value, "$1=REDACTED")
 }

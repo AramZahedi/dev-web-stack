@@ -278,6 +278,30 @@ func TestSiteDBLinkJSONRedactsConnectionSecrets(t *testing.T) {
 	}
 }
 
+func TestSiteDBListRedactsUnderscoreAndDSNSecrets(t *testing.T) {
+	useTestSeams(t)
+	secret := "s3cret-dsn"
+	fake := &fakeClient{databaseLinks: []model.DatabaseLink{{
+		ID: "lnk_1", SiteID: "site-1", SiteName: "blog", ServiceID: "mysql", Engine: model.DatabaseMySQL,
+		Database: "app", Username: "app", PasswordManaged: true,
+		Error: "connect failed DB_PASSWORD=" + secret + " db_password=" + secret + " dsn app:" + secret + "@tcp(127.0.0.1:3306)/app",
+		Connection: model.DatabaseConnection{
+			Engine: model.DatabaseMySQL, Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
+			URL: "app:" + secret + "@tcp(127.0.0.1:3306)/app",
+		},
+	}}}
+	jsonOut := runCLI(t, fake, "site", "db", "list", "blog", "--json")
+	humanOut := runCLI(t, fake, "site", "db", "list", "blog")
+	for name, out := range map[string]string{"json": jsonOut, "human": humanOut} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("%s output leaked an underscore/DSN password: %s", name, out)
+		}
+	}
+	if !strings.Contains(jsonOut, "app@tcp(127.0.0.1:3306)/app") {
+		t.Fatalf("DSN userinfo was not redacted to a safe form: %s", jsonOut)
+	}
+}
+
 func TestSiteDBListRedactsErrorAndQuerySecrets(t *testing.T) {
 	useTestSeams(t)
 	secret := "s3cret-query"
