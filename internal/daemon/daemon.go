@@ -384,7 +384,7 @@ func Run(ctx context.Context, opts Options) error {
 		Logger:      logger,
 	})
 
-	authToken, err := dashboardAuthToken(cfg.Home)
+	authToken, err := dashboardAuthToken(cfg.Home, cfg.DashboardAuth)
 	if err != nil {
 		return err
 	}
