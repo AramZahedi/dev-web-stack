@@ -238,3 +238,16 @@ func TestPostgresDumpCommandUsesAdminUser(t *testing.T) {
 		t.Fatalf("pg_dump flags changed: %s", joined)
 	}
 }
+
+func TestRedisDefaultAdminKeepsACL(t *testing.T) {
+	e := NewRedisACL()
+	cmd := strings.ToLower(strings.Join(e.SetUserCommand("default", "pw", "full", true), " "))
+	if !strings.Contains(cmd, "+@all") || !strings.Contains(cmd, "+acl") {
+		t.Fatalf("default user lost admin/ACL access: %s", cmd)
+	}
+	for _, forbidden := range []string{"-acl", "-@admin", "-@dangerous", "-config"} {
+		if strings.Contains(cmd, forbidden) {
+			t.Fatalf("default user has app-user restriction %s: %s", forbidden, cmd)
+		}
+	}
+}

@@ -92,6 +92,36 @@ func (*redisACL) SetUserCommand(username, password, accessLevel string, enabled 
 		rules = append(rules, "off")
 	}
 	rules = append(rules, "~*")
+	rules = append(rules, redisAccessRules(username, accessLevel)...)
+	// The password is deliberately last so the agent can deliver it through
+	// stdin with `redis-cli -x` instead of argv.
+	rules = append(rules, ">"+password)
+	args := []string{"redis-cli", "ACL", "SETUSER", username}
+	return append(args, rules...)
+}
+
+// SetUserRulesCommand changes on/off state and access level without resetting
+// the password. It is used by updates that must preserve the existing secret.
+func SetUserRulesCommand(username, accessLevel string, enabled bool) []string {
+	args := []string{"redis-cli", "ACL", "SETUSER", username}
+	if enabled {
+		args = append(args, "on")
+	} else {
+		args = append(args, "off")
+	}
+	args = append(args, "-@all")
+	args = append(args, redisAccessRules(username, accessLevel)...)
+	return args
+}
+
+func redisAccessRules(username, accessLevel string) []string {
+	if username == "default" {
+		// The default identity is the Redis administrator. It must retain ACL
+		// (and therefore ACL SAVE/LIST/SETUSER) or the next rotation locks the
+		// agent out of the engine. Application users get the restricted rules.
+		return []string{"+@all", "+acl"}
+	}
+	rules := make([]string, 0, 4+len(redisForbiddenCommands))
 	switch normalizeRedisAccessLevel(accessLevel) {
 	case "full":
 		rules = append(rules, "+@all")
@@ -104,11 +134,7 @@ func (*redisACL) SetUserCommand(username, password, accessLevel string, enabled 
 	for _, command := range redisForbiddenCommands {
 		rules = append(rules, "-"+command)
 	}
-	// The password is deliberately last so the agent can deliver it through
-	// stdin with `redis-cli -x` instead of argv.
-	rules = append(rules, ">"+password)
-	args := []string{"redis-cli", "ACL", "SETUSER", username}
-	return append(args, rules...)
+	return rules
 }
 
 func (*redisACL) DeleteUserCommand(username string) []string {
