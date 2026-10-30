@@ -88,6 +88,47 @@ func TestLongRunningOperationsUseLongTimeout(t *testing.T) {
 	}
 }
 
+func TestInstallRuntimeSendsPinnedArtifact(t *testing.T) {
+	var received agentproto.RuntimeRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc(agentproto.PathRuntimes, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			writeJSON(w, http.StatusBadRequest, agentproto.ErrorResponse{Code: agentproto.CodeInvalidRequest, Message: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, agentproto.RuntimeResponse{
+			ID: received.Artifact.ID, Kind: received.Artifact.Kind, Version: received.Artifact.Version,
+			Backend: "wsl", Checksum: received.Artifact.SHA256,
+		})
+	})
+	srv, pin := newTLSServer(t, mux)
+	c, err := New(Config{BaseURL: srv.URL, Token: "secret", PinSHA256: pin, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	artifact := agentproto.RuntimeArtifact{
+		ID:      "node@24.22.1",
+		Kind:    "node",
+		Version: "24.22.1",
+		Build:   "linux-x64",
+		URL:     "https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.gz",
+		SHA256:  strings.Repeat("a", 64),
+		Size:    58_290_700,
+	}
+	response, err := c.InstallRuntime(context.Background(), agentproto.RuntimeRequest{Artifact: &artifact})
+	if err != nil {
+		t.Fatalf("InstallRuntime = %v", err)
+	}
+	if received.Artifact == nil || *received.Artifact != artifact {
+		t.Fatalf("agent received artifact %+v, want %+v", received.Artifact, artifact)
+	}
+	if response.ID != artifact.ID {
+		t.Fatalf("runtime response = %+v", response)
+	}
+}
+
 func TestFollowedLogStreamIsNotCutByTheClientTimeout(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(agentproto.PathSiteLogsFor("site-1"), func(w http.ResponseWriter, r *http.Request) {

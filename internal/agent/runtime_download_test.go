@@ -57,7 +57,7 @@ func TestDownloadAndExtractArchiveRequiresAndVerifiesChecksum(t *testing.T) {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := downloadAndExtractArchive(context.Background(), server.URL+"/php.tar.gz", digest, dest); err != nil {
+	if err := downloadAndExtractArchive(context.Background(), server.URL+"/php.tar.gz", digest, int64(len(archive)), dest); err != nil {
 		t.Fatalf("downloadAndExtractArchive = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dest, "bin", "php"))
@@ -86,7 +86,7 @@ func TestDownloadAndExtractArchiveFailsClosed(t *testing.T) {
 			if err := os.MkdirAll(dest, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := downloadAndExtractArchive(context.Background(), server.URL+"/php.tar.gz", tc.hash, dest); err == nil {
+			if err := downloadAndExtractArchive(context.Background(), server.URL+"/php.tar.gz", tc.hash, int64(len(archive)), dest); err == nil {
 				t.Fatal("downloadAndExtractArchive accepted an unverified archive")
 			}
 			entries, err := os.ReadDir(dest)
@@ -154,7 +154,7 @@ func TestDownloadAndExtractArchiveRejectsUnsafeMembers(t *testing.T) {
 			if err := os.MkdirAll(dest, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := downloadAndExtractArchive(context.Background(), server.URL+"/php.tar.gz", digest, dest); err == nil {
+			if err := downloadAndExtractArchive(context.Background(), server.URL+"/php.tar.gz", digest, int64(len(archive)), dest); err == nil {
 				t.Fatal("downloadAndExtractArchive accepted an unsafe archive")
 			}
 			entries, err := os.ReadDir(dest)

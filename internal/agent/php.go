@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -83,36 +85,138 @@ func CheckDebian12PHPCompatibility(ctx context.Context, buildPath string) error 
 	return nil
 }
 
-// InstallRuntime downloads/registers an installed runtime build from the catalog.
+var runtimeArtifactChecksum = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+const (
+	runtimeArtifactHost     = "nodejs.org"
+	runtimeArtifactNodeKind = "node"
+	runtimeArtifactBuild    = "linux-x64"
+)
+
+// runtimeArtifactEntry validates a daemon-supplied pinned artifact and converts
+// it into the catalog entry shape the installer already understands. The agent
+// never trusts the daemon for any of these properties: the downloader re-hashes
+// the archive and checks its size before extraction.
+func runtimeArtifactEntry(artifact agentproto.RuntimeArtifact) (catalog.Entry, error) {
+	if strings.TrimSpace(artifact.ID) == "" ||
+		strings.TrimSpace(artifact.Kind) == "" ||
+		strings.TrimSpace(artifact.Version) == "" ||
+		strings.TrimSpace(artifact.URL) == "" ||
+		strings.TrimSpace(artifact.SHA256) == "" {
+		return catalog.Entry{}, errors.New("agent: runtime artifact is missing required fields")
+	}
+	if artifact.Size <= 0 {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact size %d must be positive", artifact.Size)
+	}
+	if artifact.Size > maxRuntimeArchiveBytes {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact size %d exceeds the %d byte archive limit", artifact.Size, maxRuntimeArchiveBytes)
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(artifact.Kind))
+	if kind != runtimeArtifactNodeKind {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact kind %q is unsupported", artifact.Kind)
+	}
+
+	id := strings.TrimSpace(artifact.ID)
+	if strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact id %q contains a path element", id)
+	}
+	parsed, err := catalog.ParseID(id)
+	if err != nil {
+		return catalog.Entry{}, fmt.Errorf("agent: invalid runtime artifact id: %w", err)
+	}
+	version := strings.TrimSpace(artifact.Version)
+	// ParseID rejects revisions on node ids and non-semver versions, so matching
+	// the parsed id against kind and version is the complete check here.
+	if parsed.Kind != kind || parsed.Version != version || parsed.Revision != 0 {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact id %q does not match kind %q and version %q", id, kind, artifact.Version)
+	}
+
+	build := strings.TrimSpace(artifact.Build)
+	if build == "" {
+		build = runtimeArtifactBuild
+	}
+	if build != runtimeArtifactBuild {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact build %q is unsupported (want %s)", artifact.Build, runtimeArtifactBuild)
+	}
+
+	if !runtimeArtifactChecksum.MatchString(artifact.SHA256) {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact sha256 %q must be 64 lowercase hex characters", artifact.SHA256)
+	}
+
+	rawURL := strings.TrimSpace(artifact.URL)
+	if strings.ContainsRune(rawURL, 0) {
+		return catalog.Entry{}, errors.New("agent: runtime artifact url contains NUL")
+	}
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return catalog.Entry{}, fmt.Errorf("agent: invalid runtime artifact url: %w", err)
+	}
+	if parsedURL.Scheme != "https" {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact url %q must use https", rawURL)
+	}
+	if parsedURL.User != nil {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact url %q must not contain user info", rawURL)
+	}
+	if !strings.EqualFold(parsedURL.Hostname(), runtimeArtifactHost) {
+		return catalog.Entry{}, fmt.Errorf("agent: runtime artifact url host %q must be %s", parsedURL.Hostname(), runtimeArtifactHost)
+	}
+
+	return catalog.Entry{
+		ID:      id,
+		Kind:    kind,
+		Version: version,
+		Build:   build,
+		URL:     rawURL,
+		SHA256:  artifact.SHA256,
+		Size:    artifact.Size,
+	}, nil
+}
+
+// downloadRuntimeArchive is a test seam for the verified download/extraction
+// step, mirroring removeRuntimePath below.
+var downloadRuntimeArchive = downloadAndExtractArchive
+
+// InstallRuntime downloads/registers an installed runtime build from the catalog
+// or from a daemon-supplied pinned artifact.
 func (r *Runtime) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequest) (agentproto.RuntimeResponse, error) {
 	if err := ctxErr(ctx); err != nil {
 		return agentproto.RuntimeResponse{}, err
 	}
-	cat, err := catalog.Load()
-	if err != nil {
-		return agentproto.RuntimeResponse{}, fmt.Errorf("agent: load catalog: %w", err)
-	}
 
 	var match *catalog.Entry
-	buildID := strings.TrimSpace(req.BuildID)
-	if buildID != "" {
-		for i := range cat.Entries {
-			if cat.Entries[i].ID == buildID {
-				match = &cat.Entries[i]
-				break
-			}
+	if req.Artifact != nil {
+		entry, err := runtimeArtifactEntry(*req.Artifact)
+		if err != nil {
+			return agentproto.RuntimeResponse{}, err
 		}
-	} else if req.Kind != "" && req.Version != "" {
-		for i := range cat.Entries {
-			if cat.Entries[i].Kind == req.Kind && (cat.Entries[i].Version == req.Version || catalog.LineOf(cat.Entries[i].Version) == req.Version) {
-				match = &cat.Entries[i]
-				break
-			}
+		match = &entry
+	} else {
+		cat, err := catalog.Load()
+		if err != nil {
+			return agentproto.RuntimeResponse{}, fmt.Errorf("agent: load catalog: %w", err)
 		}
-	}
 
-	if match == nil {
-		return agentproto.RuntimeResponse{}, fmt.Errorf("agent: runtime not found in catalog: id=%q kind=%q version=%q", req.BuildID, req.Kind, req.Version)
+		buildID := strings.TrimSpace(req.BuildID)
+		if buildID != "" {
+			for i := range cat.Entries {
+				if cat.Entries[i].ID == buildID {
+					match = &cat.Entries[i]
+					break
+				}
+			}
+		} else if req.Kind != "" && req.Version != "" {
+			for i := range cat.Entries {
+				if cat.Entries[i].Kind == req.Kind && (cat.Entries[i].Version == req.Version || catalog.LineOf(cat.Entries[i].Version) == req.Version) {
+					match = &cat.Entries[i]
+					break
+				}
+			}
+		}
+
+		if match == nil {
+			return agentproto.RuntimeResponse{}, fmt.Errorf("agent: runtime not found in catalog: id=%q kind=%q version=%q", req.BuildID, req.Kind, req.Version)
+		}
 	}
 
 	targetDir := filepath.Join(r.root, "runtimes", match.ID)
@@ -141,7 +245,7 @@ func (r *Runtime) InstallRuntime(ctx context.Context, req agentproto.RuntimeRequ
 			// A failed download or checksum mismatch must fail the install.
 			// The previous code discarded this error and returned a successful
 			// response for a runtime that does not exist.
-			if err := downloadAndExtractArchive(ctx, match.URL, match.SHA256, targetDir); err != nil {
+			if err := downloadRuntimeArchive(ctx, match.URL, match.SHA256, match.Size, targetDir); err != nil {
 				return agentproto.RuntimeResponse{}, fmt.Errorf("agent: install runtime %q: %w", match.ID, err)
 			}
 		}
@@ -540,13 +644,16 @@ func (r *Runtime) loadRuntimes() {
 	}
 }
 
-func downloadAndExtractArchive(ctx context.Context, url, expectedSHA256, destDir string) error {
+func downloadAndExtractArchive(ctx context.Context, url, expectedSHA256 string, expectedSize int64, destDir string) error {
 	expected := strings.ToLower(strings.TrimSpace(expectedSHA256))
 	if len(expected) != 64 {
 		return errors.New("agent: runtime archive checksum is missing or malformed")
 	}
 	if _, err := hex.DecodeString(expected); err != nil {
 		return fmt.Errorf("agent: runtime archive checksum is invalid: %w", err)
+	}
+	if expectedSize <= 0 || expectedSize > maxRuntimeArchiveBytes {
+		return fmt.Errorf("agent: runtime archive size %d is outside the supported range", expectedSize)
 	}
 	if strings.TrimSpace(destDir) == "" {
 		return errors.New("agent: runtime destination is empty")
@@ -584,6 +691,16 @@ func downloadAndExtractArchive(ctx context.Context, url, expectedSHA256, destDir
 		"-o", archivePath, url)
 	if out, err := cmdCurl.CombinedOutput(); err != nil {
 		return fmt.Errorf("curl: %w (output: %s)", err, string(out))
+	}
+
+	// The pinned size is checked before hashing so a truncated or substituted
+	// archive fails even if the daemon's checksum was also wrong.
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		return fmt.Errorf("agent: stat runtime archive: %w", err)
+	}
+	if info.Size() != expectedSize {
+		return fmt.Errorf("agent: runtime archive size mismatch: got %d bytes, want %d", info.Size(), expectedSize)
 	}
 
 	// Stream the archive through SHA-256. Reading the whole file into memory
