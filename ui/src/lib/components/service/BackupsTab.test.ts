@@ -2,10 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 import BackupsTab from './BackupsTab.svelte';
+import * as api from '../../api';
 import * as db from '../../databaseApi';
 import { clearToasts, toasts } from '../../stores';
 import type { Database, DatabaseBackup, DatabaseJob } from '../../databaseTypes';
 import type { ServiceView } from '../../types';
+
+vi.mock('../../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api')>();
+  return {
+    ...actual,
+    getSite: vi.fn(),
+    stopSite: vi.fn(),
+  };
+});
 
 vi.mock('../../databaseApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../databaseApi')>();
@@ -82,6 +92,13 @@ const RUNNING_JOB: DatabaseJob = {
 
 beforeEach(() => {
   clearToasts();
+  vi.mocked(api.getSite).mockResolvedValue({
+    id: 'site_blog',
+    name: 'blog',
+    status: 'running',
+    desired_state: 'running',
+  } as never);
+  vi.mocked(api.stopSite).mockResolvedValue(undefined);
   vi.mocked(db.downloadServiceBackup).mockResolvedValue(new Blob(['mock']));
   vi.mocked(db.deleteServiceBackup).mockResolvedValue(undefined);
   vi.mocked(db.cancelDatabaseJob).mockResolvedValue(undefined);
@@ -242,6 +259,39 @@ describe('BackupsTab', () => {
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Delete backup' }));
 
     await waitFor(() => expect(db.deleteServiceBackup).toHaveBeenCalledWith('mysql', 'bkp_1'));
+  });
+
+  it('requires linked sites to be stopped before overwriting', async () => {
+    render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: MYSQL_BACKUPS,
+        databases: [
+          {
+            ...MYSQL_DATABASES[0],
+            linked_sites: [{ id: 'site_blog', name: 'blog' }],
+          },
+        ],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /restore app backup/i }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.click(within(dialog).getByLabelText(/overwrite existing database/i));
+    expect(within(dialog).getByText('blog')).toBeTruthy();
+
+    const confirm = within(dialog).getByRole('button', {
+      name: 'Restore backup',
+    }) as HTMLButtonElement;
+    await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    expect(confirm.disabled).toBe(true);
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Stop site blog' }));
+    await waitFor(() => expect(api.stopSite).toHaveBeenCalledWith('site_blog'));
+    await waitFor(() => expect(confirm.disabled).toBe(false));
   });
 
   it('reports a canceled restore job as an informational toast', async () => {

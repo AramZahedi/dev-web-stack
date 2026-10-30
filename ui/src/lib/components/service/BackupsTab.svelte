@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { Archive, Download, RotateCcw, Trash2 } from 'lucide-svelte';
+  import * as api from '../../api';
   import * as dbApi from '../../databaseApi';
   import { describeError, type DescribedError } from '../../errors';
   import { checksumPrefix, formatBytes, formatDateTime } from '../../format';
@@ -9,6 +10,7 @@
     Database,
     DatabaseBackup,
     DatabaseJob,
+    DatabaseSiteRef,
   } from '../../databaseTypes';
   import type { ServiceView } from '../../types';
   import Badge from '../Badge.svelte';
@@ -19,9 +21,15 @@
   import ErrorBanner from '../ErrorBanner.svelte';
   import Modal from '../Modal.svelte';
   import Toggle from '../Toggle.svelte';
+  import LinkedSitesStop from './LinkedSitesStop.svelte';
   import { isProtectedDatabase } from './databaseProtection';
   import { saveBlob } from './fileDownload';
   import { jobToastKind } from './jobStatus';
+  import {
+    allLinkedSitesStopped,
+    readLinkedSiteStates,
+    type LinkedSiteState,
+  } from './linkedSites';
 
   interface Props {
     service: ServiceView;
@@ -44,6 +52,9 @@
   const active = $derived(service.active);
 
   let actionError = $state('');
+  let linkedStates = $state<Record<string, LinkedSiteState>>({});
+  let stoppingSites = $state<Record<string, boolean>>({});
+  let siteStopError = $state('');
 
   let createOpen = $state(false);
   let createDatabase = $state('');
@@ -86,6 +97,41 @@
   const restoreProtected = $derived(
     restoreTarget ? isProtectedDatabase(restoreTarget.engine, restoreTarget.database) : false,
   );
+
+  const restoreDatabase = $derived(
+    restoreTarget ? (databases.find((database) => database.name === restoreTarget?.database) ?? null) : null,
+  );
+  const restoreSites = $derived<DatabaseSiteRef[]>(restoreDatabase?.linked_sites ?? []);
+
+  async function prepareLinkedSites(sites: DatabaseSiteRef[] | undefined): Promise<void> {
+    linkedStates = {};
+    stoppingSites = {};
+    siteStopError = '';
+    linkedStates = await readLinkedSiteStates(sites);
+  }
+
+  function sitesReady(sites: DatabaseSiteRef[] | undefined): boolean {
+    return allLinkedSitesStopped(sites, linkedStates);
+  }
+
+  async function stopLinkedSite(site: DatabaseSiteRef): Promise<void> {
+    if (stoppingSites[site.id]) return;
+    stoppingSites = { ...stoppingSites, [site.id]: true };
+    siteStopError = '';
+    try {
+      await api.stopSite(site.id);
+      linkedStates = { ...linkedStates, [site.id]: 'stopped' };
+      addToast({
+        kind: 'success',
+        title: `${site.name} stopped`,
+        message: 'The site is stopped; the overwrite restore can proceed.',
+      });
+    } catch (caught) {
+      siteStopError = describeError(caught).message;
+    } finally {
+      stoppingSites = { ...stoppingSites, [site.id]: false };
+    }
+  }
 
   function jobRunning(candidate: DatabaseJob | null): boolean {
     return candidate?.status === 'queued' || candidate?.status === 'running';
@@ -193,6 +239,8 @@
     restoreName = defaultRestoreName(backup.database);
     preRestoreBackup = false;
     restoreTarget = backup;
+    const linked = databases.find((database) => database.name === backup.database)?.linked_sites;
+    void prepareLinkedSites(linked);
   }
 
   function setRestoreMode(mode: 'new' | 'overwrite'): void {
@@ -200,12 +248,14 @@
     restoreMode = mode;
     // An overwrite always takes a pre-restore backup; the toggle is locked on.
     preRestoreBackup = mode === 'overwrite';
+    if (mode === 'overwrite') void prepareLinkedSites(restoreSites);
   }
 
   async function confirmRestore(): Promise<void> {
     const target = restoreTarget;
     if (!target || restoring) return;
     if (restoreMode === 'overwrite' && isProtectedDatabase(target.engine, target.database)) return;
+    if (restoreMode === 'overwrite' && !sitesReady(restoreSites)) return;
     restoring = true;
     restoreError = null;
     try {
@@ -474,6 +524,7 @@
   danger={restoreMode === 'overwrite'}
   busy={restoring}
   requireText={restoreTarget?.database}
+  confirmDisabled={restoreMode === 'overwrite' && !sitesReady(restoreSites)}
   onconfirm={confirmRestore}
   oncancel={() => {
     if (!restoring) restoreTarget = null;
@@ -526,6 +577,13 @@
         <p class="overwrite-target">
           Target: <code class="mono">{restoreTarget?.database}</code>
         </p>
+        <LinkedSitesStop
+          sites={restoreSites}
+          states={linkedStates}
+          stopping={stoppingSites}
+          error={siteStopError}
+          onstop={stopLinkedSite}
+        />
       {/if}
 
       <Toggle

@@ -2,10 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 import DatabaseTab from './DatabaseTab.svelte';
+import * as api from '../../api';
 import * as db from '../../databaseApi';
 import { clearToasts, toasts } from '../../stores';
 import type { Database, DatabaseJob } from '../../databaseTypes';
 import type { ServiceView } from '../../types';
+
+vi.mock('../../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api')>();
+  return {
+    ...actual,
+    getSite: vi.fn(),
+    stopSite: vi.fn(),
+    restartSite: vi.fn(),
+  };
+});
 
 vi.mock('../../databaseApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../databaseApi')>();
@@ -91,8 +102,18 @@ const POSTGRES_DATABASES: Database[] = [
   },
 ];
 
+const UNLINKED_APP: Database = { ...MYSQL_DATABASES[0], linked_sites: [] };
+
 beforeEach(() => {
   clearToasts();
+  vi.mocked(api.getSite).mockResolvedValue({
+    id: 'site_blog',
+    name: 'blog',
+    status: 'running',
+    desired_state: 'running',
+  } as never);
+  vi.mocked(api.stopSite).mockResolvedValue(undefined);
+  vi.mocked(api.restartSite).mockResolvedValue(undefined);
   vi.mocked(db.dropServiceDatabase).mockResolvedValue(undefined);
   vi.mocked(db.createServiceDatabase).mockImplementation(async (_id, body) => ({
     name: body.name,
@@ -164,7 +185,7 @@ describe('DatabaseTab', () => {
     render(DatabaseTab, {
       props: {
         service: MYSQL_SERVICE,
-        databases: MYSQL_DATABASES,
+        databases: [UNLINKED_APP, MYSQL_DATABASES[1]],
         onRefresh: vi.fn(),
       },
     });
@@ -183,7 +204,11 @@ describe('DatabaseTab', () => {
   it('drops with the backup-first default and refreshes', async () => {
     const refresh = vi.fn();
     render(DatabaseTab, {
-      props: { service: MYSQL_SERVICE, databases: MYSQL_DATABASES, onRefresh: refresh },
+      props: {
+        service: MYSQL_SERVICE,
+        databases: [UNLINKED_APP, MYSQL_DATABASES[1]],
+        onRefresh: refresh,
+      },
     });
 
     await fireEvent.click(screen.getByRole('button', { name: /drop app/i }));
@@ -201,6 +226,93 @@ describe('DatabaseTab', () => {
       }),
     );
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it('requires linked sites to be stopped before dropping', async () => {
+    render(DatabaseTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /drop app/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('blog')).toBeTruthy();
+
+    const confirm = within(dialog).getByRole('button', {
+      name: 'Drop database',
+    }) as HTMLButtonElement;
+    await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    expect(confirm.disabled).toBe(true);
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Stop site blog' }));
+    await waitFor(() => expect(api.stopSite).toHaveBeenCalledWith('site_blog'));
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+  });
+
+  it('requires linked sites to be stopped before renaming', async () => {
+    render(DatabaseTab, {
+      props: {
+        service: POSTGRES_SERVICE,
+        databases: [
+          {
+            ...POSTGRES_DATABASES[0],
+            linked_sites: [{ id: 'site_blog', name: 'blog' }],
+          },
+        ],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /rename app/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('blog')).toBeTruthy();
+
+    await fireEvent.input(within(dialog).getByLabelText(/database name/i), {
+      target: { value: 'app_v2' },
+    });
+    const rename = within(dialog).getByRole('button', {
+      name: 'Rename database',
+    }) as HTMLButtonElement;
+    expect(rename.disabled).toBe(true);
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Stop site blog' }));
+    await waitFor(() => expect(api.stopSite).toHaveBeenCalledWith('site_blog'));
+    await waitFor(() => expect(rename.disabled).toBe(false));
+  });
+
+  it('requires linked sites to be stopped for a replace import', async () => {
+    const { container } = render(DatabaseTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /import app/i }));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new File(['sql'], 'dump.sql', { type: 'text/plain' })],
+    });
+    await fireEvent.change(input);
+
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.click(within(dialog).getByLabelText(/replace contents/i));
+
+    expect(within(dialog).getByText('blog')).toBeTruthy();
+    const importButton = within(dialog).getByRole('button', {
+      name: 'Import database',
+    }) as HTMLButtonElement;
+    expect(importButton.disabled).toBe(true);
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Stop site blog' }));
+    await waitFor(() => expect(api.stopSite).toHaveBeenCalledWith('site_blog'));
   });
 
   it('reports a failed backup job as an error toast and keeps the detail', async () => {

@@ -9,6 +9,7 @@
     Plus,
     Trash2,
   } from 'lucide-svelte';
+  import * as api from '../../api';
   import * as dbApi from '../../databaseApi';
   import { describeError, type DescribedError } from '../../errors';
   import { formatBytes, formatDate } from '../../format';
@@ -17,6 +18,7 @@
     Database,
     DatabaseEngine,
     DatabaseJob,
+    DatabaseSiteRef,
   } from '../../databaseTypes';
   import type { ServiceView } from '../../types';
   import Badge from '../Badge.svelte';
@@ -28,9 +30,15 @@
   import Modal from '../Modal.svelte';
   import Toggle from '../Toggle.svelte';
   import DatabaseFormDialog from './DatabaseFormDialog.svelte';
+  import LinkedSitesStop from './LinkedSitesStop.svelte';
   import { isProtectedDatabase } from './databaseProtection';
   import { saveBlob } from './fileDownload';
   import { jobToastKind } from './jobStatus';
+  import {
+    allLinkedSitesStopped,
+    readLinkedSiteStates,
+    type LinkedSiteState,
+  } from './linkedSites';
 
   interface Props {
     service: ServiceView;
@@ -55,6 +63,10 @@
 
   let actionError = $state('');
   let unlinkTarget = $state<Database | null>(null);
+
+  let linkedStates = $state<Record<string, LinkedSiteState>>({});
+  let stoppingSites = $state<Record<string, boolean>>({});
+  let siteStopError = $state('');
 
   let createOpen = $state(false);
   let renameTarget = $state<Database | null>(null);
@@ -188,6 +200,7 @@
     if (isProtectedDatabase(engine, database.name)) return;
     formError = '';
     renameTarget = database;
+    void prepareLinkedSites(database.linked_sites);
   }
 
   function openDrop(database: Database): void {
@@ -195,10 +208,41 @@
     dropError = null;
     backupFirst = true;
     dropTarget = database;
+    void prepareLinkedSites(database.linked_sites);
   }
 
   function protectedDatabase(database: Database): boolean {
     return isProtectedDatabase(database.engine, database.name);
+  }
+
+  async function prepareLinkedSites(sites: DatabaseSiteRef[] | undefined): Promise<void> {
+    linkedStates = {};
+    stoppingSites = {};
+    siteStopError = '';
+    linkedStates = await readLinkedSiteStates(sites);
+  }
+
+  function sitesReady(sites: DatabaseSiteRef[] | undefined): boolean {
+    return allLinkedSitesStopped(sites, linkedStates);
+  }
+
+  async function stopLinkedSite(site: DatabaseSiteRef): Promise<void> {
+    if (stoppingSites[site.id]) return;
+    stoppingSites = { ...stoppingSites, [site.id]: true };
+    siteStopError = '';
+    try {
+      await api.stopSite(site.id);
+      linkedStates = { ...linkedStates, [site.id]: 'stopped' };
+      addToast({
+        kind: 'success',
+        title: `${site.name} stopped`,
+        message: 'The site is stopped; the destructive operation can proceed.',
+      });
+    } catch (caught) {
+      siteStopError = describeError(caught).message;
+    } finally {
+      stoppingSites = { ...stoppingSites, [site.id]: false };
+    }
   }
 
   async function confirmDrop(): Promise<void> {
@@ -275,7 +319,13 @@
     actionError = '';
     importTarget = database;
     importError = null;
+    void prepareLinkedSites(database.linked_sites);
     fileInput?.click();
+  }
+
+  function setImportMode(mode: 'merge' | 'replace'): void {
+    importMode = mode;
+    if (mode === 'replace') void prepareLinkedSites(importTarget?.linked_sites);
   }
 
   function onImportFileSelected(event: Event): void {
@@ -294,6 +344,7 @@
     const target = importTarget;
     const file = importFile;
     if (!target || !file || importing) return;
+    if (importMode === 'replace' && !sitesReady(target.linked_sites)) return;
     importing = true;
     importError = null;
     try {
@@ -574,12 +625,23 @@
   mode="rename"
   database={renameTarget}
   busy={formBusy}
+  disabled={!sitesReady(renameTarget?.linked_sites)}
   error={formError}
   onsubmit={submitRename}
   onclose={() => {
     if (!formBusy) renameTarget = null;
   }}
-/>
+>
+  {#snippet details()}
+    <LinkedSitesStop
+      sites={renameTarget?.linked_sites ?? []}
+      states={linkedStates}
+      stopping={stoppingSites}
+      error={siteStopError}
+      onstop={stopLinkedSite}
+    />
+  {/snippet}
+</DatabaseFormDialog>
 
 <ConfirmDialog
   open={dropTarget !== null}
@@ -589,6 +651,7 @@
   danger
   busy={dropping}
   requireText={dropTarget?.name}
+  confirmDisabled={!sitesReady(dropTarget?.linked_sites)}
   onconfirm={confirmDrop}
   oncancel={() => {
     if (!dropping) dropTarget = null;
@@ -596,13 +659,13 @@
 >
   {#snippet details()}
     <div class="drop-details">
-      {#if dropTarget?.linked_sites?.length}
-        <p class="drop-warning" role="alert">
-          Linked sites must be stopped before dropping this database:
-          {dropTarget.linked_sites.map((site) => site.name).join(', ')}. Stop them from each site's
-          detail page; devstack never stops sites silently.
-        </p>
-      {/if}
+      <LinkedSitesStop
+        sites={dropTarget?.linked_sites ?? []}
+        states={linkedStates}
+        stopping={stoppingSites}
+        error={siteStopError}
+        onstop={stopLinkedSite}
+      />
       <Toggle
         bind:checked={backupFirst}
         label="Back up first"
@@ -658,7 +721,7 @@
           name="import-mode"
           value="merge"
           checked={importMode === 'merge'}
-          onchange={() => (importMode = 'merge')}
+          onchange={() => setImportMode('merge')}
         />
         <span>
           <strong>Merge (default)</strong>
@@ -671,7 +734,7 @@
           name="import-mode"
           value="replace"
           checked={importMode === 'replace'}
-          onchange={() => (importMode = 'replace')}
+          onchange={() => setImportMode('replace')}
         />
         <span>
           <strong>Replace contents</strong>
@@ -689,6 +752,13 @@
     />
 
     {#if importMode === 'replace'}
+      <LinkedSitesStop
+        sites={importTarget?.linked_sites ?? []}
+        states={linkedStates}
+        stopping={stoppingSites}
+        error={siteStopError}
+        onstop={stopLinkedSite}
+      />
       <p class="drop-warning" role="alert">
         Replace mode removes the current schema. The pre-import backup is offered as a one-click
         recovery if the job fails.
@@ -705,7 +775,12 @@
 
   {#snippet footer()}
     <Button variant="ghost" onclick={closeImport} disabled={importing}>Cancel</Button>
-    <Button variant="primary" onclick={confirmImport} loading={importing}>
+    <Button
+      variant="primary"
+      onclick={confirmImport}
+      loading={importing}
+      disabled={importMode === 'replace' && !sitesReady(importTarget?.linked_sites)}
+    >
       Import database
     </Button>
   {/snippet}

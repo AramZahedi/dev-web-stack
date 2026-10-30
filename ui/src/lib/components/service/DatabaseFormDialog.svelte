@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import type { Database } from '../../databaseTypes';
   import Button from '../Button.svelte';
   import Field from '../Field.svelte';
@@ -9,12 +10,24 @@
     mode: 'create' | 'rename';
     database?: Database | null;
     busy?: boolean;
+    disabled?: boolean;
     error?: string;
     onsubmit: (name: string) => void;
     onclose: () => void;
+    details?: Snippet;
   }
 
-  let { open, mode, database = null, busy = false, error, onsubmit, onclose }: Props = $props();
+  let {
+    open,
+    mode,
+    database = null,
+    busy = false,
+    disabled = false,
+    error,
+    onsubmit,
+    onclose,
+    details,
+  }: Props = $props();
 
   let name = $state('');
   let validation = $state('');
@@ -54,6 +67,9 @@
 </script>
 
 <Modal {open} {title} {description} size="sm" onclose={onclose}>
+  {#if details}
+    <div class="details">{@render details()}</div>
+  {/if}
   <Field
     id="database-name"
     label="Database name"
@@ -76,8 +92,14 @@
 
   {#snippet footer()}
     <Button variant="ghost" onclick={onclose} disabled={busy}>Cancel</Button>
-    <Button variant="primary" onclick={submit} loading={busy}>
+    <Button variant="primary" onclick={submit} loading={busy} disabled={disabled}>
       {mode === 'rename' ? 'Rename database' : 'Create database'}
     </Button>
   {/snippet}
 </Modal>
+
+<style>
+  .details {
+    margin-bottom: 12px;
+  }
+</style>
