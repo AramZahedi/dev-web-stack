@@ -197,6 +197,41 @@ func TestWindowsPathToWSLPath(t *testing.T) {
 	}
 }
 
+func TestRemoveWSLComposerFilesRemovesOnlyComposerArtifacts(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		filepath.Join("tools", "composer", "composer.phar"):   "phar",
+		filepath.Join("tools", "composer", "VERSION"):         "2.10.3\n",
+		filepath.Join("tools", "composer", "bin", "composer"): "wrapper",
+		filepath.Join("bin", "composer"):                      "wrapper",
+		filepath.Join("tools", "php-default", "bin", "php"):   "sentinel",
+	}
+	for rel, content := range files {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := RemoveWSLComposerFiles(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		filepath.Join("tools", "composer"),
+		filepath.Join("bin", "composer"),
+	} {
+		if _, err := os.Stat(filepath.Join(root, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s still exists after RemoveWSLComposerFiles", rel)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "tools", "php-default", "bin", "php")); err != nil {
+		t.Errorf("sibling tool was removed: %v", err)
+	}
+}
+
 func TestEnsureWindowsToolShimsRejectsUnsafeDistroName(t *testing.T) {
 	if err := EnsureWindowsToolShims(t.TempDir(), `devstack & whoami`); err == nil {
 		t.Fatal("unsafe distro name was accepted")

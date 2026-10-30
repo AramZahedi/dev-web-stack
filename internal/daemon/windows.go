@@ -160,6 +160,7 @@ func Run(ctx context.Context, opts Options) error {
 	adapter := &helperAdapter{
 		socketPath: helperSocket,
 		home:       cfg.Home,
+		distro:     cfg.WSLDistro,
 		nodeTools:  newWindowsToolService(cfg.Home, cfg.WSLDistro, st),
 	}
 	wslBackend := wslbackend.New(nil)
@@ -773,11 +774,13 @@ func updateWindowsProxyTargets(ctx context.Context, socket string, httpPort, htt
 }
 
 type helperAdapter struct {
-	mu         sync.RWMutex
-	socketPath string
-	client     *helperclient.Client
-	home       string
-	nodeTools  *windowsToolService
+	mu                sync.RWMutex
+	socketPath        string
+	client            *helperclient.Client
+	home              string
+	distro            string
+	nodeTools         *windowsToolService
+	removeWSLComposer func(context.Context, string) error
 }
 
 func (h *helperAdapter) set(c *helperclient.Client) {
@@ -1027,8 +1030,22 @@ func (h *helperAdapter) ToolRemove(ctx context.Context, id string) (helperproto.
 		return h.nodeTools.Remove(ctx)
 	}
 	home := h.devstackHome()
+	if id == helperproto.ToolComposer {
+		removeWSL := h.removeWSLComposer
+		if removeWSL == nil {
+			removeWSL = tooling.RemoveWSLComposer
+		}
+		if err := removeWSL(ctx, h.distro); err != nil {
+			return helperproto.ToolStatus{}, fmt.Errorf("daemon: remove WSL composer: %w", err)
+		}
+		if err := os.RemoveAll(filepath.Join(home, "tools", "composer")); err != nil {
+			return helperproto.ToolStatus{}, fmt.Errorf("daemon: remove composer artifacts: %w", err)
+		}
+	}
 	wrapper := filepath.Join(home, "bin", h.toolShimName(id))
-	_ = os.Remove(wrapper)
+	if err := os.Remove(wrapper); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return helperproto.ToolStatus{}, fmt.Errorf("daemon: remove %s wrapper: %w", id, err)
+	}
 	return helperproto.ToolStatus{
 		ID:          id,
 		Installed:   false,

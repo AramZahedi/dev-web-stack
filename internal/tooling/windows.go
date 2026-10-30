@@ -445,21 +445,34 @@ func ProvisionWSLComposerFiles(wslDataDir string, pharData []byte, version strin
 	return nil
 }
 
-// ProvisionWSLComposer deploys Composer into the managed WSL distro.
-func ProvisionWSLComposer(ctx context.Context, distro string, source composerSource, localPharPath string) error {
+// wslDataDir locates the managed distro's /data/devstack directory over the
+// WSL UNC share.
+func wslDataDir(distro string) (string, error) {
 	if distro == "" {
 		distro = "devstack"
 	}
 	if !wslDistroPattern.MatchString(distro) {
-		return fmt.Errorf("tooling: invalid WSL distro name %q", distro)
+		return "", fmt.Errorf("tooling: invalid WSL distro name %q", distro)
 	}
-	// Locate UNC path to /data/devstack
-	wslDataDir := fmt.Sprintf(`\\wsl.localhost\%s\data\devstack`, distro)
-	if _, err := os.Stat(wslDataDir); err != nil {
-		wslDataDir = fmt.Sprintf(`\\wsl$\%s\data\devstack`, distro)
-		if _, err := os.Stat(wslDataDir); err != nil {
-			return fmt.Errorf("tooling: WSL data directory not accessible: %w", err)
-		}
+	dir := fmt.Sprintf(`\\wsl.localhost\%s\data\devstack`, distro)
+	if _, err := os.Stat(dir); err == nil {
+		return dir, nil
+	}
+	dir = fmt.Sprintf(`\\wsl$\%s\data\devstack`, distro)
+	if _, err := os.Stat(dir); err != nil {
+		return "", fmt.Errorf("tooling: WSL data directory not accessible: %w", err)
+	}
+	return dir, nil
+}
+
+// ProvisionWSLComposer deploys Composer into the managed WSL distro.
+func ProvisionWSLComposer(ctx context.Context, distro string, source composerSource, localPharPath string) error {
+	wslData, err := wslDataDir(distro)
+	if err != nil {
+		return err
+	}
+	if distro == "" {
+		distro = "devstack"
 	}
 
 	pharData, err := os.ReadFile(localPharPath)
@@ -467,7 +480,7 @@ func ProvisionWSLComposer(ctx context.Context, distro string, source composerSou
 		return fmt.Errorf("tooling: read local composer.phar: %w", err)
 	}
 
-	if err := ProvisionWSLComposerFiles(wslDataDir, pharData, source.Version); err != nil {
+	if err := ProvisionWSLComposerFiles(wslData, pharData, source.Version); err != nil {
 		return err
 	}
 
@@ -475,5 +488,73 @@ func ProvisionWSLComposer(ctx context.Context, distro string, source composerSou
 	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "bash", "-c", "mkdir -p /usr/local/bin && ln -sf /data/devstack/bin/composer /usr/local/bin/composer && chmod +x /usr/local/bin/composer /data/devstack/bin/composer /data/devstack/tools/composer/bin/composer")
 	platform.ConfigureProcess(cmd)
 	_ = cmd.Run()
+	return nil
+}
+
+// RemoveWSLComposerFiles deletes the Composer PHAR, wrappers, and version
+// marker from a WSL data directory while preserving unrelated tools.
+func RemoveWSLComposerFiles(wslDataDir string) error {
+	if strings.TrimSpace(wslDataDir) == "" {
+		return errors.New("tooling: WSL data directory is empty")
+	}
+	if err := os.RemoveAll(filepath.Join(wslDataDir, "tools", "composer")); err != nil {
+		return fmt.Errorf("tooling: remove WSL composer artifacts: %w", err)
+	}
+	path := filepath.Join(wslDataDir, "bin", "composer")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("tooling: remove WSL composer wrapper: %w", err)
+	}
+	return nil
+}
+
+// wslComposerLinkState reports whether /usr/local/bin/composer is absent, the
+// devstack-managed link, or a foreign command that must not be deleted.
+func wslComposerLinkState(ctx context.Context, distro string) (string, error) {
+	script := `p=/usr/local/bin/composer; if [ -L "$p" ]; then t=$(readlink "$p"); if [ "$t" = "/data/devstack/bin/composer" ]; then echo managed; else echo foreign; fi; elif [ -e "$p" ]; then echo foreign; else echo absent; fi`
+	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "-u", "root", "--exec", "sh", "-c", script)
+	platform.ConfigureProcess(cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("tooling: inspect WSL composer link: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	state := strings.TrimSpace(string(output))
+	switch state {
+	case "managed", "foreign", "absent":
+		return state, nil
+	default:
+		return "", fmt.Errorf("tooling: unrecognized WSL composer link state %q", state)
+	}
+}
+
+// RemoveWSLComposer removes Composer from the managed WSL distro, including
+// the /usr/local/bin link used by shell sessions. A foreign link is refused.
+func RemoveWSLComposer(ctx context.Context, distro string) error {
+	if distro == "" {
+		distro = "devstack"
+	}
+	if !wslDistroPattern.MatchString(distro) {
+		return fmt.Errorf("tooling: invalid WSL distro name %q", distro)
+	}
+	linkState, err := wslComposerLinkState(ctx, distro)
+	if err != nil {
+		return err
+	}
+	if linkState == "foreign" {
+		return errors.New("tooling: refusing to remove a foreign /usr/local/bin/composer")
+	}
+	dir, err := wslDataDir(distro)
+	if err != nil {
+		return err
+	}
+	if err := RemoveWSLComposerFiles(dir); err != nil {
+		return err
+	}
+	if linkState == "managed" {
+		cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "-u", "root", "--exec", "rm", "-f", "/usr/local/bin/composer")
+		platform.ConfigureProcess(cmd)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("tooling: remove WSL composer link: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
 	return nil
 }

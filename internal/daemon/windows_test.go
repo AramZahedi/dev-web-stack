@@ -781,7 +781,12 @@ func TestWindowsHelperAdapterToolLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	adapter := &helperAdapter{home: home}
+	adapter := &helperAdapter{
+		home: home,
+		removeWSLComposer: func(context.Context, string) error {
+			return nil
+		},
+	}
 	ctx := context.Background()
 
 	// Initial status when no shims exist
@@ -844,6 +849,83 @@ func TestWindowsHelperAdapterToolLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(binDir, "php.cmd")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("php.cmd still exists after remove")
+	}
+}
+
+func TestWindowsHelperAdapterToolRemoveDeletesComposerArtifacts(t *testing.T) {
+	home := t.TempDir()
+	binDir := filepath.Join(home, "bin")
+	composerDir := filepath.Join(home, "tools", "composer")
+	for _, dir := range []string{binDir, filepath.Join(composerDir, "bin")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		filepath.Join(binDir, "composer.cmd"):         "@echo off\r\n",
+		filepath.Join(composerDir, "composer.phar"):   "phar",
+		filepath.Join(composerDir, "VERSION"):         "2.10.3\n",
+		filepath.Join(composerDir, "bin", "composer"): "wrapper",
+	}
+	for path, content := range files {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removedWSL := ""
+	adapter := &helperAdapter{
+		home:   home,
+		distro: "devstack",
+		removeWSLComposer: func(_ context.Context, distro string) error {
+			removedWSL = distro
+			return nil
+		},
+	}
+	if _, err := adapter.ToolRemove(context.Background(), helperproto.ToolComposer); err != nil {
+		t.Fatalf("ToolRemove(composer): %v", err)
+	}
+	if removedWSL != "devstack" {
+		t.Errorf("WSL composer removal distro = %q, want devstack", removedWSL)
+	}
+	for _, path := range []string{filepath.Join(binDir, "composer.cmd"), composerDir} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s still exists after ToolRemove(composer)", path)
+		}
+	}
+}
+
+func TestWindowsHelperAdapterToolRemoveAbortsOnWSLRemovalError(t *testing.T) {
+	home := t.TempDir()
+	binDir := filepath.Join(home, "bin")
+	composerDir := filepath.Join(home, "tools", "composer")
+	for _, dir := range []string{binDir, composerDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wrapper := filepath.Join(binDir, "composer.cmd")
+	phar := filepath.Join(composerDir, "composer.phar")
+	for _, path := range []string{wrapper, phar} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	adapter := &helperAdapter{
+		home:   home,
+		distro: "devstack",
+		removeWSLComposer: func(context.Context, string) error {
+			return errors.New("wsl unavailable")
+		},
+	}
+	if _, err := adapter.ToolRemove(context.Background(), helperproto.ToolComposer); err == nil {
+		t.Fatal("ToolRemove succeeded while WSL removal failed")
+	}
+	for _, path := range []string{wrapper, phar} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("%s was removed despite the WSL failure: %v", path, err)
+		}
 	}
 }
 
