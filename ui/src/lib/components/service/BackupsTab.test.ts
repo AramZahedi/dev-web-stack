@@ -140,8 +140,38 @@ describe('BackupsTab', () => {
     await waitFor(() => expect(confirm.disabled).toBe(false));
   });
 
-  it('shows an inactive-service error instead of creating a backup while stopped', async () => {
+  it('restores into a new database after the typed confirmation', async () => {
     render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: MYSQL_BACKUPS,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /restore app backup/i }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Restore backup' }));
+
+    await waitFor(() =>
+      expect(db.restoreServiceBackup).toHaveBeenCalledWith(
+        'mysql',
+        'bkp_1',
+        expect.objectContaining({
+          overwrite: false,
+          confirm: 'app',
+          pre_restore_backup: true,
+          target: expect.stringMatching(/^app_restore_/),
+        }),
+      ),
+    );
+  });
+
+  it('shows an inactive-service error instead of creating a backup while stopped', async () => {    render(BackupsTab, {
       props: {
         service: STOPPED_MYSQL,
         backups: MYSQL_BACKUPS,

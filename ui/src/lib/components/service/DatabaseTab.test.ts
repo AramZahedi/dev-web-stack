@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import DatabaseTab from './DatabaseTab.svelte';
 import * as db from '../../databaseApi';
 import type { Database } from '../../databaseTypes';
@@ -200,6 +200,59 @@ describe('DatabaseTab', () => {
     expect(refresh).toHaveBeenCalled();
   });
 
+  it('creates a database through the form dialog', async () => {
+    const refresh = vi.fn();
+    render(DatabaseTab, {
+      props: { service: MYSQL_SERVICE, databases: MYSQL_DATABASES, onRefresh: refresh },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create database' }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.input(within(dialog).getByLabelText(/database name/i), {
+      target: { value: 'shop' },
+    });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Create database' }));
+
+    await waitFor(() =>
+      expect(db.createServiceDatabase).toHaveBeenCalledWith('mysql', { name: 'shop' }),
+    );
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it('renames a PostgreSQL database through the form dialog', async () => {
+    render(DatabaseTab, {
+      props: {
+        service: POSTGRES_SERVICE,
+        databases: POSTGRES_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /rename app/i }));
+    const dialog = await screen.findByRole('dialog');
+    const input = within(dialog).getByLabelText(/database name/i) as HTMLInputElement;
+    expect(input.value).toBe('app');
+    await fireEvent.input(input, { target: { value: 'app_v2' } });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Rename database' }));
+
+    await waitFor(() =>
+      expect(db.renameServiceDatabase).toHaveBeenCalledWith('postgresql', 'app', {
+        name: 'app_v2',
+      }),
+    );
+  });
+
+  it('exports a database through the download endpoint', async () => {
+    vi.mocked(db.exportServiceDatabase).mockResolvedValue(new Blob(['dump']));
+    render(DatabaseTab, {
+      props: { service: MYSQL_SERVICE, databases: MYSQL_DATABASES, onRefresh: vi.fn() },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /export app/i }));
+
+    await waitFor(() => expect(db.exportServiceDatabase).toHaveBeenCalledWith('mysql', 'app'));
+  });
+
   it('flags a database missing on the engine and offers to manage its links', () => {
     render(DatabaseTab, {
       props: {
@@ -210,10 +263,10 @@ describe('DatabaseTab', () => {
     });
 
     expect(screen.getByText(/missing on engine/i)).toBeTruthy();
-    expect(screen.getByRole('link', { name: /unlink app from blog/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /unlink app/i })).toBeTruthy();
   });
 
-  it('disables mutations while the service is stopped but keeps the inventory visible', () => {
+  it('disables create while stopped and reports inactive backup, export and import attempts', async () => {
     render(DatabaseTab, {
       props: {
         service: STOPPED_MYSQL,
@@ -223,10 +276,19 @@ describe('DatabaseTab', () => {
     });
 
     expect(screen.getByText('app')).toBeTruthy();
-    expect(screen.getByText(/activate the service/i)).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Create database' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: /back up app/i }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: /export app/i }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: /import app/i }) as HTMLButtonElement).disabled).toBe(true);
+
+    await fireEvent.click(screen.getByRole('button', { name: /back up app/i }));
+    expect(screen.getByText(/activate the service to back up databases/i)).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: /export app/i }));
+    expect(screen.getByText(/activate the service to export databases/i)).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: /import app/i }));
+    expect(screen.getByText(/activate the service to import databases/i)).toBeTruthy();
+
+    expect(db.createServiceBackup).not.toHaveBeenCalled();
+    expect(db.exportServiceDatabase).not.toHaveBeenCalled();
+    expect(db.importServiceDatabase).not.toHaveBeenCalled();
   });
 });

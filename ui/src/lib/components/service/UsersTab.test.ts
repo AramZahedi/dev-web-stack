@@ -307,6 +307,30 @@ describe('UsersTab', () => {
     );
   });
 
+  it('edits grants through the user dialog', async () => {
+    render(UsersTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        users: MYSQL_USERS,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /edit app/i }));
+    const dialog = await screen.findByRole('dialog');
+    const preset = within(dialog).getByLabelText('Grant 1 preset') as HTMLSelectElement;
+    await fireEvent.change(preset, { target: { value: 'read_only' } });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(db.updateServiceUser).toHaveBeenCalledWith('mysql', 'usr_app', {
+        enabled: true,
+        grants: [{ database: 'app', preset: 'read_only' }],
+      }),
+    );
+  });
+
   it('hides host and grants for Redis and shows the access level', () => {
     render(UsersTab, {
       props: {

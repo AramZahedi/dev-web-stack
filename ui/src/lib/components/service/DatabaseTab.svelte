@@ -51,6 +51,9 @@
   const canRename = $derived(engine === 'postgres');
   const active = $derived(service.active);
 
+  let actionError = $state('');
+  let unlinkTarget = $state<Database | null>(null);
+
   let createOpen = $state(false);
   let renameTarget = $state<Database | null>(null);
   let formBusy = $state(false);
@@ -218,9 +221,10 @@
 
   async function backupDatabase(database: Database): Promise<void> {
     if (!active) {
-      toastError('Activate the service to back up databases');
+      actionError = 'Activate the service to back up databases.';
       return;
     }
+    actionError = '';
     try {
       const next = await dbApi.createServiceBackup(service.id, database.name, { kind: 'manual' });
       watchJob(next);
@@ -232,9 +236,10 @@
 
   async function exportDatabase(database: Database): Promise<void> {
     if (!active) {
-      toastError('Activate the service to export databases');
+      actionError = 'Activate the service to export databases.';
       return;
     }
+    actionError = '';
     try {
       const blob = await dbApi.exportServiceDatabase(service.id, database.name);
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -252,9 +257,10 @@
 
   function beginImport(database: Database): void {
     if (!active) {
-      toastError('Activate the service to import databases');
+      actionError = 'Activate the service to import databases.';
       return;
     }
+    actionError = '';
     importTarget = database;
     importError = null;
     fileInput?.click();
@@ -317,6 +323,10 @@
       The service is stopped. Activate the service to create, rename, back up, import or export
       databases. Existing databases and backups remain visible.
     </p>
+  {/if}
+
+  {#if actionError}
+    <p class="action-error" role="alert">{actionError}</p>
   {/if}
 
   {#if job}
@@ -437,14 +447,22 @@
                         <a
                           class="site-link"
                           href={`#/sites/${site.id}`}
-                          aria-label={database.missing
-                            ? `Unlink ${database.name} from ${site.name}`
-                            : `Open ${site.name}`}
+                          aria-label={`Open ${site.name}`}
                         >
                           {site.name}
                         </a>
                       {/each}
                     </div>
+                    {#if database.missing}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        ariaLabel={`Unlink ${database.name}`}
+                        onclick={() => (unlinkTarget = database)}
+                      >
+                        Unlink
+                      </Button>
+                    {/if}
                   {:else}
                     <span class="muted">—</span>
                   {/if}
@@ -468,7 +486,7 @@
                       size="sm"
                       variant="ghost"
                       ariaLabel={`Back up ${database.name}`}
-                      disabled={!active || database.missing}
+                      disabled={database.missing}
                       onclick={() => backupDatabase(database)}
                     >
                       <Archive size={12} strokeWidth={2} aria-hidden="true" />
@@ -478,7 +496,7 @@
                       size="sm"
                       variant="ghost"
                       ariaLabel={`Export ${database.name}`}
-                      disabled={!active || database.missing}
+                      disabled={database.missing}
                       onclick={() => exportDatabase(database)}
                     >
                       <Download size={12} strokeWidth={2} aria-hidden="true" />
@@ -488,7 +506,7 @@
                       size="sm"
                       variant="ghost"
                       ariaLabel={`Import ${database.name}`}
-                      disabled={!active || database.missing}
+                      disabled={database.missing}
                       onclick={() => beginImport(database)}
                     >
                       <FileUp size={12} strokeWidth={2} aria-hidden="true" />
@@ -586,6 +604,28 @@
 </ConfirmDialog>
 
 <Modal
+  open={unlinkTarget !== null}
+  title={unlinkTarget ? `Unlink sites from ${unlinkTarget.name}` : 'Unlink sites'}
+  description="Remove the link from each site's Databases card. A database that is missing on the engine is never recreated automatically."
+  size="sm"
+  onclose={() => (unlinkTarget = null)}
+>
+  {#if unlinkTarget}
+    <ul class="unlink-list">
+      {#each unlinkTarget.linked_sites ?? [] as site (site.id)}
+        <li>
+          <a class="site-link" href={`#/sites/${site.id}`}>Open {site.name}</a>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+
+  {#snippet footer()}
+    <Button variant="ghost" onclick={() => (unlinkTarget = null)}>Close</Button>
+  {/snippet}
+</Modal>
+
+<Modal
   open={importOpen}
   title={importTarget ? `Import into ${importTarget.name}` : 'Import database'}
   description="Upload a .sql or .sql.gz dump. Files are staged on the agent and deleted after the job."
@@ -672,6 +712,15 @@
     color: var(--warning-fg);
     font-size: 11.5px;
     line-height: 1.5;
+  }
+
+  .action-error {
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    background: var(--danger-soft);
+    color: var(--danger-fg);
+    font-size: 11.5px;
+    line-height: 1.45;
   }
 
   .job-card {
@@ -794,6 +843,15 @@
 
   .file-input {
     display: none;
+  }
+
+  .unlink-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
   .drop-details,
