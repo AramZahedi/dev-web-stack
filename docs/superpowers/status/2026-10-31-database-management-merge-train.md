@@ -24,7 +24,7 @@
 | Merged registry verification | done | — | dbengine/helper/helperclient/agentdocker/agentclient + databases/servicecontrol + API + sites PASS |
 | Full merged-tree gate | done | `f60e1a8` | Go race/vet/build PASS; UI 0/0 + 330 tests + build PASS; 5 binaries built |
 | Merge to `master` | done | `8411b56` | trees identical; databases/api/sites + build PASS; not pushed |
-| Full E2E plan | pending | — | — |
+| Full E2E plan | done | `0b9d48d` | `2026-10-31-database-management-e2e-plan.md`; not executed |
 
 ## Step log
 
@@ -116,3 +116,10 @@
 - Tree equality confirmed: `master^{tree}` = `integration/database-management^{tree}` = `6c4e19e488baa5db883eb55f64de4f1fab79138e`.
 - Post-merge sanity: `go test ./internal/databases ./internal/api ./internal/sites -count=1` PASS; `go build ./...` PASS.
 - Local only; `master` is ahead of `origin/master` and nothing was pushed.
+
+### Step 12 - Full E2E plan
+
+- Wrote `docs/superpowers/status/2026-10-31-database-management-e2e-plan.md` (488 lines).
+- Covers Windows/WSL, Linux helper, MySQL/MariaDB/PostgreSQL/Redis, site deletion, wrong-engine blocking, backup/restore/import/export, Redis ACL persistence, CLI security, and mock/live Playwright checks.
+- Explicitly not executed; no live E2E, container change, site mutation, backup, restore, import, Redis restart, or Playwright run was started.
+- Commit `0b9d48d`.
