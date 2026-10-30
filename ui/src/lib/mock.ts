@@ -1309,6 +1309,17 @@ function nodeDefaultBuild(): RuntimeBuild | undefined {
   return findNodeBuild(nodeDefaultConfigured);
 }
 
+function nodeDefaultStatus(): NodeDefaultStatus {
+  const build = nodeDefaultBuild();
+  return {
+    configured: nodeDefaultConfigured || undefined,
+    build: build ? clone(build) : undefined,
+    shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+    shim_installed: Boolean(build),
+    source: nodeDefaultConfigured ? 'setting' : 'newest',
+  };
+}
+
 /** Test fixture hook for the configured default, including stale values. */
 export function setMockNodeDefaultForTests(value: string): void {
   nodeDefaultConfigured = value.trim();
@@ -1758,14 +1769,43 @@ export const mockApi = {
 
   async getNodeDefault(): Promise<NodeDefaultStatus> {
     await wait();
-    const build = nodeDefaultBuild();
+    return clone(nodeDefaultStatus());
+  },
+
+  async refreshNodeReleases(): Promise<NodeReleaseSnapshot> {
+    await wait(250, 450);
     return clone({
-      configured: nodeDefaultConfigured || undefined,
-      build,
-      shim_dir: '/home/dev/.devstack/tools/node-default/bin',
-      shim_installed: Boolean(build),
-      source: nodeDefaultConfigured ? 'setting' : 'newest',
+      ...nodeReleaseSnapshot(false),
+      source: 'live',
+      cached_at: new Date().toISOString(),
+      stale: false,
+      warning: undefined,
     });
+  },
+
+  async setNodeDefault(value: string, _force = false): Promise<NodeDefaultStatus> {
+    await wait();
+    const wanted = value.trim();
+    if (!wanted) {
+      nodeDefaultConfigured = '';
+      return clone(nodeDefaultStatus());
+    }
+    const build = findNodeBuild(wanted);
+    if (!build) {
+      throw new ApiError(
+        'NODE_DEFAULT_NOT_INSTALLED',
+        `Node ${exactNodeVersion(wanted)} is not installed.`,
+        409,
+      );
+    }
+    nodeDefaultConfigured = wanted;
+    return clone(nodeDefaultStatus());
+  },
+
+  async clearNodeDefault(): Promise<NodeDefaultStatus> {
+    await wait();
+    nodeDefaultConfigured = '';
+    return clone(nodeDefaultStatus());
   },
 
   async installRuntime(id: string): Promise<RuntimeBuild> {

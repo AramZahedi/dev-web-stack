@@ -5,6 +5,7 @@
     CircleCheck,
     CircleX,
     Copy,
+    Download,
     Eye,
     FileCode,
     Package,
@@ -25,6 +26,7 @@
   import { addToast, daemon, session, toastError } from '../lib/stores';
   import type {
     GlobalIni,
+    NodeDefaultStatus,
     PHPDefaultStatus,
     RuntimeBuild,
     Settings,
@@ -72,6 +74,12 @@
   let phpDefaultChoice = $state('');
   let phpDefaultBusy = $state<'save' | 'clear' | null>(null);
   let phpDefaultActionError = $state<{ code: string; message: string } | null>(null);
+  let nodeDefault = $state<NodeDefaultStatus | null>(null);
+  let nodeDefaultError = $state<{ code: string; message: string } | null>(null);
+  let nodeDefaultLoading = $state(true);
+  let nodeDefaultChoice = $state('');
+  let nodeDefaultBusy = $state<'save' | 'clear' | null>(null);
+  let nodeDefaultActionError = $state<{ code: string; message: string } | null>(null);
   let globalIni = $state<GlobalIni | null>(null);
   let globalIniContent = $state('');
   let globalIniError = $state<{ code: string; message: string } | null>(null);
@@ -151,6 +159,28 @@
           phpRevision(b.id) - phpRevision(a.id),
       ),
   );
+  const nodeBuilds = $derived(
+    toolingRuntimes
+      .filter((runtime) => runtime.kind === 'node')
+      .slice()
+      .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true })),
+  );
+  const configuredNodeDefault = $derived(nodeDefault?.configured?.trim() ?? '');
+  const configuredNodeDefaultDisplay = $derived(nodeVersionLabel(configuredNodeDefault));
+  const nodeDefaultMissing = $derived(
+    Boolean(configuredNodeDefault) && !nodeDefault?.build,
+  );
+  const nodeDefaultLabel = $derived.by(() => {
+    if (nodeDefault?.build) {
+      return configuredNodeDefault
+        ? `Configured · Node ${nodeDefault.build.version}`
+        : `Newest installed (Node ${nodeDefault.build.version})`;
+    }
+    if (configuredNodeDefault) {
+      return `Configured · Node ${configuredNodeDefaultDisplay} (not installed)`;
+    }
+    return 'Not configured';
+  });
   const composerTool = $derived(tools.find((tool) => tool.id === 'composer'));
   const phpDefaultLabel = $derived(
     phpDefault?.configured
@@ -193,6 +223,10 @@
   function phpRevision(id: string): number {
     const match = /-r([1-9][0-9]*)$/.exec(id);
     return match ? Number.parseInt(match[1], 10) : 0;
+  }
+
+  function nodeVersionLabel(value: string): string {
+    return value.trim().replace(/^node@/i, '').replace(/-linux-x64$/i, '');
   }
 
   function modeLabel(mode: ServingMode): string {
@@ -297,6 +331,26 @@
     }
   }
 
+  async function loadNodeDefault(initial = false): Promise<void> {
+    if (initial) nodeDefaultLoading = true;
+    nodeDefaultError = null;
+    try {
+      const [status, builds] = await Promise.all([api.getNodeDefault(), api.listRuntimes()]);
+      nodeDefault = status;
+      toolingRuntimes = builds;
+      const available = builds
+        .filter((runtime) => runtime.kind === 'node')
+        .map((runtime) => runtime.version);
+      if (!nodeDefaultChoice || !available.includes(nodeDefaultChoice)) {
+        nodeDefaultChoice = status.build?.version ?? '';
+      }
+    } catch (caught) {
+      nodeDefaultError = describeError(caught);
+    } finally {
+      nodeDefaultLoading = false;
+    }
+  }
+
   async function loadGlobalIni(initial = false): Promise<void> {
     if (initial) globalIniLoading = true;
     globalIniError = null;
@@ -326,12 +380,14 @@
     void load(true);
     void loadVhosts(true);
     void loadPHPDefault(true);
+    void loadNodeDefault(true);
     void loadGlobalIni(true);
     void loadTools(true);
     const refresh = () => {
       void load();
       void loadVhosts();
       void loadPHPDefault();
+      void loadNodeDefault();
       void loadGlobalIni();
       void loadTools();
     };
@@ -555,6 +611,61 @@
       toastError('Could not clear the PHP CLI default', `${described.code}: ${described.message}`);
     } finally {
       phpDefaultBusy = null;
+    }
+  }
+
+  async function saveNodeDefault(): Promise<void> {
+    if (!nodeDefaultChoice || nodeDefaultBusy) return;
+    if (!nodeBuilds.some((build) => build.version === nodeDefaultChoice)) {
+      nodeDefaultActionError = {
+        code: 'NODE_DEFAULT_NOT_INSTALLED',
+        message: 'Choose an installed Node build before saving the default.',
+      };
+      return;
+    }
+    nodeDefaultBusy = 'save';
+    nodeDefaultActionError = null;
+    try {
+      nodeDefault = await api.setNodeDefault(nodeDefaultChoice);
+      nodeDefaultChoice = nodeDefault.build?.version ?? nodeDefaultChoice;
+      addToast({
+        kind: 'success',
+        title: 'Node CLI default saved',
+        message: nodeDefault.build
+          ? `node, npm and npx now use Node ${nodeDefault.build.version} (${nodeDefault.build.id}).`
+          : 'The default was saved. Install a Node build to activate the shims.',
+      });
+      await loadTools();
+    } catch (caught) {
+      const described = describeError(caught);
+      nodeDefaultActionError = described;
+      toastError('Could not set the Node CLI default', `${described.code}: ${described.message}`);
+    } finally {
+      nodeDefaultBusy = null;
+    }
+  }
+
+  async function clearNodeDefault(): Promise<void> {
+    if (nodeDefaultBusy) return;
+    nodeDefaultBusy = 'clear';
+    nodeDefaultActionError = null;
+    try {
+      nodeDefault = await api.clearNodeDefault();
+      nodeDefaultChoice = nodeDefault.build?.version ?? '';
+      addToast({
+        kind: 'success',
+        title: 'Node CLI default cleared',
+        message: nodeDefault.build
+          ? `The shims fall back to the newest installed build, Node ${nodeDefault.build.version}.`
+          : 'No Node build is installed, so the managed shims were removed.',
+      });
+      await loadTools();
+    } catch (caught) {
+      const described = describeError(caught);
+      nodeDefaultActionError = described;
+      toastError('Could not clear the Node CLI default', `${described.code}: ${described.message}`);
+    } finally {
+      nodeDefaultBusy = null;
     }
   }
 
@@ -1176,6 +1287,163 @@
                 Clear default
               </Button>
             </div>
+          </div>
+        {/if}
+      </Card>
+
+      <Card
+        title="Node CLI default"
+        subtitle="Machine-wide node, npm and npx shims outside a site shell"
+      >
+        {#snippet actions()}
+          <Badge
+            variant={nodeDefaultMissing
+              ? 'warning'
+              : nodeDefault?.configured
+                ? 'accent'
+                : nodeDefault?.build
+                  ? 'info'
+                  : 'neutral'}
+          >
+            {nodeDefaultMissing
+              ? 'Missing'
+              : nodeDefault?.configured
+                ? 'Explicit'
+                : nodeDefault?.build
+                  ? 'Fallback'
+                  : 'Not set'}
+          </Badge>
+        {/snippet}
+
+        {#if nodeDefaultLoading && !nodeDefault}
+          <div class="tooling-loading" aria-busy="true" aria-label="Loading Node CLI default">
+            <Skeleton width="64%" height="13px" />
+            <Skeleton width="100%" height="36px" />
+            <Skeleton width="46%" height="11px" />
+          </div>
+        {:else if nodeDefaultError && !nodeDefault}
+          <ErrorBanner
+            title="Could not load the Node CLI default"
+            code={nodeDefaultError.code}
+            message={nodeDefaultError.message}
+            onretry={() => loadNodeDefault(true)}
+          />
+        {:else if nodeDefault}
+          {#if nodeDefaultError}
+            <div class="tooling-inline-error">
+              <ErrorBanner
+                title="Node CLI state is out of date"
+                code={nodeDefaultError.code}
+                message={nodeDefaultError.message}
+                onretry={() => loadNodeDefault()}
+                ondismiss={() => (nodeDefaultError = null)}
+              />
+            </div>
+          {/if}
+
+          {#if nodeDefaultMissing}
+            <p class="node-default-warning" role="status">
+              Configured Node {configuredNodeDefaultDisplay} is not installed. Clear the default or install
+              that build before saving a new one.
+            </p>
+          {/if}
+
+          <dl class="tooling-list">
+            <div>
+              <dt>Status</dt>
+              <dd>
+                <span class="tool-state" class:ok={Boolean(nodeDefault.build)} class:warn={nodeDefaultMissing}>
+                  {nodeDefaultLabel}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Resolved build</dt>
+              <dd class="mono break">
+                {nodeDefault.build
+                  ? `Node ${nodeDefault.build.version} · ${nodeDefault.build.id}`
+                  : nodeDefaultMissing
+                    ? `Node ${configuredNodeDefaultDisplay} is not installed`
+                    : 'No Node build is installed'}
+              </dd>
+            </div>
+            <div>
+              <dt>Shim directory</dt>
+              <dd class="mono break">{nodeDefault.shim_dir || '—'}</dd>
+            </div>
+            <div>
+              <dt>Managed shims</dt>
+              <dd>
+                <span class="tool-state" class:ok={nodeDefault.shim_installed}>
+                  {nodeDefault.shim_installed
+                    ? `Installed${nodeDefault.shim_dir ? ` in ${nodeDefault.shim_dir}` : ''}`
+                    : 'Not installed'}
+                </span>
+              </dd>
+            </div>
+          </dl>
+
+          {#if nodeDefaultActionError}
+            <div class="tooling-inline-error">
+              <ErrorBanner
+                title="Could not update the Node CLI default"
+                code={nodeDefaultActionError.code}
+                message={nodeDefaultActionError.message}
+                ondismiss={() => (nodeDefaultActionError = null)}
+              />
+            </div>
+          {/if}
+
+          <div class="php-default-form">
+            <label class="tooling-label" for="node-default-build">Default Node build</label>
+            <select
+              id="node-default-build"
+              class="input mono"
+              bind:value={nodeDefaultChoice}
+              disabled={nodeDefaultBusy !== null || nodeBuilds.length === 0}
+            >
+              {#if nodeDefaultMissing}
+                <option value="" disabled>Node {configuredNodeDefaultDisplay} (not installed)</option>
+              {:else if nodeBuilds.length === 0}
+                <option value="">No Node build installed</option>
+              {/if}
+              {#each nodeBuilds as build (build.id)}
+                <option value={build.version}>
+                  Node {build.version} · {build.backend}
+                </option>
+              {/each}
+            </select>
+            <p class="tooling-hint">
+              Choosing a build points <span class="mono">node</span>,
+              <span class="mono">npm</span> and <span class="mono">npx</span> at it for new shells.
+              Clearing keeps the newest installed build as the documented fallback.
+            </p>
+            <div class="tooling-actions">
+              <Button
+                size="sm"
+                variant="primary"
+                ariaLabel="Save Node default"
+                loading={nodeDefaultBusy === 'save'}
+                disabled={nodeDefaultBusy !== null || !nodeDefaultChoice}
+                onclick={saveNodeDefault}
+              >
+                Save default
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                ariaLabel="Clear Node default"
+                loading={nodeDefaultBusy === 'clear'}
+                disabled={nodeDefaultBusy !== null || !nodeDefault.configured}
+                onclick={clearNodeDefault}
+              >
+                Clear default
+              </Button>
+            </div>
+            <a class="install-more" href="#/runtimes">
+              <Download size={12} strokeWidth={2} aria-hidden="true" />
+              Install more Node versions
+            </a>
           </div>
         {/if}
       </Card>
@@ -2210,6 +2478,38 @@
 
   .tool-state.ok {
     color: var(--success-fg);
+  }
+
+  .tool-state.warn {
+    color: var(--warning-fg);
+  }
+
+  .node-default-warning {
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--warning) 34%, var(--border));
+    border-radius: var(--radius);
+    background: var(--warning-soft);
+    color: var(--warning-fg);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .install-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 2px;
+    color: var(--info-fg);
+    font-size: 10.5px;
+    font-weight: 500;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    align-self: flex-start;
+  }
+
+  .install-more:hover {
+    color: var(--fg);
   }
 
   .php-default-form {

@@ -371,6 +371,30 @@ export async function getNodeDefault(): Promise<NodeDefaultStatus> {
   return request<NodeDefaultStatus>('/node/default');
 }
 
+/** Force one Node release index fetch and return the refreshed snapshot. */
+export async function refreshNodeReleases(): Promise<NodeReleaseSnapshot> {
+  if (isMockMode) return mockApi.refreshNodeReleases();
+  return request<NodeReleaseSnapshot>('/runtimes/node/refresh', { method: 'POST' });
+}
+
+/** Set the machine-wide Node CLI default to an installed build. */
+export async function setNodeDefault(value: string, force = false): Promise<NodeDefaultStatus> {
+  if (isMockMode) return mockApi.setNodeDefault(value, force);
+  return request<NodeDefaultStatus>('/node/default', {
+    method: 'PUT',
+    body: { value, force },
+  });
+}
+
+/** Clear the Node CLI default and re-resolve the newest installed fallback. */
+export async function clearNodeDefault(): Promise<NodeDefaultStatus> {
+  if (isMockMode) return mockApi.clearNodeDefault();
+  return request<NodeDefaultStatus>('/node/default', {
+    method: 'PUT',
+    body: { clear: true },
+  });
+}
+
 // Older daemons omit the container runtime fields. Normalize them so the
 // dashboard can rely on the ServiceView contract without optional guards.
 function normalizeService(service: ServiceView): ServiceView {

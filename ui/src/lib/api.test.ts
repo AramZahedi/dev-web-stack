@@ -5,11 +5,13 @@ import {
   authenticateFromFragment,
   browseFs,
   buildSite,
+  clearNodeDefault,
   clearPHPDefault,
   createSite,
   deactivateService,
   getBuildLogs,
   getGlobalIni,
+  getNodeDefault,
   getPHPDefault,
   getPHPDefaults,
   getPHPInfo,
@@ -26,6 +28,7 @@ import {
   phpExec,
   phpExtensions,
   previewVhost,
+  refreshNodeReleases,
   removeTool,
   resetApiClientForTests,
   restartService,
@@ -35,6 +38,7 @@ import {
   saveGlobalIni,
   savePHPDefaults,
   serviceLogs,
+  setNodeDefault,
   setPHPDefault,
   setServingMode,
   startSite,
@@ -688,6 +692,60 @@ describe('api client', () => {
     const [removeToolUrl, removeToolInit] = fetchMock.mock.calls[8] as [string, RequestInit];
     expect(removeToolUrl).toBe('/api/v1/tools/composer/remove');
     expect(removeToolInit.method).toBe('POST');
+  });
+
+  it('refreshes Node releases and mutates the Node CLI default with CSRF', async () => {
+    const status = {
+      configured: '24.9.0',
+      build: { id: 'node@24.9.0', kind: 'node', version: '24.9.0' },
+      shim_dir: '/home/dev/.devstack/tools/node-default/bin',
+      shim_installed: true,
+      source: 'setting',
+    };
+    const snapshot = {
+      majors: [],
+      all: [],
+      source: 'live',
+      cached_at: '2026-10-30T10:00:00Z',
+      stale: false,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(status))
+      .mockResolvedValueOnce(jsonResponse({ csrf_token: 'csrf-node' }))
+      .mockResolvedValueOnce(jsonResponse(snapshot))
+      .mockResolvedValueOnce(jsonResponse(status))
+      .mockResolvedValueOnce(jsonResponse({ ...status, configured: undefined, source: 'newest' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getNodeDefault()).resolves.toMatchObject({ configured: '24.9.0' });
+    await expect(refreshNodeReleases()).resolves.toMatchObject({ source: 'live' });
+    await expect(setNodeDefault('24.9.0', true)).resolves.toMatchObject({
+      shim_installed: true,
+    });
+    await expect(clearNodeDefault()).resolves.toMatchObject({ source: 'newest' });
+
+    const [getUrl, getInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(getUrl).toBe('/api/v1/node/default');
+    expect(getInit.method ?? 'GET').toBe('GET');
+    expect(new Headers(getInit.headers).get('X-CSRF-Token')).toBeNull();
+
+    const [sessionUrl] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(sessionUrl).toBe('/api/v1/session');
+    const [refreshUrl, refreshInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(refreshUrl).toBe('/api/v1/runtimes/node/refresh');
+    expect(refreshInit.method).toBe('POST');
+    expect(new Headers(refreshInit.headers).get('X-CSRF-Token')).toBe('csrf-node');
+
+    const [setUrl, setInit] = fetchMock.mock.calls[3] as [string, RequestInit];
+    expect(setUrl).toBe('/api/v1/node/default');
+    expect(setInit.method).toBe('PUT');
+    expect(JSON.parse(String(setInit.body))).toEqual({ value: '24.9.0', force: true });
+
+    const [clearUrl, clearInit] = fetchMock.mock.calls[4] as [string, RequestInit];
+    expect(clearUrl).toBe('/api/v1/node/default');
+    expect(clearInit.method).toBe('PUT');
+    expect(JSON.parse(String(clearInit.body))).toEqual({ clear: true });
   });
 
   it('runs site builds and reads a bounded build log tail', async () => {

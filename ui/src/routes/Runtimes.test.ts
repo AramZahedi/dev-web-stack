@@ -3,7 +3,13 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import Runtimes from './Runtimes.svelte';
 import * as api from '../lib/api';
 import { ApiError } from '../lib/errors';
-import type { RuntimeBuild, Site } from '../lib/types';
+import type {
+  NodeRelease,
+  NodeReleasePreflight,
+  NodeReleaseSnapshot,
+  RuntimeBuild,
+  Site,
+} from '../lib/types';
 
 vi.mock('../lib/api', () => ({
   isMockMode: false,
@@ -16,6 +22,9 @@ vi.mock('../lib/api', () => ({
   getPHPDefaults: vi.fn(),
   savePHPDefaults: vi.fn(),
   phpExtensions: vi.fn(),
+  listNodeReleases: vi.fn(),
+  getNodeRelease: vi.fn(),
+  refreshNodeReleases: vi.fn(),
 }));
 
 const BUILD_A: RuntimeBuild = {
@@ -46,6 +55,103 @@ const BUILD_C: RuntimeBuild = {
   path: '/home/dev/.devstack/runtimes/php/8.5.0-r1',
   checksum: 'c'.repeat(64),
   installed_at: '2026-10-22T10:00:00Z',
+};
+
+const NODE_24_9_0: NodeRelease = {
+  version: '24.9.0',
+  date: '2026-10-15',
+  lts: 'Krypton',
+  security: false,
+  npm: '11.6.0',
+  modules: '137',
+  file: 'linux-x64',
+};
+
+const NODE_24_8_1: NodeRelease = {
+  version: '24.8.1',
+  date: '2026-09-24',
+  lts: 'Krypton',
+  security: false,
+  npm: '11.5.2',
+  modules: '137',
+  file: 'linux-x64',
+};
+
+const NODE_24_8_0: NodeRelease = {
+  version: '24.8.0',
+  date: '2026-09-10',
+  lts: 'Krypton',
+  security: false,
+  npm: '11.5.1',
+  modules: '137',
+  file: 'linux-x64',
+};
+
+const NODE_22_20_0: NodeRelease = {
+  version: '22.20.0',
+  date: '2026-10-08',
+  lts: 'Jod',
+  security: true,
+  npm: '10.9.4',
+  modules: '127',
+  file: 'linux-x64',
+};
+
+const NODE_22_19_0: NodeRelease = {
+  version: '22.19.0',
+  date: '2026-09-18',
+  lts: 'Jod',
+  security: true,
+  npm: '10.9.0',
+  modules: '127',
+  file: 'linux-x64',
+};
+
+const NODE_RELEASES: NodeReleaseSnapshot = {
+  majors: [
+    { major: 24, latest: NODE_24_9_0, releases: [NODE_24_9_0] },
+    { major: 22, latest: NODE_22_20_0, releases: [NODE_22_20_0] },
+  ],
+  all: [NODE_24_9_0, NODE_24_8_1, NODE_24_8_0, NODE_22_20_0, NODE_22_19_0],
+  source: 'live',
+  cached_at: '2026-10-30T09:00:00Z',
+  stale: false,
+};
+
+const NODE_24_PREFLIGHT: NodeReleasePreflight = {
+  entry: {
+    id: 'node@24.9.0',
+    kind: 'node',
+    version: '24.9.0',
+    build: 'linux-x64',
+    url: 'https://nodejs.org/dist/v24.9.0/node-v24.9.0-linux-x64.tar.xz',
+    sha256: '9a4f7c02e1d8b63a5f0c92d47e18ba6c3f5d20e9a7b4c61d8f30e2a95c7b4d18',
+    size: 51_904_512,
+  },
+  release: NODE_24_9_0,
+};
+
+const NODE_22_PREFLIGHT: NodeReleasePreflight = {
+  entry: {
+    id: 'node@22.19.0',
+    kind: 'node',
+    version: '22.19.0',
+    build: 'linux-x64',
+    url: 'https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-x64.tar.xz',
+    sha256: '1f2c3d4e5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d',
+    size: 48_234_496,
+  },
+  release: NODE_22_19_0,
+};
+
+const NODE_24_BUILD: RuntimeBuild = {
+  id: 'node@24.9.0',
+  kind: 'node',
+  version: '24.9.0',
+  backend: 'local',
+  path: '/home/dev/.devstack/runtimes/node/24.9.0-linux-x64',
+  checksum: 'd'.repeat(64),
+  installed_at: '2026-10-29T10:00:00Z',
 };
 
 const PHP_EXTENSIONS = [
@@ -117,6 +223,9 @@ beforeEach(() => {
     { site: 'shop', ok: true },
   ]);
   mockApi.removeRuntime.mockReset();
+  mockApi.listNodeReleases.mockResolvedValue(NODE_RELEASES);
+  mockApi.getNodeRelease.mockResolvedValue(NODE_24_PREFLIGHT);
+  mockApi.refreshNodeReleases.mockResolvedValue(NODE_RELEASES);
 });
 
 afterEach(() => {
@@ -419,5 +528,140 @@ describe('Runtimes PHP removal', () => {
     expect(button.disabled).toBe(true);
     expect(button.getAttribute('title')).toContain('blog');
     expect(within(row as HTMLElement).getByText(/Used by blog/)).toBeTruthy();
+  });
+});
+
+describe('Runtimes Node discovery', () => {
+  it('shows only the newest patch per major by default', async () => {
+    mockApi.listRuntimes.mockResolvedValue([BUILD_A, BUILD_B, NODE_24_BUILD]);
+    render(Runtimes);
+
+    const node24 = (await screen.findByRole('heading', { name: 'Node 24' })).closest(
+      'article',
+    ) as HTMLElement;
+    const node22 = screen.getByRole('heading', { name: 'Node 22' }).closest(
+      'article',
+    ) as HTMLElement;
+
+    expect(within(node24).getAllByText(/24\.9\.0/).length).toBeGreaterThan(0);
+    expect(within(node24).queryByText(/24\.8\.1/)).toBeNull();
+    expect(within(node22).queryByText(/22\.19\.0/)).toBeNull();
+    expect(within(node24).getByText('LTS Krypton')).toBeTruthy();
+    expect(within(node22).getByText('Security')).toBeTruthy();
+    expect(within(node24).getByText('Installed')).toBeTruthy();
+    expect(mockApi.listNodeReleases).toHaveBeenCalledWith();
+  });
+
+  it('expands a major to show every stable release', async () => {
+    render(Runtimes);
+
+    const node24 = (await screen.findByRole('heading', { name: 'Node 24' })).closest(
+      'article',
+    ) as HTMLElement;
+    expect(within(node24).queryByText(/24\.8\.1/)).toBeNull();
+
+    await fireEvent.click(
+      within(node24).getByRole('button', { name: 'Show all Node 24 versions' }),
+    );
+
+    expect(await within(node24).findByText(/24\.8\.1/)).toBeTruthy();
+    expect(within(node24).getByText(/24\.8\.0/)).toBeTruthy();
+    expect(within(node24).getByText('Node 24.8')).toBeTruthy();
+    expect(
+      within(node24).getByRole('button', { name: 'Hide Node 24 versions' }),
+    ).toBeTruthy();
+    expect(screen.queryByText(/22\.19\.0/)).toBeNull();
+  });
+
+  it('lazily loads checksum and size in the install dialog', async () => {
+    render(Runtimes);
+
+    const node24 = (await screen.findByRole('heading', { name: 'Node 24' })).closest(
+      'article',
+    ) as HTMLElement;
+    expect(mockApi.getNodeRelease).not.toHaveBeenCalled();
+
+    await fireEvent.click(
+      within(node24).getByRole('button', { name: 'Install Node 24.9.0' }),
+    );
+    const dialog = await screen.findByRole('dialog', {
+      name: /Install Node 24\.9\.0/,
+    });
+
+    await waitFor(() => expect(mockApi.getNodeRelease).toHaveBeenCalledWith('24.9.0'));
+    expect(await within(dialog).findByText('49.5 MB')).toBeTruthy();
+    expect(within(dialog).getByText('npm 11.6.0')).toBeTruthy();
+    expect(within(dialog).getByText(/9a4f7c02e1d8b63a…/)).toBeTruthy();
+  });
+
+  it('warns about older patch releases before installing', async () => {
+    mockApi.getNodeRelease.mockResolvedValue(NODE_22_PREFLIGHT);
+    render(Runtimes);
+
+    const node22 = (await screen.findByRole('heading', { name: 'Node 22' })).closest(
+      'article',
+    ) as HTMLElement;
+    await fireEvent.click(
+      within(node22).getByRole('button', { name: 'Show all Node 22 versions' }),
+    );
+    await fireEvent.click(
+      await within(node22).findByRole('button', { name: 'Install Node 22.19.0' }),
+    );
+
+    const dialog = await screen.findByRole('dialog', {
+      name: /Install Node 22\.19\.0/,
+    });
+    expect(await within(dialog).findByText(/older patch release/i)).toBeTruthy();
+    expect(within(dialog).getByText(/newest patch in Node 22 is 22\.20\.0/i)).toBeTruthy();
+    expect(within(dialog).getByText(/security fixes/i)).toBeTruthy();
+  });
+
+  it('shows stale/offline refresh state', async () => {
+    const cachedAt = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+    mockApi.listNodeReleases.mockResolvedValue({
+      ...NODE_RELEASES,
+      source: 'cache',
+      stale: true,
+      cached_at: cachedAt,
+      warning: 'nodejs.org is unreachable. Using the cached index.',
+    });
+    mockApi.refreshNodeReleases.mockResolvedValue({
+      ...NODE_RELEASES,
+      source: 'embedded',
+      stale: true,
+      cached_at: cachedAt,
+      warning: 'Offline: serving the embedded Node catalog.',
+    });
+    render(Runtimes);
+
+    expect(await screen.findByText('Cached')).toBeTruthy();
+    expect(screen.getByText('Stale')).toBeTruthy();
+    expect(screen.getByText(/Cache age 5 hours ago/)).toBeTruthy();
+    expect(screen.getByText(/nodejs\.org is unreachable/)).toBeTruthy();
+
+    await fireEvent.click(
+      screen.getByRole('button', { name: 'Refresh available versions' }),
+    );
+
+    await waitFor(() => expect(mockApi.refreshNodeReleases).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('Offline catalog')).toBeTruthy();
+    expect(screen.getByText(/embedded Node catalog/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Node 24' })).toBeTruthy();
+  });
+
+  it('keeps discovered Node choices when refresh fails', async () => {
+    mockApi.refreshNodeReleases.mockRejectedValue(
+      new ApiError('NETWORK_ERROR', 'nodejs.org is unreachable', 0),
+    );
+    render(Runtimes);
+
+    await screen.findByRole('heading', { name: 'Node 24' });
+    await fireEvent.click(
+      screen.getByRole('button', { name: 'Refresh available versions' }),
+    );
+
+    expect(await screen.findByText('Could not refresh Node releases')).toBeTruthy();
+    expect(screen.getByText(/NETWORK_ERROR/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Node 24' })).toBeTruthy();
   });
 });

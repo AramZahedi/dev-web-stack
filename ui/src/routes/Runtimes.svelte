@@ -8,16 +8,22 @@
     Download,
     FileCode,
     HardDrive,
+    RefreshCw,
     Settings2,
     ShieldCheck,
     Trash2,
+    TriangleAlert,
   } from 'lucide-svelte';
   import * as api from '../lib/api';
   import { describeError } from '../lib/errors';
-  import { checksumPrefix, formatBytes, formatDate } from '../lib/format';
+  import { checksumPrefix, formatBytes, formatDate, formatRelative } from '../lib/format';
   import { addToast, toastError } from '../lib/stores';
   import type {
     CatalogEntry,
+    NodeRelease,
+    NodeReleaseMajor,
+    NodeReleasePreflight,
+    NodeReleaseSnapshot,
     PHPMigrationResult,
     PHPRuntimeBuild,
     RuntimeBuild,
@@ -49,6 +55,18 @@
   let removeTarget = $state<RuntimeBuild | null>(null);
   let removing = $state(false);
   let defaultsLine = $state<string | null>(null);
+
+  let nodeSnapshot = $state<NodeReleaseSnapshot | null>(null);
+  let nodeLoading = $state(true);
+  let nodeError = $state<{ code: string; message: string } | null>(null);
+  let nodeRefreshing = $state(false);
+  let nodeRefreshError = $state<{ code: string; message: string } | null>(null);
+  let expandedMajors = $state<Record<number, boolean>>({});
+  let releaseTarget = $state<NodeRelease | null>(null);
+  let releasePreflight = $state<NodeReleasePreflight | null>(null);
+  let releasePreflightLoading = $state(false);
+  let releasePreflightError = $state<{ code: string; message: string } | null>(null);
+  let releaseInstalling = $state(false);
 
   let migration = $state<MigrationJob | null>(null);
   let migrationTarget = $state('');
@@ -98,12 +116,9 @@
     ),
   );
 
-  const availableNode = $derived(
-    catalog
-      .filter((entry) => entry.kind === 'node')
-      .slice()
-      .sort((a, b) => compareVersions(b.version, a.version)),
-  );
+  const nodeMajors = $derived<NodeReleaseMajor[]>(nodeSnapshot?.majors ?? []);
+  const installedNodeVersions = $derived(new Set(nodeRuntimes.map((runtime) => runtime.version)));
+  const nodeReleaseCount = $derived(nodeSnapshot?.all.length ?? 0);
 
   const availablePHP = $derived(
     catalog
@@ -115,7 +130,7 @@
       ),
   );
 
-  const availableCount = $derived(availableNode.length + availablePHP.length);
+  const availableCount = $derived(nodeReleaseCount + availablePHP.length);
   const migrationCandidates = $derived(
     migration ? phpRuntimes.filter((runtime) => runtime.id !== migration?.runtime.id) : [],
   );
@@ -139,9 +154,48 @@
     }
   }
 
+  async function loadReleases(initial = false): Promise<void> {
+    if (initial) nodeLoading = true;
+    nodeError = null;
+    try {
+      nodeSnapshot = await api.listNodeReleases();
+      expandedMajors = {};
+    } catch (caught) {
+      nodeError = describeError(caught);
+    } finally {
+      nodeLoading = false;
+    }
+  }
+
+  async function refreshReleases(): Promise<void> {
+    if (nodeRefreshing) return;
+    nodeRefreshing = true;
+    nodeRefreshError = null;
+    try {
+      nodeSnapshot = await api.refreshNodeReleases();
+      nodeError = null;
+      expandedMajors = {};
+      addToast({
+        kind: nodeSnapshot.stale ? 'info' : 'success',
+        title: nodeSnapshot.stale ? 'Node index refreshed from cache' : 'Node index refreshed',
+        message: `Source ${sourceLabel(nodeSnapshot.source)}. Cache age ${releaseAge(
+          nodeSnapshot.cached_at,
+        )}${nodeSnapshot.warning ? `. ${nodeSnapshot.warning}` : '.'}`,
+      });
+    } catch (caught) {
+      nodeRefreshError = describeError(caught);
+    } finally {
+      nodeRefreshing = false;
+    }
+  }
+
   onMount(() => {
     void load(true);
-    const refresh = () => void load();
+    void loadReleases(true);
+    const refresh = () => {
+      void load();
+      void loadReleases();
+    };
     window.addEventListener('devstack:refresh', refresh);
     return () => window.removeEventListener('devstack:refresh', refresh);
   });
@@ -213,6 +267,109 @@
       return `PHP ${entry.version} (r${entry.revision ?? 1})`;
     }
     return `Node ${entry.version}`;
+  }
+
+  function releaseMajor(version: string): number {
+    return Number.parseInt(version.split('.')[0] ?? '0', 10);
+  }
+
+  function releaseMinor(version: string): string {
+    const parts = version.split('.');
+    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : version;
+  }
+
+  function releaseAge(value: string): string {
+    if (!value || value.startsWith('0001-01-01')) return 'unknown';
+    return formatRelative(value);
+  }
+
+  function sourceLabel(source: string): string {
+    if (source === 'live') return 'Live';
+    if (source === 'cache') return 'Cached';
+    if (source === 'embedded') return 'Offline catalog';
+    return source ? source[0].toUpperCase() + source.slice(1) : 'Unknown';
+  }
+
+  function sourceVariant(source: string, stale: boolean): 'accent' | 'warning' | 'info' | 'neutral' {
+    if (source === 'live') return stale ? 'warning' : 'accent';
+    if (source === 'embedded') return 'warning';
+    if (source === 'cache') return stale ? 'warning' : 'info';
+    return 'neutral';
+  }
+
+  function olderReleaseGroups(entry: NodeReleaseMajor): { minor: string; releases: NodeRelease[] }[] {
+    const grouped = new Map<string, NodeRelease[]>();
+    for (const release of nodeSnapshot?.all ?? []) {
+      if (releaseMajor(release.version) !== entry.major) continue;
+      if (release.version === entry.latest.version) continue;
+      const minor = releaseMinor(release.version);
+      grouped.set(minor, [...(grouped.get(minor) ?? []), release]);
+    }
+    return Array.from(grouped.entries()).map(([minor, releases]) => ({ minor, releases }));
+  }
+
+  function toggleMajor(major: number): void {
+    expandedMajors = { ...expandedMajors, [major]: !expandedMajors[major] };
+  }
+
+  function newestPatchFor(version: string): string | null {
+    const major = releaseMajor(version);
+    return nodeSnapshot?.majors.find((entry) => entry.major === major)?.latest.version ?? null;
+  }
+
+  function olderPatchWarning(release: NodeRelease): string | null {
+    const newest = newestPatchFor(release.version);
+    if (!newest || newest === release.version) return null;
+    return `Node ${release.version} is an older patch release. The newest patch in Node ${releaseMajor(
+      release.version,
+    )} is ${newest}.`;
+  }
+
+  async function openReleaseInstall(release: NodeRelease): Promise<void> {
+    releaseTarget = release;
+    releasePreflight = null;
+    releasePreflightError = null;
+    releasePreflightLoading = true;
+    try {
+      const preflight = await api.getNodeRelease(release.version);
+      if (releaseTarget?.version === release.version) releasePreflight = preflight;
+    } catch (caught) {
+      if (releaseTarget?.version === release.version) {
+        releasePreflightError = describeError(caught);
+      }
+    } finally {
+      if (releaseTarget?.version === release.version) releasePreflightLoading = false;
+    }
+  }
+
+  function closeReleaseInstall(): void {
+    if (releaseInstalling) return;
+    releaseTarget = null;
+    releasePreflight = null;
+    releasePreflightError = null;
+    releasePreflightLoading = false;
+  }
+
+  async function installRelease(): Promise<void> {
+    const preflight = releasePreflight;
+    if (!preflight || releaseInstalling) return;
+    releaseInstalling = true;
+    try {
+      await api.installRuntime(preflight.entry.id);
+      addToast({
+        kind: 'success',
+        title: `Node ${preflight.entry.version} installed`,
+        message: 'Archive verified against the release checksum. Available for new sites.',
+      });
+      releaseTarget = null;
+      releasePreflight = null;
+      await load();
+    } catch (caught) {
+      const described = describeError(caught);
+      toastError('Could not install Node release', `${described.code}: ${described.message}`);
+    } finally {
+      releaseInstalling = false;
+    }
   }
 
   async function install(): Promise<void> {
@@ -549,7 +706,7 @@
       <span class="section-count mono">{availableCount}</span>
     </div>
 
-    {#if loading}
+    {#if loading || nodeLoading}
       <div class="catalog-list" aria-busy="true" aria-label="Loading runtime catalog">
         {#each Array(3) as _, index (index)}
           <div class="catalog-row skeleton">
@@ -562,7 +719,7 @@
           </div>
         {/each}
       </div>
-    {:else if availableCount === 0 && !error}
+    {:else if availableCount === 0 && !error && !nodeError}
       <div class="empty-box">
         <EmptyState
           icon={Download}
@@ -573,58 +730,154 @@
       </div>
     {:else}
       <div class="catalog-groups">
-        {#if availableNode.length > 0}
-          <div class="catalog-group">
+        {#if nodeError && !nodeSnapshot}
+          <div class="catalog-group" aria-label="Available Node releases">
             <div class="group-head">
               <span class="group-label">Node</span>
-              <span class="group-count mono">{availableNode.length}</span>
             </div>
+            <ErrorBanner
+              title="Could not load Node releases"
+              code={nodeError.code}
+              message={nodeError.message}
+              onretry={() => loadReleases(true)}
+            />
+          </div>
+        {:else if nodeSnapshot && nodeMajors.length > 0}
+          <div class="catalog-group" aria-label="Available Node releases">
+            <div class="group-head node-group-head">
+              <span class="group-label">Node</span>
+              <span class="group-count mono">{nodeReleaseCount}</span>
+              <span class="node-source">
+                <Badge variant={sourceVariant(nodeSnapshot.source, nodeSnapshot.stale)}>
+                  {sourceLabel(nodeSnapshot.source)}
+                </Badge>
+                {#if nodeSnapshot.stale}<Badge variant="warning">Stale</Badge>{/if}
+                <span class="release-age">Cache age {releaseAge(nodeSnapshot.cached_at)}</span>
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                loading={nodeRefreshing}
+                onclick={refreshReleases}
+              >
+                {#if !nodeRefreshing}<RefreshCw size={12} strokeWidth={2} aria-hidden="true" />{/if}
+                Refresh available versions
+              </Button>
+            </div>
+
+            {#if nodeSnapshot.warning}
+              <p class="release-warning" role="status">{nodeSnapshot.warning}</p>
+            {/if}
+            {#if nodeRefreshError}
+              <div class="release-error">
+                <ErrorBanner
+                  title="Could not refresh Node releases"
+                  code={nodeRefreshError.code}
+                  message={nodeRefreshError.message}
+                  onretry={refreshReleases}
+                  ondismiss={() => (nodeRefreshError = null)}
+                />
+              </div>
+            {/if}
+            {#if nodeError}
+              <div class="release-error">
+                <ErrorBanner
+                  title="Node releases are out of date"
+                  code={nodeError.code}
+                  message={nodeError.message}
+                  onretry={() => loadReleases(true)}
+                  ondismiss={() => (nodeError = null)}
+                />
+              </div>
+            {/if}
+
             <div class="catalog-list">
-              {#each availableNode as entry (entry.id)}
-                {@const installed = isInstalled(entry)}
-                <article class="catalog-row" class:installed class:busy={installingId === entry.id}>
-                  <span class="catalog-icon" aria-hidden="true">
-                    {#if installed}<Boxes size={17} strokeWidth={1.8} />{:else}<Download size={17} strokeWidth={1.8} />{/if}
-                  </span>
-                  <div class="catalog-main">
-                    <div class="catalog-title">
-                      <h3 class="mono">Node {entry.version}</h3>
-                      <Badge>{entry.build}</Badge>
-                      {#if installed}<Badge variant="accent">Installed</Badge>{/if}
+              {#each nodeMajors as entry (entry.major)}
+                {@const older = olderReleaseGroups(entry)}
+                {@const latestInstalled = installedNodeVersions.has(entry.latest.version)}
+                <article class="node-major" aria-labelledby={`node-major-${entry.major}`}>
+                  <div class="node-major-head">
+                    <div class="node-major-title">
+                      <h3 id={`node-major-${entry.major}`}>Node {entry.major}</h3>
+                      {#if entry.latest.lts}
+                        <Badge variant="accent">LTS {entry.latest.lts}</Badge>
+                      {/if}
+                      {#if entry.latest.security}<Badge variant="warning">Security</Badge>{/if}
+                      {#if latestInstalled}<Badge variant="accent">Installed</Badge>{/if}
                     </div>
-                    <div class="catalog-meta">
-                      <span><HardDrive size={11} strokeWidth={1.8} aria-hidden="true" /> {formatBytes(entry.size)}</span>
-                      <span class="checksum" title={entry.sha256}>
-                        sha256 <span class="mono">{checksumPrefix(entry.sha256, 16)}</span>
-                      </span>
+                    <div class="node-major-actions">
+                      {#if older.length > 0}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          ariaExpanded={expandedMajors[entry.major] === true}
+                          ariaControls={`node-major-${entry.major}-older`}
+                          onclick={() => toggleMajor(entry.major)}
+                        >
+                          {expandedMajors[entry.major]
+                            ? `Hide Node ${entry.major} versions`
+                            : `Show all Node ${entry.major} versions`}
+                        </Button>
+                      {/if}
+                      {#if latestInstalled}
+                        <span class="installed-note">Already installed</span>
+                      {:else}
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          ariaLabel={`Install Node ${entry.latest.version}`}
+                          onclick={() => openReleaseInstall(entry.latest)}
+                        >
+                          <Download size={13} strokeWidth={2} aria-hidden="true" />
+                          Install
+                        </Button>
+                      {/if}
                     </div>
-                    {#if installingId === entry.id}
-                      <div
-                        class="install-progress"
-                        role="progressbar"
-                        aria-label="Installing Node {entry.version}"
-                        aria-valuetext="Downloading and verifying"
-                      >
-                        <span></span>
-                      </div>
-                      <p class="install-copy">Downloading, verifying checksum and extracting…</p>
-                    {/if}
                   </div>
-                  <div class="catalog-actions">
-                    {#if installed}
-                      <span class="installed-note">Already installed</span>
-                    {:else}
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        disabled={Boolean(installingId)}
-                        onclick={() => (installTarget = entry)}
-                      >
-                        <Download size={13} strokeWidth={2} aria-hidden="true" />
-                        Install
-                      </Button>
-                    {/if}
+
+                  <div class="node-release">
+                    <span class="node-version mono">Node {entry.latest.version}</span>
+                    <span class="release-meta">
+                      {entry.latest.lts ? `LTS ${entry.latest.lts}` : 'Current'}
+                      {' · '}npm {entry.latest.npm}
+                      {' · '}released {formatDate(entry.latest.date)}
+                      {' · '}{entry.latest.file}
+                    </span>
                   </div>
+
+                  {#if expandedMajors[entry.major] && older.length > 0}
+                    <div class="node-older" id={`node-major-${entry.major}-older`}>
+                      {#each older as group (group.minor)}
+                        <p class="minor-label">Node {group.minor}</p>
+                        {#each group.releases as release (release.version)}
+                          {@const installed = installedNodeVersions.has(release.version)}
+                          <div class="node-release">
+                            <div class="release-copy">
+                              <span class="node-version mono">Node {release.version}</span>
+                              <span class="release-meta">
+                                {release.lts ? `LTS ${release.lts}` : 'Current'}
+                                {' · '}npm {release.npm}
+                                {' · '}released {formatDate(release.date)}
+                              </span>
+                            </div>
+                            {#if installed}
+                              <Badge variant="accent">Installed</Badge>
+                            {:else}
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                ariaLabel={`Install Node ${release.version}`}
+                                onclick={() => openReleaseInstall(release)}
+                              >
+                                <Download size={12} strokeWidth={2} aria-hidden="true" />
+                                Install
+                              </Button>
+                            {/if}
+                          </div>
+                        {/each}
+                      {/each}
+                    </div>
+                  {/if}
                 </article>
               {/each}
             </div>
@@ -841,6 +1094,97 @@
   {/snippet}
 </Modal>
 
+<Modal
+  open={Boolean(releaseTarget)}
+  title={releaseTarget ? `Install Node ${releaseTarget.version}` : 'Install Node'}
+  description="devstack downloads the official Linux x64 archive once, verifies its SHA-256, then extracts it under the devstack home. Existing sites are not restarted."
+  size="md"
+  onclose={closeReleaseInstall}
+>
+  {#if releaseTarget}
+    {#if releasePreflightLoading}
+      <div class="preflight-loading" aria-busy="true">
+        <Skeleton width="46%" height="12px" />
+        <Skeleton width="100%" height="112px" radius="8px" />
+        <p class="preflight-copy" role="status">
+          Loading checksum and size for Node {releaseTarget.version}…
+        </p>
+      </div>
+    {:else if releasePreflightError}
+      <ErrorBanner
+        title="Could not load release details"
+        code={releasePreflightError.code}
+        message={releasePreflightError.message}
+        onretry={() => {
+          if (releaseTarget) void openReleaseInstall(releaseTarget);
+        }}
+      />
+    {:else if releasePreflight}
+      <dl class="install-details">
+        <div>
+          <dt>Version</dt>
+          <dd class="mono">Node {releasePreflight.release.version}</dd>
+        </div>
+        <div>
+          <dt>npm</dt>
+          <dd class="mono">npm {releasePreflight.release.npm}</dd>
+        </div>
+        <div>
+          <dt>Download</dt>
+          <dd class="mono">{formatBytes(releasePreflight.entry.size)}</dd>
+        </div>
+        <div>
+          <dt>Architecture</dt>
+          <dd class="mono">{releasePreflight.entry.build}</dd>
+        </div>
+        <div class="checksum-row">
+          <dt>SHA-256</dt>
+          <dd class="mono" title={releasePreflight.entry.sha256}>
+            {checksumPrefix(releasePreflight.entry.sha256, 16)}
+          </dd>
+        </div>
+        <div>
+          <dt>Released</dt>
+          <dd class="mono">{formatDate(releasePreflight.release.date)}</dd>
+        </div>
+      </dl>
+
+      {#if releasePreflight.release.security}
+        <p class="release-warning" role="status">
+          <TriangleAlert size={13} strokeWidth={2} aria-hidden="true" />
+          Node {releasePreflight.release.version} includes security fixes. Review the release notes
+          before pinning an older line.
+        </p>
+      {/if}
+      {#if olderPatchWarning(releasePreflight.release)}
+        <p class="release-warning" role="status">
+          <TriangleAlert size={13} strokeWidth={2} aria-hidden="true" />
+          {olderPatchWarning(releasePreflight.release)}
+        </p>
+      {/if}
+    {/if}
+  {/if}
+
+  {#snippet footer()}
+    <Button variant="ghost" onclick={closeReleaseInstall} disabled={releaseInstalling}>
+      Cancel
+    </Button>
+    <Button
+      variant="primary"
+      onclick={installRelease}
+      loading={releaseInstalling}
+      disabled={
+        !releasePreflight ||
+        releasePreflightLoading ||
+        Boolean(releasePreflightError) ||
+        releaseInstalling
+      }
+    >
+      Install Node {releaseTarget?.version ?? ''}
+    </Button>
+  {/snippet}
+</Modal>
+
 <PHPDefaultsDrawer
   open={Boolean(defaultsLine)}
   version={defaultsLine ?? '8.4'}
@@ -1045,6 +1389,143 @@
     color: var(--info-fg);
     text-decoration: underline;
     text-underline-offset: 2px;
+  }
+
+  .node-group-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .node-source {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-left: 2px;
+  }
+
+  .release-age {
+    color: var(--muted-2);
+    font-size: 9.5px;
+    white-space: nowrap;
+  }
+
+  .release-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 0 2px;
+    padding: 7px 9px;
+    border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
+    border-radius: var(--radius);
+    background: var(--warning-soft);
+    color: var(--warning-fg);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .release-warning :global(svg) {
+    flex: none;
+    margin-top: 1px;
+  }
+
+  .release-error {
+    margin: 0 2px;
+  }
+
+  .node-major {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 11px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .node-major-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .node-major-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .node-major-title h3 {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  .node-major-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .node-release {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 30px;
+    padding: 3px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .node-version {
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .release-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .release-meta {
+    color: var(--muted-2);
+    font-size: 9.5px;
+    line-height: 1.45;
+  }
+
+  .node-older {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 5px 0 1px;
+  }
+
+  .minor-label {
+    margin: 5px 0 1px;
+    color: var(--muted-2);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .preflight-loading {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .preflight-copy {
+    color: var(--muted);
+    font-size: 11px;
   }
 
   .runtime-list,
@@ -1502,6 +1983,11 @@
     }
 
     .line-head {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .node-major-head {
       align-items: flex-start;
       flex-direction: column;
     }
