@@ -33,11 +33,12 @@ const (
 )
 
 type terminalTicket struct {
-	token     string
-	siteID    string
-	cols      int
-	rows      int
-	expiresAt time.Time
+	token       string
+	siteID      string
+	cols        int
+	rows        int
+	nodeVersion string
+	expiresAt   time.Time
 }
 
 type terminalClientFrame struct {
@@ -86,11 +87,12 @@ func (r *Runtime) IssueTerminalTicket(id string, req agentproto.TerminalTicketRe
 	// tickets cannot grow the map without bound.
 	r.pruneTerminalTicketsLocked(time.Now())
 	r.termTickets[token] = &terminalTicket{
-		token:     token,
-		siteID:    id,
-		cols:      cols,
-		rows:      rows,
-		expiresAt: expiresAt,
+		token:       token,
+		siteID:      id,
+		cols:        cols,
+		rows:        rows,
+		nodeVersion: strings.TrimSpace(req.NodeVersion),
+		expiresAt:   expiresAt,
 	}
 	r.termMu.Unlock()
 
@@ -184,11 +186,12 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 		_ = conn.Close(websocket.StatusInternalError, "site shell is unavailable")
 		return
 	}
+	spec := terminalSiteSpec(site.spec, ticket)
 	cmd := exec.Command(shell)
-	cmd.Dir = site.spec.BackendPath
+	cmd.Dir = spec.BackendPath
 
 	envMap := make(map[string]string)
-	for k, v := range site.spec.Env {
+	for k, v := range spec.Env {
 		envMap[k] = v
 	}
 	caEnv, err := r.Environment(envMap)
@@ -196,7 +199,7 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 		_ = conn.Close(websocket.StatusInternalError, "site environment is unavailable")
 		return
 	}
-	caEnv["PATH"] = r.sitePathEnv(site.spec, caEnv["PATH"])
+	caEnv["PATH"] = r.sitePathEnv(spec, caEnv["PATH"])
 	caEnv["TERM"] = "xterm-256color"
 	caEnv["DEVSTACK_SITE"] = siteID
 
@@ -324,6 +327,19 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 		_ = sendFrame(terminalServerFrame{Type: "exit", Code: &exitCode})
 		_ = conn.Close(websocket.StatusNormalClosure, "process exited")
 	}
+}
+
+// terminalSiteSpec applies the ticket's daemon-resolved Node version to the
+// prepared site spec. The prepared spec is only a fallback for tickets created
+// before the daemon started resolving an exact build.
+func terminalSiteSpec(spec agentproto.SiteSpec, ticket *terminalTicket) agentproto.SiteSpec {
+	if ticket == nil {
+		return spec
+	}
+	if version := strings.TrimSpace(ticket.nodeVersion); version != "" {
+		spec.RuntimeVersion = version
+	}
+	return spec
 }
 
 // terminalShell returns the shell used for a site PTY. A missing /bin/bash
