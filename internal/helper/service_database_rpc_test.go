@@ -254,6 +254,21 @@ func TestServiceDatabaseStreamErrorBeforeHeaders(t *testing.T) {
 	})
 }
 
+func TestServiceDatabaseRejectsWrongPeerUID(t *testing.T) {
+	socketPath, _ := startTestServer(t, helper.Config{
+		AllowUID: os.Getuid() + 1,
+		Service:  helper.Service{DatabasePlatform: &fakeDatabasePlatform{}},
+	})
+	client := dialClient(t, socketPath)
+	_, err := client.ListDatabases(context.Background(), "mysql")
+	if err == nil {
+		t.Fatal("database route accepted a foreign peer UID")
+	}
+	if errors.Is(err, helperclient.ErrUnauthorized) {
+		t.Fatalf("foreign UID reached the HTTP handler: %v", err)
+	}
+}
+
 func TestServiceDatabaseRejectsProtocolMismatch(t *testing.T) {
 	socketPath, _ := startTestServer(t, helper.Config{
 		AllowUID: os.Getuid(),

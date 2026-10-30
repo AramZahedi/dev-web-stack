@@ -158,7 +158,9 @@ func (c *DockerServiceController) RenameDatabase(ctx context.Context, serviceID,
 }
 
 // DropDatabase terminates target sessions and drops a database after typed
-// confirmation. The daemon orchestrates a pre-drop backup when requested.
+// confirmation. BackupFirst is an orchestration hint: the daemon must create
+// the pre-drop backup before calling this method; the helper never creates one
+// implicitly.
 func (c *DockerServiceController) DropDatabase(ctx context.Context, serviceID, name string, req databases.DropDatabaseRequest) error {
 	engine, engineID, err := c.databaseEngine(serviceID)
 	if err != nil {

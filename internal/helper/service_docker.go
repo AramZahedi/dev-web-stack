@@ -846,9 +846,9 @@ func (execRunner) RunStream(ctx context.Context, name string, args ...string) (i
 	return stream, nil
 }
 
-// RunInputStream runs a command with input streamed on stdin. The command's
-// combined output is retained for error reporting; the input is never buffered
-// by this runner.
+// RunInputStream runs a command with input streamed on stdin. Stdout is
+// discarded and stderr is retained (capped) for error reporting; the input is
+// never buffered by this runner.
 func (execRunner) RunInputStream(ctx context.Context, input io.Reader, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = input
