@@ -318,6 +318,20 @@ describe('ServiceDetail', () => {
     expect(within(dialog).getByText(/backup on app/i)).toBeTruthy();
   });
 
+  it('closes the deactivate dialog when the route changes service', async () => {
+    const { rerender } = render(ServiceDetail, { props: { params: { id: 'mysql' } } });
+    await screen.findByRole('heading', { name: 'MySQL 8.4' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Deactivate' }));
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+
+    vi.mocked(api.getService).mockResolvedValue(REDIS_SERVICE);
+    vi.mocked(db.listServiceUsers).mockResolvedValue({ users: REDIS_USERS });
+    rerender({ params: { id: 'redis' } });
+
+    expect(await screen.findByRole('heading', { name: 'Redis 8.8' })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
   it('fails closed on deactivate when the backup inventory is unavailable', async () => {
     vi.mocked(db.listServiceBackups).mockRejectedValue(new Error('backup index unavailable'));
 
