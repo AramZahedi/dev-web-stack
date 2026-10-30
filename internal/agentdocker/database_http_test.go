@@ -371,6 +371,29 @@ func TestDatabaseEnvRouteRejectsNestedCallerPassword(t *testing.T) {
 	}
 }
 
+// TestCrossLaneMariaDBConnectionNameRoute pins the agent route to the same
+// framework-facing value the daemon lane must emit for MariaDB.
+func TestCrossLaneMariaDBConnectionNameRoute(t *testing.T) {
+	d, _ := newDatabaseTestDocker(t)
+	body, _ := json.Marshal(dbproto.SiteEnvRequest{
+		ServiceID: "mariadb",
+		Links: []dbproto.LinkInfo{{
+			ServiceID: "mariadb", Engine: model.DatabaseMariaDB, Database: "app", Username: "app", Primary: true,
+		}},
+	})
+	recorder := serveDatabase(t, d, http.MethodPost, "/v1/services/mariadb/database-env", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("env = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var response dbproto.SiteEnvResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Env["DB_CONNECTION"] != "mariadb" {
+		t.Fatalf("DB_CONNECTION = %q, want mariadb (env=%v)", response.Env["DB_CONNECTION"], response.Env)
+	}
+}
+
 func TestDatabaseEnvRouteUsesFrameworkConnectionNames(t *testing.T) {
 	d, _ := newDatabaseTestDocker(t)
 	cases := []struct {

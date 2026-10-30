@@ -1401,6 +1401,28 @@ func TestPrepareSiteRejectsInsecureSecretDirectory(t *testing.T) {
 	}
 }
 
+// TestCrossLaneMariaDBConnectionName pins the framework-facing name shared
+// with the daemon lane. Both lanes must emit "mariadb" for a MariaDB link;
+// the daemon's dbConnectionValue used to collapse it to "mysql".
+func TestCrossLaneMariaDBConnectionName(t *testing.T) {
+	if got := agentConnectionName("mariadb"); got != "mariadb" {
+		t.Fatalf("agentConnectionName(mariadb) = %q", got)
+	}
+	rt, _, _ := newStaticTestRuntime(t)
+	env, err := rt.resolveDatabaseEnv(agentproto.SiteSpec{
+		ID: "site-mariadb",
+		DatabaseLinks: []agentproto.DatabaseLinkSpec{{
+			ServiceID: "mariadb", Engine: "mariadb", Database: "app", Username: "app", Primary: true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["DB_CONNECTION"] != "mariadb" {
+		t.Fatalf("DB_CONNECTION = %q, want mariadb (env=%v)", env["DB_CONNECTION"], env)
+	}
+}
+
 func TestResolveDatabaseEnvUsesFrameworkConnectionNames(t *testing.T) {
 	rt, _, _ := newStaticTestRuntime(t)
 	cases := []struct {
