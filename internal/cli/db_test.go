@@ -327,6 +327,29 @@ func TestDBLinkAndUnlink(t *testing.T) {
 	}
 }
 
+func TestDBLinkJSONRedactsConnectionSecrets(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseLinked: model.DatabaseLink{
+		ID: "lnk_1", Database: "app", Username: "app",
+		Error: "failed mysql://app:s3cret@127.0.0.1:3306/app?password=s3cret",
+		Connection: model.DatabaseConnection{
+			Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
+			URL: "mysql://app:s3cret@127.0.0.1:3306/app?password=s3cret&sslmode=require",
+			Env: map[string]string{"DB_PASSWORD": "s3cret", "DB_BLOG_PASSWORD": "s3cret", "DB_BLOG_URL": "mysql://blog:s3cret@127.0.0.1:3306/blog", "DB_HOST": "127.0.0.1"},
+		},
+	}}
+	out := runCLI(t, fake, "db", "link", "--site", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--json")
+	if strings.Contains(out, "s3cret") {
+		t.Fatalf("db link JSON leaked a secret: %s", out)
+	}
+	if strings.Contains(out, "DB_PASSWORD") || strings.Contains(out, "DB_BLOG_PASSWORD") {
+		t.Fatalf("db link JSON leaked a password key: %s", out)
+	}
+	if !strings.Contains(out, "sslmode=require") {
+		t.Fatalf("db link JSON lost a non-secret query parameter: %s", out)
+	}
+}
+
 func TestDBPasswordRejectsNonRedisBeforeAPICall(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{databaseUserSecret: databases.Secret{Value: "s3cret"}}

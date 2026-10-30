@@ -202,6 +202,25 @@ func TestSiteDBListJSONRedactsConnectionPasswords(t *testing.T) {
 	}
 }
 
+func TestSiteDBLinkJSONRedactsConnectionSecrets(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseLinked: model.DatabaseLink{
+		ID: "lnk_1", Database: "app", Username: "app",
+		Connection: model.DatabaseConnection{
+			Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
+			URL: "mysql://app:s3cret@127.0.0.1:3306/app?password=s3cret",
+			Env: map[string]string{"DB_PASSWORD": "s3cret", "DB_BLOG_PASSWORD": "s3cret", "DB_BLOG_URL": "mysql://blog:s3cret@127.0.0.1:3306/blog"},
+		},
+	}}
+	out := runCLI(t, fake, "site", "db", "link", "blog", "--service", "mysql", "--database", "app", "--user-id", "usr_app", "--json")
+	if strings.Contains(out, "s3cret") {
+		t.Fatalf("site db link JSON leaked a secret: %s", out)
+	}
+	if strings.Contains(out, "DB_PASSWORD") || strings.Contains(out, "DB_BLOG_PASSWORD") {
+		t.Fatalf("site db link JSON leaked a password key: %s", out)
+	}
+}
+
 func TestSiteDBListRedactsErrorAndQuerySecrets(t *testing.T) {
 	useTestSeams(t)
 	secret := "s3cret-query"
