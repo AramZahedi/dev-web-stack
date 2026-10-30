@@ -239,6 +239,77 @@ func TestListDownloadAndDeleteBackupWorkWhileStopped(t *testing.T) {
 	}
 }
 
+func TestBackupOperationsRejectSymlinkedParentDirectories(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	d, runner := newDatabaseTestDocker(t)
+	outside := t.TempDir()
+	name := "20260101T000000.000000000Z.sql.gz"
+	if err := os.WriteFile(filepath.Join(outside, name), gzipBytes(t, "outside dump"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serviceRoot := filepath.Join(d.root, "backups", "databases", "mysql")
+	if err := os.MkdirAll(serviceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(serviceRoot, "app")); err != nil {
+		t.Fatal(err)
+	}
+	backupID := "app/" + name
+
+	if backups, err := d.ListBackups(context.Background(), "mysql"); err != nil || len(backups) != 0 {
+		t.Fatalf("ListBackups followed a symlinked database directory: %+v, %v", backups, err)
+	}
+	if _, err := d.DownloadBackup(context.Background(), "mysql", backupID); err == nil {
+		t.Fatal("DownloadBackup followed a symlinked database directory")
+	}
+	if err := d.DeleteBackup(context.Background(), "mysql", backupID); err == nil {
+		t.Fatal("DeleteBackup followed a symlinked database directory")
+	}
+	if _, err := os.Stat(filepath.Join(outside, name)); err != nil {
+		t.Fatalf("DeleteBackup removed a file outside the backup tree: %v", err)
+	}
+	runner.calls = nil
+	if _, err := d.RestoreBackup(context.Background(), "mysql", backupID, databases.RestoreBackupRequest{Target: "restored"}); err == nil {
+		t.Fatal("RestoreBackup followed a symlinked database directory")
+	}
+	if runner.stdinContains("outside dump") {
+		t.Fatalf("RestoreBackup read a file outside the backup tree: %s", runner.joinedCalls())
+	}
+}
+
+func TestBackupOperationsRejectSymlinkedServiceRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	d, _ := newDatabaseTestDocker(t)
+	outside := t.TempDir()
+	name := "20260101T000000.000000000Z.sql.gz"
+	if err := os.MkdirAll(filepath.Join(outside, "app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "app", name), gzipBytes(t, "outside dump"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	databasesRoot := filepath.Join(d.root, "backups", "databases")
+	if err := os.MkdirAll(databasesRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(databasesRoot, "mysql")); err != nil {
+		t.Fatal(err)
+	}
+	if backups, err := d.ListBackups(context.Background(), "mysql"); err == nil && len(backups) != 0 {
+		t.Fatalf("ListBackups followed a symlinked service root: %+v", backups)
+	}
+	if _, err := d.DownloadBackup(context.Background(), "mysql", "app/"+name); err == nil {
+		t.Fatal("DownloadBackup followed a symlinked service root")
+	}
+	if err := d.DeleteBackup(context.Background(), "mysql", "app/"+name); err == nil {
+		t.Fatal("DeleteBackup followed a symlinked service root")
+	}
+}
+
 func TestDownloadBackupRejectsTraversal(t *testing.T) {
 	d, _ := newDatabaseTestDocker(t)
 	for _, backupID := range []string{"../../etc/passwd", "app/../x.sql.gz", "app/x.sql", ""} {

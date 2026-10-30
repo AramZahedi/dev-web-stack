@@ -89,7 +89,13 @@ func (d *Docker) ListBackups(ctx context.Context, serviceID string) ([]model.Dat
 	if engine.ID() == model.DatabaseRedis {
 		return nil, databases.ErrUnsupported
 	}
-	root := filepath.Join(d.root, "backups", "databases", string(service.ID))
+	root, err := d.databaseBackupRoot(serviceID)
+	if errors.Is(err, databases.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+		return []model.DatabaseBackup{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("agentdocker: list backups: %w", err)
+	}
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
 		return []model.DatabaseBackup{}, nil
@@ -99,7 +105,7 @@ func (d *Docker) ListBackups(ctx context.Context, serviceID string) ([]model.Dat
 	}
 	backups := make([]model.DatabaseBackup, 0)
 	for _, databaseEntry := range entries {
-		if !databaseEntry.IsDir() || databaseEntry.Name() == ".staging" {
+		if databaseEntry.Type()&os.ModeSymlink != 0 || !databaseEntry.IsDir() || databaseEntry.Name() == ".staging" {
 			continue
 		}
 		if err := dbengine.ValidateIdentifier(databaseEntry.Name()); err != nil {
@@ -118,6 +124,9 @@ func (d *Docker) ListBackups(ctx context.Context, serviceID string) ([]model.Dat
 				continue
 			}
 			path := filepath.Join(root, databaseEntry.Name(), fileEntry.Name())
+			if err := ensureNoSymlinkComponents(root, path); err != nil {
+				continue
+			}
 			sha, err := hashFile(path)
 			if err != nil {
 				continue

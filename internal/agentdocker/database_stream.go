@@ -32,7 +32,48 @@ func (d *Docker) databaseBackupRoot(serviceID string) (string, error) {
 	if _, ok := databaseEngineID(service.ID); !ok {
 		return "", fmt.Errorf("agentdocker: %s is not a database service", service.ID)
 	}
-	return filepath.Join(d.root, "backups", "databases", string(service.ID)), nil
+	root := filepath.Join(d.root, "backups", "databases", string(service.ID))
+	if err := ensureNoSymlinkComponents(d.root, root); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+// ensureNoSymlinkComponents rejects any symlink between root and target and
+// verifies target stays inside root. Backup list/download/delete/restore must
+// never follow a symlinked service or database directory out of the tree.
+func ensureNoSymlinkComponents(root, target string) error {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("%w: path escapes the service tree", databases.ErrInvalidRequest)
+	}
+	if rel == "." {
+		return nil
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	current := root
+	for index, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			if index == len(parts)-1 {
+				return nil
+			}
+			return databases.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: backup path component %q is a symlink", databases.ErrInvalidRequest, part)
+		}
+		if index < len(parts)-1 && !info.IsDir() {
+			return fmt.Errorf("%w: backup path component %q is not a directory", databases.ErrInvalidRequest, part)
+		}
+	}
+	return nil
 }
 
 func validateBackupID(backupID string) (string, string, error) {
@@ -63,6 +104,9 @@ func (d *Docker) databaseBackupPath(serviceID, backupID string) (string, error) 
 	rel, err := filepath.Rel(root, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return "", fmt.Errorf("%w: backup path escapes the service tree", databases.ErrInvalidRequest)
+	}
+	if err := ensureNoSymlinkComponents(root, path); err != nil {
+		return "", err
 	}
 	return path, nil
 }
