@@ -279,6 +279,21 @@ async function openDefaultsDrawer(): Promise<HTMLElement> {
 }
 
 describe('Runtimes PHP removal', () => {
+  it('opens migration for an in-use PHP build without a failed removal', async () => {
+    mockApi.listSites.mockResolvedValue([PHP_SITE]);
+
+    render(Runtimes);
+    const row = (await screen.findByRole('heading', { name: 'PHP 8.4.4' })).closest('article');
+    expect(row).not.toBeNull();
+    await fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Migrate' }));
+
+    const dialog = await screen.findByRole('dialog', { name: /Migrate sites off PHP 8.4.4/ });
+    expect(within(dialog).getByText('blog')).toBeTruthy();
+    const select = within(dialog).getByLabelText('Target build') as HTMLSelectElement;
+    expect(select.value).toBe(BUILD_B.id);
+    expect(mockApi.removeRuntime).not.toHaveBeenCalled();
+  });
+
   it('lists the affected sites, migrates to the selected build, then retries removal', async () => {
     mockApi.removeRuntime
       .mockRejectedValueOnce(

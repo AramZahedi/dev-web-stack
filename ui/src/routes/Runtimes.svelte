@@ -673,12 +673,26 @@
                         {/if}
                       </div>
                       <div class="runtime-actions">
+                        {#if users.length > 0 && runtime.kind === 'php'}
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={Boolean(installingId) || phpRuntimes.length < 2}
+                            title={phpRuntimes.length < 2
+                              ? 'Install another PHP build to migrate these sites'
+                              : `Migrate sites off PHP ${runtime.version}`}
+                            onclick={() => openMigration(runtime, users)}
+                          >
+                            <ArrowUpCircle size={13} strokeWidth={2} aria-hidden="true" />
+                            Migrate
+                          </Button>
+                        {/if}
                         <Button
                           size="sm"
                           variant="ghost"
                           disabled={users.length > 0 || Boolean(installingId)}
                           title={users.length > 0
-                            ? `In use by ${users.join(', ')} — switch those sites to another build first`
+                            ? `In use by ${users.join(', ')} — migrate those sites to another build first`
                             : `Remove PHP ${runtime.version} (r${runtime.revision})`}
                           onclick={() => (removeTarget = runtime)}
                         >
