@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 func TestRedisFullDoesNotGrantAdmin(t *testing.T) {
@@ -99,7 +100,7 @@ func TestRedisACLFileIsEnabledOnce(t *testing.T) {
 func TestRedisDeleteUserProtectsDefault(t *testing.T) {
 	d, runner := newDatabaseTestDocker(t)
 	defaultID := databaseUserID("redis", "default", "")
-	if err := d.DeleteRedisUser(context.Background(), "redis", defaultID); !errors.Is(err, databases.ErrProtected) {
+	if err := d.DeleteRedisUser(context.Background(), "redis", defaultID, "default"); !errors.Is(err, databases.ErrProtected) {
 		t.Fatalf("err = %v, want ErrProtected", err)
 	}
 	if len(runner.calls) != 0 {
@@ -186,5 +187,96 @@ func TestSetRedisUserDeletesStaleSecretOnWriteFailure(t *testing.T) {
 	}
 	if _, err := d.readDatabaseSecret("redis", databaseUserID("redis", "cache", "")); !errors.Is(err, databases.ErrPasswordMissing) {
 		t.Fatalf("failed redis create left a secret: %v", err)
+	}
+}
+
+func TestUpdateRedisUserTogglesWithoutRotatingPassword(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	created, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "read-only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := d.readDatabaseSecret("redis", created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.runOutputs["ACL LIST"] = []byte("user cache on #abc ~* +@read\n")
+	runner.calls = nil
+	enabled := false
+	updated, err := d.UpdateRedisUser(context.Background(), "redis", created.ID, databases.UpdateUserRequest{Enabled: &enabled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Enabled {
+		t.Fatalf("updated = %+v, want disabled", updated)
+	}
+	joined := runner.joinedCalls()
+	if !strings.Contains(joined, "ACL SETUSER cache off") {
+		t.Fatalf("ACL update missing off: %s", joined)
+	}
+	if strings.Contains(joined, "reset") || strings.Contains(joined, ">") {
+		t.Fatalf("enable/disable rotated the password: %s", joined)
+	}
+	after, err := d.readDatabaseSecret("redis", created.ID)
+	if err != nil || after != before {
+		t.Fatalf("password changed on enable/disable: %q -> %q, %v", before, after, err)
+	}
+}
+
+func TestUpdateRedisUserChangesAccessLevelWithoutRotatingPassword(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	created, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "read-only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := d.readDatabaseSecret("redis", created.ID)
+	runner.runOutputs["ACL LIST"] = []byte("user cache on #abc ~* +@read\n")
+	runner.calls = nil
+	updated, err := d.UpdateRedisUser(context.Background(), "redis", created.ID, databases.UpdateUserRequest{AccessLevel: "full"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AccessLevel != "full" {
+		t.Fatalf("updated = %+v", updated)
+	}
+	joined := strings.ToLower(runner.joinedCalls())
+	if !strings.Contains(joined, "acl setuser cache") || !strings.Contains(joined, "+@all") {
+		t.Fatalf("access level update missing: %s", joined)
+	}
+	if strings.Contains(joined, "reset") || strings.Contains(joined, ">") {
+		t.Fatalf("access level update rotated the password: %s", joined)
+	}
+	after, _ := d.readDatabaseSecret("redis", created.ID)
+	if after != before {
+		t.Fatalf("password changed on access level update")
+	}
+}
+
+func TestUpdateRedisUserRejectsGrants(t *testing.T) {
+	d, _ := newDatabaseTestDocker(t)
+	created, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.UpdateRedisUser(context.Background(), "redis", created.ID, databases.UpdateUserRequest{Grants: []model.DatabaseGrant{{Database: "app"}}}); !errors.Is(err, databases.ErrUnsupported) {
+		t.Fatalf("err = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestDeleteRedisUserRequiresConfirmation(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	created, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.runOutputs["ACL LIST"] = []byte("user cache on #abc ~* +@read\n")
+	if err := d.DeleteRedisUser(context.Background(), "redis", created.ID, "wrong"); !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("wrong confirm err = %v", err)
+	}
+	if err := d.DeleteRedisUser(context.Background(), "redis", created.ID, "cache"); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.contains("ACL DELUSER cache") {
+		t.Fatalf("delete did not remove the redis user: %s", runner.joinedCalls())
 	}
 }

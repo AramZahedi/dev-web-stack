@@ -104,7 +104,61 @@ func (d *Docker) SetRedisUser(ctx context.Context, serviceID string, req databas
 	return user, nil
 }
 
-func (d *Docker) DeleteRedisUser(ctx context.Context, serviceID, userID string) error {
+func (d *Docker) UpdateRedisUser(ctx context.Context, serviceID, userID string, req databases.UpdateUserRequest) (model.DatabaseUser, error) {
+	engine, service, err := d.databaseEngine(serviceID)
+	if err != nil {
+		return model.DatabaseUser{}, err
+	}
+	if engine.ID() != model.DatabaseRedis {
+		return model.DatabaseUser{}, databases.ErrUnsupported
+	}
+	if req.Grants != nil {
+		return model.DatabaseUser{}, databases.ErrUnsupported
+	}
+	accessLevel := ""
+	if strings.TrimSpace(req.AccessLevel) != "" {
+		accessLevel, err = normalizeRedisAccessLevel(req.AccessLevel)
+		if err != nil {
+			return model.DatabaseUser{}, err
+		}
+	}
+	lock := d.databaseLock(string(service.ID))
+	lock.Lock()
+	defer lock.Unlock()
+	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
+		return model.DatabaseUser{}, err
+	}
+	user, err := d.findRedisUser(ctx, serviceID, userID)
+	if err != nil {
+		return model.DatabaseUser{}, err
+	}
+	if user.Username == "default" || engine.ProtectedUser(user.Username, "") {
+		return model.DatabaseUser{}, databases.ErrProtected
+	}
+	if req.Enabled == nil && accessLevel == "" {
+		return user, nil
+	}
+	enabled := user.Enabled
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	level := user.AccessLevel
+	if accessLevel != "" {
+		level = accessLevel
+	}
+	if _, err := d.runRedisCommand(ctx, serviceID, dbengine.SetUserRulesCommand(user.Username, level, enabled), ""); err != nil {
+		return model.DatabaseUser{}, err
+	}
+	acl := dbengine.NewRedisACL()
+	if _, err := d.runRedisCommand(ctx, serviceID, acl.SaveCommand(), ""); err != nil {
+		return model.DatabaseUser{}, err
+	}
+	user.Enabled = enabled
+	user.AccessLevel = level
+	return user, nil
+}
+
+func (d *Docker) DeleteRedisUser(ctx context.Context, serviceID, userID, confirm string) error {
 	engine, service, err := d.databaseEngine(serviceID)
 	if err != nil {
 		return err
@@ -129,6 +183,9 @@ func (d *Docker) DeleteRedisUser(ctx context.Context, serviceID, userID string) 
 	}
 	if username == "" {
 		return databases.ErrNotFound
+	}
+	if confirm != username {
+		return fmt.Errorf("%w: confirmation does not match %q", databases.ErrInvalidRequest, username)
 	}
 	lock := d.databaseLock(string(service.ID))
 	lock.Lock()
@@ -301,6 +358,19 @@ func (d *Docker) redisAuthPassword(serviceID string) (string, error) {
 		return "", err
 	}
 	return value, nil
+}
+
+func (d *Docker) findRedisUser(ctx context.Context, serviceID, userID string) (model.DatabaseUser, error) {
+	users, err := d.ListRedisUsers(ctx, serviceID)
+	if err != nil {
+		return model.DatabaseUser{}, err
+	}
+	for _, user := range users {
+		if user.ID == userID {
+			return user, nil
+		}
+	}
+	return model.DatabaseUser{}, databases.ErrNotFound
 }
 
 func redisCommandWithSecret(command []string) ([]string, string, error) {
