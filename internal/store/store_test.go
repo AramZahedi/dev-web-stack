@@ -668,8 +668,23 @@ func TestMigration0006AddsPHPFPMWithoutLosingSites(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 {
-		t.Fatalf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Fatalf("schema version = %d, want 8", version)
+	}
+}
+
+func TestMigration0008AddsDatabaseTables(t *testing.T) {
+	s := openTemp(t)
+	for _, table := range []string{
+		"database_users", "database_links", "database_user_grants",
+		"database_backups", "database_jobs", "audit_events",
+	} {
+		var name string
+		err := s.db.QueryRowContext(ctx,
+			`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)
+		if err != nil || name != table {
+			t.Fatalf("table %q: %v", table, err)
+		}
 	}
 }
 
@@ -678,7 +693,9 @@ func TestSchemaAndPragmas(t *testing.T) {
 	for _, table := range []string{
 		"sites", "runtimes", "certs", "settings", "events",
 		"php_defaults", "site_php_config", "schema_migrations",
-		"services",
+		"services", "database_users", "database_links",
+		"database_user_grants", "database_backups", "database_jobs",
+		"audit_events",
 	} {
 		var name string
 		err := s.db.QueryRowContext(ctx,
@@ -716,8 +733,8 @@ func TestSchemaAndPragmas(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 {
-		t.Fatalf("schema version = %d, want 7", version)
+	if version != 8 {
+		t.Fatalf("schema version = %d, want 8", version)
 	}
 }
 
