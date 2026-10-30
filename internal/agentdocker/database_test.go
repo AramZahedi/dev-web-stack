@@ -3,6 +3,7 @@ package agentdocker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ type fakeDatabaseRunner struct {
 	streamOutput []byte
 	streamErr    error
 	inputErr     error
+	failOnInput  string
 	state        string
 }
 
@@ -52,7 +54,11 @@ func (r *fakeDatabaseRunner) Run(_ context.Context, name string, args ...string)
 func (r *fakeDatabaseRunner) RunInput(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, databaseCall{args: append([]string{name}, args...), input: append([]byte(nil), input...)})
+	failOn := r.failOnInput
 	r.mu.Unlock()
+	if failOn != "" && strings.Contains(string(input), failOn) {
+		return nil, errors.New("simulated input failure")
+	}
 	if r.inputErr != nil {
 		return nil, r.inputErr
 	}
