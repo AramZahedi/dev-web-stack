@@ -67,6 +67,13 @@ const POSTGRES_SERVICE: ServiceView = {
   data_path: '/data/devstack/services/postgresql/data',
 };
 
+const MARIADB_SERVICE: ServiceView = {
+  ...MYSQL_SERVICE,
+  id: 'mariadb',
+  display_name: 'MariaDB 11.8',
+  image: 'mariadb:11.8',
+};
+
 const MYSQL_DATABASES: Database[] = [
   {
     name: 'app',
@@ -180,6 +187,18 @@ describe('DatabaseTab', () => {
     });
 
     expect(screen.getByRole('button', { name: /rename app/i })).toBeTruthy();
+  });
+
+  it('hides rename for MariaDB as well as MySQL', () => {
+    render(DatabaseTab, {
+      props: {
+        service: MARIADB_SERVICE,
+        databases: [{ ...MYSQL_DATABASES[0], service_id: 'mariadb', engine: 'mariadb' }],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    expect(screen.queryByRole('button', { name: /rename app/i })).toBeNull();
   });
 
   it('requires the exact database name before dropping', async () => {

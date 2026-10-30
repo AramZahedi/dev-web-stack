@@ -74,9 +74,8 @@
   let deactivateError = $state<DescribedError | null>(null);
 
   let loadGeneration = 0;
-  let loadedID = '';
+  let loadedID: string | null = null;
   let queryApplied = false;
-  let pollAttempts = 0;
 
   function isRedis(view: ServiceView | null): boolean {
     return view?.id === 'redis';
@@ -214,7 +213,6 @@
       busy = null;
       jobActive = false;
       queryApplied = false;
-      pollAttempts = 0;
     }
     error = null;
     notFound = false;
@@ -315,10 +313,15 @@
   }
 
   function onTabKeydown(event: KeyboardEvent, index: number): void {
-    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+    if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const offset = event.key === 'ArrowRight' ? 1 : -1;
-    const next = tabs[(index + offset + tabs.length) % tabs.length];
+    let next: TabDef | undefined;
+    if (event.key === 'Home') next = tabs[0];
+    else if (event.key === 'End') next = tabs[tabs.length - 1];
+    else {
+      const offset = event.key === 'ArrowRight' ? 1 : -1;
+      next = tabs[(index + offset + tabs.length) % tabs.length];
+    }
     if (!next) return;
     tab = next.id;
     document.getElementById(`tab-${next.id}`)?.focus();
@@ -336,22 +339,22 @@
 
   onMount(() => {
     const listener = () => void load();
+    const onHash = () => {
+      if (!service) return;
+      queryApplied = false;
+      applyRouteQuery(service);
+    };
     window.addEventListener('devstack:refresh', listener);
-    return () => window.removeEventListener('devstack:refresh', listener);
+    window.addEventListener('hashchange', onHash);
+    return () => {
+      window.removeEventListener('devstack:refresh', listener);
+      window.removeEventListener('hashchange', onHash);
+    };
   });
 
   $effect(() => {
-    if (!transient) {
-      pollAttempts = 0;
-      return;
-    }
-    pollAttempts = 0;
+    if (!transient) return;
     const timer = setInterval(() => {
-      pollAttempts += 1;
-      if (pollAttempts > 60) {
-        clearInterval(timer);
-        return;
-      }
       void load();
     }, 1500);
     return () => clearInterval(timer);

@@ -214,6 +214,42 @@ describe('ServiceDetail', () => {
     expect(screen.getByRole('tab', { name: 'Databases' })).toBeTruthy();
   });
 
+  it('shows not found for an empty service id instead of hanging', async () => {
+    render(ServiceDetail, { props: { params: {} } });
+
+    expect(await screen.findByText('Service not found')).toBeTruthy();
+  });
+
+  it('applies a same-service hash change to the selected tab', async () => {
+    render(ServiceDetail, { props: { params: { id: 'mysql' } } });
+    await screen.findByRole('heading', { name: 'MySQL 8.4' });
+
+    window.location.hash = '#/services/mysql?tab=backups';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    const backupsTab = screen.getByRole('tab', { name: 'Backups' });
+    await waitFor(() => expect(backupsTab.getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it('supports Home and End on the tablist', async () => {
+    render(ServiceDetail, { props: { params: { id: 'mysql' } } });
+    const databasesTab = await screen.findByRole('tab', { name: 'Databases' });
+
+    await fireEvent.keyDown(databasesTab, { key: 'End' });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('tab', { name: 'Backups' }).getAttribute('aria-selected'),
+      ).toBe('true'),
+    );
+
+    await fireEvent.keyDown(screen.getByRole('tab', { name: 'Backups' }), { key: 'Home' });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('tab', { name: 'Databases' }).getAttribute('aria-selected'),
+      ).toBe('true'),
+    );
+  });
+
   it('activates a stopped service from the detail header', async () => {
     const stopped = { ...MYSQL_SERVICE, active: false, state: 'installed' as const };
     vi.mocked(api.getService).mockResolvedValue(stopped);
