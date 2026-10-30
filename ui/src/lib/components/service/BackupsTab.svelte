@@ -37,6 +37,8 @@
     service: ServiceView;
     backups: DatabaseBackup[];
     databases?: Database[];
+    databasesLoading?: boolean;
+    databasesError?: string | null;
     loading?: boolean;
     onRefresh: () => void;
     onjobchange?: (active: boolean) => void;
@@ -46,12 +48,15 @@
     service,
     backups,
     databases = [],
+    databasesLoading = false,
+    databasesError = null,
     loading = false,
     onRefresh,
     onjobchange,
   }: Props = $props();
 
   const active = $derived(service.active);
+  const inventoryUnavailable = $derived(databasesLoading || Boolean(databasesError));
 
   let actionError = $state('');
   let linkedStates = $state<Record<string, LinkedSiteState>>({});
@@ -547,7 +552,7 @@
   busy={restoring}
   requireText={restoreTarget?.database}
   confirmDisabled={restoreMode === 'overwrite'
-    ? !sitesReady(restoreSites)
+    ? inventoryUnavailable || !sitesReady(restoreSites)
     : Boolean(restoreNameError)}
   onconfirm={confirmRestore}
   oncancel={() => {
@@ -604,6 +609,12 @@
         <p class="overwrite-target">
           Target: <code class="mono">{restoreTarget?.database}</code>
         </p>
+        {#if inventoryUnavailable}
+          <p class="dialog-error" role="alert">
+            Database inventory is unavailable. Overwrite restore is disabled until the database
+            list loads.
+          </p>
+        {/if}
         <LinkedSitesStop
           sites={restoreSites}
           states={linkedStates}

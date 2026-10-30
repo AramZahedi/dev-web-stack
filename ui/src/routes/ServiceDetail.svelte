@@ -571,6 +571,8 @@
             {service}
             {backups}
             {databases}
+            databasesLoading={databasesLoading}
+            databasesError={databasesError?.message ?? null}
             loading={backupsLoading}
             onRefresh={refresh}
             onjobchange={onJobChange}

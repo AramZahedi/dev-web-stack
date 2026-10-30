@@ -356,6 +356,32 @@ describe('BackupsTab', () => {
     );
   });
 
+  it('disables overwrite restore when the database inventory is unavailable', async () => {
+    render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: MYSQL_BACKUPS,
+        databases: [],
+        databasesLoading: true,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /restore app backup/i }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.click(within(dialog).getByLabelText(/overwrite existing database/i));
+    await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
+      target: { value: 'app' },
+    });
+
+    expect(within(dialog).getByText(/database inventory is unavailable/i)).toBeTruthy();
+    expect(
+      (within(dialog).getByRole('button', { name: 'Restore backup' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(db.restoreServiceBackup).not.toHaveBeenCalled();
+  });
+
   it('reports a canceled restore job as an informational toast', async () => {
     vi.mocked(db.restoreServiceBackup).mockResolvedValue({
       ...RUNNING_JOB,
