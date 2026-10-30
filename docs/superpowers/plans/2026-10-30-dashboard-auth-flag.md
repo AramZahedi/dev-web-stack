@@ -1,6 +1,6 @@
 # Dashboard Auth Flag Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make the dashboard install-token gate opt-in through `config.yaml` (`dashboard_auth`, default `false`) and `devstack init --dashboard-auth`.
 
@@ -9,6 +9,8 @@
 **Tech Stack:** Go, Cobra, YAML config, Svelte UI (no UI changes), Windows live daemon.
 
 **Spec:** `docs/superpowers/specs/2026-10-30-dashboard-auth-flag-design.md`
+
+**Status (2026-10-30):** implemented and verified. Review follow-ups: auth persistence moved to the restart point (9208248); upgrade file operations now fail fast under the block's `Continue` preference (ed4f057).
 
 ## Global Constraints
 
@@ -37,7 +39,7 @@
 **Interfaces:**
 - Produces: `Config.DashboardAuth bool` with YAML key `dashboard_auth`.
 
-- [ ] **Step 1: Write the failing test** — append to `config_test.go`:
+- [x] **Step 1: Write the failing test** — append to `config_test.go`:
 
 ```go
 func TestDashboardAuthDefaultsOffAndRoundTrips(t *testing.T) {
@@ -63,10 +65,10 @@ func TestDashboardAuthDefaultsOffAndRoundTrips(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail** — `go test ./internal/config -run TestDashboardAuthDefaultsOffAndRoundTrips`. Expected: compile error, `cfg.DashboardAuth` undefined.
-- [ ] **Step 3: Implement** — add `DashboardAuth bool \`yaml:"dashboard_auth"\`` after `AutoStartSites`, and `DashboardAuth: false` in `Default()`.
-- [ ] **Step 4: Re-run** — same command. Expected: PASS.
-- [ ] **Step 5: Commit** — `git add internal/config && git commit -m "feat(config): add dashboard_auth setting default off"`.
+- [x] **Step 2: Run it and watch it fail** — `go test ./internal/config -run TestDashboardAuthDefaultsOffAndRoundTrips`. Expected: compile error, `cfg.DashboardAuth` undefined.
+- [x] **Step 3: Implement** — add `DashboardAuth bool \`yaml:"dashboard_auth"\`` after `AutoStartSites`, and `DashboardAuth: false` in `Default()`.
+- [x] **Step 4: Re-run** — same command. Expected: PASS.
+- [x] **Step 5: Commit** — `git add internal/config && git commit -m "feat(config): add dashboard_auth setting default off"`.
 
 ---
 
@@ -79,7 +81,7 @@ func TestDashboardAuthDefaultsOffAndRoundTrips(t *testing.T) {
 **Interfaces:**
 - Produces: `dashboardAuthToken(home string, enabled bool) (string, error)`; returns `"", nil` when disabled without creating the secret.
 
-- [ ] **Step 1: Write the failing test** — create `auth_test.go`:
+- [x] **Step 1: Write the failing test** — create `auth_test.go`:
 
 ```go
 func TestDashboardAuthTokenDisabledDoesNotCreateSecret(t *testing.T) {
@@ -114,10 +116,10 @@ func TestDashboardAuthTokenEnabledCreatesSecret(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail** — `go test ./internal/daemon -run TestDashboardAuthToken`. Expected: compile error, too many arguments.
-- [ ] **Step 3: Implement** — change the signature, return early when `!enabled`, and update both call sites to `dashboardAuthToken(cfg.Home, cfg.DashboardAuth)`.
-- [ ] **Step 4: Re-run** — same command. Expected: PASS.
-- [ ] **Step 5: Commit** — `git add internal/daemon && git commit -m "feat(daemon): require dashboard token only when enabled"`.
+- [x] **Step 2: Run it and watch it fail** — `go test ./internal/daemon -run TestDashboardAuthToken`. Expected: compile error, too many arguments.
+- [x] **Step 3: Implement** — change the signature, return early when `!enabled`, and update both call sites to `dashboardAuthToken(cfg.Home, cfg.DashboardAuth)`.
+- [x] **Step 4: Re-run** — same command. Expected: PASS.
+- [x] **Step 5: Commit** — `git add internal/daemon && git commit -m "feat(daemon): require dashboard token only when enabled"`.
 
 ---
 
@@ -130,7 +132,7 @@ func TestDashboardAuthTokenEnabledCreatesSecret(t *testing.T) {
 **Interfaces:**
 - Consumes: `config.Config.DashboardAuth`.
 
-- [ ] **Step 1: Write the failing test** — add:
+- [x] **Step 1: Write the failing test** — add:
 
 ```go
 func TestCLIUIOmitsTokenWhenDashboardAuthDisabled(t *testing.T) {
@@ -167,10 +169,10 @@ if err := cfg.Save(); err != nil {
 }
 ```
 
-- [ ] **Step 2: Run it and watch the new test fail** — `go test ./internal/cli -run TestCLIUIO`. Expected: the new test fails because the fragment is still appended.
-- [ ] **Step 3: Implement** — wrap the token load in `if cfg.DashboardAuth { ... }`.
-- [ ] **Step 4: Re-run** — same command. Expected: PASS.
-- [ ] **Step 5: Commit** — `git add internal/cli && git commit -m "feat(cli): only append dashboard token when auth is enabled"`.
+- [x] **Step 2: Run it and watch the new test fail** — `go test ./internal/cli -run TestCLIUIO`. Expected: the new test fails because the fragment is still appended.
+- [x] **Step 3: Implement** — wrap the token load in `if cfg.DashboardAuth { ... }`.
+- [x] **Step 4: Re-run** — same command. Expected: PASS.
+- [x] **Step 5: Commit** — `git add internal/cli && git commit -m "feat(cli): only append dashboard token when auth is enabled"`.
 
 ---
 
@@ -183,7 +185,7 @@ if err := cfg.Save(); err != nil {
 **Interfaces:**
 - Produces: `devstack init --dashboard-auth[=true|false]` persists the setting and stops a running daemon before `ensureRunning` restarts it.
 
-- [ ] **Step 1: Write the failing test** — add a focused init test using the existing fake-helper pattern:
+- [x] **Step 1: Write the failing test** — add a focused init test using the existing fake-helper pattern:
 
 ```go
 func TestCLIInitDashboardAuthFlag(t *testing.T) {
@@ -224,10 +226,10 @@ func TestCLIInitDashboardAuthFlag(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run it and watch it fail** — `go test ./internal/cli -run TestCLIInitDashboardAuthFlag`. Expected: unknown flag `--dashboard-auth`.
-- [ ] **Step 3: Implement** — add `cmd.Flags().Bool("dashboard-auth", false, "...")`; in `runInit`, when `cmd.Flags().Changed("dashboard-auth")`, set and save `cfg.DashboardAuth`; immediately before the `ensureRunning` call, if changed call `stopDaemon(ctx, home)` and propagate errors.
-- [ ] **Step 4: Re-run** — same command. Expected: PASS.
-- [ ] **Step 5: Commit** — `git add internal/cli && git commit -m "feat(cli): add init --dashboard-auth flag"`.
+- [x] **Step 2: Run it and watch it fail** — `go test ./internal/cli -run TestCLIInitDashboardAuthFlag`. Expected: unknown flag `--dashboard-auth`.
+- [x] **Step 3: Implement** — add `cmd.Flags().Bool("dashboard-auth", false, "...")`; in `runInit`, when `cmd.Flags().Changed("dashboard-auth")`, set and save `cfg.DashboardAuth`; immediately before the `ensureRunning` call, if changed call `stopDaemon(ctx, home)` and propagate errors.
+- [x] **Step 4: Re-run** — same command. Expected: PASS.
+- [x] **Step 5: Commit** — `git add internal/cli && git commit -m "feat(cli): add init --dashboard-auth flag"`.
 
 ---
 
@@ -236,6 +238,6 @@ func TestCLIInitDashboardAuthFlag(t *testing.T) {
 **Files:**
 - Modify: `docs/install-windows.md`, `docs/architecture.md`
 
-- [ ] **Step 1: Document** — in `docs/install-windows.md`, replace the “API still requires the install token” sentence with the default-off/opt-in behavior and the `devstack init --dashboard-auth` command. In `docs/architecture.md`, note that token auth is opt-in via `dashboard_auth`.
-- [ ] **Step 2: Run the gates** — `go test ./...`, `npm --prefix ui test -- --run`, `npm --prefix ui run build`. Expected: all pass.
-- [ ] **Step 3: Commit** — `git add docs && git commit -m "docs: document opt-in dashboard auth"`.
+- [x] **Step 1: Document** — in `docs/install-windows.md`, replace the “API still requires the install token” sentence with the default-off/opt-in behavior and the `devstack init --dashboard-auth` command. In `docs/architecture.md`, note that token auth is opt-in via `dashboard_auth`.
+- [x] **Step 2: Run the gates** — `go test ./...`, `npm --prefix ui test -- --run`, `npm --prefix ui run build`. Expected: all pass.
+- [x] **Step 3: Commit** — `git add docs && git commit -m "docs: document opt-in dashboard auth"`.
