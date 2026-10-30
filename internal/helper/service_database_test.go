@@ -29,8 +29,28 @@ type fakeCommandRunner struct {
 	streamOutput []byte
 	psState      string
 	aclList      string
+	databaseList string
+	grantList    string
 	handle       func(name string, args []string) ([]byte, error)
 	handleInput  func(name string, args []string, input []byte) ([]byte, error)
+}
+
+func (f *fakeCommandRunner) databaseListOutput() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.databaseList != "" {
+		return []byte(f.databaseList)
+	}
+	return []byte("app\t1024\t2\nblog\t2048\t3\n")
+}
+
+func (f *fakeCommandRunner) grantListOutput() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.grantList != "" {
+		return []byte(f.grantList)
+	}
+	return []byte("app\tread_write_schema\n")
 }
 
 func (f *fakeCommandRunner) aclListOutput() []byte {
@@ -92,11 +112,11 @@ func (f *fakeCommandRunner) defaultRun(name string, args []string) ([]byte, erro
 		}
 		return []byte(`[{"Service":"mysql","State":"` + state + `","Health":"healthy"},{"Service":"mariadb","State":"` + state + `","Health":"healthy"},{"Service":"postgresql","State":"` + state + `","Health":"healthy"},{"Service":"redis","State":"` + state + `","Health":"healthy"}]`), nil
 	case strings.Contains(joined, "list-databases"):
-		return []byte("app\t1024\t2\nblog\t2048\t3\n"), nil
+		return f.databaseListOutput(), nil
 	case strings.Contains(joined, "list-users"):
 		return []byte("usr_app\tapp\t%\n"), nil
 	case strings.Contains(joined, "list-grants"):
-		return []byte("app\tread_write_schema\n"), nil
+		return f.grantListOutput(), nil
 	case strings.Contains(joined, "ACL LIST"):
 		return f.aclListOutput(), nil
 	case strings.Contains(joined, "restart"):
@@ -814,6 +834,118 @@ func TestHelperImportPreImportBackup(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(root, "backups", "databases", "mysql", "app", "*.sql.gz"))
 	if len(matches) != 1 {
 		t.Fatalf("pre-import backups=%v", matches)
+	}
+}
+
+func TestHelperCreateDatabaseRejectsUnsafeCharset(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	_, err := c.CreateDatabase(context.Background(), "mysql", databases.CreateDatabaseRequest{
+		Name: "app", Charset: "utf8mb4; DROP DATABASE mysql",
+	})
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("calls=%v", runner.calls)
+	}
+}
+
+func TestHelperRunDatabaseSQLInRejectsInjection(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	if _, err := c.runDatabaseSQLIn(context.Background(), "postgresql", "app=evil", "SELECT 1"); !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("calls=%v", runner.calls)
+	}
+}
+
+func TestHelperReassignOwnedValidatesDatabaseNames(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.databaseList = "app=evil\t0\t0\n"
+	runner.reset()
+	err := c.DeleteUser(context.Background(), "postgresql", "usr_app", databases.DeleteUserRequest{
+		Confirm: "app", ReassignOwned: true,
+	})
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+	if runner.joinedCallsContains("--dbname=app=evil") {
+		t.Fatalf("unsafe database name reached psql: %s", runner.joinedCalls())
+	}
+}
+
+func TestHelperGrantDiffSkipsGlobalScopes(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.grantList = "*\tread_write\napp\tread_write_schema\n"
+	runner.reset()
+	engine := &fakeDatabaseEngine{id: model.DatabaseMySQL}
+	user := model.DatabaseUser{Username: "app", Host: "%"}
+	if err := c.applyUserGrants(context.Background(), "mysql", engine, user, []model.DatabaseGrant{
+		{Database: "app", Preset: model.GrantReadWrite},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.stdinContains("ON *") || runner.stdinContains("REVOKE read_write ON *") {
+		t.Fatalf("global grant was revoked: %q", runner.stdin)
+	}
+}
+
+func TestHelperGrantDiffReadsUnderServiceLock(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.grantList = "app\tread_write_schema\n"
+	var mu sync.Mutex
+	active := 0
+	overlap := false
+	track := func() func() {
+		mu.Lock()
+		active++
+		if active > 1 {
+			overlap = true
+		}
+		mu.Unlock()
+		time.Sleep(2 * time.Millisecond)
+		return func() {
+			mu.Lock()
+			active--
+			mu.Unlock()
+		}
+	}
+	runner.handle = func(name string, args []string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "list-grants") {
+			defer track()()
+		}
+		return []byte("app\tread_write_schema\n"), nil
+	}
+	runner.handleInput = func(name string, args []string, input []byte) ([]byte, error) {
+		if strings.Contains(string(input), "GRANT") || strings.Contains(string(input), "REVOKE") {
+			defer track()()
+		}
+		return []byte("OK"), nil
+	}
+	engine := &fakeDatabaseEngine{id: model.DatabaseMySQL}
+	user := model.DatabaseUser{Username: "app", Host: "%"}
+	var wg sync.WaitGroup
+	for _, preset := range []model.DatabaseGrantPreset{model.GrantReadWrite, model.GrantAdmin} {
+		wg.Add(1)
+		go func(preset model.DatabaseGrantPreset) {
+			defer wg.Done()
+			if err := c.applyUserGrants(context.Background(), "mysql", engine, user, []model.DatabaseGrant{{Database: "app", Preset: preset}}); err != nil {
+				t.Errorf("applyUserGrants: %v", err)
+			}
+		}(preset)
+	}
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if overlap {
+		t.Fatal("grant diff read/apply overlapped across service lock")
 	}
 }
 

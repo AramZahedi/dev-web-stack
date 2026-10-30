@@ -77,6 +77,13 @@ func (c *DockerServiceController) CreateDatabase(ctx context.Context, serviceID 
 	if engine.ProtectedDatabase(req.Name) {
 		return model.Database{}, fmt.Errorf("%w: database %q", databases.ErrProtected, req.Name)
 	}
+	for _, value := range []string{req.Charset, req.Collation} {
+		if value != "" {
+			if err := dbengine.ValidateIdentifier(value); err != nil {
+				return model.Database{}, invalidIdentifier(err)
+			}
+		}
+	}
 	if err := c.requireActive(ctx, serviceID); err != nil {
 		return model.Database{}, err
 	}
@@ -486,19 +493,27 @@ func (c *DockerServiceController) findUserByID(ctx context.Context, serviceID, u
 }
 
 func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID string, engine dbengine.Engine, user model.DatabaseUser, desired []model.DatabaseGrant) error {
+	// The current grant set and the diff both run under the service lock so a
+	// concurrent update cannot interleave a stale read with new grants.
+	lock := c.databaseLock(serviceID)
+	lock.Lock()
+	defer lock.Unlock()
 	current, err := c.userGrants(ctx, serviceID, engine, user)
 	if err != nil {
 		return err
 	}
 	currentByDB := make(map[string]model.DatabaseGrant, len(current))
 	for _, grant := range current {
-		if grant.Database == "" || engine.ProtectedDatabase(grant.Database) {
+		if isGlobalGrantScope(grant.Database) || engine.ProtectedDatabase(grant.Database) {
 			continue
 		}
 		currentByDB[grant.Database] = grant
 	}
 	desiredByDB := make(map[string]model.DatabaseGrant, len(desired))
 	for _, grant := range desired {
+		if isGlobalGrantScope(grant.Database) {
+			return fmt.Errorf("%w: grant scope %q is not database-scoped", databases.ErrInvalidRequest, grant.Database)
+		}
 		if err := engine.ValidateDatabaseName(grant.Database); err != nil {
 			return invalidIdentifier(err)
 		}
@@ -507,9 +522,6 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 		}
 		desiredByDB[grant.Database] = grant
 	}
-	lock := c.databaseLock(serviceID)
-	lock.Lock()
-	defer lock.Unlock()
 	for database, want := range desiredByDB {
 		have, ok := currentByDB[database]
 		if ok && grantsEqual(have, want) {
@@ -562,6 +574,18 @@ func (c *DockerServiceController) userGrants(ctx context.Context, serviceID stri
 	return engine.ParseGrants(out)
 }
 
+// isGlobalGrantScope reports whether a grant scope is not a single database.
+// Global and wildcard scopes are never diffed or revoked by a database-scoped
+// update.
+func isGlobalGrantScope(database string) bool {
+	switch strings.ToLower(strings.TrimSpace(database)) {
+	case "", "*", "%", "all", "*.*":
+		return true
+	default:
+		return false
+	}
+}
+
 func grantsEqual(a, b model.DatabaseGrant) bool {
 	if a.Preset != b.Preset {
 		return false
@@ -600,6 +624,9 @@ func (c *DockerServiceController) reassignOwned(ctx context.Context, serviceID s
 		switch database.Name {
 		case "template0", "template1":
 			continue
+		}
+		if err := dbengine.ValidateIdentifier(database.Name); err != nil {
+			return invalidIdentifier(err)
 		}
 		sql := fmt.Sprintf("REASSIGN OWNED BY %s TO %s;", role, admin)
 		if _, err := c.runDatabaseSQLIn(ctx, serviceID, database.Name, sql); err != nil {

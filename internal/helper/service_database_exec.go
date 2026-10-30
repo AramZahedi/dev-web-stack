@@ -199,6 +199,11 @@ func (c *DockerServiceController) runDatabaseSQL(ctx context.Context, serviceID,
 // runDatabaseSQLIn executes SQL against a specific database (PostgreSQL needs
 // a database connection for REASSIGN OWNED).
 func (c *DockerServiceController) runDatabaseSQLIn(ctx context.Context, serviceID, database, sql string) ([]byte, error) {
+	if database != "" {
+		if err := dbengine.ValidateIdentifier(database); err != nil {
+			return nil, invalidIdentifier(err)
+		}
+	}
 	client, err := c.sqlClientCommandForDatabase(serviceID, database)
 	if err != nil {
 		return nil, err
