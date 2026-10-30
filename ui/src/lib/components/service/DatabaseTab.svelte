@@ -410,7 +410,10 @@
   function setImportMode(mode: 'merge' | 'replace'): void {
     importMode = mode;
     importConfirm = '';
-    if (mode === 'replace') void prepareLinkedSites(importTarget?.linked_sites);
+    if (mode === 'replace') {
+      importBackup = true;
+      void prepareLinkedSites(importTarget?.linked_sites);
+    }
   }
 
   const importConfirmationReady = $derived(
@@ -442,7 +445,7 @@
       const next = await dbApi.importServiceDatabase(service.id, target.name, file, {
         mode: importMode,
         confirm: target.name,
-        pre_import_backup: importBackup,
+        pre_import_backup: importMode === 'replace' ? true : importBackup,
       });
       importOpen = false;
       importTarget = null;
@@ -880,7 +883,10 @@
     <Toggle
       bind:checked={importBackup}
       label="Back up first"
-      description="Create a pre-import backup before the dump is applied."
+      disabled={importMode === 'replace'}
+      description={importMode === 'replace'
+        ? 'Replace mode always creates a pre-import backup before dropping the target.'
+        : 'Create a pre-import backup before the dump is applied.'}
     />
 
     {#if importMode === 'replace'}
@@ -906,8 +912,8 @@
         />
       </Field>
       <p class="drop-warning" role="alert">
-        Replace mode removes the current schema. The pre-import backup is offered as a one-click
-        recovery if the job fails.
+        Replace mode removes the current schema. A pre-import backup is always created and offered
+        as a one-click recovery if the job fails.
       </p>
     {/if}
 

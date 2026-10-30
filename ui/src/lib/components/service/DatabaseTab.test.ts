@@ -534,6 +534,12 @@ describe('DatabaseTab', () => {
     }) as HTMLButtonElement;
     expect(importButton.disabled).toBe(true);
 
+    const backupToggle = within(dialog).getByRole('switch', {
+      name: 'Back up first',
+    }) as HTMLButtonElement;
+    expect(backupToggle.getAttribute('aria-checked')).toBe('true');
+    expect(backupToggle.disabled).toBe(true);
+
     await fireEvent.input(within(dialog).getByLabelText(/type .app. to confirm/i), {
       target: { value: 'app' },
     });
@@ -545,7 +551,11 @@ describe('DatabaseTab', () => {
         'mysql',
         'app',
         expect.any(File),
-        expect.objectContaining({ mode: 'replace', confirm: 'app' }),
+        expect.objectContaining({
+          mode: 'replace',
+          confirm: 'app',
+          pre_import_backup: true,
+        }),
       ),
     );
   });
