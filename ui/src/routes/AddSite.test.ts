@@ -179,6 +179,14 @@ const EXTERNAL_USER: DatabaseUser = {
   linked_sites: [],
 };
 
+const MANAGED_UNKNOWN_USER: DatabaseUser = {
+  ...EXTERNAL_USER,
+  id: 'usr_managed',
+  username: 'managed_user',
+  managed: true,
+  password_managed: false,
+};
+
 const DISABLED_USER: DatabaseUser = {
   ...EXTERNAL_USER,
   id: 'usr_disabled',
@@ -253,6 +261,24 @@ const OTHER_DB_LINK: DatabaseLink = {
       ...SITE_DB_LINK.connection.env,
       DB_DATABASE: 'other',
       DB_USERNAME: 'other_user',
+    },
+  },
+};
+
+const MANAGED_UNKNOWN_DB_LINK: DatabaseLink = {
+  ...SITE_DB_LINK,
+  id: 'lnk_managed_unknown',
+  user_id: 'usr_managed',
+  username: 'managed_user',
+  password_managed: false,
+  connection: {
+    ...SITE_DB_LINK.connection,
+    username: 'managed_user',
+    password_managed: false,
+    url: 'mysql://managed_user@127.0.0.1:3306/app',
+    env: {
+      ...SITE_DB_LINK.connection.env,
+      DB_USERNAME: 'managed_user',
     },
   },
 };
@@ -1009,5 +1035,66 @@ describe('AddSite Wave 2 fields', () => {
         },
       }),
     );
+  });
+
+  it('shows an unknown password for a managed existing user in review', async () => {
+    mockDb.listServiceDatabases.mockResolvedValue({ databases: [APP_DATABASE] });
+    mockDb.listServiceUsers.mockResolvedValue({ users: [MANAGED_UNKNOWN_USER] });
+    await openOptionsStep();
+
+    await fireEvent.click(screen.getByLabelText('Create or link a database'));
+    const service = (await screen.findByLabelText(/Database service/)) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    await fireEvent.click(screen.getByLabelText('Use existing database'));
+    await fireEvent.change(screen.getByLabelText(/Existing database/), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(screen.getByLabelText('Use existing user'));
+    await fireEvent.change(screen.getByLabelText(/Existing user/), {
+      target: { value: 'usr_managed' },
+    });
+
+    expect(
+      screen.getByText(
+        "The password is unknown. Reset it after creation from the site's Databases card.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Password unknown. Reset it from the site's Databases card after creation.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/external password entry is not available in v1/i)).toBeNull();
+  });
+
+  it('shows managed-unknown copy in the post-create modal', async () => {
+    mockDb.listServiceDatabases.mockResolvedValue({ databases: [APP_DATABASE] });
+    mockDb.listServiceUsers.mockResolvedValue({ users: [MANAGED_UNKNOWN_USER] });
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [MANAGED_UNKNOWN_DB_LINK] });
+    await openOptionsStep();
+
+    await fireEvent.click(screen.getByLabelText('Create or link a database'));
+    const service = (await screen.findByLabelText(/Database service/)) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    await fireEvent.click(screen.getByLabelText('Use existing database'));
+    await fireEvent.change(screen.getByLabelText(/Existing database/), {
+      target: { value: 'app' },
+    });
+    await fireEvent.click(screen.getByLabelText('Use existing user'));
+    await fireEvent.change(screen.getByLabelText(/Existing user/), {
+      target: { value: 'usr_managed' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      within(dialog).getByText(
+        "The database password is unknown. Reset it from the site's Databases card.",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(dialog).queryByText(/external password entry is not available in v1/i),
+    ).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Reveal password' })).toBeNull();
   });
 });

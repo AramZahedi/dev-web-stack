@@ -283,6 +283,20 @@ const METADATA_ONLY_LINK: DatabaseLink = {
   },
 };
 
+const MANAGED_UNKNOWN_LINK: DatabaseLink = {
+  ...SITE_DB_LINK,
+  password_managed: false,
+  connection: {
+    ...SITE_DB_LINK.connection,
+    password_managed: false,
+  },
+};
+
+const MANAGED_UNKNOWN_USER: DatabaseUser = {
+  ...APP_USER,
+  password_managed: false,
+};
+
 const PASSWORD_ENV_LINK: DatabaseLink = {
   ...SITE_DB_LINK,
   connection: {
@@ -783,6 +797,21 @@ describe('SiteDetail configuration and builds', () => {
     expect(
       screen.getByText(/external password entry is not available in v1/i),
     ).toBeTruthy();
+  });
+
+  it('offers a reset for a managed user whose password is unknown', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [MANAGED_UNKNOWN_LINK] });
+    mockDb.listServiceUsers.mockResolvedValue({ users: [MANAGED_UNKNOWN_USER] });
+    mockDb.setServiceUserPassword.mockResolvedValue({ value: 'rotated' });
+    await renderSite('blog');
+
+    expect(await screen.findByText(/password unknown/i)).toBeTruthy();
+    expect(screen.queryByText(/external password entry is not available in v1/i)).toBeNull();
+    expect(screen.getByText('Replaces the current password.')).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: /reset password/i }));
+    expect(await screen.findByText('rotated')).toBeTruthy();
+    expect(mockDb.setServiceUserPassword).toHaveBeenCalledWith('mysql', 'usr_app');
   });
 
   it('resets a devstack-managed password and asks for a restart', async () => {

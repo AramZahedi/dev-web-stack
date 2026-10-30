@@ -749,6 +749,7 @@
     const target = createdSite;
     createdOpen = false;
     createdLink = null;
+    createdUserManaged = false;
     createdSite = null;
     revealValue = '';
     revealError = null;
@@ -768,6 +769,8 @@
     }
 
     submitting = true;
+    const databaseRequest = dbRequest;
+    const databaseSummary = dbSummary;
     try {
       const env: Record<string, string> = {};
       if (kind === 'node') {
@@ -814,7 +817,7 @@
         build,
         env,
       };
-      if (dbRequest) body.database = withoutPassword(dbRequest);
+      if (databaseRequest) body.database = withoutPassword(databaseRequest);
       const site = await api.createSite(body);
       const buildOutputMissing =
         site.kind === 'static' && Boolean(site.build) && site.status === 'stopped';
@@ -825,8 +828,8 @@
           ? `${site.domain} was created stopped because ${site.build?.output || 'the build output'} does not exist yet. Run Build on the detail page, then Start the site.`
           : `${site.domain} is starting. Logs are live on the detail page.`,
       });
-      if (dbRequest) {
-        const request = dbRequest;
+      if (databaseRequest) {
+        const request = databaseRequest;
         let link: SiteDatabaseLink | null = null;
         try {
           const result = await db.listSiteDatabases(site.id);
@@ -852,6 +855,7 @@
         if (link) {
           createdSite = site;
           createdLink = link;
+          createdUserManaged = Boolean(databaseSummary?.userManaged || request.new_user);
           revealValue = '';
           revealError = null;
           createdOpen = true;
@@ -1871,6 +1875,10 @@
           onhide={() => (revealValue = '')}
           oncopy={copyCreatedPassword}
         />
+      {:else if createdUserManaged}
+        <p class="hint">
+          The database password is unknown. Reset it from the site's Databases card.
+        </p>
       {:else}
         <p class="hint">
           This link has no managed password. External password entry is not available in v1;
