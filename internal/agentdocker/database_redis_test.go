@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
+	"github.com/AramZahedi/dev-web-stack/internal/dbengine"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
@@ -284,6 +285,77 @@ func TestUpdateRedisUserCustomRulesPreservedOnDisable(t *testing.T) {
 	after, err := d.readDatabaseSecret("redis", created.ID)
 	if err != nil || after != before {
 		t.Fatalf("password changed on custom enable/disable: %q -> %q, %v", before, after, err)
+	}
+}
+
+func TestRedisCommandWithSecretKeepsEveryRule(t *testing.T) {
+	command := dbengine.NewRedisACL().SetUserCommand("cache", "s3cret", "full", true)
+	delivered, secret, err := redisCommandWithSecret(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret != ">s3cret" {
+		t.Fatalf("secret argument = %q", secret)
+	}
+	// redis-cli -x appends the stdin argument to the command. Simulate the
+	// final argv and prove that removing the password placeholder did not
+	// remove any ACL rule.
+	finalArgv := append(append([]string(nil), delivered...), secret)
+	for _, rule := range command[4 : len(command)-1] {
+		found := false
+		for _, arg := range finalArgv {
+			if arg == rule {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("rule %q missing from post -x argv: %v", rule, finalArgv)
+		}
+	}
+	if finalArgv[len(finalArgv)-1] != ">s3cret" {
+		t.Fatalf("password is not the final argument: %v", finalArgv)
+	}
+	for _, arg := range delivered {
+		if arg == ">s3cret" {
+			t.Fatalf("password leaked into argv: %v", delivered)
+		}
+	}
+}
+
+func TestSetRedisUserDeliversEveryRule(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	user, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "full"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := d.readDatabaseSecret("redis", user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var setUser []string
+	for _, call := range runner.calls {
+		if strings.Contains(strings.Join(call.args, " "), "ACL SETUSER cache") {
+			setUser = call.args
+		}
+	}
+	if len(setUser) == 0 {
+		t.Fatalf("ACL SETUSER was not called: %s", runner.joinedCalls())
+	}
+	for _, rule := range []string{"+@all", "-@admin", "-@dangerous", "-config", "-failover"} {
+		found := false
+		for _, arg := range setUser {
+			if arg == rule {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("rule %q missing from argv: %v", rule, setUser)
+		}
+	}
+	if !runner.stdinContains(">" + secret) {
+		t.Fatal("password was not delivered on stdin")
 	}
 }
 

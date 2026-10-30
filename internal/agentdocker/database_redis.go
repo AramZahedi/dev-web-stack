@@ -514,6 +514,16 @@ func redisCommandWithSecret(command []string) ([]string, string, error) {
 	if !strings.HasPrefix(secret, ">") {
 		return nil, "", errors.New("agentdocker: redis password must be the last argument")
 	}
+	for _, arg := range command[1 : len(command)-1] {
+		if strings.HasPrefix(arg, ">") {
+			return nil, "", errors.New("agentdocker: redis command has more than one password argument")
+		}
+	}
+	// redis-cli -x appends the stdin argument to the command; it does not
+	// replace an existing argument. Removing only the password placeholder
+	// therefore keeps every ACL rule, and the password becomes the final
+	// argument on the wire. No extra placeholder is needed (and one would be
+	// parsed as an ACL rule).
 	out := []string{command[0], "-x"}
 	out = append(out, command[1:len(command)-1]...)
 	return out, secret, nil
