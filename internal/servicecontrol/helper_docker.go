@@ -71,6 +71,8 @@ type HelperDocker struct {
 	*databasePlatform
 }
 
+var _ databases.Platform = (*HelperDocker)(nil)
+
 func (p *databasePlatform) api(ctx context.Context) (DatabasePlatformAPI, error) {
 	if p == nil || p.provider == nil {
 		return nil, fmt.Errorf("%w: database platform is not configured", databases.ErrUnsupported)

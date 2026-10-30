@@ -178,7 +178,7 @@ func (m *Manager) LinkDatabase(ctx context.Context, siteRef string, req LinkData
 		return model.DatabaseLink{}, err
 	}
 	primary := req.Primary
-	if len(records) == 0 {
+	if len(records) == 0 || !hasPrimaryLink(records) {
 		primary = true
 	}
 	for _, record := range records {
@@ -208,7 +208,11 @@ func (m *Manager) LinkDatabase(ctx context.Context, siteRef string, req LinkData
 		}
 	}
 	link := m.linkFromRecord(ctx, record, user)
-	if !grantsHaveDatabase(m.storedGrants(ctx, user.ID), database) {
+	grants := m.storedGrants(ctx, user.ID)
+	if live, liveErr := m.existingUser(ctx, serviceID, user.ID); liveErr == nil {
+		grants = live.Grants
+	}
+	if !grantsHaveDatabase(grants, database) {
 		link.Error = "database user has no grant on this database"
 	}
 	m.audit(ctx, "database.link.changed", serviceID, site.ID, "database_link", database, "ok", map[string]any{"link_id": record.ID, "user_id": user.ID, "primary": primary})
@@ -458,7 +462,7 @@ func SiteEnv(links []model.DatabaseLink) (map[string]string, error) {
 	}
 	env := make(map[string]string, len(links)*7)
 	for i, link := range links {
-		prefix := ""
+		prefix := "DB_"
 		if i != primaryIndex {
 			prefix = "DB_" + envSlug(link.Database) + "_"
 		}
@@ -474,13 +478,13 @@ func SiteEnv(links []model.DatabaseLink) (map[string]string, error) {
 		if username == "" {
 			username = link.Connection.Username
 		}
-		env[prefix+"DB_CONNECTION"] = dbConnectionValue(engine)
-		env[prefix+"DB_HOST"] = "127.0.0.1"
-		env[prefix+"DB_PORT"] = fmt.Sprintf("%d", port)
-		env[prefix+"DB_DATABASE"] = link.Database
-		env[prefix+"DB_USERNAME"] = username
+		env[prefix+"CONNECTION"] = dbConnectionValue(engine)
+		env[prefix+"HOST"] = "127.0.0.1"
+		env[prefix+"PORT"] = fmt.Sprintf("%d", port)
+		env[prefix+"DATABASE"] = link.Database
+		env[prefix+"USERNAME"] = username
 		if link.PasswordManaged && link.Connection.URL != "" {
-			if prefix == "" {
+			if i == primaryIndex {
 				env["DATABASE_URL"] = link.Connection.URL
 			} else {
 				env[prefix+"URL"] = link.Connection.URL
@@ -525,6 +529,16 @@ func envSlug(value string) string {
 		return "DB_" + slug
 	}
 	return slug
+}
+
+// hasPrimaryLink reports whether a site already has a primary link.
+func hasPrimaryLink(records []model.DatabaseLinkRecord) bool {
+	for _, record := range records {
+		if record.Primary {
+			return true
+		}
+	}
+	return false
 }
 
 // userHasGrant reports whether a user has any grant on a database.

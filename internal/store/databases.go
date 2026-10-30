@@ -140,6 +140,30 @@ func (s *Store) SetPrimaryDatabaseLink(ctx context.Context, siteID, linkID strin
 	return nil
 }
 
+// RenameDatabaseReferences updates site links and persisted grant intent after
+// a PostgreSQL rename so existing sites keep their connection.
+func (s *Store) RenameDatabaseReferences(ctx context.Context, serviceID, oldName, newName string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rename database references %q: begin transaction: %w", oldName, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE database_links SET database_name = ?
+		WHERE service_id = ? AND database_name = ?`, newName, serviceID, oldName); err != nil {
+		return fmt.Errorf("rename database links %q: %w", oldName, err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE database_user_grants SET database_name = ?
+		WHERE database_name = ? AND user_id IN (
+			SELECT id FROM database_users WHERE service_id = ?
+		)`, newName, oldName, serviceID); err != nil {
+		return fmt.Errorf("rename database grants %q: %w", oldName, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rename database references %q: commit: %w", oldName, err)
+	}
+	return nil
+}
+
 // UpsertDatabaseUser inserts or updates a discovered or managed user.
 func (s *Store) UpsertDatabaseUser(ctx context.Context, user model.DatabaseUserRecord) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO database_users (`+databaseUserColumns+`)

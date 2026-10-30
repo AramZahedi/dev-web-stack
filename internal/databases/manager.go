@@ -27,6 +27,7 @@ type Store interface {
 	DeleteDatabaseLink(ctx context.Context, id string) error
 	DeleteDatabaseLinksByService(ctx context.Context, serviceID string) (int64, error)
 	SetPrimaryDatabaseLink(ctx context.Context, siteID, linkID string) error
+	RenameDatabaseReferences(ctx context.Context, serviceID, oldName, newName string) error
 
 	UpsertDatabaseUser(ctx context.Context, user model.DatabaseUserRecord) error
 	GetDatabaseUser(ctx context.Context, id string) (model.DatabaseUserRecord, error)
@@ -177,8 +178,7 @@ func (m *Manager) requireInstalled(ctx context.Context, serviceID string) (servi
 // databases that no longer exist are returned with Missing set.
 func (m *Manager) ListDatabases(ctx context.Context, serviceID string) ([]model.Database, error) {
 	serviceID = canonicalServiceID(serviceID)
-	view, err := m.requireActive(ctx, serviceID)
-	if err != nil {
+	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return nil, err
 	}
 	if isRedisService(serviceID) {
@@ -219,7 +219,6 @@ func (m *Manager) ListDatabases(ctx context.Context, serviceID string) ([]model.
 		})
 	}
 	sort.SliceStable(databases, func(i, j int) bool { return databases[i].Name < databases[j].Name })
-	_ = view
 	return databases, nil
 }
 
@@ -293,6 +292,9 @@ func (m *Manager) RenameDatabase(ctx context.Context, serviceID, name string, re
 	}
 	if db.Engine == "" {
 		db.Engine = model.DatabasePostgreSQL
+	}
+	if err := m.deps.Store.RenameDatabaseReferences(ctx, serviceID, name, newName); err != nil {
+		return model.Database{}, err
 	}
 	m.audit(ctx, "database.renamed", serviceID, "", "database", name, "ok", map[string]any{"new_name": newName})
 	m.emit(ctx, "", "database.renamed", fmt.Sprintf("database %s renamed to %s on %s", name, newName, serviceID))
@@ -484,7 +486,7 @@ func (m *Manager) CreateUser(ctx context.Context, serviceID string, req CreateUs
 		Host:              user.Host,
 		ManagedByDevstack: true,
 		PasswordManaged:   true,
-		Enabled:           user.Enabled,
+		Enabled:           true,
 		AccessLevel:       user.AccessLevel,
 		CreatedAt:         m.now().Unix(),
 		LastSeenAt:        m.now().Unix(),
@@ -492,6 +494,14 @@ func (m *Manager) CreateUser(ctx context.Context, serviceID string, req CreateUs
 	if record.Username == "" {
 		record.Username = username
 	}
+	if record.Host == "" {
+		record.Host = strings.TrimSpace(req.Host)
+	}
+	if record.Host == "" && (record.Engine == model.DatabaseMySQL || record.Engine == model.DatabaseMariaDB) {
+		record.Host = "%"
+	}
+	user.Host = record.Host
+	user.Username = record.Username
 	if err := m.deps.Store.UpsertDatabaseUser(ctx, record); err != nil {
 		return model.DatabaseUser{}, err
 	}
@@ -540,28 +550,39 @@ func (m *Manager) UpdateUser(ctx context.Context, serviceID, userID string, req 
 	}
 	if req.Enabled != nil {
 		record.Enabled = *req.Enabled
+	} else if user.Enabled {
+		record.Enabled = true
 	}
 	if req.AccessLevel != "" {
 		record.AccessLevel = req.AccessLevel
-	}
-	if user.Enabled || req.Enabled == nil {
-		// A platform response may leave Enabled at its zero value; keep the
-		// explicitly requested state when one was supplied.
-		if req.Enabled == nil {
-			record.Enabled = user.Enabled
-		}
 	}
 	record.LastSeenAt = m.now().Unix()
 	if err := m.deps.Store.UpsertDatabaseUser(ctx, record); err != nil {
 		return model.DatabaseUser{}, err
 	}
-	for _, grant := range req.Grants {
-		preset := grant.Preset
-		if preset == "" {
-			preset = model.GrantReadWriteSchema
+	if req.Grants != nil {
+		kept := make(map[string]struct{}, len(req.Grants))
+		for _, grant := range req.Grants {
+			preset := grant.Preset
+			if preset == "" {
+				preset = model.GrantReadWriteSchema
+			}
+			kept[grant.Database] = struct{}{}
+			if err := m.saveGrant(ctx, userID, grant.Database, preset, grant.Privileges); err != nil {
+				return model.DatabaseUser{}, err
+			}
 		}
-		if err := m.saveGrant(ctx, userID, grant.Database, preset, grant.Privileges); err != nil {
+		existing, err := m.deps.Store.ListDatabaseGrants(ctx, userID)
+		if err != nil {
 			return model.DatabaseUser{}, err
+		}
+		for _, grant := range existing {
+			if _, ok := kept[grant.DatabaseName]; ok {
+				continue
+			}
+			if err := m.deps.Store.DeleteDatabaseGrant(ctx, userID, grant.DatabaseName); err != nil {
+				return model.DatabaseUser{}, err
+			}
 		}
 	}
 	m.audit(ctx, "database.user.grants_changed", serviceID, "", "user", record.Username, "ok", nil)
@@ -714,16 +735,29 @@ func (m *Manager) ListBackups(ctx context.Context, serviceID string) ([]model.Da
 			backups[i].Engine = engineForService(serviceID)
 		}
 		record := backupFromView(backups[i])
-		if _, err := m.deps.Store.GetDatabaseBackup(ctx, record.ID); errors.Is(err, store.ErrNotFound) {
+		existing, err := m.deps.Store.GetDatabaseBackup(ctx, record.ID)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
 			if err := m.deps.Store.CreateDatabaseBackup(ctx, record); err != nil {
 				return nil, err
 			}
-		} else if err == nil {
+		case err != nil:
+			return nil, err
+		default:
+			// The platform view intentionally omits the private path. Preserve
+			// the daemon's stored path and kind when refreshing metadata.
+			if record.Path == "" {
+				record.Path = existing.Path
+			}
+			if record.Kind == "" {
+				record.Kind = existing.Kind
+			}
+			if record.CreatedAt == 0 {
+				record.CreatedAt = existing.CreatedAt
+			}
 			if err := m.deps.Store.UpdateDatabaseBackup(ctx, record); err != nil {
 				return nil, err
 			}
-		} else {
-			return nil, err
 		}
 	}
 	sort.SliceStable(backups, func(i, j int) bool { return backups[i].CreatedAt.After(backups[j].CreatedAt) })
@@ -783,6 +817,28 @@ func (m *Manager) GetJob(ctx context.Context, jobID string) (model.DatabaseJob, 
 			return model.DatabaseJob{}, fmt.Errorf("%w: job %q", ErrJobNotFound, jobID)
 		}
 		return model.DatabaseJob{}, err
+	}
+	if record.Status == string(model.JobRunning) || record.Status == string(model.JobQueued) {
+		m.jobsMu.Lock()
+		platformID := m.platformJobs[jobID]
+		m.jobsMu.Unlock()
+		if platformID != "" {
+			if platformJob, platformErr := m.deps.Platform.GetJob(ctx, platformID); platformErr == nil {
+				record.Status = string(platformJob.Status)
+				record.Progress = platformJob.Progress
+				if platformJob.Message != "" {
+					record.Message = platformJob.Message
+				}
+				if platformJob.BackupID != "" {
+					record.BackupID = platformJob.BackupID
+				}
+				record.UpdatedAt = m.now().Unix()
+				_ = m.deps.Store.UpdateDatabaseJob(ctx, record)
+				if record.Status != string(model.JobRunning) && record.Status != string(model.JobQueued) {
+					m.auditJob(ctx, recordToJob(record), string(record.Status))
+				}
+			}
+		}
 	}
 	return recordToJob(record), nil
 }

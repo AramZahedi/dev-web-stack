@@ -103,7 +103,7 @@ func (m *Manager) LinkProvisioned(ctx context.Context, siteID string, provisione
 		return SiteDatabaseResult{}, err
 	}
 	primary := provisioned.Request.Primary
-	if len(records) == 0 {
+	if len(records) == 0 || !hasPrimaryLink(records) {
 		primary = true
 	}
 	record := model.DatabaseLinkRecord{

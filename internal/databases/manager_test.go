@@ -143,6 +143,22 @@ func (f *fakeStore) SetPrimaryDatabaseLink(_ context.Context, siteID, linkID str
 	return nil
 }
 
+func (f *fakeStore) RenameDatabaseReferences(_ context.Context, serviceID, oldName, newName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.links {
+		if f.links[i].ServiceID == serviceID && f.links[i].DatabaseName == oldName {
+			f.links[i].DatabaseName = newName
+		}
+	}
+	for i := range f.grants {
+		if f.grants[i].DatabaseName == oldName {
+			f.grants[i].DatabaseName = newName
+		}
+	}
+	return nil
+}
+
 func (f *fakeStore) UpsertDatabaseUser(_ context.Context, user model.DatabaseUserRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -595,6 +611,20 @@ func TestManagerRenameRejectsMySQL(t *testing.T) {
 	m, _, _, _, _ := testManagerWithFakes(t)
 	if _, err := m.RenameDatabase(context.Background(), "mysql", "app", RenameDatabaseRequest{Name: "blog"}); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("rename mysql = %v", err)
+	}
+}
+
+func TestManagerRenamePostgresUpdatesLinks(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	svc := m.deps.Services.(*fakeServices)
+	svc.views[services.IDPostgreSQL] = services.View{ID: services.IDPostgreSQL, State: services.StateActive, Active: true, Installed: true}
+	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", ServiceID: "postgresql", DatabaseName: "old", UserID: "usr_app"}}
+	db, err := m.RenameDatabase(context.Background(), "postgresql", "old", RenameDatabaseRequest{Name: "new"})
+	if err != nil || db.Name != "new" {
+		t.Fatalf("db=%+v err=%v", db, err)
+	}
+	if st.links[0].DatabaseName != "new" {
+		t.Fatalf("link not updated: %+v", st.links[0])
 	}
 }
 

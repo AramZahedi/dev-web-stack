@@ -90,6 +90,35 @@ func TestDatabaseLinkPrimaryUniquePerSite(t *testing.T) {
 	}
 }
 
+func TestRenameDatabaseReferences(t *testing.T) {
+	s := openTemp(t)
+	site := testSite("site_1", "blog")
+	if err := s.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	user := model.DatabaseUserRecord{ID: "usr_app", ServiceID: "postgresql", Engine: model.DatabasePostgreSQL, Username: "app"}
+	if err := s.UpsertDatabaseUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDatabaseLink(ctx, model.DatabaseLinkRecord{ID: "lnk_1", SiteID: site.ID, ServiceID: "postgresql", DatabaseName: "old", UserID: user.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveDatabaseGrant(ctx, model.DatabaseGrantRecord{UserID: user.ID, DatabaseName: "old", Preset: string(model.GrantReadOnly)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameDatabaseReferences(ctx, "postgresql", "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	links, _ := s.ListDatabaseLinksBySite(ctx, site.ID)
+	if len(links) != 1 || links[0].DatabaseName != "new" {
+		t.Fatalf("links = %+v", links)
+	}
+	grants, _ := s.ListDatabaseGrants(ctx, user.ID)
+	if len(grants) != 1 || grants[0].DatabaseName != "new" {
+		t.Fatalf("grants = %+v", grants)
+	}
+}
+
 func TestDatabaseUserDeleteBlockedWhileLinked(t *testing.T) {
 	s := openTemp(t)
 	site := testSite("site_1", "blog")

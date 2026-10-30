@@ -184,29 +184,21 @@ func Run(ctx context.Context, opts Options) error {
 		logger:  logger,
 	}
 
-	siteService := sites.NewService(sites.Deps{
-		Store:        st,
-		Backend:      wslBackend,
-		Helper:       adapter,
-		Certs:        certManager,
-		Vhosts:       adapter,
-		Proxy:        publicProxy,
-		Forwarders:   adapter,
-		Router:       router,
-		Ports:        domain.NewPortAllocator(),
-		PortProvider: agentPorts,
-		Config:       cfg,
-		Logs:         logStore,
-		PHP:          sites.NewPHPCommands(),
-		PHPBackend:   wslBackend,
-		PHPManifest:  &phpManifest,
-		SourceCopier: agentServices,
-	})
-
 	agentDocker, err := servicecontrol.NewAgentDocker(agentServices, agent.DefaultAgentRoot)
 	if err != nil {
 		return fmt.Errorf("daemon: init agent docker: %w", err)
 	}
+	agentDocker.SetDatabaseProvider(func(ctx context.Context) (servicecontrol.DatabasePlatformAPI, error) {
+		client, err := agentServices.ensureAwake(ctx)
+		if err != nil {
+			return nil, err
+		}
+		api, ok := any(client).(servicecontrol.DatabasePlatformAPI)
+		if !ok {
+			return nil, errors.New("daemon: WSL agent client does not implement the database API")
+		}
+		return api, nil
+	})
 
 	preparers := make(map[services.ID]servicecontrol.Preparer)
 	for _, id := range servicecontrol.AllowedAgentServiceIDs() {
@@ -222,6 +214,29 @@ func Run(ctx context.Context, opts Options) error {
 		serviceCatalog,
 		preparers,
 	)
+	databaseManager := newDatabaseManager(st, agentDocker, serviceManager, logger)
+
+	siteService := sites.NewService(sites.Deps{
+		Store:         st,
+		Backend:       wslBackend,
+		Helper:        adapter,
+		Certs:         certManager,
+		Vhosts:        adapter,
+		Proxy:         publicProxy,
+		Forwarders:    adapter,
+		Router:        router,
+		Ports:         domain.NewPortAllocator(),
+		PortProvider:  agentPorts,
+		Config:        cfg,
+		Logs:          logStore,
+		PHP:           sites.NewPHPCommands(),
+		PHPBackend:    wslBackend,
+		PHPManifest:   &phpManifest,
+		SourceCopier:  agentServices,
+		DatabaseLinks: databaseLinksResolver(databaseManager),
+		DatabaseGuard: databaseManager.GuardSite,
+		Database:      databaseManager,
+	})
 
 	agentConfig := &windowsAgentConfigAdapter{
 		home:    cfg.Home,
@@ -299,6 +314,7 @@ func Run(ctx context.Context, opts Options) error {
 		Vhosts:           siteService,
 		Services:         serviceManager,
 		ServiceConfig:    serviceConfigService,
+		Databases:        databaseManager,
 		Tooling:          toolingService,
 		Build:            buildService,
 		Terminal:         terminalService,

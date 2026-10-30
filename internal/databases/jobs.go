@@ -215,9 +215,16 @@ func (m *Manager) executeJob(ctx context.Context, record model.DatabaseJobRecord
 		}
 		return job, err
 	}
-	if job.Status == "" || job.Status == model.JobRunning || job.Status == model.JobQueued {
-		job.Status = model.JobSucceeded
+	if job.Status == model.JobRunning || job.Status == model.JobQueued {
+		// The platform started an asynchronous job. Keep the daemon job running;
+		// GetJob refreshes it from the platform.
+		job.UpdatedAt = m.now()
+		record = jobToRecord(job)
+		_ = m.deps.Store.UpdateDatabaseJob(context.Background(), record)
+		m.emit(context.Background(), "", "database.job.updated", fmt.Sprintf("database job %s running", job.ID))
+		return job, nil
 	}
+	job.Status = model.JobSucceeded
 	job.Progress = 100
 	job.UpdatedAt = m.now()
 	record = jobToRecord(job)

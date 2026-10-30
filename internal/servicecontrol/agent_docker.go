@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
@@ -29,8 +30,9 @@ type AgentDocker struct {
 }
 
 var (
-	_ Helper           = (*AgentDocker)(nil)
-	_ ServiceValidator = (*AgentDocker)(nil)
+	_ Helper             = (*AgentDocker)(nil)
+	_ ServiceValidator   = (*AgentDocker)(nil)
+	_ databases.Platform = (*AgentDocker)(nil)
 )
 
 // NewAgentDocker creates the Windows-to-WSL service adapter. When api also
