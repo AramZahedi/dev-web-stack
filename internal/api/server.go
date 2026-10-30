@@ -31,6 +31,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
@@ -103,6 +104,15 @@ const (
 	codeConfigResetUnavailable = "CONFIG_RESET_UNAVAILABLE"
 	codeConfigValidationFailed = "CONFIG_VALIDATION_FAILED"
 	codeConfigReloadFailed     = "CONFIG_RELOAD_FAILED"
+
+	codeDatabaseNotFound        = "DATABASE_NOT_FOUND"
+	codeDatabaseConflict        = "DATABASE_CONFLICT"
+	codeDatabaseProtected       = "DATABASE_PROTECTED"
+	codeDatabaseUnsupported     = "DATABASE_UNSUPPORTED"
+	codeDatabaseInUse           = "DATABASE_IN_USE"
+	codeDatabaseServiceInactive = "DATABASE_SERVICE_INACTIVE"
+	codeDatabasePasswordMissing = "DATABASE_PASSWORD_MISSING"
+	codeDatabaseJobNotFound     = "DATABASE_JOB_NOT_FOUND"
 )
 
 // SiteService is the site lifecycle surface used by the API.
@@ -180,6 +190,13 @@ type ServiceConfigService interface {
 	Diff(ctx context.Context, id services.ID, path, content string) (servicecontrol.ConfigDiff, error)
 	Apply(ctx context.Context, id services.ID, req servicecontrol.ConfigApplyRequest) (servicecontrol.ConfigApplyResult, error)
 	Reset(ctx context.Context, id services.ID, path string) (servicecontrol.ConfigApplyResult, error)
+}
+
+// DatabaseService is the service-wide database management surface used by the
+// API. It extends the shared databases.Service with the uninstall cleanup hook.
+type DatabaseService interface {
+	databases.Service
+	DeleteServiceLinks(ctx context.Context, serviceID string) error
 }
 
 // ToolService is the machine-wide PHP default and managed tool surface used by
@@ -304,6 +321,7 @@ type Config struct {
 	Vhosts           VhostService
 	Services         ServiceService
 	ServiceConfig    ServiceConfigService
+	Databases        DatabaseService
 	Tooling          ToolService
 	Build            BuildService
 	Terminal         TerminalService
@@ -323,6 +341,7 @@ type Server struct {
 	vhosts        VhostService
 	services      ServiceService
 	serviceConfig ServiceConfigService
+	databases     DatabaseService
 	tooling       ToolService
 	build         BuildService
 	terminal      TerminalService
@@ -371,6 +390,7 @@ func NewServer(
 		vhosts:            cfg.Vhosts,
 		services:          cfg.Services,
 		serviceConfig:     cfg.ServiceConfig,
+		databases:         cfg.Databases,
 		tooling:           cfg.Tooling,
 		build:             cfg.Build,
 		terminal:          cfg.Terminal,
@@ -500,6 +520,34 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/services/{id}/config/reset", s.handleServiceConfigReset},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/reveal", s.handleRevealServiceCredentials},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/rotate", s.handleRotateServiceCredentials},
+
+		{http.MethodGet, "/api/v1/services/{id}/databases", s.handleListServiceDatabases},
+		{http.MethodPost, "/api/v1/services/{id}/databases", s.handleCreateServiceDatabase},
+		{http.MethodGet, "/api/v1/services/{id}/databases/{name}", s.handleGetServiceDatabase},
+		{http.MethodPatch, "/api/v1/services/{id}/databases/{name}", s.handleRenameServiceDatabase},
+		{http.MethodDelete, "/api/v1/services/{id}/databases/{name}", s.handleDropServiceDatabase},
+		{http.MethodGet, "/api/v1/services/{id}/users", s.handleListServiceUsers},
+		{http.MethodPost, "/api/v1/services/{id}/users", s.handleCreateServiceUser},
+		{http.MethodGet, "/api/v1/services/{id}/users/{userID}", s.handleGetServiceUser},
+		{http.MethodPatch, "/api/v1/services/{id}/users/{userID}", s.handleUpdateServiceUser},
+		{http.MethodDelete, "/api/v1/services/{id}/users/{userID}", s.handleDeleteServiceUser},
+		{http.MethodPost, "/api/v1/services/{id}/users/{userID}/password", s.handleSetServiceUserPassword},
+		{http.MethodPost, "/api/v1/services/{id}/users/{userID}/reveal", s.handleRevealServiceUserPassword},
+		{http.MethodPost, "/api/v1/services/{id}/password", s.handleSetServiceDefaultPassword},
+		{http.MethodGet, "/api/v1/services/{id}/backups", s.handleListServiceBackups},
+		{http.MethodPost, "/api/v1/services/{id}/databases/{name}/backups", s.handleCreateServiceBackup},
+		{http.MethodDelete, "/api/v1/services/{id}/backups/{backupID}", s.handleDeleteServiceBackup},
+		{http.MethodGet, "/api/v1/services/{id}/backups/{backupID}/download", s.handleDownloadServiceBackup},
+		{http.MethodPost, "/api/v1/services/{id}/backups/{backupID}/restore", s.handleRestoreServiceBackup},
+		{http.MethodPost, "/api/v1/services/{id}/databases/{name}/import", s.handleImportServiceDatabase},
+		{http.MethodGet, "/api/v1/services/{id}/databases/{name}/export", s.handleExportServiceDatabase},
+		{http.MethodGet, "/api/v1/jobs/{jobID}", s.handleGetDatabaseJob},
+		{http.MethodDelete, "/api/v1/jobs/{jobID}", s.handleCancelDatabaseJob},
+
+		{http.MethodGet, "/api/v1/sites/{ref}/databases", s.handleListSiteDatabases},
+		{http.MethodPost, "/api/v1/sites/{ref}/databases", s.handleLinkSiteDatabase},
+		{http.MethodDelete, "/api/v1/sites/{ref}/databases/{linkID}", s.handleUnlinkSiteDatabase},
+		{http.MethodGet, "/api/v1/sites/{ref}/database-env", s.handleSiteDatabaseEnv},
 
 		{http.MethodGet, "/api/v1/performance", s.handlePerformanceStatus},
 		{http.MethodPut, "/api/v1/performance/profile", s.handlePerformanceProfile},
@@ -1006,6 +1054,26 @@ func (s *Server) writeServiceError(w http.ResponseWriter, r *http.Request, err e
 func classifyError(err error) (int, string, string, any) {
 	if err == nil {
 		return http.StatusInternalServerError, codeInternal, "internal error", nil
+	}
+	switch {
+	case errors.Is(err, databases.ErrJobNotFound):
+		return http.StatusNotFound, codeDatabaseJobNotFound, err.Error(), nil
+	case errors.Is(err, databases.ErrNotFound):
+		return http.StatusNotFound, codeDatabaseNotFound, err.Error(), nil
+	case errors.Is(err, databases.ErrProtected):
+		return http.StatusConflict, codeDatabaseProtected, err.Error(), nil
+	case errors.Is(err, databases.ErrUnsupported):
+		return http.StatusBadRequest, codeDatabaseUnsupported, err.Error(), nil
+	case errors.Is(err, databases.ErrServiceInactive):
+		return http.StatusConflict, codeDatabaseServiceInactive, err.Error(), nil
+	case errors.Is(err, databases.ErrLinkedSites):
+		return http.StatusConflict, codeDatabaseInUse, err.Error(), nil
+	case errors.Is(err, databases.ErrPasswordMissing):
+		return http.StatusConflict, codeDatabasePasswordMissing, err.Error(), nil
+	case errors.Is(err, databases.ErrConflict):
+		return http.StatusConflict, codeDatabaseConflict, err.Error(), nil
+	case errors.Is(err, databases.ErrInvalidRequest):
+		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
 	}
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, services.ErrNotFound) {
 		return http.StatusNotFound, codeNotFound, err.Error(), nil

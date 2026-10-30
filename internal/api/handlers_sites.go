@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 )
@@ -39,30 +40,31 @@ func (s *Server) siteResponse(r *http.Request, site model.Site) model.Site {
 // from name by the site service; host_path is accepted as an alias for path so
 // the shape in the M1 design appendix also works.
 type createSiteRequest struct {
-	Name                string              `json:"name"`
-	Path                string              `json:"path"`
-	HostPath            string              `json:"host_path"`
-	Kind                string              `json:"kind"`
-	SourceMode          string              `json:"source_mode"`
-	NodeVersion         string              `json:"node_version"`
-	Command             string              `json:"command"`
-	DocumentRoot        string              `json:"document_root"`
-	WWW                 bool                `json:"www"`
-	TLS                 bool                `json:"tls"`
-	ForceHTTPS          bool                `json:"force_https"`
-	SPAFallback         bool                `json:"spa_fallback"`
-	SPAFallbackFile     string              `json:"spa_fallback_file"`
-	Env                 map[string]string   `json:"env"`
-	PHPVersion          string              `json:"php_version"`
-	PHPBuild            string              `json:"php_build"`
-	PHPExtensions       map[string]bool     `json:"php_extensions"`
-	PHPIni              map[string]string   `json:"php_ini"`
-	PHPIniRaw           string              `json:"php_ini_raw"`
-	FrontController     bool                `json:"front_controller"`
-	FrontControllerFile string              `json:"front_controller_file"`
-	FrontControllerMode string              `json:"front_controller_mode"`
-	ApacheAllowOverride string              `json:"apache_allow_override"`
-	Build               *model.BuildProfile `json:"build"`
+	Name                string                         `json:"name"`
+	Path                string                         `json:"path"`
+	HostPath            string                         `json:"host_path"`
+	Kind                string                         `json:"kind"`
+	SourceMode          string                         `json:"source_mode"`
+	NodeVersion         string                         `json:"node_version"`
+	Command             string                         `json:"command"`
+	DocumentRoot        string                         `json:"document_root"`
+	WWW                 bool                           `json:"www"`
+	TLS                 bool                           `json:"tls"`
+	ForceHTTPS          bool                           `json:"force_https"`
+	SPAFallback         bool                           `json:"spa_fallback"`
+	SPAFallbackFile     string                         `json:"spa_fallback_file"`
+	Env                 map[string]string              `json:"env"`
+	PHPVersion          string                         `json:"php_version"`
+	PHPBuild            string                         `json:"php_build"`
+	PHPExtensions       map[string]bool                `json:"php_extensions"`
+	PHPIni              map[string]string              `json:"php_ini"`
+	PHPIniRaw           string                         `json:"php_ini_raw"`
+	FrontController     bool                           `json:"front_controller"`
+	FrontControllerFile string                         `json:"front_controller_file"`
+	FrontControllerMode string                         `json:"front_controller_mode"`
+	ApacheAllowOverride string                         `json:"apache_allow_override"`
+	Build               *model.BuildProfile            `json:"build"`
+	Database            *databases.SiteDatabaseRequest `json:"database,omitempty"`
 }
 
 type changeSiteSourceRequest struct {
@@ -181,6 +183,7 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 		ApacheAllowOverride: req.ApacheAllowOverride,
 		SPAFallbackFile:     req.SPAFallbackFile,
 		Build:               req.Build,
+		Database:            req.Database,
 	})
 	if err != nil {
 		s.writeServiceError(w, r, err)

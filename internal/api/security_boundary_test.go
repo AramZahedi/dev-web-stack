@@ -151,7 +151,11 @@ func TestEveryAPIRouteRequiresTheInstallToken(t *testing.T) {
 	const token = "install-token-route-coverage-0123456789abcdef"
 	fx := newFixture(t, Config{UserHome: t.TempDir(), AuthToken: token})
 	handler := fx.server.Handler()
-	replace := strings.NewReplacer("{ref}", "probe", "{id}", "probe", "{version}", "8.4")
+	replace := strings.NewReplacer(
+		"{ref}", "probe", "{id}", "probe", "{version}", "8.4",
+		"{name}", "probe", "{userID}", "probe", "{backupID}", "probe",
+		"{jobID}", "probe", "{linkID}", "probe",
+	)
 
 	for _, route := range fx.server.apiRoutes() {
 		path := replace.Replace(route.pattern)
