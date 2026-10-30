@@ -1,4 +1,5 @@
 import { ApiError } from './errors';
+import { mockDatabaseApi } from './databaseMock';
 import type {
   BuildLogs,
   BuildResult,
@@ -1639,6 +1640,9 @@ export const mockApi = {
           }
         : undefined,
     };
+    if (request.database) {
+      await mockDatabaseApi.createSiteDatabase(id, request.database);
+    }
     sites.push(site);
     emitEvent(
       'site.created',

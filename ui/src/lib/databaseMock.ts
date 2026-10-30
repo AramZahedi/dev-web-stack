@@ -351,6 +351,28 @@ export const mockDatabaseApi = {
     await wait();
     const database = findDatabase(body.service_id, body.database);
     const user = findUser(body.service_id, body.user_id);
+    if (
+      links.some(
+        (candidate) =>
+          candidate.site_id === siteID &&
+          candidate.service_id === body.service_id &&
+          candidate.database === database.name,
+      )
+    ) {
+      throw new ApiError(
+        'DATABASE_LINK_EXISTS',
+        'This database is already linked to the site.',
+        409,
+      );
+    }
+    const primary = body.primary ?? true;
+    if (primary && links.some((candidate) => candidate.site_id === siteID && candidate.primary)) {
+      throw new ApiError(
+        'DATABASE_PRIMARY_EXISTS',
+        'The site already has a primary database link.',
+        409,
+      );
+    }
     const link: DatabaseLink = {
       id: `lnk_${links.length + 1}`,
       site_id: siteID,
@@ -360,7 +382,7 @@ export const mockDatabaseApi = {
       user_id: user.id,
       username: user.username,
       host: user.host,
-      primary: body.primary ?? true,
+      primary,
       password_managed: user.password_managed,
       available: true,
       connection: connectionFor({ engine: database.engine, database: database.name, username: user.username, password_managed: user.password_managed }),
