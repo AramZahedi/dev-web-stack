@@ -2,7 +2,6 @@
   import { Copy, Database, Link2, RotateCw, Trash2 } from 'lucide-svelte';
   import { copyText } from '../../clipboard';
   import { describeError } from '../../errors';
-  import { isSecretKey } from '../../format';
   import { addToast, toastError } from '../../stores';
   import type { Site } from '../../types';
   import type { SiteDatabaseLink } from '../../databaseTypes';
@@ -19,7 +18,11 @@
   import EmptyState from '../EmptyState.svelte';
   import SecretField from '../SecretField.svelte';
   import LinkDatabaseDialog from './LinkDatabaseDialog.svelte';
-  import { sanitizeDatabaseUrl } from './databasePickerTypes';
+  import {
+    isDatabaseUrlEnvKey,
+    isSecretEnvKey,
+    sanitizeDatabaseUrl,
+  } from './databasePickerTypes';
 
   interface Props {
     site: Site;
@@ -90,8 +93,8 @@
 
   function envSnippet(link: SiteDatabaseLink): string {
     return Object.entries(link.connection.env ?? {})
-      .filter(([key]) => !isSecretKey(key))
-      .map(([key, value]) => `${key}=${key === 'DATABASE_URL' ? sanitizeDatabaseUrl(value) : value}`)
+      .filter(([key]) => !isSecretEnvKey(key))
+      .map(([key, value]) => `${key}=${isDatabaseUrlEnvKey(key) ? sanitizeDatabaseUrl(value) : value}`)
       .join('\n');
   }
 
@@ -247,7 +250,7 @@
                 size="sm"
                 variant="ghost"
                 ariaLabel={`Copy .env snippet for ${link.database}`}
-                onclick={() => copy('.env snippet', envSnippet(link))}
+                onclick={() => copy('.env snippet', envSnippet(link), true)}
               >
                 <Copy size={12} strokeWidth={2} aria-hidden="true" />
                 .env

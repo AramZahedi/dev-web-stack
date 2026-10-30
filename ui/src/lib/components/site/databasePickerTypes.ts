@@ -32,11 +32,28 @@ export function grantLabel(preset: GrantPreset | ''): string {
 export function sanitizeDatabaseUrl(value: string): string {
   const scheme = value.indexOf('://');
   if (scheme < 0) return value;
+  const prefix = value.slice(0, scheme + 3);
   const rest = value.slice(scheme + 3);
-  const at = rest.indexOf('@');
+  // The authority may contain an unescaped @ inside the password. Use the last
+  // @ so user:p@ss@host is treated as user + password p@ss + host.
+  const at = rest.lastIndexOf('@');
   if (at < 0) return value;
   const authority = rest.slice(0, at);
+  const hostAndPath = rest.slice(at);
   const colon = authority.indexOf(':');
   if (colon < 0) return value;
-  return `${value.slice(0, scheme + 3)}${authority.slice(0, colon)}${rest.slice(at)}`;
+  return `${prefix}${authority.slice(0, colon)}${hostAndPath}`;
+}
+
+/** True when an environment key is likely to carry a secret value. */
+export function isSecretEnvKey(key: string): boolean {
+  return (
+    /(key|token|secret|password|passwd|credential|auth)/i.test(key) ||
+    /(^|_)(pwd|pass)(_|$)/i.test(key)
+  );
+}
+
+/** True when an environment key carries a URL that may embed credentials. */
+export function isDatabaseUrlEnvKey(key: string): boolean {
+  return key === 'URL' || key.endsWith('_URL');
 }

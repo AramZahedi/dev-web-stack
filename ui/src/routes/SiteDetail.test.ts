@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 import SiteDetail from './SiteDetail.svelte';
 import * as api from '../lib/api';
 import * as db from '../lib/databaseApi';
 import { ApiError } from '../lib/errors';
+import { toasts } from '../lib/stores';
 import type { Database, DatabaseLink, DatabaseUser } from '../lib/databaseTypes';
 import type {
   NodeReleasePreflight,
@@ -281,6 +283,45 @@ const METADATA_ONLY_LINK: DatabaseLink = {
   },
 };
 
+const PASSWORD_ENV_LINK: DatabaseLink = {
+  ...SITE_DB_LINK,
+  connection: {
+    ...SITE_DB_LINK.connection,
+    env: {
+      DB_CONNECTION: 'mysql',
+      DB_HOST: '127.0.0.1',
+      DB_PORT: '3306',
+      DB_DATABASE: 'app',
+      DB_USERNAME: 'blog_user',
+      DB_APP_DATABASE_URL: 'mysql://blog_user:p@ss@127.0.0.1:3306/app',
+      DB_APP_PWD: 's3cret',
+      DB_APP_PASSWORD: 's3cret',
+    },
+  },
+};
+
+const BLOG_DATABASE: Database = {
+  name: 'blog',
+  service_id: 'mysql',
+  engine: 'mysql',
+  size_bytes: 2048,
+  table_count: 2,
+  linked_sites: [],
+  managed: true,
+};
+
+const MISSING_DATABASE: Database = {
+  ...BLOG_DATABASE,
+  name: 'missing_db',
+  missing: true,
+};
+
+const DEVSTACK_DATABASE: Database = {
+  ...BLOG_DATABASE,
+  name: 'devstack',
+  managed: false,
+};
+
 const mockApi = vi.mocked(api);
 const mockDb = vi.mocked(db);
 
@@ -331,6 +372,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 async function renderSite(name = 'blog'): Promise<void> {
@@ -794,5 +836,31 @@ describe('SiteDetail configuration and builds', () => {
         primary: true,
       }),
     );
+  });
+
+  it('sanitizes copied .env snippets and never echoes them', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [PASSWORD_ENV_LINK] });
+    await renderSite('blog');
+
+    expect(screen.queryByText(/p@ss/)).toBeNull();
+    expect(screen.queryByText(/s3cret/)).toBeNull();
+
+    await fireEvent.click(
+      await screen.findByRole('button', { name: /copy \.env snippet for app/i }),
+    );
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied).toContain('DB_APP_DATABASE_URL=mysql://blog_user@127.0.0.1:3306/app');
+    expect(copied).not.toContain('p@ss');
+    expect(copied).not.toContain('s3cret');
+    expect(copied).not.toContain('DB_APP_PWD');
+    expect(copied).not.toContain('DB_APP_PASSWORD');
+
+    const toast = get(toasts).find((entry) => entry.title.includes('.env'));
+    expect(toast?.message).not.toContain('DB_APP_DATABASE_URL');
+    expect(toast?.message).not.toContain('p@ss');
+    expect(toast?.message).not.toContain('s3cret');
   });
 });
