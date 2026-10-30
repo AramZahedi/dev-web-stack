@@ -378,6 +378,54 @@ func TestDBDropYesCallsAPIWithConfirmation(t *testing.T) {
 	}
 }
 
+func TestDBUserDeleteRequiresYes(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "db", "user", "delete", "--service", "mysql", "--user-id", "usr_app")
+	if code == 0 || !strings.Contains(stderr, "CONFIRMATION_REQUIRED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.databaseUserDeleted || fake.lastHome != "" {
+		t.Fatal("user delete called the daemon without confirmation")
+	}
+}
+
+func TestDBBackupDeleteRequiresYes(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "db", "backup", "delete", "--service", "mysql", "--backup-id", "bkp_1")
+	if code == 0 || !strings.Contains(stderr, "CONFIRMATION_REQUIRED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.databaseBackupDelete || fake.lastHome != "" {
+		t.Fatal("backup delete called the daemon without confirmation")
+	}
+}
+
+func TestDBPasswordRequiresYes(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "db", "password", "--service", "redis")
+	if code == 0 || !strings.Contains(stderr, "CONFIRMATION_REQUIRED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.servicePasswordSet || fake.lastHome != "" {
+		t.Fatal("db password called the daemon without confirmation")
+	}
+}
+
+func TestDBUserPasswordRequiresYes(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "db", "user", "password", "--service", "mysql", "--user-id", "usr_app")
+	if code == 0 || !strings.Contains(stderr, "CONFIRMATION_REQUIRED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.databaseUserRotated || fake.lastHome != "" {
+		t.Fatal("user password rotation called the daemon without confirmation")
+	}
+}
+
 func TestDBUserDeleteConfirmsWithUsername(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{databaseUser: model.DatabaseUser{ID: "usr_app", Username: "app"}}
