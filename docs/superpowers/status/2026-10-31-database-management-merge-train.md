@@ -20,7 +20,7 @@
 | Merge Lane D | done | `f0c5e0f` | svelte-check 0/0; 79 focused tests; 329 full tests; build PASS |
 | Merge Lane E | done | `d6af29a` | CLI/client/tooling PASS; full Go suite PASS; vet + build PASS |
 | Redis ACL confirmation path | done | `c948272` | manager/servicecontrol/API tests PASS; UI 330 tests PASS; build + vet PASS |
-| Merged registry verification | pending | — | — |
+| Merged registry verification | done | — | dbengine/helper/helperclient/agentdocker/agentclient + databases/servicecontrol + API + sites PASS |
 | Full merged-tree gate | pending | — | — |
 | Full E2E plan | pending | — | — |
 
@@ -88,3 +88,12 @@
 - Tests: manager confirmation test, helper/agent adapter tests, API route test, RedisTab confirm-dialog test. RED→GREEN for each new behavior.
 - Commit `c948272`.
 - Gate: `go test ./internal/databases ./internal/servicecontrol ./internal/api -count=1` PASS; `go build ./...` PASS; `go vet ./...` PASS; `npm run check` 0/0; `npm test -- --run` 30 files/330 tests PASS; `npm run build` PASS.
+
+### Step 9 — Merged registry and cross-lane contract verification
+
+- `internal/dbengine` `TestRegistryResolvesEngines` covers MySQL, MariaDB, PostgreSQL, and Redis through `DefaultRegistry`; helper, helperclient, and agent adapters all resolve the same engines.
+- Helper and agent database adapters: `go test ./internal/dbengine ./internal/helper ./internal/helperclient ./internal/agentdocker ./internal/agentclient -count=1` PASS.
+- Manager/platform adapters: `go test ./internal/databases ./internal/servicecontrol -run 'TestAgentDocker|TestHelperDocker|TestManager' -count=1` PASS.
+- API routes, OpenAPI, and install-token boundary: `go test ./internal/api -run 'TestDatabase|TestOpenAPI|TestEveryAPIRouteRequiresTheInstallToken' -count=1` PASS.
+- Site lifecycle and database links: `go test ./internal/sites -run 'TestCreate|TestDelete|TestStart|TestDatabase' -count=1` PASS.
+- No code change was needed; the merged registry and adapters agree.
