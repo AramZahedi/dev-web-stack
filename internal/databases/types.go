@@ -9,9 +9,10 @@ type CreateDatabaseRequest struct {
 	Collation string `json:"collation,omitempty"`
 }
 
-// RenameDatabaseRequest renames a PostgreSQL database.
+// RenameDatabaseRequest renames a PostgreSQL database after typed confirmation.
 type RenameDatabaseRequest struct {
-	Name string `json:"name"`
+	Name    string `json:"name"`
+	Confirm string `json:"confirm"`
 }
 
 // DropDatabaseRequest drops a database after explicit confirmation.

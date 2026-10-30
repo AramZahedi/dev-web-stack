@@ -2898,9 +2898,10 @@ components:
         collation: {type: string}
     RenameDatabaseRequest:
       type: object
-      required: [name]
+      required: [name, confirm]
       properties:
         name: {type: string}
+        confirm: {type: string}
     DropDatabaseRequest:
       type: object
       required: [confirm]

@@ -196,6 +196,7 @@ type ServiceConfigService interface {
 // API. It extends the shared databases.Service with the uninstall cleanup hook.
 type DatabaseService interface {
 	databases.Service
+	SetDefaultUserPassword(ctx context.Context, serviceID string) (databases.Secret, error)
 	DeleteServiceLinks(ctx context.Context, serviceID string) error
 }
 

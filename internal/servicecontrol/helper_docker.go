@@ -449,9 +449,14 @@ func (p *databasePlatform) ResolveSiteEnv(ctx context.Context, serviceID string,
 	if err != nil {
 		return nil, err
 	}
+	normalized := make([]model.DatabaseLink, len(links))
+	copy(normalized, links)
+	for i := range normalized {
+		normalized[i].ServiceID = databasePlatformServiceID(normalized[i].ServiceID)
+	}
 	env, err := api.ResolveSiteEnv(ctx, databasePlatformServiceID(serviceID), dbproto.SiteEnvRequest{
 		ServiceID: databasePlatformServiceID(serviceID),
-		Links:     links,
+		Links:     normalized,
 	})
 	if err != nil {
 		return nil, mapDatabasePlatformError(err)

@@ -273,7 +273,13 @@ func (m *Manager) RenameDatabase(ctx context.Context, serviceID, name string, re
 	if protectedDatabase(name) || protectedDatabase(newName) {
 		return model.Database{}, fmt.Errorf("%w: database is protected", ErrProtected)
 	}
+	if strings.TrimSpace(req.Confirm) != name {
+		return model.Database{}, fmt.Errorf("%w: type %q to confirm the rename", ErrConflict, name)
+	}
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
+		return model.Database{}, err
+	}
+	if err := m.ensureLinkedSitesStopped(ctx, serviceID, name); err != nil {
 		return model.Database{}, err
 	}
 	unlock := m.lockService(serviceID)
@@ -698,6 +704,22 @@ func (m *Manager) SetUserPassword(ctx context.Context, serviceID, userID string)
 		m.emit(ctx, "", "database.user.password_changed", fmt.Sprintf("database user %s password changed on %s", userID, serviceID))
 	}
 	return secret, nil
+}
+
+// SetDefaultUserPassword resolves the Redis default ACL user by username and
+// rotates its password through the opaque user ID.
+func (m *Manager) SetDefaultUserPassword(ctx context.Context, serviceID string) (Secret, error) {
+	serviceID = canonicalServiceID(serviceID)
+	users, err := m.ListUsers(ctx, serviceID)
+	if err != nil {
+		return Secret{}, err
+	}
+	for _, user := range users {
+		if strings.EqualFold(user.Username, "default") {
+			return m.SetUserPassword(ctx, serviceID, user.ID)
+		}
+	}
+	return Secret{}, fmt.Errorf("%w: default user", ErrNotFound)
 }
 
 // RevealUserPassword returns a stored secret once and audits the reveal. The

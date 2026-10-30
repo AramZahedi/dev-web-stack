@@ -346,18 +346,19 @@ func (f *fakeStore) CountAuditEvents(context.Context) (int64, error) {
 }
 
 type fakePlatform struct {
-	databases    []model.Database
-	users        []model.DatabaseUser
-	backups      []model.DatabaseBackup
-	job          model.DatabaseJob
-	env          map[string]string
-	createErr    error
-	restoreErr   error
-	importErr    error
-	grants       []model.DatabaseGrant
-	grantCalls   []model.DatabaseGrant
-	dropCalls    []string
-	restoreCalls []string
+	databases        []model.Database
+	users            []model.DatabaseUser
+	backups          []model.DatabaseBackup
+	job              model.DatabaseJob
+	env              map[string]string
+	createErr        error
+	restoreErr       error
+	importErr        error
+	grants           []model.DatabaseGrant
+	grantCalls       []model.DatabaseGrant
+	dropCalls        []string
+	restoreCalls     []string
+	lastPasswordUser string
 }
 
 func (f *fakePlatform) ListDatabases(context.Context, string) ([]model.Database, error) {
@@ -417,7 +418,8 @@ func (f *fakePlatform) DeleteUser(context.Context, string, string, DeleteUserReq
 	return nil
 }
 
-func (f *fakePlatform) SetUserPassword(context.Context, string, string) (Secret, error) {
+func (f *fakePlatform) SetUserPassword(_ context.Context, _ string, userID string) (Secret, error) {
+	f.lastPasswordUser = userID
 	return Secret{Value: "generated-secret"}, nil
 }
 
@@ -619,12 +621,44 @@ func TestManagerRenamePostgresUpdatesLinks(t *testing.T) {
 	svc := m.deps.Services.(*fakeServices)
 	svc.views[services.IDPostgreSQL] = services.View{ID: services.IDPostgreSQL, State: services.StateActive, Active: true, Installed: true}
 	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", ServiceID: "postgresql", DatabaseName: "old", UserID: "usr_app"}}
-	db, err := m.RenameDatabase(context.Background(), "postgresql", "old", RenameDatabaseRequest{Name: "new"})
+	db, err := m.RenameDatabase(context.Background(), "postgresql", "old", RenameDatabaseRequest{Name: "new", Confirm: "old"})
 	if err != nil || db.Name != "new" {
 		t.Fatalf("db=%+v err=%v", db, err)
 	}
 	if st.links[0].DatabaseName != "new" {
 		t.Fatalf("link not updated: %+v", st.links[0])
+	}
+}
+
+func TestManagerRenameRequiresConfirmAndStoppedSites(t *testing.T) {
+	m, st, _, _, _ := testManagerWithFakes(t)
+	svc := m.deps.Services.(*fakeServices)
+	svc.views[services.IDPostgreSQL] = services.View{ID: services.IDPostgreSQL, State: services.StateActive, Active: true, Installed: true}
+	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", SiteName: "blog", ServiceID: "postgresql", DatabaseName: "old", UserID: "usr_app"}}
+	if _, err := m.RenameDatabase(context.Background(), "postgresql", "old", RenameDatabaseRequest{Name: "new", Confirm: "wrong"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("wrong confirm = %v", err)
+	}
+	st.sites[0].Status = model.StatusRunning
+	if _, err := m.RenameDatabase(context.Background(), "postgresql", "old", RenameDatabaseRequest{Name: "new", Confirm: "old"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("running linked site = %v", err)
+	}
+	st.sites[0].Status = model.StatusStopped
+	if _, err := m.RenameDatabase(context.Background(), "postgresql", "old", RenameDatabaseRequest{Name: "new", Confirm: "old"}); err != nil {
+		t.Fatalf("rename with stopped site: %v", err)
+	}
+}
+
+func TestManagerSetDefaultUserPasswordResolvesOpaqueID(t *testing.T) {
+	m, _, platform, _, _ := testManagerWithFakes(t)
+	svc := m.deps.Services.(*fakeServices)
+	svc.views[services.IDRedis] = services.View{ID: services.IDRedis, State: services.StateActive, Active: true, Installed: true}
+	platform.users = []model.DatabaseUser{{ID: "usr_default", ServiceID: "redis", Engine: model.DatabaseRedis, Username: "default", Enabled: true}}
+	secret, err := m.SetDefaultUserPassword(context.Background(), "redis")
+	if err != nil || secret.Value == "" {
+		t.Fatalf("secret=%+v err=%v", secret, err)
+	}
+	if platform.lastPasswordUser != "usr_default" {
+		t.Fatalf("password user = %q, want opaque default user id", platform.lastPasswordUser)
 	}
 }
 

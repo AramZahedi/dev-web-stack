@@ -214,7 +214,7 @@ func (s *Server) handleSetServiceDefaultPassword(w http.ResponseWriter, r *http.
 	if s.databaseUnavailable(w) {
 		return
 	}
-	secret, err := s.databases.SetUserPassword(r.Context(), r.PathValue("id"), "default")
+	secret, err := s.databases.SetDefaultUserPassword(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeServiceError(w, r, err)
 		return

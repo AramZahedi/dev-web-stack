@@ -26,6 +26,7 @@ type fakeDatabaseService struct {
 	err           error
 
 	lastCreate   databases.CreateDatabaseRequest
+	lastRename   databases.RenameDatabaseRequest
 	lastLink     databases.LinkDatabaseRequest
 	lastSiteReq  databases.SiteDatabaseRequest
 	importedFile string
@@ -44,6 +45,7 @@ func (f *fakeDatabaseService) CreateDatabase(_ context.Context, serviceID string
 	return model.Database{Name: req.Name, ServiceID: serviceID, Engine: model.DatabaseMySQL}, nil
 }
 func (f *fakeDatabaseService) RenameDatabase(_ context.Context, serviceID, name string, req databases.RenameDatabaseRequest) (model.Database, error) {
+	f.lastRename = req
 	return model.Database{Name: req.Name, ServiceID: serviceID}, f.err
 }
 func (f *fakeDatabaseService) DropDatabase(context.Context, string, string, databases.DropDatabaseRequest) error {
@@ -62,6 +64,9 @@ func (f *fakeDatabaseService) DeleteUser(context.Context, string, string, databa
 	return f.err
 }
 func (f *fakeDatabaseService) SetUserPassword(context.Context, string, string) (databases.Secret, error) {
+	return databases.Secret{Value: f.secret}, f.err
+}
+func (f *fakeDatabaseService) SetDefaultUserPassword(context.Context, string) (databases.Secret, error) {
 	return databases.Secret{Value: f.secret}, f.err
 }
 func (f *fakeDatabaseService) RevealUserPassword(context.Context, string, string) (databases.Secret, error) {
@@ -302,6 +307,30 @@ func TestCreateSiteCarriesDatabaseRequest(t *testing.T) {
 	}
 	if len(fake.created) != 1 || fake.created[0].Database == nil || fake.created[0].Database.Database != "app" {
 		t.Fatalf("created = %+v", fake.created)
+	}
+}
+
+func TestRenameDatabasePassesConfirm(t *testing.T) {
+	fake := &fakeDatabaseService{}
+	fx := newFixture(t, Config{Databases: fake})
+	rec := fx.request(t, http.MethodPatch, "/api/v1/services/postgresql/databases/old", strings.NewReader(`{"name":"new","confirm":"old"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.lastRename.Confirm != "old" || fake.lastRename.Name != "new" {
+		t.Fatalf("rename request = %+v", fake.lastRename)
+	}
+}
+
+func TestRedisDefaultPasswordRoute(t *testing.T) {
+	fake := &fakeDatabaseService{secret: "redis-secret"}
+	fx := newFixture(t, Config{Databases: fake})
+	rec := fx.request(t, http.MethodPost, "/api/v1/services/redis/password", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "redis-secret") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache=%q", rec.Header().Get("Cache-Control"))
 	}
 }
 

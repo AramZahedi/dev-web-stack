@@ -210,6 +210,24 @@ func TestHelperDockerMapsDatabaseList(t *testing.T) {
 	}
 }
 
+func TestResolveSiteEnvCanonicalizesPostgresLinks(t *testing.T) {
+	api := &fakeDatabaseAPI{env: map[string]string{"DB_CONNECTION": "pgsql"}}
+	h := NewHelperDockerAPI(api)
+	_, err := h.ResolveSiteEnv(context.Background(), "postgresql", []model.DatabaseLink{{
+		ServiceID: "postgresql", Database: "app", UserID: "usr_app", Username: "app",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, ok := api.lastReq.(dbproto.SiteEnvRequest)
+	if !ok || len(req.Links) != 1 {
+		t.Fatalf("request = %#v", api.lastReq)
+	}
+	if req.ServiceID != "postgres" || req.Links[0].ServiceID != "postgres" {
+		t.Fatalf("service ids = request %q link %q", req.ServiceID, req.Links[0].ServiceID)
+	}
+}
+
 func TestHelperDockerRequiresProvider(t *testing.T) {
 	h := NewHelperDockerAPI(nil)
 	if _, err := h.ListDatabases(context.Background(), "mysql"); !errors.Is(err, databases.ErrUnsupported) {

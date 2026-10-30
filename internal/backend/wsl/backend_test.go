@@ -221,13 +221,22 @@ func TestDatabaseLinksPayloadMatchesAgentWireShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, key := range []string{`"service_id"`, `"user_id"`, `"password_managed"`} {
+		if !strings.Contains(string(raw), key) {
+			t.Fatalf("payload missing %s: %s", key, raw)
+		}
+	}
 	var decoded struct {
-		DatabaseLinks []backend.DatabaseLinkSpec `json:"database_links"`
+		DatabaseLinks []struct {
+			ServiceID       string `json:"service_id"`
+			UserID          string `json:"user_id"`
+			PasswordManaged bool   `json:"password_managed"`
+		} `json:"database_links"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.DatabaseLinks) != 1 || decoded.DatabaseLinks[0].UserID != "usr_app" || !decoded.DatabaseLinks[0].Primary {
+	if len(decoded.DatabaseLinks) != 1 || decoded.DatabaseLinks[0].UserID != "usr_app" || !decoded.DatabaseLinks[0].PasswordManaged {
 		t.Fatalf("decoded = %+v", decoded.DatabaseLinks)
 	}
 }

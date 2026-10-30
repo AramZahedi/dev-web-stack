@@ -14,15 +14,15 @@ import (
 // DatabaseLinkSpec is the password-free metadata the Windows agent needs to
 // resolve a linked database's secret at prepare/terminal time.
 type DatabaseLinkSpec struct {
-	ServiceID       string
-	Engine          string
-	Database        string
-	UserID          string
-	Username        string
-	Host            string
-	Port            int
-	Primary         bool
-	PasswordManaged bool
+	ServiceID       string `json:"service_id"`
+	Engine          string `json:"engine"`
+	Database        string `json:"database"`
+	UserID          string `json:"user_id"`
+	Username        string `json:"username"`
+	Host            string `json:"host"`
+	Port            int    `json:"port"`
+	Primary         bool   `json:"primary"`
+	PasswordManaged bool   `json:"password_managed"`
 }
 
 // SiteSpec describes one site as the backend needs to see it. Paths are
