@@ -229,6 +229,110 @@ func TestWebServiceApplySkipsValidationWhenInactive(t *testing.T) {
 	}
 }
 
+func writeWebServiceBackup(t *testing.T, root, content string) {
+	t.Helper()
+	backupDir := filepath.Join(root, "backups", "services", "nginx", "config", "20261030T120000.000000000Z", "conf.d", "custom")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "e2e.conf"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWebServiceResetReloadsRestoredConfigWhenActive(t *testing.T) {
+	root := t.TempDir()
+	runner := &serviceApplyRunner{state: "running"}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "services", "nginx", "config", "conf.d", "custom")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(configDir, "e2e.conf")
+	if err := os.WriteFile(file, []byte("current configuration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeWebServiceBackup(t, root, "backup configuration\n")
+
+	if _, err := module.ServiceReset(context.Background(), agentproto.ServiceConfigRequest{
+		ID: "nginx", Rel: "conf.d/custom/e2e.conf",
+	}); err != nil {
+		t.Fatalf("ServiceReset() = %v", err)
+	}
+	if !runner.called("exec -T nginx nginx -t") {
+		t.Fatalf("ServiceReset() did not validate the restored active config: %v", runner.calls)
+	}
+	if !runner.called("exec -T nginx nginx -s reload") {
+		t.Fatalf("ServiceReset() did not reload nginx after a reset: %v", runner.calls)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || string(data) != "backup configuration\n" {
+		t.Fatalf("config after reset = %q, err %v", data, err)
+	}
+}
+
+func TestWebServiceResetKeepsCurrentConfigWhenValidationFails(t *testing.T) {
+	root := t.TempDir()
+	runner := &serviceApplyRunner{state: "running", validateErr: errors.New("nginx: configuration test failed")}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "services", "nginx", "config", "conf.d", "custom")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(configDir, "e2e.conf")
+	if err := os.WriteFile(file, []byte("current configuration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeWebServiceBackup(t, root, "backup configuration\n")
+
+	if _, err := module.ServiceReset(context.Background(), agentproto.ServiceConfigRequest{
+		ID: "nginx", Rel: "conf.d/custom/e2e.conf",
+	}); err == nil {
+		t.Fatal("ServiceReset() accepted a backup that failed nginx -t")
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || string(data) != "current configuration\n" {
+		t.Fatalf("config after failed reset = %q, err %v", data, err)
+	}
+}
+
+func TestWebServiceResetSkipsValidationWhenInactive(t *testing.T) {
+	root := t.TempDir()
+	runner := &serviceApplyRunner{state: "exited"}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "services", "nginx", "config", "conf.d", "custom")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(configDir, "e2e.conf")
+	if err := os.WriteFile(file, []byte("current configuration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeWebServiceBackup(t, root, "backup configuration\n")
+
+	if _, err := module.ServiceReset(context.Background(), agentproto.ServiceConfigRequest{
+		ID: "nginx", Rel: "conf.d/custom/e2e.conf",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.called("nginx -t") || runner.called("nginx -s reload") {
+		t.Fatalf("inactive reset validated or reloaded: %v", runner.calls)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil || string(data) != "backup configuration\n" {
+		t.Fatalf("config after inactive reset = %q, err %v", data, err)
+	}
+}
+
 func TestServiceConfigRejectsTraversalAndSensitivePaths(t *testing.T) {
 	module, err := agentdocker.New(agentdocker.Config{Root: t.TempDir(), Runner: &fakeRunner{}})
 	if err != nil {

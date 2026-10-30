@@ -243,6 +243,17 @@ func (d *Docker) ServiceReset(ctx context.Context, request agentproto.ServiceCon
 	if err := writeAtomic(full, content, 0o644); err != nil {
 		return agentproto.ServiceContentResponse{}, err
 	}
+	stage, applyErr := d.applyLiveWebConfig(ctx, service)
+	if applyErr != nil {
+		rollbackErr := d.restoreServiceConfig(full, current, true)
+		if stage == "reload" {
+			_ = d.reloadActiveWebConfig(ctx, service)
+		}
+		if rollbackErr != nil {
+			return agentproto.ServiceContentResponse{}, fmt.Errorf("agentdocker: %s %s reset config %s: %w (rollback failed: %v)", stage, service.ID, rel, applyErr, rollbackErr)
+		}
+		return agentproto.ServiceContentResponse{}, fmt.Errorf("agentdocker: %s %s reset config %s: %w", stage, service.ID, rel, applyErr)
+	}
 	return agentproto.ServiceContentResponse{Path: rel, Content: string(content), Hash: hashBytes(content)}, nil
 }
 
