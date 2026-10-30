@@ -341,3 +341,22 @@ func TestExistingUsernamesAllowDotsAndDashes(t *testing.T) {
 		t.Fatal("existing username validation accepted injection")
 	}
 }
+
+func TestPostgresListDatabasesCountsTables(t *testing.T) {
+	e := NewPostgreSQL()
+	command, err := e.ListDatabasesCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(command, " ")
+	if !strings.Contains(joined, "pg_class") || !strings.Contains(joined, "count(") {
+		t.Fatalf("postgres database inventory does not count tables: %s", joined)
+	}
+	if strings.Contains(joined, ", 0 FROM pg_database") {
+		t.Fatalf("postgres database inventory still hardcodes zero tables: %s", joined)
+	}
+	databases, err := e.ParseDatabases([]byte("app\t1024\t7\n"))
+	if err != nil || len(databases) != 1 || databases[0].TableCount != 7 {
+		t.Fatalf("databases = %+v, %v", databases, err)
+	}
+}

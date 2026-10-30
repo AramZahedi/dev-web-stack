@@ -36,13 +36,15 @@ func (*postgresEngine) ProtectedUser(username, _ string) bool {
 func (*postgresEngine) RenameSupported() bool { return true }
 
 func (*postgresEngine) ListDatabasesCommand() ([]string, error) {
-	const query = `SELECT datname, pg_database_size(datname), 0 FROM pg_database ORDER BY datname;`
-	return []string{
-		"psql", "--no-psqlrc", "--set=ON_ERROR_STOP=1",
-		"--username=postgres", "--dbname=postgres",
-		"--tuples-only", "--no-align", "--field-separator", "\t",
-		"--command", query,
-	}, nil
+	// Table counts are database-local in PostgreSQL, so the fixed script
+	// connects to each connectable database and emits name<TAB>size<TAB>tables.
+	const script = `set -eu
+psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname=postgres --tuples-only --no-align --command="SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname" | while IFS= read -r db; do
+  size=$(psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname="$db" --tuples-only --no-align --command="SELECT pg_database_size(current_database())")
+  tables=$(psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname="$db" --tuples-only --no-align --command="SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')")
+  printf '%s\t%s\t%s\n' "$db" "$size" "$tables"
+done`
+	return []string{"sh", "-c", script}, nil
 }
 
 func (*postgresEngine) ParseDatabases(output []byte) ([]model.Database, error) {
