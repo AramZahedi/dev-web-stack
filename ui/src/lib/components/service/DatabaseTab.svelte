@@ -493,7 +493,10 @@
     <div class="restart-prompt" role="status">
       <div class="restart-copy">
         <strong>Restart linked sites to apply.</strong>
-        <p>{restartPrompt.label}. Restart each site so it reconnects.</p>
+        <p>
+          {restartPrompt.label}. Restart each site so it reconnects. This prompt clears when you
+          leave this page.
+        </p>
       </div>
       <div class="restart-actions">
         {#each restartPrompt.sites as site (site.id)}
