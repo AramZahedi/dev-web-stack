@@ -1163,3 +1163,140 @@ func TestLogHubReaderCloseUnregistersSubscriber(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func writeAgentDatabaseSecret(t *testing.T, root, serviceID, userID, value string) {
+	t.Helper()
+	dir := filepath.Join(root, "services", serviceID, "secrets", "database-users")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, userID), []byte(value+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrepareSiteInjectsManagedDatabaseEnv(t *testing.T) {
+	rt, root, spec := newStaticTestRuntime(t)
+	writeAgentDatabaseSecret(t, root, "mysql", "usr_app", "s3cret")
+	spec.DatabaseLinks = []agentproto.DatabaseLinkSpec{{
+		ServiceID: "mysql", Engine: "mysql", Database: "app", UserID: "usr_app",
+		Username: "app", Port: 3306, Primary: true, PasswordManaged: true,
+	}}
+	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	env := rt.sites[spec.ID].databaseEnv
+	if env["DB_PASSWORD"] != "s3cret" || env["DB_DATABASE"] != "app" {
+		t.Fatalf("env=%v", env)
+	}
+	if env["DB_HOST"] != "127.0.0.1" || env["DB_PORT"] != "3306" || env["DB_USERNAME"] != "app" || env["DB_CONNECTION"] != "mysql" {
+		t.Fatalf("env=%v", env)
+	}
+	if !strings.HasPrefix(env["DATABASE_URL"], "mysql://app:s3cret@127.0.0.1:3306/app") {
+		t.Fatalf("DATABASE_URL=%q", env["DATABASE_URL"])
+	}
+}
+
+func TestPrepareSiteOmitsMetadataPassword(t *testing.T) {
+	rt, _, spec := newStaticTestRuntime(t)
+	spec.DatabaseLinks = []agentproto.DatabaseLinkSpec{{
+		ServiceID: "mysql", Engine: "mysql", Database: "app", Username: "app", Primary: true, PasswordManaged: false,
+	}}
+	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	env := rt.sites[spec.ID].databaseEnv
+	if _, ok := env["DB_PASSWORD"]; ok {
+		t.Fatalf("metadata-only env has a password: %v", env)
+	}
+	if _, ok := env["DATABASE_URL"]; ok {
+		t.Fatalf("metadata-only env has a URL: %v", env)
+	}
+}
+
+func TestPrepareSiteFailsWhenManagedSecretIsMissing(t *testing.T) {
+	rt, _, spec := newStaticTestRuntime(t)
+	spec.DatabaseLinks = []agentproto.DatabaseLinkSpec{{
+		ServiceID: "mysql", Engine: "mysql", Database: "app", UserID: "usr_missing",
+		Username: "app", Primary: true, PasswordManaged: true,
+	}}
+	if _, err := rt.PrepareSite(context.Background(), spec); err == nil {
+		t.Fatal("PrepareSite silently omitted a missing managed password")
+	}
+}
+
+func TestPrepareSiteAdditionalLinkUsesNamespacedEnv(t *testing.T) {
+	rt, root, spec := newStaticTestRuntime(t)
+	writeAgentDatabaseSecret(t, root, "postgres", "usr_blog", "pgsecret")
+	spec.DatabaseLinks = []agentproto.DatabaseLinkSpec{
+		{ServiceID: "mysql", Engine: "mysql", Database: "app", Username: "app", Primary: true},
+		{ServiceID: "postgres", Engine: "postgres", Database: "blog", UserID: "usr_blog", Username: "blog", Port: 5432, PasswordManaged: true},
+	}
+	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	env := rt.sites[spec.ID].databaseEnv
+	if env["DB_BLOG_DATABASE"] != "blog" || env["DB_BLOG_PASSWORD"] != "pgsecret" || env["DB_BLOG_PORT"] != "5432" {
+		t.Fatalf("env=%v", env)
+	}
+	if !strings.HasPrefix(env["DB_BLOG_URL"], "postgresql://blog:pgsecret@127.0.0.1:5432/blog") {
+		t.Fatalf("DB_BLOG_URL=%q", env["DB_BLOG_URL"])
+	}
+	if _, ok := env["DB_PASSWORD"]; ok {
+		t.Fatalf("primary metadata-only link gained a password: %v", env)
+	}
+}
+
+func TestPrepareSiteDoesNotPersistDatabasePassword(t *testing.T) {
+	rt, root, spec := newStaticTestRuntime(t)
+	writeAgentDatabaseSecret(t, root, "mysql", "usr_app", "s3cret")
+	spec.DatabaseLinks = []agentproto.DatabaseLinkSpec{{
+		ServiceID: "mysql", Engine: "mysql", Database: "app", UserID: "usr_app",
+		Username: "app", Primary: true, PasswordManaged: true,
+	}}
+	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "run", "sites.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "s3cret") {
+		t.Fatalf("runtime state persisted a database password:\n%s", data)
+	}
+}
+
+func TestPreparePHPInjectsDatabaseEnvWithoutWritingSecretToFPM(t *testing.T) {
+	rt, root := newTestRuntimeOnly(t)
+	project := filepath.Join(root, "php-db-app")
+	publicDir := filepath.Join(project, "public")
+	if err := os.MkdirAll(publicDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(publicDir, "index.php"), []byte("<?php echo 'ok';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeAgentDatabaseSecret(t, root, "mysql", "usr_app", "s3cret")
+	spec := agentproto.SiteSpec{
+		ID: "php-db-site", Kind: "php", BackendPath: project, DocumentRoot: "public",
+		PHPVersion: "8.4", PHPBuild: "php@8.4.27-r1",
+		DatabaseLinks: []agentproto.DatabaseLinkSpec{{
+			ServiceID: "mysql", Engine: "mysql", Database: "app", UserID: "usr_app",
+			Username: "app", Primary: true, PasswordManaged: true,
+		}},
+	}
+	if _, err := rt.PreparePHP(context.Background(), spec.ID, agentproto.PHPPrepareRequest{Generation: "gen-1", Site: spec}); err != nil {
+		t.Fatal(err)
+	}
+	generation := rt.sites[spec.ID].phpGenerations["gen-1"]
+	if generation == nil || generation.databaseEnv["DB_PASSWORD"] != "s3cret" {
+		t.Fatalf("generation env = %+v", generation)
+	}
+	fpmData, err := os.ReadFile(filepath.Join(root, "sites", spec.ID, "fpm.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(fpmData), "s3cret") {
+		t.Fatalf("php-fpm.conf contains a database password:\n%s", fpmData)
+	}
+}

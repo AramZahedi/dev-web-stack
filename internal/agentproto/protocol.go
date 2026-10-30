@@ -199,29 +199,44 @@ type PortValidateResponse struct {
 	Valid bool `json:"valid"`
 }
 
+// DatabaseLinkSpec is the agent-visible site/database link. It never carries a
+// password; the agent resolves the secret from its private service tree.
+type DatabaseLinkSpec struct {
+	ServiceID       string `json:"service_id"`
+	Engine          string `json:"engine,omitempty"`
+	Database        string `json:"database"`
+	UserID          string `json:"user_id,omitempty"`
+	Username        string `json:"username"`
+	Host            string `json:"host,omitempty"`
+	Port            int    `json:"port,omitempty"`
+	Primary         bool   `json:"primary,omitempty"`
+	PasswordManaged bool   `json:"password_managed,omitempty"`
+}
+
 // SiteSpec is the agent-visible description of one site.
 type SiteSpec struct {
-	ID                string            `json:"id"`
-	Kind              string            `json:"kind"`
-	Domain            string            `json:"domain"`
-	HostPath          string            `json:"host_path"`
-	BackendPath       string            `json:"backend_path"`
-	DocumentRoot      string            `json:"document_root"`
-	ProxyDocumentRoot string            `json:"proxy_document_root"`
-	Command           string            `json:"command"`
-	Env               map[string]string `json:"env,omitempty"`
-	HTTPPort          int               `json:"http_port"`
-	FastCGIPort       int               `json:"fastcgi_port"`
-	SPAFallback       bool              `json:"spa_fallback"`
-	FrontController   bool              `json:"front_controller"`
-	RuntimeVersion    string            `json:"runtime_version,omitempty"`
-	PHPVersion        string            `json:"php_version,omitempty"`
-	PHPBuild          string            `json:"php_build,omitempty"`
-	PHPBuildPath      string            `json:"php_build_path,omitempty"`
-	PHPIniPath        string            `json:"php_ini_path,omitempty"`
-	FPMConfigPath     string            `json:"fpm_config_path,omitempty"`
-	PHPHealthScript   string            `json:"php_health_script,omitempty"`
-	SourceMode        string            `json:"source_mode,omitempty"`
+	ID                string             `json:"id"`
+	Kind              string             `json:"kind"`
+	Domain            string             `json:"domain"`
+	HostPath          string             `json:"host_path"`
+	BackendPath       string             `json:"backend_path"`
+	DocumentRoot      string             `json:"document_root"`
+	ProxyDocumentRoot string             `json:"proxy_document_root"`
+	Command           string             `json:"command"`
+	Env               map[string]string  `json:"env,omitempty"`
+	DatabaseLinks     []DatabaseLinkSpec `json:"database_links,omitempty"`
+	HTTPPort          int                `json:"http_port"`
+	FastCGIPort       int                `json:"fastcgi_port"`
+	SPAFallback       bool               `json:"spa_fallback"`
+	FrontController   bool               `json:"front_controller"`
+	RuntimeVersion    string             `json:"runtime_version,omitempty"`
+	PHPVersion        string             `json:"php_version,omitempty"`
+	PHPBuild          string             `json:"php_build,omitempty"`
+	PHPBuildPath      string             `json:"php_build_path,omitempty"`
+	PHPIniPath        string             `json:"php_ini_path,omitempty"`
+	FPMConfigPath     string             `json:"fpm_config_path,omitempty"`
+	PHPHealthScript   string             `json:"php_health_script,omitempty"`
+	SourceMode        string             `json:"source_mode,omitempty"`
 }
 
 // SitePrepareRequest prepares (validates and stages) a site.

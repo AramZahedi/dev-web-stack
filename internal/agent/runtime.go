@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +35,11 @@ type runtimeSite struct {
 	nodeDone       chan struct{}
 	activeGen      string
 	phpGenerations map[string]*phpGeneration
+	// databaseEnv holds resolved DB_*/DATABASE_URL values for this process
+	// lifetime only. It is deliberately never written to sites.json or
+	// php-fpm.conf; the links are persisted instead and re-resolved from the
+	// agent secret tree after a restart.
+	databaseEnv map[string]string
 }
 
 // Runtime owns site state, backend ports, and process/server reconciliation in
@@ -183,6 +193,10 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 		return agentproto.SitePrepareResponse{}, err
 	}
 	spec.Env = env
+	databaseEnv, err := r.resolveDatabaseEnv(spec)
+	if err != nil {
+		return agentproto.SitePrepareResponse{}, err
+	}
 	port, _, err := r.ports.Allocate(spec.ID, "http", spec.HTTPPort)
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
@@ -193,7 +207,12 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 		r.mu.Unlock()
 		return agentproto.SitePrepareResponse{}, errors.New("agent: stop the site before changing its prepared configuration")
 	}
-	r.sites[spec.ID] = &runtimeSite{spec: cloneAgentSiteSpec(spec), documentRoot: docroot, status: "stopped"}
+	r.sites[spec.ID] = &runtimeSite{
+		spec:         cloneAgentSiteSpec(spec),
+		documentRoot: docroot,
+		status:       "stopped",
+		databaseEnv:  databaseEnv,
+	}
 	if err := r.saveLocked(); err != nil {
 		delete(r.sites, spec.ID)
 		_ = r.ports.Release(spec.ID, 0)
@@ -464,4 +483,217 @@ func ctxErr(ctx context.Context) error {
 		return nil
 	}
 	return ctx.Err()
+}
+
+var agentDatabaseUserIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// resolveDatabaseEnv turns the site's non-secret database links into the
+// DB_*/DATABASE_URL values. Secrets are read from the agent-owned tree and are
+// kept in memory only.
+func (r *Runtime) resolveDatabaseEnv(spec agentproto.SiteSpec) (map[string]string, error) {
+	env := make(map[string]string)
+	for index, link := range spec.DatabaseLinks {
+		if strings.TrimSpace(link.Database) == "" {
+			continue
+		}
+		if err := validateAgentDatabaseName(link.Database); err != nil {
+			return nil, fmt.Errorf("agent: invalid database link %q: %w", link.Database, err)
+		}
+		serviceID := canonicalAgentServiceID(link.ServiceID)
+		if !validAgentDatabaseService(serviceID) {
+			return nil, fmt.Errorf("agent: invalid database service %q", link.ServiceID)
+		}
+		engine := strings.TrimSpace(link.Engine)
+		if engine == "" {
+			engine = agentEngineForService(serviceID)
+		}
+		port := link.Port
+		if port == 0 {
+			port = agentDefaultDatabasePort(engine)
+		}
+		prefix := "DB_"
+		if !link.Primary {
+			slug := agentDatabaseSlug(link.Database)
+			if slug == "" {
+				slug = "LINK" + strconv.Itoa(index+1)
+			}
+			prefix = "DB_" + slug + "_"
+		}
+		env[prefix+"CONNECTION"] = engine
+		env[prefix+"HOST"] = "127.0.0.1"
+		env[prefix+"PORT"] = strconv.Itoa(port)
+		env[prefix+"DATABASE"] = link.Database
+		env[prefix+"USERNAME"] = link.Username
+		if link.PasswordManaged {
+			if !agentDatabaseUserIDPattern.MatchString(link.UserID) {
+				return nil, fmt.Errorf("agent: invalid database user ID for site %q", spec.ID)
+			}
+			secret, err := r.readAgentDatabaseSecret(serviceID, link.UserID)
+			if err != nil {
+				return nil, fmt.Errorf("agent: resolve database secret for site %q: %w", spec.ID, err)
+			}
+			env[prefix+"PASSWORD"] = secret
+			connectionURL := agentDatabaseConnectionURL(engine, link.Username, secret, port, link.Database)
+			if link.Primary {
+				env["DATABASE_URL"] = connectionURL
+			} else {
+				env[prefix+"URL"] = connectionURL
+			}
+		} else {
+			delete(env, prefix+"PASSWORD")
+			delete(env, prefix+"URL")
+			if link.Primary {
+				delete(env, "DATABASE_URL")
+			}
+		}
+	}
+	return env, nil
+}
+
+// databaseEnvFor returns the in-memory resolved environment, or resolves the
+// persisted links on demand after an agent restart. It never mutates the site,
+// so callers that do not hold r.mu are safe.
+func (r *Runtime) databaseEnvFor(site *runtimeSite) (map[string]string, error) {
+	if site == nil || len(site.spec.DatabaseLinks) == 0 {
+		return nil, nil
+	}
+	if site.databaseEnv != nil {
+		return site.databaseEnv, nil
+	}
+	return r.resolveDatabaseEnv(site.spec)
+}
+
+func environmentPairs(values map[string]string) []string {
+	pairs := make([]string, 0, len(values))
+	for key, value := range values {
+		pairs = append(pairs, key+"="+value)
+	}
+	sort.Strings(pairs)
+	return pairs
+}
+
+func (r *Runtime) readAgentDatabaseSecret(serviceID, userID string) (string, error) {
+	if !agentDatabaseUserIDPattern.MatchString(userID) {
+		return "", errors.New("agent: invalid database user ID")
+	}
+	serviceID = canonicalAgentServiceID(serviceID)
+	if !validAgentDatabaseService(serviceID) {
+		return "", errors.New("agent: invalid database service")
+	}
+	secretsDir := filepath.Join(r.root, "services", serviceID, "secrets")
+	dir := filepath.Join(secretsDir, "database-users")
+	for _, candidate := range []string{secretsDir, dir} {
+		info, err := os.Lstat(candidate)
+		if err != nil {
+			return "", err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("agent: unsafe database secret directory")
+		}
+	}
+	path := filepath.Join(dir, userID)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", errors.New("agent: database secret is not a regular file")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		return "", fmt.Errorf("agent: database secret %s has mode %04o", userID, info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimRight(string(data), "\r\n")
+	if value == "" {
+		return "", errors.New("agent: database secret is empty")
+	}
+	return value, nil
+}
+
+func canonicalAgentServiceID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "postgresql" {
+		return "postgres"
+	}
+	return id
+}
+
+func validAgentDatabaseService(id string) bool {
+	switch id {
+	case "mysql", "mariadb", "postgres", "redis":
+		return true
+	default:
+		return false
+	}
+}
+
+func agentEngineForService(serviceID string) string {
+	switch canonicalAgentServiceID(serviceID) {
+	case "mysql":
+		return "mysql"
+	case "mariadb":
+		return "mariadb"
+	case "postgres":
+		return "postgres"
+	case "redis":
+		return "redis"
+	default:
+		return ""
+	}
+}
+
+func agentDefaultDatabasePort(engine string) int {
+	switch engine {
+	case "mysql", "mariadb":
+		return 3306
+	case "postgres":
+		return 5432
+	case "redis":
+		return 6379
+	default:
+		return 0
+	}
+}
+
+func agentDatabaseSlug(database string) string {
+	var builder strings.Builder
+	for _, r := range strings.ToUpper(database) {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		default:
+			builder.WriteByte('_')
+		}
+	}
+	return strings.Trim(builder.String(), "_")
+}
+
+func agentDatabaseConnectionURL(engine, username, password string, port int, database string) string {
+	scheme := "mysql"
+	switch engine {
+	case "postgres":
+		scheme = "postgresql"
+	case "redis":
+		scheme = "redis"
+	}
+	user := url.UserPassword(username, password)
+	return scheme + "://" + user.String() + "@" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/" + url.PathEscape(database)
+}
+
+func validateAgentDatabaseName(name string) error {
+	if len(name) == 0 || len(name) > 63 {
+		return errors.New("agent: invalid database name")
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return errors.New("agent: invalid database name")
+		}
+	}
+	return nil
 }

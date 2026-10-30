@@ -77,8 +77,15 @@ func (r *Runtime) startNodeLocked(site *runtimeSite) (agentproto.SiteActionRespo
 }
 
 func (r *Runtime) nodeEnvironment(site *runtimeSite, nodeRoot string) ([]string, error) {
-	values := make(map[string]string, len(site.spec.Env)+4)
+	databaseEnv, err := r.databaseEnvFor(site)
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]string, len(site.spec.Env)+len(databaseEnv)+4)
 	for key, value := range site.spec.Env {
+		values[key] = value
+	}
+	for key, value := range databaseEnv {
 		values[key] = value
 	}
 	values["PORT"] = strconv.Itoa(site.spec.HTTPPort)

@@ -123,6 +123,7 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 	}
 	site, err := r.site(id)
 	var spec agentproto.SiteSpec
+	var databaseEnv map[string]string
 	if err != nil {
 		if !errors.Is(err, ErrSiteNotFound) {
 			return agentproto.BuildResponse{}, err
@@ -137,6 +138,10 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 		}
 	} else {
 		spec = site.spec
+		databaseEnv, err = r.databaseEnvFor(site)
+		if err != nil {
+			return agentproto.BuildResponse{}, err
+		}
 	}
 	runtimeVersion := strings.TrimSpace(req.RuntimeVersion)
 	if runtimeVersion == "" {
@@ -179,6 +184,9 @@ func (r *Runtime) BuildSite(ctx context.Context, id string, req agentproto.Build
 	// Build environment with the selected Node runtime prepended.
 	envMap := make(map[string]string)
 	for k, v := range spec.Env {
+		envMap[k] = v
+	}
+	for k, v := range databaseEnv {
 		envMap[k] = v
 	}
 	for k, v := range req.Env {
@@ -257,8 +265,15 @@ func (r *Runtime) ExecSite(ctx context.Context, id string, req agentproto.SiteEx
 	cmd.Dir = site.spec.BackendPath
 	configureBuildCmd(cmd)
 
+	databaseEnv, err := r.databaseEnvFor(site)
+	if err != nil {
+		return agentproto.SiteExecResponse{}, err
+	}
 	envMap := make(map[string]string)
 	for k, v := range site.spec.Env {
+		envMap[k] = v
+	}
+	for k, v := range databaseEnv {
 		envMap[k] = v
 	}
 	for k, v := range req.Env {

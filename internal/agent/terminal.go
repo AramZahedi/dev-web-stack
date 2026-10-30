@@ -134,8 +134,23 @@ func (r *Runtime) pruneTerminalTicketsLocked(now time.Time) {
 // exported, the managed home is visible, and PHP uses the site's generated
 // php.ini.
 func (r *Runtime) terminalEnvironment(spec agentproto.SiteSpec, ticket *terminalTicket) (map[string]string, error) {
-	envMap := make(map[string]string, len(spec.Env))
+	return r.terminalEnvironmentWith(spec, nil, ticket)
+}
+
+func (r *Runtime) terminalEnvironmentForSite(site *runtimeSite, ticket *terminalTicket) (map[string]string, error) {
+	databaseEnv, err := r.databaseEnvFor(site)
+	if err != nil {
+		return nil, err
+	}
+	return r.terminalEnvironmentWith(terminalSiteSpec(site.spec, ticket), databaseEnv, ticket)
+}
+
+func (r *Runtime) terminalEnvironmentWith(spec agentproto.SiteSpec, databaseEnv map[string]string, ticket *terminalTicket) (map[string]string, error) {
+	envMap := make(map[string]string, len(spec.Env)+len(databaseEnv))
 	for key, value := range spec.Env {
+		envMap[key] = value
+	}
+	for key, value := range databaseEnv {
 		envMap[key] = value
 	}
 	caEnv, err := r.Environment(envMap)
@@ -225,7 +240,7 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 	cmd := exec.Command(shell)
 	cmd.Dir = spec.BackendPath
 
-	caEnv, err := r.terminalEnvironment(spec, ticket)
+	caEnv, err := r.terminalEnvironmentForSite(site, ticket)
 	if err != nil {
 		_ = conn.Close(websocket.StatusInternalError, "site environment is unavailable")
 		return

@@ -32,6 +32,9 @@ type phpGeneration struct {
 	fpmPath      string
 	port         int
 	process      *fpmProcess
+	// databaseEnv is injected into the FPM process environment only; it is
+	// never rendered into php-fpm.conf.
+	databaseEnv map[string]string
 }
 
 // runtimeBinaryPath returns the relative path of the command a runtime build
@@ -417,6 +420,10 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
 	}
+	databaseEnv, err := r.resolveDatabaseEnv(req.Site)
+	if err != nil {
+		return agentproto.SitePrepareResponse{}, err
+	}
 
 	port, _, err := r.ports.Allocate(id, "fastcgi", req.Site.FastCGIPort)
 	if err != nil {
@@ -461,11 +468,13 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 			documentRoot:   docroot,
 			status:         "stopped",
 			phpGenerations: make(map[string]*phpGeneration),
+			databaseEnv:    databaseEnv,
 		}
 		r.sites[id] = site
 	} else {
 		site.spec = cloneAgentSiteSpec(req.Site)
 		site.documentRoot = docroot
+		site.databaseEnv = databaseEnv
 		if site.phpGenerations == nil {
 			site.phpGenerations = make(map[string]*phpGeneration)
 		}
@@ -485,6 +494,7 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 		fpmPath:      fpmPath,
 		port:         port,
 		process:      liveProcess,
+		databaseEnv:  databaseEnv,
 	}
 
 	if err := r.saveLocked(); err != nil {
@@ -552,7 +562,15 @@ func (r *Runtime) StartPHP(ctx context.Context, id string, req agentproto.PHPAct
 	}
 
 	// Launch target FPM process
-	proc, err := r.startFPM(ctx, id, gen, targetGen.fpmPath, targetGen.spec.PHPIniPath, targetGen.spec.PHPBuildPath, targetGen.port)
+	databaseEnv := targetGen.databaseEnv
+	if databaseEnv == nil {
+		var resolveErr error
+		databaseEnv, resolveErr = r.resolveDatabaseEnv(targetGen.spec)
+		if resolveErr != nil {
+			return agentproto.SiteActionResponse{}, resolveErr
+		}
+	}
+	proc, err := r.startFPM(ctx, id, gen, targetGen.fpmPath, targetGen.spec.PHPIniPath, targetGen.spec.PHPBuildPath, targetGen.port, databaseEnv)
 	if err != nil {
 		return agentproto.SiteActionResponse{}, err
 	}
