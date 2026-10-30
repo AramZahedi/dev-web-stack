@@ -299,6 +299,8 @@ func (s *Server) handleImportServiceDatabase(w http.ResponseWriter, r *http.Requ
 	if s.databaseUnavailable(w) {
 		return
 	}
+	const maxImportBytes = int64(1) << 30
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {

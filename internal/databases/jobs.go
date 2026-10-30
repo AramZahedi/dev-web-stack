@@ -15,6 +15,9 @@ import (
 func (m *Manager) CreateBackup(ctx context.Context, serviceID, database string, req CreateBackupRequest) (model.DatabaseJob, error) {
 	serviceID = canonicalServiceID(serviceID)
 	database = strings.TrimSpace(database)
+	if !isSQLService(serviceID) {
+		return model.DatabaseJob{}, fmt.Errorf("%w: service %q has no SQL backups", ErrUnsupported, serviceID)
+	}
 	if database == "" {
 		return model.DatabaseJob{}, fmt.Errorf("%w: database is required", ErrInvalidRequest)
 	}
@@ -38,6 +41,9 @@ func (m *Manager) CreateBackup(ctx context.Context, serviceID, database string, 
 // is created first when requested.
 func (m *Manager) RestoreBackup(ctx context.Context, serviceID, backupID string, req RestoreBackupRequest) (model.DatabaseJob, error) {
 	serviceID = canonicalServiceID(serviceID)
+	if !isSQLService(serviceID) {
+		return model.DatabaseJob{}, fmt.Errorf("%w: service %q has no SQL restore", ErrUnsupported, serviceID)
+	}
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return model.DatabaseJob{}, err
 	}
@@ -84,6 +90,9 @@ func (m *Manager) RestoreBackup(ctx context.Context, serviceID, backupID string,
 func (m *Manager) ImportDatabase(ctx context.Context, serviceID, database string, file io.Reader, filename string, req ImportRequest) (model.DatabaseJob, error) {
 	serviceID = canonicalServiceID(serviceID)
 	database = strings.TrimSpace(database)
+	if !isSQLService(serviceID) {
+		return model.DatabaseJob{}, fmt.Errorf("%w: service %q has no SQL import", ErrUnsupported, serviceID)
+	}
 	if database == "" {
 		return model.DatabaseJob{}, fmt.Errorf("%w: database is required", ErrInvalidRequest)
 	}

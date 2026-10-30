@@ -715,6 +715,24 @@ func TestManagerSetPasswordUpdatesState(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsRedisDatabasesAndBackups(t *testing.T) {
+	m, _, _, _, _ := testManagerWithFakes(t)
+	svc := m.deps.Services.(*fakeServices)
+	svc.views[services.IDRedis] = services.View{ID: services.IDRedis, State: services.StateActive, Active: true, Installed: true}
+	if _, err := m.ListDatabases(context.Background(), "redis"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("redis databases = %v", err)
+	}
+	if err := m.DropDatabase(context.Background(), "redis", "cache", DropDatabaseRequest{Confirm: "cache"}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("redis drop = %v", err)
+	}
+	if _, err := m.ListBackups(context.Background(), "redis"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("redis backups = %v", err)
+	}
+	if _, err := m.CreateBackup(context.Background(), "redis", "cache", CreateBackupRequest{}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("redis backup = %v", err)
+	}
+}
+
 func TestManagerRequiresActiveService(t *testing.T) {
 	m, _, _, _, _ := testManagerWithFakes(t)
 	svc := m.deps.Services.(*fakeServices)

@@ -306,6 +306,9 @@ func (m *Manager) RenameDatabase(ctx context.Context, serviceID, name string, re
 func (m *Manager) DropDatabase(ctx context.Context, serviceID, name string, req DropDatabaseRequest) error {
 	serviceID = canonicalServiceID(serviceID)
 	name = strings.TrimSpace(name)
+	if !isSQLService(serviceID) {
+		return fmt.Errorf("%w: service %q has no logical databases", ErrUnsupported, serviceID)
+	}
 	if protectedDatabase(name) {
 		return fmt.Errorf("%w: database %q is protected", ErrProtected, name)
 	}
@@ -720,6 +723,9 @@ func (m *Manager) RevealUserPassword(ctx context.Context, serviceID, userID stri
 // ListBackups returns platform backups and refreshes the persisted metadata.
 func (m *Manager) ListBackups(ctx context.Context, serviceID string) ([]model.DatabaseBackup, error) {
 	serviceID = canonicalServiceID(serviceID)
+	if !isSQLService(serviceID) {
+		return nil, fmt.Errorf("%w: service %q has no SQL backups", ErrUnsupported, serviceID)
+	}
 	if _, err := m.requireInstalled(ctx, serviceID); err != nil {
 		return nil, err
 	}
@@ -767,6 +773,9 @@ func (m *Manager) ListBackups(ctx context.Context, serviceID string) ([]model.Da
 // DeleteBackup deletes a backup file and its metadata.
 func (m *Manager) DeleteBackup(ctx context.Context, serviceID, backupID string) error {
 	serviceID = canonicalServiceID(serviceID)
+	if !isSQLService(serviceID) {
+		return fmt.Errorf("%w: service %q has no SQL backups", ErrUnsupported, serviceID)
+	}
 	if _, err := m.requireInstalled(ctx, serviceID); err != nil {
 		return err
 	}
@@ -788,6 +797,9 @@ func (m *Manager) DeleteBackup(ctx context.Context, serviceID, backupID string) 
 // ExportDatabase streams a logical dump.
 func (m *Manager) ExportDatabase(ctx context.Context, serviceID, database string) (io.ReadCloser, error) {
 	serviceID = canonicalServiceID(serviceID)
+	if !isSQLService(serviceID) {
+		return nil, fmt.Errorf("%w: service %q has no SQL export", ErrUnsupported, serviceID)
+	}
 	if _, err := m.requireActive(ctx, serviceID); err != nil {
 		return nil, err
 	}
@@ -803,6 +815,9 @@ func (m *Manager) ExportDatabase(ctx context.Context, serviceID, database string
 // DownloadBackup streams a backup file while the service is stopped.
 func (m *Manager) DownloadBackup(ctx context.Context, serviceID, backupID string) (io.ReadCloser, error) {
 	serviceID = canonicalServiceID(serviceID)
+	if !isSQLService(serviceID) {
+		return nil, fmt.Errorf("%w: service %q has no SQL backups", ErrUnsupported, serviceID)
+	}
 	if _, err := m.requireInstalled(ctx, serviceID); err != nil {
 		return nil, err
 	}
