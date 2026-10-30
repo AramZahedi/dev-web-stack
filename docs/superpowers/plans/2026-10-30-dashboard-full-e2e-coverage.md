@@ -602,34 +602,34 @@ Settings → Built-in; confirm. Expected builtin proxy returns, helper forwarder
 
 **Depends on:** Tasks 5 and 9 (nginx active for web includes). **Artifacts:** `task-10/`
 
-- [ ] **Step 1: Baseline**
+- [x] **Step 1: Baseline**
 
 Services page → Performance panel; capture active profile, current values, benchmark history. `doctor` green.
 
-- [ ] **Step 2: Profile selection and preview**
+- [x] **Step 2: Profile selection and preview**
 
 - Select Balanced → Preview; assert generated nginx/Apache/PHP/host values and warnings.
 - Select Throughput → Preview; compare.
 - Select Custom → edit valid JSON; save; preview.
 - Invalid JSON → validation error; no changes.
 
-- [ ] **Step 3: Apply**
+- [x] **Step 3: Apply**
 
 With nginx active, Apply profile; type `APPLY`; keep host tuning unchecked first. Expected: backup, include files written, nginx reload, PHP OPcache/realpath settings merged, result details. Verify site serves and `doctor` green.
 
-- [ ] **Step 4: Reset**
+- [x] **Step 4: Reset**
 
 Reset; type `RESET`; expected previous host files/includes restored, site serves. Verify no performance-managed includes remain.
 
-- [ ] **Step 5: Host tuning opt-in (guarded)**
+- [x] **Step 5: Host tuning opt-in (guarded)**
 
 If host tuning is available and the user explicitly approves system changes, check the box and apply; verify fixed-path backup/rollback; reset. If not approved, assert the checkbox is present and explains the host impact, and record it as intentionally not applied.
 
-- [ ] **Step 6: Benchmark**
+- [x] **Step 6: Benchmark**
 
 Select a registered site; Run benchmark; verify a result row/history with RPS, latency, errors; rerun and verify history; inspect details; no errors. If no site exists, create a temporary static site, benchmark, then remove.
 
-- [ ] **Step 7: Cleanup**
+- [x] **Step 7: Cleanup**
 
 Reset profile to baseline, remove temporary site, `doctor` green.
 
