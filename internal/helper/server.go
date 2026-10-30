@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/forwarder"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
@@ -166,12 +167,15 @@ type Service struct {
 	ServiceRotateCredentials func(context.Context, string) error
 	ServiceValidate          func(context.Context, string) error
 	ServiceReload            func(context.Context, string) error
-	ToolStatus               func(context.Context) (helperproto.ToolStatusResponse, error)
-	ToolInstall              func(context.Context, helperproto.ToolInstallRequest) (helperproto.ToolStatus, error)
-	ToolRemove               func(context.Context, string) (helperproto.ToolStatus, error)
-	PerformanceStatus        func(context.Context) (helperproto.PerformanceStatusResponse, error)
-	PerformanceApply         func(context.Context, helperproto.PerformanceApplyRequest) (helperproto.PerformanceApplyResponse, error)
-	PerformanceReset         func(context.Context, helperproto.PerformanceResetRequest) (helperproto.PerformanceResetResponse, error)
+	// DatabasePlatform implements the service-scoped database and user RPCs.
+	// When nil the database routes return NOT_IMPLEMENTED.
+	DatabasePlatform  databases.Platform
+	ToolStatus        func(context.Context) (helperproto.ToolStatusResponse, error)
+	ToolInstall       func(context.Context, helperproto.ToolInstallRequest) (helperproto.ToolStatus, error)
+	ToolRemove        func(context.Context, string) (helperproto.ToolStatus, error)
+	PerformanceStatus func(context.Context) (helperproto.PerformanceStatusResponse, error)
+	PerformanceApply  func(context.Context, helperproto.PerformanceApplyRequest) (helperproto.PerformanceApplyResponse, error)
+	PerformanceReset  func(context.Context, helperproto.PerformanceResetRequest) (helperproto.PerformanceResetResponse, error)
 }
 
 // Server is a helper RPC server listening on a Unix-domain socket.
@@ -397,6 +401,9 @@ func (s *Server) wireService(service Service) Service {
 			service.ServiceReload = func(ctx context.Context, id string) error {
 				return s.dockerServices.Reload(ctx, services.ID(id))
 			}
+		}
+		if service.DatabasePlatform == nil {
+			service.DatabasePlatform = s.dockerServices
 		}
 	}
 	if service.Uninstall == nil {
@@ -919,6 +926,26 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST "+helperproto.PathServicesRotate, s.handleServicesRotate)
 	mux.HandleFunc("POST "+helperproto.PathServicesValidate, s.handleServicesValidate)
 	mux.HandleFunc("POST "+helperproto.PathServicesReload, s.handleServicesReload)
+	mux.HandleFunc("GET "+helperproto.PathServiceDatabases, s.handleDatabaseList)
+	mux.HandleFunc("POST "+helperproto.PathServiceDatabases, s.handleDatabaseCreate)
+	mux.HandleFunc("PATCH "+helperproto.PathServiceDatabase, s.handleDatabaseRename)
+	mux.HandleFunc("DELETE "+helperproto.PathServiceDatabase, s.handleDatabaseDrop)
+	mux.HandleFunc("GET "+helperproto.PathServiceUsers, s.handleUserList)
+	mux.HandleFunc("POST "+helperproto.PathServiceUsers, s.handleUserCreate)
+	mux.HandleFunc("PATCH "+helperproto.PathServiceUser, s.handleUserUpdate)
+	mux.HandleFunc("DELETE "+helperproto.PathServiceUser, s.handleUserDelete)
+	mux.HandleFunc("POST "+helperproto.PathServiceUserPassword, s.handleUserPassword)
+	mux.HandleFunc("POST "+helperproto.PathServiceUserReveal, s.handleUserReveal)
+	mux.HandleFunc("GET "+helperproto.PathServiceBackups, s.handleBackupList)
+	mux.HandleFunc("POST "+helperproto.PathServiceDatabaseBackup, s.handleBackupCreate)
+	mux.HandleFunc("GET "+helperproto.PathServiceBackupDownload, s.handleBackupDownload)
+	mux.HandleFunc("DELETE "+helperproto.PathServiceBackup, s.handleBackupDelete)
+	mux.HandleFunc("POST "+helperproto.PathServiceBackupRestore, s.handleBackupRestore)
+	mux.HandleFunc("POST "+helperproto.PathServiceDatabaseImport, s.handleDatabaseImport)
+	mux.HandleFunc("GET "+helperproto.PathServiceDatabaseExport, s.handleDatabaseExport)
+	mux.HandleFunc("GET "+helperproto.PathServiceJob, s.handleJobGet)
+	mux.HandleFunc("DELETE "+helperproto.PathServiceJob, s.handleJobCancel)
+	mux.HandleFunc("POST "+helperproto.PathServiceDatabaseEnv, s.handleDatabaseEnv)
 	mux.HandleFunc("GET "+helperproto.PathToolsStatus, s.handleToolsStatus)
 	mux.HandleFunc("POST "+helperproto.PathToolsInstall, s.handleToolsInstall)
 	mux.HandleFunc("POST "+helperproto.PathToolsRemove, s.handleToolsRemove)
@@ -1295,6 +1322,22 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 		s.writeError(w, http.StatusInternalServerError, helperproto.CodeVhostSyncFailed, err.Error())
 	case errors.Is(err, helperproto.ErrToolConflict):
 		s.writeError(w, http.StatusConflict, helperproto.CodeToolConflict, err.Error())
+	case errors.Is(err, databases.ErrJobNotFound):
+		s.writeError(w, http.StatusNotFound, helperproto.CodeJobNotFound, err.Error())
+	case errors.Is(err, databases.ErrNotFound):
+		s.writeError(w, http.StatusNotFound, helperproto.CodeNotFound, err.Error())
+	case errors.Is(err, databases.ErrPasswordMissing):
+		s.writeError(w, http.StatusNotFound, helperproto.CodePasswordMissing, err.Error())
+	case errors.Is(err, databases.ErrProtected):
+		s.writeError(w, http.StatusForbidden, helperproto.CodeProtected, err.Error())
+	case errors.Is(err, databases.ErrUnsupported):
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeUnsupported, err.Error())
+	case errors.Is(err, databases.ErrServiceInactive):
+		s.writeError(w, http.StatusConflict, helperproto.CodeServiceInactive, err.Error())
+	case errors.Is(err, databases.ErrConflict), errors.Is(err, databases.ErrLinkedSites):
+		s.writeError(w, http.StatusConflict, helperproto.CodeConflict, err.Error())
+	case errors.Is(err, databases.ErrInvalidRequest):
+		s.writeError(w, http.StatusBadRequest, helperproto.CodeInvalidRequest, err.Error())
 	default:
 		s.writeError(w, http.StatusInternalServerError, helperproto.CodeInternal, err.Error())
 	}

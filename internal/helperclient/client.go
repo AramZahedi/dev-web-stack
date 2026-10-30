@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
@@ -85,6 +86,20 @@ func (e *Error) Unwrap() error {
 		return helperproto.ErrVhostSyncBusy
 	case helperproto.CodeToolConflict:
 		return helperproto.ErrToolConflict
+	case helperproto.CodeNotFound:
+		return databases.ErrNotFound
+	case helperproto.CodeConflict:
+		return databases.ErrConflict
+	case helperproto.CodeProtected:
+		return databases.ErrProtected
+	case helperproto.CodeUnsupported:
+		return databases.ErrUnsupported
+	case helperproto.CodeServiceInactive:
+		return databases.ErrServiceInactive
+	case helperproto.CodePasswordMissing:
+		return databases.ErrPasswordMissing
+	case helperproto.CodeJobNotFound:
+		return databases.ErrJobNotFound
 	default:
 		return nil
 	}
@@ -427,6 +442,10 @@ func codeForStatus(status int) string {
 		return helperproto.CodeProtocolMismatch
 	case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
 		return helperproto.CodeInvalidRequest
+	case http.StatusNotFound:
+		return helperproto.CodeNotFound
+	case http.StatusConflict:
+		return helperproto.CodeConflict
 	case http.StatusNotImplemented:
 		return helperproto.CodeNotImplemented
 	default:
