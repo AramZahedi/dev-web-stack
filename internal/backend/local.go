@@ -766,6 +766,9 @@ func (l *Local) execEnvironment(p preparedSite, callEnv map[string]string) map[s
 		siteEnv = nodeEnvironment(p.spec.HTTPPort, p.nodeRoot, l.caBundlePath(), p.spec.Env)
 	case string(model.SitePHP):
 		siteEnv = phpEnvironment(p.spec.PHPBuildPath, p.spec.Env)
+		for key, value := range p.spec.RuntimeEnv {
+			siteEnv[key] = value
+		}
 		siteEnv["PHPRC"] = p.spec.PHPIniPath
 	}
 	return mergedEnv(siteEnv, callEnv)

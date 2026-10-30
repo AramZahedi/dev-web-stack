@@ -290,20 +290,27 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		provisioned = &result
 	}
 
+	warnProvisioned := func(err error) error {
+		if provisioned == nil {
+			return err
+		}
+		return fmt.Errorf("%w (database %q and user %q were created and kept)", err, provisioned.Database.Name, provisioned.User.Username)
+	}
+
 	oldHosts, err := s.hostsFor(ctx, "", nil)
 	if err != nil {
-		return model.Site{}, err
+		return model.Site{}, warnProvisioned(err)
 	}
 	newHosts, err := s.hostsFor(ctx, "", siteDomains(site))
 	if err != nil {
-		return model.Site{}, err
+		return model.Site{}, warnProvisioned(err)
 	}
 
 	buildOutputMissing := false
 	if site.Kind == model.SiteStatic && site.Build != nil {
 		exists, err := build.OutputExists(site)
 		if err != nil {
-			return model.Site{}, fmt.Errorf("sites: build output for %q: %w", site.Name, err)
+			return model.Site{}, warnProvisioned(fmt.Errorf("sites: build output for %q: %w", site.Name, err))
 		}
 		buildOutputMissing = !exists
 	}
@@ -318,26 +325,23 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	case site.Kind == model.SiteNode || !s.externalServing():
 		port, err = s.allocatePort(ctx, site.ID, domain.PortHTTP)
 		if err != nil {
-			return model.Site{}, fmt.Errorf("sites: allocate HTTP port for %q: %w", site.Name, err)
+			return model.Site{}, warnProvisioned(fmt.Errorf("sites: allocate HTTP port for %q: %w", site.Name, err))
 		}
 		site.HTTPPort = port
 	}
 
 	fail := func(cause error, certIssued bool) (model.Site, error) {
-		if provisioned != nil {
-			cause = fmt.Errorf("%w (database %q and user %q were created and kept)", cause, provisioned.Database.Name, provisioned.User.Username)
-		}
-		return model.Site{}, s.rollbackCreate(ctx, site, oldHosts, certIssued, port, cause)
+		return model.Site{}, s.rollbackCreate(ctx, site, oldHosts, certIssued, port, warnProvisioned(cause))
 	}
 
 	var phpBuild model.RuntimeBuild
 	if site.Kind == model.SitePHP {
 		if err := s.checkPHPBackend(); err != nil {
-			return model.Site{}, err
+			return model.Site{}, warnProvisioned(err)
 		}
 		fastCGIPort, err := s.allocatePort(ctx, site.ID, domain.PortFastCGI)
 		if err != nil {
-			return model.Site{}, fmt.Errorf("sites: allocate FastCGI port for %q: %w", site.Name, err)
+			return model.Site{}, warnProvisioned(fmt.Errorf("sites: allocate FastCGI port for %q: %w", site.Name, err))
 		}
 		site.FastCGIPort = fastCGIPort
 

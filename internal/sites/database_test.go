@@ -3,6 +3,9 @@ package sites
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
@@ -102,6 +105,23 @@ func TestCreateProvisionsDatabaseBeforeSiteRowAndLinksAfter(t *testing.T) {
 	}
 	if _, err := fakes.store.GetSiteByName(context.Background(), "blog"); err != nil {
 		t.Fatalf("site row missing: %v", err)
+	}
+}
+
+func TestCreatePostProvisionFailureWarnsAndKeepsDatabase(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Database = &fakeDatabaseProvisioner{}
+	output := filepath.Join(fakes.root, "dist")
+	if err := os.WriteFile(output, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.Create(context.Background(), CreateRequest{
+		Name: "blog", Path: fakes.root, Kind: "static",
+		Build:    &model.BuildProfile{NodeVersion: "22", Command: "npm run build", Output: "dist"},
+		Database: &databases.SiteDatabaseRequest{ServiceID: "mysql", Database: "app", UserID: "usr_app"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "were created and kept") {
+		t.Fatalf("create error = %v, want provisioning warning", err)
 	}
 }
 
