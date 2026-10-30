@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentapi"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/credentials"
+	"github.com/AramZahedi/dev-web-stack/internal/dbengine"
 	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
@@ -50,6 +52,18 @@ type InputRunner interface {
 	RunInput(ctx context.Context, input []byte, name string, args ...string) ([]byte, error)
 }
 
+// StreamRunner is an optional runner extension for commands whose stdout is
+// streamed to the caller instead of buffered.
+type StreamRunner interface {
+	RunStream(ctx context.Context, name string, args ...string) (io.ReadCloser, error)
+}
+
+// InputStreamRunner is an optional runner extension for commands whose stdin is
+// streamed from the caller instead of buffered.
+type InputStreamRunner interface {
+	RunInputStream(ctx context.Context, input io.Reader, name string, args ...string) error
+}
+
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -73,6 +87,50 @@ func (execRunner) RunInput(ctx context.Context, input []byte, name string, args 
 	return output, nil
 }
 
+func (execRunner) RunStream(ctx context.Context, name string, args ...string) (io.ReadCloser, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 3 * time.Second
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("%s: open stdout: %w", name, err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return &commandStream{ReadCloser: stdout, cmd: cmd, name: name, stderr: &stderr}, nil
+}
+
+func (execRunner) RunInputStream(ctx context.Context, input io.Reader, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 3 * time.Second
+	cmd.Stdin = input
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// commandStream closes the child's stdout and reaps the process. Close must be
+// called even after the caller has read to EOF.
+type commandStream struct {
+	io.ReadCloser
+	cmd    *exec.Cmd
+	name   string
+	stderr *bytes.Buffer
+}
+
+func (s *commandStream) Close() error {
+	readErr := s.ReadCloser.Close()
+	waitErr := s.cmd.Wait()
+	if waitErr != nil {
+		return fmt.Errorf("%s: %w: %s", s.name, waitErr, strings.TrimSpace(s.stderr.String()))
+	}
+	return readErr
+}
+
 // Config binds the module to the agent's WSL root. Root is supplied by the
 // trusted agent configuration, never by an HTTP request.
 type Config struct {
@@ -83,11 +141,13 @@ type Config struct {
 
 // Docker is a fixed-catalog service module.
 type Docker struct {
-	root        string
-	composePath string
-	runner      Runner
-	catalog     services.Catalog
-	opMu        sync.Mutex
+	root             string
+	composePath      string
+	runner           Runner
+	catalog          services.Catalog
+	opMu             sync.Mutex
+	databaseRegistry dbengine.Registry
+	databaseLocks    sync.Map
 }
 
 var _ agentapi.Module = (*Docker)(nil)
@@ -115,11 +175,16 @@ func New(cfg Config) (*Docker, error) {
 	if runner == nil {
 		runner = execRunner{}
 	}
+	var databaseRegistry dbengine.Registry
+	if dbengine.DefaultRegistry != nil {
+		databaseRegistry = dbengine.DefaultRegistry()
+	}
 	return &Docker{
-		root:        root,
-		composePath: filepath.Join(root, "services", "compose.yaml"),
-		runner:      runner,
-		catalog:     catalog,
+		root:             root,
+		composePath:      filepath.Join(root, "services", "compose.yaml"),
+		runner:           runner,
+		catalog:          catalog,
+		databaseRegistry: databaseRegistry,
 	}, nil
 }
 
