@@ -639,23 +639,23 @@ Reset profile to baseline, remove temporary site, `doctor` green.
 
 **Artifacts:** `task-11/`
 
-- [ ] **Step 1: Baseline**
+- [x] **Step 1: Baseline**
 
 `devstack doctor --json`; all checks pass; Settings → Doctor → Run checks; Repair button visible.
 
-- [ ] **Step 2: Dashboard Repair**
+- [x] **Step 2: Dashboard Repair**
 
 Click Repair; wait; expected checks pass, toast, no host breakage. Reload; `doctor` green.
 
-- [ ] **Step 3: CLI repair**
+- [x] **Step 3: CLI repair**
 
 `devstack doctor --repair --json`; expected exit 0, checks pass, idempotent second run.
 
-- [ ] **Step 4: Safe repairable drift**
+- [x] **Step 4: Safe repairable drift**
 
 Use a sandbox or a reversible drift (for example, stop helper/daemon and start again; or remove a test-only hosts entry if the repair path supports it). Do not break the live trust store without Task 7's restore path. Expected: repair restores and reports what it fixed.
 
-- [ ] **Step 5: Final**
+- [x] **Step 5: Final**
 
 `doctor` green; no sites/services left; evidence captured.
 
