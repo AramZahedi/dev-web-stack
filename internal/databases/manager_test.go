@@ -1426,16 +1426,18 @@ func TestReconcileJobsMarksOrphansFailed(t *testing.T) {
 	}
 }
 
-func TestManagerDeleteServiceMetadataKeepsLinksUntilSeparateCleanup(t *testing.T) {
+func TestManagerDeleteServiceMetadataRemovesLinksUsersGrantsBackupsAndJobs(t *testing.T) {
 	m, st, _, _, _ := testManagerWithFakes(t)
 	st.links = []model.DatabaseLinkRecord{{ID: "lnk_1", SiteID: "site_1", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app"}}
+	st.users = []model.DatabaseUserRecord{{ID: "usr_app", ServiceID: "mysql", Engine: model.DatabaseMySQL, Username: "app"}}
+	st.grants = []model.DatabaseGrantRecord{{UserID: "usr_app", DatabaseName: "app", Preset: string(model.GrantReadOnly)}}
 	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
 	st.jobs = []model.DatabaseJobRecord{{ID: "job_1", ServiceID: "mysql", DatabaseName: "app", Status: string(model.JobSucceeded)}}
 	if err := m.DeleteServiceMetadata(context.Background(), "mysql"); err != nil {
 		t.Fatal(err)
 	}
-	if len(st.users) != 0 || len(st.backups) != 0 || len(st.jobs) != 0 {
-		t.Fatalf("metadata survived: users=%+v backups=%+v jobs=%+v", st.users, st.backups, st.jobs)
+	if len(st.users) != 0 || len(st.grants) != 0 || len(st.backups) != 0 || len(st.jobs) != 0 {
+		t.Fatalf("metadata survived: users=%+v grants=%+v backups=%+v jobs=%+v", st.users, st.grants, st.backups, st.jobs)
 	}
 	if len(st.links) != 0 {
 		t.Fatalf("links survived metadata cleanup: %+v", st.links)

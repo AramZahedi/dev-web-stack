@@ -316,7 +316,7 @@ func TestDatabaseBackupAndJobRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDeleteServiceMetadataKeepsAuditAndLinks(t *testing.T) {
+func TestDeleteServiceMetadataRemovesLinksUsersBackupsAndJobsKeepsAudit(t *testing.T) {
 	s := openTemp(t)
 	site := testSite("site_1", "blog")
 	if err := s.CreateSite(ctx, site); err != nil {
@@ -358,6 +358,58 @@ func TestDeleteServiceMetadataKeepsAuditAndLinks(t *testing.T) {
 	}
 	if links, _ := s.ListDatabaseLinksBySite(ctx, site.ID); len(links) != 0 {
 		t.Fatalf("links survived metadata cleanup: %+v", links)
+	}
+	if count, _ := s.CountAuditEvents(ctx); count != 1 {
+		t.Fatalf("audit rows = %d, want durable 1", count)
+	}
+}
+
+func TestDeleteServiceMetadataRollsBackEverythingOnFailure(t *testing.T) {
+	s := openTemp(t)
+	site := testSite("site_1", "blog")
+	if err := s.CreateSite(ctx, site); err != nil {
+		t.Fatal(err)
+	}
+	user := model.DatabaseUserRecord{ID: "usr_app", ServiceID: "mysql", Engine: model.DatabaseMySQL, Username: "app", Host: "%"}
+	if err := s.UpsertDatabaseUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveDatabaseGrant(ctx, model.DatabaseGrantRecord{UserID: user.ID, DatabaseName: "app", Preset: string(model.GrantReadOnly)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDatabaseBackup(ctx, model.DatabaseBackupRecord{ID: "bkp_1", ServiceID: "mysql", Engine: model.DatabaseMySQL, DatabaseName: "app", Kind: string(model.BackupManual), Status: string(model.BackupReady)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDatabaseJob(ctx, model.DatabaseJobRecord{ID: "job_1", ServiceID: "mysql", DatabaseName: "app", Kind: string(model.JobBackup), Status: string(model.JobSucceeded)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateDatabaseLink(ctx, model.DatabaseLinkRecord{ID: "lnk_1", SiteID: site.ID, ServiceID: "mysql", DatabaseName: "app", UserID: user.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddAuditEvent(ctx, model.AuditEventRecord{Action: "database.created", Result: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER fail_job_delete BEFORE DELETE ON database_jobs
+		BEGIN SELECT RAISE(ABORT, 'job delete blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteServiceMetadata(ctx, "mysql"); err == nil {
+		t.Fatal("DeleteServiceMetadata succeeded despite trigger failure")
+	}
+	if users, _ := s.ListDatabaseUsers(ctx, "mysql"); len(users) != 1 {
+		t.Fatalf("users were not rolled back: %+v", users)
+	}
+	if grants, _ := s.ListDatabaseGrants(ctx, user.ID); len(grants) != 1 {
+		t.Fatalf("grants were not rolled back: %+v", grants)
+	}
+	if backups, _ := s.ListDatabaseBackups(ctx, "mysql"); len(backups) != 1 {
+		t.Fatalf("backups were not rolled back: %+v", backups)
+	}
+	if jobs, _ := s.ListDatabaseJobs(ctx, "mysql"); len(jobs) != 1 {
+		t.Fatalf("jobs were not rolled back: %+v", jobs)
+	}
+	if links, _ := s.ListDatabaseLinksBySite(ctx, site.ID); len(links) != 1 {
+		t.Fatalf("links were not rolled back: %+v", links)
 	}
 	if count, _ := s.CountAuditEvents(ctx); count != 1 {
 		t.Fatalf("audit rows = %d, want durable 1", count)

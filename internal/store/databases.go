@@ -510,9 +510,8 @@ func (s *Store) ListDatabaseJobs(ctx context.Context, serviceID string) ([]model
 	return jobs, nil
 }
 
-// DeleteServiceMetadata removes users, grants, backups, and jobs for a service
-// after its data was deleted. Links are removed separately; audit rows are
-// durable and never touched.
+// DeleteServiceMetadata removes links, users, grants, backups, and jobs for a
+// service after its data was deleted. Audit rows are durable and never touched.
 func (s *Store) DeleteServiceMetadata(ctx context.Context, serviceID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

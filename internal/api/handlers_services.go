@@ -17,6 +17,14 @@ type listServicesResponse struct {
 	Services []services.View `json:"services"`
 }
 
+// uninstallResponse keeps the servicecontrol result shape and adds non-fatal
+// cleanup warnings. The uninstall itself succeeded; stale database metadata is
+// reported without turning a successful uninstall into an HTTP error.
+type uninstallResponse struct {
+	servicecontrol.UninstallResult
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 	if s.services == nil {
 		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "service coordinator is not available", nil)

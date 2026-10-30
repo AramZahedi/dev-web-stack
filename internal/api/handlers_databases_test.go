@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -24,6 +25,7 @@ type fakeDatabaseService struct {
 	secret        string
 	env           map[string]string
 	err           error
+	metadataErr   error
 
 	lastCreate      databases.CreateDatabaseRequest
 	lastRename      databases.RenameDatabaseRequest
@@ -142,6 +144,9 @@ func (f *fakeDatabaseService) DeleteServiceLinks(context.Context, string) error 
 }
 func (f *fakeDatabaseService) DeleteServiceMetadata(context.Context, string) error {
 	f.deletedMetadata = true
+	if f.metadataErr != nil {
+		return f.metadataErr
+	}
 	return f.err
 }
 func (f *fakeDatabaseService) Impact(_ context.Context, serviceID string) (databases.ServiceImpact, error) {
@@ -385,10 +390,41 @@ func TestUninstallDeleteDataCleansDatabaseMetadata(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 			}
-			if db.deletedLinks != tc.want || db.deletedMetadata != tc.want {
-				t.Fatalf("cleanup links=%v metadata=%v, want %v", db.deletedLinks, db.deletedMetadata, tc.want)
+			if db.deletedMetadata != tc.want {
+				t.Fatalf("metadata cleanup = %v, want %v", db.deletedMetadata, tc.want)
+			}
+			if db.deletedLinks {
+				t.Fatal("uninstall called DeleteServiceLinks separately; metadata cleanup owns links")
 			}
 		})
+	}
+}
+
+func TestUninstallDeleteDataWarnsWhenMetadataCleanupFails(t *testing.T) {
+	db := &fakeDatabaseService{metadataErr: errors.New("delete metadata: password=supersecret failed")}
+	fx := newFixture(t, Config{
+		Databases: db,
+		Services:  &fakeServiceCoordinator{},
+	})
+	rec := fx.request(t, http.MethodDelete, "/api/v1/services/mysql", strings.NewReader(`{"delete_data":true}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !db.deletedMetadata {
+		t.Fatal("metadata cleanup was not attempted")
+	}
+	var resp struct {
+		BackupPath string   `json:"backup_path"`
+		Warnings   []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rec.Body.String())
+	}
+	if len(resp.Warnings) != 1 || !strings.Contains(resp.Warnings[0], "metadata cleanup failed") {
+		t.Fatalf("warnings = %#v body=%s", resp.Warnings, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "supersecret") {
+		t.Fatalf("warning leaked a password: %s", rec.Body.String())
 	}
 }
 

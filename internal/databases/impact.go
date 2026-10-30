@@ -65,9 +65,8 @@ func (m *Manager) Impact(ctx context.Context, serviceID string) (ServiceImpact, 
 	}, nil
 }
 
-// DeleteServiceMetadata removes users, grants, backups, and jobs after an
-// uninstall with delete-data succeeded. Links are removed by DeleteServiceLinks;
-// audit rows remain durable.
+// DeleteServiceMetadata removes links, users, grants, backups, and jobs after an
+// uninstall with delete-data succeeded. Audit rows remain durable.
 func (m *Manager) DeleteServiceMetadata(ctx context.Context, serviceID string) error {
 	serviceID = canonicalServiceID(serviceID)
 	links, err := m.deps.Store.ListDatabaseLinksByService(ctx, serviceID)
