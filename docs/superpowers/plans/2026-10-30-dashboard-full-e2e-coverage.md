@@ -380,7 +380,14 @@ Remove the site; remove copied fixture folders; `doctor` green.
 
 **Depends on:** Task 0. **Artifacts:** `task-4/`
 
-- [ ] **Step 1: Discover PHP builds**
+> **Result (2026-10-30):** COMPLETE. PHP 8.5 installed and verified through the
+> dashboard, CLI line migrations moved every site, dashboard migration and
+> removal were exercised, removal protection failed closed, and PHP 8.4 was
+> restored as the only installed build. Two product bugs were fixed with tests
+> and redeployed. Evidence:
+> `dist/e2e/full-dashboard/task-4/PROGRESS.md`.
+
+- [x] **Step 1: Discover PHP builds**
 
 ```powershell
 & $ds runtime available --kind php --home $h
@@ -389,7 +396,7 @@ Remove the site; remove copied fixture folders; `doctor` green.
 
 Expected: embedded PHP builds 8.2–8.5 with exact IDs.
 
-- [ ] **Step 2: Install PHP 8.5 from the dashboard**
+- [x] **Step 2: Install PHP 8.5 from the dashboard**
 
 Runtimes → Available PHP → install `php@8.5.12-r1` (or newest 8.5 in this build). Expected: install dialog, progress, installed badge; `runtime list` has 8.5.
 
@@ -399,11 +406,11 @@ CLI parity:
 & $ds runtime install php@8.5.12-r1 --home $h --yes
 ```
 
-- [ ] **Step 3: Create PHP sites on 8.4 and 8.5**
+- [x] **Step 3: Create PHP sites on 8.4 and 8.5**
 
 Use Task 1 fixtures; pin one site to each. Verify HTTP `PHP_VERSION` and `php -v`.
 
-- [ ] **Step 4: Migrate a PHP line**
+- [x] **Step 4: Migrate a PHP line**
 
 ```powershell
 & $ds runtime migrate 8.4 --to 8.5 --home $h --yes
@@ -413,13 +420,13 @@ Expected: every 8.4 site moves to the 8.5 build, routes republished, HTTP report
 
 Dashboard: Runtimes → migration controls, choose 8.4 → 8.5, confirm; same assertions.
 
-- [ ] **Step 5: Removal protection and removal**
+- [x] **Step 5: Removal protection and removal**
 
 - Attempt `runtime remove php@8.5...` while sites pin it → `PHP_VERSION_IN_USE` / `RUNTIME_IN_USE` naming sites.
 - Remove/migrate the sites, then remove the unused PHP build; verify directory removed and `runtime list` updated.
 - Restore sites to 8.4 and remove 8.5.
 
-- [ ] **Step 6: Negative cases and cleanup**
+- [x] **Step 6: Negative cases and cleanup**
 
 Unknown PHP line/build, in-use default, dashboard remove confirmation/cancel; verify errors and no mutation. Leave PHP default `php@8.4.27-r1`; `doctor` green.
 
