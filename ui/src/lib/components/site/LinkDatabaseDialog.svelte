@@ -7,6 +7,7 @@
   import ErrorBanner from '../ErrorBanner.svelte';
   import Modal from '../Modal.svelte';
   import DatabasePicker from './DatabasePicker.svelte';
+  import { isDatabaseIdentifier } from './databaseIdentifiers';
 
   interface Props {
     open: boolean;
@@ -41,9 +42,10 @@
     onclose();
   }
 
-  function isDatabaseIdentifier(value: string): boolean {
-    return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(value);
-  }
+  $effect(() => {
+    value;
+    if (validation) validation = '';
+  });
 
   async function submit(): Promise<void> {
     if (!value) {

@@ -1978,7 +1978,7 @@
   open={deleteOpen}
   title={site ? `Remove ${site.name}?` : 'Remove site?'}
   description={site
-    ? `This stops the site and removes its ${site.domain} domain, certificate and generated configs. Files in ${site.host_path} are never deleted. Linked databases, users, grants, passwords, backups, and data remain.`
+    ? `This stops the site and removes its ${site.domain} domain, certificate, generated configs, and database links. Files in ${site.host_path} are never deleted. Databases, users, grants, passwords, backups, and data remain.`
     : ''}
   confirmLabel="Remove site"
   requireText={site?.name}

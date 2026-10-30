@@ -2,17 +2,13 @@ import type { GrantPreset } from '../../databaseTypes';
 
 /** Display data derived from the picker selection for review and dialogs. */
 export interface DatabasePickerSummary {
-  serviceID: string;
   serviceName: string;
-  engine: string;
   database: string;
   username: string;
-  grant: GrantPreset | '';
   grantLabel: string;
   host: string;
   port: number;
   passwordManaged: boolean;
-  hasAccess: boolean;
 }
 
 const GRANT_LABELS: Record<GrantPreset, string> = {

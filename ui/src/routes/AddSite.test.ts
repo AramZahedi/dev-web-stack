@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { get } from 'svelte/store';
 import AddSite from './AddSite.svelte';
 import * as api from '../lib/api';
@@ -219,6 +219,40 @@ const SITE_DB_LINK: DatabaseLink = {
       DB_PORT: '3306',
       DB_DATABASE: 'app',
       DB_USERNAME: 'blog_user',
+    },
+  },
+};
+
+const BLOG_DB_LINK: DatabaseLink = {
+  ...SITE_DB_LINK,
+  id: 'lnk_blog',
+  database: 'blog',
+  connection: {
+    ...SITE_DB_LINK.connection,
+    database: 'blog',
+    url: 'mysql://blog_user@127.0.0.1:3306/blog',
+    env: {
+      ...SITE_DB_LINK.connection.env,
+      DB_DATABASE: 'blog',
+    },
+  },
+};
+
+const OTHER_DB_LINK: DatabaseLink = {
+  ...SITE_DB_LINK,
+  id: 'lnk_other',
+  database: 'other',
+  user_id: 'usr_other',
+  username: 'other_user',
+  connection: {
+    ...SITE_DB_LINK.connection,
+    database: 'other',
+    username: 'other_user',
+    url: 'mysql://other_user@127.0.0.1:3306/other',
+    env: {
+      ...SITE_DB_LINK.connection.env,
+      DB_DATABASE: 'other',
+      DB_USERNAME: 'other_user',
     },
   },
 };
@@ -729,6 +763,14 @@ describe('AddSite Wave 2 fields', () => {
     expect(mockApi.createSite).not.toHaveBeenCalled();
   });
 
+  it('focuses the database picker from the review row', async () => {
+    await openOptionsStep();
+    await enableDatabase('blog', 'blog_user');
+    const row = screen.getByText(/blog on MySQL 8\.4/).closest('.review-row') as HTMLElement;
+    await fireEvent.click(within(row).getByRole('button', { name: 'Edit' }));
+    await waitFor(() => expect(document.activeElement?.id).toBe('database-service'));
+  });
+
   it('filters missing and protected existing databases and users', async () => {
     mockDb.listServiceDatabases.mockResolvedValue({
       databases: [APP_DATABASE, BLOG_DATABASE, MISSING_DATABASE, DEVSTACK_DATABASE],
@@ -878,6 +920,22 @@ describe('AddSite Wave 2 fields', () => {
     expect(screen.queryByText('generated')).toBeNull();
     await fireEvent.click(screen.getByRole('button', { name: 'Reveal password' }));
     expect(await screen.findByText('generated')).toBeTruthy();
+    expect(mockDb.revealServiceUserPassword).toHaveBeenCalledWith('mysql', 'usr_app');
+  });
+
+  it('opens the created link that matches the requested database', async () => {
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [OTHER_DB_LINK, BLOG_DB_LINK] });
+    mockDb.revealServiceUserPassword.mockResolvedValue({ value: 'generated' });
+    await openOptionsStep();
+    await enableDatabase('blog', 'blog_user');
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('blog')).toBeTruthy();
+    await fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Reveal password' }),
+    );
+    expect(await within(dialog).findByText('generated')).toBeTruthy();
     expect(mockDb.revealServiceUserPassword).toHaveBeenCalledWith('mysql', 'usr_app');
   });
 

@@ -47,6 +47,7 @@
   import Toggle from '../lib/components/Toggle.svelte';
   import DatabasePicker from '../lib/components/site/DatabasePicker.svelte';
   import DatabaseReviewRow from '../lib/components/site/DatabaseReviewRow.svelte';
+  import { isDatabaseIdentifier } from '../lib/components/site/databaseIdentifiers';
   import {
     sanitizeDatabaseUrl,
     type DatabasePickerSummary,
@@ -481,10 +482,6 @@
     return next;
   }
 
-  function isDatabaseIdentifier(value: string): boolean {
-    return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(value);
-  }
-
   function isRelativeFile(value: string): boolean {
     if (value.startsWith('/') || value.startsWith('\\')) return false;
     if (value.includes('\0')) return false;
@@ -694,6 +691,14 @@
     push(`/services/${encodeURIComponent(serviceID)}?tab=users&user=${encodeURIComponent(userID)}`);
   }
 
+  async function focusDatabasePanel(): Promise<void> {
+    await goToStep(3);
+    const target =
+      document.getElementById('database-service') ?? document.getElementById('database-picker');
+    target?.focus();
+    target?.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
+  }
+
   function warningFromDetails(details: unknown): string {
     if (!details || typeof details !== 'object') return '';
     const raw = details as Record<string, unknown>;
@@ -819,10 +824,21 @@
           : `${site.domain} is starting. Logs are live on the detail page.`,
       });
       if (dbRequest) {
+        const request = dbRequest;
         let link: SiteDatabaseLink | null = null;
         try {
           const result = await db.listSiteDatabases(site.id);
-          link = result?.links?.[0] ?? null;
+          const requestedDatabase =
+            request.new_database?.name?.trim() ?? request.database ?? '';
+          const candidates = result?.links ?? [];
+          link =
+            candidates.find(
+              (candidate) =>
+                candidate.service_id === request.service_id &&
+                candidate.database === requestedDatabase,
+            ) ??
+            candidates[0] ??
+            null;
         } catch (caught) {
           const described = describeError(caught);
           addToast({
@@ -1686,7 +1702,7 @@
                     <DatabaseReviewRow
                       value={dbRequest}
                       summary={dbSummary}
-                      onedit={() => goToStep(3)}
+                      onedit={focusDatabasePanel}
                     />
                   {/if}
                   {#if kind === 'node'}

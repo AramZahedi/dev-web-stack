@@ -119,13 +119,9 @@
     const grantPreset: GrantPreset | '' =
       userMode === 'new' ? grant : (selectedUserGrant?.preset ?? '');
     return {
-      serviceID,
       serviceName: selectedService?.display_name ?? serviceID,
-      engine:
-        selectedService?.id === 'postgresql' ? 'postgres' : (selectedService?.id ?? ''),
       database: selectedDatabase,
       username: userMode === 'new' ? username.trim() : (selectedUser?.username ?? ''),
-      grant: grantPreset,
       grantLabel: grantPreset ? grantLabel(grantPreset) : 'No access yet',
       host: '127.0.0.1',
       port:
@@ -133,7 +129,6 @@
         defaultPort(selectedService?.id),
       passwordManaged:
         userMode === 'new' ? true : Boolean(selectedUser?.password_managed),
-      hasAccess: userMode === 'new' || Boolean(selectedUserGrant),
     };
   }
 
@@ -163,6 +158,11 @@
     }
     value = request;
     summary = buildSummary();
+  }
+
+  function invalidateData(): void {
+    dataGeneration += 1;
+    dataLoading = false;
   }
 
   async function selectService(id: string, reset = true): Promise<void> {
@@ -239,6 +239,7 @@
       services = [];
       servicesError = describeError(caught);
       if (!alwaysOn) enabled = false;
+      invalidateData();
       sync();
     } finally {
       servicesLoading = false;
@@ -249,6 +250,7 @@
   function setEnabled(next: boolean): void {
     enabled = next;
     if (!next) {
+      invalidateData();
       sync();
       return;
     }
@@ -283,6 +285,7 @@
     const id = (event.currentTarget as HTMLSelectElement).value;
     onclearerror?.('database_service');
     if (!id) {
+      invalidateData();
       serviceID = '';
       databases = [];
       users = [];
@@ -311,7 +314,7 @@
   });
 </script>
 
-<div class="database-picker">
+<div class="database-picker" id="database-picker" tabindex="-1">
   <div class="panel-label">
     <h3>Database</h3>
     {#if !alwaysOn}<span>Optional</span>{/if}
