@@ -768,11 +768,11 @@ Close terminals, remove fixtures, verify no orphan PTYs; `doctor` green.
 
 **Artifacts:** `task-14/` and `docs/superpowers/audits/2026-10-30-dashboard-full-e2e.md`
 
-- [ ] **Step 1: Restore baseline**
+- [x] **Step 1: Restore baseline**
 
 Sites empty, services `not_installed`, serving builtin, Node `24.22.1`, PHP `8.4.27`, Composer installed, trust/hosts healthy, ports 8080/8443/7070, performance reset, no host tuning applied. Confirm against Task 0 baseline JSON.
 
-- [ ] **Step 2: Re-run every gate**
+- [x] **Step 2: Re-run every gate**
 
 ```powershell
 gofmt -l .
@@ -793,7 +793,7 @@ pwsh -NoProfile -File test/windows/vertical_slice.ps1
 
 Expected: all green; record any environment skips with the exact reason.
 
-- [ ] **Step 3: Final live assertions**
+- [x] **Step 3: Final live assertions**
 
 ```powershell
 & $ds doctor --json --home $h
@@ -805,11 +805,11 @@ Expected: all green; record any environment skips with the exact reason.
 
 Expected: doctor no failures; sites empty; services not installed; defaults exact; wrappers run.
 
-- [ ] **Step 4: Dashboard final sweep**
+- [x] **Step 4: Dashboard final sweep**
 
 Fresh tab: Sites, Services, Runtimes, Doctor, Settings; assert 0 console errors/warnings; screenshots for the report.
 
-- [ ] **Step 5: Write the report**
+- [x] **Step 5: Write the report**
 
 Create `docs/superpowers/audits/2026-10-30-dashboard-full-e2e.md` and record:
 - each task PASS/FAIL/BLOCKED with exact commands and evidence paths;
@@ -820,7 +820,7 @@ Create `docs/superpowers/audits/2026-10-30-dashboard-full-e2e.md` and record:
 
 Link the report from `docs/README.md` and `docs/handoff.md`.
 
-- [ ] **Step 6: Commit and push**
+- [x] **Step 6: Commit and push**
 
 ```powershell
 git add internal ui test docs api
@@ -832,13 +832,13 @@ Do not commit `dist/`, `.playwright-mcp/`, runtime data, or secrets.
 
 ## Self-review checklist
 
-- [ ] Every item in “Why this plan exists” maps to a task above.
-- [ ] Every destructive task has a backup and a restore step.
-- [ ] Every task ends with `doctor` green and no leftover sites/services.
-- [ ] Every dashboard assertion names a visible label and captures console errors.
-- [ ] Every CLI command has an expected exit code and JSON/table assertion.
-- [ ] No task weakens a security boundary to pass.
-- [ ] Final gate includes Go, UI, installer, lifecycle, release, vertical slice, and live state.
-- [ ] The final report is committed and linked from `docs/README.md` and `docs/handoff.md`.
+- [x] Every item in “Why this plan exists” maps to a task above.
+- [x] Every destructive task has a backup and a restore step.
+- [x] Every task ends with `doctor` green and no leftover sites/services.
+- [x] Every dashboard assertion names a visible label and captures console errors.
+- [x] Every CLI command has an expected exit code and JSON/table assertion.
+- [x] No task weakens a security boundary to pass.
+- [x] Final gate includes Go, UI, installer, lifecycle, release, vertical slice, and live state.
+- [x] The final report is committed and linked from `docs/README.md` and `docs/handoff.md`.
 
 
