@@ -310,6 +310,7 @@ type TerminalTicketRequest struct {
 	Cols        int    `json:"cols,omitempty"`
 	Rows        int    `json:"rows,omitempty"`
 	NodeVersion string `json:"node_version,omitempty"`
+	SiteName    string `json:"site_name,omitempty"`
 }
 
 // TerminalTicketResponse is the WebSocket endpoint and one-time ticket.

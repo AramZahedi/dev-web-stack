@@ -43,6 +43,12 @@ func NewServerWithRuntimeAndDocker(config Config, token string, identity TLSIden
 	if err := config.applyDefaultsAndValidate(); err != nil {
 		return nil, err
 	}
+	if runtime != nil {
+		runtime.SetTerminalLimits(
+			time.Duration(config.TerminalIdleSeconds)*time.Second,
+			time.Duration(config.TerminalMaxSeconds)*time.Second,
+		)
+	}
 	if strings.TrimSpace(token) == "" {
 		return nil, errors.New("agent: bearer token is empty")
 	}

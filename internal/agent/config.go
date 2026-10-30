@@ -12,8 +12,12 @@ import (
 )
 
 const (
-	DefaultAgentRoot = "/data/devstack"
-	DefaultAgentPort = 7843
+	DefaultAgentRoot           = "/data/devstack"
+	DefaultAgentPort           = 7843
+	DefaultTerminalIdleSeconds = 1800
+	DefaultTerminalMaxSeconds  = 14400
+	maxTerminalIdleSeconds     = 86400
+	maxTerminalSessionSeconds  = 604800
 )
 
 // Config is the root-owned, non-secret agent configuration. Credentials are
@@ -29,6 +33,11 @@ type Config struct {
 	TLSCertFile  string   `yaml:"tls_cert_file,omitempty"`
 	TLSKeyFile   string   `yaml:"tls_key_file,omitempty"`
 	Capabilities []string `yaml:"capabilities,omitempty"`
+
+	// TerminalIdleSeconds closes an idle site terminal and
+	// TerminalMaxSeconds caps a single session. Zero selects the defaults.
+	TerminalIdleSeconds int `yaml:"terminal_idle_seconds,omitempty"`
+	TerminalMaxSeconds  int `yaml:"terminal_max_seconds,omitempty"`
 }
 
 // DefaultConfig returns the installed agent's standard path and listener
@@ -125,6 +134,18 @@ func (c *Config) applyDefaultsAndValidate() error {
 	}
 	if c.TLSDir != filepath.Dir(c.TLSCertFile) || c.TLSDir != filepath.Dir(c.TLSKeyFile) {
 		return errors.New("agent: TLS certificate and key must be directly inside the TLS directory")
+	}
+	if c.TerminalIdleSeconds == 0 {
+		c.TerminalIdleSeconds = DefaultTerminalIdleSeconds
+	}
+	if c.TerminalIdleSeconds < 1 || c.TerminalIdleSeconds > maxTerminalIdleSeconds {
+		return fmt.Errorf("agent: terminal_idle_seconds must be between 1 and %d", maxTerminalIdleSeconds)
+	}
+	if c.TerminalMaxSeconds == 0 {
+		c.TerminalMaxSeconds = DefaultTerminalMaxSeconds
+	}
+	if c.TerminalMaxSeconds < 1 || c.TerminalMaxSeconds > maxTerminalSessionSeconds {
+		return fmt.Errorf("agent: terminal_max_seconds must be between 1 and %d", maxTerminalSessionSeconds)
 	}
 	return nil
 }

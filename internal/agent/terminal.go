@@ -35,6 +35,7 @@ const (
 type terminalTicket struct {
 	token       string
 	siteID      string
+	siteName    string
 	cols        int
 	rows        int
 	nodeVersion string
@@ -89,6 +90,7 @@ func (r *Runtime) IssueTerminalTicket(id string, req agentproto.TerminalTicketRe
 	r.termTickets[token] = &terminalTicket{
 		token:       token,
 		siteID:      id,
+		siteName:    strings.TrimSpace(req.SiteName),
 		cols:        cols,
 		rows:        rows,
 		nodeVersion: strings.TrimSpace(req.NodeVersion),
@@ -127,7 +129,40 @@ func (r *Runtime) pruneTerminalTicketsLocked(now time.Time) {
 	}
 }
 
-// HandleTerminalWebSocket upgrades to WebSocket, validates the ticket, and runs a PTY shell.
+// terminalEnvironment builds the shell environment for a site terminal. The
+// dashboard contract matches `devstack shell`: the site name and project are
+// exported, the managed home is visible, and PHP uses the site's generated
+// php.ini.
+func (r *Runtime) terminalEnvironment(spec agentproto.SiteSpec, ticket *terminalTicket) (map[string]string, error) {
+	envMap := make(map[string]string, len(spec.Env))
+	for key, value := range spec.Env {
+		envMap[key] = value
+	}
+	caEnv, err := r.Environment(envMap)
+	if err != nil {
+		return nil, err
+	}
+	caEnv["PATH"] = r.sitePathEnv(spec, caEnv["PATH"])
+	caEnv["TERM"] = "xterm-256color"
+	siteName := strings.TrimSpace(ticket.siteName)
+	if siteName == "" {
+		siteName = ticket.siteID
+	}
+	caEnv["DEVSTACK_SITE"] = siteName
+	caEnv["DEVSTACK_PROJECT"] = spec.BackendPath
+	caEnv["DEVSTACK_HOME"] = r.root
+	if strings.EqualFold(spec.Kind, "php") {
+		// Only point PHP at a generated file that exists; an empty PHPRC would
+		// make the CLI exit before the shell starts.
+		if info, err := os.Stat(strings.TrimSpace(spec.PHPIniPath)); err == nil && info.Mode().IsRegular() {
+			caEnv["PHPRC"] = spec.PHPIniPath
+		}
+	}
+	return caEnv, nil
+}
+
+// HandleTerminalWebSocket upgrades to WebSocket, validates the ticket, and runs
+// a PTY shell in the site project with its toolchain environment.
 func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Request, siteID string) {
 	token := strings.TrimSpace(req.URL.Query().Get("ticket"))
 	if token == "" {
@@ -190,18 +225,11 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 	cmd := exec.Command(shell)
 	cmd.Dir = spec.BackendPath
 
-	envMap := make(map[string]string)
-	for k, v := range spec.Env {
-		envMap[k] = v
-	}
-	caEnv, err := r.Environment(envMap)
+	caEnv, err := r.terminalEnvironment(spec, ticket)
 	if err != nil {
 		_ = conn.Close(websocket.StatusInternalError, "site environment is unavailable")
 		return
 	}
-	caEnv["PATH"] = r.sitePathEnv(spec, caEnv["PATH"])
-	caEnv["TERM"] = "xterm-256color"
-	caEnv["DEVSTACK_SITE"] = siteID
 
 	envList := os.Environ()
 	for k, v := range caEnv {
@@ -266,12 +294,23 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 		return conn.Write(writeCtx, websocket.MessageText, data)
 	}
 
+	// Activity resets the idle timer. The channel is buffered so a burst of
+	// output cannot block the PTY reader.
+	activity := make(chan struct{}, 1)
+	touch := func() {
+		select {
+		case activity <- struct{}{}:
+		default:
+		}
+	}
+
 	// PTY stdout -> WebSocket frames
 	go func() {
 		buf := make([]byte, 4096)
 		for {
 			n, err := outReader.Read(buf)
 			if n > 0 {
+				touch()
 				_ = sendFrame(terminalServerFrame{Type: "output", Data: string(buf[:n])})
 			}
 			if err != nil {
@@ -288,6 +327,7 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 				cancel()
 				return
 			}
+			touch()
 			var frame terminalClientFrame
 			if err := json.Unmarshal(msg, &frame); err == nil {
 				switch frame.Type {
@@ -310,22 +350,48 @@ func (r *Runtime) HandleTerminalWebSocket(w http.ResponseWriter, req *http.Reque
 		}
 	}()
 
-	// Wait for process exit or context done
+	// Wait for process exit, an idle/absolute limit, or context done.
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
 	}()
+	idle := time.NewTimer(r.terminalIdleTimeout)
+	defer idle.Stop()
+	absolute := time.NewTimer(r.terminalMaxDuration)
+	defer absolute.Stop()
 
-	select {
-	case <-ctx.Done():
-	case err := <-done:
-		exitCode := 0
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-done:
+			exitCode := 0
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				exitCode = exitErr.ExitCode()
+			}
+			_ = sendFrame(terminalServerFrame{Type: "exit", Code: &exitCode})
+			_ = conn.Close(websocket.StatusNormalClosure, "process exited")
+			return
+		case <-activity:
+			if !idle.Stop() {
+				select {
+				case <-idle.C:
+				default:
+				}
+			}
+			idle.Reset(r.terminalIdleTimeout)
+		case <-idle.C:
+			exitCode := 0
+			_ = sendFrame(terminalServerFrame{Type: "exit", Code: &exitCode})
+			_ = conn.Close(websocket.StatusNormalClosure, "terminal idle timeout")
+			return
+		case <-absolute.C:
+			exitCode := 0
+			_ = sendFrame(terminalServerFrame{Type: "exit", Code: &exitCode})
+			_ = conn.Close(websocket.StatusPolicyViolation, "terminal max duration reached")
+			return
 		}
-		_ = sendFrame(terminalServerFrame{Type: "exit", Code: &exitCode})
-		_ = conn.Close(websocket.StatusNormalClosure, "process exited")
 	}
 }
 

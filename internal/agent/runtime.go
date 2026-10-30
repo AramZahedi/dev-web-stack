@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
@@ -44,6 +45,9 @@ type Runtime struct {
 	runtimeMu   sync.Mutex
 	termMu      sync.Mutex
 	termTickets map[string]*terminalTicket
+
+	terminalIdleTimeout time.Duration
+	terminalMaxDuration time.Duration
 }
 
 type persistedSite struct {
@@ -77,13 +81,15 @@ func NewRuntime(root string) (*Runtime, error) {
 		}
 	}
 	runtime := &Runtime{
-		root:        root,
-		statePath:   filepath.Join(root, "run", "sites.json"),
-		ports:       NewPortAllocator(),
-		logs:        newLogHub(filepath.Join(root, "logs")),
-		sites:       make(map[string]*runtimeSite),
-		runtimes:    make(map[string]agentproto.RuntimeResponse),
-		termTickets: make(map[string]*terminalTicket),
+		root:                root,
+		statePath:           filepath.Join(root, "run", "sites.json"),
+		ports:               NewPortAllocator(),
+		logs:                newLogHub(filepath.Join(root, "logs")),
+		sites:               make(map[string]*runtimeSite),
+		runtimes:            make(map[string]agentproto.RuntimeResponse),
+		termTickets:         make(map[string]*terminalTicket),
+		terminalIdleTimeout: 30 * time.Minute,
+		terminalMaxDuration: 4 * time.Hour,
 	}
 	runtime.loadRuntimes()
 	data, err := os.ReadFile(runtime.statePath)
@@ -212,6 +218,18 @@ func (r *Runtime) Environment(base map[string]string) (map[string]string, error)
 		return nil, fmt.Errorf("agent: inspect CA bundle: %w", err)
 	}
 	return CAEnvironment(r.root, base)
+}
+
+// SetTerminalLimits applies the agent-configured idle and absolute terminal
+// session limits. Non-positive values keep the defaults. Call it during
+// startup, before the server begins accepting terminal connections.
+func (r *Runtime) SetTerminalLimits(idle, maxDuration time.Duration) {
+	if idle > 0 {
+		r.terminalIdleTimeout = idle
+	}
+	if maxDuration > 0 {
+		r.terminalMaxDuration = maxDuration
+	}
 }
 
 // Reconcile restarts every site whose persisted desired state is running.

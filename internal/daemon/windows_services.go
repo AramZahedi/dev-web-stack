@@ -144,7 +144,7 @@ func (s *windowsTerminalService) IssueTicket(ctx context.Context, site model.Sit
 	if err != nil {
 		return terminal.Ticket{}, fmt.Errorf("terminal: WSL agent unavailable: %w", err)
 	}
-	resp, err := agent.TerminalTicket(ctx, site.ID, agentproto.TerminalTicketRequest{Cols: 100, Rows: 30})
+	resp, err := agent.TerminalTicket(ctx, site.ID, agentproto.TerminalTicketRequest{Cols: 100, Rows: 30, SiteName: site.Name})
 	if err != nil {
 		return terminal.Ticket{}, fmt.Errorf("terminal: agent ticket: %w", err)
 	}

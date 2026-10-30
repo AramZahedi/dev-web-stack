@@ -138,10 +138,12 @@ func TestWindowsBuildServiceSurfacesAgentConnectionError(t *testing.T) {
 type fakeTerminalAgent struct {
 	ticket    agentproto.TerminalTicketResponse
 	ticketErr error
+	ticketReq agentproto.TerminalTicketRequest
 	dial      func(context.Context, string, string) (*websocket.Conn, error)
 }
 
-func (f *fakeTerminalAgent) TerminalTicket(context.Context, string, agentproto.TerminalTicketRequest) (agentproto.TerminalTicketResponse, error) {
+func (f *fakeTerminalAgent) TerminalTicket(_ context.Context, _ string, req agentproto.TerminalTicketRequest) (agentproto.TerminalTicketResponse, error) {
+	f.ticketReq = req
 	return f.ticket, f.ticketErr
 }
 
@@ -159,6 +161,12 @@ func TestWindowsTerminalServiceIssuesAgentTicket(t *testing.T) {
 	}
 	if ticket.Token != "agent-ticket" || ticket.SiteID != "site-1" || !ticket.ExpiresAt.Equal(expires) {
 		t.Fatalf("ticket = %+v", ticket)
+	}
+	if agent.ticketReq.SiteName != "blog" {
+		t.Fatalf("ticket site name = %q, want blog", agent.ticketReq.SiteName)
+	}
+	if agent.ticketReq.SiteName == "" {
+		t.Fatal("agent ticket request is missing the site name")
 	}
 }
 

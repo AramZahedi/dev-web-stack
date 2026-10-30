@@ -54,6 +54,113 @@ func TestSitePathEnvPrependsRuntimeShims(t *testing.T) {
 	}
 }
 
+func openTestTerminal(t *testing.T, runtime *Runtime, spec agentproto.SiteSpec, idle, maxDuration time.Duration) (*websocket.Conn, context.Context) {
+	t.Helper()
+	ticket, err := runtime.IssueTerminalTicket(spec.ID, agentproto.TerminalTicketRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := GenerateTLSIdentity(filepath.Join(t.TempDir(), "tls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServerWithRuntime(Config{Root: t.TempDir(), Distro: "devstack"}, "secret-token", identity, nil, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Apply the test limits after construction because the server installs
+	// the configured defaults.
+	runtime.SetTerminalLimits(idle, maxDuration)
+	ts := httptest.NewServer(server.Handler())
+	t.Cleanup(ts.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + agentproto.PathSiteTerminalFor(spec.ID) + "?ticket=" + ticket.Ticket
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	header := http.Header{}
+	header.Set(agentproto.HeaderProtocol, agentproto.ProtocolVersion)
+	header.Set(agentproto.HeaderAuth, agentproto.BearerPrefix+"secret-token")
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.CloseNow() })
+	return conn, ctx
+}
+
+// readUntilClosed drains frames until the agent closes the session and
+// returns how long the session stayed open.
+func readUntilClosed(t *testing.T, conn *websocket.Conn, ctx context.Context) time.Duration {
+	t.Helper()
+	started := time.Now()
+	for {
+		readCtx, readCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, _, readErr := conn.Read(readCtx)
+		readCancel()
+		if readErr != nil {
+			return time.Since(started)
+		}
+		if time.Since(started) > 3*time.Second {
+			t.Fatal("terminal stayed open past the 3s test bound")
+		}
+	}
+}
+
+func TestAgentTerminalClosesAtIdleAndMaxDuration(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		idle        time.Duration
+		maxDuration time.Duration
+	}{
+		{name: "idle", idle: 400 * time.Millisecond, maxDuration: 10 * time.Second},
+		{name: "max-duration", idle: 10 * time.Second, maxDuration: 400 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, _, spec := newStaticTestRuntime(t)
+			if _, err := runtime.PrepareSite(context.Background(), spec); err != nil {
+				t.Fatal(err)
+			}
+			conn, ctx := openTestTerminal(t, runtime, spec, tc.idle, tc.maxDuration)
+
+			elapsed := readUntilClosed(t, conn, ctx)
+			if elapsed < 300*time.Millisecond {
+				t.Fatalf("terminal closed after %s, before the %s limit could apply", elapsed, tc.name)
+			}
+			if elapsed > 3*time.Second {
+				t.Fatalf("terminal closed after %s, want the %s limit", elapsed, tc.name)
+			}
+		})
+	}
+}
+
+func TestAgentTerminalInputResetsIdleTimer(t *testing.T) {
+	runtime, _, spec := newStaticTestRuntime(t)
+	if _, err := runtime.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	conn, ctx := openTestTerminal(t, runtime, spec, time.Second, 10*time.Second)
+
+	started := time.Now()
+	time.Sleep(400 * time.Millisecond)
+	writeCtx, writeCancel := context.WithTimeout(ctx, 2*time.Second)
+	err := conn.Write(writeCtx, websocket.MessageText, []byte(`{"type":"input","data":""}`))
+	writeCancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Without the reset the session would close 1s after opening, only 600ms
+	// into the read below. With it, the close lands near 1.4s.
+	_ = readUntilClosed(t, conn, ctx)
+	total := time.Since(started)
+	if total < 1100*time.Millisecond {
+		t.Fatalf("terminal closed %s after opening, before the reset idle limit (400ms + 1s)", total)
+	}
+	if total > 3*time.Second {
+		t.Fatalf("terminal closed after %s, want roughly 1.4s", total)
+	}
+}
+
 func TestIssueTerminalTicketClampsDimensionsAndPrunesExpired(t *testing.T) {
 	runtime, _, spec := newStaticTestRuntime(t)
 	if _, err := runtime.PrepareSite(context.Background(), spec); err != nil {
