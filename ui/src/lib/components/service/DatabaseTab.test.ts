@@ -295,6 +295,10 @@ describe('DatabaseTab', () => {
     await fireEvent.input(within(dialog).getByLabelText(/database name/i), {
       target: { value: 'app_v2' },
     });
+    await fireEvent.input(
+      within(dialog).getByLabelText(/type the current name to confirm/i),
+      { target: { value: 'app' } },
+    );
     const rename = within(dialog).getByRole('button', {
       name: 'Rename database',
     }) as HTMLButtonElement;
@@ -532,6 +536,10 @@ describe('DatabaseTab', () => {
     await fireEvent.input(within(dialog).getByLabelText(/database name/i), {
       target: { value: 'app_v2' },
     });
+    await fireEvent.input(
+      within(dialog).getByLabelText(/type the current name to confirm/i),
+      { target: { value: 'app' } },
+    );
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Rename database' }));
 
     expect(await screen.findByText(/restart linked sites to apply/i)).toBeTruthy();
@@ -558,7 +566,7 @@ describe('DatabaseTab', () => {
     expect(refresh).toHaveBeenCalled();
   });
 
-  it('renames a PostgreSQL database through the form dialog', async () => {
+  it('renames a PostgreSQL database only after typing the current name', async () => {
     render(DatabaseTab, {
       props: {
         service: POSTGRES_SERVICE,
@@ -571,12 +579,31 @@ describe('DatabaseTab', () => {
     const dialog = await screen.findByRole('dialog');
     const input = within(dialog).getByLabelText(/database name/i) as HTMLInputElement;
     expect(input.value).toBe('app');
+
+    const rename = within(dialog).getByRole('button', {
+      name: 'Rename database',
+    }) as HTMLButtonElement;
+    expect(rename.disabled).toBe(true);
+
     await fireEvent.input(input, { target: { value: 'app_v2' } });
-    await fireEvent.click(within(dialog).getByRole('button', { name: 'Rename database' }));
+    expect(rename.disabled).toBe(true);
+
+    const confirmInput = within(dialog).getByLabelText(
+      /type the current name to confirm/i,
+    ) as HTMLInputElement;
+    await fireEvent.input(confirmInput, { target: { value: 'wrong' } });
+    expect(rename.disabled).toBe(true);
+    await fireEvent.click(rename);
+    expect(db.renameServiceDatabase).not.toHaveBeenCalled();
+
+    await fireEvent.input(confirmInput, { target: { value: 'app' } });
+    await waitFor(() => expect(rename.disabled).toBe(false));
+    await fireEvent.click(rename);
 
     await waitFor(() =>
       expect(db.renameServiceDatabase).toHaveBeenCalledWith('postgresql', 'app', {
         name: 'app_v2',
+        confirm: 'app',
       }),
     );
   });

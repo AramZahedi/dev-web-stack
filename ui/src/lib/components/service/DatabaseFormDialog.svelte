@@ -30,13 +30,22 @@
   }: Props = $props();
 
   let name = $state('');
+  let confirmName = $state('');
   let validation = $state('');
 
   $effect(() => {
     if (!open) return;
     name = mode === 'rename' ? (database?.name ?? '') : '';
+    confirmName = '';
     validation = '';
   });
+
+  const renameConfirmed = $derived(
+    mode !== 'rename' || confirmName === (database?.name ?? ''),
+  );
+  const confirmMismatch = $derived(
+    mode === 'rename' && confirmName.length > 0 && confirmName !== (database?.name ?? ''),
+  );
 
   const title = $derived(
     mode === 'rename' ? `Rename ${database?.name ?? 'database'}` : 'Create database',
@@ -48,6 +57,10 @@
   );
 
   function submit(): void {
+    if (!renameConfirmed) {
+      validation = 'Type the current database name to confirm the rename.';
+      return;
+    }
     const value = name.trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
       validation = 'Use letters, numbers and underscores; start with a letter or underscore.';
@@ -70,35 +83,71 @@
   {#if details}
     <div class="details">{@render details()}</div>
   {/if}
-  <Field
-    id="database-name"
-    label="Database name"
-    error={validation || error}
-    hint="Letters, numbers and underscores only."
-  >
-    <input
+  <div class="fields">
+    <Field
       id="database-name"
-      class="input mono"
-      type="text"
-      bind:value={name}
-      autocomplete="off"
-      spellcheck="false"
-      data-autofocus
-      onkeydown={(event) => {
-        if (event.key === 'Enter') submit();
-      }}
-    />
-  </Field>
+      label="Database name"
+      error={validation || error}
+      hint="Letters, numbers and underscores only."
+    >
+      <input
+        id="database-name"
+        class="input mono"
+        type="text"
+        bind:value={name}
+        autocomplete="off"
+        spellcheck="false"
+        data-autofocus
+        onkeydown={(event) => {
+          if (event.key === 'Enter') submit();
+        }}
+      />
+    </Field>
+
+    {#if mode === 'rename'}
+      <Field
+        id="database-rename-confirm"
+        label="Type the current name to confirm"
+        error={confirmMismatch
+          ? 'The typed name does not match the current database name.'
+          : undefined}
+        hint={`Enter “${database?.name ?? ''}” exactly.`}
+      >
+        <input
+          id="database-rename-confirm"
+          class="input mono"
+          type="text"
+          bind:value={confirmName}
+          autocomplete="off"
+          spellcheck="false"
+          onkeydown={(event) => {
+            if (event.key === 'Enter') submit();
+          }}
+        />
+      </Field>
+    {/if}
+  </div>
 
   {#snippet footer()}
     <Button variant="ghost" onclick={onclose} disabled={busy}>Cancel</Button>
-    <Button variant="primary" onclick={submit} loading={busy} disabled={disabled}>
+    <Button
+      variant="primary"
+      onclick={submit}
+      loading={busy}
+      disabled={disabled || !renameConfirmed}
+    >
       {mode === 'rename' ? 'Rename database' : 'Create database'}
     </Button>
   {/snippet}
 </Modal>
 
 <style>
+  .fields {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
   .details {
     margin-bottom: 12px;
   }

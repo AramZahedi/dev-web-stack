@@ -186,7 +186,10 @@
     formBusy = true;
     formError = '';
     try {
-      await dbApi.renameServiceDatabase(service.id, target.name, { name });
+      await dbApi.renameServiceDatabase(service.id, target.name, {
+        name,
+        confirm: target.name,
+      });
       renameTarget = null;
       addToast({
         kind: 'success',
