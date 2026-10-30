@@ -365,6 +365,9 @@ func decodeEnv(raw json.RawMessage) (map[string]string, error) {
 
 // doMultipart streams a multipart form without buffering the file in memory.
 func (c *Client) doMultipart(ctx context.Context, path string, fields map[string]string, filename string, file io.Reader) (*http.Response, error) {
+	if file == nil {
+		return nil, fmt.Errorf("client: multipart file is required")
+	}
 	if strings.TrimSpace(filename) == "" {
 		filename = "import.sql"
 	}
