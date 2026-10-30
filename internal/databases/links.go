@@ -253,6 +253,11 @@ func (m *Manager) SiteDatabaseEnv(ctx context.Context, siteRef string) (map[stri
 		m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "ok", nil)
 		return map[string]string{}, nil
 	}
+	base, err := SiteEnv(links)
+	if err != nil {
+		m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "failed", map[string]any{"error": safeErrorMessage(err)})
+		return nil, err
+	}
 	allMetadataOnly := true
 	for _, link := range links {
 		if link.PasswordManaged {
@@ -261,32 +266,79 @@ func (m *Manager) SiteDatabaseEnv(ctx context.Context, siteRef string) (map[stri
 		}
 	}
 	if allMetadataOnly {
-		env, err := SiteEnv(links)
-		if err != nil {
-			m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "failed", map[string]any{"error": safeErrorMessage(err)})
-			return nil, err
-		}
 		m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "ok", nil)
-		return env, nil
+		return base, nil
 	}
-	grouped := make(map[string][]model.DatabaseLink)
-	for _, link := range links {
+	// Resolve one link at a time so each platform call has unambiguous global
+	// primary context. The daemon re-keys non-primary results itself.
+	ordered := append([]model.DatabaseLink(nil), links...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Primary != ordered[j].Primary {
+			return ordered[i].Primary
+		}
+		if ordered[i].ServiceID != ordered[j].ServiceID {
+			return ordered[i].ServiceID < ordered[j].ServiceID
+		}
+		if ordered[i].Database != ordered[j].Database {
+			return ordered[i].Database < ordered[j].Database
+		}
+		return ordered[i].ID < ordered[j].ID
+	})
+	primaryIndex := 0
+	for i, link := range ordered {
+		if link.Primary {
+			primaryIndex = i
+			break
+		}
+	}
+	env := base
+	for i, link := range ordered {
+		if !link.PasswordManaged {
+			continue
+		}
 		serviceID := canonicalServiceID(link.ServiceID)
-		grouped[serviceID] = append(grouped[serviceID], link)
-	}
-	env := map[string]string{}
-	for serviceID, serviceLinks := range grouped {
-		resolved, err := m.deps.Platform.ResolveSiteEnv(ctx, serviceID, serviceLinks)
+		resolved, err := m.deps.Platform.ResolveSiteEnv(ctx, serviceID, []model.DatabaseLink{link})
 		if err != nil {
 			m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "failed", map[string]any{"error": safeErrorMessage(err)})
 			return nil, err
 		}
-		for key, value := range resolved {
-			env[key] = value
+		if i == primaryIndex {
+			mergePrimaryEnv(env, resolved, link)
+			continue
 		}
+		mergeNamespacedEnv(env, resolved, link)
 	}
 	m.audit(ctx, "database.env.resolved", "", site.ID, "site", site.Name, "ok", nil)
 	return env, nil
+}
+
+// mergePrimaryEnv overlays a platform result for the true primary link.
+func mergePrimaryEnv(env, resolved map[string]string, link model.DatabaseLink) {
+	slugPrefix := "DB_" + envSlug(link.Database) + "_"
+	for key, value := range resolved {
+		if strings.HasPrefix(key, slugPrefix) {
+			key = "DB_" + strings.TrimPrefix(key, slugPrefix)
+		}
+		env[key] = value
+	}
+}
+
+// mergeNamespacedEnv re-keys a single-link platform result to DB_<SLUG>_*.
+func mergeNamespacedEnv(env, resolved map[string]string, link model.DatabaseLink) {
+	prefix := "DB_" + envSlug(link.Database) + "_"
+	slugKeyPrefix := "DB_" + envSlug(link.Database) + "_"
+	for key, value := range resolved {
+		switch {
+		case key == "DATABASE_URL":
+			env[prefix+"URL"] = value
+		case strings.HasPrefix(key, slugKeyPrefix):
+			env[key] = value
+		case strings.HasPrefix(key, "DB_"):
+			env[prefix+strings.TrimPrefix(key, "DB_")] = value
+		default:
+			env[key] = value
+		}
+	}
 }
 
 // GuardSite blocks a site start only when a different member of an exclusive

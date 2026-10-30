@@ -3,6 +3,7 @@ package databases
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -437,6 +438,7 @@ type fakePlatform struct {
 	lastImportReq    ImportRequest
 	listErr          error
 	envErr           error
+	resolveEnv       func(serviceID string, links []model.DatabaseLink) map[string]string
 	passwordStateErr error
 }
 
@@ -569,9 +571,12 @@ func (f *fakePlatform) GetJob(context.Context, string) (model.DatabaseJob, error
 
 func (f *fakePlatform) CancelJob(context.Context, string) error { return nil }
 
-func (f *fakePlatform) ResolveSiteEnv(context.Context, string, []model.DatabaseLink) (map[string]string, error) {
+func (f *fakePlatform) ResolveSiteEnv(_ context.Context, serviceID string, links []model.DatabaseLink) (map[string]string, error) {
 	if f.envErr != nil {
 		return nil, f.envErr
+	}
+	if f.resolveEnv != nil {
+		return f.resolveEnv(serviceID, links), nil
 	}
 	if f.env == nil {
 		return map[string]string{}, nil
@@ -947,6 +952,59 @@ func TestMetadataEnvUsesSlugForNonPrimary(t *testing.T) {
 	}
 	if _, ok := env["DB_HOST"]; ok {
 		t.Fatalf("non-primary used primary prefix: %+v", env)
+	}
+}
+
+func TestSiteDatabaseEnvUsesGlobalPrimaryAcrossServices(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	platform.databases = append(platform.databases, model.Database{Name: "analytics", ServiceID: "postgresql", Engine: model.DatabasePostgreSQL})
+	platform.resolveEnv = func(_ string, links []model.DatabaseLink) map[string]string {
+		if len(links) != 1 {
+			t.Fatalf("platform received %d links, want exactly one per call", len(links))
+		}
+		link := links[0]
+		return map[string]string{
+			"DB_CONNECTION": dbConnectionValue(link.Engine),
+			"DB_HOST":       "127.0.0.1",
+			"DB_PORT":       fmt.Sprintf("%d", link.Connection.Port),
+			"DB_DATABASE":   link.Database,
+			"DB_USERNAME":   link.Username,
+			"DB_PASSWORD":   "s3cret",
+			"DATABASE_URL":  "scheme://" + link.Username + ":s3cret@127.0.0.1/" + link.Database,
+		}
+	}
+	st.users[0].PasswordManaged = true
+	st.users = append(st.users, model.DatabaseUserRecord{
+		ID: "usr_analytics", ServiceID: "postgresql", Engine: model.DatabasePostgreSQL,
+		Username: "analytics", Enabled: true, PasswordManaged: true,
+	})
+	st.links = []model.DatabaseLinkRecord{
+		{ID: "lnk_1", SiteID: "site_1", SiteName: "blog", ServiceID: "mysql", DatabaseName: "app", UserID: "usr_app", Primary: true},
+		{ID: "lnk_2", SiteID: "site_1", SiteName: "blog", ServiceID: "postgresql", DatabaseName: "analytics", UserID: "usr_analytics"},
+	}
+	for i := 0; i < 100; i++ {
+		env, err := m.SiteDatabaseEnv(context.Background(), "blog")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if env["DB_DATABASE"] != "app" {
+			t.Fatalf("iteration %d: DB_DATABASE = %q, want app (env=%+v)", i, env["DB_DATABASE"], env)
+		}
+		if env["DB_ANALYTICS_DATABASE"] != "analytics" {
+			t.Fatalf("iteration %d: DB_ANALYTICS_DATABASE = %q", i, env["DB_ANALYTICS_DATABASE"])
+		}
+		if env["DB_PASSWORD"] != "s3cret" || env["DB_ANALYTICS_PASSWORD"] != "s3cret" {
+			t.Fatalf("iteration %d: passwords = %+v", i, env)
+		}
+		if !strings.Contains(env["DATABASE_URL"], "/app") {
+			t.Fatalf("iteration %d: primary URL = %q", i, env["DATABASE_URL"])
+		}
+		if !strings.Contains(env["DB_ANALYTICS_URL"], "/analytics") {
+			t.Fatalf("iteration %d: namespaced URL = %q", i, env["DB_ANALYTICS_URL"])
+		}
+		if _, ok := env["DB_ANALYTICS_DB_DATABASE"]; ok {
+			t.Fatalf("iteration %d: double DB_ prefix in %+v", i, env)
+		}
 	}
 }
 
