@@ -390,12 +390,16 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		if err := s.deps.Store.CreateSiteWithPHPConfig(ctx, site, cfg); err != nil {
 			return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
 		}
-		s.linkProvisionedDatabase(ctx, site, provisioned)
+		if warning := s.linkProvisionedDatabase(ctx, site, provisioned); warning != "" {
+			site.Warnings = append(site.Warnings, warning)
+		}
 	} else {
 		if err := s.deps.Store.CreateSite(ctx, site); err != nil {
 			return fail(fmt.Errorf("sites: persist %q: %w", site.Name, err), true)
 		}
-		s.linkProvisionedDatabase(ctx, site, provisioned)
+		if warning := s.linkProvisionedDatabase(ctx, site, provisioned); warning != "" {
+			site.Warnings = append(site.Warnings, warning)
+		}
 	}
 
 	createdMessage := fmt.Sprintf("site %s created", site.Name)
@@ -2183,13 +2187,16 @@ func (s *Service) emitStatus(ctx context.Context, site model.Site, old, current 
 // linkProvisionedDatabase links the Add Site database after the site row
 // exists. A link failure keeps the site and records a warning; the database and
 // user remain service-wide.
-func (s *Service) linkProvisionedDatabase(ctx context.Context, site model.Site, provisioned *databases.ProvisionedDatabase) {
+func (s *Service) linkProvisionedDatabase(ctx context.Context, site model.Site, provisioned *databases.ProvisionedDatabase) string {
 	if provisioned == nil || s.deps.Database == nil {
-		return
+		return ""
 	}
 	if _, err := s.deps.Database.LinkProvisioned(ctx, site.ID, *provisioned); err != nil {
-		s.emitEvent(ctx, site.ID, "database.link.changed", fmt.Sprintf("site %s: link database: %s", site.Name, databases.RedactError(err)))
+		warning := fmt.Sprintf("site %s: link database: %s", site.Name, databases.RedactError(err))
+		s.emitEvent(ctx, site.ID, "database.link.changed", warning)
+		return warning
 	}
+	return ""
 }
 
 // checkDatabaseGuard blocks a start when a linked service has a conflicting

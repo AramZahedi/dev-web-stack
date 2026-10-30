@@ -153,6 +153,9 @@ func TestCreateLinkFailureKeepsSiteAndWarns(t *testing.T) {
 	if site.Name != "blog" {
 		t.Fatalf("site = %+v", site)
 	}
+	if len(site.Warnings) == 0 || !strings.Contains(strings.Join(site.Warnings, " "), "link failed") {
+		t.Fatalf("site warnings = %+v", site.Warnings)
+	}
 	if _, err := fakes.store.GetSiteByName(context.Background(), "blog"); err != nil {
 		t.Fatalf("site row missing: %v", err)
 	}
