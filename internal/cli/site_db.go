@@ -78,6 +78,9 @@ func (a *App) newSiteDBLinkCmd() *cobra.Command {
 			if service == "" || database == "" || userID == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--service, --database, and --user-id are required", Remediation: "For example `devstack site db link blog --service mysql --database blog --user-id usr_blog`."}
 			}
+			if strings.EqualFold(service, "redis") {
+				return &Error{Code: "DATABASE_UNSUPPORTED", Message: "Redis users are not site-linkable in v1", Remediation: "Use `devstack db user` to manage Redis ACL users."}
+			}
 			password := ""
 			if passwordStdin {
 				value, err := readPasswordLine(cmd)
