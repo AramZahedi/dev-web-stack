@@ -241,6 +241,7 @@
     } catch (caught) {
       services = [];
       servicesError = describeError(caught);
+      if (!alwaysOn) enabled = false;
       sync();
     } finally {
       servicesLoading = false;
@@ -327,7 +328,9 @@
         description="Provision a database and user, or attach an existing one. Nothing is created until you submit."
         bind:checked={enabled}
         onchange={setEnabled}
-        disabled={!enabled && servicesLoaded && !servicesError && selectable.length === 0}
+        disabled={!alwaysOn &&
+          (servicesError !== null ||
+            (!enabled && servicesLoaded && !servicesError && selectable.length === 0))}
       />
     </div>
   {/if}
@@ -339,6 +342,11 @@
       message={servicesError.message}
       onretry={loadServices}
     />
+    {#if !alwaysOn}
+      <p class="empty-hint">
+        No database will be linked. Site creation can continue without a database.
+      </p>
+    {/if}
   {:else if servicesLoaded && selectable.length === 0}
     <div class="notice">
       <p>No active SQL service is available.</p>

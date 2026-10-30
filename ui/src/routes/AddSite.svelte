@@ -558,6 +558,7 @@
   }
 
   async function focusField(key: string): Promise<void> {
+    if (key.startsWith('database_') && !dbRequest) return;
     const target = fieldStep(key);
     step = target;
     await tick();

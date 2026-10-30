@@ -759,6 +759,28 @@ describe('AddSite Wave 2 fields', () => {
     expect(userOptions).not.toContain('usr_root');
   });
 
+  it('continues without a database when services fail to load', async () => {
+    mockApi.listServices.mockRejectedValue(
+      new ApiError('SERVICE_LIST_FAILED', 'Services unavailable.', 503),
+    );
+    await openOptionsStep();
+
+    expect(await screen.findByText('Could not load database services')).toBeTruthy();
+    expect(
+      screen.getByText(/site creation can continue without a database/i),
+    ).toBeTruthy();
+    const toggle = screen.getByLabelText(
+      'Create or link a database',
+    ) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+    await waitFor(() => expect(mockApi.createSite).toHaveBeenCalledTimes(1));
+    expect(mockApi.createSite).toHaveBeenCalledWith(
+      expect.not.objectContaining({ database: expect.anything() }),
+    );
+  });
+
   it('does not block site creation when no SQL service is active', async () => {
     mockApi.listServices.mockResolvedValue([]);
     await openOptionsStep();
