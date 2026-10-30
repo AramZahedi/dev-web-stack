@@ -128,6 +128,7 @@
     revealGeneration += 1;
     secrets = {};
     revealError = {};
+    managedOverrides = {};
   });
 
   onMount(() => {
@@ -212,9 +213,7 @@
       if (generation !== revealGeneration) return;
       revealError = { ...revealError, [link.id]: describeError(caught).message };
     } finally {
-      if (generation === revealGeneration) {
-        revealLoading = { ...revealLoading, [link.id]: false };
-      }
+      revealLoading = { ...revealLoading, [link.id]: false };
     }
   }
 
@@ -227,9 +226,11 @@
 
   async function resetPassword(link: SiteDatabaseLink): Promise<void> {
     if (resettingPassword[link.id]) return;
+    const generation = ++revealGeneration;
     resettingPassword = { ...resettingPassword, [link.id]: true };
     try {
       const secret = await setServiceUserPassword(link.service_id, link.user_id);
+      if (generation !== revealGeneration) return;
       secrets = { ...secrets, [link.id]: secret.value };
       managedOverrides = { ...managedOverrides, [link.id]: true };
       restartNeeded = true;
@@ -240,6 +241,7 @@
       });
       onRefresh();
     } catch (caught) {
+      if (generation !== revealGeneration) return;
       toastError('Could not reset the database password', describeError(caught).message);
     } finally {
       resettingPassword = { ...resettingPassword, [link.id]: false };
@@ -584,3 +586,4 @@
     font-size: 12px;
   }
 </style>
+

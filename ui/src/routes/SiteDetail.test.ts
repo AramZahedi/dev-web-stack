@@ -5,7 +5,7 @@ import SiteDetail from './SiteDetail.svelte';
 import * as api from '../lib/api';
 import * as db from '../lib/databaseApi';
 import { ApiError } from '../lib/errors';
-import { toasts } from '../lib/stores';
+import { clearToasts, toasts } from '../lib/stores';
 import type { Database, DatabaseLink, DatabaseUser } from '../lib/databaseTypes';
 import type {
   NodeReleasePreflight,
@@ -387,6 +387,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  clearToasts();
 });
 
 async function renderSite(name = 'blog'): Promise<void> {
@@ -1055,6 +1056,76 @@ describe('SiteDetail configuration and builds', () => {
     mockDb.listSiteDatabases.mockResolvedValue({ links: [SITE_DB_LINK] });
     await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByText('Could not load databases')).toBeNull());
+  });
+
+  it('clears reveal loading when the link set changes during a reveal', async () => {
+    let resolveReveal!: (value: { value: string }) => void;
+    mockDb.revealServiceUserPassword.mockReturnValue(
+      new Promise((resolve) => {
+        resolveReveal = resolve;
+      }),
+    );
+    await renderSite('blog');
+    const reveal = await screen.findByRole('button', {
+      name: /reveal password for app/i,
+    });
+    await fireEvent.click(reveal);
+    await waitFor(() => expect(reveal.getAttribute('aria-busy')).toBe('true'));
+
+    mockDb.listSiteDatabases.mockResolvedValue({
+      links: [{ ...SITE_DB_LINK, user_id: 'usr_other', username: 'other' }],
+    });
+    window.dispatchEvent(new Event('devstack:refresh'));
+    await waitFor(() => expect(mockDb.listSiteDatabases).toHaveBeenCalledTimes(2));
+
+    resolveReveal({ value: 's3cret' });
+    await waitFor(() => expect(reveal.getAttribute('aria-busy')).toBeNull());
+    expect(screen.queryByText('s3cret')).toBeNull();
+  });
+
+  it('ignores a reset result that arrives after the links changed', async () => {
+    let resolveReset!: (value: { value: string }) => void;
+    mockDb.setServiceUserPassword.mockReturnValue(
+      new Promise((resolve) => {
+        resolveReset = resolve;
+      }),
+    );
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [MANAGED_UNKNOWN_LINK] });
+    mockDb.listServiceUsers.mockResolvedValue({ users: [MANAGED_UNKNOWN_USER] });
+    await renderSite('blog');
+    await fireEvent.click(await screen.findByRole('button', { name: /reset password/i }));
+
+    mockDb.listSiteDatabases.mockResolvedValue({
+      links: [{ ...MANAGED_UNKNOWN_LINK, user_id: 'usr_other' }],
+    });
+    window.dispatchEvent(new Event('devstack:refresh'));
+    await waitFor(() => expect(mockDb.listSiteDatabases).toHaveBeenCalledTimes(2));
+
+    resolveReset({ value: 'stale_password' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText('stale_password')).toBeNull();
+    expect(get(toasts).some((toast) => toast.title === 'Database password reset')).toBe(false);
+  });
+
+  it('clears a local password override when password_managed changes', async () => {
+    mockDb.setServiceUserPassword.mockResolvedValue({ value: 'rotated' });
+    await renderSite('blog');
+    await fireEvent.click(await screen.findByRole('button', { name: /reset password/i }));
+    expect(await screen.findByText('rotated')).toBeTruthy();
+
+    mockDb.listSiteDatabases.mockResolvedValue({
+      links: [{ ...SITE_DB_LINK, password_managed: false }],
+    });
+    const callsBefore = mockDb.listSiteDatabases.mock.calls.length;
+    window.dispatchEvent(new Event('devstack:refresh'));
+    await waitFor(() =>
+      expect(mockDb.listSiteDatabases.mock.calls.length).toBeGreaterThan(callsBefore),
+    );
+    await waitFor(() => expect(screen.queryByText('rotated')).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /reveal password for app/i })).toBeNull(),
+    );
+    expect(screen.getByText(/password unknown/i)).toBeTruthy();
   });
 
   it('clears a revealed password on devstack:refresh', async () => {
