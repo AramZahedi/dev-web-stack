@@ -70,10 +70,17 @@ func (m *Manager) Impact(ctx context.Context, serviceID string) (ServiceImpact, 
 // audit rows remain durable.
 func (m *Manager) DeleteServiceMetadata(ctx context.Context, serviceID string) error {
 	serviceID = canonicalServiceID(serviceID)
+	links, err := m.deps.Store.ListDatabaseLinksByService(ctx, serviceID)
+	if err != nil {
+		return err
+	}
 	if err := m.deps.Store.DeleteServiceMetadata(ctx, serviceID); err != nil {
 		return err
 	}
-	m.audit(ctx, "database.service.metadata_deleted", serviceID, "", "service", serviceID, "ok", nil)
+	m.audit(ctx, "database.service.metadata_deleted", serviceID, "", "service", serviceID, "ok", map[string]any{"removed_links": len(links)})
 	m.emit(ctx, "", "database.service.metadata_deleted", fmt.Sprintf("database metadata removed for service %s", serviceID))
+	if len(links) > 0 {
+		m.emit(ctx, "", "database.link.changed", fmt.Sprintf("removed %d site links to service %s after uninstall", len(links), serviceID))
+	}
 	return nil
 }

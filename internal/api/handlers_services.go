@@ -121,17 +121,15 @@ func (s *Server) handleUninstallService(w http.ResponseWriter, r *http.Request) 
 		s.writeServiceError(w, r, err)
 		return
 	}
+	warnings := []string{}
 	if req.DeleteData && s.databases != nil {
-		if err := s.databases.DeleteServiceLinks(r.Context(), string(id)); err != nil {
-			s.logger.Warn("api: remove database links after uninstall",
-				"service", id, "error", servicecontrol.RedactSecrets(err.Error()))
-		}
 		if err := s.databases.DeleteServiceMetadata(r.Context(), string(id)); err != nil {
 			s.logger.Warn("api: remove database metadata after uninstall",
 				"service", id, "error", servicecontrol.RedactSecrets(err.Error()))
+			warnings = append(warnings, "service data was deleted but database metadata cleanup failed: "+servicecontrol.RedactSecrets(err.Error()))
 		}
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, uninstallResponse{UninstallResult: result, Warnings: warnings})
 }
 
 func (s *Server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {
