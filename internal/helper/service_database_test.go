@@ -581,6 +581,192 @@ func TestHelperImportReplaceRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestHelperListBackupsReportsKind(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	job, err := c.CreateBackup(context.Background(), "mysql", "app", databases.CreateBackupRequest{Kind: model.BackupPreRestore})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := c.ListBackups(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != job.BackupID || list[0].Kind != model.BackupPreRestore {
+		t.Fatalf("backup list = %+v", list)
+	}
+}
+
+func TestHelperRestoreCorruptBackupDoesNotDrop(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	dir := filepath.Join(root, "backups", "databases", "mysql", "app")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "20261030T120000.000000000Z.manual.sql.gz")
+	if err := os.WriteFile(path, []byte("not gzip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	_, err := c.RestoreBackup(context.Background(), "mysql", "app--20261030T120000.000000000Z.manual.sql.gz", databases.RestoreBackupRequest{
+		Target: "app", Overwrite: true, Confirm: "app",
+	})
+	if err == nil {
+		t.Fatal("corrupt backup restore succeeded")
+	}
+	if runner.stdinContains("DROP DATABASE") || runner.joinedCallsContains("DROP DATABASE") {
+		t.Fatalf("target dropped before backup validation: %s", runner.joinedCalls())
+	}
+}
+
+func TestHelperRestoreForcesPreRestoreBackup(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.streamOutput = []byte("dump")
+	job, err := c.CreateBackup(context.Background(), "mysql", "app", databases.CreateBackupRequest{Kind: model.BackupManual})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RestoreBackup(context.Background(), "mysql", job.BackupID, databases.RestoreBackupRequest{
+		Target: "app", Overwrite: true, Confirm: "app", PreRestoreBackup: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := c.ListBackups(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preRestore := 0
+	for _, backup := range list {
+		if backup.Kind == model.BackupPreRestore {
+			preRestore++
+		}
+	}
+	if preRestore != 1 {
+		t.Fatalf("pre-restore backups = %d, list=%+v", preRestore, list)
+	}
+}
+
+func TestHelperRestoreFailureCarriesPreRestoreBackupID(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.streamOutput = []byte("dump")
+	job, err := c.CreateBackup(context.Background(), "mysql", "app", databases.CreateBackupRequest{Kind: model.BackupManual})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.handleInput = func(name string, args []string, input []byte) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "restore") {
+			return nil, errors.New("restore failed")
+		}
+		return []byte("OK"), nil
+	}
+	failed, err := c.RestoreBackup(context.Background(), "mysql", job.BackupID, databases.RestoreBackupRequest{
+		Target: "app", Overwrite: true, Confirm: "app",
+	})
+	if err == nil || failed.Status != model.JobFailed {
+		t.Fatalf("job=%+v err=%v", failed, err)
+	}
+	list, err := c.ListBackups(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, backup := range list {
+		if backup.ID == failed.BackupID && backup.Kind == model.BackupPreRestore {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("failed job backup=%q is not a pre_restore backup: %+v", failed.BackupID, list)
+	}
+}
+
+func TestHelperImportReplaceForcesPreImportBackup(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.streamOutput = []byte("dump")
+	job, err := c.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("dump"), "app.sql", databases.ImportRequest{
+		Mode: databases.ImportReplace, Confirm: "app", PreImportBackup: false,
+	})
+	if err != nil || job.Status != model.JobSucceeded {
+		t.Fatalf("job=%+v err=%v", job, err)
+	}
+	list, err := c.ListBackups(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Kind != model.BackupPreImport || job.BackupID != list[0].ID {
+		t.Fatalf("job backup=%q list=%+v", job.BackupID, list)
+	}
+}
+
+func TestHelperImportCorruptGzipDoesNotDrop(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	_, err := c.ImportDatabase(context.Background(), "mysql", "app", bytes.NewReader([]byte{0x1f, 0x8b, 0x00}), "bad.sql.gz", databases.ImportRequest{
+		Mode: databases.ImportReplace, Confirm: "app",
+	})
+	if err == nil {
+		t.Fatal("corrupt gzip import succeeded")
+	}
+	if runner.stdinContains("DROP DATABASE") || runner.joinedCallsContains("DROP DATABASE") {
+		t.Fatalf("target dropped before import validation: %s", runner.joinedCalls())
+	}
+}
+
+func TestHelperRestoreDefaultTargetLength(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	longName := "d" + strings.Repeat("a", 59)
+	dir := filepath.Join(c.root, "backups", "databases", "mysql", longName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "20261030T120000.000000000Z.manual.sql.gz"), gzipBytes(t, "dump"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	job, err := c.RestoreBackup(context.Background(), "mysql", longName+"--20261030T120000.000000000Z.manual.sql.gz", databases.RestoreBackupRequest{})
+	if err != nil || job.Status != model.JobSucceeded {
+		t.Fatalf("job=%+v err=%v", job, err)
+	}
+	if len(job.Database) > 63 {
+		t.Fatalf("default target %q is too long", job.Database)
+	}
+	if err := dbengine.ValidateIdentifier(job.Database); err != nil {
+		t.Fatalf("default target %q invalid: %v", job.Database, err)
+	}
+}
+
+func TestHelperListBackupsHonorsCanceledContext(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	dir := filepath.Join(root, "backups", "databases", "mysql", "app")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "20261030T120000.000000000Z.sql.gz"), []byte("gzip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.ListBackups(ctx, "mysql"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func gzipBytes(t *testing.T, value string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write([]byte(value)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func TestHelperRestoreOverwriteRequiresConfirmation(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	runner := c.runner.(*fakeCommandRunner)

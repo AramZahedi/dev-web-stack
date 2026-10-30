@@ -3,6 +3,7 @@
 package helper
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -146,12 +147,24 @@ func (c *DockerServiceController) ListBackups(ctx context.Context, serviceID str
 			if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 				continue
 			}
-			sha, err := hashFile(path)
+			sha, err := hashFile(ctx, path)
 			if err != nil {
 				return nil, err
 			}
 			created := info.ModTime().UTC()
-			if parsed, err := time.Parse(backupTimestampLayout, strings.TrimSuffix(file.Name(), ".sql.gz")); err == nil {
+			kind := model.BackupManual
+			timestamp := strings.TrimSuffix(file.Name(), ".sql.gz")
+			for _, candidate := range []model.DatabaseBackupKind{
+				model.BackupManual, model.BackupPreDrop, model.BackupPreRestore, model.BackupPreImport,
+			} {
+				suffix := "." + string(candidate)
+				if strings.HasSuffix(timestamp, suffix) {
+					kind = candidate
+					timestamp = strings.TrimSuffix(timestamp, suffix)
+					break
+				}
+			}
+			if parsed, err := time.Parse(backupTimestampLayout, timestamp); err == nil {
 				created = parsed
 			}
 			backups = append(backups, model.DatabaseBackup{
@@ -161,7 +174,7 @@ func (c *DockerServiceController) ListBackups(ctx context.Context, serviceID str
 				Database:  database,
 				SizeBytes: info.Size(),
 				SHA256:    sha,
-				Kind:      model.BackupManual,
+				Kind:      kind,
 				Status:    model.BackupReady,
 				CreatedAt: created,
 			})
@@ -176,15 +189,30 @@ func (c *DockerServiceController) ListBackups(ctx context.Context, serviceID str
 	return backups, nil
 }
 
-func hashFile(path string) (string, error) {
+func hashFile(ctx context.Context, path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("open backup for hashing: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", fmt.Errorf("hash backup: %w", err)
+	buf := make([]byte, 32<<10)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		n, readErr := file.Read(buf)
+		if n > 0 {
+			if _, err := hash.Write(buf[:n]); err != nil {
+				return "", fmt.Errorf("hash backup: %w", err)
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("hash backup: %w", readErr)
+		}
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
@@ -235,7 +263,7 @@ func (c *DockerServiceController) CreateBackup(ctx context.Context, serviceID, d
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return model.DatabaseJob{}, fmt.Errorf("set backup directory mode: %w", err)
 	}
-	filename := c.backupFilename(dir)
+	filename := c.backupFilename(dir, kind)
 	finalPath := filepath.Join(dir, filename)
 
 	tmp, err := os.CreateTemp(dir, "backup-*.sql.gz.tmp")
@@ -290,10 +318,14 @@ func (c *DockerServiceController) CreateBackup(ctx context.Context, serviceID, d
 	}, nil
 }
 
-func (c *DockerServiceController) backupFilename(dir string) string {
+func (c *DockerServiceController) backupFilename(dir string, kind model.DatabaseBackupKind) string {
+	if kind == "" {
+		kind = model.BackupManual
+	}
 	timestamp := c.now().UTC().Format(backupTimestampLayout)
-	name := timestamp + ".sql.gz"
-	for suffix := 2; ; suffix++ {
+	suffix := "." + string(kind) + ".sql.gz"
+	name := timestamp + suffix
+	for index := 2; ; index++ {
 		_, err := os.Lstat(filepath.Join(dir, name))
 		if errors.Is(err, os.ErrNotExist) {
 			return name
@@ -301,7 +333,7 @@ func (c *DockerServiceController) backupFilename(dir string) string {
 		if err != nil {
 			return name
 		}
-		name = fmt.Sprintf("%s-%d.sql.gz", timestamp, suffix)
+		name = fmt.Sprintf("%s-%d%s", timestamp, index, suffix)
 	}
 }
 
@@ -358,7 +390,7 @@ func (c *DockerServiceController) RestoreBackup(ctx context.Context, serviceID, 
 		if req.Overwrite {
 			target = sourceDatabase
 		} else {
-			target = fmt.Sprintf("%s_restore_%s", sourceDatabase, c.now().UTC().Format(restoreTimestampLayout))
+			target = restoreTargetName(sourceDatabase, c.now())
 		}
 	}
 	if err := engine.ValidateDatabaseName(target); err != nil {
@@ -374,10 +406,28 @@ func (c *DockerServiceController) RestoreBackup(ctx context.Context, serviceID, 
 	if err != nil {
 		return model.DatabaseJob{}, err
 	}
-	if req.PreRestoreBackup && exists {
-		if _, err := c.CreateBackup(ctx, serviceID, target, databases.CreateBackupRequest{Kind: model.BackupPreRestore}); err != nil {
+	// Validate the backup before any destructive step. A corrupt or empty
+	// backup must never drop the target.
+	reader, err := openBackupGzip(path)
+	if err != nil {
+		return model.DatabaseJob{}, err
+	}
+	defer func() { _ = reader.Close() }()
+	command, err := engine.RestoreCommand(target)
+	if err != nil {
+		return model.DatabaseJob{}, err
+	}
+	preBackupID := ""
+	if req.Overwrite && exists {
+		preJob, err := c.CreateBackup(ctx, serviceID, target, databases.CreateBackupRequest{Kind: model.BackupPreRestore})
+		if err != nil {
 			return model.DatabaseJob{}, fmt.Errorf("pre-restore backup: %w", err)
 		}
+		preBackupID = preJob.BackupID
+	}
+	recoveryID := preBackupID
+	if recoveryID == "" {
+		recoveryID = backupID
 	}
 	lock := c.databaseLock(serviceID)
 	lock.Lock()
@@ -385,36 +435,22 @@ func (c *DockerServiceController) RestoreBackup(ctx context.Context, serviceID, 
 	if req.Overwrite {
 		if exists {
 			if err := c.dropDatabaseDirect(ctx, serviceID, engine, target); err != nil {
-				return failedJob(serviceID, target, model.JobRestore, backupID, c.now(), err), err
+				return failedJob(serviceID, target, model.JobRestore, recoveryID, c.now(), err), err
 			}
 		}
 		if err := c.createDatabaseDirect(ctx, serviceID, engine, target); err != nil {
-			return failedJob(serviceID, target, model.JobRestore, backupID, c.now(), err), err
+			return failedJob(serviceID, target, model.JobRestore, recoveryID, c.now(), err), err
 		}
 	} else {
 		if exists {
 			return model.DatabaseJob{}, fmt.Errorf("%w: target database %q already exists", databases.ErrConflict, target)
 		}
 		if err := c.createDatabaseDirect(ctx, serviceID, engine, target); err != nil {
-			return failedJob(serviceID, target, model.JobRestore, backupID, c.now(), err), err
+			return failedJob(serviceID, target, model.JobRestore, recoveryID, c.now(), err), err
 		}
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return model.DatabaseJob{}, fmt.Errorf("open backup: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-	gz, err := gzip.NewReader(file)
-	if err != nil {
-		return model.DatabaseJob{}, fmt.Errorf("open backup gzip: %w", err)
-	}
-	defer func() { _ = gz.Close() }()
-	command, err := engine.RestoreCommand(target)
-	if err != nil {
-		return model.DatabaseJob{}, err
-	}
-	if err := c.runEngineInput(ctx, serviceID, gz, command); err != nil {
-		return failedJob(serviceID, target, model.JobRestore, backupID, c.now(), err), err
+	if err := c.runEngineInput(ctx, serviceID, reader, command); err != nil {
+		return failedJob(serviceID, target, model.JobRestore, recoveryID, c.now(), err), err
 	}
 	now := c.now()
 	return model.DatabaseJob{
@@ -467,11 +503,6 @@ func (c *DockerServiceController) ImportDatabase(ctx context.Context, serviceID,
 	if !exists {
 		return model.DatabaseJob{}, fmt.Errorf("%w: database %q", databases.ErrNotFound, database)
 	}
-	if req.PreImportBackup && exists {
-		if _, err := c.CreateBackup(ctx, serviceID, database, databases.CreateBackupRequest{Kind: model.BackupPreImport}); err != nil {
-			return model.DatabaseJob{}, fmt.Errorf("pre-import backup: %w", err)
-		}
-	}
 	stagingDir := filepath.Join(c.backupRoot(serviceID), ".staging")
 	if err := rejectSymlinkPath(c.root, stagingDir); err != nil {
 		return model.DatabaseJob{}, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err)
@@ -504,30 +535,42 @@ func (c *DockerServiceController) ImportDatabase(ctx context.Context, serviceID,
 		return model.DatabaseJob{}, fmt.Errorf("close import staging file: %w", err)
 	}
 
-	lock := c.databaseLock(serviceID)
-	lock.Lock()
-	defer lock.Unlock()
-	if mode == databases.ImportReplace {
-		if exists {
-			if err := c.dropDatabaseDirect(ctx, serviceID, engine, database); err != nil {
-				return failedJob(serviceID, database, model.JobImport, "", c.now(), err), err
-			}
-		}
-		if err := c.createDatabaseDirect(ctx, serviceID, engine, database); err != nil {
-			return failedJob(serviceID, database, model.JobImport, "", c.now(), err), err
-		}
-	}
-	reader, err := openSQLFile(stagedPath)
+	// Validate the staged SQL/gzip and resolve the restore command before any
+	// destructive step.
+	stagedReader, err := openSQLFile(stagedPath)
 	if err != nil {
-		return failedJob(serviceID, database, model.JobImport, "", c.now(), err), err
+		return model.DatabaseJob{}, err
 	}
-	defer func() { _ = reader.Close() }()
+	defer func() { _ = stagedReader.Close() }()
+	reader, err := validateRestoreReader(stagedReader)
+	if err != nil {
+		return model.DatabaseJob{}, err
+	}
 	command, err := engine.RestoreCommand(database)
 	if err != nil {
 		return model.DatabaseJob{}, err
 	}
+	preBackupID := ""
+	if mode == databases.ImportReplace || req.PreImportBackup {
+		preJob, err := c.CreateBackup(ctx, serviceID, database, databases.CreateBackupRequest{Kind: model.BackupPreImport})
+		if err != nil {
+			return model.DatabaseJob{}, fmt.Errorf("pre-import backup: %w", err)
+		}
+		preBackupID = preJob.BackupID
+	}
+	lock := c.databaseLock(serviceID)
+	lock.Lock()
+	defer lock.Unlock()
+	if mode == databases.ImportReplace {
+		if err := c.dropDatabaseDirect(ctx, serviceID, engine, database); err != nil {
+			return failedJob(serviceID, database, model.JobImport, preBackupID, c.now(), err), err
+		}
+		if err := c.createDatabaseDirect(ctx, serviceID, engine, database); err != nil {
+			return failedJob(serviceID, database, model.JobImport, preBackupID, c.now(), err), err
+		}
+	}
 	if err := c.runEngineInput(ctx, serviceID, reader, command); err != nil {
-		return failedJob(serviceID, database, model.JobImport, "", c.now(), err), err
+		return failedJob(serviceID, database, model.JobImport, preBackupID, c.now(), err), err
 	}
 	now := c.now()
 	return model.DatabaseJob{
@@ -537,6 +580,7 @@ func (c *DockerServiceController) ImportDatabase(ctx context.Context, serviceID,
 		Kind:      model.JobImport,
 		Status:    model.JobSucceeded,
 		Progress:  100,
+		BackupID:  preBackupID,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
@@ -596,6 +640,56 @@ func (c *DockerServiceController) dropDatabaseDirect(ctx context.Context, servic
 	}
 	_, err = c.runDatabaseSQL(ctx, serviceID, sql)
 	return err
+}
+
+func restoreTargetName(source string, now time.Time) string {
+	suffix := "_restore_" + now.UTC().Format(restoreTimestampLayout)
+	maxSource := 63 - len(suffix)
+	if maxSource < 1 {
+		maxSource = 1
+	}
+	if len(source) > maxSource {
+		source = source[:maxSource]
+	}
+	return source + suffix
+}
+
+// openBackupGzip opens and validates the backup stream before a destructive
+// restore. The returned reader replays the validated prefix.
+func openBackupGzip(path string) (io.ReadCloser, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open backup: %w", err)
+	}
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("open backup gzip: %w", err)
+	}
+	reader, err := validateRestoreReader(gz)
+	if err != nil {
+		_ = gz.Close()
+		_ = file.Close()
+		return nil, err
+	}
+	return &combinedReadCloser{Reader: reader, closers: []io.Closer{gz, file}}, nil
+}
+
+// validateRestoreReader reads a small prefix so corrupt/empty streams fail
+// before the target is dropped, then replays the prefix to the restore command.
+func validateRestoreReader(reader io.Reader) (io.Reader, error) {
+	prefix := make([]byte, 4096)
+	n, err := reader.Read(prefix)
+	if n > 0 {
+		return io.MultiReader(bytes.NewReader(prefix[:n]), reader), nil
+	}
+	if errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: restore stream is empty", databases.ErrInvalidRequest)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: validate restore stream: %v", databases.ErrInvalidRequest, err)
+	}
+	return reader, nil
 }
 
 func openSQLFile(path string) (io.ReadCloser, error) {
