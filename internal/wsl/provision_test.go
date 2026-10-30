@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/AramZahedi/dev-web-stack/internal/platform"
 )
 
 type provisionRunner struct {
@@ -75,9 +73,12 @@ func testProvisioner(t *testing.T, runner Runner) *Provisioner {
 }
 
 func TestDefaultInstallDirUsesProfileHome(t *testing.T) {
-	want := platform.Join("windows", platform.DefaultRoot("windows"), "wsl", "devstack")
-	if DefaultInstallDir != want {
-		t.Fatalf("DefaultInstallDir = %q, want %q", DefaultInstallDir, want)
+	lower := strings.ToLower(DefaultInstallDir)
+	if !strings.HasSuffix(lower, `\.devstack\wsl\devstack`) {
+		t.Fatalf("DefaultInstallDir = %q, want a path under the profile .devstack directory", DefaultInstallDir)
+	}
+	if strings.Contains(lower, `c:\devstack\`) {
+		t.Fatalf("DefaultInstallDir = %q still points at the legacy root", DefaultInstallDir)
 	}
 }
 
