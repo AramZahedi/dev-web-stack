@@ -808,7 +808,10 @@ describe('SiteDetail configuration and builds', () => {
     expect(screen.getByRole('link', { name: /activate/i })).toBeTruthy();
   });
 
-  it('links an existing database from the site card', async () => {
+  it('links a different existing database as a non-primary link', async () => {
+    mockDb.listServiceDatabases.mockResolvedValue({
+      databases: [APP_DATABASE, BLOG_DATABASE, MISSING_DATABASE, DEVSTACK_DATABASE],
+    });
     await renderSite('blog');
     await fireEvent.click(await screen.findByRole('button', { name: 'Link database' }));
     const dialog = await screen.findByRole('dialog');
@@ -818,8 +821,13 @@ describe('SiteDetail configuration and builds', () => {
     await waitFor(() => expect(service.value).toBe('mysql'));
     await fireEvent.click(within(dialog).getByLabelText('Use existing database'));
     const database = within(dialog).getByLabelText(/Existing database/) as HTMLSelectElement;
-    await waitFor(() => expect(database.value).toBe('app'));
-    await fireEvent.change(database, { target: { value: 'app' } });
+    await waitFor(() => expect(database.value).toBe('blog'));
+    const options = Array.from(database.options).map((option) => option.value);
+    expect(options).not.toContain('app');
+    expect(options).not.toContain('missing_db');
+    expect(options).not.toContain('devstack');
+    expect(options).toContain('blog');
+    await fireEvent.change(database, { target: { value: 'blog' } });
     await fireEvent.click(within(dialog).getByLabelText('Use existing user'));
     const user = within(dialog).getByLabelText(/Existing user/) as HTMLSelectElement;
     await waitFor(() => expect(user.value).toBe('usr_app'));
@@ -831,9 +839,9 @@ describe('SiteDetail configuration and builds', () => {
     await waitFor(() =>
       expect(mockDb.linkSiteDatabase).toHaveBeenCalledWith('s_blog', {
         service_id: 'mysql',
-        database: 'app',
+        database: 'blog',
         user_id: 'usr_app',
-        primary: true,
+        primary: false,
       }),
     );
   });

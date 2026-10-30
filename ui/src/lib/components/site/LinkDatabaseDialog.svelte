@@ -12,11 +12,21 @@
     open: boolean;
     siteRef: string;
     siteName?: string;
+    primary?: boolean;
+    linkedDatabases?: Array<{ service_id: string; database: string }>;
     onclose: () => void;
     onlinked: () => void;
   }
 
-  let { open, siteRef, siteName = '', onclose, onlinked }: Props = $props();
+  let {
+    open,
+    siteRef,
+    siteName = '',
+    primary = true,
+    linkedDatabases = [],
+    onclose,
+    onlinked,
+  }: Props = $props();
 
   let value = $state<CreateSiteDatabaseRequest | null>(null);
   let submitting = $state(false);
@@ -87,7 +97,7 @@
           database,
           user_id: value.user_id ?? '',
           ...(value.password ? { password: value.password } : {}),
-          primary: value.primary ?? true,
+          primary: value.primary ?? primary,
         });
       }
       addToast({
@@ -128,7 +138,13 @@
     <p class="validation" role="alert">{validation}</p>
   {/if}
 
-  <DatabasePicker bind:value={value} alwaysOn {siteName} />
+  <DatabasePicker
+    bind:value={value}
+    alwaysOn
+    {siteName}
+    {primary}
+    {linkedDatabases}
+  />
 
   {#snippet footer()}
     <Button variant="ghost" onclick={close} disabled={submitting}>Cancel</Button>

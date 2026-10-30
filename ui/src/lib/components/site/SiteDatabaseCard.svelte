@@ -331,6 +331,11 @@
   open={linkOpen}
   siteRef={site.id}
   siteName={site.name}
+  primary={!links.some((link) => link.primary)}
+  linkedDatabases={links.map((link) => ({
+    service_id: link.service_id,
+    database: link.database,
+  }))}
   onclose={() => (linkOpen = false)}
   onlinked={handleLinked}
 />

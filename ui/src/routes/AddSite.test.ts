@@ -147,6 +147,25 @@ const APP_DATABASE: Database = {
   managed: true,
 };
 
+const BLOG_DATABASE: Database = {
+  ...APP_DATABASE,
+  name: 'blog',
+  size_bytes: 2048,
+  table_count: 2,
+};
+
+const MISSING_DATABASE: Database = {
+  ...BLOG_DATABASE,
+  name: 'missing_db',
+  missing: true,
+};
+
+const DEVSTACK_DATABASE: Database = {
+  ...BLOG_DATABASE,
+  name: 'devstack',
+  managed: false,
+};
+
 const EXTERNAL_USER: DatabaseUser = {
   id: 'usr_ext',
   service_id: 'mysql',
@@ -158,6 +177,20 @@ const EXTERNAL_USER: DatabaseUser = {
   password_managed: false,
   grants: [],
   linked_sites: [],
+};
+
+const DISABLED_USER: DatabaseUser = {
+  ...EXTERNAL_USER,
+  id: 'usr_disabled',
+  username: 'disabled',
+  enabled: false,
+};
+
+const ROOT_USER: DatabaseUser = {
+  ...EXTERNAL_USER,
+  id: 'usr_root',
+  username: 'root',
+  enabled: true,
 };
 
 const SITE_DB_LINK: DatabaseLink = {
@@ -694,6 +727,36 @@ describe('AddSite Wave 2 fields', () => {
       (await screen.findAllByText(/Use letters, numbers and underscores/)).length,
     ).toBeGreaterThan(0);
     expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
+  it('filters missing and protected existing databases and users', async () => {
+    mockDb.listServiceDatabases.mockResolvedValue({
+      databases: [APP_DATABASE, BLOG_DATABASE, MISSING_DATABASE, DEVSTACK_DATABASE],
+    });
+    mockDb.listServiceUsers.mockResolvedValue({
+      users: [EXTERNAL_USER, DISABLED_USER, ROOT_USER],
+    });
+    await openOptionsStep();
+
+    await fireEvent.click(screen.getByLabelText('Create or link a database'));
+    const service = (await screen.findByLabelText(/Database service/)) as HTMLSelectElement;
+    await waitFor(() => expect(service.value).toBe('mysql'));
+    await fireEvent.click(screen.getByLabelText('Use existing database'));
+    const database = (await screen.findByLabelText(/Existing database/)) as HTMLSelectElement;
+    await waitFor(() => expect(database.value).toBe('app'));
+    const databaseOptions = Array.from(database.options).map((option) => option.value);
+    expect(databaseOptions).toContain('app');
+    expect(databaseOptions).toContain('blog');
+    expect(databaseOptions).not.toContain('missing_db');
+    expect(databaseOptions).not.toContain('devstack');
+
+    await fireEvent.click(screen.getByLabelText('Use existing user'));
+    const user = (await screen.findByLabelText(/Existing user/)) as HTMLSelectElement;
+    await waitFor(() => expect(user.value).toBe('usr_ext'));
+    const userOptions = Array.from(user.options).map((option) => option.value);
+    expect(userOptions).toContain('usr_ext');
+    expect(userOptions).not.toContain('usr_disabled');
+    expect(userOptions).not.toContain('usr_root');
   });
 
   it('does not block site creation when no SQL service is active', async () => {

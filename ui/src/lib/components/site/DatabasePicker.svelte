@@ -15,6 +15,7 @@
   import Field from '../Field.svelte';
   import Toggle from '../Toggle.svelte';
   import { grantLabel, type DatabasePickerSummary } from './databasePickerTypes';
+  import { isSelectableDatabase, isSelectableUser } from './databaseIdentifiers';
 
   interface Props {
     value?: CreateSiteDatabaseRequest | null;
@@ -22,6 +23,8 @@
     siteName?: string;
     errors?: Record<string, string>;
     alwaysOn?: boolean;
+    primary?: boolean;
+    linkedDatabases?: Array<{ service_id: string; database: string }>;
     onmanageuser?: (serviceID: string, userID: string) => void;
     onclearerror?: (key: string) => void;
   }
@@ -32,6 +35,8 @@
     siteName = '',
     errors = {},
     alwaysOn = false,
+    primary = true,
+    linkedDatabases = [],
     onmanageuser,
     onclearerror,
   }: Props = $props();
@@ -63,8 +68,19 @@
         service.installed && service.active && SQL_SERVICES.includes(service.id),
     ),
   );
+  const linkedDatabaseKeys = $derived(
+    new Set(linkedDatabases.map((link) => `${link.service_id}:${link.database}`)),
+  );
+  const availableDatabases = $derived(
+    databases.filter(
+      (database) =>
+        isSelectableDatabase(database) &&
+        !linkedDatabaseKeys.has(`${serviceID}:${database.name}`),
+    ),
+  );
+  const availableUsers = $derived(users.filter(isSelectableUser));
   const selectedService = $derived(services.find((service) => service.id === serviceID) ?? null);
-  const selectedUser = $derived(users.find((user) => user.id === userID) ?? null);
+  const selectedUser = $derived(availableUsers.find((user) => user.id === userID) ?? null);
   const selectedDatabase = $derived(
     databaseMode === 'new' ? databaseName.trim() : databaseName,
   );
@@ -130,7 +146,7 @@
     }
     const request: CreateSiteDatabaseRequest = {
       service_id: serviceID,
-      primary: true,
+      primary,
     };
     if (databaseMode === 'new') {
       request.new_database = { name: databaseName.trim() };
@@ -174,14 +190,20 @@
       if (generation !== dataGeneration) return;
       databases = databaseResult?.databases ?? [];
       users = userResult?.users ?? [];
+      const visibleDatabases = databases.filter(
+        (database) =>
+          isSelectableDatabase(database) &&
+          !linkedDatabaseKeys.has(`${id}:${database.name}`),
+      );
+      const visibleUsers = users.filter(isSelectableUser);
       if (
         databaseMode === 'existing' &&
-        !databases.some((database) => database.name === databaseName)
+        !visibleDatabases.some((database) => database.name === databaseName)
       ) {
-        databaseName = databases[0]?.name ?? '';
+        databaseName = visibleDatabases[0]?.name ?? '';
       }
-      if (userMode === 'existing' && !users.some((user) => user.id === userID)) {
-        userID = users[0]?.id ?? '';
+      if (userMode === 'existing' && !visibleUsers.some((user) => user.id === userID)) {
+        userID = visibleUsers[0]?.id ?? '';
       }
       sync();
     } catch (caught) {
@@ -245,7 +267,7 @@
 
   function setDatabaseMode(mode: 'new' | 'existing'): void {
     databaseMode = mode;
-    databaseName = mode === 'new' ? defaultName() : (databases[0]?.name ?? '');
+    databaseName = mode === 'new' ? defaultName() : (availableDatabases[0]?.name ?? '');
     onclearerror?.('database_name');
     sync();
   }
@@ -253,7 +275,7 @@
   function setUserMode(mode: 'new' | 'existing'): void {
     userMode = mode;
     username = mode === 'new' ? defaultName() : '';
-    userID = mode === 'existing' ? (users[0]?.id ?? '') : '';
+    userID = mode === 'existing' ? (availableUsers[0]?.id ?? '') : '';
     password = '';
     onclearerror?.('database_user');
     onclearerror?.('database_username');
@@ -435,10 +457,10 @@
               sync();
             }}
           >
-            {#if databases.length === 0}
-              <option value="">No databases found</option>
+            {#if availableDatabases.length === 0}
+              <option value="">No databases available</option>
             {/if}
-            {#each databases as database (database.name)}
+            {#each availableDatabases as database (database.name)}
               <option value={database.name}>
                 {database.name}{database.missing ? ' (missing)' : ''}
               </option>
@@ -524,10 +546,10 @@
               sync();
             }}
           >
-            {#if users.length === 0}
-              <option value="">No users found</option>
+            {#if availableUsers.length === 0}
+              <option value="">No users available</option>
             {/if}
-            {#each users as user (user.id)}
+            {#each availableUsers as user (user.id)}
               <option value={user.id}>
                 {user.username}{user.host ? `@${user.host}` : ''}
               </option>
