@@ -29,6 +29,16 @@ func TestServiceConfigReadApplyResetAndBackupStayAgentSide(t *testing.T) {
 	if err := os.WriteFile(file, []byte("old configuration\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	listing, err := module.ServiceConfig(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Files) != 1 || listing.Files[0].Path != "my.cnf" {
+		t.Fatalf("ServiceConfig() = %+v, want my.cnf", listing)
+	}
+	if got, want := listing.Files[0].Size, int64(len("old configuration\n")); got != want {
+		t.Fatalf("ServiceConfig() size = %d, want %d", got, want)
+	}
 	request := agentproto.ServiceConfigRequest{ID: "mysql", Rel: "my.cnf"}
 	content, err := module.ServiceContent(context.Background(), request)
 	if err != nil || content.Content != "old configuration\n" {

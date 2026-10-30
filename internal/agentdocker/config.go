@@ -63,7 +63,12 @@ func (d *Docker) ServiceConfig(ctx context.Context, id string) (agentproto.Servi
 			}
 			return err
 		}
-		files = append(files, agentproto.ServiceConfigFile{Path: rel, Class: "custom", Hash: hashBytes(content)})
+		files = append(files, agentproto.ServiceConfigFile{
+			Path:  rel,
+			Class: "custom",
+			Hash:  hashBytes(content),
+			Size:  int64(len(content)),
+		})
 		return nil
 	})
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

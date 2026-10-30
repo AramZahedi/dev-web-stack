@@ -389,6 +389,7 @@ type ServiceConfigFile struct {
 	Path     string `json:"path"`
 	Class    string `json:"class"`
 	Hash     string `json:"hash"`
+	Size     int64  `json:"size"`
 	Modified bool   `json:"modified"`
 	Detached bool   `json:"detached"`
 }

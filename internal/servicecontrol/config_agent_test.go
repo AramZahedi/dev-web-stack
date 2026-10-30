@@ -14,7 +14,7 @@ func TestConfigServiceWithAgent(t *testing.T) {
 	api := &fakeAgentConfigAPI{
 		listing: agentproto.ServiceConfigResponse{
 			Files: []agentproto.ServiceConfigFile{
-				{Path: "my.cnf", Class: "custom", Hash: "current-hash"},
+				{Path: "my.cnf", Class: "custom", Hash: "current-hash", Size: int64(len("[mysqld]\nport=3306\n"))},
 			},
 		},
 		content: agentproto.ServiceContentResponse{
@@ -42,6 +42,9 @@ func TestConfigServiceWithAgent(t *testing.T) {
 	}
 	if len(listing.Files) != 1 || listing.Files[0].Path != "my.cnf" {
 		t.Fatalf("listing = %+v, want 1 file 'my.cnf'", listing)
+	}
+	if got, want := listing.Files[0].Size, int64(len("[mysqld]\nport=3306\n")); got != want {
+		t.Fatalf("listing size = %d, want %d", got, want)
 	}
 
 	// 2. Content

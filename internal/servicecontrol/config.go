@@ -317,6 +317,7 @@ func (s *ConfigService) List(ctx context.Context, id services.ID) (ConfigListing
 				Path:     f.Path,
 				Class:    serviceconfig.Class(f.Class),
 				Hash:     f.Hash,
+				Size:     f.Size,
 				Modified: f.Modified,
 				Detached: f.Detached,
 				Conflict: ConfigConflictSummary{
