@@ -148,6 +148,30 @@ func TestSiteDBListJSON(t *testing.T) {
 	}
 }
 
+func TestSiteDBListJSONRedactsConnectionPasswords(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{databaseLinks: []model.DatabaseLink{{
+		ID: "lnk_1", SiteID: "site-1", ServiceID: "mysql", Engine: model.DatabaseMySQL,
+		Database: "app", Username: "app", PasswordManaged: true,
+		Connection: model.DatabaseConnection{
+			Engine: model.DatabaseMySQL, Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
+			PasswordManaged: true,
+			URL:             "mysql://app:s3cret@127.0.0.1:3306/app",
+			Env:             map[string]string{"DB_PASSWORD": "s3cret", "DATABASE_URL": "mysql://app:s3cret@127.0.0.1:3306/app", "DB_HOST": "127.0.0.1"},
+		},
+	}}}
+	out := runCLI(t, fake, "site", "db", "list", "blog", "--json")
+	if strings.Contains(out, "s3cret") {
+		t.Fatalf("link list leaked a connection password: %s", out)
+	}
+	if !strings.Contains(out, "mysql://app@127.0.0.1:3306/app") {
+		t.Fatalf("link list did not keep a redacted URL: %s", out)
+	}
+	if strings.Contains(out, "DB_PASSWORD") {
+		t.Fatalf("link list leaked the password env key: %s", out)
+	}
+}
+
 func TestSiteDBLinkPayload(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{databaseLinked: model.DatabaseLink{ID: "lnk_1", Database: "app"}}

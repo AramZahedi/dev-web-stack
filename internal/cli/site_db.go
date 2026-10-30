@@ -47,9 +47,13 @@ func (a *App) newSiteDBListCmd() *cobra.Command {
 				links = []model.DatabaseLink{}
 			}
 			if a.jsonOutput {
+				clean := make([]model.DatabaseLink, 0, len(links))
+				for _, link := range links {
+					clean = append(clean, sanitizeDatabaseLink(link))
+				}
 				return a.writeJSON(cmd, struct {
 					Links []model.DatabaseLink `json:"links"`
-				}{Links: links})
+				}{Links: clean})
 			}
 			return writeSiteDatabaseLinkTable(cmd, links)
 		},
@@ -94,7 +98,7 @@ func (a *App) newSiteDBLinkCmd() *cobra.Command {
 				return err
 			}
 			if a.jsonOutput {
-				return a.writeJSON(cmd, link)
+				return a.writeJSON(cmd, sanitizeDatabaseLink(link))
 			}
 			return writeDatabaseLinkDetails(cmd, link)
 		},

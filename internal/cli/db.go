@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -840,7 +841,7 @@ func (a *App) newDBLinkCmd() *cobra.Command {
 				return err
 			}
 			if a.jsonOutput {
-				return a.writeJSON(cmd, link)
+				return a.writeJSON(cmd, sanitizeDatabaseLink(link))
 			}
 			return writeDatabaseLinkDetails(cmd, link)
 		},
@@ -1222,6 +1223,43 @@ func writeDatabaseJob(cmd *cobra.Command, app *App, job model.DatabaseJob) error
 		{"Message", defaultString(job.Message, "-")},
 		{"Backup", defaultString(job.BackupID, "-")},
 	})
+}
+
+// sanitizeDatabaseLink is defense-in-depth for CLI JSON output: list/detail
+// responses must never expose a password, even if a platform adapter includes
+// one in a connection URL or env snippet.
+func sanitizeDatabaseLink(link model.DatabaseLink) model.DatabaseLink {
+	link.Connection.URL = redactDatabaseURL(link.Connection.URL)
+	if len(link.Connection.Env) == 0 {
+		return link
+	}
+	env := make(map[string]string, len(link.Connection.Env))
+	for key, value := range link.Connection.Env {
+		switch {
+		case strings.EqualFold(key, "DB_PASSWORD"):
+			continue
+		case strings.EqualFold(key, "DATABASE_URL"):
+			value = redactDatabaseURL(value)
+		}
+		env[key] = value
+	}
+	link.Connection.Env = env
+	return link
+}
+
+func redactDatabaseURL(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User == nil {
+		return value
+	}
+	if _, ok := parsed.User.Password(); !ok {
+		return value
+	}
+	parsed.User = url.User(parsed.User.Username())
+	return parsed.String()
 }
 
 func writeDatabaseLinkDetails(cmd *cobra.Command, link model.DatabaseLink) error {
