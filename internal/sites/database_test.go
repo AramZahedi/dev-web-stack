@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
@@ -44,7 +45,7 @@ func (f *fakeDatabaseProvisioner) LinkProvisioned(_ context.Context, siteID stri
 	return databases.SiteDatabaseResult{}, nil
 }
 
-func TestBackendSpecMergesDatabaseEnvWithoutMutatingSite(t *testing.T) {
+func TestBackendSpecKeepsResolvedDatabaseEnvOutOfSiteEnv(t *testing.T) {
 	svc, fakes := newTestService(t)
 	svc.deps.DatabaseEnv = func(context.Context, model.Site) (map[string]string, error) {
 		return map[string]string{"DB_DATABASE": "app", "DB_PASSWORD": "s3cret"}, nil
@@ -55,14 +56,46 @@ func TestBackendSpecMergesDatabaseEnvWithoutMutatingSite(t *testing.T) {
 		Env: map[string]string{"DB_DATABASE": "old", "APP_ENV": "local"},
 	}
 	spec := svc.backendSpecFor(context.Background(), site)
-	if spec.Env["DB_DATABASE"] != "app" || spec.Env["DB_PASSWORD"] != "s3cret" {
-		t.Fatalf("spec env = %+v", spec.Env)
+	if spec.RuntimeEnv["DB_DATABASE"] != "app" || spec.RuntimeEnv["DB_PASSWORD"] != "s3cret" {
+		t.Fatalf("runtime env = %+v", spec.RuntimeEnv)
+	}
+	if spec.Env["DB_DATABASE"] != "old" {
+		t.Fatalf("resolved database env leaked into spec.Env: %+v", spec.Env)
+	}
+	if _, ok := spec.Env["DB_PASSWORD"]; ok {
+		t.Fatalf("resolved database password leaked into spec.Env: %+v", spec.Env)
 	}
 	if spec.Env["APP_ENV"] != "local" {
 		t.Fatalf("site env lost: %+v", spec.Env)
 	}
 	if site.Env["DB_DATABASE"] != "old" {
 		t.Fatalf("backendSpecFor mutated site.Env: %+v", site.Env)
+	}
+}
+
+func TestBackendSpecSendsDatabaseLinksWithoutSecrets(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.DatabaseEnv = func(context.Context, model.Site) (map[string]string, error) {
+		return map[string]string{"DB_PASSWORD": "s3cret"}, nil
+	}
+	svc.deps.DatabaseLinks = func(context.Context, model.Site) ([]model.DatabaseLink, error) {
+		return []model.DatabaseLink{{
+			ID: "lnk_1", ServiceID: "mysql", Engine: model.DatabaseMySQL,
+			Database: "app", UserID: "usr_app", Username: "app", Primary: true,
+			PasswordManaged: true,
+			Connection:      model.DatabaseConnection{Host: "127.0.0.1", Port: 3306},
+		}}, nil
+	}
+	site := model.Site{ID: "site", Name: "blog", Kind: model.SiteNode, HostPath: fakes.root, BackendPath: fakes.root}
+	spec := svc.backendSpecFor(context.Background(), site)
+	if len(spec.DatabaseLinks) != 1 || spec.DatabaseLinks[0].UserID != "usr_app" {
+		t.Fatalf("database links = %+v", spec.DatabaseLinks)
+	}
+	if spec.DatabaseLinks[0].Port != 3306 || !spec.DatabaseLinks[0].PasswordManaged {
+		t.Fatalf("database link = %+v", spec.DatabaseLinks[0])
+	}
+	if _, ok := spec.Env["DB_PASSWORD"]; ok {
+		t.Fatalf("resolved database password leaked into spec.Env: %+v", spec.Env)
 	}
 }
 
@@ -80,6 +113,51 @@ func TestStartCallsDatabaseGuard(t *testing.T) {
 	svc.deps.DatabaseGuard = func(context.Context, model.Site) error { return guardErr }
 	if err := svc.Start(context.Background(), "blog"); !errors.Is(err, guardErr) {
 		t.Fatalf("start error = %v, want guard error", err)
+	}
+}
+
+func TestStartPersistsNoResolvedDatabasePassword(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.DatabaseEnv = func(context.Context, model.Site) (map[string]string, error) {
+		return map[string]string{"DB_DATABASE": "app", "DB_PASSWORD": "s3cret"}, nil
+	}
+	site := model.Site{
+		ID: "site", Name: "blog", Domain: "blog.test", Kind: model.SiteStatic,
+		HostPath: fakes.root, BackendPath: fakes.root, DocumentRoot: ".",
+		Env:    map[string]string{"APP_ENV": "local"},
+		Status: model.StatusStopped, DesiredState: model.DesiredStopped,
+	}
+	if err := fakes.store.CreateSite(context.Background(), site); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Start(context.Background(), "blog"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := fakes.store.GetSiteByName(context.Background(), "blog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stored.Env["DB_PASSWORD"]; ok {
+		t.Fatalf("resolved database password persisted with the site: %+v", stored.Env)
+	}
+	if stored.Env["APP_ENV"] != "local" {
+		t.Fatalf("site env lost: %+v", stored.Env)
+	}
+	var prepared *backend.SiteSpec
+	for i := range fakes.backend.prepared {
+		if fakes.backend.prepared[i].ID == "site" {
+			prepared = &fakes.backend.prepared[i]
+			break
+		}
+	}
+	if prepared == nil {
+		t.Fatal("backend did not receive a spec")
+	}
+	if prepared.Env["DB_PASSWORD"] != "" {
+		t.Fatalf("resolved password entered spec.Env: %+v", prepared.Env)
+	}
+	if prepared.RuntimeEnv["DB_PASSWORD"] != "s3cret" || prepared.RuntimeEnv["DB_DATABASE"] != "app" {
+		t.Fatalf("runtime env = %+v", prepared.RuntimeEnv)
 	}
 }
 

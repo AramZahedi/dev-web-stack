@@ -1769,19 +1769,16 @@ func backendSpec(site model.Site) backend.SiteSpec {
 }
 
 // backendSpecFor resolves the exact Node toolchain, including an inherited
-// global default, and returns the backend execution view.
+// global default, and returns the backend execution view. Resolved database
+// environment values are process-only: they go into RuntimeEnv, never into
+// Env, so they cannot be persisted with the site or rendered into config.
 func (s *Service) backendSpecFor(ctx context.Context, site model.Site) backend.SiteSpec {
 	spec := backendSpec(site)
 	if toolchain, err := s.ResolveNodeToolchain(ctx, site); err == nil {
 		spec.RuntimeVersion = toolchain.Version
 	}
 	if env := s.databaseEnv(ctx, site); len(env) > 0 {
-		if spec.Env == nil {
-			spec.Env = make(map[string]string, len(env))
-		}
-		for key, value := range env {
-			spec.Env[key] = value
-		}
+		spec.RuntimeEnv = env
 	}
 	if s.deps.DatabaseLinks != nil {
 		if links, err := s.deps.DatabaseLinks(ctx, site); err == nil {

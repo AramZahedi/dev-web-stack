@@ -256,6 +256,9 @@ func TestCreatePHPValidatesVersionDocumentRootAndConfiguration(t *testing.T) {
 
 func TestCreatePHPComposesIniFPMAndStoresSnapshot(t *testing.T) {
 	svc, fakes := newTestService(t)
+	svc.deps.DatabaseEnv = func(context.Context, model.Site) (map[string]string, error) {
+		return map[string]string{"DB_DATABASE": "app", "DB_PASSWORD": "s3cret"}, nil
+	}
 	build := fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
 	site, err := svc.Create(ctx, CreateRequest{
 		Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4", PHPBuild: build.ID,
@@ -306,6 +309,16 @@ func TestCreatePHPComposesIniFPMAndStoresSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(fpm, `env[APP_ENV] = "local"`) {
 		t.Fatalf("environment missing from php-fpm.conf:\n%s", fpm)
+	}
+	if strings.Contains(fpm, "s3cret") || strings.Contains(fpm, "DB_PASSWORD") {
+		t.Fatalf("resolved database password rendered into php-fpm.conf:\n%s", fpm)
+	}
+	stored, err := fakes.store.GetSiteByName(ctx, "blog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stored.Env["DB_PASSWORD"]; ok {
+		t.Fatalf("resolved database password persisted with the site: %+v", stored.Env)
 	}
 
 	for _, name := range []string{"php.ini", "php-fpm.conf", "health.php"} {
