@@ -4,7 +4,9 @@ package wslbackend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"strings"
@@ -33,7 +35,11 @@ func (b *Backend) Prepare(ctx context.Context, spec backend.SiteSpec) (backend.P
 	if err := b.check(); err != nil {
 		return backend.PreparedSite{}, err
 	}
-	resp, err := b.Client.PrepareSite(ctx, agentproto.SitePrepareRequest{Site: toAgentSite(spec)})
+	site, err := toAgentSite(spec)
+	if err != nil {
+		return backend.PreparedSite{}, err
+	}
+	resp, err := b.Client.PrepareSite(ctx, agentproto.SitePrepareRequest{Site: site})
 	if err != nil {
 		return backend.PreparedSite{}, err
 	}
@@ -150,9 +156,13 @@ func (b *Backend) PreparePHP(ctx context.Context, siteID, generation string, spe
 	if err := b.check(); err != nil {
 		return backend.PreparedSite{}, err
 	}
+	site, err := toAgentSite(spec)
+	if err != nil {
+		return backend.PreparedSite{}, err
+	}
 	resp, err := b.Client.PreparePHP(ctx, siteID, agentproto.PHPPrepareRequest{
 		Generation: generation,
-		Site:       toAgentSite(spec),
+		Site:       site,
 	})
 	if err != nil {
 		return backend.PreparedSite{}, err
@@ -218,7 +228,7 @@ func toWSLPath(p string) string {
 	return strings.ReplaceAll(p, `\`, "/")
 }
 
-func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
+func toAgentSite(spec backend.SiteSpec) (agentproto.SiteSpec, error) {
 	documentRoot := strings.TrimSpace(spec.DocumentRoot)
 	backendDocumentRoot := strings.TrimSpace(spec.BackendPath)
 	if documentRoot != "" && documentRoot != "." {
@@ -237,7 +247,7 @@ func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 	case len(spec.HostPath) >= 3 && spec.HostPath[1] == ':' && (spec.HostPath[2] == '\\' || spec.HostPath[2] == '/'):
 		mode = string(model.SourceWindows)
 	}
-	return agentproto.SiteSpec{
+	site := agentproto.SiteSpec{
 		ID: spec.ID, Kind: spec.Kind, Domain: spec.Domain, HostPath: spec.HostPath, BackendPath: toWSLPath(spec.BackendPath),
 		DocumentRoot: toWSLPath(backendDocumentRoot), ProxyDocumentRoot: proxyRoot, SourceMode: mode,
 		Command: spec.Command, Env: cloneMap(spec.Env), HTTPPort: spec.HTTPPort, FastCGIPort: spec.FastCGIPort,
@@ -245,6 +255,33 @@ func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 		PHPVersion: spec.PHPVersion, PHPBuild: spec.PHPBuild, PHPBuildPath: toWSLPath(spec.PHPBuildPath),
 		PHPIniPath: toWSLPath(spec.PHPIniPath), FPMConfigPath: toWSLPath(spec.FPMConfigPath), PHPHealthScript: toWSLPath(spec.PHPHealthScript),
 	}
+	if err := applyDatabaseLinks(&site, spec.DatabaseLinks); err != nil {
+		return agentproto.SiteSpec{}, fmt.Errorf("backend/wsl: encode database links: %w", err)
+	}
+	return site, nil
+}
+
+// applyDatabaseLinks carries password-free link metadata to the agent. The
+// agent lane owns the SiteSpec.DatabaseLinks field; this JSON bridge lets the
+// daemon branch compile against the frozen foundation and start sending links
+// as soon as that field is merged, without importing a not-yet-landed type.
+func applyDatabaseLinks(site *agentproto.SiteSpec, links []backend.DatabaseLinkSpec) error {
+	if site == nil || len(links) == 0 {
+		return nil
+	}
+	raw, err := databaseLinksPayload(links)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, site)
+}
+
+// databaseLinksPayload is the wire fragment the agent's SiteSpec field
+// consumes.
+func databaseLinksPayload(links []backend.DatabaseLinkSpec) ([]byte, error) {
+	return json.Marshal(struct {
+		DatabaseLinks []backend.DatabaseLinkSpec `json:"database_links,omitempty"`
+	}{DatabaseLinks: links})
 }
 
 func filepathToSlash(value string) string { return strings.ReplaceAll(value, `\`, "/") }

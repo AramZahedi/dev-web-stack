@@ -149,12 +149,13 @@ func (s *Service) renderPHPFilesLocked(ctx context.Context, site model.Site, bui
 		// The supervisor wires php-fpm's stderr to the site log stream, so
 		// fd 2 merges master and pool output (with redaction) into
 		// `devstack logs`. Only the PID file is generation-local.
-		ErrorLog: "/proc/self/fd/2",
-		PIDFile:  filepath.Join(generationDir, "php-fpm.pid"),
-		User:     "",
-		Group:    "",
-		Env:      cloneEnv(site.Env),
-		Pool:     site.PHPFPM,
+		ErrorLog:   "/proc/self/fd/2",
+		PIDFile:    filepath.Join(generationDir, "php-fpm.pid"),
+		User:       "",
+		Group:      "",
+		Env:        cloneEnv(site.Env),
+		RuntimeEnv: s.databaseEnv(ctx, site),
+		Pool:       site.PHPFPM,
 	})
 	if err != nil {
 		return phpRendered{}, fmt.Errorf("sites: render php-fpm.conf for %q: %w", site.Name, err)

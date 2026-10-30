@@ -1,7 +1,7 @@
-# Lane H recovery — interrupted helper fixer
+# Lane H recovery ÔÇö interrupted helper fixer
 
 - **Session:** `ses_e719a01e8ffejairZT6YJPB5cK`
-- **Outcome:** failed — provider quota `429 GoUsageLimitError` (`retryAfterMs` 777000)
+- **Outcome:** failed ÔÇö provider quota `429 GoUsageLimitError` (`retryAfterMs` 777000)
 - **Branch:** `lane/db-helper`
 - **HEAD at interruption:** `ee6f7f26e1dd64b2c393646ca584ba298d68db24` plus uncommitted WIP
 - **Base:** `44c9d6812439a27c4e3ba060e364a197a781e929`
@@ -22,7 +22,7 @@ Commits made after the previous audit (`2611c2e`):
 
 `internal/helper/service_database.go`:
 
-- Added `engineError(err)` mapping `dbengine.ErrUnsupported` → `databases.ErrUnsupported` and `dbengine.ErrInvalidIdentifier` → `databases.ErrInvalidRequest`.
+- Added `engineError(err)` mapping `dbengine.ErrUnsupported` ÔåÆ `databases.ErrUnsupported` and `dbengine.ErrInvalidIdentifier` ÔåÆ `databases.ErrInvalidRequest`.
 - Wrapped engine errors in `ListDatabases`, `CreateDatabase`, `RenameDatabase`, `DropDatabase`, `terminateSessions`, `CreateUser`, `DeleteUser`, `SetUserPassword`, `rollbackCreatedUser`, `applyUserGrants`.
 - Added `isGrantableScope(engine, database)` and skip/reject wildcard scopes (`app%`); desired global scopes return `ErrInvalidRequest`.
 
@@ -33,7 +33,7 @@ Commits made after the previous audit (`2611c2e`):
 - `TestHelperGrantDiffRejectsDesiredGlobalScope`
 - `TestHelperGrantEngineErrorIsDomainError`
 
-This is the **I3 fix** plus the “wrap engine errors as domain errors” minor. It has not been compiled/tested yet. The last action was an `edit` wrapping engine errors; the session died immediately after.
+This is the **I3 fix** plus the ÔÇ£wrap engine errors as domain errorsÔÇØ minor. It has not been compiled/tested yet. The last action was an `edit` wrapping engine errors; the session died immediately after.
 
 ## Exact next steps
 
@@ -41,13 +41,13 @@ This is the **I3 fix** plus the “wrap engine errors as domain errors” minor.
    - `gofmt` the two files.
    - `go test ./internal/helper -count=1` (Windows compiles; Linux/WSL runs the real DB tests).
    - Ensure `isGrantableScope` is used consistently in both the current-grant skip and the desired-grant validation, and that `RevokeSQL` is never called for `%` scopes.
-2. Implement **I4 — Redis ACL migration confirmation gate** (not started):
+2. Implement **I4 ÔÇö Redis ACL migration confirmation gate** (not started):
    - Add an optional `confirm` field to the Redis mutation RPCs and/or a dedicated `EnableRedisACLFile` RPC with `confirm`.
    - If migration is needed and `confirm` is false, return a typed confirmation-required error **before any change or restart**.
    - Keep existing signatures working; default false must fail closed when migration is needed.
    - Add tests for unconfirmed and confirmed migration.
 3. Fix the remaining Minors from the H re-audit:
-   - `ListBackups` nil → empty slice when the tree is absent.
+   - `ListBackups` nil ÔåÆ empty slice when the tree is absent.
    - Tighten `redisOutputError` to structural `(error) NOAUTH`/`WRONGPASS`.
    - Validate backup `kind` enum.
    - Enforce `users.acl` 0600 on existing files and reject directories.

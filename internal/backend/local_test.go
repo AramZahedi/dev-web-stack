@@ -315,6 +315,41 @@ func TestLocalExecResolvesCommandFromSitePATH(t *testing.T) {
 	}
 }
 
+func TestLocalProcessAndExecIncludeRuntimeEnv(t *testing.T) {
+	b, root := newTestLocal(t)
+	for _, kind := range []model.SiteKind{model.SiteStatic, model.SiteNode} {
+		t.Run(string(kind), func(t *testing.T) {
+			p := preparedSite{
+				spec: SiteSpec{
+					ID: string(kind), Kind: string(kind), HTTPPort: freePort(t),
+					Env:        map[string]string{"APP_ENV": "local"},
+					RuntimeEnv: map[string]string{"DB_DATABASE": "app", "DB_PASSWORD": "s3cret"},
+				},
+				documentRoot: root,
+				workingDir:   root,
+			}
+			process, err := b.processSpec(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if process.Env["DB_PASSWORD"] != "s3cret" || process.Env["DB_DATABASE"] != "app" {
+				t.Fatalf("process env = %+v", process.Env)
+			}
+			if process.Env["APP_ENV"] != "local" {
+				t.Fatalf("site env lost from process: %+v", process.Env)
+			}
+
+			execEnv := b.execEnvironment(p, nil)
+			if execEnv["DB_PASSWORD"] != "s3cret" || execEnv["DB_DATABASE"] != "app" {
+				t.Fatalf("exec env = %+v", execEnv)
+			}
+			if execEnv["APP_ENV"] != "local" {
+				t.Fatalf("site env lost from exec: %+v", execEnv)
+			}
+		})
+	}
+}
+
 func TestLocalExecUsesNodeRuntimeEnvironment(t *testing.T) {
 	nodeRoot := t.TempDir()
 	binDir := filepath.Join(nodeRoot, "bin")

@@ -48,6 +48,10 @@ type Config struct {
 	PIDFile      string
 	User, Group  string
 	Env          map[string]string
+	// RuntimeEnv carries values that must be present in the FPM master process
+	// environment but must never be rendered into php-fpm.conf. The backend
+	// applies them when launching the master; Render deliberately ignores them.
+	RuntimeEnv map[string]string
 	// Pool is the persisted per-site sizing. Nil or zero selects the
 	// conservative defaults.
 	Pool *model.PHPFPMBudget

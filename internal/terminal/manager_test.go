@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
@@ -84,6 +85,59 @@ func TestPrepareNodeSitePutsNodeShimFirst(t *testing.T) {
 	}
 	if _, ok := env["PHPRC"]; ok {
 		t.Fatalf("Node site unexpectedly sets PHPRC")
+	}
+}
+
+func TestPrepareAddsDatabaseEnvironment(t *testing.T) {
+	home := t.TempDir()
+	paths, site, build := testNodeFixture(t, home)
+	site.Env = map[string]string{"DB_DATABASE": "old", "APP_ENV": "local"}
+	deps := testDeps(paths)
+	deps.Runtimes = staticRuntimes{build}
+	deps.DatabaseEnv = func(context.Context, model.Site) (map[string]string, error) {
+		return map[string]string{"DB_DATABASE": "app", "DB_PASSWORD": "s3cret"}, nil
+	}
+	manager := NewManager(deps)
+	t.Cleanup(manager.Close)
+
+	prepared, err := manager.prepare(context.Background(), site)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	env := envMap(t, prepared.Env)
+	if env["DB_DATABASE"] != "app" {
+		t.Fatalf("DB_DATABASE = %q, want app", env["DB_DATABASE"])
+	}
+	if env["DB_PASSWORD"] != "s3cret" {
+		t.Fatalf("DB_PASSWORD missing from terminal environment")
+	}
+	if env["APP_ENV"] != "local" {
+		t.Fatalf("site env was not forwarded: %q", env["APP_ENV"])
+	}
+}
+
+func TestPrepareSurvivesDatabaseEnvironmentFailure(t *testing.T) {
+	home := t.TempDir()
+	paths, site, build := testNodeFixture(t, home)
+	site.Env = map[string]string{"APP_ENV": "local"}
+	deps := testDeps(paths)
+	deps.Runtimes = staticRuntimes{build}
+	deps.DatabaseEnv = func(context.Context, model.Site) (map[string]string, error) {
+		return nil, errors.New("database service offline: password=supersecret")
+	}
+	manager := NewManager(deps)
+	t.Cleanup(manager.Close)
+
+	prepared, err := manager.prepare(context.Background(), site)
+	if err != nil {
+		t.Fatalf("prepare failed because database env was unavailable: %v", err)
+	}
+	env := envMap(t, prepared.Env)
+	if env["APP_ENV"] != "local" {
+		t.Fatalf("site env was not forwarded: %q", env["APP_ENV"])
+	}
+	if _, ok := env["DB_PASSWORD"]; ok {
+		t.Fatalf("failed database env leaked into terminal: %q", env["DB_PASSWORD"])
 	}
 }
 

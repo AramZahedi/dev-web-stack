@@ -2,6 +2,7 @@ package wslbackend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -204,9 +205,41 @@ func TestToAgentSiteSourceMode(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		spec := toAgentSite(backend.SiteSpec{HostPath: tc.hostPath})
+		spec, err := toAgentSite(backend.SiteSpec{HostPath: tc.hostPath})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if spec.SourceMode != tc.wantMode {
 			t.Errorf("toAgentSite(%q).SourceMode = %q, want %q", tc.hostPath, spec.SourceMode, tc.wantMode)
 		}
+	}
+}
+
+func TestDatabaseLinksPayloadMatchesAgentWireShape(t *testing.T) {
+	links := []backend.DatabaseLinkSpec{{
+		ServiceID: "mysql", Engine: "mysql", Database: "app", UserID: "usr_app",
+		Username: "app", Host: "127.0.0.1", Port: 3306, Primary: true, PasswordManaged: true,
+	}}
+	raw, err := databaseLinksPayload(links)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"service_id"`, `"user_id"`, `"password_managed"`} {
+		if !strings.Contains(string(raw), key) {
+			t.Fatalf("payload missing %s: %s", key, raw)
+		}
+	}
+	var decoded struct {
+		DatabaseLinks []struct {
+			ServiceID       string `json:"service_id"`
+			UserID          string `json:"user_id"`
+			PasswordManaged bool   `json:"password_managed"`
+		} `json:"database_links"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.DatabaseLinks) != 1 || decoded.DatabaseLinks[0].UserID != "usr_app" || !decoded.DatabaseLinks[0].PasswordManaged {
+		t.Fatalf("decoded = %+v", decoded.DatabaseLinks)
 	}
 }

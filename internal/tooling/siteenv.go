@@ -35,6 +35,9 @@ type EnvDeps struct {
 	// pin. When nil, the newest installed Node build acts as the default.
 	NodeDefault *model.RuntimeBuild
 	BasePATH    string
+	// ExtraEnv is merged after site.Env and before the DEVSTACK_* values. It is
+	// used for dynamic database link variables; link values win over site.Env.
+	ExtraEnv map[string]string
 }
 
 // SiteEnvironment is a fully resolved site shell environment.
@@ -175,9 +178,15 @@ func BuildSiteEnv(site model.Site, deps EnvDeps) (SiteEnvironment, error) {
 	if err := validateEnvironment(site.Env); err != nil {
 		return SiteEnvironment{}, fmt.Errorf("tooling: site %q: %w", site.Name, err)
 	}
+	if err := validateEnvironment(deps.ExtraEnv); err != nil {
+		return SiteEnvironment{}, fmt.Errorf("tooling: site %q: %w", site.Name, err)
+	}
 	env := SiteEnvironment{Site: site, ShimDir: SiteShimDir(deps.Paths, site.Name)}
-	values := make(map[string]string, len(site.Env)+8)
+	values := make(map[string]string, len(site.Env)+len(deps.ExtraEnv)+8)
 	for key, value := range site.Env {
+		values[key] = value
+	}
+	for key, value := range deps.ExtraEnv {
 		values[key] = value
 	}
 
