@@ -368,6 +368,42 @@ describe('UsersTab', () => {
     expect(within(select).queryByRole('option', { name: 'devstack' })).toBeNull();
   });
 
+  it('swaps databases instead of duplicating grant rows', async () => {
+    const user: DatabaseUser = {
+      ...MYSQL_USERS[0],
+      grants: [
+        { database: 'app', preset: 'read_write_schema' },
+        { database: 'blog', preset: 'read_only' },
+      ],
+    };
+    vi.mocked(db.updateServiceUser).mockResolvedValue(user);
+    render(UsersTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        users: [user],
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /edit app/i }));
+    const dialog = await screen.findByRole('dialog');
+    await fireEvent.change(within(dialog).getByLabelText('Grant 1 database'), {
+      target: { value: 'blog' },
+    });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(db.updateServiceUser).toHaveBeenCalledWith('mysql', 'usr_app', {
+        enabled: true,
+        grants: [
+          { database: 'blog', preset: 'read_write_schema' },
+          { database: 'app', preset: 'read_only' },
+        ],
+      }),
+    );
+  });
+
   it('prompts to restart linked sites after a grant change', async () => {
     const linked = { ...MYSQL_USERS[0], linked_sites: [{ id: 'site_blog', name: 'blog' }] };
     vi.mocked(db.updateServiceUser).mockResolvedValue(linked);

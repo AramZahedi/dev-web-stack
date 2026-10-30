@@ -38,7 +38,26 @@
   }
 
   function updateDatabase(index: number, name: string): void {
-    update(grants.map((grant, position) => (position === index ? { ...grant, database: name } : grant)));
+    const current = grants[index]?.database;
+    if (!current || current === name) return;
+    const conflict = grants.findIndex(
+      (grant, position) => position !== index && grant.database === name,
+    );
+    if (conflict >= 0) {
+      update(
+        grants.map((grant, position) => {
+          if (position === index) return { ...grant, database: name };
+          if (position === conflict) return { ...grant, database: current };
+          return grant;
+        }),
+      );
+      return;
+    }
+    update(
+      grants.map((grant, position) =>
+        position === index ? { ...grant, database: name } : grant,
+      ),
+    );
   }
 
   function updatePreset(index: number, preset: GrantPreset): void {
