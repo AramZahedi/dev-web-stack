@@ -1751,6 +1751,26 @@ func TestCLIUIOpensDashboard(t *testing.T) {
 	}
 }
 
+func TestCLIUIOmitsTokenWhenDashboardAuthDisabled(t *testing.T) {
+	useTestSeams(t)
+	var opened []string
+	oldOpen := openBrowser
+	openBrowser = func(url string) error {
+		opened = append(opened, url)
+		return nil
+	}
+	t.Cleanup(func() { openBrowser = oldOpen })
+
+	home := t.TempDir()
+	if err := securestore.SaveAt(home, "api-token", []byte("0123456789abcdef0123456789abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	runCLI(t, &fakeClient{}, "ui", "--home", home)
+	if !reflect.DeepEqual(opened, []string{dashboardURL}) {
+		t.Fatalf("opened = %v, want [%s]", opened, dashboardURL)
+	}
+}
+
 func TestCLIUIOpensDashboardWithInstallToken(t *testing.T) {
 	useTestSeams(t)
 	var opened []string
@@ -1764,6 +1784,14 @@ func TestCLIUIOpensDashboardWithInstallToken(t *testing.T) {
 	home := t.TempDir()
 	token := []byte("0123456789abcdef0123456789abcdef")
 	if err := securestore.SaveAt(home, "api-token", token); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DashboardAuth = true
+	if err := cfg.Save(); err != nil {
 		t.Fatal(err)
 	}
 	fake := &fakeClient{}

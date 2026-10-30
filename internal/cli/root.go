@@ -531,8 +531,10 @@ func (a *App) newUICmd() *cobra.Command {
 			}
 			fallback := fmt.Sprintf("http://127.0.0.1:%d", cfg.UIPort)
 			token := ""
-			if secret, err := securestore.LoadAt(home, "api-token"); err == nil && len(secret) > 0 {
-				token = hex.EncodeToString(secret)
+			if cfg.DashboardAuth {
+				if secret, err := securestore.LoadAt(home, "api-token"); err == nil && len(secret) > 0 {
+					token = hex.EncodeToString(secret)
+				}
 			}
 			openURL := dashboardURL
 			fallbackOpenURL := fallback
