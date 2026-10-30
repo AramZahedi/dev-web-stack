@@ -26,6 +26,8 @@ type DatabaseAPI interface {
 	DeleteUser(ctx context.Context, serviceID, userID string, req dbproto.UserDeleteRequest) error
 	SetUserPassword(ctx context.Context, serviceID, userID string) (dbproto.SecretValue, error)
 	RevealUserPassword(ctx context.Context, serviceID, userID string) (dbproto.SecretValue, error)
+	SetRedisPassword(ctx context.Context, serviceID string) (dbproto.SecretValue, error)
+	EnableRedisACLFile(ctx context.Context, serviceID string) error
 	ListBackups(ctx context.Context, serviceID string) ([]dbproto.BackupInfo, error)
 	CreateBackup(ctx context.Context, serviceID, database string, req dbproto.BackupCreateRequest) (dbproto.JobInfo, error)
 	DeleteBackup(ctx context.Context, serviceID, backupID string) error
@@ -106,6 +108,19 @@ func (c *Client) RevealUserPassword(ctx context.Context, serviceID, userID strin
 	var out dbproto.SecretResponse
 	err := c.do(ctx, http.MethodPost, dbproto.ServiceUserReveal(serviceID, userID), dbproto.UserRevealRequest{ID: serviceID, UserID: userID}, &out)
 	return dbproto.SecretValue{Value: out.Value}, err
+}
+
+// SetRedisPassword rotates the Redis default user's password. The generic
+// SetUserPassword also dispatches the default user here.
+func (c *Client) SetRedisPassword(ctx context.Context, serviceID string) (dbproto.SecretValue, error) {
+	var out dbproto.SecretResponse
+	err := c.do(ctx, http.MethodPost, serviceRedisPasswordPath(serviceID), dbproto.UserPasswordRequest{ID: serviceID}, &out)
+	return dbproto.SecretValue{Value: out.Value}, err
+}
+
+// EnableRedisACLFile runs the one-time Redis ACL file migration.
+func (c *Client) EnableRedisACLFile(ctx context.Context, serviceID string) error {
+	return c.do(ctx, http.MethodPost, serviceRedisACLFilePath(serviceID), nil, nil)
 }
 
 func (c *Client) ListBackups(ctx context.Context, serviceID string) ([]dbproto.BackupInfo, error) {
@@ -230,4 +245,12 @@ func (c *Client) doRaw(ctx context.Context, method, path string, body io.Reader,
 
 func serviceBackupsPath(serviceID string) string {
 	return "/v1/services/" + url.PathEscape(serviceID) + "/backups"
+}
+
+func serviceRedisPasswordPath(serviceID string) string {
+	return "/v1/services/" + url.PathEscape(serviceID) + "/password"
+}
+
+func serviceRedisACLFilePath(serviceID string) string {
+	return "/v1/services/" + url.PathEscape(serviceID) + "/redis/acl-file"
 }

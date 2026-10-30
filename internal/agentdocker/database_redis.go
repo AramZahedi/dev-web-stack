@@ -109,6 +109,55 @@ func (d *Docker) SetRedisUser(ctx context.Context, serviceID string, req databas
 	return user, nil
 }
 
+func (d *Docker) SetRedisUserPassword(ctx context.Context, serviceID, userID string) (databases.Secret, error) {
+	engine, service, err := d.databaseEngine(serviceID)
+	if err != nil {
+		return databases.Secret{}, err
+	}
+	if engine.ID() != model.DatabaseRedis {
+		return databases.Secret{}, databases.ErrUnsupported
+	}
+	lock := d.databaseLock(string(service.ID))
+	lock.Lock()
+	defer lock.Unlock()
+	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
+		return databases.Secret{}, err
+	}
+	if err := d.ensureRedisACLFileLocked(ctx, serviceID, service); err != nil {
+		return databases.Secret{}, err
+	}
+	user, err := d.findRedisUser(ctx, serviceID, userID)
+	if err != nil {
+		return databases.Secret{}, err
+	}
+	if user.Username == "default" || engine.ProtectedUser(user.Username, "") {
+		return databases.Secret{}, databases.ErrProtected
+	}
+	if user.AccessLevel != "full" && user.AccessLevel != "read-only" {
+		return databases.Secret{}, fmt.Errorf("%w: cannot rotate a custom Redis access level", databases.ErrUnsupported)
+	}
+	password, err := credentials.NewSecret()
+	if err != nil {
+		return databases.Secret{}, fmt.Errorf("agentdocker: generate redis password: %w", err)
+	}
+	acl := dbengine.NewRedisACL()
+	command, secretArg, err := redisCommandWithSecret(acl.SetUserCommand(user.Username, password, user.AccessLevel, user.Enabled))
+	if err != nil {
+		return databases.Secret{}, err
+	}
+	if _, err := d.runRedisCommand(ctx, serviceID, command, secretArg); err != nil {
+		return databases.Secret{}, err
+	}
+	if err := d.storeDatabaseSecret(serviceID, userID, password); err != nil {
+		_ = d.deleteDatabaseSecret(serviceID, userID)
+		return databases.Secret{}, fmt.Errorf("agentdocker: redis password changed but the new secret could not be stored: %w", err)
+	}
+	if _, err := d.runRedisCommand(ctx, serviceID, acl.SaveCommand(), ""); err != nil {
+		return databases.Secret{Value: password}, err
+	}
+	return databases.Secret{Value: password}, nil
+}
+
 func (d *Docker) UpdateRedisUser(ctx context.Context, serviceID, userID string, req databases.UpdateUserRequest) (model.DatabaseUser, error) {
 	engine, service, err := d.databaseEngine(serviceID)
 	if err != nil {

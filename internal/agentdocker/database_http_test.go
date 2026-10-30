@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -196,5 +198,124 @@ func TestDatabaseImportRouteUsesQueryAndFilename(t *testing.T) {
 	}
 	if !runner.stdinContains("CREATE TABLE t (id int);") {
 		t.Fatal("import route did not stream the dump")
+	}
+}
+
+func TestRedisUserRoutesDispatchToACL(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.runOutputs["ACL LIST"] = []byte("user default on nopass ~* &* +@all\n")
+	body, _ := json.Marshal(dbproto.UserCreateRequest{ID: "redis", Username: "cache", AccessLevel: "read-only"})
+	recorder := serveDatabase(t, d, http.MethodPost, "/v1/services/redis/users", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("create = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var created dbproto.UserResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.User.Username != "cache" || !created.User.PasswordManaged {
+		t.Fatalf("created = %+v", created.User)
+	}
+	if !runner.contains("ACL SETUSER") {
+		t.Fatalf("redis create did not call ACL SETUSER: %s", runner.joinedCalls())
+	}
+	userID := created.User.ID
+
+	runner.runOutputs["ACL LIST"] = []byte("user default on nopass ~* &* +@all\nuser cache on #abc ~* +@read\n")
+	recorder = serveDatabase(t, d, http.MethodGet, "/v1/services/redis/users", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var list dbproto.UserListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Users) != 2 {
+		t.Fatalf("users = %+v", list.Users)
+	}
+
+	enabled := false
+	updateBody, _ := json.Marshal(dbproto.UserUpdateRequest{ID: "redis", UserID: userID, Enabled: &enabled})
+	recorder = serveDatabase(t, d, http.MethodPatch, dbproto.ServiceUser("redis", userID), updateBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("update = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !runner.contains("ACL SETUSER cache off") {
+		t.Fatalf("redis update did not disable the user: %s", runner.joinedCalls())
+	}
+
+	revealBody, _ := json.Marshal(dbproto.UserRevealRequest{ID: "redis", UserID: userID})
+	recorder = serveDatabase(t, d, http.MethodPost, dbproto.ServiceUserReveal("redis", userID), revealBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reveal = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var secret dbproto.SecretResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &secret); err != nil || secret.Value == "" {
+		t.Fatalf("secret = %+v, %v", secret, err)
+	}
+
+	deleteBody, _ := json.Marshal(dbproto.UserDeleteRequest{ID: "redis", UserID: userID, Confirm: "wrong"})
+	recorder = serveDatabase(t, d, http.MethodDelete, dbproto.ServiceUser("redis", userID), deleteBody)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("wrong delete confirm = %d %s", recorder.Code, recorder.Body.String())
+	}
+	deleteBody, _ = json.Marshal(dbproto.UserDeleteRequest{ID: "redis", UserID: userID, Confirm: "cache"})
+	recorder = serveDatabase(t, d, http.MethodDelete, dbproto.ServiceUser("redis", userID), deleteBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delete = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !runner.contains("ACL DELUSER cache") {
+		t.Fatalf("redis delete did not call ACL DELUSER: %s", runner.joinedCalls())
+	}
+}
+
+func TestRedisPasswordRoutes(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	runner.runOutputs["ACL LIST"] = []byte("user default on nopass ~* &* +@all\n")
+	body, _ := json.Marshal(dbproto.UserPasswordRequest{ID: "redis"})
+	recorder := serveDatabase(t, d, http.MethodPost, "/v1/services/redis/password", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("default password = %d %s", recorder.Code, recorder.Body.String())
+	}
+	var defaultSecret dbproto.SecretResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &defaultSecret); err != nil || defaultSecret.Value == "" {
+		t.Fatalf("default secret = %+v, %v", defaultSecret, err)
+	}
+	if _, err := d.readDatabaseSecret("redis", databaseUserID("redis", "default", "")); err != nil {
+		t.Fatalf("default secret not stored: %v", err)
+	}
+
+	if _, err := d.SetRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache"}); err != nil {
+		t.Fatal(err)
+	}
+	cacheID := databaseUserID("redis", "cache", "")
+	runner.runOutputs["ACL LIST"] = []byte("user default on #hash ~* &* +@all\nuser cache on #abc ~* +@read\n")
+	body, _ = json.Marshal(dbproto.UserPasswordRequest{ID: "redis", UserID: cacheID})
+	recorder = serveDatabase(t, d, http.MethodPost, dbproto.ServiceUserPassword("redis", cacheID), body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("user password = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !runner.contains("ACL SETUSER cache") {
+		t.Fatalf("redis user password did not call ACL SETUSER: %s", runner.joinedCalls())
+	}
+}
+
+func TestRedisACLFileRoute(t *testing.T) {
+	d, runner := newDatabaseTestDocker(t)
+	configDir := filepath.Join(d.root, "services", "redis", "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "redis.conf"), []byte("appendonly yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner.runOutputs["ACL LIST"] = []byte("user default on nopass ~* &* +@all\n")
+	recorder := serveDatabase(t, d, http.MethodPost, "/v1/services/redis/redis/acl-file", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("acl-file = %d %s", recorder.Code, recorder.Body.String())
+	}
+	config, err := os.ReadFile(filepath.Join(configDir, "redis.conf"))
+	if err != nil || !strings.Contains(string(config), "aclfile /data/users.acl") {
+		t.Fatalf("config = %s, %v", config, err)
 	}
 }

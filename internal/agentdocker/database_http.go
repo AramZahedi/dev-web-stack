@@ -166,7 +166,35 @@ func (d *Docker) handleUserPassword(w http.ResponseWriter, r *http.Request) {
 		writeDatabaseError(w, err)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, dbproto.SecretResponse{Value: secret.Value})
+}
+
+func (d *Docker) handleRedisPassword(w http.ResponseWriter, r *http.Request) {
+	var request dbproto.UserPasswordRequest
+	if err := decodeRequest(w, r, &request); err != nil && !errors.Is(err, io.EOF) {
+		writeDatabaseError(w, fmt.Errorf("%w: %v", databases.ErrInvalidRequest, err))
+		return
+	}
+	if request.ID != "" && request.ID != r.PathValue("id") {
+		writeDatabaseError(w, fmt.Errorf("%w: service ID does not match URL", databases.ErrInvalidRequest))
+		return
+	}
+	secret, err := d.SetRedisPassword(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDatabaseError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, dbproto.SecretResponse{Value: secret.Value})
+}
+
+func (d *Docker) handleRedisEnableACLFile(w http.ResponseWriter, r *http.Request) {
+	if err := d.EnableRedisACLFile(r.Context(), r.PathValue("id")); err != nil {
+		writeDatabaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": true})
 }
 
 func (d *Docker) handleUserReveal(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +212,7 @@ func (d *Docker) handleUserReveal(w http.ResponseWriter, r *http.Request) {
 		writeDatabaseError(w, err)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, dbproto.SecretResponse{Value: secret.Value})
 }
 

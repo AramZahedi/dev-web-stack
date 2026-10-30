@@ -36,7 +36,7 @@ func (d *Docker) ListUsers(ctx context.Context, serviceID string) ([]model.Datab
 		return nil, err
 	}
 	if engine.ID() == model.DatabaseRedis {
-		return nil, databases.ErrUnsupported
+		return d.ListRedisUsers(ctx, serviceID)
 	}
 	if err := d.requireDatabaseActive(ctx, serviceID); err != nil {
 		return nil, err
@@ -86,7 +86,7 @@ func (d *Docker) CreateUser(ctx context.Context, serviceID string, req databases
 		return model.DatabaseUser{}, err
 	}
 	if engine.ID() == model.DatabaseRedis {
-		return model.DatabaseUser{}, databases.ErrUnsupported
+		return d.SetRedisUser(ctx, serviceID, req)
 	}
 	if err := engine.ValidateUsername(req.Username); err != nil {
 		return model.DatabaseUser{}, mapEngineError(err)
@@ -174,7 +174,7 @@ func (d *Docker) UpdateUser(ctx context.Context, serviceID, userID string, req d
 		return model.DatabaseUser{}, err
 	}
 	if engine.ID() == model.DatabaseRedis {
-		return model.DatabaseUser{}, databases.ErrUnsupported
+		return d.UpdateRedisUser(ctx, serviceID, userID, req)
 	}
 	for _, grant := range req.Grants {
 		if err := engine.ValidateDatabaseName(grant.Database); err != nil {
@@ -278,7 +278,7 @@ func (d *Docker) DeleteUser(ctx context.Context, serviceID, userID string, req d
 		return err
 	}
 	if engine.ID() == model.DatabaseRedis {
-		return databases.ErrUnsupported
+		return d.DeleteRedisUser(ctx, serviceID, userID, req.Confirm)
 	}
 	user, err := d.findDatabaseUser(ctx, serviceID, userID)
 	if err != nil {
@@ -324,7 +324,11 @@ func (d *Docker) SetUserPassword(ctx context.Context, serviceID, userID string) 
 		return databases.Secret{}, err
 	}
 	if engine.ID() == model.DatabaseRedis {
-		return databases.Secret{}, databases.ErrUnsupported
+		defaultID := databaseUserID(string(service.ID), "default", "")
+		if userID == defaultID {
+			return d.SetRedisPassword(ctx, serviceID)
+		}
+		return d.SetRedisUserPassword(ctx, serviceID, userID)
 	}
 	user, err := d.findDatabaseUser(ctx, serviceID, userID)
 	if err != nil {
@@ -367,8 +371,12 @@ func (d *Docker) SetUserPassword(ctx context.Context, serviceID, userID string) 
 }
 
 func (d *Docker) RevealUserPassword(ctx context.Context, serviceID, userID string) (databases.Secret, error) {
-	if _, _, err := d.databaseEngine(serviceID); err != nil {
+	engine, _, err := d.databaseEngine(serviceID)
+	if err != nil {
 		return databases.Secret{}, err
+	}
+	if engine.ID() == model.DatabaseRedis {
+		return d.RevealRedisPassword(ctx, serviceID, userID)
 	}
 	value, err := d.readDatabaseSecret(serviceID, userID)
 	if err != nil {

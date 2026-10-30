@@ -294,6 +294,8 @@ func (d *Docker) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/services/{id}/users/{userID}", d.handleUserDelete)
 	mux.HandleFunc("POST /v1/services/{id}/users/{userID}/password", d.handleUserPassword)
 	mux.HandleFunc("POST /v1/services/{id}/users/{userID}/reveal", d.handleUserReveal)
+	mux.HandleFunc("POST /v1/services/{id}/password", d.handleRedisPassword)
+	mux.HandleFunc("POST /v1/services/{id}/redis/acl-file", d.handleRedisEnableACLFile)
 	mux.HandleFunc("GET /v1/services/{id}/backups", d.handleBackupList)
 	mux.HandleFunc("POST /v1/services/{id}/databases/{name}/backups", d.handleBackupCreate)
 	mux.HandleFunc("GET /v1/services/{id}/backups/{backupID}/download", d.handleBackupDownload)

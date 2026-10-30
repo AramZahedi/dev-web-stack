@@ -158,3 +158,33 @@ func TestAgentClientDownloadBackup(t *testing.T) {
 		t.Fatalf("download = %q", data)
 	}
 }
+
+func TestAgentClientRedisPasswordAndACLFile(t *testing.T) {
+	var paths []string
+	srv, pin := newTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/services/redis/password":
+			writeJSON(w, http.StatusOK, dbproto.SecretResponse{Value: "redis-pw"})
+		case "/v1/services/redis/redis/acl-file":
+			writeJSON(w, http.StatusOK, map[string]bool{"enabled": true})
+		default:
+			writeJSON(w, http.StatusNotFound, agentproto.ErrorResponse{Code: agentproto.CodeNotFound})
+		}
+	}))
+	c, err := New(Config{BaseURL: srv.URL, Token: "secret", PinSHA256: pin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	secret, err := c.SetRedisPassword(context.Background(), "redis")
+	if err != nil || secret.Value != "redis-pw" {
+		t.Fatalf("secret = %+v, %v", secret, err)
+	}
+	if err := c.EnableRedisACLFile(context.Background(), "redis"); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 || paths[0] != "/v1/services/redis/password" || paths[1] != "/v1/services/redis/redis/acl-file" {
+		t.Fatalf("paths = %v", paths)
+	}
+}
