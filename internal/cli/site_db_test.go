@@ -157,18 +157,24 @@ func TestSiteDBListJSONRedactsConnectionPasswords(t *testing.T) {
 			Engine: model.DatabaseMySQL, Host: "127.0.0.1", Port: 3306, Database: "app", Username: "app",
 			PasswordManaged: true,
 			URL:             "mysql://app:s3cret@127.0.0.1:3306/app",
-			Env:             map[string]string{"DB_PASSWORD": "s3cret", "DATABASE_URL": "mysql://app:s3cret@127.0.0.1:3306/app", "DB_HOST": "127.0.0.1"},
+			Env: map[string]string{
+				"DB_PASSWORD":      "s3cret",
+				"DATABASE_URL":     "mysql://app:s3cret@127.0.0.1:3306/app",
+				"DB_HOST":          "127.0.0.1",
+				"DB_BLOG_PASSWORD": "blog-secret",
+				"DB_BLOG_URL":      "mysql://blog:blog-secret@127.0.0.1:3306/blog",
+			},
 		},
 	}}}
 	out := runCLI(t, fake, "site", "db", "list", "blog", "--json")
-	if strings.Contains(out, "s3cret") {
+	if strings.Contains(out, "s3cret") || strings.Contains(out, "blog-secret") {
 		t.Fatalf("link list leaked a connection password: %s", out)
 	}
-	if !strings.Contains(out, "mysql://app@127.0.0.1:3306/app") {
-		t.Fatalf("link list did not keep a redacted URL: %s", out)
+	if !strings.Contains(out, "mysql://app@127.0.0.1:3306/app") || !strings.Contains(out, "mysql://blog@127.0.0.1:3306/blog") {
+		t.Fatalf("link list did not keep redacted URLs: %s", out)
 	}
-	if strings.Contains(out, "DB_PASSWORD") {
-		t.Fatalf("link list leaked the password env key: %s", out)
+	if strings.Contains(out, "DB_PASSWORD") || strings.Contains(out, "DB_BLOG_PASSWORD") {
+		t.Fatalf("link list leaked a password env key: %s", out)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,11 @@ import (
 )
 
 const maxDatabaseImportBytes = 1 << 30
+
+var (
+	databasePasswordEnvPattern = regexp.MustCompile(`(?i)^DB_.*_PASSWORD$`)
+	databaseURLEnvPattern      = regexp.MustCompile(`(?i)^(DATABASE_URL|DB_.*_URL)$`)
+)
 
 func (a *App) newDBCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -1270,9 +1276,9 @@ func sanitizeDatabaseLink(link model.DatabaseLink) model.DatabaseLink {
 	env := make(map[string]string, len(link.Connection.Env))
 	for key, value := range link.Connection.Env {
 		switch {
-		case strings.EqualFold(key, "DB_PASSWORD"):
+		case strings.EqualFold(key, "DB_PASSWORD") || databasePasswordEnvPattern.MatchString(key):
 			continue
-		case strings.EqualFold(key, "DATABASE_URL"):
+		case databaseURLEnvPattern.MatchString(key):
 			value = redactDatabaseURL(value)
 		}
 		env[key] = value
