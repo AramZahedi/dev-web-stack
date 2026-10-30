@@ -16,6 +16,14 @@ clean-machine installation, real reboot/resume, destructive installer
 rollback/purge, failure injection, load/soak, multi-user isolation, race
 coverage, cross-browser/accessibility, and independent security fuzzing.
 
+> **Update 2026-10-30 (`v0.3.1`):** the packaged
+> `uninstall.ps1 -PurgeDistro -PurgeData -Force` and a clean reinstall from
+> `devstack-installer.exe` were exercised on this host, including a
+> zero-leftover audit. The run found a clean-install daemon-credential bug,
+> fixed in `40df5c0` and released as
+> [`v0.3.1`](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.3.1).
+> A blank Windows VM and real reboot/resume remain open.
+
 ## 1. N/A or unsupported by design
 
 These were not tested because the product intentionally rejects or does not
@@ -66,8 +74,8 @@ release should re-run them live.
 
 | Gap | Why it remains open | How to close it |
 | --- | --- | --- |
-| Clean-machine install from the release ZIP | Installer gates use `-TestSandbox`/`-DryRun`; no fresh WSL import on a blank machine | Dedicated clean Windows VM: run the released `install.ps1`, verify helper/daemon/agent/dashboard/sites |
-| Real `uninstall.ps1` default and `-PurgeData/-PurgeDistro` | Lifecycle suite runs in sandboxes; the 2026-10-30 uninstall was the `devstack uninstall` CLI, not the PowerShell uninstaller | Throwaway VM with snapshots; verify services, task, firewall, trust, hosts, securestore, distro, PATH |
+| Blank-machine install from the release ZIP | Exercised 2026-10-30 on this host with WSL/VMP already enabled; no blank Windows VM | Dedicated clean Windows VM: run the released `devstack-installer.exe`, verify helper/daemon/agent/dashboard/sites |
+| Real `uninstall.ps1` default and `-PurgeData/-PurgeDistro` | Exercised 2026-10-30 with `-PurgeDistro -PurgeData -Force` and a zero-leftover audit; repeat on a second machine for confidence | Throwaway VM with snapshots; verify services, task, firewall, trust, hosts, securestore, distro, PATH |
 | Real reboot/resume | Logon task was re-registered after Task 12 but the host was not rebooted | Reboot twice: first-run task registration, second-run auto-start; verify daemon/helper/agent, sites, dashboard |
 | Upgrade rollback and purge | Task 0 ran a real `install.ps1 -Upgrade`, but rollback/purge paths are mocked in the lifecycle suite | VM with populated state, inject upgrade failure, verify binary/data rollback and health |
 | Windows 10 22H2 and other Windows builds | Validated on the current Windows 11 host only (`OS build 26300`) | Run the acceptance suite on Windows 10 22H2+ and a second Windows 11 build/locale |
