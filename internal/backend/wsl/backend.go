@@ -33,7 +33,11 @@ func (b *Backend) Prepare(ctx context.Context, spec backend.SiteSpec) (backend.P
 	if err := b.check(); err != nil {
 		return backend.PreparedSite{}, err
 	}
-	resp, err := b.Client.PrepareSite(ctx, agentproto.SitePrepareRequest{Site: toAgentSite(spec)})
+	site, err := toAgentSite(spec)
+	if err != nil {
+		return backend.PreparedSite{}, err
+	}
+	resp, err := b.Client.PrepareSite(ctx, agentproto.SitePrepareRequest{Site: site})
 	if err != nil {
 		return backend.PreparedSite{}, err
 	}
@@ -150,9 +154,13 @@ func (b *Backend) PreparePHP(ctx context.Context, siteID, generation string, spe
 	if err := b.check(); err != nil {
 		return backend.PreparedSite{}, err
 	}
+	site, err := toAgentSite(spec)
+	if err != nil {
+		return backend.PreparedSite{}, err
+	}
 	resp, err := b.Client.PreparePHP(ctx, siteID, agentproto.PHPPrepareRequest{
 		Generation: generation,
-		Site:       toAgentSite(spec),
+		Site:       site,
 	})
 	if err != nil {
 		return backend.PreparedSite{}, err
@@ -218,7 +226,7 @@ func toWSLPath(p string) string {
 	return strings.ReplaceAll(p, `\`, "/")
 }
 
-func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
+func toAgentSite(spec backend.SiteSpec) (agentproto.SiteSpec, error) {
 	documentRoot := strings.TrimSpace(spec.DocumentRoot)
 	backendDocumentRoot := strings.TrimSpace(spec.BackendPath)
 	if documentRoot != "" && documentRoot != "." {
@@ -237,13 +245,37 @@ func toAgentSite(spec backend.SiteSpec) agentproto.SiteSpec {
 	case len(spec.HostPath) >= 3 && spec.HostPath[1] == ':' && (spec.HostPath[2] == '\\' || spec.HostPath[2] == '/'):
 		mode = string(model.SourceWindows)
 	}
-	return agentproto.SiteSpec{
+	site := agentproto.SiteSpec{
 		ID: spec.ID, Kind: spec.Kind, Domain: spec.Domain, HostPath: spec.HostPath, BackendPath: toWSLPath(spec.BackendPath),
 		DocumentRoot: toWSLPath(backendDocumentRoot), ProxyDocumentRoot: proxyRoot, SourceMode: mode,
 		Command: spec.Command, Env: cloneMap(spec.Env), HTTPPort: spec.HTTPPort, FastCGIPort: spec.FastCGIPort,
 		SPAFallback: spec.SPAFallback, FrontController: spec.FrontController, RuntimeVersion: spec.RuntimeVersion,
 		PHPVersion: spec.PHPVersion, PHPBuild: spec.PHPBuild, PHPBuildPath: toWSLPath(spec.PHPBuildPath),
 		PHPIniPath: toWSLPath(spec.PHPIniPath), FPMConfigPath: toWSLPath(spec.FPMConfigPath), PHPHealthScript: toWSLPath(spec.PHPHealthScript),
+	}
+	applyDatabaseLinks(&site, spec.DatabaseLinks)
+	return site, nil
+}
+
+// applyDatabaseLinks carries password-free link metadata to the agent. The
+// agent owns the SiteSpec.DatabaseLinks field; the daemon converts its backend
+// view directly so the wire shape is checked by the compiler.
+func applyDatabaseLinks(site *agentproto.SiteSpec, links []backend.DatabaseLinkSpec) {
+	if site == nil {
+		return
+	}
+	for _, link := range links {
+		site.DatabaseLinks = append(site.DatabaseLinks, agentproto.DatabaseLinkSpec{
+			ServiceID:       link.ServiceID,
+			Engine:          link.Engine,
+			Database:        link.Database,
+			UserID:          link.UserID,
+			Username:        link.Username,
+			Host:            link.Host,
+			Port:            link.Port,
+			Primary:         link.Primary,
+			PasswordManaged: link.PasswordManaged,
+		})
 	}
 }
 

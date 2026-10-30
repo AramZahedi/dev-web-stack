@@ -119,6 +119,10 @@ type Site struct {
 	// NodeToolchain is a response-only summary populated by the site service.
 	// It is never persisted; the stored pin is NodeVersion.
 	NodeToolchain *NodeToolchain `json:"node_toolchain,omitempty"`
+	// Warnings is a response-only list of non-fatal problems (for example a
+	// database link that failed after the site row was created). It is never
+	// persisted.
+	Warnings []string `json:"warnings,omitempty"`
 
 	DocumentRoot        string        `json:"document_root"`
 	FrontController     bool          `json:"front_controller"`

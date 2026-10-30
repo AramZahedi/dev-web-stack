@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
@@ -94,6 +95,10 @@ type Deps struct {
 	UID         int
 	Shell       string
 	BasePATH    string
+	// DatabaseEnv resolves dynamic database-link environment values for a site.
+	// The values may include passwords and are passed straight to the process
+	// environment; they are never persisted or logged.
+	DatabaseEnv func(context.Context, model.Site) (map[string]string, error)
 	Now         func() time.Time
 
 	TicketTTL   time.Duration
@@ -114,6 +119,7 @@ type Manager struct {
 	uid         int
 	shell       string
 	basePATH    string
+	databaseEnv func(context.Context, model.Site) (map[string]string, error)
 
 	tickets     *TicketStore
 	ticketTTL   time.Duration
@@ -171,6 +177,7 @@ func NewManager(deps Deps) *Manager {
 		uid:         deps.UID,
 		shell:       deps.Shell,
 		basePATH:    deps.BasePATH,
+		databaseEnv: deps.DatabaseEnv,
 		tickets:     NewTicketStore(deps.TicketTTL, deps.Now),
 		ticketTTL:   deps.TicketTTL,
 		maxTotal:    deps.MaxTotal,
@@ -333,12 +340,28 @@ func (m *Manager) environment(ctx context.Context, site model.Site) ([]string, e
 	if nodeDefault == nil {
 		nodeDefault = m.nodeDefault
 	}
+	var extraEnv map[string]string
+	if m.databaseEnv != nil {
+		values, err := m.databaseEnv(ctx, site)
+		if err != nil {
+			// A database service can be offline while the site's shell still
+			// works. Start the terminal without the dynamic variables instead
+			// of failing the whole session.
+			if m.logger != nil {
+				m.logger.Warn("terminal: resolve database environment; continuing without it",
+					"site", site.ID, "error", databases.RedactError(err))
+			}
+		} else {
+			extraEnv = values
+		}
+	}
 	env, err := tooling.BuildSiteEnv(site, tooling.EnvDeps{
 		Paths:       m.paths,
 		Builds:      builds,
 		PHPInfo:     info,
 		NodeDefault: nodeDefault,
 		BasePATH:    basePATH,
+		ExtraEnv:    extraEnv,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("terminal: build site environment: %w", err)

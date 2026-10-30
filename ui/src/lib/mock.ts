@@ -1,4 +1,5 @@
 import { ApiError } from './errors';
+import { mockDatabaseApi } from './databaseMock';
 import type {
   BuildLogs,
   BuildResult,
@@ -1639,6 +1640,9 @@ export const mockApi = {
           }
         : undefined,
     };
+    if (request.database) {
+      await mockDatabaseApi.createSiteDatabase(id, request.database);
+    }
     sites.push(site);
     emitEvent(
       'site.created',
@@ -1707,6 +1711,10 @@ export const mockApi = {
   async deleteSite(ref: string): Promise<void> {
     await wait();
     const site = findSite(ref);
+    const { links } = await mockDatabaseApi.listSiteDatabases(site.id);
+    for (const link of links) {
+      await mockDatabaseApi.unlinkSiteDatabase(site.id, link.id);
+    }
     const index = sites.findIndex((entry) => entry.id === site.id);
     if (index >= 0) sites.splice(index, 1);
     delete logTemplates[site.name];

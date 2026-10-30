@@ -330,6 +330,22 @@ describe('Services', () => {
     expect(within(apache).getAllByText(/installed/i)).toHaveLength(1);
   });
 
+  it('links installed database services to the management route', async () => {
+    render(Services);
+
+    const mysql = await cardFor('MySQL 8.4');
+    const databases = within(mysql).getByRole('link', { name: /manage databases/i });
+    expect(databases.getAttribute('href')).toBe('#/services/mysql');
+
+    mockApi.listServices.mockResolvedValue([
+      { ...REDIS, installed: true, active: true, state: 'active' as const, health: 'healthy' },
+    ]);
+    window.dispatchEvent(new Event('devstack:refresh'));
+
+    const users = await screen.findByRole('link', { name: /manage users/i });
+    expect(users.getAttribute('href')).toBe('#/services/redis');
+  });
+
   it('opens phpMyAdmin only for an active phpMyAdmin service', async () => {
     render(Services);
 

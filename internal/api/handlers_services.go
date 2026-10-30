@@ -17,6 +17,14 @@ type listServicesResponse struct {
 	Services []services.View `json:"services"`
 }
 
+// uninstallResponse keeps the servicecontrol result shape and adds non-fatal
+// cleanup warnings. The uninstall itself succeeded; stale database metadata is
+// reported without turning a successful uninstall into an HTTP error.
+type uninstallResponse struct {
+	servicecontrol.UninstallResult
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 func (s *Server) handleListServices(w http.ResponseWriter, r *http.Request) {
 	if s.services == nil {
 		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "service coordinator is not available", nil)
@@ -106,10 +114,8 @@ func (s *Server) handleUninstallService(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		DeleteData bool `json:"delete_data"`
 	}
-	if r.Body != nil && r.ContentLength != 0 {
-		if !decodeJSONBody(w, r, &req) {
-			return
-		}
+	if !decodeOptionalJSONBody(w, r, &req) {
+		return
 	}
 	id := services.ID(strings.TrimSpace(r.PathValue("id")))
 	if id == "" {
@@ -121,7 +127,15 @@ func (s *Server) handleUninstallService(w http.ResponseWriter, r *http.Request) 
 		s.writeServiceError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	warnings := []string{}
+	if req.DeleteData && s.databases != nil {
+		if err := s.databases.DeleteServiceMetadata(r.Context(), string(id)); err != nil {
+			s.logger.Warn("api: remove database metadata after uninstall",
+				"service", id, "error", servicecontrol.RedactSecrets(err.Error()))
+			warnings = append(warnings, "service data was deleted but database metadata cleanup failed: "+servicecontrol.RedactSecrets(err.Error()))
+		}
+	}
+	writeJSON(w, http.StatusOK, uninstallResponse{UninstallResult: result, Warnings: warnings})
 }
 
 func (s *Server) handleServiceLogs(w http.ResponseWriter, r *http.Request) {

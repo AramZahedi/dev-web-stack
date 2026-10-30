@@ -12,6 +12,7 @@
     cancelLabel?: string;
     danger?: boolean;
     requireText?: string;
+    confirmDisabled?: boolean;
     busy?: boolean;
     onconfirm: () => void;
     oncancel: () => void;
@@ -26,6 +27,7 @@
     cancelLabel = 'Cancel',
     danger = false,
     requireText,
+    confirmDisabled = false,
     busy = false,
     onconfirm,
     oncancel,
@@ -70,7 +72,7 @@
     <Button
       variant={danger ? 'danger' : 'primary'}
       onclick={onconfirm}
-      disabled={!ready}
+      disabled={!ready || confirmDisabled}
       loading={busy}
     >
       {confirmLabel}

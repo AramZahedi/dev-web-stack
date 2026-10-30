@@ -584,6 +584,7 @@ func (l *Local) processSpec(p preparedSite) (supervisor.ProcessSpec, error) {
 		return supervisor.ProcessSpec{
 			ID:      p.spec.ID,
 			Argv:    argv,
+			Env:     runtimeEnvironment(p.spec.Env, p.spec.RuntimeEnv),
 			Dir:     p.documentRoot,
 			Ready:   supervisor.ReadyCheck{TCPAddr: addr, Timeout: staticReadyTimeout},
 			Restart: defaultRestartPolicy,
@@ -593,6 +594,7 @@ func (l *Local) processSpec(p preparedSite) (supervisor.ProcessSpec, error) {
 
 	case string(model.SiteNode):
 		env := nodeEnvironment(p.spec.HTTPPort, p.nodeRoot, l.caBundlePath(), p.spec.Env)
+		env = runtimeEnvironment(env, p.spec.RuntimeEnv)
 		return supervisor.ProcessSpec{
 			ID:      p.spec.ID,
 			Argv:    []string{"/bin/sh", "-lc", p.spec.Command},
@@ -718,7 +720,7 @@ func validatePort(port int, label, id string) error {
 	return nil
 }
 
-// cloneSiteSpec detaches the caller's environment map from the stored spec.
+// cloneSiteSpec detaches the caller's environment maps from the stored spec.
 func cloneSiteSpec(spec SiteSpec) SiteSpec {
 	if spec.Env != nil {
 		env := make(map[string]string, len(spec.Env))
@@ -726,6 +728,13 @@ func cloneSiteSpec(spec SiteSpec) SiteSpec {
 			env[key] = value
 		}
 		spec.Env = env
+	}
+	if spec.RuntimeEnv != nil {
+		env := make(map[string]string, len(spec.RuntimeEnv))
+		for key, value := range spec.RuntimeEnv {
+			env[key] = value
+		}
+		spec.RuntimeEnv = env
 	}
 	return spec
 }
@@ -755,6 +764,20 @@ func nodeEnvironment(port int, nodeRoot, caBundle string, siteEnv map[string]str
 	return env
 }
 
+// runtimeEnvironment layers process-only values over the persisted site env.
+// RuntimeEnv is used for database secrets that must never be rendered into a
+// site configuration file.
+func runtimeEnvironment(siteEnv, runtimeEnv map[string]string) map[string]string {
+	env := make(map[string]string, len(siteEnv)+len(runtimeEnv))
+	for key, value := range siteEnv {
+		env[key] = value
+	}
+	for key, value := range runtimeEnv {
+		env[key] = value
+	}
+	return env
+}
+
 // execEnvironment returns the environment for an Exec call. Node sites get the
 // same runtime PATH, PORT, and CA variables as their supervised process. PHP
 // sites get the build's bin directory, a cleared scan directory, and PHPRC
@@ -766,6 +789,9 @@ func (l *Local) execEnvironment(p preparedSite, callEnv map[string]string) map[s
 		siteEnv = nodeEnvironment(p.spec.HTTPPort, p.nodeRoot, l.caBundlePath(), p.spec.Env)
 	case string(model.SitePHP):
 		siteEnv = phpEnvironment(p.spec.PHPBuildPath, p.spec.Env)
+	}
+	siteEnv = runtimeEnvironment(siteEnv, p.spec.RuntimeEnv)
+	if p.spec.Kind == string(model.SitePHP) {
 		siteEnv["PHPRC"] = p.spec.PHPIniPath
 	}
 	return mergedEnv(siteEnv, callEnv)

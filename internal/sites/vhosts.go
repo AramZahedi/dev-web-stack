@@ -1288,6 +1288,7 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 	}
 
 	s.emitEvent(ctx, site.ID, "site.deleted", fmt.Sprintf("site %s deleted", site.Name))
+	s.emitEvent(ctx, site.ID, "database.link.changed", fmt.Sprintf("site %s deleted; database links removed", site.Name))
 	// Only release retained and row ports after the row is gone: a later
 	// failure restores the row and expects its FastCGI port to stay reserved.
 	if s.deps.Backend != nil {

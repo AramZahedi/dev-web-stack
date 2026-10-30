@@ -3,6 +3,7 @@
 package helper
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -54,6 +55,36 @@ func stageAtomicFile(path string, data []byte, perm fs.FileMode) (string, error)
 		return "", err
 	}
 	return tmp, nil
+}
+
+// writeFileInPlace truncates and rewrites an existing file without replacing
+// its inode. This is required for files bind-mounted into a container as a
+// single file: an atomic rename would leave the container on the old inode.
+func writeFileInPlace(path string, data []byte, defaultPerm fs.FileMode) error {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return writeAtomicFile(path, data, defaultPerm)
+	}
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	cleanup := func() { _ = file.Close() }
+	if _, err := file.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // syncDir fsyncs a directory so freshly renamed entries survive a crash. It is

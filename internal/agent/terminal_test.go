@@ -267,3 +267,22 @@ func TestTerminalConsumesTicketOnlyOnce(t *testing.T) {
 		t.Fatal("ticket was accepted for a different site")
 	}
 }
+
+func TestTerminalEnvironmentInheritsDatabaseEnv(t *testing.T) {
+	rt, root, spec := newStaticTestRuntime(t)
+	writeAgentDatabaseSecret(t, root, "mysql", "usr_app", "s3cret")
+	spec.DatabaseLinks = []agentproto.DatabaseLinkSpec{{
+		ServiceID: "mysql", Engine: "mysql", Database: "app", UserID: "usr_app",
+		Username: "app", Primary: true, PasswordManaged: true,
+	}}
+	if _, err := rt.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	env, err := rt.terminalEnvironmentForSite(rt.sites[spec.ID], &terminalTicket{siteID: spec.ID, siteName: "blog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["DB_PASSWORD"] != "s3cret" || env["DB_DATABASE"] != "app" {
+		t.Fatalf("terminal env = %v", env)
+	}
+}

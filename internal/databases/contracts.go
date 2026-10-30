@@ -18,6 +18,9 @@ var (
 	ErrLinkedSites     = errors.New("database: user is linked to sites")
 	ErrPasswordMissing = errors.New("database: password is not managed")
 	ErrJobNotFound     = errors.New("database: job not found")
+	// ErrConfirmationRequired reports that an operation would migrate or
+	// restart a service and the caller has not explicitly confirmed it.
+	ErrConfirmationRequired = errors.New("database: confirmation required")
 )
 
 // Platform is the privileged engine surface implemented by the Windows agent
@@ -43,6 +46,13 @@ type Platform interface {
 	GetJob(ctx context.Context, jobID string) (model.DatabaseJob, error)
 	CancelJob(ctx context.Context, jobID string) error
 	ResolveSiteEnv(ctx context.Context, serviceID string, links []model.DatabaseLink) (map[string]string, error)
+}
+
+// RedisACLFilePlatform is the optional extension implemented by platforms that
+// can migrate a Redis install to ACL-file persistence. confirm must be true
+// before the migration changes redis.conf or restarts Redis.
+type RedisACLFilePlatform interface {
+	EnableRedisACLFileConfirmed(ctx context.Context, confirm bool) error
 }
 
 // Service is the daemon-facing database service used by the API.

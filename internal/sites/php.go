@@ -341,6 +341,11 @@ func (s *Service) phpSiteSpecFromBuildLocked(ctx context.Context, site model.Sit
 		return backend.SiteSpec{}, fmt.Errorf("sites: PHP configuration for %q is not written", site.Name)
 	}
 	spec := s.backendSpecFor(ctx, site)
+	// PHP secrets belong in the master process environment, never in the
+	// rendered php-fpm.conf or a persisted site.Env.
+	for key := range spec.RuntimeEnv {
+		delete(spec.Env, key)
+	}
 	spec.PHPVersion = site.PHPVersion
 	spec.PHPBuild = build.ID
 	spec.PHPBuildPath = build.Path

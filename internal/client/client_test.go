@@ -20,6 +20,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
@@ -29,12 +30,15 @@ import (
 
 // fakeAPI is a minimal Unix-socket API used by the client tests.
 type fakeAPI struct {
-	mu         sync.Mutex
-	sites      map[string]model.Site
-	routes     []recordedRequest
-	err        error
-	delay      time.Duration
-	buildDelay time.Duration
+	mu                    sync.Mutex
+	sites                 map[string]model.Site
+	routes                []recordedRequest
+	err                   error
+	delay                 time.Duration
+	buildDelay            time.Duration
+	wrongDatabaseEnvelope bool
+	nullDatabaseEnv       bool
+	databaseResponseBody  string
 }
 
 type recordedRequest struct {
@@ -459,6 +463,179 @@ func (f *fakeAPI) mux() *http.ServeMux {
 				Engine: "mysql", Username: "devstack", Password: "secret-password",
 				Database: "devstack", Host: "127.0.0.1", Port: 3306,
 			})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/services/{id}/databases", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]any{
+				"databases": []model.Database{{Name: "app", ServiceID: r.PathValue("id"), Engine: model.DatabaseMySQL, SizeBytes: 12 << 20}},
+			})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/databases", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusCreated, model.Database{Name: "blog", ServiceID: r.PathValue("id"), Engine: model.DatabaseMySQL})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/services/{id}/databases/{name}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			if f.databaseResponseBody != "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, f.databaseResponseBody)
+				return
+			}
+			if f.wrongDatabaseEnvelope {
+				writeTestJSON(w, http.StatusOK, map[string]any{"unexpected": map[string]any{"name": "app"}})
+				return
+			}
+			writeTestJSON(w, http.StatusOK, model.Database{Name: "app", ServiceID: r.PathValue("id"), Engine: model.DatabaseMySQL})
+		})
+	})
+	mux.HandleFunc("PATCH /api/v1/services/{id}/databases/{name}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, model.Database{Name: "app2", ServiceID: r.PathValue("id"), Engine: model.DatabasePostgreSQL})
+		})
+	})
+	mux.HandleFunc("DELETE /api/v1/services/{id}/databases/{name}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { w.WriteHeader(http.StatusNoContent) })
+	})
+	mux.HandleFunc("GET /api/v1/services/{id}/users", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]any{
+				"users": []model.DatabaseUser{{ID: "usr_app", ServiceID: r.PathValue("id"), Engine: model.DatabaseMySQL, Username: "app"}},
+			})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/users", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusCreated, model.DatabaseUser{ID: "usr_new", ServiceID: r.PathValue("id"), Engine: model.DatabaseMySQL, Username: "app"})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/services/{id}/users/{userID}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, model.DatabaseUser{ID: r.PathValue("userID"), ServiceID: r.PathValue("id"), Engine: model.DatabaseMySQL, Username: "app"})
+		})
+	})
+	mux.HandleFunc("PATCH /api/v1/services/{id}/users/{userID}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, model.DatabaseUser{ID: r.PathValue("userID"), ServiceID: r.PathValue("id"), Engine: model.DatabaseMySQL, Username: "app"})
+		})
+	})
+	mux.HandleFunc("DELETE /api/v1/services/{id}/users/{userID}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { w.WriteHeader(http.StatusNoContent) })
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/users/{userID}/password", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, map[string]string{"value": "new-secret"}) })
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/users/{userID}/reveal", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, map[string]string{"value": "s3cret"}) })
+	})
+	mux.HandleFunc("GET /api/v1/services/{id}/backups", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]any{
+				"backups": []model.DatabaseBackup{{ID: "bkp_1", ServiceID: r.PathValue("id"), Database: "app", Status: model.BackupReady}},
+			})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/databases/{name}/backups", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusAccepted, model.DatabaseJob{ID: "job_1", ServiceID: r.PathValue("id"), Database: r.PathValue("name"), Kind: model.JobBackup, Status: model.JobQueued})
+		})
+	})
+	mux.HandleFunc("DELETE /api/v1/services/{id}/backups/{backupID}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { w.WriteHeader(http.StatusNoContent) })
+	})
+	mux.HandleFunc("GET /api/v1/services/{id}/backups/{backupID}/download", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			w.Header().Set("Content-Type", "application/gzip")
+			_, _ = io.WriteString(w, "backup-data")
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/backups/{backupID}/restore", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusAccepted, model.DatabaseJob{ID: "job_1", ServiceID: r.PathValue("id"), Kind: model.JobRestore, Status: model.JobQueued})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/databases/{name}/import", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusAccepted, model.DatabaseJob{ID: "job_1", ServiceID: r.PathValue("id"), Database: r.PathValue("name"), Kind: model.JobImport, Status: model.JobQueued})
+		})
+	})
+	mux.HandleFunc("GET /api/v1/services/{id}/databases/{name}/export", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			w.Header().Set("Content-Type", "application/gzip")
+			_, _ = io.WriteString(w, "dump")
+		})
+	})
+	mux.HandleFunc("POST /api/v1/services/{id}/password", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { writeTestJSON(w, http.StatusOK, map[string]string{"value": "redis-secret"}) })
+	})
+	mux.HandleFunc("GET /api/v1/jobs/{jobID}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, model.DatabaseJob{ID: r.PathValue("jobID"), Status: model.JobSucceeded})
+		})
+	})
+	mux.HandleFunc("DELETE /api/v1/jobs/{jobID}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { w.WriteHeader(http.StatusNoContent) })
+	})
+	mux.HandleFunc("GET /api/v1/sites/{ref}/databases", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			writeTestJSON(w, http.StatusOK, map[string]any{
+				"links": []model.DatabaseLink{{ID: "lnk_1", SiteID: "site-1", ServiceID: "mysql", Database: "app", UserID: "usr_app", Username: "app"}},
+			})
+		})
+	})
+	mux.HandleFunc("POST /api/v1/sites/{ref}/databases", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			link := model.DatabaseLink{ID: "lnk_1", SiteID: "site-1", ServiceID: "mysql", Database: "app", UserID: "usr_app", Username: "app", Primary: true}
+			if strings.Contains(f.lastBody(), `"new_database"`) {
+				writeTestJSON(w, http.StatusCreated, databases.SiteDatabaseResult{
+					Link:     link,
+					Database: model.Database{Name: "app", ServiceID: "mysql", Engine: model.DatabaseMySQL},
+					User:     model.DatabaseUser{ID: "usr_app", Username: "app", ServiceID: "mysql", Engine: model.DatabaseMySQL},
+				})
+				return
+			}
+			writeTestJSON(w, http.StatusCreated, link)
+		})
+	})
+	mux.HandleFunc("DELETE /api/v1/sites/{ref}/databases/{linkID}", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() { w.WriteHeader(http.StatusNoContent) })
+	})
+	mux.HandleFunc("GET /api/v1/sites/{ref}/database-env", func(w http.ResponseWriter, r *http.Request) {
+		f.record(r)
+		f.writeErrorOr(w, func() {
+			if f.nullDatabaseEnv {
+				writeTestJSON(w, http.StatusOK, map[string]any{"env": nil})
+				return
+			}
+			writeTestJSON(w, http.StatusOK, map[string]any{"env": map[string]string{"DB_HOST": "127.0.0.1", "DB_DATABASE": "app"}})
 		})
 	})
 	return mux

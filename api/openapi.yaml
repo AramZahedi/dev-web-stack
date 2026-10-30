@@ -2510,6 +2510,16 @@ paths:
         "404":
           description: The asset does not exist.
 
+  /api/v1/services/{id}/database-impact:
+    get:
+      summary: Preview sites, backups, and jobs affected by deactivation
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatabaseServiceImpact"
   /api/v1/services/{id}/databases:
     get:
       summary: List service databases
@@ -2624,6 +2634,14 @@ paths:
       responses:
         "200":
           description: OK
+  /api/v1/services/{id}/redis/acl-file:
+    post:
+      summary: Enable Redis ACL-file persistence
+      responses:
+        "200":
+          description: OK
+        "409":
+          description: Confirmation required
   /api/v1/jobs/{jobID}:
     get:
       summary: Get a database job
@@ -2859,6 +2877,19 @@ components:
         available: {type: boolean}
         error: {type: string}
         connection: {$ref: "#/components/schemas/DatabaseConnection"}
+    DatabaseServiceImpact:
+      type: object
+      properties:
+        service_id: {type: string}
+        linked_sites:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseSiteRef"}
+        backups:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseBackup"}
+        running_jobs:
+          type: array
+          items: {$ref: "#/components/schemas/DatabaseJob"}
     DatabaseBackup:
       type: object
       properties:
@@ -2898,9 +2929,10 @@ components:
         collation: {type: string}
     RenameDatabaseRequest:
       type: object
-      required: [name]
+      required: [name, confirm]
       properties:
         name: {type: string}
+        confirm: {type: string}
     DropDatabaseRequest:
       type: object
       required: [confirm]

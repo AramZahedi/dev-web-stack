@@ -254,6 +254,20 @@ func Run(ctx context.Context, opts Options) error {
 		serviceCatalog,
 		nil,
 	)
+	helperDatabase, err := servicecontrol.NewHelperDocker(func(ctx context.Context) (servicecontrol.DatabasePlatformAPI, error) {
+		api, ok := any(helper).(servicecontrol.DatabasePlatformAPI)
+		if !ok {
+			return nil, errors.New("daemon: helper client does not implement the database API")
+		}
+		return api, nil
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: init helper database platform: %w", err)
+	}
+	databaseManager := newDatabaseManager(st, helperDatabase, serviceManager, logger)
+	if err := databaseManager.ReconcileJobs(ctx); err != nil {
+		logger.Warn("daemon: reconcile database jobs", "error", err)
+	}
 	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
 	projectsRoot := cfg.ProjectsRoot
 	if projectsRoot == "" {
@@ -272,25 +286,29 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	siteService := sites.NewService(sites.Deps{
-		Store:        st,
-		Backend:      local,
-		Helper:       helper,
-		Certs:        certManager,
-		Vhosts:       helper,
-		Proxy:        proxyServer,
-		Forwarders:   helper,
-		DockerSyncer: dockerWebSyncer{manager: dockerWeb},
-		DockerSwitch: webSwitch,
-		Router:       router,
-		Ports:        domain.NewPortAllocator(),
-		Config:       cfg,
-		Logs:         logStore,
-		PHP:          sites.NewPHPCommands(),
-		PHPBackend:   local,
-		PHPManifest:  &phpManifest,
-		SourceCopier: localSourceCopier{},
-		Lifecycle:    serviceManager.LifecycleMutex(),
-		WaitReady:    waitBackendReady,
+		Store:         st,
+		Backend:       local,
+		Helper:        helper,
+		Certs:         certManager,
+		Vhosts:        helper,
+		Proxy:         proxyServer,
+		Forwarders:    helper,
+		DockerSyncer:  dockerWebSyncer{manager: dockerWeb},
+		DockerSwitch:  webSwitch,
+		Router:        router,
+		Ports:         domain.NewPortAllocator(),
+		Config:        cfg,
+		Logs:          logStore,
+		PHP:           sites.NewPHPCommands(),
+		PHPBackend:    local,
+		PHPManifest:   &phpManifest,
+		SourceCopier:  localSourceCopier{},
+		Lifecycle:     serviceManager.LifecycleMutex(),
+		WaitReady:     waitBackendReady,
+		DatabaseEnv:   databaseEnvResolver(databaseManager),
+		DatabaseLinks: databaseLinksResolver(databaseManager),
+		DatabaseGuard: databaseManager.GuardSite,
+		Database:      databaseManager,
 	})
 	d.certs = certManager
 	d.sites = siteService
@@ -362,11 +380,12 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("daemon: service config manager: %w", err)
 	}
 	terminalManager := terminal.NewManager(terminal.Deps{
-		Paths:    paths,
-		Runtimes: runtimes,
-		PHP:      siteService,
-		Logger:   logger,
-		UID:      os.Getuid(),
+		Paths:       paths,
+		Runtimes:    runtimes,
+		PHP:         siteService,
+		Logger:      logger,
+		UID:         os.Getuid(),
+		DatabaseEnv: databaseEnvResolver(databaseManager),
 	})
 	// Close runs before d.shutdown because it is deferred later: hijacked
 	// WebSockets are not tracked by http.Server.Shutdown.
@@ -400,6 +419,7 @@ func Run(ctx context.Context, opts Options) error {
 		Vhosts:        siteService,
 		Services:      serviceManager,
 		ServiceConfig: serviceConfigService,
+		Databases:     databaseManager,
 		Tooling:       toolingService,
 		Build:         buildService,
 		Terminal:      terminalManager,

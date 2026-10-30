@@ -204,9 +204,31 @@ func TestToAgentSiteSourceMode(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		spec := toAgentSite(backend.SiteSpec{HostPath: tc.hostPath})
+		spec, err := toAgentSite(backend.SiteSpec{HostPath: tc.hostPath})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if spec.SourceMode != tc.wantMode {
 			t.Errorf("toAgentSite(%q).SourceMode = %q, want %q", tc.hostPath, spec.SourceMode, tc.wantMode)
 		}
+	}
+}
+
+func TestToAgentSiteCarriesDatabaseLinks(t *testing.T) {
+	spec, err := toAgentSite(backend.SiteSpec{
+		ID: "site_1", Kind: "static", DatabaseLinks: []backend.DatabaseLinkSpec{{
+			ServiceID: "mysql", Engine: "mysql", Database: "app", UserID: "usr_app",
+			Username: "app", Host: "127.0.0.1", Port: 3306, Primary: true, PasswordManaged: true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.DatabaseLinks) != 1 {
+		t.Fatalf("database links = %+v", spec.DatabaseLinks)
+	}
+	link := spec.DatabaseLinks[0]
+	if link.ServiceID != "mysql" || link.UserID != "usr_app" || !link.PasswordManaged || !link.Primary {
+		t.Fatalf("database link = %+v", link)
 	}
 }

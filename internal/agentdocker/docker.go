@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentapi"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/credentials"
+	"github.com/AramZahedi/dev-web-stack/internal/dbengine"
 	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
@@ -50,6 +52,18 @@ type InputRunner interface {
 	RunInput(ctx context.Context, input []byte, name string, args ...string) ([]byte, error)
 }
 
+// StreamRunner is an optional runner extension for commands whose stdout is
+// streamed to the caller instead of buffered.
+type StreamRunner interface {
+	RunStream(ctx context.Context, name string, args ...string) (io.ReadCloser, error)
+}
+
+// InputStreamRunner is an optional runner extension for commands whose stdin is
+// streamed from the caller instead of buffered.
+type InputStreamRunner interface {
+	RunInputStream(ctx context.Context, input io.Reader, name string, args ...string) error
+}
+
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -57,7 +71,7 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	cmd.WaitDelay = 3 * time.Second
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
+		return output, fmt.Errorf("%s: %w: %s", name, err, truncateOutput([]byte(redactSQLSecrets(string(output)))))
 	}
 	return output, nil
 }
@@ -68,9 +82,85 @@ func (execRunner) RunInput(ctx context.Context, input []byte, name string, args 
 	cmd.Stdin = bytes.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
+		return output, fmt.Errorf("%s: %w: %s", name, err, truncateOutput([]byte(redactSQLSecrets(string(output)))))
 	}
 	return output, nil
+}
+
+func (execRunner) RunStream(ctx context.Context, name string, args ...string) (io.ReadCloser, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 3 * time.Second
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("%s: open stdout: %w", name, err)
+	}
+	stderr := &limitedBuffer{limit: 64 << 10}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return &commandStream{ReadCloser: stdout, cmd: cmd, name: name, stderr: stderr}, nil
+}
+
+func (execRunner) RunInputStream(ctx context.Context, input io.Reader, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 3 * time.Second
+	cmd.Stdin = input
+	// A restore/import can emit far more than the client needs. Discard stdout
+	// and keep only a bounded stderr tail for the error message.
+	cmd.Stdout = io.Discard
+	stderr := &limitedBuffer{limit: 64 << 10}
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w: %s", name, err, redactSQLSecrets(strings.TrimSpace(stderr.String())))
+	}
+	return nil
+}
+
+// limitedBuffer keeps at most limit bytes while accepting the full write.
+type limitedBuffer struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	remaining := b.limit - b.buffer.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			_, _ = b.buffer.Write(p[:remaining])
+		} else {
+			_, _ = b.buffer.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string { return b.buffer.String() }
+
+func truncateOutput(output []byte) string {
+	const limit = 64 << 10
+	if len(output) > limit {
+		output = output[len(output)-limit:]
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// commandStream closes the child's stdout and reaps the process. Close must be
+// called even after the caller has read to EOF.
+type commandStream struct {
+	io.ReadCloser
+	cmd    *exec.Cmd
+	name   string
+	stderr *limitedBuffer
+}
+
+func (s *commandStream) Close() error {
+	readErr := s.ReadCloser.Close()
+	waitErr := s.cmd.Wait()
+	if waitErr != nil {
+		return fmt.Errorf("%s: %w: %s", s.name, waitErr, redactSQLSecrets(strings.TrimSpace(s.stderr.String())))
+	}
+	return readErr
 }
 
 // Config binds the module to the agent's WSL root. Root is supplied by the
@@ -83,11 +173,16 @@ type Config struct {
 
 // Docker is a fixed-catalog service module.
 type Docker struct {
-	root        string
-	composePath string
-	runner      Runner
-	catalog     services.Catalog
-	opMu        sync.Mutex
+	root             string
+	composePath      string
+	runner           Runner
+	catalog          services.Catalog
+	opMu             sync.Mutex
+	databaseRegistry dbengine.Registry
+	databaseLocks    sync.Map
+	// secretWriter is a test seam for the failure path after an engine
+	// password change. Production leaves it nil and uses writeDatabaseSecret.
+	secretWriter func(serviceID, userID, value string) error
 }
 
 var _ agentapi.Module = (*Docker)(nil)
@@ -115,11 +210,16 @@ func New(cfg Config) (*Docker, error) {
 	if runner == nil {
 		runner = execRunner{}
 	}
+	var databaseRegistry dbengine.Registry
+	if dbengine.DefaultRegistry != nil {
+		databaseRegistry = dbengine.DefaultRegistry()
+	}
 	return &Docker{
-		root:        root,
-		composePath: filepath.Join(root, "services", "compose.yaml"),
-		runner:      runner,
-		catalog:     catalog,
+		root:             root,
+		composePath:      filepath.Join(root, "services", "compose.yaml"),
+		runner:           runner,
+		catalog:          catalog,
+		databaseRegistry: databaseRegistry,
 	}, nil
 }
 
@@ -184,6 +284,26 @@ func (d *Docker) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/services/{id}/apply", d.handleServiceApply)
 	mux.HandleFunc("POST /v1/services/{id}/reset", d.handleServiceReset)
 	mux.HandleFunc("POST /v1/services/{id}/credential", d.handleServiceCredential)
+	mux.HandleFunc("GET /v1/services/{id}/databases", d.handleDatabaseList)
+	mux.HandleFunc("POST /v1/services/{id}/databases", d.handleDatabaseCreate)
+	mux.HandleFunc("PATCH /v1/services/{id}/databases/{name}", d.handleDatabaseRename)
+	mux.HandleFunc("DELETE /v1/services/{id}/databases/{name}", d.handleDatabaseDrop)
+	mux.HandleFunc("GET /v1/services/{id}/users", d.handleUserList)
+	mux.HandleFunc("POST /v1/services/{id}/users", d.handleUserCreate)
+	mux.HandleFunc("PATCH /v1/services/{id}/users/{userID}", d.handleUserUpdate)
+	mux.HandleFunc("DELETE /v1/services/{id}/users/{userID}", d.handleUserDelete)
+	mux.HandleFunc("POST /v1/services/{id}/users/{userID}/password", d.handleUserPassword)
+	mux.HandleFunc("POST /v1/services/{id}/users/{userID}/reveal", d.handleUserReveal)
+	mux.HandleFunc("POST /v1/services/{id}/password", d.handleRedisPassword)
+	mux.HandleFunc("POST /v1/services/{id}/redis/acl-file", d.handleRedisEnableACLFile)
+	mux.HandleFunc("GET /v1/services/{id}/backups", d.handleBackupList)
+	mux.HandleFunc("POST /v1/services/{id}/databases/{name}/backups", d.handleBackupCreate)
+	mux.HandleFunc("GET /v1/services/{id}/backups/{backupID}/download", d.handleBackupDownload)
+	mux.HandleFunc("DELETE /v1/services/{id}/backups/{backupID}", d.handleBackupDelete)
+	mux.HandleFunc("POST /v1/services/{id}/backups/{backupID}/restore", d.handleBackupRestore)
+	mux.HandleFunc("POST /v1/services/{id}/databases/{name}/import", d.handleDatabaseImport)
+	mux.HandleFunc("GET /v1/services/{id}/databases/{name}/export", d.handleDatabaseExport)
+	mux.HandleFunc("POST /v1/services/{id}/database-env", d.handleDatabaseEnv)
 	return mux
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
@@ -134,6 +135,57 @@ type fakeClient struct {
 	configActionPath string
 	configActionBody string
 	configResolution string
+
+	databaseList          []model.Database
+	databaseCreated       model.Database
+	databaseCreateReq     databases.CreateDatabaseRequest
+	databaseRenamed       bool
+	databaseRenameReq     databases.RenameDatabaseRequest
+	databaseDropped       bool
+	databaseDropReq       databases.DropDatabaseRequest
+	databaseUser          model.DatabaseUser
+	databaseUserList      []model.DatabaseUser
+	databaseUserCreated   model.DatabaseUser
+	databaseUserCreateReq databases.CreateUserRequest
+	databaseUserUpdate    model.DatabaseUser
+	databaseUserUpdateID  string
+	databaseUserUpdateReq databases.UpdateUserRequest
+	databaseUserDeleted   bool
+	databaseUserDeleteReq databases.DeleteUserRequest
+	databaseUserSecret    databases.Secret
+	databaseUserRevealed  bool
+	databaseUserRevealID  string
+	databaseUserRotated   bool
+	databaseUserRotateID  string
+
+	databaseBackups          []model.DatabaseBackup
+	databaseBackupJob        model.DatabaseJob
+	databaseBackupData       string
+	databaseBackupDelete     bool
+	databaseBackupDownloaded bool
+	databaseExported         bool
+	databaseRestoreJob       model.DatabaseJob
+	databaseRestoreReq       databases.RestoreBackupRequest
+	databaseImportJob        model.DatabaseJob
+	databaseImportReq        databases.ImportRequest
+	databaseImportFile       string
+	databaseExportData       string
+	databaseExportReadErr    error
+
+	databaseJob         model.DatabaseJob
+	databaseJobCanceled bool
+
+	databaseLinks         []model.DatabaseLink
+	databaseLinked        model.DatabaseLink
+	databaseLinkReq       databases.LinkDatabaseRequest
+	siteDatabaseUnlinked  bool
+	siteDatabaseUnlinkRef string
+	siteDatabaseUnlinkID  string
+	siteDatabaseCreated   databases.SiteDatabaseResult
+	siteDatabaseCreateReq databases.SiteDatabaseRequest
+	siteDatabaseEnv       map[string]string
+	siteDatabaseEnvErr    error
+	servicePasswordSet    bool
 }
 
 func (f *fakeClient) ChangeSourceMode(_ context.Context, ref string, mode model.SourceMode, destination string, remove bool) (model.Site, error) {
@@ -447,6 +499,260 @@ func (f *fakeClient) RotateServiceCredentials(_ context.Context, id string) (ser
 	return f.serviceCredentials, nil
 }
 
+func (f *fakeClient) ListServiceDatabases(_ context.Context, _ string) ([]model.Database, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	if f.databaseList == nil {
+		return []model.Database{}, nil
+	}
+	return f.databaseList, nil
+}
+
+func (f *fakeClient) CreateServiceDatabase(_ context.Context, _ string, req databases.CreateDatabaseRequest) (model.Database, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.Database{}, err
+	}
+	f.databaseCreateReq = req
+	return f.databaseCreated, nil
+}
+
+func (f *fakeClient) GetServiceDatabase(_ context.Context, _, name string) (model.Database, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.Database{}, err
+	}
+	return model.Database{Name: name}, nil
+}
+
+func (f *fakeClient) RenameServiceDatabase(_ context.Context, _, _ string, req databases.RenameDatabaseRequest) (model.Database, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.Database{}, err
+	}
+	f.databaseRenamed = true
+	f.databaseRenameReq = req
+	return model.Database{Name: req.Name}, nil
+}
+
+func (f *fakeClient) DropServiceDatabase(_ context.Context, _, _ string, req databases.DropDatabaseRequest) error {
+	if err := f.maybeErr(); err != nil {
+		return err
+	}
+	f.databaseDropped = true
+	f.databaseDropReq = req
+	return nil
+}
+
+func (f *fakeClient) ListServiceUsers(_ context.Context, _ string) ([]model.DatabaseUser, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	if f.databaseUserList == nil {
+		return []model.DatabaseUser{}, nil
+	}
+	return f.databaseUserList, nil
+}
+
+func (f *fakeClient) CreateServiceUser(_ context.Context, _ string, req databases.CreateUserRequest) (model.DatabaseUser, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.DatabaseUser{}, err
+	}
+	f.databaseUserCreateReq = req
+	return f.databaseUserCreated, nil
+}
+
+func (f *fakeClient) GetServiceUser(_ context.Context, _, userID string) (model.DatabaseUser, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.DatabaseUser{}, err
+	}
+	if f.databaseUser.ID != "" || f.databaseUser.Username != "" {
+		return f.databaseUser, nil
+	}
+	for _, user := range f.databaseUserList {
+		if user.ID == userID || user.Username == userID {
+			return user, nil
+		}
+	}
+	return model.DatabaseUser{ID: userID}, nil
+}
+
+func (f *fakeClient) UpdateServiceUser(_ context.Context, _, userID string, req databases.UpdateUserRequest) (model.DatabaseUser, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.DatabaseUser{}, err
+	}
+	f.databaseUserUpdateID = userID
+	f.databaseUserUpdateReq = req
+	return f.databaseUserUpdate, nil
+}
+
+func (f *fakeClient) DeleteServiceUser(_ context.Context, _, _ string, req databases.DeleteUserRequest) error {
+	if err := f.maybeErr(); err != nil {
+		return err
+	}
+	f.databaseUserDeleted = true
+	f.databaseUserDeleteReq = req
+	return nil
+}
+
+func (f *fakeClient) SetServiceUserPassword(_ context.Context, _, userID string) (databases.Secret, error) {
+	if err := f.maybeErr(); err != nil {
+		return databases.Secret{}, err
+	}
+	f.databaseUserRotated = true
+	f.databaseUserRotateID = userID
+	return f.databaseUserSecret, nil
+}
+
+func (f *fakeClient) RevealServiceUserPassword(_ context.Context, _, userID string) (databases.Secret, error) {
+	if err := f.maybeErr(); err != nil {
+		return databases.Secret{}, err
+	}
+	f.databaseUserRevealed = true
+	f.databaseUserRevealID = userID
+	return f.databaseUserSecret, nil
+}
+
+func (f *fakeClient) SetServicePassword(_ context.Context, _ string) (databases.Secret, error) {
+	if err := f.maybeErr(); err != nil {
+		return databases.Secret{}, err
+	}
+	f.servicePasswordSet = true
+	return f.databaseUserSecret, nil
+}
+
+func (f *fakeClient) ListServiceBackups(_ context.Context, _ string) ([]model.DatabaseBackup, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	if f.databaseBackups == nil {
+		return []model.DatabaseBackup{}, nil
+	}
+	return f.databaseBackups, nil
+}
+
+func (f *fakeClient) CreateServiceBackup(_ context.Context, _, _ string, _ databases.CreateBackupRequest) (model.DatabaseJob, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.DatabaseJob{}, err
+	}
+	return f.databaseBackupJob, nil
+}
+
+func (f *fakeClient) DeleteServiceBackup(_ context.Context, _, _ string) error {
+	if err := f.maybeErr(); err != nil {
+		return err
+	}
+	f.databaseBackupDelete = true
+	return nil
+}
+
+func (f *fakeClient) RestoreServiceBackup(_ context.Context, _, _ string, req databases.RestoreBackupRequest) (model.DatabaseJob, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.DatabaseJob{}, err
+	}
+	f.databaseRestoreReq = req
+	return f.databaseRestoreJob, nil
+}
+
+func (f *fakeClient) DownloadServiceBackup(_ context.Context, _, _ string) (io.ReadCloser, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	f.databaseBackupDownloaded = true
+	data := f.databaseBackupData
+	if data == "" {
+		data = "backup-data"
+	}
+	return io.NopCloser(strings.NewReader(data)), nil
+}
+
+func (f *fakeClient) ImportServiceDatabase(_ context.Context, _, _ string, file io.Reader, _ string, req databases.ImportRequest) (model.DatabaseJob, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.DatabaseJob{}, err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return model.DatabaseJob{}, err
+	}
+	f.databaseImportReq = req
+	f.databaseImportFile = string(data)
+	return f.databaseImportJob, nil
+}
+
+func (f *fakeClient) ExportServiceDatabase(_ context.Context, _, _ string) (io.ReadCloser, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	f.databaseExported = true
+	if f.databaseExportReadErr != nil {
+		return &failingReadCloser{data: "partial", err: f.databaseExportReadErr}, nil
+	}
+	data := f.databaseExportData
+	if data == "" {
+		data = "dump"
+	}
+	return io.NopCloser(strings.NewReader(data)), nil
+}
+
+func (f *fakeClient) GetDatabaseJob(_ context.Context, _ string) (model.DatabaseJob, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.DatabaseJob{}, err
+	}
+	return f.databaseJob, nil
+}
+
+func (f *fakeClient) CancelDatabaseJob(_ context.Context, _ string) error {
+	if err := f.maybeErr(); err != nil {
+		return err
+	}
+	f.databaseJobCanceled = true
+	return nil
+}
+
+func (f *fakeClient) ListSiteDatabases(_ context.Context, _ string) ([]model.DatabaseLink, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	if f.databaseLinks == nil {
+		return []model.DatabaseLink{}, nil
+	}
+	return f.databaseLinks, nil
+}
+
+func (f *fakeClient) LinkSiteDatabase(_ context.Context, _ string, req databases.LinkDatabaseRequest) (model.DatabaseLink, error) {
+	if err := f.maybeErr(); err != nil {
+		return model.DatabaseLink{}, err
+	}
+	f.databaseLinkReq = req
+	return f.databaseLinked, nil
+}
+
+func (f *fakeClient) UnlinkSiteDatabase(_ context.Context, ref, linkID string) error {
+	if err := f.maybeErr(); err != nil {
+		return err
+	}
+	f.siteDatabaseUnlinked = true
+	f.siteDatabaseUnlinkRef = ref
+	f.siteDatabaseUnlinkID = linkID
+	return nil
+}
+
+func (f *fakeClient) CreateSiteDatabase(_ context.Context, _ string, req databases.SiteDatabaseRequest) (databases.SiteDatabaseResult, error) {
+	if err := f.maybeErr(); err != nil {
+		return databases.SiteDatabaseResult{}, err
+	}
+	f.siteDatabaseCreateReq = req
+	return f.siteDatabaseCreated, nil
+}
+
+func (f *fakeClient) SiteDatabaseEnv(_ context.Context, _ string) (map[string]string, error) {
+	if err := f.maybeErr(); err != nil {
+		return nil, err
+	}
+	if f.siteDatabaseEnvErr != nil {
+		return nil, f.siteDatabaseEnvErr
+	}
+	return f.siteDatabaseEnv, nil
+}
+
 func (f *fakeClient) PHPInfo(_ context.Context, ref string) (sites.PHPInfo, error) {
 	if err := f.maybeErr(); err != nil {
 		return sites.PHPInfo{}, err
@@ -618,6 +924,46 @@ func newTestRoot(fake *fakeClient) *cobra.Command {
 	})
 }
 
+// trackingReader records whether a command read stdin.
+type trackingReader struct {
+	data string
+	read bool
+}
+
+func (r *trackingReader) Read(p []byte) (int, error) {
+	r.read = true
+	if r.data == "" {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// errorReader fails the test if a command reads stdin.
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) {
+	return 0, errors.New("stdin must not be read")
+}
+
+// failingReadCloser emits data and then returns err.
+type failingReadCloser struct {
+	data string
+	err  error
+}
+
+func (r *failingReadCloser) Read(p []byte) (int, error) {
+	if r.data != "" {
+		n := copy(p, r.data)
+		r.data = r.data[n:]
+		return n, nil
+	}
+	return 0, r.err
+}
+
+func (r *failingReadCloser) Close() error { return nil }
+
 func runCLI(t *testing.T, fake *fakeClient, args ...string) string {
 	t.Helper()
 	code, stdout, stderr := runCLIExit(t, fake, args...)
@@ -634,11 +980,16 @@ func runCLIExit(t *testing.T, fake *fakeClient, args ...string) (int, string, st
 
 func runCLIExitInput(t *testing.T, fake *fakeClient, input string, args ...string) (int, string, string) {
 	t.Helper()
+	return runCLIExitReader(t, fake, strings.NewReader(input), args...)
+}
+
+func runCLIExitReader(t *testing.T, fake *fakeClient, input io.Reader, args ...string) (int, string, string) {
+	t.Helper()
 	root := newTestRoot(fake)
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetIn(strings.NewReader(input))
+	root.SetIn(input)
 	root.SetArgs(args)
 	err := root.Execute()
 	if err != nil {
@@ -1705,6 +2056,39 @@ func TestCLIHumanErrorIncludesCodeMessageRemediation(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, missing %q", stderr, want)
 		}
+	}
+}
+
+func TestCLIDatabaseErrorRemediations(t *testing.T) {
+	cases := []struct {
+		code string
+		want string
+	}{
+		{"DATABASE_NOT_FOUND", "devstack db list"},
+		{"DATABASE_CONFLICT", "another name"},
+		{"DATABASE_PROTECTED", "protected"},
+		{"DATABASE_IN_USE", "Unlink"},
+		{"DATABASE_SERVICE_INACTIVE", "service activate"},
+		{"DATABASE_PASSWORD_MISSING", "db user password"},
+		{"DATABASE_JOB_NOT_FOUND", "job id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			converted := asError(&client.Error{Code: tc.code, Message: "failed"})
+			if !strings.Contains(converted.Remediation, tc.want) {
+				t.Fatalf("remediation = %q, want %q", converted.Remediation, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrintErrorDatabaseRemediation(t *testing.T) {
+	cmd := &cobra.Command{}
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+	PrintError(cmd, &client.Error{Code: "DATABASE_SERVICE_INACTIVE", Message: "service is inactive"})
+	if !strings.Contains(stderr.String(), "DATABASE_SERVICE_INACTIVE") || !strings.Contains(stderr.String(), "service activate") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 

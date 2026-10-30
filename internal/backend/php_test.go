@@ -621,3 +621,20 @@ func waitPortClosed(t *testing.T, port int, timeout time.Duration) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestExecEnvironmentPHPIncludesRuntimeEnv(t *testing.T) {
+	local := &Local{}
+	env := local.execEnvironment(preparedSite{spec: SiteSpec{
+		Kind:         string(model.SitePHP),
+		Env:          map[string]string{"APP_ENV": "local"},
+		RuntimeEnv:   map[string]string{"DB_PASSWORD": "s3cret"},
+		PHPBuildPath: t.TempDir(),
+		PHPIniPath:   filepath.Join(t.TempDir(), "php.ini"),
+	}}, nil)
+	if env["DB_PASSWORD"] != "s3cret" {
+		t.Fatalf("DB_PASSWORD = %q, want runtime env", env["DB_PASSWORD"])
+	}
+	if env["APP_ENV"] != "local" {
+		t.Fatalf("APP_ENV = %q", env["APP_ENV"])
+	}
+}

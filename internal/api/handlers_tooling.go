@@ -119,10 +119,8 @@ func (s *Server) handleInstallTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req toolActionRequest
-	if r.ContentLength != 0 {
-		if !decodeJSONBody(w, r, &req) {
-			return
-		}
+	if !decodeOptionalJSONBody(w, r, &req) {
+		return
 	}
 	tool, err := s.tooling.InstallTool(r.Context(), r.PathValue("id"), req.Force)
 	if err != nil {

@@ -26,6 +26,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
@@ -96,6 +97,33 @@ type Client interface {
 	ResetServiceConfig(ctx context.Context, id, path string) (servicecontrol.ConfigApplyResult, error)
 	ServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error)
 	RotateServiceCredentials(ctx context.Context, id string) (servicecontrol.Credentials, error)
+	ListServiceDatabases(ctx context.Context, serviceID string) ([]model.Database, error)
+	CreateServiceDatabase(ctx context.Context, serviceID string, req databases.CreateDatabaseRequest) (model.Database, error)
+	GetServiceDatabase(ctx context.Context, serviceID, name string) (model.Database, error)
+	RenameServiceDatabase(ctx context.Context, serviceID, name string, req databases.RenameDatabaseRequest) (model.Database, error)
+	DropServiceDatabase(ctx context.Context, serviceID, name string, req databases.DropDatabaseRequest) error
+	ListServiceUsers(ctx context.Context, serviceID string) ([]model.DatabaseUser, error)
+	CreateServiceUser(ctx context.Context, serviceID string, req databases.CreateUserRequest) (model.DatabaseUser, error)
+	GetServiceUser(ctx context.Context, serviceID, userID string) (model.DatabaseUser, error)
+	UpdateServiceUser(ctx context.Context, serviceID, userID string, req databases.UpdateUserRequest) (model.DatabaseUser, error)
+	DeleteServiceUser(ctx context.Context, serviceID, userID string, req databases.DeleteUserRequest) error
+	SetServiceUserPassword(ctx context.Context, serviceID, userID string) (databases.Secret, error)
+	RevealServiceUserPassword(ctx context.Context, serviceID, userID string) (databases.Secret, error)
+	SetServicePassword(ctx context.Context, serviceID string) (databases.Secret, error)
+	ListServiceBackups(ctx context.Context, serviceID string) ([]model.DatabaseBackup, error)
+	CreateServiceBackup(ctx context.Context, serviceID, database string, req databases.CreateBackupRequest) (model.DatabaseJob, error)
+	DeleteServiceBackup(ctx context.Context, serviceID, backupID string) error
+	RestoreServiceBackup(ctx context.Context, serviceID, backupID string, req databases.RestoreBackupRequest) (model.DatabaseJob, error)
+	DownloadServiceBackup(ctx context.Context, serviceID, backupID string) (io.ReadCloser, error)
+	ImportServiceDatabase(ctx context.Context, serviceID, database string, file io.Reader, filename string, req databases.ImportRequest) (model.DatabaseJob, error)
+	ExportServiceDatabase(ctx context.Context, serviceID, database string) (io.ReadCloser, error)
+	GetDatabaseJob(ctx context.Context, jobID string) (model.DatabaseJob, error)
+	CancelDatabaseJob(ctx context.Context, jobID string) error
+	ListSiteDatabases(ctx context.Context, ref string) ([]model.DatabaseLink, error)
+	LinkSiteDatabase(ctx context.Context, ref string, req databases.LinkDatabaseRequest) (model.DatabaseLink, error)
+	UnlinkSiteDatabase(ctx context.Context, ref, linkID string) error
+	CreateSiteDatabase(ctx context.Context, ref string, req databases.SiteDatabaseRequest) (databases.SiteDatabaseResult, error)
+	SiteDatabaseEnv(ctx context.Context, ref string) (map[string]string, error)
 }
 
 // Package-level seams. Tests replace these so no command touches a real
@@ -152,6 +180,7 @@ func NewRootCmd(newClient func(home string) (Client, error)) *cobra.Command {
 		app.newTrustCmd(),
 		app.newVhostCmd(),
 		app.newServiceCmd(),
+		app.newDBCmd(),
 		app.newUICmd(),
 		app.newUninstallCmd(),
 		newVersionCmd(),
@@ -301,6 +330,20 @@ func apiRemediation(code string) string {
 		return "Run `devstack trust repair` to install the local CA."
 	case "PAYLOAD_TOO_LARGE":
 		return "Reduce the request size and try again."
+	case "DATABASE_NOT_FOUND":
+		return "Run `devstack db list --service <id>` to see the database inventory, then retry with the correct name."
+	case "DATABASE_CONFLICT":
+		return "Choose another name or resolve the existing database/user, then retry."
+	case "DATABASE_PROTECTED":
+		return "System databases and users are protected; choose a different object."
+	case "DATABASE_IN_USE":
+		return "Unlink the affected sites or stop them before retrying."
+	case "DATABASE_SERVICE_INACTIVE":
+		return "Activate the service with `devstack service activate <id>`, then retry."
+	case "DATABASE_PASSWORD_MISSING":
+		return "Rotate a managed password with `devstack db user password --service <id> --user-id <id> --rotate`."
+	case "DATABASE_JOB_NOT_FOUND":
+		return "Check the job id or run `devstack db backup list --service <id>` to see recent backups."
 	case helperproto.CodeServingModeUnavailable:
 		return "Install nginx or Apache and start its service, then run `devstack vhost sync`."
 	case helperproto.CodeVhostConfigInvalid:

@@ -10,6 +10,18 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
+func TestCreateSiteReturnsDatabaseWarnings(t *testing.T) {
+	fx := newFixture(t, Config{})
+	fx.sites.createWarnings = []string{"database user has no grant on this database"}
+	rec := fx.request(t, http.MethodPost, "/api/v1/sites", strings.NewReader(`{"name":"blog","path":"/tmp","kind":"static"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "no grant") {
+		t.Fatalf("warning missing from response: %s", rec.Body.String())
+	}
+}
+
 func TestCreateSiteWithContracts(t *testing.T) {
 	_, fake := newTestAPIWithFakes(t)
 

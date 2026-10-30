@@ -35,7 +35,7 @@ func TestStartFPMRejectsAStaleListenerWhenTheMasterExits(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	process, err := (&Runtime{}).startFPM(ctx, "site", "default",
-		filepath.Join(root, "fpm.conf"), filepath.Join(root, "php.ini"), build, port)
+		filepath.Join(root, "fpm.conf"), filepath.Join(root, "php.ini"), build, port, nil)
 	if err == nil {
 		if process != nil {
 			process.stop()
