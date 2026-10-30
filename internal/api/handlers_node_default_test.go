@@ -17,14 +17,33 @@ import (
 // default handler never calls and adds the narrow NodeDefault surface.
 type fakeNodeDefaultToolService struct {
 	ToolService
-	status tooling.NodeDefaultStatus
-	err    error
-	calls  int
+	status      tooling.NodeDefaultStatus
+	clearStatus tooling.NodeDefaultStatus
+	err         error
+	setErr      error
+	clearErr    error
+	calls       int
+	setCalls    int
+	clearCalls  int
+	setValue    string
+	setForce    bool
 }
 
 func (f *fakeNodeDefaultToolService) NodeDefault(context.Context) (tooling.NodeDefaultStatus, error) {
 	f.calls++
 	return f.status, f.err
+}
+
+func (f *fakeNodeDefaultToolService) SetNodeDefault(_ context.Context, value string, force bool) (tooling.NodeDefaultStatus, error) {
+	f.setCalls++
+	f.setValue = value
+	f.setForce = force
+	return f.status, f.setErr
+}
+
+func (f *fakeNodeDefaultToolService) ClearNodeDefault(context.Context) (tooling.NodeDefaultStatus, error) {
+	f.clearCalls++
+	return f.clearStatus, f.clearErr
 }
 
 func TestNodeDefaultAPIStatus(t *testing.T) {
@@ -90,6 +109,85 @@ func TestNodeDefaultAPIStatus(t *testing.T) {
 	assertError(t, rec, http.StatusInternalServerError, codeInternal)
 }
 
+func TestNodeDefaultAPIStatusSetClear(t *testing.T) {
+	build := model.RuntimeBuild{
+		ID:      "node@22.11.0",
+		Kind:    "node",
+		Version: "22.11.0",
+		Backend: model.BackendLocal,
+		Path:    "/data/devstack/runtimes/node@22.11.0",
+	}
+	fallback := model.RuntimeBuild{
+		ID:      "node@24.1.0",
+		Kind:    "node",
+		Version: "24.1.0",
+		Backend: model.BackendLocal,
+		Path:    "/data/devstack/runtimes/node@24.1.0",
+	}
+	toolSvc := &fakeNodeDefaultToolService{
+		status: tooling.NodeDefaultStatus{
+			Configured:    "22.11.0",
+			Build:         &build,
+			ShimDir:       "/data/devstack/tools/node-default/bin",
+			ShimInstalled: true,
+			Source:        tooling.NodeDefaultSourceSetting,
+		},
+		clearStatus: tooling.NodeDefaultStatus{
+			Build:         &fallback,
+			ShimDir:       "/data/devstack/tools/node-default/bin",
+			ShimInstalled: true,
+			Source:        tooling.NodeDefaultSourceNewest,
+		},
+	}
+	fx := newFixture(t, Config{Tooling: toolSvc})
+
+	rec := httptest.NewRecorder()
+	fx.server.handleNodeDefault(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/default", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET code = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	fx.server.handleSetNodeDefault(rec, httptest.NewRequest(http.MethodPut, "/api/v1/node/default", strings.NewReader(`{"value":"22.11.0","force":true}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if toolSvc.setCalls != 1 || toolSvc.setValue != "22.11.0" || !toolSvc.setForce {
+		t.Fatalf("set call = %d value=%q force=%v", toolSvc.setCalls, toolSvc.setValue, toolSvc.setForce)
+	}
+	var status tooling.NodeDefaultStatus
+	decode(t, rec, &status)
+	if status.Build == nil || status.Build.ID != build.ID || status.Source != tooling.NodeDefaultSourceSetting {
+		t.Fatalf("set response = %+v", status)
+	}
+
+	rec = httptest.NewRecorder()
+	fx.server.handleSetNodeDefault(rec, httptest.NewRequest(http.MethodPut, "/api/v1/node/default", strings.NewReader(`{"clear":true}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if toolSvc.clearCalls != 1 {
+		t.Fatalf("clear calls = %d", toolSvc.clearCalls)
+	}
+	decode(t, rec, &status)
+	if status.Build == nil || status.Build.ID != fallback.ID || status.Source != tooling.NodeDefaultSourceNewest {
+		t.Fatalf("clear response = %+v", status)
+	}
+
+	rec = httptest.NewRecorder()
+	fx.server.handleSetNodeDefault(rec, httptest.NewRequest(http.MethodPut, "/api/v1/node/default", strings.NewReader(`{"value":"   "}`)))
+	assertError(t, rec, http.StatusBadRequest, codeInvalidRequest)
+
+	rec = httptest.NewRecorder()
+	fx.server.handleSetNodeDefault(rec, httptest.NewRequest(http.MethodPut, "/api/v1/node/default", strings.NewReader(`{`)))
+	assertError(t, rec, http.StatusBadRequest, codeInvalidRequest)
+
+	toolSvc.setErr = errors.New("store unavailable")
+	rec = httptest.NewRecorder()
+	fx.server.handleSetNodeDefault(rec, httptest.NewRequest(http.MethodPut, "/api/v1/node/default", strings.NewReader(`{"value":"22.11.0"}`)))
+	assertError(t, rec, http.StatusInternalServerError, codeInternal)
+}
+
 func TestNodeDefaultAPIUnavailable(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -102,6 +200,10 @@ func TestNodeDefaultAPIUnavailable(t *testing.T) {
 			fx := newFixture(t, Config{Tooling: tc.service})
 			rec := httptest.NewRecorder()
 			fx.server.handleNodeDefault(rec, httptest.NewRequest(http.MethodGet, "/api/v1/node/default", nil))
+			assertError(t, rec, http.StatusServiceUnavailable, codeServiceUnavailable)
+
+			rec = httptest.NewRecorder()
+			fx.server.handleSetNodeDefault(rec, httptest.NewRequest(http.MethodPut, "/api/v1/node/default", strings.NewReader(`{"value":"22"}`)))
 			assertError(t, rec, http.StatusServiceUnavailable, codeServiceUnavailable)
 		})
 	}

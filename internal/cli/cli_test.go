@@ -84,15 +84,21 @@ type fakeClient struct {
 	migrationReq  sites.PHPMigrationRequest
 	migrationErr  error
 
-	phpDefaultStatus tooling.PHPDefaultStatus
-	phpClearStatus   tooling.PHPDefaultStatus
-	phpDefaultSet    string
-	phpDefaultForce  bool
-	phpDefaultClear  int
-	tools            []helperproto.ToolStatus
-	toolInstallID    string
-	toolInstallForce bool
-	toolRemoveID     string
+	phpDefaultStatus  tooling.PHPDefaultStatus
+	phpClearStatus    tooling.PHPDefaultStatus
+	phpDefaultSet     string
+	phpDefaultForce   bool
+	phpDefaultClear   int
+	nodeDefaultStatus tooling.NodeDefaultStatus
+	nodeClearStatus   tooling.NodeDefaultStatus
+	nodeDefaultSet    string
+	nodeDefaultForce  bool
+	nodeDefaultClear  int
+	nodeDefaultCalls  int
+	tools             []helperproto.ToolStatus
+	toolInstallID     string
+	toolInstallForce  bool
+	toolRemoveID      string
 
 	buildResult build.Result
 	buildRef    string
@@ -2719,6 +2725,31 @@ func (f *fakeClient) ClearPHPDefault(_ context.Context) (tooling.PHPDefaultStatu
 	}
 	f.phpDefaultClear++
 	return f.phpClearStatus, nil
+}
+
+func (f *fakeClient) NodeDefault(_ context.Context) (tooling.NodeDefaultStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return tooling.NodeDefaultStatus{}, err
+	}
+	f.nodeDefaultCalls++
+	return f.nodeDefaultStatus, nil
+}
+
+func (f *fakeClient) SetNodeDefault(_ context.Context, value string, force bool) (tooling.NodeDefaultStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return tooling.NodeDefaultStatus{}, err
+	}
+	f.nodeDefaultSet = value
+	f.nodeDefaultForce = force
+	return f.nodeDefaultStatus, nil
+}
+
+func (f *fakeClient) ClearNodeDefault(_ context.Context) (tooling.NodeDefaultStatus, error) {
+	if err := f.maybeErr(); err != nil {
+		return tooling.NodeDefaultStatus{}, err
+	}
+	f.nodeDefaultClear++
+	return f.nodeClearStatus, nil
 }
 
 func (f *fakeClient) Tools(_ context.Context) ([]helperproto.ToolStatus, error) {
