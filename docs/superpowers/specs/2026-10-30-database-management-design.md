@@ -4,7 +4,7 @@
 
 **Goal:** Add service-wide database and user management for the installed SQL services, Redis ACL users/password management, optional database creation/linking in Add Site, and a connection-details card on Site Detail.
 
-**Architecture:** The daemon exposes service-scoped database APIs. The privileged agent (WSL on Windows, native on Linux) performs all engine operations through validated, fixed `docker compose exec` commands and streams backups/imports. The agent owns database-user secret files under its service tree; the daemon owns site links, user/backup/job metadata, and audit records. SQLite never stores passwords. The dashboard is a structured control plane, not a SQL console.
+**Architecture:** The daemon exposes service-scoped database APIs. The privileged platform performs all engine operations through validated, fixed `docker compose exec` commands and streams backups/imports: the WSL agent on Windows and the privileged helper on Linux. The platform owns database-user secret files under its service tree; the daemon owns site links, user/backup/job metadata, and audit records. SQLite never stores passwords. The dashboard is a structured control plane, not a SQL console.
 
 **Tech Stack:** Go daemon/helper/agent, SQLite store migrations, Docker Compose services (MySQL 8.4, MariaDB 11.8, PostgreSQL 18, Redis 8.8), Svelte dashboard, Cobra CLI, PowerShell/Go tests.
 
@@ -56,15 +56,15 @@ A developer using devstack needs to create databases for projects, manage applic
 - Service ports are loopback-only. Site backends run as WSL processes on Windows and native processes on Linux, so `DB_HOST` is `127.0.0.1`, not a container-network alias.
 - The agent runs as root inside the managed distro; all engine commands execute inside the service container, never on the host.
 - Existing service credentials and the `devstack` database/user are protected.
-- Database-user secrets are owned by the agent, never by the daemon or `state.db`. They live under `<agent-root>/services/<service>/secrets/database-users/<user-id>` with 0600 files and a 0700 directory.
+- Database-user secrets are owned by the privileged platform (agent on Windows, helper on Linux), never by SQLite. They live under `<platform-root>/services/<service>/secrets/database-users/<user-id>` with 0600 files and a 0700 directory. On Linux the daemon may receive a secret transiently in memory to set a site process environment; it never persists, logs, or writes it to `site.Env` or `php-fpm.conf`.
 - Backups and imports live under the agent’s backups tree, not in the Windows home or `state.db`.
 - The dashboard remains loopback-only, session/CSRF protected, and audited.
 
 ## Approaches considered
 
-1. **Agent-side engine adapters — chosen.** Extend the agent with per-engine database adapters. Fixed commands run via `docker compose exec`, with SQL and passwords on stdin and dumps/imports streamed. The agent owns secrets; the daemon owns metadata.
-   - Pros: matches the privileged-helper boundary; no database passwords in the daemon or SQLite; native dump tools; one pattern for all engines; works on Windows/WSL and Linux.
-   - Cons: largest surface; streaming and engine SQL differences need care.
+1. **Platform-side engine adapters — chosen.** Extend the WSL agent and the Linux privileged helper with per-engine database adapters sharing one `dbengine` contract. Fixed commands run via `docker compose exec`, with SQL and passwords on stdin and dumps/imports streamed. The platform owns secrets; the daemon owns metadata.
+   - Pros: matches the privileged-helper boundary; no database passwords in SQLite; native dump tools; one shared engine contract for both platforms; works on Windows/WSL and Linux.
+   - Cons: largest surface; streaming and engine SQL differences need care; Linux needs helper RPC parity.
 2. **Daemon-side SQL drivers.** The daemon connects to loopback ports with Go drivers.
    - Pros: structured queries and simple metadata reads.
    - Cons: passwords/connections in the daemon process; native backup tools still needed; driver/networking matrix; weaker boundary.
@@ -175,7 +175,7 @@ Redis ACL persistence: on the first Redis user/password change, the adapter back
 
 - `servicecontrol` gains a `DatabaseService` interface backed by the agent adapter, exposed through the existing service manager wiring.
 - The daemon owns link metadata, user/backup/job metadata, site orchestration, and audit records. The agent owns password generation, secret storage, reveal, and engine operations.
-- The daemon never receives a password for env injection. Site env resolution asks the agent to resolve linked secrets; the daemon only sees a password when a user explicitly reveals it, and that reveal is audited.
+- On Windows the daemon never receives a password for env injection; the agent resolves linked secrets directly. On Linux the daemon may receive the resolved env transiently to launch the site process, but never persists or logs it. The daemon only returns a password to a client through an explicit, audited reveal or the explicit CLI env-resolution endpoint.
 - On list, the daemon merges engine-discovered databases/users with SQLite metadata. If an externally dropped database has links, the UI flags it as missing and offers “Remove link”; it never recreates it automatically.
 - Site env injection is dynamic: links are resolved at site prepare/terminal time and are not written into `site.Env`. Reserved variables for the primary link: `DB_CONNECTION`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `DATABASE_URL`. Additional links use `DB_<SLUG>_*`. If the user has set a reserved key, the link value wins and the UI warns that the key is managed. Metadata-only links omit `DB_PASSWORD` and `DATABASE_URL`.
 - `DB_HOST` is `127.0.0.1`; site backends are WSL/native processes, not containers on the service network.
@@ -205,7 +205,7 @@ Responses never include passwords. Reveal/password endpoints return the secret o
 
 ## Add Site flow
 
-The existing three-step wizard stays three steps. Step 2 (Options) gains an optional **Database** panel after domain/options:
+The existing three-step wizard stays three steps (`Project → Runtime → Options`). Step 3 (Options) gains an optional **Database** panel after domain/options:
 
 - Toggle: “Create or link a database”.
 - Choose an installed, active SQL service.
@@ -261,7 +261,7 @@ New `devstack db` group:
 - `db link`, `db unlink`
 - Redis: `db user ...`, `db password`
 
-`site add` gains `--database-service`, `--database`, `--database-new`, `--database-user`, `--database-user-new`, `--database-user-password`, `--database-grant`. `site db list/link/unlink` mirrors the API. Mutating commands require `--yes`; JSON output never includes passwords except explicit `--reveal` actions. `db user password --set` supports external users; omitting it creates a metadata-only link.
+`site add` gains `--database-service`, `--database`, `--database-new`, `--database-user`, `--database-user-new`, `--database-user-password-stdin`, `--database-grant`. `site db list/link/unlink` mirrors the API. Mutating commands require `--yes`; JSON output never includes passwords except explicit `--reveal` actions. `db user password --set` reads the new password from stdin, not argv; omitting a password creates a metadata-only link.
 
 ## Security and safety
 
