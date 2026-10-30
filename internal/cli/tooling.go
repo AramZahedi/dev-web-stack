@@ -181,7 +181,7 @@ func (a *App) newToolListCmd() *cobra.Command {
 
 func validToolID(id string) bool {
 	switch id {
-	case helperproto.ToolComposer, helperproto.ToolPHPDefault:
+	case helperproto.ToolComposer, helperproto.ToolPHPDefault, helperproto.ToolNodeDefault:
 		return true
 	default:
 		return false
@@ -197,7 +197,7 @@ func (a *App) newToolInstallCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := strings.TrimSpace(args[0])
 			if !validToolID(id) {
-				return &Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("unsupported tool %q", id), Remediation: "Use `composer` or `php-default`."}
+				return &Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("unsupported tool %q", id), Remediation: "Use `composer`, `php-default`, or `node-default`."}
 			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
@@ -231,7 +231,7 @@ func (a *App) newToolUpdateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := strings.TrimSpace(args[0])
 			if !validToolID(id) {
-				return &Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("unsupported tool %q", id), Remediation: "Use `composer` or `php-default`."}
+				return &Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("unsupported tool %q", id), Remediation: "Use `composer`, `php-default`, or `node-default`."}
 			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
@@ -261,7 +261,7 @@ func (a *App) newToolRemoveCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := strings.TrimSpace(args[0])
 			if !validToolID(id) {
-				return &Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("unsupported tool %q", id), Remediation: "Use `composer` or `php-default`."}
+				return &Error{Code: "INVALID_ARGUMENT", Message: fmt.Sprintf("unsupported tool %q", id), Remediation: "Use `composer`, `php-default`, or `node-default`."}
 			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
