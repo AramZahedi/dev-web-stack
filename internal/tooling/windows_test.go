@@ -318,6 +318,104 @@ func TestBuildWSLExecArgsRejectsUnsafeInputs(t *testing.T) {
 	}
 }
 
+func TestBuildWSLExecArgsRejectsSecretEnvironment(t *testing.T) {
+	for _, key := range []string{"DB_PASSWORD", "DATABASE_URL", "DB_BLOG_PASSWORD", "DB_BLOG_URL"} {
+		t.Run(key, func(t *testing.T) {
+			_, err := BuildWSLExecArgs("devstack", "/home/dev/project", map[string]string{key: "s3cret"}, []string{"pwd"}, false)
+			if err == nil {
+				t.Fatalf("BuildWSLExecArgs accepted secret key %s", key)
+			}
+			if strings.Contains(err.Error(), "s3cret") {
+				t.Fatalf("error leaked the secret value: %v", err)
+			}
+		})
+	}
+}
+
+func TestNewWSLEnvFileIsPrivateAndQuoted(t *testing.T) {
+	file, err := NewWSLEnvFile(map[string]string{
+		"DB_PASSWORD": "s3cret",
+		"APP_MODE":    "it's safe",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Cleanup()
+	if !strings.HasPrefix(file.WSLPath, "/") {
+		t.Fatalf("WSL path = %q", file.WSLPath)
+	}
+	info, err := os.Stat(file.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o, want 0600", info.Mode().Perm())
+	}
+	content, err := os.ReadFile(file.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"export APP_MODE='it'\\''s safe'", "export DB_PASSWORD='s3cret'"} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("env file missing %q", want)
+		}
+	}
+	file.Cleanup()
+	if _, err := os.Stat(file.Path); !os.IsNotExist(err) {
+		t.Fatalf("cleanup left the env file: %v", err)
+	}
+}
+
+func TestBuildWSLExecArgsWithEnvFileKeepsSecretsOutOfScript(t *testing.T) {
+	args, err := BuildWSLExecArgsWithEnvFile("devstack", "/home/dev/project", "/tmp/devstack-wsl-env-1.sh", []string{"php", "artisan"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := args[5]
+	for _, want := range []string{
+		"trap ",
+		". '/tmp/devstack-wsl-env-1.sh'",
+		"rm -f -- '/tmp/devstack-wsl-env-1.sh'",
+		"cd -- '/home/dev/project'",
+		"exec 'php' 'artisan'",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing %q:\n%s", want, script)
+		}
+	}
+}
+
+func TestBuildWSLExecArgsWithEnvFileRunsInBash(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the generated /mnt path is only executable from WSL/Linux")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not available")
+	}
+	project := t.TempDir()
+	file, err := NewWSLEnvFile(map[string]string{"APP_MODE": "dev", "DB_PASSWORD": "s3cret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Cleanup()
+	args, err := BuildWSLExecArgsWithEnvFile("devstack", project, file.WSLPath, []string{"sh", "-c", `printf '%s|%s' "$APP_MODE" "$DB_PASSWORD"`}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(bash, "-lc", args[5])
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated script failed: %v", err)
+	}
+	if string(output) != "dev|s3cret" {
+		t.Fatal("generated script did not source the private environment")
+	}
+	if _, err := os.Stat(file.Path); !os.IsNotExist(err) {
+		t.Fatalf("generated script did not remove the env file: %v", err)
+	}
+}
+
 func TestEnsureWindowsSiteShimsRejectsUnsafeEnvironmentNames(t *testing.T) {
 	bin := t.TempDir()
 	site := model.Site{

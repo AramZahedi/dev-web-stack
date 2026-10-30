@@ -332,8 +332,114 @@ func exactNodeVersion(version string) string {
 	return version
 }
 
+// WSLEnvFile is a private environment file for one WSL invocation. Path is the
+// native temp path; WSLPath is the path the WSL shell sources.
+type WSLEnvFile struct {
+	Path    string
+	WSLPath string
+	cleanup func()
+}
+
+// Cleanup removes the private env file. It is safe to call after the WSL shell
+// has already removed it.
+func (f *WSLEnvFile) Cleanup() {
+	if f != nil && f.cleanup != nil {
+		f.cleanup()
+	}
+}
+
+// NewWSLEnvFile writes env to a 0600 temporary file and returns both its native
+// and WSL paths. Callers must Cleanup the file after the WSL process exits; the
+// generated script also removes it after sourcing.
+func NewWSLEnvFile(env map[string]string) (*WSLEnvFile, error) {
+	keys := make([]string, 0, len(env))
+	for key, value := range env {
+		if !envNamePattern.MatchString(key) || strings.ContainsRune(value, 0) {
+			return nil, fmt.Errorf("tooling: invalid WSL environment entry %q", key)
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	file, err := os.CreateTemp("", "devstack-wsl-env-*.sh")
+	if err != nil {
+		return nil, fmt.Errorf("tooling: create WSL environment file: %w", err)
+	}
+	nativePath := file.Name()
+	cleanup := func() { _ = os.Remove(nativePath) }
+	if err := secureWSLEnvFile(nativePath); err != nil {
+		_ = file.Close()
+		cleanup()
+		return nil, fmt.Errorf("tooling: secure WSL environment file: %w", err)
+	}
+	for _, key := range keys {
+		if _, err := fmt.Fprintf(file, "export %s=%s\n", key, posixQuote(env[key])); err != nil {
+			_ = file.Close()
+			cleanup()
+			return nil, fmt.Errorf("tooling: write WSL environment file: %w", err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("tooling: close WSL environment file: %w", err)
+	}
+	wslPath, err := windowsPathToWSLPath(nativePath)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	return &WSLEnvFile{Path: nativePath, WSLPath: wslPath, cleanup: cleanup}, nil
+}
+
+// BuildWSLExecArgsWithEnvFile builds wsl.exe arguments that source a private
+// env file inside WSL. The file path is the only environment-related value in
+// argv; the script removes the file after sourcing and on exit before exec.
+func BuildWSLExecArgsWithEnvFile(distro, backendPath, envFile string, argv []string, interactive bool) ([]string, error) {
+	if !wslDistroPattern.MatchString(strings.TrimSpace(distro)) {
+		return nil, fmt.Errorf("tooling: invalid WSL distro name %q", distro)
+	}
+	if !strings.HasPrefix(backendPath, "/") || strings.HasPrefix(backendPath, "//") || hasParentSegment(backendPath) || strings.ContainsAny(backendPath, "\x00\r\n") {
+		return nil, fmt.Errorf("tooling: invalid WSL project path %q", backendPath)
+	}
+	if !interactive && len(argv) == 0 {
+		return nil, errors.New("tooling: WSL exec requires a command")
+	}
+	if !strings.HasPrefix(envFile, "/") || strings.HasPrefix(envFile, "//") || hasParentSegment(envFile) || strings.ContainsAny(envFile, "\x00\r\n") {
+		return nil, fmt.Errorf("tooling: invalid WSL environment file path %q", envFile)
+	}
+	quotedFile := posixQuote(envFile)
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	script.WriteString("trap ")
+	script.WriteString(posixQuote("rm -f -- " + quotedFile))
+	script.WriteString(" EXIT\n")
+	script.WriteString(". ")
+	script.WriteString(quotedFile)
+	script.WriteString("\nrm -f -- ")
+	script.WriteString(quotedFile)
+	script.WriteString("\ntrap - EXIT\ncd -- ")
+	script.WriteString(posixQuote(backendPath))
+	script.WriteString("\nexec ")
+	if interactive {
+		script.WriteString(`"${SHELL:-/bin/bash}" -i`)
+	} else {
+		for i, arg := range argv {
+			if strings.ContainsRune(arg, 0) {
+				return nil, errors.New("tooling: WSL command argument contains NUL")
+			}
+			if i > 0 {
+				script.WriteByte(' ')
+			}
+			script.WriteString(posixQuote(arg))
+		}
+	}
+	return []string{"-d", distro, "--", "bash", "-lc", script.String()}, nil
+}
+
 // BuildWSLExecArgs returns arguments for wsl.exe to launch a command in the
 // selected distro with a validated working directory and shell-quoted env.
+// Secret-bearing DB entries must use NewWSLEnvFile instead so they never enter
+// argv.
 func BuildWSLExecArgs(distro, backendPath string, env map[string]string, argv []string, interactive bool) ([]string, error) {
 	if !wslDistroPattern.MatchString(strings.TrimSpace(distro)) {
 		return nil, fmt.Errorf("tooling: invalid WSL distro name %q", distro)
@@ -349,6 +455,9 @@ func BuildWSLExecArgs(distro, backendPath string, env map[string]string, argv []
 	script.WriteString(posixQuote(backendPath))
 	keys := make([]string, 0, len(env))
 	for key, value := range env {
+		if isSecretWSLEnvKey(key) {
+			return nil, fmt.Errorf("tooling: secret environment entry %q requires the env-file transport", key)
+		}
 		if !envNamePattern.MatchString(key) || strings.ContainsRune(value, 0) {
 			return nil, fmt.Errorf("tooling: invalid WSL environment entry %q", key)
 		}
@@ -376,6 +485,14 @@ func BuildWSLExecArgs(distro, backendPath string, env map[string]string, argv []
 		}
 	}
 	return []string{"-d", distro, "--", "bash", "-lc", script.String()}, nil
+}
+
+func isSecretWSLEnvKey(key string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(key))
+	if upper == "DB_PASSWORD" || upper == "DATABASE_URL" {
+		return true
+	}
+	return strings.HasPrefix(upper, "DB_") && (strings.HasSuffix(upper, "_PASSWORD") || strings.HasSuffix(upper, "_URL"))
 }
 
 func posixQuote(value string) string {

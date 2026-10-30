@@ -26,6 +26,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/daemon"
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/ipc"
@@ -195,6 +196,7 @@ func (c *Client) AddSite(ctx context.Context, req sites.CreateRequest) (model.Si
 		ApacheAllowOverride: req.ApacheAllowOverride,
 		SPAFallbackFile:     req.SPAFallbackFile,
 		Build:               req.Build,
+		Database:            req.Database,
 	}
 	var site model.Site
 	err := c.doJSON(ctx, http.MethodPost, "/api/v1/sites", payload, &site)
@@ -718,6 +720,31 @@ func (c *Client) doStream(ctx context.Context, method, path string) (io.ReadClos
 	return resp.Body, nil
 }
 
+// doRaw sends a request with an explicit body and content type. It is used for
+// streaming downloads and multipart imports, so it does not impose the generic
+// JSON timeout.
+func (c *Client) doRaw(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("client: build %s request: %w", path, err)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("client: %s %s: %w", method, path, err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		defer func() { _ = resp.Body.Close() }()
+		return nil, decodeError(resp)
+	}
+	return resp, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in any) (*http.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -771,29 +798,30 @@ func decodeError(resp *http.Response) error {
 }
 
 type createSitePayload struct {
-	Name                string              `json:"name"`
-	Path                string              `json:"path"`
-	Kind                string              `json:"kind"`
-	SourceMode          string              `json:"source_mode,omitempty"`
-	NodeVersion         string              `json:"node_version,omitempty"`
-	Command             string              `json:"command,omitempty"`
-	DocumentRoot        string              `json:"document_root,omitempty"`
-	WWW                 bool                `json:"www"`
-	TLS                 bool                `json:"tls"`
-	ForceHTTPS          bool                `json:"force_https"`
-	SPAFallback         bool                `json:"spa_fallback"`
-	SPAFallbackFile     string              `json:"spa_fallback_file,omitempty"`
-	Env                 map[string]string   `json:"env,omitempty"`
-	PHPVersion          string              `json:"php_version,omitempty"`
-	PHPBuild            string              `json:"php_build,omitempty"`
-	PHPExtensions       map[string]bool     `json:"php_extensions,omitempty"`
-	PHPIni              map[string]string   `json:"php_ini,omitempty"`
-	PHPIniRaw           string              `json:"php_ini_raw,omitempty"`
-	FrontController     bool                `json:"front_controller"`
-	FrontControllerFile string              `json:"front_controller_file,omitempty"`
-	FrontControllerMode string              `json:"front_controller_mode,omitempty"`
-	ApacheAllowOverride string              `json:"apache_allow_override,omitempty"`
-	Build               *model.BuildProfile `json:"build,omitempty"`
+	Name                string                         `json:"name"`
+	Path                string                         `json:"path"`
+	Kind                string                         `json:"kind"`
+	SourceMode          string                         `json:"source_mode,omitempty"`
+	NodeVersion         string                         `json:"node_version,omitempty"`
+	Command             string                         `json:"command,omitempty"`
+	DocumentRoot        string                         `json:"document_root,omitempty"`
+	WWW                 bool                           `json:"www"`
+	TLS                 bool                           `json:"tls"`
+	ForceHTTPS          bool                           `json:"force_https"`
+	SPAFallback         bool                           `json:"spa_fallback"`
+	SPAFallbackFile     string                         `json:"spa_fallback_file,omitempty"`
+	Env                 map[string]string              `json:"env,omitempty"`
+	PHPVersion          string                         `json:"php_version,omitempty"`
+	PHPBuild            string                         `json:"php_build,omitempty"`
+	PHPExtensions       map[string]bool                `json:"php_extensions,omitempty"`
+	PHPIni              map[string]string              `json:"php_ini,omitempty"`
+	PHPIniRaw           string                         `json:"php_ini_raw,omitempty"`
+	FrontController     bool                           `json:"front_controller"`
+	FrontControllerFile string                         `json:"front_controller_file,omitempty"`
+	FrontControllerMode string                         `json:"front_controller_mode,omitempty"`
+	ApacheAllowOverride string                         `json:"apache_allow_override,omitempty"`
+	Build               *model.BuildProfile            `json:"build,omitempty"`
+	Database            *databases.SiteDatabaseRequest `json:"database,omitempty"`
 }
 
 type updateSitePayload struct {

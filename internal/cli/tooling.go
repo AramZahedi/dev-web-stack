@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/AramZahedi/dev-web-stack/internal/client"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -31,6 +32,8 @@ var runWSL = func(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	command.Stderr = stderr
 	return exitStatus(command.Run())
 }
+
+var newWSLEnvFile = tooling.NewWSLEnvFile
 
 // ExitError carries the exact exit status of a shell or exec command.
 type ExitError struct {
@@ -281,8 +284,10 @@ func (a *App) newToolRemoveCmd() *cobra.Command {
 	}
 }
 
-// siteShellContext resolves a site and builds its project environment.
-func (a *App) siteShellContext(ctx context.Context, c Client, ref string) (model.Site, tooling.SiteEnvironment, string, error) {
+// siteShellContext resolves a site and builds its project environment. A
+// database environment that an older daemon cannot resolve is reported through
+// warn and does not block the base site environment.
+func (a *App) siteShellContext(ctx context.Context, c Client, ref string, warn io.Writer) (model.Site, tooling.SiteEnvironment, string, error) {
 	home, err := resolveHome(a.home)
 	if err != nil {
 		return model.Site{}, tooling.SiteEnvironment{}, "", err
@@ -295,36 +300,89 @@ func (a *App) siteShellContext(ctx context.Context, c Client, ref string) (model
 	if err != nil {
 		return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SITE_NOT_FOUND", "Run `devstack site list`, then pass `--site <name>`.")
 	}
+	var env tooling.SiteEnvironment
 	if runtime.GOOS == "windows" {
 		if !strings.HasPrefix(site.BackendPath, "/") {
 			return model.Site{}, tooling.SiteEnvironment{}, "", &Error{Code: "WSL_PATH_INVALID", Message: "site has no absolute WSL backend path", Remediation: "Recreate the site with a validated Windows or WSL source path."}
 		}
-		env := tooling.SiteEnvironment{Site: site, Values: tooling.WindowsSiteEnvironment(site)}
-		return site, env, home, nil
-	}
-	builds, err := c.Runtimes(ctx)
-	if err != nil {
-		return model.Site{}, tooling.SiteEnvironment{}, "", err
-	}
-	var info *sites.PHPInfo
-	if site.Kind == model.SitePHP {
-		value, err := c.PHPInfo(ctx, site.ID)
+		env = tooling.SiteEnvironment{Site: site, Values: tooling.WindowsSiteEnvironment(site)}
+	} else {
+		builds, err := c.Runtimes(ctx)
 		if err != nil {
 			return model.Site{}, tooling.SiteEnvironment{}, "", err
 		}
-		info = &value
+		var info *sites.PHPInfo
+		if site.Kind == model.SitePHP {
+			value, err := c.PHPInfo(ctx, site.ID)
+			if err != nil {
+				return model.Site{}, tooling.SiteEnvironment{}, "", err
+			}
+			info = &value
+		}
+		env, err = tooling.BuildSiteEnv(site, tooling.EnvDeps{
+			Paths:       config.NewPaths(home),
+			Builds:      builds,
+			PHPInfo:     info,
+			NodeDefault: tooling.NodeDefaultBuild(site, builds),
+			BasePATH:    os.Getenv("PATH"),
+		})
+		if err != nil {
+			return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SHELL_ENV_FAILED", "Fix the reported runtime or site configuration, then retry.")
+		}
 	}
-	env, err := tooling.BuildSiteEnv(site, tooling.EnvDeps{
-		Paths:       config.NewPaths(home),
-		Builds:      builds,
-		PHPInfo:     info,
-		NodeDefault: tooling.NodeDefaultBuild(site, builds),
-		BasePATH:    os.Getenv("PATH"),
-	})
-	if err != nil {
-		return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SHELL_ENV_FAILED", "Fix the reported runtime or site configuration, then retry.")
+	if err := mergeSiteDatabaseEnv(ctx, c, site, &env, warn); err != nil {
+		return model.Site{}, tooling.SiteEnvironment{}, "", err
 	}
 	return site, env, home, nil
+}
+
+// mergeSiteDatabaseEnv resolves the dynamic DB_*/DATABASE_URL values and
+// merges them after the site environment so link values win. The values are
+// never printed or logged by this function.
+func mergeSiteDatabaseEnv(ctx context.Context, c Client, site model.Site, env *tooling.SiteEnvironment, warn io.Writer) error {
+	ref := site.ID
+	if strings.TrimSpace(ref) == "" {
+		ref = site.Name
+	}
+	if strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	dbEnv, err := c.SiteDatabaseEnv(ctx, ref)
+	if err != nil {
+		if code, ok := degradedDatabaseEnvCode(err); ok {
+			if warn != nil {
+				fmt.Fprintf(warn, "Warning: database environment is unavailable (%s); continuing without database variables.\n", code)
+			}
+			return nil
+		}
+		return err
+	}
+	if len(dbEnv) == 0 {
+		return nil
+	}
+	if env.Values == nil {
+		env.Values = map[string]string{}
+	}
+	for key, value := range dbEnv {
+		env.Values[key] = value
+	}
+	return nil
+}
+
+// degradedDatabaseEnvCode reports database-env failures that should not block
+// shell/exec/shell-init: an older daemon without the route, a metadata-only
+// link with no password, or a stopped service.
+func degradedDatabaseEnvCode(err error) (string, bool) {
+	var apiErr *client.Error
+	if !errors.As(err, &apiErr) {
+		return "", false
+	}
+	switch apiErr.Code {
+	case "NOT_FOUND", "DATABASE_NOT_FOUND", "DATABASE_PASSWORD_MISSING", "DATABASE_SERVICE_INACTIVE":
+		return apiErr.Code, true
+	default:
+		return "", false
+	}
 }
 
 // newShellCmd starts an interactive project shell as the installing user.
@@ -343,7 +401,7 @@ func (a *App) newShellCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, env, home, err := a.siteShellContext(ctx, c, site)
+			_, env, home, err := a.siteShellContext(ctx, c, site, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -394,7 +452,7 @@ func (a *App) newExecCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, env, home, err := a.siteShellContext(ctx, c, site)
+			_, env, home, err := a.siteShellContext(ctx, c, site, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -423,7 +481,19 @@ func (a *App) newExecCmd() *cobra.Command {
 }
 
 func execWSLSite(ctx context.Context, distro string, site model.Site, env map[string]string, argv []string, interactive bool, stdin io.Reader, stdout, stderr io.Writer) error {
-	args, err := tooling.BuildWSLExecArgs(distro, site.BackendPath, env, argv, interactive)
+	if len(env) == 0 {
+		args, err := tooling.BuildWSLExecArgs(distro, site.BackendPath, nil, argv, interactive)
+		if err != nil {
+			return wrapError(err, "WSL_SITE_ENV_FAILED", "Check the site's backend path and runtime environment, then retry.")
+		}
+		return runWSL(ctx, args, stdin, stdout, stderr)
+	}
+	envFile, err := newWSLEnvFile(env)
+	if err != nil {
+		return wrapError(err, "WSL_SITE_ENV_FAILED", "Check the site's backend path and runtime environment, then retry.")
+	}
+	defer envFile.Cleanup()
+	args, err := tooling.BuildWSLExecArgsWithEnvFile(distro, site.BackendPath, envFile.WSLPath, argv, interactive)
 	if err != nil {
 		return wrapError(err, "WSL_SITE_ENV_FAILED", "Check the site's backend path and runtime environment, then retry.")
 	}
@@ -443,7 +513,7 @@ func (a *App) newShellInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, env, _, err := a.siteShellContext(ctx, c, site)
+			_, env, _, err := a.siteShellContext(ctx, c, site, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
