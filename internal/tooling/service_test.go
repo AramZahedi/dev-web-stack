@@ -83,6 +83,9 @@ func newToolService(t *testing.T) (*Service, *store.Store, config.Paths, model.R
 		Store:  st,
 		Paths:  paths,
 		Helper: helper,
+		ProvisionComposer: func(context.Context, string, composerSource, string) error {
+			return nil
+		},
 	})
 	return svc, st, paths, phpBuild, helper
 }

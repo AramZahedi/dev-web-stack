@@ -35,6 +35,9 @@ type Deps struct {
 	Helper         Helper
 	HTTPClient     *http.Client
 	ComposerSource *composerSource
+	// ProvisionComposer is the WSL deployment seam. Tests inject a no-op so a
+	// temporary Composer fixture can never overwrite /data/devstack.
+	ProvisionComposer func(context.Context, string, composerSource, string) error
 }
 
 // Service owns the machine-wide PHP CLI default, global ini, Composer PHAR,
@@ -134,10 +137,10 @@ func (s *Service) SetPHPDefault(ctx context.Context, value string, force bool) (
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
 		return PHPDefaultStatus{}, err
 	}
-	if err := s.ensureWindowsToolShims(); err != nil {
+	if err := s.helperInstall(ctx, helperproto.ToolPHPDefault, force); err != nil {
 		return PHPDefaultStatus{}, err
 	}
-	if err := s.helperInstall(ctx, helperproto.ToolPHPDefault, force); err != nil {
+	if err := s.ensureWindowsToolShims(build); err != nil {
 		return PHPDefaultStatus{}, err
 	}
 	if err := s.deps.Store.SetSetting(ctx, DefaultPHPSettingKey, value); err != nil {
@@ -184,10 +187,10 @@ func (s *Service) ClearPHPDefault(ctx context.Context) (PHPDefaultStatus, error)
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
 		return PHPDefaultStatus{}, err
 	}
-	if err := s.ensureWindowsToolShims(); err != nil {
+	if err := s.helperInstall(ctx, helperproto.ToolPHPDefault, false); err != nil {
 		return PHPDefaultStatus{}, err
 	}
-	if err := s.helperInstall(ctx, helperproto.ToolPHPDefault, false); err != nil {
+	if err := s.ensureWindowsToolShims(build); err != nil {
 		return PHPDefaultStatus{}, err
 	}
 	if err := s.deps.Store.DeleteSetting(ctx, DefaultPHPSettingKey); err != nil {
@@ -260,6 +263,10 @@ func (s *Service) InstallTool(ctx context.Context, id string, force bool) (helpe
 		if err := s.ensureGlobalPHP(ctx); err != nil {
 			return helperproto.ToolStatus{}, err
 		}
+		phpBuild, err := ResolveDefault(ctx, s.deps.Store)
+		if err != nil {
+			return helperproto.ToolStatus{}, err
+		}
 		source := defaultComposerSource()
 		if s.deps.ComposerSource != nil {
 			source = *s.deps.ComposerSource
@@ -267,13 +274,21 @@ func (s *Service) InstallTool(ctx context.Context, id string, force bool) (helpe
 		if _, err := installComposer(ctx, s.deps.HTTPClient, s.deps.Paths, source); err != nil {
 			return helperproto.ToolStatus{}, err
 		}
-		if err := s.ensureWindowsToolShims(); err != nil {
+		if runtime.GOOS == "windows" {
+			provision := s.deps.ProvisionComposer
+			if provision == nil {
+				provision = ProvisionWSLComposer
+			}
+			_ = provision(ctx, s.deps.WSLDistro, source, ComposerPHARPath(s.deps.Paths))
+		}
+		status, err := s.helperInstallStatus(ctx, id, force)
+		if err != nil {
 			return helperproto.ToolStatus{}, err
 		}
-		if runtime.GOOS == "windows" {
-			_ = ProvisionWSLComposer(ctx, s.deps.WSLDistro, source, ComposerPHARPath(s.deps.Paths))
+		if err := s.ensureWindowsToolShims(phpBuild); err != nil {
+			return helperproto.ToolStatus{}, err
 		}
-		return s.helperInstallStatus(ctx, id, force)
+		return status, nil
 	default:
 		return helperproto.ToolStatus{}, fmt.Errorf("%w: %q", ErrUnsupportedTool, id)
 	}
@@ -295,10 +310,14 @@ func (s *Service) setPHPDefaultLocked(ctx context.Context, _ bool, force bool) (
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
 		return helperproto.ToolStatus{}, err
 	}
-	if err := s.ensureWindowsToolShims(); err != nil {
+	status, err := s.helperInstallStatus(ctx, helperproto.ToolPHPDefault, force)
+	if err != nil {
 		return helperproto.ToolStatus{}, err
 	}
-	return s.helperInstallStatus(ctx, helperproto.ToolPHPDefault, force)
+	if err := s.ensureWindowsToolShims(build); err != nil {
+		return helperproto.ToolStatus{}, err
+	}
+	return status, nil
 }
 
 // RemoveTool removes a managed system link and its managed artifacts.
@@ -346,14 +365,19 @@ func (s *Service) ensureGlobalPHP(ctx context.Context) error {
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
 		return err
 	}
-	return s.ensureWindowsToolShims()
+	return s.ensureWindowsToolShims(build)
 }
 
-func (s *Service) ensureWindowsToolShims() error {
+func (s *Service) ensureWindowsToolShims(build model.RuntimeBuild) error {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	return EnsureGlobalWindowsToolShims(s.deps.Paths.Home, s.deps.WSLDistro)
+	if !strings.HasPrefix(strings.TrimSpace(build.Path), "/") {
+		// Local test/development builds are not WSL paths; keep the legacy
+		// ambient wrapper instead of emitting an unusable absolute path.
+		return EnsureGlobalWindowsToolShims(s.deps.Paths.Home, s.deps.WSLDistro)
+	}
+	return EnsureGlobalWindowsToolShimsForBuild(s.deps.Paths.Home, s.deps.WSLDistro, build.Path)
 }
 
 // preflight rejects a foreign system wrapper before any artifact is written.

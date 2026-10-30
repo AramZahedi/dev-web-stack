@@ -585,17 +585,21 @@ func (s *Service) isPortResponding(port int) bool {
 	// A wildcard bind probe cannot tell which address owns a port, and some
 	// listeners (for example a dual-stack or IPv6-only service) are invisible
 	// to a dial of 127.0.0.1. Check both loopback families.
-	addrs := []string{
-		net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
-		net.JoinHostPort("::1", strconv.Itoa(port)),
+	probes := []struct {
+		network string
+		addr    string
+	}{
+		{"tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))},
+		{"tcp6", net.JoinHostPort("::1", strconv.Itoa(port))},
 	}
-	for _, addr := range addrs {
-		conn, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
+	for _, probe := range probes {
+		conn, err := net.DialTimeout(probe.network, probe.addr, 150*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
 			return true
 		}
 	}
+	addrs := []string{probes[0].addr, probes[1].addr}
 	client := &http.Client{
 		Timeout: 200 * time.Millisecond,
 		Transport: &http.Transport{

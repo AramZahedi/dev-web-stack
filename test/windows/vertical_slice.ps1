@@ -26,6 +26,17 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$installDir = if ($env:DEVSTACK_HOME) {
+    [IO.Path]::GetFullPath($env:DEVSTACK_HOME)
+} elseif (Test-Path "C:\devstack\bin") {
+    "C:\devstack"
+} else {
+    Join-Path $env:USERPROFILE ".devstack"
+}
+$env:DEVSTACK_HOME = $installDir
+if (Test-Path (Join-Path $installDir "bin")) {
+    $env:PATH = "$(Join-Path $installDir 'bin');$env:PATH"
+}
 if (Test-Path "C:\devstack\bin") {
     $env:PATH = "C:\devstack\bin;$env:PATH"
 }
@@ -110,10 +121,9 @@ Require ($null -ne $helper -and $helper.Status -eq "Running") "DevstackHelper Wi
 $daemon = Invoke-Devstack @("daemon", "status", "--json") | ConvertFrom-Json
 Require ($daemon.running -eq $true -or $daemon.Running -eq $true) "devstack daemon is running"
 
-$installDir = "C:\devstack"
 if (Test-Path $installDir) {
-    $tokenPath = Join-Path $installDir "system\agent-token"
-    $pinPath = Join-Path $installDir "system\agent-pin"
+    $tokenPath = Join-Path $installDir "system\secrets\agent-token"
+    $pinPath = Join-Path $installDir "system\secrets\agent-pin"
     Require (Test-Path $tokenPath) "DPAPI-protected agent-token file exists"
     Require (Test-Path $pinPath) "DPAPI-protected agent-pin file exists"
 
@@ -241,15 +251,15 @@ foreach ($site in @($WinSite, $WslSite)) {
 $phpWslResult = (& wsl.exe -d devstack -- bash -lc "curl -fsS --max-time 20 https://$PhpSite.test/ | grep -q 'fpm-fcgi' && echo ok" 2>&1 | Out-String)
 Require ($phpWslResult -match "ok") "WSL curl https://$PhpSite.test/ succeeds and reports fpm-fcgi"
 
-$dashWslResult = (& wsl.exe -d devstack -- bash -lc "curl -fsS --max-time 20 https://devstack.test/ >/dev/null && echo ok" 2>&1 | Out-String)
-Require ($dashWslResult -match "ok") "WSL curl https://devstack.test/ succeeds"
+$dashWslResult = (& wsl.exe -d devstack -- bash -lc "curl -k -sS -o /dev/null -w '%{http_code}' --max-time 20 https://devstack.test/" 2>&1 | Out-String)
+Require ($dashWslResult -match "403") "WSL dashboard access is rejected by the loopback-only boundary (403)"
 
 # -----------------------------------------------------------------------------
 # 6. Tooling Shims & CLI Parity
 # -----------------------------------------------------------------------------
 Step "Checking Windows .cmd tooling shims"
 
-$phpShim = "C:\devstack\bin\php.cmd"
+$phpShim = Join-Path $installDir "bin\php.cmd"
 Require (Test-Path $phpShim) "php.cmd shim exists at $phpShim"
 $phpShimOut = & "$phpShim" -v 2>&1 | Out-String
 Require ($phpShimOut -match "PHP 8\.") "php.cmd -v reports active PHP version"
@@ -264,7 +274,7 @@ try {
     Remove-Item -Path $tempPhpScript -Force -ErrorAction SilentlyContinue
 }
 
-$composerShim = "C:\devstack\bin\composer.cmd"
+$composerShim = Join-Path $installDir "bin\composer.cmd"
 Require (Test-Path $composerShim) "composer.cmd shim exists at $composerShim"
 $composerShimOut = & "$composerShim" --version 2>&1 | Out-String
 Require ($composerShimOut -match "Composer version [0-9]") "composer.cmd --version reports Composer version"

@@ -96,6 +96,57 @@ func TestEnsureGlobalWindowsToolShimsUsesConfiguredDistro(t *testing.T) {
 	}
 }
 
+func TestEnsureGlobalWindowsToolShimsUsesExactPHPBuild(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "tools", "php-default"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "tools", "php-default", "VERSION"), []byte("php@8.4.27-r1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureGlobalWindowsToolShims(home, "devstack"); err != nil {
+		t.Fatal(err)
+	}
+	phpShim, err := os.ReadFile(filepath.Join(home, "bin", "php.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(phpShim), "/data/devstack/runtimes/php@8.4.27-r1/bin/php") {
+		t.Fatalf("php.cmd did not pin the exact build: %s", phpShim)
+	}
+	composerShim, err := os.ReadFile(filepath.Join(home, "bin", "composer.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(composerShim), "/data/devstack/runtimes/php@8.4.27-r1/bin/php") ||
+		!strings.Contains(string(composerShim), "/data/devstack/tools/composer/composer.phar") {
+		t.Fatalf("composer.cmd did not pin the exact PHP build: %s", composerShim)
+	}
+}
+
+func TestEnsureGlobalWindowsToolShimsForBuildPinsExactPath(t *testing.T) {
+	home := t.TempDir()
+	buildPath := "/data/devstack/runtimes/php@8.4.27-r1"
+	if err := EnsureGlobalWindowsToolShimsForBuild(home, "devstack", buildPath); err != nil {
+		t.Fatal(err)
+	}
+	phpShim, err := os.ReadFile(filepath.Join(home, "bin", "php.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(phpShim), buildPath+"/bin/php") {
+		t.Fatalf("php.cmd did not use the supplied build path: %s", phpShim)
+	}
+	composerShim, err := os.ReadFile(filepath.Join(home, "bin", "composer.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(composerShim), buildPath+"/bin/php") ||
+		!strings.Contains(string(composerShim), "/data/devstack/tools/composer/composer.phar") {
+		t.Fatalf("composer.cmd did not use the supplied build: %s", composerShim)
+	}
+}
+
 func TestEnsureWindowsToolShimsRejectsUnsafeDistroName(t *testing.T) {
 	if err := EnsureWindowsToolShims(t.TempDir(), `devstack & whoami`); err == nil {
 		t.Fatal("unsafe distro name was accepted")

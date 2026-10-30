@@ -370,6 +370,11 @@ func TestIsPortRespondingChecksIPv6Loopback(t *testing.T) {
 	}
 	defer func() { _ = listener.Close() }()
 	port := listener.Addr().(*net.TCPAddr).Port
+	probe, err := net.DialTimeout("tcp6", listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Skipf("IPv6 loopback dial unavailable: %v", err)
+	}
+	_ = probe.Close()
 	svc := &Service{}
 	if !svc.isPortResponding(port) {
 		t.Fatalf("IPv6-only listener on port %d was reported as free", port)

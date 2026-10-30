@@ -13,6 +13,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
 )
@@ -116,6 +117,13 @@ func EnsureWindowsSiteShims(binDir, distro string, site model.Site) error {
 // EnsureGlobalWindowsToolShims installs wrappers in the public Windows bin
 // directory using the persisted distro or the managed-distro default.
 func EnsureGlobalWindowsToolShims(home, distro string) error {
+	return EnsureGlobalWindowsToolShimsForBuild(home, distro, "")
+}
+
+// EnsureGlobalWindowsToolShimsForBuild is the preferred form: it pins the
+// Windows php.cmd and composer.cmd wrappers to the resolved PHP build instead
+// of whatever `php` happens to be first in the WSL PATH.
+func EnsureGlobalWindowsToolShimsForBuild(home, distro, phpBuildPath string) error {
 	if strings.TrimSpace(home) == "" {
 		return errors.New("tooling: devstack home is empty")
 	}
@@ -126,7 +134,74 @@ func EnsureGlobalWindowsToolShims(home, distro string) error {
 			return err
 		}
 	}
-	return EnsureWindowsToolShims(filepath.Join(home, "bin"), distro)
+	binDir := filepath.Join(home, "bin")
+	if phpBuildPath = strings.TrimSpace(phpBuildPath); phpBuildPath != "" {
+		if !strings.HasPrefix(phpBuildPath, "/") {
+			return fmt.Errorf("tooling: PHP build path %q is not a WSL path", phpBuildPath)
+		}
+		root := strings.TrimRight(phpBuildPath, "/")
+		return ensureExactWindowsPHPShims(binDir, distro, root+"/bin/php", root+"/bin")
+	}
+	if phpBin, phpBinDir, ok := windowsPHPDefaultTarget(home); ok {
+		return ensureExactWindowsPHPShims(binDir, distro, phpBin, phpBinDir)
+	}
+	return EnsureWindowsToolShims(binDir, distro)
+}
+
+// windowsPHPDefaultTarget reads the registered PHP default and returns the
+// exact WSL binary and bin directory. The Windows shim must not depend on an
+// ambient WSL PATH, which can retain a symlink to a removed build.
+func windowsPHPDefaultTarget(home string) (bin, binDir string, ok bool) {
+	data, err := os.ReadFile(filepath.Join(home, "tools", "php-default", "VERSION"))
+	if err != nil {
+		return "", "", false
+	}
+	id := strings.TrimSpace(string(data))
+	parsed, err := catalog.ParseID(id)
+	if err != nil || parsed.Kind != "php" || id != catalog.FormatID("php", parsed.Version, parsed.Revision) {
+		return "", "", false
+	}
+	root := "/data/devstack/runtimes/" + id + "/bin"
+	return root + "/php", root, true
+}
+
+func ensureExactWindowsPHPShims(binDir, distro, phpBin, phpBinDir string) error {
+	if !wslDistroPattern.MatchString(strings.TrimSpace(distro)) {
+		return fmt.Errorf("tooling: invalid WSL distro name %q", distro)
+	}
+	if strings.TrimSpace(binDir) == "" {
+		return errors.New("tooling: Windows shim directory is empty")
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return fmt.Errorf("tooling: create Windows shim directory: %w", err)
+	}
+	const argTranslate = `args=(); for a in \"$@\"; do a_norm=\"${a//\\//}\"; if [[ \"$a_norm\" =~ ^([a-zA-Z]):/(.*) ]]; then drive=\"${BASH_REMATCH[1],,}\"; rest=\"${BASH_REMATCH[2]}\"; args+=(\"/mnt/$drive/$rest\"); elif [[ \"$a_norm\" =~ ^([a-zA-Z0-9_.-]+)=([a-zA-Z]):/(.*) ]]; then opt=\"${BASH_REMATCH[1]}\"; drive=\"${BASH_REMATCH[2],,}\"; rest=\"${BASH_REMATCH[3]}\"; args+=(\"$opt=/mnt/$drive/$rest\"); elif [[ \"$a_norm\" =~ ^//wsl(\.localhost|\$)/[^/]+/?(.*) ]]; then rest=\"${BASH_REMATCH[2]}\"; if [[ -z \"$rest\" ]]; then args+=(\"/\"); else args+=(\"/$rest\"); fi; elif [[ \"$a_norm\" =~ ^([a-zA-Z0-9_.-]+)=//wsl(\.localhost|\$)/[^/]+/?(.*) ]]; then opt=\"${BASH_REMATCH[1]}\"; rest=\"${BASH_REMATCH[3]}\"; if [[ -z \"$rest\" ]]; then args+=(\"$opt=/\"); else args+=(\"$opt=/$rest\"); fi; elif [[ \"$a_norm\" =~ ^/[uU]sers/(.*) ]]; then rest=\"${BASH_REMATCH[1]}\"; args+=(\"/mnt/c/Users/$rest\"); else args+=(\"$a\"); fi; done;`
+	phpExec := strings.ReplaceAll("export PATH="+posixQuote(phpBinDir)+":\"$PATH\" && exec "+posixQuote(phpBin)+" \"${args[@]}\"", `"`, `\"`)
+	extDir := strings.TrimSuffix(phpBinDir, "/bin") + "/lib/php/extensions"
+	composerExec := strings.ReplaceAll("exec "+posixQuote(phpBin)+
+		" -d extension_dir="+posixQuote(extDir)+
+		" -d extension=phar.so -d extension=mbstring.so -d extension=openssl.so -d extension=curl.so "+
+		posixQuote("/data/devstack/tools/composer/composer.phar")+" \"${args[@]}\"", `"`, `\"`)
+	shims := map[string]string{
+		"php.cmd":      fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s --exec bash -c \"%s %s\" _ %%*\r\n", distro, argTranslate, phpExec),
+		"composer.cmd": fmt.Sprintf("@echo off\r\nsetlocal DisableDelayedExpansion\r\nwsl.exe -d %s --exec bash -c \"%s %s\" _ %%*\r\n", distro, argTranslate, composerExec),
+	}
+	for tool, content := range shims {
+		path := filepath.Join(binDir, tool)
+		temporary := path + ".tmp"
+		if err := os.WriteFile(temporary, []byte(content), 0o600); err != nil {
+			return fmt.Errorf("tooling: write %s: %w", temporary, err)
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			_ = os.Remove(temporary)
+			return fmt.Errorf("tooling: replace %s: %w", path, err)
+		}
+		if err := os.Rename(temporary, path); err != nil {
+			_ = os.Remove(temporary)
+			return fmt.Errorf("tooling: install %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 // ReadWSLDistro reads only the persisted distro name and never creates or
