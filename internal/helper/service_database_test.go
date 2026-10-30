@@ -417,6 +417,31 @@ func TestHelperUsesItsOwnComposeProject(t *testing.T) {
 	}
 }
 
+func TestLimitedBufferCapsOutput(t *testing.T) {
+	var buffer limitedBuffer
+	buffer.limit = 1024
+	if _, err := buffer.Write(bytes.Repeat([]byte("x"), 10000)); err != nil {
+		t.Fatal(err)
+	}
+	text := buffer.String()
+	if len(text) > 1024+len("\n[output truncated]") {
+		t.Fatalf("limited buffer retained %d bytes", len(text))
+	}
+	if !strings.Contains(text, "output truncated") {
+		t.Fatalf("truncation marker missing: %q", text)
+	}
+}
+
+func TestRunInputStreamCapsErrorOutput(t *testing.T) {
+	err := (execRunner{}).RunInputStream(context.Background(), strings.NewReader(""), "sh", "-c", `yes err | head -c 200000 >&2; exit 1`)
+	if err == nil {
+		t.Fatal("RunInputStream succeeded, want exit error")
+	}
+	if len(err.Error()) > 70<<10 {
+		t.Fatalf("error output was not capped: %d bytes", len(err.Error()))
+	}
+}
+
 func TestHelperUsesDefaultRegistryFallback(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	c.databaseRegistry = nil

@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -22,14 +24,35 @@ import (
 type fakeDatabasePlatform struct {
 	databases.Platform
 
-	mu        sync.Mutex
-	listErr   error
-	createErr error
-	jobErr    error
-	databases []model.Database
-	created   databases.CreateDatabaseRequest
-	env       map[string]string
+	mu             sync.Mutex
+	listErr        error
+	createErr      error
+	jobErr         error
+	databases      []model.Database
+	created        databases.CreateDatabaseRequest
+	env            map[string]string
+	exportReader   io.ReadCloser
+	downloadReader io.ReadCloser
 }
+
+func (f *fakeDatabasePlatform) ExportDatabase(ctx context.Context, serviceID, database string) (io.ReadCloser, error) {
+	if f.exportReader != nil {
+		return f.exportReader, nil
+	}
+	return io.NopCloser(strings.NewReader("dump")), nil
+}
+
+func (f *fakeDatabasePlatform) DownloadBackup(ctx context.Context, serviceID, backupID string) (io.ReadCloser, error) {
+	if f.downloadReader != nil {
+		return f.downloadReader, nil
+	}
+	return io.NopCloser(strings.NewReader("backup")), nil
+}
+
+type failingReadCloser struct{}
+
+func (failingReadCloser) Read([]byte) (int, error) { return 0, errors.New("stream failed") }
+func (failingReadCloser) Close() error             { return nil }
 
 func (f *fakeDatabasePlatform) ListDatabases(ctx context.Context, serviceID string) ([]model.Database, error) {
 	if f.listErr != nil {
@@ -142,6 +165,36 @@ func TestServiceDatabaseErrorMapping(t *testing.T) {
 		_, err := client.ListDatabases(context.Background(), "../escape")
 		if !errors.Is(err, helperproto.ErrInvalidRequest) {
 			t.Fatalf("err=%v", err)
+		}
+	})
+}
+
+func TestServiceDatabaseStreamErrorBeforeHeaders(t *testing.T) {
+	t.Run("export", func(t *testing.T) {
+		platform := &fakeDatabasePlatform{exportReader: failingReadCloser{}}
+		client := databaseRPCServer(t, platform)
+		body, err := client.ExportDatabase(context.Background(), "mysql", "app")
+		if err == nil {
+			_ = body.Close()
+			t.Fatal("export stream failure was reported as success")
+		}
+		var helperErr *helperclient.Error
+		if !errors.As(err, &helperErr) || helperErr.Status != http.StatusInternalServerError {
+			t.Fatalf("helper error = %+v", helperErr)
+		}
+	})
+
+	t.Run("download", func(t *testing.T) {
+		platform := &fakeDatabasePlatform{downloadReader: failingReadCloser{}}
+		client := databaseRPCServer(t, platform)
+		body, err := client.DownloadBackup(context.Background(), "mysql", "app--b.sql.gz")
+		if err == nil {
+			_ = body.Close()
+			t.Fatal("download stream failure was reported as success")
+		}
+		var helperErr *helperclient.Error
+		if !errors.As(err, &helperErr) || helperErr.Status != http.StatusInternalServerError {
+			t.Fatalf("helper error = %+v", helperErr)
 		}
 	})
 }

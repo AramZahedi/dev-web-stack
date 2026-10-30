@@ -836,7 +836,7 @@ func (execRunner) RunStream(ctx context.Context, name string, args ...string) (i
 	if err != nil {
 		return nil, err
 	}
-	stream := &commandStream{cmd: cmd, stdout: stdout, stderr: &bytes.Buffer{}}
+	stream := &commandStream{cmd: cmd, stdout: stdout, stderr: &limitedBuffer{limit: maxCommandOutput}}
 	cmd.Stderr = stream.stderr
 	cmd.WaitDelay = 3 * time.Second
 	if err := cmd.Start(); err != nil {
@@ -852,12 +852,12 @@ func (execRunner) RunStream(ctx context.Context, name string, args ...string) (i
 func (execRunner) RunInputStream(ctx context.Context, input io.Reader, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = input
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	stderr := &limitedBuffer{limit: maxCommandOutput}
+	cmd.Stdout = io.Discard
+	cmd.Stderr = stderr
 	cmd.WaitDelay = 3 * time.Second
 	if err := cmd.Run(); err != nil {
-		message := strings.TrimSpace(output.String())
+		message := strings.TrimSpace(stderr.String())
 		if message != "" {
 			return fmt.Errorf("%s: %w: %s", cmd.Path, err, message)
 		}
@@ -866,10 +866,46 @@ func (execRunner) RunInputStream(ctx context.Context, input io.Reader, name stri
 	return nil
 }
 
+const maxCommandOutput = 64 << 10
+
+// limitedBuffer retains at most limit bytes and records truncation. Writers
+// always report the full input length so a child process is never blocked by
+// retained-output limits.
+type limitedBuffer struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		b.limit = maxCommandOutput
+	}
+	original := len(p)
+	remaining := b.limit - b.buffer.Len()
+	if remaining <= 0 {
+		b.truncated = true
+		return original, nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+		b.truncated = true
+	}
+	_, _ = b.buffer.Write(p)
+	return original, nil
+}
+
+func (b *limitedBuffer) String() string {
+	if b.truncated {
+		return b.buffer.String() + "\n[output truncated]"
+	}
+	return b.buffer.String()
+}
+
 type commandStream struct {
 	cmd     *exec.Cmd
 	stdout  io.ReadCloser
-	stderr  *bytes.Buffer
+	stderr  *limitedBuffer
 	once    sync.Once
 	waitErr error
 }

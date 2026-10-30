@@ -3,6 +3,7 @@
 package helper
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -618,12 +619,7 @@ func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = body.Close() }()
-	w.Header().Set("Content-Type", "application/gzip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(backupID)))
-	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, body); err != nil {
-		s.logger.Debug("helper: stream backup download", "error", err)
-	}
+	s.writeStream(w, "application/gzip", fmt.Sprintf("attachment; filename=%q", path.Base(backupID)), body)
 }
 
 func (s *Server) handleBackupDelete(w http.ResponseWriter, r *http.Request) {
@@ -750,11 +746,38 @@ func (s *Server) handleDatabaseExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = body.Close() }()
-	w.Header().Set("Content-Type", "application/sql")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name+".sql"))
+	s.writeStream(w, "application/sql", fmt.Sprintf("attachment; filename=%q", name+".sql"), body)
+}
+
+// writeStream validates the first chunk before committing a 200 response. A
+// stream that fails immediately becomes a normal error response; a late
+// failure can only be logged because headers are already sent.
+func (s *Server) writeStream(w http.ResponseWriter, contentType, disposition string, body io.ReadCloser) {
+	prefix := make([]byte, 32<<10)
+	n, err := body.Read(prefix)
+	if n == 0 && err != nil && !errors.Is(err, io.EOF) {
+		s.writeServiceError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	if disposition != "" {
+		w.Header().Set("Content-Disposition", disposition)
+	}
 	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, body); err != nil {
-		s.logger.Debug("helper: stream database export", "error", err)
+	if n > 0 {
+		if _, writeErr := w.Write(prefix[:n]); writeErr != nil {
+			s.logger.Debug("helper: write stream prefix", "error", writeErr)
+			return
+		}
+	}
+	if err == nil {
+		if _, copyErr := io.Copy(w, body); copyErr != nil {
+			s.logger.Debug("helper: stream response", "error", copyErr)
+		}
+		return
+	}
+	if !errors.Is(err, io.EOF) {
+		s.logger.Debug("helper: stream response", "error", err)
 	}
 }
 
