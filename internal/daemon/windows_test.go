@@ -33,6 +33,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
 func TestWindowsRunOpensSQLiteWritesLogAndCleansReadiness(t *testing.T) {
@@ -654,6 +655,62 @@ func TestWindowsHelperAdapterToolLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(binDir, "php.cmd")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("php.cmd still exists after remove")
+	}
+}
+
+func TestWindowsHelperAdapterUsesNodeBuildPathMetadata(t *testing.T) {
+	home := t.TempDir()
+	st, err := store.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	const (
+		legacyPath = "/data/devstack/runtimes/node@22.11.0"
+		modernPath = "/data/devstack/runtimes/node/22.11.0-linux-x64"
+	)
+	if err := st.UpsertRuntime(ctx, model.RuntimeBuild{
+		ID:          "node@22.11.0",
+		Kind:        "node",
+		Version:     "22.11.0",
+		Backend:     model.BackendWSL,
+		Path:        legacyPath,
+		InstalledAt: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	paths := config.NewPaths(home)
+	if err := os.MkdirAll(tooling.NodeDefaultToolDir(paths), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tooling.NodeDefaultVersionPath(paths), []byte("node@22.11.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tooling.NodeDefaultBuildPathPath(paths), []byte(modernPath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &helperAdapter{
+		home:      home,
+		nodeTools: newWindowsToolService(home, "devstack", st),
+	}
+	installed, err := adapter.ToolInstall(ctx, helperproto.ToolNodeDefault, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.Target != modernPath+"/bin/node" {
+		t.Fatalf("target = %q, want the BUILD_PATH target %q", installed.Target, modernPath+"/bin/node")
+	}
+	data, err := os.ReadFile(filepath.Join(home, "bin", "node.cmd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), modernPath+"/bin/node") {
+		t.Fatalf("node.cmd does not use the BUILD_PATH build:\n%s", data)
+	}
+	if strings.Contains(string(data), legacyPath+"/bin/node") {
+		t.Fatalf("node.cmd fell back to the legacy build:\n%s", data)
 	}
 }
 

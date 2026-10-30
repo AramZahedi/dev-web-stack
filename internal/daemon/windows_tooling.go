@@ -212,6 +212,17 @@ func windowsPosixQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
+// hasParentSegment rejects traversal before either a POSIX or host path is
+// cleaned, so ../ cannot be hidden inside an otherwise valid build path.
+func hasParentSegment(value string) bool {
+	for _, part := range strings.FieldsFunc(value, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *windowsToolService) resolveStatus(ctx context.Context) (*model.RuntimeBuild, error) {
 	if s.store == nil {
 		return nil, errors.New("daemon: no store configured")
@@ -223,10 +234,11 @@ func (s *windowsToolService) resolveStatus(ctx context.Context) (*model.RuntimeB
 	if err != nil {
 		return nil, fmt.Errorf("daemon: resolve the Node default: %w", err)
 	}
-	if err := validateWindowsNodeBuild(build); err != nil {
+	resolved, err := s.resolveBuildPath(build)
+	if err != nil {
 		return nil, err
 	}
-	return &build, nil
+	return &resolved, nil
 }
 
 func (s *windowsToolService) resolveInstall(ctx context.Context) (model.RuntimeBuild, error) {
@@ -237,10 +249,88 @@ func (s *windowsToolService) resolveInstall(ctx context.Context) (model.RuntimeB
 	if err != nil {
 		return model.RuntimeBuild{}, fmt.Errorf("daemon: resolve the Node default: %w", err)
 	}
-	if err := validateWindowsNodeBuild(build); err != nil {
+	return s.resolveBuildPath(build)
+}
+
+// resolveBuildPath prefers the BUILD_PATH metadata written by EnsureNodeShims.
+// Without it the legacy <runtimes>/node@<version> location is validated from
+// the store row. Metadata is never silently ignored: a present but invalid
+// BUILD_PATH is an error.
+func (s *windowsToolService) resolveBuildPath(build model.RuntimeBuild) (model.RuntimeBuild, error) {
+	paths := config.NewPaths(s.home)
+	recorded, present, err := tooling.ReadNodeDefaultBuildPath(paths)
+	if err != nil {
+		return model.RuntimeBuild{}, fmt.Errorf("daemon: read the Node default build path: %w", err)
+	}
+	if !present {
+		if err := validateWindowsNodeBuild(build); err != nil {
+			return model.RuntimeBuild{}, err
+		}
+		return build, nil
+	}
+	id, versionPresent, err := tooling.ReadNodeDefaultVersion(paths)
+	if err != nil {
+		return model.RuntimeBuild{}, fmt.Errorf("daemon: read the Node default version: %w", err)
+	}
+	if !versionPresent {
+		return model.RuntimeBuild{}, errors.New("daemon: node-default BUILD_PATH is present without VERSION")
+	}
+	if id != strings.TrimSpace(build.ID) {
+		return model.RuntimeBuild{}, fmt.Errorf("daemon: node-default VERSION %q does not match build %q", id, build.ID)
+	}
+	parsed, err := catalog.ParseID(id)
+	if err != nil || parsed.Kind != "node" || id != catalog.FormatID("node", parsed.Version, 0) {
+		return model.RuntimeBuild{}, fmt.Errorf("daemon: node-default VERSION %q is not an exact node@<version> id", id)
+	}
+	if kind := strings.TrimSpace(build.Kind); kind != "" && kind != "node" {
+		return model.RuntimeBuild{}, fmt.Errorf("daemon: build %q is not a Node build", id)
+	}
+	if version := strings.TrimSpace(build.Version); version != parsed.Version {
+		return model.RuntimeBuild{}, fmt.Errorf("daemon: Node default build %q has version %q, want %q", id, version, parsed.Version)
+	}
+	root, err := validateWindowsNodeBuildPath(paths, id, recorded)
+	if err != nil {
 		return model.RuntimeBuild{}, err
 	}
+	build.Path = root
 	return build, nil
+}
+
+// validateWindowsNodeBuildPath validates BUILD_PATH against the VERSION id.
+// Host-absolute paths (native tests and native installs) must stay below
+// <home>/runtimes with a Node layout and must not resolve through a symlink
+// escape. POSIX WSL paths cannot be resolved from the Windows host, so their
+// layout and version are validated lexically.
+func validateWindowsNodeBuildPath(paths config.Paths, id, recorded string) (string, error) {
+	if recorded == "" || strings.TrimSpace(recorded) != recorded || strings.ContainsAny(recorded, "\x00\r\n") || hasParentSegment(recorded) {
+		return "", fmt.Errorf("daemon: Node default build path %q is invalid", recorded)
+	}
+	if filepath.IsAbs(recorded) {
+		root := filepath.Clean(recorded)
+		rel, err := filepath.Rel(paths.Runtimes, root)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return "", fmt.Errorf("daemon: Node default build path %q is outside %s", recorded, paths.Runtimes)
+		}
+		if err := tooling.ValidateNodeDefaultBuildLayout(id, filepath.ToSlash(rel)); err != nil {
+			return "", fmt.Errorf("daemon: %w", err)
+		}
+		realRuntimes, err := filepath.EvalSymlinks(paths.Runtimes)
+		if err != nil {
+			return "", fmt.Errorf("daemon: resolve the runtimes directory: %w", err)
+		}
+		realRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return "", fmt.Errorf("daemon: resolve the Node default build path: %w", err)
+		}
+		if realRoot != filepath.Join(realRuntimes, rel) {
+			return "", fmt.Errorf("daemon: Node default build path %q escapes %s", recorded, paths.Runtimes)
+		}
+		return root, nil
+	}
+	if _, err := tooling.NodeDefaultBuildRelativePath(id, recorded); err != nil {
+		return "", fmt.Errorf("daemon: %w", err)
+	}
+	return recorded, nil
 }
 
 // validateWindowsNodeBuild accepts only an exact registered Node build whose

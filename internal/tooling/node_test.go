@@ -157,6 +157,13 @@ func TestEnsureNodeShimsWritesNodeNpmNpx(t *testing.T) {
 	if strings.TrimSpace(string(version)) != build.ID {
 		t.Fatalf("VERSION = %q, want %q", version, build.ID)
 	}
+	buildPath, err := os.ReadFile(NodeDefaultBuildPathPath(paths))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(buildPath)) != filepath.Clean(root) {
+		t.Fatalf("BUILD_PATH = %q, want %q", buildPath, filepath.Clean(root))
+	}
 
 	// Re-running is deterministic and leaves no temporary files behind.
 	if err := EnsureNodeShims(paths, build); err != nil {

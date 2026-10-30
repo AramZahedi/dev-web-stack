@@ -401,20 +401,20 @@ var errNodeDefaultNotPrepared = errors.New("helper: node-default is not prepared
 // nodeDefaultWrapperMarker identifies a system wrapper owned by devstack.
 const nodeDefaultWrapperMarker = "# Managed by devstack: node-default (do not edit)"
 
-// nodeDefaultRoot resolves the registered global Node default. The only
-// accepted input is the build id recorded in tools/node-default/VERSION; it
-// must name an exact node@<major>.<minor>.<patch> build whose complete bin
-// directory resolves inside <home>/runtimes.
+// nodeDefaultRoot resolves the registered global Node default. VERSION names
+// the exact node@<major>.<minor>.<patch> build for display; BUILD_PATH records
+// the exact on-disk build directory. The legacy <runtimes>/node@<version>
+// location is used only when BUILD_PATH is absent. The complete bin directory
+// must resolve inside <home>/runtimes.
 func (m *ToolManager) nodeDefaultRoot() (root, id string, err error) {
 	paths := config.NewPaths(m.home)
-	data, err := os.ReadFile(tooling.NodeDefaultVersionPath(paths))
-	if errors.Is(err, os.ErrNotExist) {
-		return "", "", errNodeDefaultNotPrepared
-	}
+	id, present, err := tooling.ReadNodeDefaultVersion(paths)
 	if err != nil {
 		return "", "", fmt.Errorf("helper: read the node-default build: %w", err)
 	}
-	id = strings.TrimSpace(string(data))
+	if !present {
+		return "", "", errNodeDefaultNotPrepared
+	}
 	if id == "" {
 		return "", "", errNodeDefaultNotPrepared
 	}
@@ -427,9 +427,25 @@ func (m *ToolManager) nodeDefaultRoot() (root, id string, err error) {
 	if strings.ContainsAny(runtimes, "\x00\r\n") {
 		return "", "", errors.New("the runtimes directory contains invalid characters")
 	}
-	root = filepath.Join(runtimes, id)
-	if filepath.Dir(root) != runtimes || filepath.Base(root) != id {
-		return "", "", fmt.Errorf("node-default build %q is outside %s", id, runtimes)
+	relative := id
+	recorded, hasBuildPath, err := tooling.ReadNodeDefaultBuildPath(paths)
+	if err != nil {
+		return "", "", fmt.Errorf("helper: read the node-default build path: %w", err)
+	}
+	if hasBuildPath {
+		relative, err = tooling.NodeDefaultBuildRelativePath(id, recorded)
+		if err != nil {
+			return "", "", fmt.Errorf("helper: %w", err)
+		}
+		root = filepath.Join(runtimes, filepath.FromSlash(relative))
+		if filepath.Clean(recorded) != filepath.Clean(root) {
+			return "", "", fmt.Errorf("node-default build path %q is outside %s", recorded, runtimes)
+		}
+	} else {
+		root = filepath.Join(runtimes, id)
+		if filepath.Dir(root) != runtimes || filepath.Base(root) != id {
+			return "", "", fmt.Errorf("node-default build %q is outside %s", id, runtimes)
+		}
 	}
 	realRuntimes, err := filepath.EvalSymlinks(runtimes)
 	if err != nil {
@@ -439,7 +455,7 @@ func (m *ToolManager) nodeDefaultRoot() (root, id string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("helper: resolve node-default build %q: %w", id, err)
 	}
-	if realRoot != filepath.Join(realRuntimes, id) {
+	if realRoot != filepath.Join(realRuntimes, filepath.FromSlash(relative)) {
 		return "", "", fmt.Errorf("node-default build %q escapes %s", id, runtimes)
 	}
 	for _, name := range []string{"node", "npm", "npx"} {

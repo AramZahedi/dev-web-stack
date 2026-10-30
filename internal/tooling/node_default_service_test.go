@@ -348,6 +348,91 @@ func TestNodeDefaultClearReResolvesNewest(t *testing.T) {
 	}
 }
 
+func readNodeDefaultBuildPath(t *testing.T, paths config.Paths) string {
+	t.Helper()
+	data, err := os.ReadFile(NodeDefaultBuildPathPath(paths))
+	if err != nil {
+		t.Fatalf("read BUILD_PATH: %v", err)
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func assertNodeDefaultShimTarget(t *testing.T, paths config.Paths, build model.RuntimeBuild) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(NodeDefaultShimDir(paths), "node"))
+	if err != nil {
+		t.Fatalf("read node shim: %v", err)
+	}
+	want := filepath.ToSlash(filepath.Join(build.Path, "bin", "node"))
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("node shim does not target %s:\n%s", want, data)
+	}
+}
+
+func TestNodeDefaultSetRollsBackOnHelperFailure(t *testing.T) {
+	svc, st, paths, builds, helper := newNodeDefaultService(t, "22.10.0", "24.1.0")
+	ctx := context.Background()
+
+	if _, err := svc.SetNodeDefault(ctx, "22.10.0", false); err != nil {
+		t.Fatal(err)
+	}
+	helper.installErr = errors.New("helper install failed")
+	if _, err := svc.SetNodeDefault(ctx, "24.1.0", false); err == nil {
+		t.Fatal("set succeeded despite the helper failure")
+	}
+
+	stored, err := st.GetSetting(ctx, DefaultNodeSettingKey)
+	if err != nil || stored != "22.10.0" {
+		t.Fatalf("setting = %q err=%v, want the previous 22.10.0", stored, err)
+	}
+	if got := readNodeDefaultVersion(t, paths); got != builds[0].ID {
+		t.Fatalf("VERSION = %q, want previous %q", got, builds[0].ID)
+	}
+	if got := readNodeDefaultBuildPath(t, paths); got != filepath.Clean(builds[0].Path) {
+		t.Fatalf("BUILD_PATH = %q, want previous %q", got, filepath.Clean(builds[0].Path))
+	}
+	assertNodeDefaultShimTarget(t, paths, builds[0])
+	status, err := svc.NodeDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Build == nil || status.Build.ID != builds[0].ID {
+		t.Fatalf("status after rollback = %+v, want %s", status, builds[0].ID)
+	}
+}
+
+func TestNodeDefaultClearRollsBackOnHelperFailure(t *testing.T) {
+	svc, st, paths, builds, helper := newNodeDefaultService(t, "22.10.0", "24.1.0")
+	ctx := context.Background()
+
+	if _, err := svc.SetNodeDefault(ctx, "node@22.10.0", false); err != nil {
+		t.Fatal(err)
+	}
+	helper.installErr = errors.New("helper install failed")
+	if _, err := svc.ClearNodeDefault(ctx); err == nil {
+		t.Fatal("clear succeeded despite the helper failure")
+	}
+
+	stored, err := st.GetSetting(ctx, DefaultNodeSettingKey)
+	if err != nil || stored != "node@22.10.0" {
+		t.Fatalf("setting = %q err=%v, want the previous node@22.10.0", stored, err)
+	}
+	if got := readNodeDefaultVersion(t, paths); got != builds[0].ID {
+		t.Fatalf("VERSION = %q, want previous %q", got, builds[0].ID)
+	}
+	if got := readNodeDefaultBuildPath(t, paths); got != filepath.Clean(builds[0].Path) {
+		t.Fatalf("BUILD_PATH = %q, want previous %q", got, filepath.Clean(builds[0].Path))
+	}
+	assertNodeDefaultShimTarget(t, paths, builds[0])
+	status, err := svc.NodeDefault(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Build == nil || status.Build.ID != builds[0].ID {
+		t.Fatalf("status after rollback = %+v, want %s", status, builds[0].ID)
+	}
+}
+
 func TestNodeDefaultToolInstallNeverChangesSetting(t *testing.T) {
 	svc, st, paths, builds, helper := newNodeDefaultService(t, "22.11.0")
 	ctx := context.Background()

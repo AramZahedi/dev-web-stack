@@ -10,9 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helper"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
 func prepareManagedTool(t *testing.T, home, id string) (target string) {
@@ -515,6 +518,149 @@ func TestHelperNodeDefaultRejectsEscapingTarget(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(binDir, "node")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("out-of-build npm symlink wrote a system wrapper")
+	}
+}
+
+func prepareNodeBuildAt(t *testing.T, root string) string {
+	t.Helper()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"node", "npm", "npx"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return binDir
+}
+
+func writeNodeDefaultMetadata(t *testing.T, paths config.Paths, id, buildPath string) {
+	t.Helper()
+	if err := os.MkdirAll(tooling.NodeDefaultToolDir(paths), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tooling.NodeDefaultVersionPath(paths), []byte(id+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tooling.NodeDefaultBuildPathPath(paths), []byte(buildPath+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHelperInstallsNodeDefaultWrappersFromBuildPath(t *testing.T) {
+	socketPath, home := startToolHelper(t)
+	c := dialClient(t, socketPath)
+	ctx := context.Background()
+	paths := config.NewPaths(home)
+	buildRoot := filepath.Join(paths.Runtimes, "node", "22.11.0-linux-x64")
+	buildBin := prepareNodeBuildAt(t, buildRoot)
+	// A legacy decoy proves the helper prefers BUILD_PATH over the fallback.
+	legacyBin := prepareNodeBuildAt(t, filepath.Join(paths.Runtimes, "node@22.11.0"))
+	build := model.RuntimeBuild{
+		ID:      "node@22.11.0",
+		Kind:    "node",
+		Version: "22.11.0",
+		Path:    buildRoot,
+	}
+	if err := tooling.EnsureNodeShims(paths, build); err != nil {
+		t.Fatal(err)
+	}
+
+	status := nodeToolStatus(t, c)
+	if !status.Managed || status.Installed || status.Conflict != "" {
+		t.Fatalf("initial node-default status = %+v", status)
+	}
+	if status.Target != filepath.Join(buildBin, "node") {
+		t.Fatalf("target = %q, want the BUILD_PATH target %q", status.Target, filepath.Join(buildBin, "node"))
+	}
+	if status.Version != build.ID {
+		t.Fatalf("version = %q, want %q", status.Version, build.ID)
+	}
+
+	installed, err := c.ToolInstall(ctx, helperproto.ToolNodeDefault, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !installed.Installed {
+		t.Fatalf("installed status = %+v", installed)
+	}
+	for _, name := range []string{"node", "npm", "npx"} {
+		data, err := os.ReadFile(filepath.Join(filepath.Dir(installed.WrapperPath), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), filepath.Join(buildBin, name)) {
+			t.Fatalf("%s does not execute the BUILD_PATH build %s:\n%s", name, filepath.Join(buildBin, name), data)
+		}
+		if strings.Contains(string(data), filepath.Join(legacyBin, name)) {
+			t.Fatalf("%s fell back to the legacy build:\n%s", name, data)
+		}
+	}
+}
+
+func TestHelperNodeDefaultBuildPathRejectsUnsafePaths(t *testing.T) {
+	socketPath, home := startToolHelper(t)
+	c := dialClient(t, socketPath)
+	ctx := context.Background()
+	paths := config.NewPaths(home)
+	validRoot := filepath.Join(paths.Runtimes, "node", "22.11.0-linux-x64")
+	prepareNodeBuildAt(t, validRoot)
+	outside := filepath.Join(t.TempDir(), "outside")
+	prepareNodeBuildAt(t, outside)
+	writeNodeDefaultMetadata(t, paths, "node@22.11.0", validRoot)
+
+	status := nodeToolStatus(t, c)
+	binDir := filepath.Dir(status.WrapperPath)
+	invalid := []string{
+		"",
+		"relative/node@22.11.0",
+		validRoot + "\x00suffix",
+		validRoot + "\n/etc/passwd",
+		paths.Runtimes + "/node/../node@22.11.0",
+		outside,
+		filepath.Join(paths.Runtimes, "php", "8.4.12-linux-x64"),
+		filepath.Join(paths.Runtimes, "node", "22.11.0"),
+		filepath.Join(paths.Runtimes, "node", "22.12.0-linux-x64"),
+		filepath.Join(paths.Runtimes, "node@22.12.0"),
+		filepath.Join(validRoot, "bin"),
+	}
+	for _, target := range invalid {
+		if err := os.WriteFile(tooling.NodeDefaultBuildPathPath(paths), []byte(target+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		status := nodeToolStatus(t, c)
+		if status.Managed || status.Installed {
+			t.Fatalf("BUILD_PATH %q reported managed=%v installed=%v", target, status.Managed, status.Installed)
+		}
+		if _, err := c.ToolInstall(ctx, helperproto.ToolNodeDefault, true); err == nil {
+			t.Fatalf("BUILD_PATH %q was accepted", target)
+		}
+		if _, err := os.Lstat(filepath.Join(binDir, "node")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("BUILD_PATH %q wrote a system wrapper", target)
+		}
+	}
+
+	// A metadata path that resolves through a symlink outside runtimes is an
+	// escaping target even though its lexical path looks valid.
+	if err := os.RemoveAll(validRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, validRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.WriteFile(tooling.NodeDefaultBuildPathPath(paths), []byte(validRoot+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status = nodeToolStatus(t, c)
+	if status.Managed || status.Installed {
+		t.Fatalf("symlinked BUILD_PATH reported managed=%v installed=%v", status.Managed, status.Installed)
+	}
+	if _, err := c.ToolInstall(ctx, helperproto.ToolNodeDefault, true); err == nil {
+		t.Fatal("symlinked BUILD_PATH was accepted")
+	}
+	if _, err := os.Lstat(filepath.Join(binDir, "node")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("symlinked BUILD_PATH wrote a system wrapper")
 	}
 }
 
