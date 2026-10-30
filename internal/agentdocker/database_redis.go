@@ -419,11 +419,18 @@ func (d *Docker) ensureRedisACLFileLocked(ctx context.Context, serviceID string,
 }
 
 func (d *Docker) waitRedisHealthy(ctx context.Context, serviceID string) error {
+	service, err := d.service(serviceID)
+	if err != nil {
+		return err
+	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		status, err := d.Status(ctx, serviceID)
-		if err == nil && status.State == "active" {
-			return nil
+		status, statusErr := d.Status(ctx, serviceID)
+		if statusErr == nil && status.State == "active" {
+			out, composeErr := d.compose(ctx, "ps", "-a", "--format", "json", string(service.ID))
+			if composeErr == nil && !strings.Contains(strings.ToLower(string(out)), `"health":"starting"`) {
+				return nil
+			}
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("agentdocker: redis did not become healthy after ACL file migration")
