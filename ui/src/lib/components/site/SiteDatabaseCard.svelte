@@ -278,7 +278,12 @@
 
 <Card title="Databases" headerWrap>
   {#snippet actions()}
-    <Button size="sm" variant="secondary" onclick={() => (linkOpen = true)}>
+    <Button
+      size="sm"
+      variant="secondary"
+      disabled={Boolean(linksError)}
+      onclick={() => (linkOpen = true)}
+    >
       <Link2 size={13} strokeWidth={2} aria-hidden="true" />
       Link database
     </Button>
@@ -463,7 +468,7 @@
   open={linkOpen}
   siteRef={site.id}
   siteName={site.name}
-  primary={!links.some((link) => link.primary)}
+  primary={!linksError && !links.some((link) => link.primary)}
   linkedDatabases={links.map((link) => ({
     service_id: link.service_id,
     database: link.database,

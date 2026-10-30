@@ -1052,10 +1052,17 @@ describe('SiteDetail configuration and builds', () => {
 
     expect(await screen.findByText('Could not load databases')).toBeTruthy();
     expect(screen.getByText('app')).toBeTruthy();
+    const linkButton = screen.getByRole('button', {
+      name: 'Link database',
+    }) as HTMLButtonElement;
+    expect(linkButton.disabled).toBe(true);
 
     mockDb.listSiteDatabases.mockResolvedValue({ links: [SITE_DB_LINK] });
     await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByText('Could not load databases')).toBeNull());
+    expect(
+      (screen.getByRole('button', { name: 'Link database' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 
   it('clears reveal loading when the link set changes during a reveal', async () => {
