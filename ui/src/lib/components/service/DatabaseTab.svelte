@@ -28,6 +28,7 @@
   import Modal from '../Modal.svelte';
   import Toggle from '../Toggle.svelte';
   import DatabaseFormDialog from './DatabaseFormDialog.svelte';
+  import { isProtectedDatabase } from './databaseProtection';
   import { saveBlob } from './fileDownload';
   import { jobToastKind } from './jobStatus';
 
@@ -164,7 +165,7 @@
 
   async function submitRename(name: string): Promise<void> {
     const target = renameTarget;
-    if (!target || formBusy) return;
+    if (!target || formBusy || isProtectedDatabase(engine, target.name)) return;
     formBusy = true;
     formError = '';
     try {
@@ -184,19 +185,25 @@
   }
 
   function openRename(database: Database): void {
+    if (isProtectedDatabase(engine, database.name)) return;
     formError = '';
     renameTarget = database;
   }
 
   function openDrop(database: Database): void {
+    if (isProtectedDatabase(engine, database.name)) return;
     dropError = null;
     backupFirst = true;
     dropTarget = database;
   }
 
+  function protectedDatabase(database: Database): boolean {
+    return isProtectedDatabase(database.engine, database.name);
+  }
+
   async function confirmDrop(): Promise<void> {
     const target = dropTarget;
-    if (!target || dropping) return;
+    if (!target || dropping || isProtectedDatabase(engine, target.name)) return;
     dropping = true;
     dropError = null;
     try {
@@ -257,6 +264,10 @@
   }
 
   function beginImport(database: Database): void {
+    if (isProtectedDatabase(database.engine, database.name)) {
+      actionError = 'Protected system databases cannot be imported into.';
+      return;
+    }
     if (!active) {
       actionError = 'Activate the service to import databases.';
       return;
@@ -432,6 +443,9 @@
               <tr class:missing={database.missing}>
                 <td>
                   <span class="db-name mono">{database.name}</span>
+                  {#if protectedDatabase(database)}
+                    <Badge variant="info">Protected</Badge>
+                  {/if}
                   {#if database.missing}
                     <Badge variant="warning">Missing on engine</Badge>
                   {/if}
@@ -476,7 +490,7 @@
                         size="sm"
                         variant="ghost"
                         ariaLabel={`Rename ${database.name}`}
-                        disabled={!active || database.missing}
+                        disabled={!active || database.missing || protectedDatabase(database)}
                         onclick={() => openRename(database)}
                       >
                         <Pencil size={12} strokeWidth={2} aria-hidden="true" />
@@ -507,7 +521,7 @@
                       size="sm"
                       variant="ghost"
                       ariaLabel={`Import ${database.name}`}
-                      disabled={database.missing}
+                      disabled={database.missing || protectedDatabase(database)}
                       onclick={() => beginImport(database)}
                     >
                       <FileUp size={12} strokeWidth={2} aria-hidden="true" />
@@ -517,7 +531,7 @@
                       size="sm"
                       variant="danger-ghost"
                       ariaLabel={`Drop ${database.name}`}
-                      disabled={!active || database.missing}
+                      disabled={!active || database.missing || protectedDatabase(database)}
                       onclick={() => openDrop(database)}
                     >
                       <Trash2 size={12} strokeWidth={2} aria-hidden="true" />

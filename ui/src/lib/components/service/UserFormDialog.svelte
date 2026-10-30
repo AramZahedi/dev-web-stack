@@ -10,6 +10,7 @@
   import Modal from '../Modal.svelte';
   import Toggle from '../Toggle.svelte';
   import GrantEditor from './GrantEditor.svelte';
+  import { isProtectedDatabase } from './databaseProtection';
   import type { UserFormValue } from './userGrants';
 
   interface Props {
@@ -45,6 +46,11 @@
 
   const isRedis = $derived(engine === 'redis');
   const isMySQLFamily = $derived(engine === 'mysql' || engine === 'mariadb');
+  const grantTargets = $derived(
+    databases.filter(
+      (database) => !database.missing && !isProtectedDatabase(engine, database.name),
+    ),
+  );
 
   $effect(() => {
     if (!open) return;
@@ -58,8 +64,8 @@
             ...grant,
             privileges: grant.privileges ? [...grant.privileges] : undefined,
           }))
-        : !isRedis && databases.length > 0
-          ? [{ database: databases[0].name, preset: 'read_write_schema' }]
+        : !isRedis && grantTargets.length > 0
+          ? [{ database: grantTargets[0].name, preset: 'read_write_schema' }]
           : [];
     validation = {};
   });

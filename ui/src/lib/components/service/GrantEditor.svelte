@@ -6,6 +6,7 @@
     GrantPreset,
   } from '../../databaseTypes';
   import Button from '../Button.svelte';
+  import { isProtectedDatabase } from './databaseProtection';
   import { CUSTOM_PRIVILEGES, GRANT_PRESETS } from './userGrants';
 
   interface Props {
@@ -17,6 +18,20 @@
   }
 
   let { databases, grants, engine, disabled = false, onchange }: Props = $props();
+
+  const grantableDatabases = $derived(
+    databases.filter(
+      (database) => !database.missing && !isProtectedDatabase(engine, database.name),
+    ),
+  );
+
+  function optionsFor(grant: DatabaseGrant): Database[] {
+    if (grantableDatabases.some((database) => database.name === grant.database)) {
+      return grantableDatabases;
+    }
+    const current = databases.find((database) => database.name === grant.database);
+    return current ? [...grantableDatabases, current] : grantableDatabases;
+  }
 
   function update(next: DatabaseGrant[]): void {
     onchange(next);
@@ -55,7 +70,7 @@
 
   function add(): void {
     const used = new Set(grants.map((grant) => grant.database));
-    const available = databases.find((database) => !used.has(database.name));
+    const available = grantableDatabases.find((database) => !used.has(database.name));
     if (!available) return;
     update([...grants, { database: available.name, preset: 'read_write_schema' }]);
   }
@@ -67,7 +82,7 @@
     <span class="hint">Grants stay scoped to one database; global privileges are never changed.</span>
   </div>
 
-  {#if databases.length === 0}
+  {#if grantableDatabases.length === 0 && grants.length === 0}
     <p class="empty">Create a database before granting access.</p>
   {:else if grants.length === 0}
     <p class="empty">No grants. The user can connect but cannot read or write any database.</p>
@@ -81,7 +96,7 @@
           {disabled}
           onchange={(event) => updateDatabase(index, event.currentTarget.value)}
         >
-          {#each databases as database (database.name)}
+          {#each optionsFor(grant) as database (database.name)}
             <option value={database.name}>{database.name}</option>
           {/each}
         </select>
@@ -127,7 +142,7 @@
   <Button
     size="sm"
     variant="ghost"
-    disabled={disabled || grants.length >= databases.length || databases.length === 0}
+    disabled={disabled || grants.length >= grantableDatabases.length || grantableDatabases.length === 0}
     onclick={add}
   >
     Add grant

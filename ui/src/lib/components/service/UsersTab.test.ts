@@ -331,6 +331,33 @@ describe('UsersTab', () => {
     );
   });
 
+  it('excludes protected databases from grant targets and defaults', async () => {
+    const protectedDatabase: Database = {
+      name: 'devstack',
+      service_id: 'mysql',
+      engine: 'mysql',
+      size_bytes: 1_000_000,
+      table_count: 2,
+      linked_sites: [],
+      managed: false,
+    };
+    render(UsersTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        users: MYSQL_USERS,
+        databases: [protectedDatabase, ...MYSQL_DATABASES],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create user' }));
+    const dialog = await screen.findByRole('dialog');
+    const select = within(dialog).getByLabelText('Grant 1 database') as HTMLSelectElement;
+
+    expect(select.value).toBe('app');
+    expect(within(select).queryByRole('option', { name: 'devstack' })).toBeNull();
+  });
+
   it('hides host and grants for Redis and shows the access level', () => {
     render(UsersTab, {
       props: {

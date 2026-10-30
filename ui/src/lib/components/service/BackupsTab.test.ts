@@ -274,6 +274,66 @@ describe('BackupsTab', () => {
     expect(screen.getByText('canceled by user')).toBeTruthy();
   });
 
+  it('excludes protected and missing databases from backup creation', async () => {
+    const protectedDatabase: Database = {
+      name: 'devstack',
+      service_id: 'mysql',
+      engine: 'mysql',
+      size_bytes: 1_000_000,
+      table_count: 2,
+      linked_sites: [],
+      managed: false,
+    };
+    const missingDatabase: Database = {
+      ...MYSQL_DATABASES[0],
+      name: 'gone',
+      missing: true,
+    };
+    render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: MYSQL_BACKUPS,
+        databases: [protectedDatabase, missingDatabase, ...MYSQL_DATABASES],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Create backup' }));
+    const select = screen.getByLabelText('Database') as HTMLSelectElement;
+
+    expect([...select.options].map((option) => option.value)).toEqual(['app']);
+  });
+
+  it('does not allow overwriting a protected database', async () => {
+    const protectedBackup: DatabaseBackup = {
+      ...MYSQL_BACKUPS[0],
+      id: 'bkp_devstack',
+      database: 'devstack',
+    };
+    render(BackupsTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        backups: [protectedBackup],
+        databases: [
+          {
+            name: 'devstack',
+            service_id: 'mysql',
+            engine: 'mysql',
+            size_bytes: 1_000_000,
+            table_count: 2,
+            linked_sites: [],
+            managed: false,
+          },
+        ],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /restore devstack backup/i }));
+    const overwrite = screen.getByLabelText(/overwrite existing database/i) as HTMLInputElement;
+    expect(overwrite.disabled).toBe(true);
+  });
+
   it('shows job progress and cancels a running backup job', async () => {
     vi.mocked(db.createServiceBackup).mockResolvedValue(RUNNING_JOB);
     render(BackupsTab, {

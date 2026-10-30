@@ -323,6 +323,33 @@ describe('DatabaseTab', () => {
     expect(screen.getByRole('button', { name: /unlink app/i })).toBeTruthy();
   });
 
+  it('does not offer destructive actions for a protected database', () => {
+    render(DatabaseTab, {
+      props: {
+        service: MYSQL_SERVICE,
+        databases: MYSQL_DATABASES,
+        onRefresh: vi.fn(),
+      },
+    });
+
+    expect(screen.getByText('Protected')).toBeTruthy();
+    expect((screen.getByRole('button', { name: /drop devstack/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /import devstack/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /back up devstack/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('does not offer rename for a protected PostgreSQL database', () => {
+    render(DatabaseTab, {
+      props: {
+        service: POSTGRES_SERVICE,
+        databases: [{ ...POSTGRES_DATABASES[0], name: 'postgres', managed: false }],
+        onRefresh: vi.fn(),
+      },
+    });
+
+    expect((screen.getByRole('button', { name: /rename postgres/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('disables create while stopped and reports inactive backup, export and import attempts', async () => {
     render(DatabaseTab, {
       props: {

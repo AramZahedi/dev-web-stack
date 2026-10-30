@@ -19,6 +19,7 @@
   import ErrorBanner from '../ErrorBanner.svelte';
   import Modal from '../Modal.svelte';
   import Toggle from '../Toggle.svelte';
+  import { isProtectedDatabase } from './databaseProtection';
   import { saveBlob } from './fileDownload';
   import { jobToastKind } from './jobStatus';
 
@@ -64,10 +65,26 @@
   let jobError = $state<DescribedError | null>(null);
   let jobTimer: ReturnType<typeof setInterval> | undefined;
 
-  const databaseOptions = $derived(
-    databases.length > 0
-      ? databases.map((database) => database.name)
-      : [...new Set(backups.map((backup) => backup.database))],
+  const databaseOptions = $derived.by(() => {
+    if (databases.length > 0) {
+      return databases
+        .filter(
+          (database) =>
+            !database.missing && !isProtectedDatabase(database.engine, database.name),
+        )
+        .map((database) => database.name);
+    }
+    return [
+      ...new Set(
+        backups
+          .filter((backup) => !isProtectedDatabase(backup.engine, backup.database))
+          .map((backup) => backup.database),
+      ),
+    ];
+  });
+
+  const restoreProtected = $derived(
+    restoreTarget ? isProtectedDatabase(restoreTarget.engine, restoreTarget.database) : false,
   );
 
   function jobRunning(candidate: DatabaseJob | null): boolean {
@@ -179,6 +196,7 @@
   }
 
   function setRestoreMode(mode: 'new' | 'overwrite'): void {
+    if (mode === 'overwrite' && restoreProtected) return;
     restoreMode = mode;
     // An overwrite always takes a pre-restore backup; the toggle is locked on.
     preRestoreBackup = mode === 'overwrite';
@@ -187,6 +205,7 @@
   async function confirmRestore(): Promise<void> {
     const target = restoreTarget;
     if (!target || restoring) return;
+    if (restoreMode === 'overwrite' && isProtectedDatabase(target.engine, target.database)) return;
     restoring = true;
     restoreError = null;
     try {
@@ -483,13 +502,18 @@
             name="restore-mode"
             value="overwrite"
             checked={restoreMode === 'overwrite'}
+            disabled={restoreProtected}
             onchange={() => setRestoreMode('overwrite')}
           />
           <span>
             <strong>Overwrite existing database</strong>
             <span class="radio-copy">
-              Drops and recreates {restoreTarget?.database ?? 'the target'} after the pre-restore
-              backup.
+              {#if restoreProtected}
+                Protected system databases cannot be overwritten. Restore into a new database.
+              {:else}
+                Drops and recreates {restoreTarget?.database ?? 'the target'} after the pre-restore
+                backup.
+              {/if}
             </span>
           </span>
         </label>
