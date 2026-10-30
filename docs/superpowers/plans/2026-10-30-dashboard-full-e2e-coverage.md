@@ -548,7 +548,7 @@ Helper stopped → clear error, no partial trust mutation; foreign CA conflict �
 
 **Depends on:** Task 0/4. **Artifacts:** `task-8/`
 
-- [ ] **Step 1: PHP CLI default**
+- [x] **Step 1: PHP CLI default**
 
 Settings → PHP CLI default:
 - set `8.4` / `php@8.4.27-r1`; verify resolved build and shim;
@@ -557,16 +557,16 @@ Settings → PHP CLI default:
 - verify `php.cmd -v` and `composer.cmd --version` use the exact build.
 CLI: `php default --status`, `php default 8.4`, `php default --clear`, `php default 99.99`.
 
-- [ ] **Step 2: Global CLI php.ini**
+- [x] **Step 2: Global CLI php.ini**
 
 Settings → Global CLI php.ini: edit `memory_limit=700M`, save; verify `php.cmd -i`; invalid line rejected; reset to original. CLI/API parity if available.
 
-- [ ] **Step 3: Composer and native tools**
+- [x] **Step 3: Composer and native tools**
 
 Settings → Native tools: install/update/remove Composer; `composer.cmd --version`; reinstall. Verify `php-default`, `composer`, `node-default` status rows, conflicts, and `tool list`. Remove/reinstall `node-default` only if it can be restored immediately.
 CLI: `tool list`, `tool install composer --force`, `tool remove composer`, `tool install composer`.
 
-- [ ] **Step 4: Restore defaults**
+- [x] **Step 4: Restore defaults**
 
 PHP `php@8.4.27-r1`, Node `24.22.1`, Composer installed, shims exact; `doctor` green.
 
