@@ -30,12 +30,13 @@ import (
 
 // fakeAPI is a minimal Unix-socket API used by the client tests.
 type fakeAPI struct {
-	mu         sync.Mutex
-	sites      map[string]model.Site
-	routes     []recordedRequest
-	err        error
-	delay      time.Duration
-	buildDelay time.Duration
+	mu                    sync.Mutex
+	sites                 map[string]model.Site
+	routes                []recordedRequest
+	err                   error
+	delay                 time.Duration
+	buildDelay            time.Duration
+	wrongDatabaseEnvelope bool
 }
 
 type recordedRequest struct {
@@ -479,6 +480,10 @@ func (f *fakeAPI) mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/services/{id}/databases/{name}", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
 		f.writeErrorOr(w, func() {
+			if f.wrongDatabaseEnvelope {
+				writeTestJSON(w, http.StatusOK, map[string]any{"unexpected": map[string]any{"name": "app"}})
+				return
+			}
 			writeTestJSON(w, http.StatusOK, model.Database{Name: "app", ServiceID: r.PathValue("id"), Engine: model.DatabaseMySQL})
 		})
 	})

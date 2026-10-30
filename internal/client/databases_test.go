@@ -74,6 +74,21 @@ func TestClientDatabaseCRUDAndReveal(t *testing.T) {
 	api.last(t, http.MethodPost, "/api/v1/services/mysql/users/usr_app/password")
 }
 
+func TestClientDatabaseWrongEnvelopeFailsLoudly(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{sites: map[string]model.Site{}, wrongDatabaseEnvelope: true}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if _, err := c.GetServiceDatabase(context.Background(), "mysql", "app"); err == nil {
+		t.Fatal("wrong response envelope returned a zero database without an error")
+	}
+}
+
 func TestClientDatabaseStreaming(t *testing.T) {
 	home := t.TempDir()
 	api := &fakeAPI{sites: map[string]model.Site{}}

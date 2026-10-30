@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -297,16 +298,31 @@ func decodeOne[T any](raw json.RawMessage, key string) (T, error) {
 	var wrapper map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &wrapper); err == nil {
 		if inner, ok := wrapper[key]; ok && len(inner) > 0 && string(inner) != "null" {
-			var value T
-			if err := json.Unmarshal(inner, &value); err != nil {
-				return zero, err
-			}
-			return value, nil
+			return decodeStrict[T](inner)
 		}
 	}
+	value, err := decodeStrict[T](raw)
+	if err != nil {
+		return zero, fmt.Errorf("client: response is neither a %T object nor a %q envelope: %w", zero, key, err)
+	}
+	return value, nil
+}
+
+// decodeStrict only accepts fields defined by T, so an unexpected wrapper key
+// cannot silently produce a zero-valued resource.
+func decodeStrict[T any](raw json.RawMessage) (T, error) {
 	var value T
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return zero, err
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return value, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return value, fmt.Errorf("client: response contains trailing JSON")
+		}
+		return value, err
 	}
 	return value, nil
 }
