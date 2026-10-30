@@ -740,15 +740,15 @@ Run `devstack --help`, each group's `--help`, `version`, `init --help`, `uninsta
 
 **Artifacts:** `task-13/`
 
-- [ ] **Step 1: Logs SSE**
+- [x] **Step 1: Logs SSE**
 
 Create a static/Node fixture. Start logs; pause; generate output; resume; verify missed lines are delivered or documented; clear; download; restart site and verify stream recovers; close/reopen.
 
-- [ ] **Step 2: Events SSE**
+- [x] **Step 2: Events SSE**
 
 From a browser context authenticated with the dashboard cookie, stream `/api/v1/events` with `fetch`/EventSource; trigger site create/start/stop/remove, runtime install/remove, service change; assert event types/data; reconnect after daemon restart; no duplicate routes/events.
 
-- [ ] **Step 3: Terminal**
+- [x] **Step 3: Terminal**
 
 - Start terminal; run `pwd`, `node -v`, `npm -v`, `php -v` where applicable.
 - Resize to 900x650 and 1200x800; verify no disconnect.
@@ -758,7 +758,7 @@ From a browser context authenticated with the dashboard cookie, stream `/api/v1/
 - Idle timeout: wait for configured timeout or use a short test timeout; verify clean close.
 - Verify `DEVSTACK_SITE`, `DEVSTACK_PROJECT`, PATH, and site shims.
 
-- [ ] **Step 4: Cleanup**
+- [x] **Step 4: Cleanup**
 
 Close terminals, remove fixtures, verify no orphan PTYs; `doctor` green.
 
