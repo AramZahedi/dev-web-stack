@@ -332,7 +332,7 @@ func (s *Service) phpBuildForSiteLocked(ctx context.Context, site model.Site) (m
 
 // phpSiteSpecFromBuildLocked converts a generated site and its build into the
 // backend's PHP specification.
-func (s *Service) phpSiteSpecFromBuildLocked(site model.Site, build model.RuntimeBuild) (backend.SiteSpec, error) {
+func (s *Service) phpSiteSpecFromBuildLocked(ctx context.Context, site model.Site, build model.RuntimeBuild) (backend.SiteSpec, error) {
 	generationDir, err := s.phpGenerationDir(site.ID, site.PHPConfigHash)
 	if err != nil {
 		return backend.SiteSpec{}, err
@@ -340,7 +340,7 @@ func (s *Service) phpSiteSpecFromBuildLocked(site model.Site, build model.Runtim
 	if !phpGenerationComplete(generationDir) {
 		return backend.SiteSpec{}, fmt.Errorf("sites: PHP configuration for %q is not written", site.Name)
 	}
-	spec := backendSpec(site)
+	spec := s.backendSpecFor(ctx, site)
 	spec.PHPVersion = site.PHPVersion
 	spec.PHPBuild = build.ID
 	spec.PHPBuildPath = build.Path
@@ -358,7 +358,7 @@ func (s *Service) phpSiteSpecLocked(ctx context.Context, site model.Site) (backe
 	if err != nil {
 		return backend.SiteSpec{}, err
 	}
-	return s.phpSiteSpecFromBuildLocked(site, build)
+	return s.phpSiteSpecFromBuildLocked(ctx, site, build)
 }
 
 // startPHPLocked starts (or restarts) the default FPM master. The stored
@@ -440,7 +440,7 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 		}
 	}
 
-	spec, err := s.phpSiteSpecFromBuildLocked(site, build)
+	spec, err := s.phpSiteSpecFromBuildLocked(ctx, site, build)
 	if err != nil {
 		releaseAllocated()
 		return site, err
@@ -744,7 +744,7 @@ func (s *Service) PHPExec(ctx context.Context, ref string, argv []string) (backe
 	if err != nil {
 		return backend.Result{}, err
 	}
-	spec, err := s.phpSiteSpecFromBuildLocked(site, build)
+	spec, err := s.phpSiteSpecFromBuildLocked(ctx, site, build)
 	if err != nil {
 		return backend.Result{}, err
 	}

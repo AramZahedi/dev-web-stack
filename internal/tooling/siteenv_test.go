@@ -126,10 +126,11 @@ func TestBuildSiteEnvPHP(t *testing.T) {
 	info := fakeSitePHPInfo(t, paths, site, phpBuild)
 
 	env, err := BuildSiteEnv(site, EnvDeps{
-		Paths:    paths,
-		Builds:   []model.RuntimeBuild{phpBuild, nodeBuild},
-		PHPInfo:  &info,
-		BasePATH: "/usr/bin:/bin",
+		Paths:       paths,
+		Builds:      []model.RuntimeBuild{phpBuild, nodeBuild},
+		PHPInfo:     &info,
+		NodeDefault: &nodeBuild,
+		BasePATH:    "/usr/bin:/bin",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -191,9 +192,10 @@ func TestBuildSiteEnvNodeAndStaticBuild(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, err := BuildSiteEnv(tc.site, EnvDeps{
-				Paths:    paths,
-				Builds:   []model.RuntimeBuild{nodeBuild},
-				BasePATH: "/usr/bin:/bin",
+				Paths:       paths,
+				Builds:      []model.RuntimeBuild{nodeBuild},
+				NodeDefault: &nodeBuild,
+				BasePATH:    "/usr/bin:/bin",
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -328,10 +330,11 @@ func TestBuildSiteEnvRejectsRoot(t *testing.T) {
 	}
 }
 
-func TestSiteShimCleansStaleTools(t *testing.T) {
+func TestSiteShimRefreshesStaleTools(t *testing.T) {
 	home := t.TempDir()
 	paths := config.NewPaths(home)
 	builder := fakePHPBuild(t, home, "8.4.12")
+	nodeBuild := fakeNodeBuild(t, home, "22.11.0")
 	project := filepath.Join(home, "projects", "app")
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
@@ -339,18 +342,29 @@ func TestSiteShimCleansStaleTools(t *testing.T) {
 	site := model.Site{ID: "p1", Name: "app", HostPath: project, Kind: model.SitePHP,
 		PHPVersion: "8.4", PHPBuild: builder.ID, PHPConfigHash: strings.Repeat("c", 64)}
 	info := fakeSitePHPInfo(t, paths, site, builder)
-	if _, err := BuildSiteEnv(site, EnvDeps{Paths: paths, Builds: []model.RuntimeBuild{builder}, PHPInfo: &info, BasePATH: "/bin"}); err != nil {
+	selected := nodeBuild
+	deps := EnvDeps{
+		Paths:       paths,
+		Builds:      []model.RuntimeBuild{builder, nodeBuild},
+		PHPInfo:     &info,
+		NodeDefault: &selected,
+		BasePATH:    "/bin",
+	}
+	if _, err := BuildSiteEnv(site, deps); err != nil {
 		t.Fatal(err)
 	}
-	// A PHP-only site must not leave stale node shims from a removed build
-	// profile.
+	// A stale shim from an earlier selection is replaced by the resolved build.
 	stale := filepath.Join(SiteShimDir(paths, site.Name), "node")
 	writeTestScript(t, stale, "#!/bin/sh\nexit 0\n", 0o755)
-	if _, err := BuildSiteEnv(site, EnvDeps{Paths: paths, Builds: []model.RuntimeBuild{builder}, PHPInfo: &info, BasePATH: "/bin"}); err != nil {
+	if _, err := BuildSiteEnv(site, deps); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stale node shim remains: %v", err)
+	data, err := os.ReadFile(stale)
+	if err != nil {
+		t.Fatalf("read node shim: %v", err)
+	}
+	if !strings.Contains(string(data), nodeBuild.Path) {
+		t.Fatalf("stale node shim was not refreshed:\n%s", data)
 	}
 }
 

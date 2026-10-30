@@ -698,6 +698,7 @@ func TestStartRunningStaticSiteIsIdempotentWithoutReprepare(t *testing.T) {
 
 func TestCreateNodeSiteEnsuresRuntime(t *testing.T) {
 	svc, fakes := newTestService(t)
+	installSiteNodeBuild(t, fakes, "24.9.0")
 	site := mustCreate(t, svc, fakes, CreateRequest{
 		Name:        "shop",
 		Path:        fakes.root,

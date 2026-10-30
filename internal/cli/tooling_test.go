@@ -144,6 +144,16 @@ func shellFixture(t *testing.T) (*fakeClient, string, model.Site) {
 			t.Fatal(err)
 		}
 	}
+	nodeRoot := filepath.Join(home, "runtimes", "node", "22.11.0-linux-x64")
+	if err := os.MkdirAll(filepath.Join(nodeRoot, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"node", "npm", "npx"} {
+		path := filepath.Join(nodeRoot, "bin", name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	site := model.Site{
 		ID:            "site-1",
 		Name:          "app",
@@ -153,6 +163,10 @@ func shellFixture(t *testing.T) (*fakeClient, string, model.Site) {
 		PHPBuild:      "php@8.4.12-r1",
 		PHPConfigHash: strings.Repeat("d", 64),
 		Env:           map[string]string{"APP_ENV": "local"},
+		NodeToolchain: &model.NodeToolchain{
+			Version: "22.11.0", BuildID: "node@22.11.0",
+			Source: model.NodeSourceGlobal, Installed: true,
+		},
 	}
 	generation := filepath.Join(home, "sites", site.ID, site.PHPConfigHash)
 	if err := os.MkdirAll(generation, 0o755); err != nil {
@@ -162,9 +176,10 @@ func shellFixture(t *testing.T) (*fakeClient, string, model.Site) {
 	if err := os.WriteFile(ini, []byte("[PHP]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	builds := []model.RuntimeBuild{{
-		ID: "php@8.4.12-r1", Kind: "php", Version: "8.4.12", Backend: model.BackendLocal, Path: phpRoot,
-	}}
+	builds := []model.RuntimeBuild{
+		{ID: "php@8.4.12-r1", Kind: "php", Version: "8.4.12", Backend: model.BackendLocal, Path: phpRoot},
+		{ID: "node@22.11.0", Kind: "node", Version: "22.11.0", Backend: model.BackendLocal, Path: nodeRoot},
+	}
 	fake := &fakeClient{
 		sites:    []model.Site{site},
 		runtimes: builds,

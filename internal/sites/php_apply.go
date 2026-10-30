@@ -292,7 +292,7 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 		return next, nil
 	}
 
-	spec, err := s.phpSiteSpecFromBuildLocked(next, build)
+	spec, err := s.phpSiteSpecFromBuildLocked(ctx, next, build)
 	if err != nil {
 		return current, discardNewGeneration(err)
 	}

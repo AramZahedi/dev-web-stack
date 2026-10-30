@@ -103,6 +103,7 @@ func testPHPFixture(t *testing.T, home string) (config.Paths, model.Site, model.
 	ini := filepath.Join(paths.Sites, "site-1", hash, "php.ini")
 	writeFile(t, ini, "[PHP]\nmemory_limit = 512M\n")
 	build := testPHPBuild(t, home)
+	nodeBuild := testNodeBuild(t, home)
 	site := model.Site{
 		ID:            "site-1",
 		Name:          "app",
@@ -114,6 +115,10 @@ func testPHPFixture(t *testing.T, home string) (config.Paths, model.Site, model.
 		PHPConfigHash: hash,
 		DocumentRoot:  "",
 		Env:           map[string]string{"APP_ENV": "local"},
+		NodeToolchain: &model.NodeToolchain{
+			Version: nodeBuild.Version, BuildID: nodeBuild.ID,
+			Source: model.NodeSourceGlobal, Installed: true,
+		},
 	}
 	info := sites.PHPInfo{
 		Site:         site,
@@ -159,8 +164,13 @@ func (p staticPHP) PHPInfo(context.Context, string) (sites.PHPInfo, error) {
 }
 
 func testDeps(paths config.Paths) Deps {
+	nodeDefault := model.RuntimeBuild{
+		ID: "node@22.1.0", Kind: "node", Version: "22.1.0", Backend: model.BackendLocal,
+		Path: filepath.Join(paths.Home, "runtimes", "node", "22.1.0"),
+	}
 	return Deps{
 		Paths:       paths,
+		NodeDefault: &nodeDefault,
 		UID:         os.Getuid(),
 		Shell:       "/bin/sh",
 		BasePATH:    os.Getenv("PATH"),

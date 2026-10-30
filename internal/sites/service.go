@@ -57,8 +57,9 @@ type CreateRequest struct {
 
 // UpdateRequest describes a partial site update. Empty strings and nil
 // pointers leave the corresponding field unchanged; a non-nil Env replaces the
-// site environment (an empty map clears it). FrontController is accepted for
-// PHP sites only.
+// site environment (an empty map clears it). NodeVersion distinguishes an
+// omitted value (nil) from an explicit clear (pointer to ""). FrontController
+// is accepted for PHP sites only.
 type UpdateRequest struct {
 	Domain              string
 	SourceMode          string
@@ -75,6 +76,7 @@ type UpdateRequest struct {
 	Command             string
 	DocumentRoot        string
 	Env                 map[string]string
+	NodeVersion         *string
 }
 
 // siteEnvNamePattern matches names that can be exported safely by the site
@@ -364,11 +366,12 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		s.emitEvent(ctx, site.ID, "site.created", fmt.Sprintf(
 			"site %s: build output %s is missing; site created stopped until the first successful build",
 			site.Name, site.Build.Output))
+		s.attachNodeToolchain(ctx, &site)
 		return site, nil
 	}
 
 	if site.Kind == model.SitePHP {
-		spec, err := s.phpSiteSpecFromBuildLocked(site, phpBuild)
+		spec, err := s.phpSiteSpecFromBuildLocked(ctx, site, phpBuild)
 		if err != nil {
 			return fail(err, true)
 		}
@@ -393,6 +396,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 			return fail(fmt.Errorf("sites: publish vhost for %q: %w", site.Name, err), true)
 		}
 		s.emitStatus(ctx, site, "", model.StatusRunning, "")
+		s.attachNodeToolchain(ctx, &site)
 		return site, nil
 	}
 
@@ -411,10 +415,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 			return fail(fmt.Errorf("sites: publish routes for %q: %w", site.Name, err), true)
 		}
 		s.emitStatus(ctx, site, "", model.StatusRunning, "")
+		s.attachNodeToolchain(ctx, &site)
 		return site, nil
 	}
 
-	prepared, err := s.deps.Backend.Prepare(ctx, backendSpec(site))
+	prepared, err := s.deps.Backend.Prepare(ctx, s.backendSpecFor(ctx, site))
 	if err != nil {
 		return fail(fmt.Errorf("sites: prepare %q: %w", site.Name, err), true)
 	}
@@ -437,6 +442,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	}
 
 	s.emitStatus(ctx, site, "", model.StatusRunning, "")
+	s.attachNodeToolchain(ctx, &site)
 	return site, nil
 }
 
@@ -509,6 +515,9 @@ func (s *Service) Update(ctx context.Context, ref string, req UpdateRequest) (mo
 			current.Command != updated.Command ||
 			current.SPAFallback != updated.SPAFallback ||
 			!sameStringMap(current.Env, updated.Env)
+		if current.Kind == model.SiteNode {
+			restartNeeded = restartNeeded || current.NodeVersion != updated.NodeVersion
+		}
 	}
 	if restartNeeded {
 		restarted, restartErr := s.restartForUpdateLocked(ctx, updated)
@@ -550,6 +559,7 @@ func (s *Service) Update(ctx context.Context, ref string, req UpdateRequest) (mo
 	}
 
 	s.emitEvent(ctx, current.ID, "site.updated", fmt.Sprintf("site %s updated", updated.Name))
+	s.attachNodeToolchain(ctx, &updated)
 	return updated, nil
 }
 
@@ -577,7 +587,12 @@ func (s *Service) Get(ctx context.Context, ref string) (model.Site, error) {
 	if err != nil {
 		return model.Site{}, err
 	}
-	return s.refreshLocked(ctx, site)
+	refreshed, err := s.refreshLocked(ctx, site)
+	if err != nil {
+		return model.Site{}, err
+	}
+	s.attachNodeToolchain(ctx, &refreshed)
+	return refreshed, nil
 }
 
 // Logs returns the backend's recent lines or live stream for a site. The
@@ -618,6 +633,7 @@ func (s *Service) List(ctx context.Context) ([]model.Site, error) {
 		if err != nil {
 			return nil, err
 		}
+		s.attachNodeToolchain(ctx, &refreshed)
 		sites = append(sites, refreshed)
 	}
 	return sites, nil
@@ -970,6 +986,14 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		site.PHPBuild = build.ID
 	}
 
+	if site.NodeVersion != "" {
+		resolved, err := s.resolveNodePin(ctx, site.NodeVersion)
+		if err != nil {
+			return model.Site{}, err
+		}
+		site.NodeVersion = resolved
+	}
+
 	if err := s.ensureDomainsAvailable(ctx, "", siteDomains(site)); err != nil {
 		return model.Site{}, err
 	}
@@ -1128,7 +1152,25 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 		}
 		updated.Env = cloneEnv(req.Env)
 	}
+	if req.NodeVersion != nil {
+		pin := strings.TrimSpace(*req.NodeVersion)
+		if pin == "" {
+			if updated.Kind == model.SiteNode {
+				return model.Site{}, errors.New("sites: node site requires a version")
+			}
+			updated.NodeVersion = ""
+		} else {
+			resolved, err := s.resolveNodePin(ctx, pin)
+			if err != nil {
+				return model.Site{}, err
+			}
+			updated.NodeVersion = resolved
+		}
+	}
 
+	if updated.Kind == model.SiteNode && strings.TrimSpace(updated.NodeVersion) == "" {
+		return model.Site{}, errors.New("sites: node site requires a version")
+	}
 	if updated.Kind == model.SiteNode && strings.TrimSpace(updated.Command) == "" {
 		return model.Site{}, errors.New("sites: node site requires a command")
 	}
@@ -1182,7 +1224,7 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 		}
 	}
 
-	prepared, err := s.deps.Backend.Prepare(ctx, backendSpec(site))
+	prepared, err := s.deps.Backend.Prepare(ctx, s.backendSpecFor(ctx, site))
 	if err != nil {
 		releaseAllocated()
 		return site, fmt.Errorf("sites: prepare %q: %w", site.Name, err)
@@ -1331,7 +1373,7 @@ func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current 
 				errs = append(errs, fmt.Errorf("rollback: start %q: %w", previous.Name, err))
 			}
 		case s.deps.Backend != nil:
-			if _, err := s.deps.Backend.Prepare(ctx, backendSpec(previous)); err != nil {
+			if _, err := s.deps.Backend.Prepare(ctx, s.backendSpecFor(ctx, previous)); err != nil {
 				errs = append(errs, fmt.Errorf("rollback: prepare %q: %w", previous.Name, err))
 			} else if _, err := s.deps.Backend.Start(ctx, previous.ID); err != nil {
 				errs = append(errs, fmt.Errorf("rollback: start %q: %w", previous.Name, err))
@@ -1628,12 +1670,20 @@ func (s *Service) checkDeps(needBackend, needHosts bool) error {
 	return nil
 }
 
-// backendSpec converts a persisted site into the backend's execution view.
+// NodeDefaultResolver resolves the machine-wide Node default. The tooling
+// package installs its ResolveNodeDefault implementation at init because it
+// imports sites for the PHP environment types; the local fallback below keeps
+// the service usable in isolation and in tests.
+var NodeDefaultResolver func(context.Context, *store.Store) (model.RuntimeBuild, error)
+
+// defaultNodeSettingKey matches tooling.DefaultNodeSettingKey without creating
+// an import cycle.
+const defaultNodeSettingKey = "node_default"
+
+// backendSpec converts a persisted site into the backend's execution view. The
+// exact site pin is sent for every kind; backendSpecFor additionally resolves an
+// inherited global default before preparing the site.
 func backendSpec(site model.Site) backend.SiteSpec {
-	runtimeVersion := ""
-	if site.Kind == model.SiteNode {
-		runtimeVersion = site.NodeVersion
-	}
 	return backend.SiteSpec{
 		ID:              site.ID,
 		Kind:            string(site.Kind),
@@ -1647,9 +1697,233 @@ func backendSpec(site model.Site) backend.SiteSpec {
 		FastCGIPort:     site.FastCGIPort,
 		SPAFallback:     site.SPAFallback,
 		FrontController: site.FrontController,
-		RuntimeVersion:  runtimeVersion,
+		RuntimeVersion:  strings.TrimSpace(site.NodeVersion),
 		PHPVersion:      site.PHPVersion,
 	}
+}
+
+// backendSpecFor resolves the exact Node toolchain, including an inherited
+// global default, and returns the backend execution view.
+func (s *Service) backendSpecFor(ctx context.Context, site model.Site) backend.SiteSpec {
+	spec := backendSpec(site)
+	if toolchain, err := s.ResolveNodeToolchain(ctx, site); err == nil {
+		spec.RuntimeVersion = toolchain.Version
+	}
+	return spec
+}
+
+// ResolveNodeToolchain resolves the exact Node runtime a site shell or exec
+// session uses. A site pin always wins; an empty pin inherits the global default
+// for static and PHP sites. Node-kind sites require an explicit pin. Resolution
+// only considers installed builds and never downloads.
+func (s *Service) ResolveNodeToolchain(ctx context.Context, site model.Site) (model.NodeToolchain, error) {
+	ctx = nonNilContext(ctx)
+	pin := strings.TrimSpace(site.NodeVersion)
+	if pin != "" {
+		build, ok, err := s.findInstalledNodeBuild(ctx, pin)
+		if err != nil {
+			return model.NodeToolchain{}, err
+		}
+		if !ok {
+			return model.NodeToolchain{
+				Version:   strings.TrimPrefix(pin, "node@"),
+				Source:    model.NodeSourceSite,
+				Installed: false,
+			}, &NodeVersionNotInstalledError{Version: strings.TrimPrefix(pin, "node@")}
+		}
+		return model.NodeToolchain{
+			Version:   build.Version,
+			BuildID:   build.ID,
+			Source:    model.NodeSourceSite,
+			Installed: true,
+		}, nil
+	}
+	if site.Kind == model.SiteNode {
+		return model.NodeToolchain{}, errors.New("sites: node site requires a version")
+	}
+	build, err := s.resolveGlobalNodeDefault(ctx)
+	if err != nil {
+		return model.NodeToolchain{}, fmt.Errorf("sites: resolve global node default: %w", err)
+	}
+	return model.NodeToolchain{
+		Version:   build.Version,
+		BuildID:   build.ID,
+		Source:    model.NodeSourceGlobal,
+		Installed: true,
+	}, nil
+}
+
+// attachNodeToolchain adds the response-only summary to a site. An unresolved
+// inheritance (no default at all) leaves the summary absent; a configured pin
+// that is missing is reported with Installed=false while the resolver error is
+// retained for operations that need an executable toolchain.
+func (s *Service) attachNodeToolchain(ctx context.Context, site *model.Site) {
+	if site == nil {
+		return
+	}
+	toolchain, err := s.ResolveNodeToolchain(ctx, *site)
+	if err != nil && toolchain.Version == "" {
+		site.NodeToolchain = nil
+		return
+	}
+	site.NodeToolchain = &toolchain
+}
+
+// ErrNodeVersionNotInstalled matches a site pin that does not name an installed
+// Node build. Create and update perform read-only validation; installing a
+// runtime is the explicit `runtime install` path, never a site mutation.
+var ErrNodeVersionNotInstalled = errors.New("sites: node version is not installed")
+
+// NodeVersionNotInstalledError reports the exact requested pin that is not
+// installed.
+type NodeVersionNotInstalledError struct {
+	Version string
+}
+
+// Error implements error.
+func (e *NodeVersionNotInstalledError) Error() string {
+	return fmt.Sprintf("sites: node version %q is not installed", e.Version)
+}
+
+// Unwrap makes every not-installed pin match ErrNodeVersionNotInstalled.
+func (e *NodeVersionNotInstalledError) Unwrap() error { return ErrNodeVersionNotInstalled }
+
+// resolveNodePin normalizes a requested site pin to an exact installed version.
+// It is strictly read-only and never asks a runtime provider to install a
+// missing build.
+func (s *Service) resolveNodePin(ctx context.Context, pin string) (string, error) {
+	pin = strings.TrimSpace(pin)
+	if pin == "" {
+		return "", nil
+	}
+	builds, err := s.installedNodeBuilds(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, build := range builds {
+		if nodeBuildMatches(build, pin) {
+			return build.Version, nil
+		}
+	}
+	return "", &NodeVersionNotInstalledError{Version: strings.TrimPrefix(pin, "node@")}
+}
+
+// findInstalledNodeBuild resolves an exact build id, exact version, major.minor
+// line, or major line against installed Node builds, newest first.
+func (s *Service) findInstalledNodeBuild(ctx context.Context, value string) (model.RuntimeBuild, bool, error) {
+	builds, err := s.installedNodeBuilds(ctx)
+	if err != nil {
+		return model.RuntimeBuild{}, false, err
+	}
+	for _, build := range builds {
+		if nodeBuildMatches(build, value) {
+			return build, true, nil
+		}
+	}
+	return model.RuntimeBuild{}, false, nil
+}
+
+// resolveGlobalNodeDefault selects the global Node default. tooling provides
+// the production resolver; the fallback mirrors its setting/newest rules.
+func (s *Service) resolveGlobalNodeDefault(ctx context.Context) (model.RuntimeBuild, error) {
+	if NodeDefaultResolver != nil {
+		return NodeDefaultResolver(ctx, s.deps.Store)
+	}
+	if s.deps.Store == nil {
+		return model.RuntimeBuild{}, errors.New("sites: missing dependencies: store")
+	}
+	builds, err := s.installedNodeBuilds(ctx)
+	if err != nil {
+		return model.RuntimeBuild{}, err
+	}
+	setting := ""
+	if value, err := s.deps.Store.GetSetting(ctx, defaultNodeSettingKey); err == nil {
+		setting = strings.TrimSpace(value)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return model.RuntimeBuild{}, fmt.Errorf("sites: read node_default: %w", err)
+	}
+	if setting == "" {
+		if len(builds) == 0 {
+			return model.RuntimeBuild{}, errors.New("no Node build is installed")
+		}
+		return builds[0], nil
+	}
+	for _, build := range builds {
+		if nodeBuildMatches(build, setting) {
+			return build, nil
+		}
+	}
+	return model.RuntimeBuild{}, fmt.Errorf("node default %q is not installed", setting)
+}
+
+// installedNodeBuilds returns compatible installed Node builds, newest first.
+func (s *Service) installedNodeBuilds(ctx context.Context) ([]model.RuntimeBuild, error) {
+	if s.deps.Store == nil {
+		return nil, errors.New("sites: missing dependencies: store")
+	}
+	all, err := s.deps.Store.ListRuntimes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sites: list runtimes: %w", err)
+	}
+	builds := make([]model.RuntimeBuild, 0, len(all))
+	for _, build := range all {
+		if build.Kind == "node" && nodeBuildCompatible(build.Backend) {
+			builds = append(builds, build)
+		}
+	}
+	sort.SliceStable(builds, func(i, j int) bool {
+		return compareNodeVersions(builds[i].Version, builds[j].Version) > 0
+	})
+	return builds, nil
+}
+
+func nodeBuildCompatible(backend model.BackendKind) bool {
+	if runtime.GOOS == "windows" {
+		return backend == model.BackendWSL || backend == model.BackendLocal || backend == ""
+	}
+	return backend == model.BackendLocal || backend == ""
+}
+
+func nodeBuildMatches(build model.RuntimeBuild, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if build.ID == value || build.Version == value {
+		return true
+	}
+	requested := strings.TrimPrefix(value, "node@")
+	if requested == build.Version {
+		return true
+	}
+	switch strings.Count(requested, ".") {
+	case 0:
+		return strings.HasPrefix(build.Version, requested+".")
+	case 1:
+		return catalog.LineOf(build.Version) == requested
+	default:
+		return false
+	}
+}
+
+func compareNodeVersions(a, b string) int {
+	ap, bp := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(ap) || i < len(bp); i++ {
+		var av, bv int
+		if i < len(ap) {
+			av, _ = strconv.Atoi(ap[i])
+		}
+		if i < len(bp) {
+			bv, _ = strconv.Atoi(bp[i])
+		}
+		switch {
+		case av < bv:
+			return -1
+		case av > bv:
+			return 1
+		}
+	}
+	return 0
 }
 
 // siteDomains returns the primary domain followed by the optional www alias.
