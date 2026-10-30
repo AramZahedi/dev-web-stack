@@ -16,6 +16,7 @@
   import ConfirmDialog from '../ConfirmDialog.svelte';
   import DatabaseConnectionCard from '../DatabaseConnectionCard.svelte';
   import EmptyState from '../EmptyState.svelte';
+  import ErrorBanner from '../ErrorBanner.svelte';
   import SecretField from '../SecretField.svelte';
   import LinkDatabaseDialog from './LinkDatabaseDialog.svelte';
   import {
@@ -27,11 +28,13 @@
   interface Props {
     site: Site;
     links: SiteDatabaseLink[];
+    linksError?: { code: string; message: string } | null;
     onRefresh: () => void;
+    onRetryLinks?: () => void;
     onRestart: () => void;
   }
 
-  let { site, links, onRefresh, onRestart }: Props = $props();
+  let { site, links, linksError = null, onRefresh, onRetryLinks, onRestart }: Props = $props();
 
   let linkOpen = $state(false);
   let unlinkTarget = $state<SiteDatabaseLink | null>(null);
@@ -177,13 +180,26 @@
     </Button>
   {/snippet}
 
+  {#if linksError}
+    <div class="links-error">
+      <ErrorBanner
+        title="Could not load databases"
+        code={linksError.code}
+        message={linksError.message}
+        onretry={onRetryLinks}
+      />
+    </div>
+  {/if}
+
   {#if links.length === 0}
-    <EmptyState
-      icon={Database}
-      title="No databases linked"
-      description="Link a database to inject DB_* connection variables into this site. Databases are service-wide and survive site deletion."
-      compact
-    />
+    {#if !linksError}
+      <EmptyState
+        icon={Database}
+        title="No databases linked"
+        description="Link a database to inject DB_* connection variables into this site. Databases are service-wide and survive site deletion."
+        compact
+      />
+    {/if}
   {:else}
     <div class="db-list">
       {#each links as link (link.id)}
@@ -358,6 +374,10 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+
+  .links-error {
+    margin-bottom: 12px;
   }
 
   .db-link {

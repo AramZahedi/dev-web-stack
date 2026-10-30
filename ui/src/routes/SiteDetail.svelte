@@ -82,6 +82,7 @@
 
   let site = $state<Site | null>(null);
   let siteLinks = $state<SiteDatabaseLink[]>([]);
+  let linksError = $state<{ code: string; message: string } | null>(null);
   let loading = $state(true);
   let notFound = $state(false);
   let error = $state<{ code: string; message: string } | null>(null);
@@ -295,6 +296,7 @@
       loading = true;
       site = null;
       siteLinks = [];
+      linksError = null;
       phpInfo = null;
       phpRuntimes = [];
       nodeDefault = null;
@@ -341,15 +343,24 @@
       return;
     }
     try {
+      const linksPromise = db
+        .listSiteDatabases(siteRef)
+        .then((result) => ({ ok: true as const, links: result?.links ?? [] }))
+        .catch((caught) => ({ ok: false as const, error: describeError(caught) }));
       const [next, builds, defaultStatus, linksResult] = await Promise.all([
         api.getSite(siteRef),
         api.listRuntimes().catch(() => [] as RuntimeBuild[]),
         api.getNodeDefault().catch(() => null),
-        db.listSiteDatabases(siteRef).catch(() => ({ links: [] as SiteDatabaseLink[] })),
+        linksPromise,
       ]);
       if (generation !== loadGeneration || siteRef !== ref) return;
       site = next;
-      siteLinks = linksResult?.links ?? [];
+      if (linksResult.ok) {
+        siteLinks = linksResult.links;
+        linksError = null;
+      } else {
+        linksError = linksResult.error;
+      }
       phpRuntimes = builds;
       nodeDefault = defaultStatus;
       if (next.kind === 'php') await loadPHP(siteRef, generation);
@@ -1176,7 +1187,9 @@
     <SiteDatabaseCard
       {site}
       links={siteLinks}
+      {linksError}
       onRefresh={() => void load()}
+      onRetryLinks={() => void load()}
       onRestart={() => void act('restart')}
     />
 

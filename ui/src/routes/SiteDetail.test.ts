@@ -846,6 +846,23 @@ describe('SiteDetail configuration and builds', () => {
     );
   });
 
+  it('keeps previous links and offers retry when link loading fails', async () => {
+    await renderSite('blog');
+    expect(await screen.findByText('app')).toBeTruthy();
+
+    mockDb.listSiteDatabases.mockRejectedValueOnce(
+      new ApiError('DATABASE_LINKS_FAILED', 'Could not load database links.', 503),
+    );
+    window.dispatchEvent(new Event('devstack:refresh'));
+
+    expect(await screen.findByText('Could not load databases')).toBeTruthy();
+    expect(screen.getByText('app')).toBeTruthy();
+
+    mockDb.listSiteDatabases.mockResolvedValue({ links: [SITE_DB_LINK] });
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText('Could not load databases')).toBeNull());
+  });
+
   it('sanitizes copied .env snippets and never echoes them', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
