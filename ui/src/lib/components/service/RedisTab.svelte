@@ -161,15 +161,15 @@
           size="sm"
           variant="secondary"
           disabled={!service.active}
-          onclick={() => (aclOpen = true)}
+          onclick={() => {
+            aclError = '';
+            aclOpen = true;
+          }}
         >
           Enable ACL persistence
         </Button>
         <span class="muted">Idempotent; safe if already enabled.</span>
       </div>
-      {#if aclError}
-        <p class="acl-error" role="alert">{aclError}</p>
-      {/if}
     </Card>
     <p class="default-hint">The protected default password is managed on the Password tab.</p>
   {:else}
@@ -229,7 +229,13 @@
   oncancel={() => {
     if (!aclBusy) aclOpen = false;
   }}
-/>
+>
+  {#snippet details()}
+    {#if aclError}
+      <p class="acl-error" role="alert">{aclError}</p>
+    {/if}
+  {/snippet}
+</ConfirmDialog>
 
 <style>
   .redis-tab {

@@ -28,8 +28,11 @@
   import { jobToastKind } from './jobStatus';
   import { isRecoveryJob, restoreDatabaseName } from './recovery';
   import {
+    clearActiveJobID,
     clearRecoveryJobID,
+    loadActiveJobID,
     loadRecoveryJobID,
+    saveActiveJobID,
     saveRecoveryJobID,
   } from './recoveryStore';
   import {
@@ -171,6 +174,7 @@
       jobError = null;
     } catch (caught) {
       jobError = describeError(caught);
+      clearActiveJobID(service.id);
       stopJobPolling();
       onjobchange?.(false, null);
     }
@@ -185,6 +189,7 @@
   function finishJob(next: DatabaseJob): void {
     job = next;
     jobError = null;
+    clearActiveJobID(service.id);
     rememberRecovery(next);
     stopJobPolling();
     onjobchange?.(false, null);
@@ -203,6 +208,7 @@
       finishJob(next);
       return;
     }
+    saveActiveJobID(service.id, next.id);
     stopJobPolling();
     onjobchange?.(true, next);
     jobTimer = setInterval(() => void pollJob(next.id), 1200);
@@ -214,6 +220,7 @@
       await dbApi.cancelDatabaseJob(job.id);
       const canceled: DatabaseJob = { ...job, status: 'canceled' };
       job = canceled;
+      clearActiveJobID(service.id);
       rememberRecovery(canceled);
       stopJobPolling();
       onjobchange?.(false, null);
@@ -233,6 +240,28 @@
 
   onMount(() => {
     const saved = loadRecoveryJobID(service.id);
+    const active = loadActiveJobID(service.id);
+    if (active && active !== saved) {
+      void dbApi
+        .getDatabaseJob(active)
+        .then((next) => {
+          if (jobRunning(next)) {
+            watchJob(next);
+            return;
+          }
+          clearActiveJobID(service.id);
+          if (isRecoveryJob(next)) {
+            recoveryJob = next;
+            saveRecoveryJobID(service.id, next.id);
+          } else {
+            finishJob(next);
+          }
+        })
+        .catch(() => {
+          // A missing active job simply means there is nothing to resume.
+          clearActiveJobID(service.id);
+        });
+    }
     if (!saved) return;
     void dbApi
       .getDatabaseJob(saved)

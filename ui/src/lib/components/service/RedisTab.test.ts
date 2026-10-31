@@ -192,6 +192,22 @@ describe('RedisTab', () => {
     await waitFor(() => expect(db.enableRedisACLFile).toHaveBeenCalledWith('redis', true));
   });
 
+  it('shows an ACL enable failure inside the open confirmation dialog', async () => {
+    vi.mocked(db.enableRedisACLFile).mockRejectedValueOnce(
+      new Error('Could not restart Redis.'),
+    );
+    render(RedisTab, {
+      props: { service: REDIS_SERVICE, users: REDIS_USERS, onRefresh: vi.fn() },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: /enable acl persistence/i }));
+    await fireEvent.click(screen.getByRole('button', { name: /enable and restart/i }));
+
+    expect(await screen.findByText('Could not restart Redis.')).toBeTruthy();
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(screen.queryByText(/redis acl persistence enabled/i)).toBeNull();
+  });
+
   it('does not duplicate the default password card on the users tab', () => {
     render(RedisTab, {
       props: { service: REDIS_SERVICE, users: REDIS_USERS, onRefresh: vi.fn() },
