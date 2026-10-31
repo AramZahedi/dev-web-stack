@@ -23,6 +23,21 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
 
+func TestNewRuntimeCreatesProjectsRoot(t *testing.T) {
+	root := t.TempDir()
+	if _, err := NewRuntime(root); err != nil {
+		t.Fatal(err)
+	}
+	projects := filepath.Join(root, "projects")
+	info, err := os.Stat(projects)
+	if err != nil {
+		t.Fatalf("projects root was not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("projects root is not a directory: %s", projects)
+	}
+}
+
 func TestListenSitePortRetriesTransientBind(t *testing.T) {
 	blocked, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

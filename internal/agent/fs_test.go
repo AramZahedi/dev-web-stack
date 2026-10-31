@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/AramZahedi/dev-web-stack/internal/agent"
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
 
@@ -47,6 +48,29 @@ func TestAgentFSListing(t *testing.T) {
 	}
 	if listing.Entries[0].Name != "site-a" || listing.Entries[1].Name != "site-b" {
 		t.Fatalf("unexpected entries: %+v", listing.Entries)
+	}
+}
+
+func TestAgentFSFreshRuntimeRootListsEmpty(t *testing.T) {
+	root := t.TempDir()
+	if _, err := agent.NewRuntime(root); err != nil {
+		t.Fatal(err)
+	}
+	server, identity := newTestAgentAt(t, root)
+	r := startAgentTestServer(t, server, identity, 1)
+	defer r.close()
+
+	resp := agentFSGet(t, r, "/")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var listing agentproto.FSListing
+	if err := json.NewDecoder(resp.Body).Decode(&listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Entries) != 0 {
+		t.Fatalf("entries = %+v, want none", listing.Entries)
 	}
 }
 

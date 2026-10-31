@@ -76,7 +76,7 @@ func NewRuntime(root string) (*Runtime, error) {
 	for _, entry := range []struct {
 		dir  string
 		mode os.FileMode
-	}{{root, 0o755}, {filepath.Join(root, "run"), 0o700}, {filepath.Join(root, "logs"), 0o750}, {filepath.Join(root, "sites"), 0o750}} {
+	}{{root, 0o755}, {filepath.Join(root, "projects"), 0o755}, {filepath.Join(root, "run"), 0o700}, {filepath.Join(root, "logs"), 0o750}, {filepath.Join(root, "sites"), 0o750}} {
 		dir := entry.dir
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("agent: create runtime directory %s: %w", dir, err)
