@@ -8,6 +8,7 @@ import type {
   DatabaseBackup,
   DatabaseConnection,
   DatabaseEngine,
+  DatabaseGrant,
   DatabaseJob,
   DatabaseLink,
   DatabaseSecret,
@@ -25,6 +26,24 @@ import type {
 const now = () => new Date().toISOString();
 const clone = <T>(value: T): T => structuredClone(value);
 const wait = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+// Dashboard form values are Svelte proxies. Convert grants to plain objects
+// before the mock stores or structured-clones them.
+function copyGrants(grants: DatabaseGrant[] | undefined): DatabaseGrant[] {
+  return (grants ?? []).map((grant) => ({
+    database: grant.database,
+    preset: grant.preset,
+    ...(grant.privileges ? { privileges: [...grant.privileges] } : {}),
+  }));
+}
+
+// Site routes use either the site id (s_blog) or its name (blog). Resolve both
+// the same way the daemon does.
+function siteRefMatches(linkSiteID: string, ref: string): boolean {
+  if (linkSiteID === ref) return true;
+  const normalized = linkSiteID.replace(/^s_/, '');
+  return normalized === ref || normalized.replace(/_\d+$/, '') === ref;
+}
 
 function engineFor(serviceID: string): DatabaseEngine {
   if (serviceID === 'postgresql' || serviceID === 'postgres') return 'postgres';
@@ -64,7 +83,7 @@ function connectionFor(link: {
 
 let databases: Database[] = [
   { name: 'app', service_id: 'mysql', engine: 'mysql', size_bytes: 13_000_000, table_count: 12, created_at: now(), linked_sites: [], managed: true },
-  { name: 'blog', service_id: 'mysql', engine: 'mysql', size_bytes: 4_200_000, table_count: 7, created_at: now(), linked_sites: [{ id: 'site_blog', name: 'blog' }], managed: true },
+  { name: 'blog', service_id: 'mysql', engine: 'mysql', size_bytes: 4_200_000, table_count: 7, created_at: now(), linked_sites: [{ id: 's_blog', name: 'blog' }], managed: true },
   { name: 'devstack', service_id: 'mysql', engine: 'mysql', size_bytes: 1_100_000, table_count: 2, created_at: now(), linked_sites: [], managed: false },
   { name: 'app', service_id: 'postgresql', engine: 'postgres', size_bytes: 8_000_000, table_count: 9, created_at: now(), linked_sites: [], managed: true },
 ];
@@ -81,13 +100,40 @@ let backups: DatabaseBackup[] = [
   { id: 'bkp_1', service_id: 'mysql', engine: 'mysql', database: 'app', size_bytes: 2_400_000, sha256: 'abc123', kind: 'manual', status: 'ready', created_at: now() },
 ];
 
-let jobs: DatabaseJob[] = [];
+const JOB_STORAGE_KEY = 'devstack.mock.database.jobs';
+
+function readPersistedJobs(): DatabaseJob[] {
+  if (typeof sessionStorage === 'undefined') return [];
+  try {
+    const raw = sessionStorage.getItem(JOB_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as DatabaseJob[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistJobs(): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(jobs));
+  } catch {
+    // Session storage can be unavailable in private modes.
+  }
+}
+
+let jobs: DatabaseJob[] = readPersistedJobs();
 let links: DatabaseLink[] = [];
+
+/** Seeds a job in the in-page mock so recovery can be exercised after reload. */
+export function seedMockDatabaseJobForTests(job: DatabaseJob): void {
+  jobs.push(clone(job));
+  persistJobs();
+}
 
 export function resetMockDatabaseStateForTests(): void {
   databases = [
     { name: 'app', service_id: 'mysql', engine: 'mysql', size_bytes: 13_000_000, table_count: 12, created_at: now(), linked_sites: [], managed: true },
-    { name: 'blog', service_id: 'mysql', engine: 'mysql', size_bytes: 4_200_000, table_count: 7, created_at: now(), linked_sites: [{ id: 'site_blog', name: 'blog' }], managed: true },
+    { name: 'blog', service_id: 'mysql', engine: 'mysql', size_bytes: 4_200_000, table_count: 7, created_at: now(), linked_sites: [{ id: 's_blog', name: 'blog' }], managed: true },
     { name: 'devstack', service_id: 'mysql', engine: 'mysql', size_bytes: 1_100_000, table_count: 2, created_at: now(), linked_sites: [], managed: false },
     { name: 'app', service_id: 'postgresql', engine: 'postgres', size_bytes: 8_000_000, table_count: 9, created_at: now(), linked_sites: [], managed: true },
   ];
@@ -103,6 +149,13 @@ export function resetMockDatabaseStateForTests(): void {
   ];
   jobs = [];
   links = [];
+  if (typeof sessionStorage !== 'undefined') {
+    try {
+      sessionStorage.removeItem(JOB_STORAGE_KEY);
+    } catch {
+      // Ignore unavailable storage.
+    }
+  }
 }
 
 function serviceDatabases(serviceID: string): Database[] {
@@ -195,7 +248,7 @@ export const mockDatabaseApi = {
       managed: true,
       password_managed: true,
       access_level: body.access_level,
-      grants: body.grants ?? [],
+      grants: copyGrants(body.grants),
       linked_sites: [],
       created_at: now(),
     };
@@ -207,7 +260,7 @@ export const mockDatabaseApi = {
     await wait();
     const user = findUser(serviceID, userID);
     if (body.enabled !== undefined) user.enabled = body.enabled;
-    if (body.grants) user.grants = body.grants;
+    if (body.grants) user.grants = copyGrants(body.grants);
     if (body.access_level) user.access_level = body.access_level;
     return clone(user);
   },
@@ -271,6 +324,7 @@ export const mockDatabaseApi = {
       updated_at: now(),
     };
     jobs.push(job);
+    persistJobs();
     return clone(job);
   },
 
@@ -298,6 +352,7 @@ export const mockDatabaseApi = {
       updated_at: now(),
     };
     jobs.push(job);
+    persistJobs();
     return clone(job);
   },
 
@@ -321,6 +376,7 @@ export const mockDatabaseApi = {
       updated_at: now(),
     };
     jobs.push(job);
+    persistJobs();
     return clone(job);
   },
 
@@ -339,12 +395,15 @@ export const mockDatabaseApi = {
   async cancelDatabaseJob(jobID: string): Promise<void> {
     await wait();
     const job = jobs.find((candidate) => candidate.id === jobID);
-    if (job) job.status = 'canceled';
+    if (job) {
+      job.status = 'canceled';
+      persistJobs();
+    }
   },
 
   async listSiteDatabases(siteID: string): Promise<{ links: DatabaseLink[] }> {
     await wait();
-    return { links: clone(links.filter((link) => link.site_id === siteID)) };
+    return { links: clone(links.filter((link) => siteRefMatches(link.site_id, siteID))) };
   },
 
   async linkSiteDatabase(siteID: string, body: LinkDatabaseRequest): Promise<DatabaseLink> {
