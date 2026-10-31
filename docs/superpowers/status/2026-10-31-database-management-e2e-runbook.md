@@ -3,7 +3,7 @@
 - **Purpose:** run the exhaustive E2E plan in fresh subagent contexts so the main session does not grow with full test transcripts.
 - **Plan:** `docs/superpowers/status/2026-10-31-database-management-e2e-plan.md`
 - **Model for every subagent:** `opencode-go/deepseek-v4.1-flash#max`
-- **Status:** readiness batch pending. No live E2E has been started.
+- **Status:** cycle 0 (readiness) done. No live E2E has been started.
 - **Main-session rule:** one batch = one spawn, one close. The subagent returns a short summary, evidence paths, and a status update; the main session records it and spawns the next batch.
 
 ## Hard constraints for every subagent
@@ -23,7 +23,7 @@ Recommended batched run: **15 spawn/close cycles** (14 if no retry is needed). O
 
 | Cycle | Batch | Scope | Environment | Destructive? | Status |
 |---|---|---|---|---|---|
-| 0 | Readiness setup | R01-R04, R11-R12: tools, Docker/images, variables, dry-runs | WIN/LIN | No real-install mutation | pending |
+| 0 | Readiness setup | R01-R04, R11-R12: tools, Docker/images, variables, dry-runs | WIN/LIN | No real-install mutation | done |
 | 1 | Harness and fixtures | R05, R07, R08: fixtures, seed/verify scripts, tracker, secret scanner, cleanup/rollback, isolation model | WIN/LIN | No real-install mutation | pending |
 | 2 | Playwright specs | R06: database-management specs, live-dashboard config, browser install | UI | No | pending |
 | 3 | Windows read-only | E2E-00, E2E-09 read-only, E2E-12 read-only, E2E-20 real-install login | WIN-REAL read-only | No | pending |
@@ -56,7 +56,7 @@ If a batch would require a destructive real-install change and no disposable env
 
 | Cycle | Started | Finished | Result | Evidence | Notes |
 |---|---|---|---|---|---|
-| 0 | - | - | pending | - | - |
+| 0 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-0/` | R01-R04 and R11 ready; R12 tool smokes done, harness dry-runs deferred to cycle 1; real install untouched. |
 | 1 | - | - | pending | - | - |
 | 2 | - | - | pending | - | - |
 | 3 | - | - | pending | - | - |

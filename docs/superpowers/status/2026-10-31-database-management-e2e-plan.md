@@ -79,10 +79,10 @@ This audit records what is already available on this machine and what must be in
 
 ### Readiness tasks (must pass before the P0/P1 run)
 
-- [ ] **R01:** Install Playwright Firefox and WebKit; record versions and browser download sizes.
-- [ ] **R02:** Install `sqlite3` on Windows and in the Linux test distros, or document a supported Go/WSL audit reader. Do not rely on a missing tool.
-- [ ] **R03:** Install Docker in Ubuntu 26.04 and Fedora 44, or create a disposable Debian 12 clone with Docker. Verify `systemctl` and `docker info`.
-- [ ] **R04:** Pull MariaDB, PostgreSQL, and Redis images; record digests and sizes.
+- [x] **R01:** Install Playwright Firefox and WebKit; record versions and browser download sizes. *(Cycle 0: Firefox 157.0 / build v1555, 346.3 MiB; WebKit 27.2 / build v2370, 169.6 MiB; both headless smokes pass.)*
+- [ ] **R02:** Install `sqlite3` on Windows and in the Linux test distros, or document a supported Go/WSL audit reader. Do not rely on a missing tool. *(Partial, cycle 0: Ubuntu 26.04 has sqlite3 3.46.1 and read a copy of `state.db` with `integrity_check=ok`; native Windows and Fedora readers are still absent.)*
+- [ ] **R03:** Install Docker in Ubuntu 26.04 and Fedora 44, or create a disposable Debian 12 clone with Docker. Verify `systemctl` and `docker info`. *(Partial, cycle 0: Ubuntu 26.04 has Docker 29.1.3 + Compose 2.40.3, systemd running, `docker info` healthy; Fedora 44 still lacks Docker.)*
+- [x] **R04:** Pull MariaDB, PostgreSQL, and Redis images; record digests and sizes. *(Cycle 0: MariaDB 11.8.9 `f16d7a34...` 458 MB, PostgreSQL 18.6 `edb0c08d...` 650 MB, Redis 8.8.3 `418e397f...` 209 MB in the Ubuntu engine.)*
 - [ ] **R05:** Create `test/e2e/database-management/` fixtures, seed/verify scripts, result tracker, secret scanner, cleanup, and rollback scripts.
 - [ ] **R06:** Write the database-management Playwright specs and a live-dashboard Playwright config/spec.
 - [ ] **R07:** Choose and document the Windows live-service isolation model:
@@ -91,9 +91,9 @@ This audit records what is already available on this machine and what must be in
   - **C:** use `-TestSandbox` only for installer mechanics, never for live service flows.
 - [ ] **R08:** Choose and document the Linux isolation model: disposable distro/clone, disposable home, foreground helper with custom socket, separate Docker network/ports.
 - [ ] **R09:** Verify the helper binary starts on Ubuntu 26.04 and Fedora 44, or record those distros as unsupported and remove them from the gate.
-- [ ] **R10:** Verify network access for image pulls, browser downloads, and package installs; record failures as blocked prerequisites.
-- [ ] **R11:** Define the shell variables used by the plan (`$ds`, `$home`, `$stamp`, `$svc`, `$id`) and the previous-binary source for E2E-14.
-- [ ] **R12:** Dry-run every harness script and the cleanup/rollback script before the first destructive scenario.
+- [x] **R10:** Verify network access for image pulls, browser downloads, and package installs; record failures as blocked prerequisites. *(Cycle 0: Ubuntu apt installs, Playwright CDN downloads, and Docker Hub digest pulls all succeeded.)*
+- [x] **R11:** Define the shell variables used by the plan (`$ds`, `$home`, `$stamp`, `$svc`, `$id`) and the previous-binary source for E2E-14. *(Cycle 0: definitions and hashes recorded in `.superpowers/e2e-progress.md`; previous source is `dist/update-20261031/*.pre-upgrade` / `v0.3.1` at `40df5c0`.)*
+- [ ] **R12:** Dry-run every harness script and the cleanup/rollback script before the first destructive scenario. *(Partial, cycle 0: tool/version/browser/docker/sqlite smokes pass; harness, cleanup, and rollback dry-runs are deferred to cycle 1 because R05 scripts do not exist yet.)*
 
 ### What is executable today
 
