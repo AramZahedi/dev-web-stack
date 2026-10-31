@@ -35,6 +35,29 @@ user_id() {
 	python3 -c 'import json,sys; users=json.load(open(sys.argv[1]))["users"]; match=next((u for u in users if u["username"]==sys.argv[2]), None); print(match["id"] if match else "")' "${file}" "${username}"
 }
 
+assert_user_grant() {
+	local service="$1" username="$2" database="$3" preset="$4"
+	shift 4
+	local file="${private}/${service}-users.json"
+	run_json "${file}" db user list --service "${service}" || true
+	if python3 - "${file}" "${username}" "${database}" "${preset}" "$@" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+user = next((u for u in data["users"] if u["username"] == sys.argv[2]), None)
+grant = next((g for g in (user or {}).get("grants", []) if g["database"] == sys.argv[3]), None)
+want_preset = sys.argv[4]
+want_privs = {p.upper() for p in sys.argv[5:]}
+have_privs = {p.upper() for p in (grant or {}).get("privileges", [])}
+ok = grant is not None and grant.get("preset") == want_preset and (not want_privs or want_privs <= have_privs)
+raise SystemExit(0 if ok else 1)
+PY
+	then
+		c4_pass "${scenario}" "${service} metadata grant ${database}:${preset} matches"
+	else
+		c4_fail "${scenario}" "${service} metadata grant ${database}:${preset} matches"
+	fi
+}
+
 json_has_no_secret() {
 	local file="$1"
 	python3 - "${file}" <<'PY'
@@ -238,6 +261,7 @@ if c4_cli --json db user grant --service mysql --user-id "${uid_mysql}" --databa
 else
 	c4_fail "${scenario}" "mysql grant read_only"
 fi
+assert_user_grant mysql e2e_custom e2e_app read_only SELECT
 mysql_grants="$(c4_mysql_root_query -e "SHOW GRANTS FOR 'e2e_custom'@'%';")"
 c4_assert_contains "${scenario}" "mysql engine grant SELECT" "${mysql_grants}" "SELECT"
 c4_assert_not_contains "${scenario}" "mysql engine grant no INSERT after read_only" "${mysql_grants}" "INSERT"
@@ -246,6 +270,7 @@ if c4_cli --json db user grant --service mysql --user-id "${uid_mysql}" --databa
 else
 	c4_fail "${scenario}" "mysql grant custom"
 fi
+assert_user_grant mysql e2e_custom e2e_app custom SELECT INSERT
 mysql_grants="$(c4_mysql_root_query -e "SHOW GRANTS FOR 'e2e_custom'@'%';")"
 c4_assert_contains "${scenario}" "mysql engine custom SELECT" "${mysql_grants}" "SELECT"
 c4_assert_contains "${scenario}" "mysql engine custom INSERT" "${mysql_grants}" "INSERT"
@@ -255,6 +280,7 @@ if c4_cli --json db user grant --service mysql --user-id "${uid_mysql}" --databa
 else
 	c4_fail "${scenario}" "mysql revoke via preset change"
 fi
+assert_user_grant mysql e2e_custom e2e_app read_write SELECT INSERT UPDATE DELETE
 mysql_grants="$(c4_mysql_root_query -e "SHOW GRANTS FOR 'e2e_custom'@'%';")"
 c4_assert_contains "${scenario}" "mysql engine read_write UPDATE" "${mysql_grants}" "UPDATE"
 
@@ -263,6 +289,7 @@ if c4_cli --json db user grant --service postgresql --user-id "${uid_pg}" --data
 else
 	c4_fail "${scenario}" "postgresql grant read_only"
 fi
+assert_user_grant postgresql e2e_custom e2e_app read_only SELECT
 pg_grants="$(c4_psql_root_query -d e2e_app -c "SELECT privilege_type FROM information_schema.role_table_grants WHERE grantee='e2e_custom' UNION SELECT 'CONNECT' WHERE has_database_privilege('e2e_custom','e2e_app','CONNECT') UNION SELECT 'USAGE' WHERE has_schema_privilege('e2e_custom','public','USAGE') ORDER BY 1;")"
 c4_assert_contains "${scenario}" "postgresql engine grant SELECT" "${pg_grants}" "SELECT"
 c4_assert_not_contains "${scenario}" "postgresql engine grant no INSERT after read_only" "${pg_grants}" "INSERT"
@@ -271,10 +298,17 @@ if c4_cli --json db user grant --service postgresql --user-id "${uid_pg}" --data
 else
 	c4_fail "${scenario}" "postgresql grant custom"
 fi
+assert_user_grant postgresql e2e_custom e2e_app custom SELECT INSERT
 pg_grants="$(c4_psql_root_query -d e2e_app -c "SELECT privilege_type FROM information_schema.role_table_grants WHERE grantee='e2e_custom' UNION SELECT 'CONNECT' WHERE has_database_privilege('e2e_custom','e2e_app','CONNECT') UNION SELECT 'USAGE' WHERE has_schema_privilege('e2e_custom','public','USAGE') ORDER BY 1;")"
 c4_assert_contains "${scenario}" "postgresql engine custom SELECT" "${pg_grants}" "SELECT"
 c4_assert_contains "${scenario}" "postgresql engine custom INSERT" "${pg_grants}" "INSERT"
 c4_assert_not_contains "${scenario}" "postgresql engine custom no UPDATE" "${pg_grants}" "UPDATE"
+if c4_cli --json db user grant --service postgresql --user-id "${uid_pg}" --database e2e_app --preset read_write >/dev/null 2>&1; then
+	c4_pass "${scenario}" "postgresql grant read_write"
+else
+	c4_fail "${scenario}" "postgresql grant read_write"
+fi
+assert_user_grant postgresql e2e_custom e2e_app read_write SELECT INSERT UPDATE DELETE
 
 # --- drop with and without backup -------------------------------------------
 for svc in mysql postgresql; do
@@ -381,6 +415,17 @@ else
 fi
 run_json "${private}/mysql-databases-after-site.json" db list --service mysql || true
 run_json "${private}/mysql-users-after-site.json" db user list --service mysql || true
+run_json "${private}/mysql-backups-after-site.json" db backup list --service mysql || true
+if python3 - "${private}/mysql-backups-after-site.json" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1], encoding="utf-8")).get("backups", [])
+raise SystemExit(0 if any(b.get("database") == "e2e_app" for b in rows) else 1)
+PY
+then
+	c4_pass "${scenario}" "site removal preserves backups"
+else
+	c4_fail "${scenario}" "site removal preserves backups"
+fi
 if python3 - "${private}/mysql-databases-after-site.json" "${private}/mysql-users-after-site.json" <<'PY'
 import json, sys
 dbs = {d["name"] for d in json.load(open(sys.argv[1]))["databases"]}
@@ -428,6 +473,13 @@ else
 	c4_fail "${scenario}" "disposable dashboard shell served"
 fi
 c4_note "${scenario}" "SKIP: full dashboard interaction is cycle 8/9 (Playwright); API parity is covered here."
+scan_paths=("${evidence_dir}/${scenario}" "${logs_dir}")
+[ -d "${private}/state-copy" ] && scan_paths+=("${private}/state-copy")
+if "${cycle4_root}/secret-scan.sh" "${scan_paths[@]}" >"${private}/secret-scan.log" 2>&1; then
+	c4_pass "${scenario}" "secret scanner clean over evidence, logs, and state copy"
+else
+	c4_fail "${scenario}" "secret scanner clean over evidence, logs, and state copy"
+fi
 
 # --- result ------------------------------------------------------------------
 status="$(c4_scenario_status "${scenario}")"

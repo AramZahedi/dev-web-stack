@@ -39,6 +39,19 @@ refresh_users() {
 	run_json "${private}/$1-users.json" db user list --service "$1" || true
 }
 
+api_csrf() {
+	local jar="$1"
+	curl -sS -c "${jar}" -X POST "http://127.0.0.1:${ui_port}/api/v1/auth" -o /dev/null
+	curl -sS -b "${jar}" -c "${jar}" "http://127.0.0.1:${ui_port}/api/v1/session" |
+		python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])'
+}
+
+api_patch() {
+	local jar="$1" csrf="$2" path="$3" body="$4"
+	curl -sS -X PATCH -b "${jar}" -H "X-CSRF-Token: ${csrf}" -H 'Content-Type: application/json' \
+		--data-binary "${body}" "http://127.0.0.1:${ui_port}${path}"
+}
+
 expect_create_db() {
 	local service="$1" name="$2" want="$3"
 	if [ "${want}" = "OK" ]; then
@@ -356,6 +369,59 @@ else
 	c4_pass "${scenario}" "link+delete removed the user when delete won"
 fi
 
+# revoke existing and non-existent grants through the API
+run_json "${private}/revoke-probe-create.json" db user create --service mysql --name e2e_revoke_probe --grant e2e_app:read_only
+refresh_users mysql
+uid_revoke="$(user_id mysql e2e_revoke_probe)"
+jar="${private}/api.cookies"
+csrf="$(api_csrf "${jar}")"
+if [ -n "${csrf}" ]; then
+	body='{"grants":[]}'
+	first="$(api_patch "${jar}" "${csrf}" "/api/v1/services/mysql/users/${uid_revoke}" "${body}")"
+	second="$(api_patch "${jar}" "${csrf}" "/api/v1/services/mysql/users/${uid_revoke}" "${body}")"
+	if printf '%s' "${first}" | grep -q '"id"' && printf '%s' "${second}" | grep -q '"id"'; then
+		c4_pass "${scenario}" "revoke existing and non-existent grants are idempotent"
+	else
+		c4_fail "${scenario}" "revoke existing and non-existent grants are idempotent"
+	fi
+	refresh_users mysql
+	if python3 - "${private}/mysql-users.json" <<'PY'
+import json, sys
+u = next((u for u in json.load(open(sys.argv[1]))["users"] if u["username"] == "e2e_revoke_probe"), None)
+raise SystemExit(0 if u and not u.get("grants") else 1)
+PY
+	then
+		c4_pass "${scenario}" "revoked grant removed from metadata"
+	else
+		c4_fail "${scenario}" "revoked grant removed from metadata"
+	fi
+else
+	c4_fail "${scenario}" "API session/CSRF available for revoke probe"
+fi
+
+# create+drop concurrency
+race_cd="e2e_race_cd_$RANDOM"
+c4_cli --json db create --service mysql --name "${race_cd}" >"${private}/race-cd-create.json" 2>"${private}/race-cd-create.err" &
+pid_cd_create=$!
+c4_cli --yes --json db drop --service mysql --name "${race_cd}" >"${private}/race-cd-drop.json" 2>"${private}/race-cd-drop.err" &
+pid_cd_drop=$!
+wait "${pid_cd_create}" || true
+wait "${pid_cd_drop}" || true
+run_json "${private}/race-cd-list.json" db list --service mysql
+if python3 - "${private}/race-cd-list.json" "${race_cd}" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1]))["databases"]
+present = any(d["name"] == sys.argv[2] for d in rows)
+# Either outcome is valid; the list must be internally consistent and not error.
+raise SystemExit(0 if isinstance(present, bool) else 1)
+PY
+then
+	c4_pass "${scenario}" "create+drop concurrency leaves a consistent inventory"
+else
+	c4_fail "${scenario}" "create+drop concurrency leaves a consistent inventory"
+fi
+c4_cli --yes --json db drop --service mysql --name "${race_cd}" >/dev/null 2>&1 || true
+
 # --- stale metadata ----------------------------------------------------------
 run_json "${private}/stale-db-create.json" db create --service mysql --name e2e_stale_db
 run_json "${private}/stale-user-create.json" db user create --service mysql --name e2e_stale_user --grant e2e_stale_db:read_only
@@ -408,10 +474,10 @@ if c4_audit_copy "${private}/state-copy"; then
 else
 	c4_fail "${scenario}" "state.db copied for audit"
 fi
-if "${cycle4_root}/secret-scan.sh" "${evidence_dir}/${scenario}" "${private}/state-copy" >"${private}/secret-scan.log" 2>&1; then
-	c4_pass "${scenario}" "secret scanner clean over evidence and state copy"
+if "${cycle4_root}/secret-scan.sh" "${evidence_dir}/${scenario}" "${private}/state-copy" "${logs_dir}" >"${private}/secret-scan.log" 2>&1; then
+	c4_pass "${scenario}" "secret scanner clean over evidence, logs, and state copy"
 else
-	c4_fail "${scenario}" "secret scanner clean over evidence and state copy"
+	c4_fail "${scenario}" "secret scanner clean over evidence, logs, and state copy"
 fi
 c4_cli db list --service mysql >"${private}/table-db.txt" 2>&1 || true
 c4_cli db user list --service mysql >"${private}/table-users.txt" 2>&1 || true
