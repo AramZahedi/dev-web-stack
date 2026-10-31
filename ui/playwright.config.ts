@@ -5,6 +5,8 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: './tests',
+  // Live-daemon specs have their own config and must never join the mock run.
+  testIgnore: ['**/live/**'],
   // The mock API lives in the page, so each browser context starts from the
   // seeded state. A single worker keeps the shared Vite server predictable.
   fullyParallel: false,
@@ -26,6 +28,14 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'] },
+    },
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
     },
   ],
   webServer: {
