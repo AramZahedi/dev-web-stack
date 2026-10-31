@@ -414,6 +414,9 @@ func (c *DockerServiceController) RestoreBackup(ctx context.Context, serviceID, 
 	if req.Overwrite && req.Confirm != target {
 		return model.DatabaseJob{}, fmt.Errorf("%w: confirmation does not match database %q", databases.ErrInvalidRequest, target)
 	}
+	if !req.Overwrite && target == sourceDatabase {
+		return model.DatabaseJob{}, fmt.Errorf("%w: restoring into the source database requires overwrite", databases.ErrInvalidRequest)
+	}
 	exists, err := c.databaseExists(ctx, serviceID, target)
 	if err != nil {
 		return model.DatabaseJob{}, err
@@ -462,6 +465,7 @@ func (c *DockerServiceController) RestoreBackup(ctx context.Context, serviceID, 
 		}
 	}
 	if err := c.runEngineInput(ctx, serviceID, reader, command); err != nil {
+		c.terminateCanceledSessions(ctx, serviceID, engine, target)
 		return failedJob(serviceID, target, model.JobRestore, recoveryID, c.now(), err), err
 	}
 	now := c.now()
@@ -472,7 +476,7 @@ func (c *DockerServiceController) RestoreBackup(ctx context.Context, serviceID, 
 		Kind:      model.JobRestore,
 		Status:    model.JobSucceeded,
 		Progress:  100,
-		BackupID:  backupID,
+		BackupID:  preBackupID,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
@@ -585,6 +589,7 @@ func (c *DockerServiceController) ImportDatabase(ctx context.Context, serviceID,
 		}
 	}
 	if err := c.runEngineInput(ctx, serviceID, reader, command); err != nil {
+		c.terminateCanceledSessions(ctx, serviceID, engine, database)
 		return failedJob(serviceID, database, model.JobImport, preBackupID, c.now(), err), err
 	}
 	now := c.now()
@@ -805,6 +810,18 @@ func copyLimited(dst io.Writer, src io.Reader, limit int64) (int64, error) {
 		return n, fmt.Errorf("stage import: %w", err)
 	}
 	return n, nil
+}
+
+// terminateCanceledSessions kills engine sessions left behind when the daemon
+// cancels an import/restore. Killing the local docker exec client is not enough:
+// the SQL client inside the container keeps running the current statement.
+func (c *DockerServiceController) terminateCanceledSessions(ctx context.Context, serviceID string, engine dbengine.Engine, database string) {
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	_ = c.terminateSessions(cleanupCtx, serviceID, engine, database)
 }
 
 func failedJob(serviceID, database string, kind model.DatabaseJobKind, backupID string, now time.Time, cause error) model.DatabaseJob {

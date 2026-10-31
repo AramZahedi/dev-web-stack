@@ -993,9 +993,10 @@ func TestHelperRestoreForcesPreRestoreBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.RestoreBackup(context.Background(), "mysql", job.BackupID, databases.RestoreBackupRequest{
+	restore, err := c.RestoreBackup(context.Background(), "mysql", job.BackupID, databases.RestoreBackupRequest{
 		Target: "app", Overwrite: true, Confirm: "app", PreRestoreBackup: false,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	list, err := c.ListBackups(context.Background(), "mysql")
@@ -1006,6 +1007,9 @@ func TestHelperRestoreForcesPreRestoreBackup(t *testing.T) {
 	for _, backup := range list {
 		if backup.Kind == model.BackupPreRestore {
 			preRestore++
+			if backup.ID != restore.BackupID {
+				t.Fatalf("restore job backup=%q, pre_restore backup=%q", restore.BackupID, backup.ID)
+			}
 		}
 	}
 	if preRestore != 1 {
@@ -1254,6 +1258,26 @@ func TestHelperRestoreOverwriteRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestHelperImportCancellationTerminatesSessions(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.handleInput = func(_ string, _ []string, input []byte) ([]byte, error) {
+		if strings.Contains(string(input), "KILL") {
+			return []byte("KILL 11;"), nil
+		}
+		return nil, context.Canceled
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	job, err := c.ImportDatabase(ctx, "mysql", "app", strings.NewReader("SELECT SLEEP(120);"), "slow.sql", databases.ImportRequest{Mode: databases.ImportMerge})
+	if err == nil || job.Status != model.JobFailed {
+		t.Fatalf("job=%+v err=%v", job, err)
+	}
+	if !runner.stdinContains("KILL 11;") {
+		t.Fatalf("canceled import did not terminate the engine session: %q", runner.stdin)
+	}
+}
+
 func TestHelperImportReplaceDropsAndCreates(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	runner := c.runner.(*fakeCommandRunner)
@@ -1490,6 +1514,24 @@ func TestHelperGrantsProtectSystemDatabase(t *testing.T) {
 	}
 	if runner.stdinContains("GRANT") {
 		t.Fatalf("grant ran on a protected database: %q", runner.stdin)
+	}
+}
+
+func TestHelperRestoreSourceWithoutOverwriteRejected(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.streamOutput = []byte("dump")
+	job, err := c.CreateBackup(context.Background(), "mysql", "app", databases.CreateBackupRequest{Kind: model.BackupManual})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.reset()
+	_, err = c.RestoreBackup(context.Background(), "mysql", job.BackupID, databases.RestoreBackupRequest{Target: "app"})
+	if !errors.Is(err, databases.ErrInvalidRequest) {
+		t.Fatalf("err=%v", err)
+	}
+	if runner.joinedCallsContains("DROP DATABASE") {
+		t.Fatalf("source restore dropped the database: %s", runner.joinedCalls())
 	}
 }
 
