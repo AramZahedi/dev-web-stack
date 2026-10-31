@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 const (
@@ -153,6 +156,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 
 		if isAPIPath(r.URL.Path) && !socketAuthenticated(r.Context()) &&
 			s.authToken != "" && !isAuthGateExempt(r.URL.Path) && !s.authorizedRequest(r) {
+			s.auditDeniedReveal(r, "install token required")
 			writeError(w, http.StatusForbidden, codeForbidden, "access denied: install token required", nil)
 			return
 		}
@@ -183,15 +187,67 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil || !isValidSessionValue(cookie.Value) {
 			// A mutation without a session is a CSRF-style rejection.
+			s.auditDeniedReveal(r, "missing dashboard session")
 			writeError(w, http.StatusForbidden, codeForbidden, "missing dashboard session", nil)
 			return
 		}
 		if !s.validCSRF(cookie.Value, r.Header.Get(csrfHeader)) {
+			s.auditDeniedReveal(r, "missing or invalid CSRF token")
 			writeError(w, http.StatusForbidden, codeForbidden, "missing or invalid CSRF token", nil)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// auditDeniedReveal records a durable audit row when a reveal request is
+// rejected before the handler. The row contains only the service/object IDs and
+// the rejection reason; request bodies and secrets are never included.
+func (s *Server) auditDeniedReveal(r *http.Request, reason string) {
+	if s.store == nil || r.Method != http.MethodPost {
+		return
+	}
+	serviceID, objectType, objectName, action, ok := revealAuditTarget(r.URL.Path)
+	if !ok {
+		return
+	}
+	detail, err := json.Marshal(map[string]string{"reason": reason})
+	if err != nil {
+		detail = []byte(`{"reason":"denied"}`)
+	}
+	_ = s.store.AddAuditEvent(r.Context(), model.AuditEventRecord{
+		Actor:      "api",
+		ServiceID:  serviceID,
+		ObjectType: objectType,
+		ObjectName: objectName,
+		Action:     action,
+		Result:     "denied",
+		DetailJSON: string(detail),
+		CreatedAt:  time.Now().UTC().Unix(),
+	})
+	s.logger.Warn("reveal denied",
+		"audit", action,
+		"service", serviceID,
+		"object", objectName,
+		"reason", reason,
+	)
+}
+
+// revealAuditTarget identifies the two reveal routes that must be audited even
+// when authentication rejects the request.
+func revealAuditTarget(path string) (serviceID, objectType, objectName, action string, ok bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 6 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "services" || parts[3] == "" {
+		return "", "", "", "", false
+	}
+	switch {
+	case len(parts) == 6 && parts[4] == "credentials" && parts[5] == "reveal":
+		return parts[3], "service_credentials", parts[3], "service.credentials.reveal_denied", true
+	case len(parts) == 7 && parts[4] == "users" && parts[5] != "" && parts[6] == "reveal":
+		return parts[3], "database_user", parts[5], "database.user.password_reveal_denied", true
+	default:
+		return "", "", "", "", false
+	}
 }
 
 // bodyLimit caps request bodies on API mutations before handlers decode them.

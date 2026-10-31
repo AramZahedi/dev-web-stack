@@ -469,3 +469,86 @@ func TestAPIHostHeaderInjectionRejection(t *testing.T) {
 		})
 	}
 }
+
+func TestDeniedRevealIsAudited(t *testing.T) {
+	fx := newFixture(t, Config{Databases: &fakeDatabaseService{secret: "s3cret"}})
+	cases := []struct {
+		name       string
+		path       string
+		cookie     bool
+		wantAction string
+		wantObject string
+	}{
+		{
+			name:       "service credentials without session",
+			path:       "/api/v1/services/mysql/credentials/reveal",
+			wantAction: "service.credentials.reveal_denied",
+			wantObject: "mysql",
+		},
+		{
+			name:       "database user without session",
+			path:       "/api/v1/services/mysql/users/usr_app/reveal",
+			wantAction: "database.user.password_reveal_denied",
+			wantObject: "usr_app",
+		},
+		{
+			name:       "service credentials without csrf",
+			path:       "/api/v1/services/mysql/credentials/reveal",
+			cookie:     true,
+			wantAction: "service.credentials.reveal_denied",
+			wantObject: "mysql",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+tc.path, nil)
+			req.RemoteAddr = "127.0.0.1:54321"
+			if tc.cookie {
+				req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: fx.session})
+			}
+			rec := httptest.NewRecorder()
+			fx.raw.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			events, err := fx.store.ListAuditEvents(context.Background(), 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, event := range events {
+				if event.Action != tc.wantAction || event.Result != "denied" {
+					continue
+				}
+				if event.ServiceID != "mysql" || event.ObjectName != tc.wantObject {
+					t.Fatalf("audit target = service %q object %q", event.ServiceID, event.ObjectName)
+				}
+				if strings.Contains(event.DetailJSON, "s3cret") {
+					t.Fatalf("audit detail leaks a secret: %s", event.DetailJSON)
+				}
+				found = true
+			}
+			if !found {
+				t.Fatalf("missing audit row %q; events=%+v", tc.wantAction, events)
+			}
+		})
+	}
+}
+
+func TestDeniedNonRevealMutationIsNotAudited(t *testing.T) {
+	fx := newFixture(t, Config{})
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/sites", strings.NewReader(`{}`))
+	req.RemoteAddr = "127.0.0.1:54321"
+	rec := httptest.NewRecorder()
+	fx.raw.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	events, err := fx.store.ListAuditEvents(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("non-reveal denial wrote audit rows: %+v", events)
+	}
+}
