@@ -83,17 +83,18 @@ This audit records what is already available on this machine and what must be in
 - [ ] **R02:** Install `sqlite3` on Windows and in the Linux test distros, or document a supported Go/WSL audit reader. Do not rely on a missing tool. *(Partial, cycle 0: Ubuntu 26.04 has sqlite3 3.46.1 and read a copy of `state.db` with `integrity_check=ok`; native Windows and Fedora readers are still absent.)*
 - [ ] **R03:** Install Docker in Ubuntu 26.04 and Fedora 44, or create a disposable Debian 12 clone with Docker. Verify `systemctl` and `docker info`. *(Partial, cycle 0: Ubuntu 26.04 has Docker 29.1.3 + Compose 2.40.3, systemd running, `docker info` healthy; Fedora 44 still lacks Docker.)*
 - [x] **R04:** Pull MariaDB, PostgreSQL, and Redis images; record digests and sizes. *(Cycle 0: MariaDB 11.8.9 `f16d7a34...` 458 MB, PostgreSQL 18.6 `edb0c08d...` 650 MB, Redis 8.8.3 `418e397f...` 209 MB in the Ubuntu engine.)*
-- [ ] **R05:** Create `test/e2e/database-management/` fixtures, seed/verify scripts, result tracker, secret scanner, cleanup, and rollback scripts.
+- [x] **R05:** Create `test/e2e/database-management/` fixtures, seed/verify scripts, result tracker, secret scanner, cleanup, and rollback scripts. *(Cycle 1: harness, fixtures, tracker, scanner, cleanup, rollback, and isolation docs created; R12 smoke PASS.)*
 - [ ] **R06:** Write the database-management Playwright specs and a live-dashboard Playwright config/spec.
-- [ ] **R07:** Choose and document the Windows live-service isolation model:
+- [x] **R07:** Choose and document the Windows live-service isolation model:
   - **A (preferred):** stop the real daemon/helper, reconfigure the singleton helper to a disposable home, run tests, restore the real service. Test the handover on a disposable home first.
   - **B (fallback):** use **WIN-REAL** with the verified baseline backup/rollback and explicit approval.
   - **C:** use `-TestSandbox` only for installer mechanics, never for live service flows.
-- [ ] **R08:** Choose and document the Linux isolation model: disposable distro/clone, disposable home, foreground helper with custom socket, separate Docker network/ports.
+  *(Cycle 1: option A documented with gated `windows/handover-plan.ps1`, `windows/rollback.ps1`, and `windows/read-only-check.ps1`; handover not executed. Windows destructive DB tests remain BLOCKED because the WSL agent's `/data/devstack` root is not isolated.)*
+- [x] **R08:** Choose and document the Linux isolation model: disposable distro/clone, disposable home, foreground helper with custom socket, separate Docker network/ports. *(Cycle 1: Ubuntu WSL distro, disposable `/tmp/devstack-e2e-*` home, unique `devstack-e2e-*` network, no published ports by default; documented in `test/e2e/database-management/README.md`.)*
 - [ ] **R09:** Verify the helper binary starts on Ubuntu 26.04 and Fedora 44, or record those distros as unsupported and remove them from the gate.
 - [x] **R10:** Verify network access for image pulls, browser downloads, and package installs; record failures as blocked prerequisites. *(Cycle 0: Ubuntu apt installs, Playwright CDN downloads, and Docker Hub digest pulls all succeeded.)*
 - [x] **R11:** Define the shell variables used by the plan (`$ds`, `$home`, `$stamp`, `$svc`, `$id`) and the previous-binary source for E2E-14. *(Cycle 0: definitions and hashes recorded in `.superpowers/e2e-progress.md`; previous source is `dist/update-20261031/*.pre-upgrade` / `v0.3.1` at `40df5c0`.)*
-- [ ] **R12:** Dry-run every harness script and the cleanup/rollback script before the first destructive scenario. *(Partial, cycle 0: tool/version/browser/docker/sqlite smokes pass; harness, cleanup, and rollback dry-runs are deferred to cycle 1 because R05 scripts do not exist yet.)*
+- [x] **R12:** Dry-run every harness script and the cleanup/rollback script before the first destructive scenario. *(Cycle 1: `HARNESS-SMOKE` PASS; seed/verify idempotency, secret scanner self-test, cleanup, and disposable-home snapshot/rollback verified. Evidence: `dist/e2e/database-management/evidence/20261031t010915z-631/HARNESS-SMOKE/`.)*
 
 ### What is executable today
 

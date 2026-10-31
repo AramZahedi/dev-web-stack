@@ -1,0 +1,4 @@
+-- MariaDB uses the shared MySQL-family seed. This file exists so the fixture
+-- catalog is explicit and so MariaDB-only notes have a stable home.
+-- Run order: seed.sh executes mysql-seed.sql, seed-unicode.sql, seed-fk.sql,
+-- seed-binary.sql, and seed-routines.sql against both MySQL and MariaDB.

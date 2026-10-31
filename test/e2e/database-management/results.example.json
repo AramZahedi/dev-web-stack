@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-10-31T00:00:00+00:00",
+  "scenarios": [
+    {
+      "id": "E2E-00",
+      "priority": "P0",
+      "environment": "LIN-UBE",
+      "status": "PASS",
+      "evidence": "dist/e2e/database-management/evidence/example/E2E-00",
+      "commit": "0000000000000000000000000000000000000000",
+      "recorded_at": "2026-10-31T00:00:00+00:00",
+      "residual_risk": "example only",
+      "notes": "replace with the real run result"
+    }
+  ]
+}

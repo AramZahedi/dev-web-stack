@@ -1,0 +1,40 @@
+-- PostgreSQL users and grants. seed.sh substitutes __E2E_*_PASSWORD__ with
+-- ephemeral hex secrets before running this file against e2e_app.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'e2e_user') THEN
+    CREATE ROLE "e2e_user" LOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'e2e_user_ro') THEN
+    CREATE ROLE "e2e_user_ro" LOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'e2e_user_admin') THEN
+    CREATE ROLE "e2e_user_admin" LOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'e2e_user_case') THEN
+    CREATE ROLE "e2e_user_case" LOGIN;
+  END IF;
+END;
+$$;
+
+ALTER ROLE "e2e_user" WITH LOGIN PASSWORD '__E2E_USER_PASSWORD__';
+ALTER ROLE "e2e_user_ro" WITH LOGIN PASSWORD '__E2E_USER_RO_PASSWORD__';
+ALTER ROLE "e2e_user_admin" WITH LOGIN PASSWORD '__E2E_USER_ADMIN_PASSWORD__';
+ALTER ROLE "e2e_user_case" WITH LOGIN PASSWORD '__E2E_USER_CASE_PASSWORD__';
+
+GRANT CONNECT ON DATABASE "e2e_app" TO "e2e_user", "e2e_user_ro", "e2e_user_admin", "e2e_user_case";
+GRANT USAGE ON SCHEMA public TO "e2e_user", "e2e_user_ro", "e2e_user_admin", "e2e_user_case";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "e2e_user";
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "e2e_user";
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO "e2e_user_ro";
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO "e2e_user_ro";
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "e2e_user_admin";
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "e2e_user_admin";
+GRANT CREATE ON DATABASE "e2e_app" TO "e2e_user_admin";
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "e2e_user";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO "e2e_user";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO "e2e_user_ro";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON SEQUENCES TO "e2e_user_ro";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO "e2e_user_admin";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO "e2e_user_admin";

@@ -1,0 +1,7 @@
+# Redis ACL fixture template. fixtures/generate.sh --redis-acl substitutes the
+# placeholders with SHA-256 password hashes generated from ephemeral secrets.
+# Never commit a populated copy: the populated file lives under the disposable
+# home and is mode 0600.
+user __E2E_CACHE_RO_USER__ on #__E2E_CACHE_RO_HASH__ ~* +@read +@connection -@admin -@dangerous -config -debug -shutdown -flushall -flushdb -acl -module -replicaof -slaveof -migrate -save -bgsave -bgrewriteaof -swapdb -cluster -failover
+user __E2E_CACHE_FULL_USER__ on #__E2E_CACHE_FULL_HASH__ ~* +@all -@admin -@dangerous -config -debug -shutdown -flushall -flushdb -acl -module -replicaof -slaveof -migrate -save -bgsave -bgrewriteaof -swapdb -cluster -failover
+user __E2E_CACHE_CUSTOM_USER__ on #__E2E_CACHE_CUSTOM_HASH__ ~e2e:* +get +set
