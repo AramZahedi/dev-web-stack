@@ -389,7 +389,7 @@ func TestHelperListUsersFiltersProtectedDatabaseGrants(t *testing.T) {
 		case strings.Contains(joined, "list-users"):
 			return []byte("usr_app\tapp\t%\n"), nil
 		case strings.Contains(joined, "list-grants"):
-			return []byte("devstack\tread_write\npostgres\tread_only\napp\tread_only\n"), nil
+			return []byte("devstack\tread_write\napp\tread_only\n"), nil
 		default:
 			return runner.defaultRun(name, args)
 		}
@@ -409,6 +409,12 @@ func TestHelperListUsersFiltersProtectedDatabaseGrants(t *testing.T) {
 func TestHelperPostgresGrantsRunInTargetDatabase(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	runner := c.runner.(*fakeCommandRunner)
+	runner.handle = func(name string, args []string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "role_table_grants") {
+			return []byte("app\tSELECT\n"), nil
+		}
+		return runner.defaultRun(name, args)
+	}
 	user := model.DatabaseUser{ID: "usr_app", Username: "app"}
 	err := c.applyUserGrants(context.Background(), "postgresql", dbengine.NewPostgreSQL(), user,
 		[]model.DatabaseGrant{{Database: "app", Preset: model.GrantReadWrite}})
@@ -419,8 +425,8 @@ func TestHelperPostgresGrantsRunInTargetDatabase(t *testing.T) {
 	if !strings.Contains(joined, "--dbname=app") {
 		t.Fatalf("PostgreSQL grant did not run in the target database: %s", joined)
 	}
-	if !strings.Contains(joined, "GRANT") {
-		t.Fatalf("PostgreSQL grant SQL was not executed: %s", joined)
+	if !runner.stdinContains("GRANT") {
+		t.Fatalf("PostgreSQL grant SQL was not executed on stdin: %s", joined)
 	}
 }
 
