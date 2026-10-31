@@ -36,6 +36,7 @@
     siteUrl,
     sourceModeLabel,
   } from '../lib/format';
+  import { isDatabaseLinkEnvKey } from '../lib/components/site/databasePickerTypes';
   import { addToast, toastError } from '../lib/stores';
   import type {
     ApacheAllowOverride,
@@ -155,6 +156,9 @@
   const url = $derived(site ? siteUrl(site) : '');
   const certDays = $derived(site?.certificate ? daysUntil(site.certificate.not_after) : null);
   const envEntries = $derived(Object.entries(site?.env ?? {}));
+  const reservedDatabaseEnv = $derived(
+    siteLinks.length > 0 && envEntries.some(([key]) => isDatabaseLinkEnvKey(key)),
+  );
   const domains = $derived(
     site?.certificate?.domains?.length
       ? site.certificate.domains
@@ -1150,6 +1154,12 @@
           {#snippet actions()}
             <span class="env-count">{envEntries.length}</span>
           {/snippet}
+          {#if reservedDatabaseEnv}
+            <p class="env-warning" role="status">
+              A database link owns one or more of these keys at runtime. The link value
+              overrides the persisted site value.
+            </p>
+          {/if}
           {#if envEntries.length === 0}
             <div class="env-empty">
               <KeyRound size={16} strokeWidth={1.8} aria-hidden="true" />
@@ -2344,6 +2354,13 @@
   .reveal:hover {
     color: var(--fg);
     background: var(--surface-2);
+  }
+
+  .env-warning {
+    margin: 0 0 10px;
+    color: var(--warning-fg);
+    font-size: 11.5px;
+    line-height: 1.5;
   }
 
   .env-empty {

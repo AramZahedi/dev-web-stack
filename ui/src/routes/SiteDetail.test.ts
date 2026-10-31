@@ -1214,4 +1214,12 @@ describe('SiteDetail configuration and builds', () => {
     expect(copied).not.toContain('DATABASE_URL');
     expect(copied).not.toContain('external_secret');
   });
+
+  it('warns when persisted site env overlaps a linked database', async () => {
+    mockApi.getSite.mockResolvedValue({ ...STATIC_SITE, env: { DB_HOST: 'evil' } });
+    await renderSite('blog');
+    expect(
+      await screen.findByText(/A database link owns one or more of these keys at runtime/),
+    ).toBeTruthy();
+  });
 });

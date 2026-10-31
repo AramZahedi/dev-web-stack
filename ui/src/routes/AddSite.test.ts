@@ -1215,4 +1215,24 @@ describe('AddSite Wave 2 fields', () => {
       primary: true,
     });
   });
+
+  it('warns when a site env key overlaps a database link', async () => {
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+    await fillProject();
+    await fireEvent.click(screen.getByRole('radio', { name: /Node/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await fireEvent.change(await screen.findByLabelText(/Node version/), {
+      target: { value: '24.9.0' },
+    });
+    await fireEvent.input(screen.getByLabelText('Variable 1 name'), {
+      target: { value: 'DB_HOST' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByText('Domain and options')).toBeTruthy();
+    await enableDatabase();
+    expect(
+      await screen.findByText(/Database link values override DB_\* and DATABASE_URL/),
+    ).toBeTruthy();
+  });
 });

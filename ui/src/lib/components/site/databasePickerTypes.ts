@@ -71,3 +71,12 @@ export function isSecretEnvKey(key: string): boolean {
 export function isDatabaseUrlEnvKey(key: string): boolean {
   return key === 'URL' || key.endsWith('_URL');
 }
+
+/**
+ * True when a database link owns the environment key at runtime. Link values
+ * are layered over the persisted site env, so a user-set DB_* or DATABASE_URL
+ * value is silently replaced unless the dashboard warns about it.
+ */
+export function isDatabaseLinkEnvKey(key: string): boolean {
+  return key === 'DATABASE_URL' || /^DB_/i.test(key);
+}

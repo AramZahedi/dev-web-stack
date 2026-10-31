@@ -53,6 +53,7 @@
     isProtectedUser,
   } from '../lib/components/site/databaseIdentifiers';
   import {
+    isDatabaseLinkEnvKey,
     sanitizeDatabaseUrl,
     withoutPassword,
     type DatabasePickerSummary,
@@ -183,10 +184,13 @@
       : kind === 'php'
         ? selectedPHPBuild
           ? `PHP ${selectedPHPBuild.version} (r${phpRevision(selectedPHPBuild.id)})`
-          : 'PHP — not selected'
+          : 'PHP - not selected'
         : nodeVersion
           ? `Node ${nodeVersion}`
-          : 'Node — not selected',
+          : 'Node - not selected',
+  );
+  const reservedDatabaseEnv = $derived(
+    Boolean(dbRequest) && envRows.some((row) => isDatabaseLinkEnvKey(row.key.trim())),
   );
   function slugify(val: string): string {
     return val
@@ -1574,6 +1578,12 @@
                 <fieldset class="env">
                   <legend>Environment variables <span class="optional">Optional</span></legend>
                   <p class="env-hint">Added to the process environment. Values are redacted in the dashboard.</p>
+                  {#if reservedDatabaseEnv}
+                    <p class="env-warning" role="status">
+                      Database link values override DB_* and DATABASE_URL at runtime. Remove the
+                      overlapping variable or expect the link value to win.
+                    </p>
+                  {/if}
                   <div class="env-list">
                     {#each envRows as row, index (index)}
                       <div class="env-row">
@@ -1713,6 +1723,12 @@
                       summary={dbSummary}
                       onedit={focusDatabasePanel}
                     />
+                  {/if}
+                  {#if reservedDatabaseEnv}
+                    <div class="review-warning" role="status">
+                      Database link values override DB_* and DATABASE_URL at runtime. Remove the
+                      overlapping variable or expect the link value to win.
+                    </div>
                   {/if}
                   {#if kind === 'node'}
                     <div class="review-row">
@@ -2305,6 +2321,24 @@
   .env-hint {
     color: var(--muted);
     font-size: 11.5px;
+  }
+
+  .env-warning {
+    margin: 6px 0 0;
+    color: var(--warning-fg);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
+  .review-warning {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--warning) 36%, var(--border));
+    border-radius: var(--radius-sm);
+    background: var(--warning-soft);
+    color: var(--warning-fg);
+    font-size: 11.5px;
+    line-height: 1.5;
   }
 
   .env-list {
