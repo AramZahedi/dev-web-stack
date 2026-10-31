@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -122,12 +123,32 @@ func NewManager(deps Deps) *Manager {
 	if stagingDir == "" {
 		stagingDir = os.TempDir()
 	}
+	cleanupStaleImportStaging(stagingDir, deps.Logger)
 	return &Manager{
 		deps:         deps,
 		locks:        make(map[string]*sync.Mutex),
 		cancels:      make(map[string]context.CancelFunc),
 		platformJobs: make(map[string]string),
 		stagingDir:   stagingDir,
+	}
+}
+
+// cleanupStaleImportStaging removes upload staging files left by a daemon that
+// was killed before its import job could clean up. A new daemon owns the
+// lifetime lock, so no other instance can be using these files.
+func cleanupStaleImportStaging(dir string, logger *slog.Logger) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "devstack-import-") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) && logger != nil {
+			logger.Warn("database: remove stale import staging", "path", path, "error", err)
+		}
 	}
 }
 

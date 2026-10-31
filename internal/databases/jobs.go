@@ -57,7 +57,7 @@ func (m *Manager) RestoreBackup(ctx context.Context, serviceID, backupID string,
 	}
 	target := strings.TrimSpace(req.Target)
 	if target == "" {
-		target = fmt.Sprintf("%s_restore_%s", backup.DatabaseName, m.now().Format("20060102-150405"))
+		target = fmt.Sprintf("%s_restore_%s", backup.DatabaseName, m.now().Format("20060102_150405"))
 	}
 	req.Target = target
 	if protectedDatabase(target) {
@@ -146,6 +146,10 @@ func (m *Manager) ImportDatabase(ctx context.Context, serviceID, database string
 		if err := m.ensureLinkedSitesStopped(ctx, serviceID, database); err != nil {
 			return model.DatabaseJob{}, err
 		}
+		// A replace import drops the database. Force a pre-import backup even
+		// when the caller omits the flag so an API client cannot bypass the
+		// recovery copy.
+		req.PreImportBackup = true
 	}
 	stagedPath, err := m.stageImport(file)
 	if err != nil {

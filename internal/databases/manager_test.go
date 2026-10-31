@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/dbengine"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
@@ -1679,6 +1681,22 @@ func TestRestoreOverwriteRequiresConfirm(t *testing.T) {
 	}
 }
 
+func TestRestoreDefaultTargetIsValid(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
+	platform.job = model.DatabaseJob{ID: "job_restore", Status: model.JobSucceeded}
+	job, err := m.RestoreBackup(context.Background(), "mysql", "bkp_1", RestoreBackupRequest{})
+	if err != nil {
+		t.Fatalf("start restore: %v", err)
+	}
+	if !strings.Contains(job.Database, "_restore_") {
+		t.Fatalf("default target = %q", job.Database)
+	}
+	if err := dbengine.ValidateIdentifier(job.Database); err != nil {
+		t.Fatalf("default target %q is not a valid identifier: %v", job.Database, err)
+	}
+}
+
 func TestRestoreFailureKeepsPreRestoreBackup(t *testing.T) {
 	m, st, platform, _, _ := testManagerWithFakes(t)
 	st.backups = []model.DatabaseBackupRecord{{ID: "bkp_1", ServiceID: "mysql", DatabaseName: "app"}}
@@ -1880,11 +1898,57 @@ func TestUnlinkPrimaryPromotesNextLink(t *testing.T) {
 	}
 }
 
+func TestNewManagerCleansStaleImportStaging(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "devstack-import-stale")
+	keep := filepath.Join(dir, "unrelated.tmp")
+	if err := os.WriteFile(stale, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keep, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = NewManager(Deps{StagingDir: dir})
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale import staging was not removed: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("unrelated staging file was removed: %v", err)
+	}
+}
+
 func TestImportReplaceRequiresConfirm(t *testing.T) {
 	m, _, _, _, _ := testManagerWithFakes(t)
 	_, err := m.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("select 1;"), "dump.sql", ImportRequest{Mode: ImportReplace, Confirm: "wrong"})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestImportReplaceForcesPreImportBackup(t *testing.T) {
+	m, _, platform, _, _ := testManagerWithFakes(t)
+	platform.job = model.DatabaseJob{ID: "job_backup", Status: model.JobSucceeded, BackupID: "bkp_pre"}
+	job, err := m.ImportDatabase(context.Background(), "mysql", "app", strings.NewReader("select 1;"), "dump.sql", ImportRequest{
+		Mode: ImportReplace, Confirm: "app", PreImportBackup: false,
+	})
+	if err != nil {
+		t.Fatalf("start import: %v", err)
+	}
+	job = waitJob(t, m, job.ID)
+	if job.Status != model.JobSucceeded || job.BackupID != "bkp_pre" {
+		t.Fatalf("job=%+v", job)
+	}
+	if platform.lastImportReq.PreImportBackup {
+		t.Fatal("manager passed PreImportBackup=true to the platform after creating its own backup")
+	}
+	found := false
+	for _, backup := range platform.backups {
+		if backup.ID == "bkp_pre" && backup.Kind == model.BackupPreImport {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("pre-import backup not created: %+v", platform.backups)
 	}
 }
 
