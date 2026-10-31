@@ -279,7 +279,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	if err != nil {
 		return model.Site{}, err
 	}
-	if err := validateSourceRoot(site); err != nil {
+	if err := ensureSourceRoot(site); err != nil {
 		return model.Site{}, err
 	}
 	var provisioned *databases.ProvisionedDatabase
@@ -879,22 +879,25 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	return nil
 }
 
-// validateSourceRoot checks a Windows or WSL project root before any
+// ensureSourceRoot creates a missing Windows or WSL project root before any
 // service-wide database objects are provisioned or PHP files are staged. Local
 // paths are validated by newSite. The daemon runs on Windows for these modes.
-func validateSourceRoot(site model.Site) error {
+func ensureSourceRoot(site model.Site) error {
 	if site.SourceMode == "" || site.SourceMode == model.SourceLocal || runtime.GOOS != "windows" {
 		return nil
 	}
 	info, err := os.Stat(site.HostPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("sites: project root %q does not exist", site.HostPath)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("sites: project root %q is not a directory", site.HostPath)
 		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
 		return fmt.Errorf("sites: project root %q is not accessible: %w", site.HostPath, err)
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("sites: project root %q is not a directory", site.HostPath)
+	if err := os.MkdirAll(site.HostPath, 0o755); err != nil {
+		return fmt.Errorf("sites: create project root %q: %w", site.HostPath, err)
 	}
 	return nil
 }
