@@ -3,7 +3,7 @@
 - **Purpose:** run the exhaustive E2E plan in fresh subagent contexts so the main session does not grow with full test transcripts.
 - **Plan:** `docs/superpowers/status/2026-10-31-database-management-e2e-plan.md`
 - **Model for every subagent:** `opencode-go/deepseek-v4.1-flash#max`
-- **Status:** cycles 0 (readiness), 1 (harness/fixtures), 2 (Playwright specs), 3 (Windows read-only), 4 (Linux core), 5 (Linux sites), 6 (Linux backup/import) and 7 (Linux Redis/phpMyAdmin) done. No destructive real-install scenario has been started.
+- **Status:** cycles 0 (readiness), 1 (harness/fixtures), 2 (Playwright specs), 3 (Windows read-only), 4 (Linux core), 5 (Linux sites), 6 (Linux backup/import), 7 (Linux Redis/phpMyAdmin) and 8 (dashboard mock) done. No destructive real-install scenario has been started.
 - **Main-session rule:** one batch = one spawn, one close. The subagent returns a short summary, evidence paths, and a status update; the main session records it and spawns the next batch.
 
 ## Hard constraints for every subagent
@@ -75,7 +75,7 @@ Recommended batched run: **16 spawn/close cycles** if the retry batch is needed 
 | 5 | Linux sites | E2E-03, E2E-04, E2E-05, E2E-06, E2E-17 | LIN disposable | Yes, disposable | done (E2E-03/04/05/17 PASS; E2E-06 guard PASS with product 3306 activation BLOCKED; 4 fixes; secret scan clean; real phpMyAdmin 8082 timeout is a controller blocker) |
 | 6 | Backup/import | E2E-07, E2E-18 | LIN disposable | Yes, disposable | done (E2E-07 130 checks PASS; E2E-18 115 checks PASS; 3 product fixes; secret scan clean; real phpMyAdmin 8082 timeout is a controller blocker) |
 | 7 | Redis/phpMyAdmin | E2E-08, E2E-19, E2E-20 Linux | LIN disposable | Yes, disposable | done (E2E-08 59 checks, E2E-19 58, E2E-20 89 PASS; 1 helper fix `b919ee8`; secret scan clean; fixed-port sub-step BLOCKED) |
-| 8 | Dashboard mock | E2E-10, E2E-21 mock | UI-MOCK | No | pending |
+| 8 | Dashboard mock | E2E-10, E2E-21 mock | UI-MOCK | No | done (186/186 across Chromium/Firefox/WebKit; 2 UI fixes `b1f9828`; secret scan clean) |
 | 9 | Dashboard live | E2E-10, E2E-21 live | UI-LIVE | Read-only/limited | pending |
 | 10 | Failure injection | E2E-23 | LIN disposable | Yes, disposable | pending |
 | 11 | Scale/performance | E2E-24 | LIN disposable | Yes, disposable | pending |
@@ -110,7 +110,7 @@ If a batch would require a destructive real-install change and no disposable env
 | 5 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/evidence/20261031t223000z/`, `dist/e2e/database-management/evidence/20261031t230000z/C5-UI/` | E2E-03 (40 checks), E2E-04 (33), E2E-05 (40), E2E-06 (19, product 3306 activation BLOCKED), E2E-17 (58) PASS; live dashboard 4/4 PASS; final secret scan clean; real phpMyAdmin 8082 timeout is a controller blocker. Commits `0c982ad`, `0d9f7ac`, `6a0ca66`, `b6e2e9f`. |
 | 6 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/evidence/20261101t150000z/E2E-07/`, `dist/e2e/database-management/evidence/20261101t100000z/E2E-18/` | E2E-07 130/130 PASS and E2E-18 115/115 PASS; manual/pre-op backup kinds, stopped-service list/download/delete, overwrite restore with pre-restore backup, linked-site gate, gzip export file/stdout, merge/replace import with pre-import backup, staging 0600/cleanup, invalid/truncated dumps, cancel and daemon-restart reconciliation, Redis unsupported, near-1 GiB and over-1 GiB, bounded tmpfs disk-full, complex SQL, concurrency; 3 product fixes (`b9053c2`, `eaf7626`, `1b906ac`); final secret scan clean; real phpMyAdmin 8082 timeout remains a controller blocker. |
 | 7 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/evidence/20261101t230000z/E2E-08/`, `.../E2E-19/`, `.../E2E-20/` | E2E-08 59/59, E2E-19 58/58, E2E-20 89/89 PASS; Redis ACL mode/foreign/rollback/duplicate fixes in `b919ee8`; test/scripts `6c3cb98`; live Redis tabs and phpMyAdmin Playwright matrix PASS; secret scan clean; fixed 3306/8082 activation BLOCKED with no-port/high-port equivalent. |
-| 8 | - | - | pending | - | - |
+| 8 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/evidence/20261031T082709Z/` | E2E-10/E2E-21 mock matrix PASS 186/186 (62 per browser); 30 database-management + 32 existing dashboard tests per browser; two UI fixes (`b1f9828`): persisted active-job resume after refresh and Redis ACL error inside the dialog; secret scan clean; live dashboard remains cycle 9. |
 | 9 | - | - | pending | - | - |
 | 10 | - | - | pending | - | - |
 | 11 | - | - | pending | - | - |

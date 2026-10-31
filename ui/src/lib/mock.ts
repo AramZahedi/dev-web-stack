@@ -415,6 +415,11 @@ function emitEvent(type: string, siteID: string | undefined, message: string): v
   for (const listener of eventListeners) listener(event);
 }
 
+/** Emits a daemon event through the same listener path the SSE stream uses. */
+export function emitMockDaemonEventForTests(event: DaemonEvent): void {
+  for (const listener of eventListeners) listener(event);
+}
+
 const sites: Site[] = [
   {
     id: 's_blog',

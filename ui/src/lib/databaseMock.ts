@@ -45,6 +45,10 @@ function siteRefMatches(linkSiteID: string, ref: string): boolean {
   return normalized === ref || normalized.replace(/_\d+$/, '') === ref;
 }
 
+function siteNameFor(siteID: string): string {
+  return siteID.replace(/^s_/, '').replace(/_\d+$/, '') || siteID;
+}
+
 function engineFor(serviceID: string): DatabaseEngine {
   if (serviceID === 'postgresql' || serviceID === 'postgres') return 'postgres';
   if (serviceID === 'mariadb') return 'mariadb';
@@ -292,6 +296,11 @@ export const mockDatabaseApi = {
     return { value: 'mock_db_password' };
   },
 
+  async enableRedisACLFile(_serviceID: string, _confirm: boolean): Promise<{ enabled: boolean }> {
+    await wait();
+    return { enabled: true };
+  },
+
   async listServiceBackups(serviceID: string): Promise<{ backups: DatabaseBackup[] }> {
     await wait();
     return { backups: clone(backups.filter((backup) => backup.service_id === serviceID)) };
@@ -447,7 +456,7 @@ export const mockDatabaseApi = {
       connection: connectionFor({ engine: database.engine, database: database.name, username: user.username, password_managed: user.password_managed }),
     };
     links.push(link);
-    const siteRef = { id: siteID, name: siteID };
+    const siteRef = { id: siteID, name: siteNameFor(siteID) };
     if (!Array.isArray(database.linked_sites)) database.linked_sites = [];
     if (!database.linked_sites.some((site) => site.id === siteID)) {
       database.linked_sites.push({ ...siteRef });

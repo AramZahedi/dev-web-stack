@@ -88,7 +88,7 @@ export async function revealServiceUserPassword(serviceID: string, userID: strin
 }
 
 export async function enableRedisACLFile(serviceID: string, confirm: boolean): Promise<{ enabled: boolean }> {
-  if (isMockMode) return { enabled: true };
+  if (isMockMode) return mockDatabaseApi.enableRedisACLFile(serviceID, confirm);
   return request<{ enabled: boolean }>(`${servicePath(serviceID)}/redis/acl-file`, {
     method: 'POST',
     body: { confirm },

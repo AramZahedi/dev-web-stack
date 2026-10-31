@@ -15,11 +15,15 @@ const REDIS = '#/services/redis';
 const PASSWORD = 'mock_db_password';
 
 const browserIssues = new WeakMap<Page, string[]>();
+const consoleText = new WeakMap<Page, string[]>();
 
 test.beforeEach(async ({ page }) => {
   const issues: string[] = [];
+  const consoleLines: string[] = [];
   browserIssues.set(page, issues);
+  consoleText.set(page, consoleLines);
   page.on('console', (message) => {
+    consoleLines.push(message.text());
     if (message.type() === 'error') issues.push(`console: ${message.text()}`);
   });
   page.on('pageerror', (error) => issues.push(`pageerror: ${error.message}`));
@@ -39,6 +43,8 @@ test.beforeEach(async ({ page }) => {
 
 test.afterEach(async ({ page }) => {
   expect(browserIssues.get(page) ?? [], 'unexpected browser errors or failed requests').toEqual([]);
+  expect(consoleText.get(page)?.join('\n') ?? '', 'secret in browser console').not.toContain(PASSWORD);
+  await expectNoSecret(page);
 });
 
 async function open(page: Page, hash: string): Promise<void> {
@@ -111,6 +117,46 @@ async function stubClipboard(page: Page): Promise<void> {
       },
     });
   });
+}
+
+/** Emits a daemon event through the mock's SSE listener set. */
+async function emitMockDaemonEvent(page: Page, type: string, message = ''): Promise<void> {
+  await page.evaluate(
+    async ({ type, message }) => {
+      const modulePath = '/src/lib/mock.ts';
+      const mod = (await import(modulePath)) as {
+        emitMockDaemonEventForTests: (event: {
+          type: string;
+          message?: string;
+          created_at?: string;
+        }) => void;
+      };
+      mod.emitMockDaemonEventForTests({
+        type,
+        message,
+        created_at: new Date().toISOString(),
+      });
+    },
+    { type, message },
+  );
+}
+
+async function linkDatabaseToSite(
+  page: Page,
+  siteID: string,
+  serviceID: string,
+  database: string,
+  userID: string,
+): Promise<void> {
+  await page.evaluate(
+    async ({ siteID, serviceID, database, userID }) => {
+      const api = (
+        window as unknown as { __dbMock: Record<string, (...args: unknown[]) => Promise<unknown>> }
+      ).__dbMock;
+      await api.linkSiteDatabase(siteID, { service_id: serviceID, database, user_id: userID });
+    },
+    { siteID, serviceID, database, userID },
+  );
 }
 
 function databaseRow(scope: Locator, name: string): Locator {
@@ -283,9 +329,11 @@ test('users can be created, edited and deleted with grants and typed confirmatio
   const enabled = editDialog.getByRole('switch', { name: 'Enabled' });
   await expect(enabled).toHaveAttribute('aria-checked', 'true');
   await enabled.click();
+  await editDialog.getByLabel('Grant 1 preset').selectOption('read_write');
   await editDialog.getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'User e2e_user updated' })).toBeVisible();
   await expect(created.getByText('Disabled', { exact: true })).toBeVisible();
+  await expect(created).toContainText('read/write on app');
 
   await created.getByRole('button', { name: 'Delete e2e_user' }).click();
   const deleteDialog = page.getByRole('dialog', { name: 'Delete user e2e_user@%?' });
@@ -834,16 +882,17 @@ test('loading, empty, error, retry, mutation failure and overlapping responses a
   await page.evaluate(() => {
     const api = (window as unknown as { __dbMock: Record<string, unknown> }).__dbMock;
     const delayedEmpty = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      (window as unknown as { __listsStarted?: boolean }).__listsStarted = true;
+      await new Promise((resolve) => setTimeout(resolve, 900));
       return { databases: [] };
     };
     api.listServiceDatabases = delayedEmpty;
     api.listServiceUsers = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 900));
       return { users: [] };
     };
     api.listServiceBackups = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 900));
       return { backups: [] };
     };
   });
@@ -851,6 +900,9 @@ test('loading, empty, error, retry, mutation failure and overlapping responses a
     window.location.hash = '#/services/mysql';
   });
   const databases = await panel(page, 'Databases');
+  await page.waitForFunction(
+    () => (window as unknown as { __listsStarted?: boolean }).__listsStarted === true,
+  );
   await expect(databases.getByText('Loading databases…')).toBeVisible();
   await expect(databases.getByText('No databases yet')).toBeVisible();
   await selectTab(page, 'Users');
@@ -1051,4 +1103,620 @@ test('service and site database cards stay usable at desktop, tablet and mobile 
       siteWidth.viewport,
     );
   }
+});
+
+test('every destructive dialog requires the exact text and cancel leaves the inventory unchanged', async ({
+  page,
+}) => {
+  await open(page, MYSQL);
+  const databases = await panel(page, 'Databases');
+
+  await databaseRow(databases, 'app').getByRole('button', { name: 'Drop app' }).click();
+  const drop = page.getByRole('dialog', { name: 'Drop database app?' });
+  const dropButton = drop.getByRole('button', { name: 'Drop database' });
+  await drop.getByRole('textbox').fill('wrong');
+  await expect(dropButton).toBeDisabled();
+  await drop.getByRole('textbox').fill('app');
+  await expect(dropButton).toBeEnabled();
+  await drop.getByRole('button', { name: 'Cancel' }).click();
+  await expect(drop).toBeHidden();
+  await expect(databaseRow(databases, 'app')).toHaveCount(1);
+  await expect(page.getByRole('status').filter({ hasText: 'Database app dropped' })).toHaveCount(0);
+
+  await selectTab(page, 'Users');
+  const users = await panel(page, 'Users');
+  const appUser = databaseRow(users, 'app');
+  await appUser.getByRole('button', { name: 'Delete app' }).click();
+  const deleteUser = page.getByRole('dialog', { name: 'Delete user app@%?' });
+  const deleteUserButton = deleteUser.getByRole('button', { name: 'Delete user' });
+  await deleteUser.getByRole('textbox').fill('wrong');
+  await expect(deleteUserButton).toBeDisabled();
+  await deleteUser.getByRole('textbox').fill('app');
+  await expect(deleteUserButton).toBeEnabled();
+  await deleteUser.getByRole('button', { name: 'Cancel' }).click();
+  await expect(deleteUser).toBeHidden();
+  await expect(databaseRow(users, 'app')).toHaveCount(1);
+  await expect(page.getByRole('status').filter({ hasText: 'User app deleted' })).toHaveCount(0);
+
+  await selectTab(page, 'Backups');
+  const backups = await panel(page, 'Backups');
+  await backupRow(backups, 'bkp_1').getByRole('button', { name: 'Delete app backup bkp_1' }).click();
+  const deleteBackup = page.getByRole('dialog', { name: 'Delete backup bkp_1?' });
+  const deleteBackupButton = deleteBackup.getByRole('button', { name: 'Delete backup' });
+  await deleteBackup.getByRole('textbox').fill('wrong');
+  await expect(deleteBackupButton).toBeDisabled();
+  await deleteBackup.getByRole('textbox').fill('bkp_1');
+  await expect(deleteBackupButton).toBeEnabled();
+  await deleteBackup.getByRole('button', { name: 'Cancel' }).click();
+  await expect(deleteBackup).toBeHidden();
+  await expect(backupRow(backups, 'bkp_1')).toHaveCount(1);
+  await expect(page.getByRole('status').filter({ hasText: 'Backup bkp_1 deleted' })).toHaveCount(0);
+
+  await backupRow(backups, 'bkp_1').getByRole('button', { name: 'Restore app backup bkp_1' }).click();
+  const restore = page.getByRole('dialog', { name: 'Restore app backup?' });
+  const restoreButton = restore.getByRole('button', { name: 'Restore backup' });
+  await restore.getByRole('textbox').last().fill('wrong');
+  await expect(restoreButton).toBeDisabled();
+  await restore.getByRole('textbox').last().fill('app');
+  await expect(restoreButton).toBeEnabled();
+  await restore.getByRole('button', { name: 'Cancel' }).click();
+  await expect(restore).toBeHidden();
+  await expect(page.getByRole('status').filter({ hasText: 'Restore queued' })).toHaveCount(0);
+
+  await selectTab(page, 'Databases');
+  const importChooser = page.waitForEvent('filechooser');
+  await databaseRow(await panel(page, 'Databases'), 'app')
+    .getByRole('button', { name: 'Import app' })
+    .click();
+  await (await importChooser).setFiles({
+    name: 'seed.sql',
+    mimeType: 'application/sql',
+    buffer: Buffer.from('CREATE TABLE e2e_cancel (id INT);'),
+  });
+  const importDialog = page.getByRole('dialog', { name: 'Import into app' });
+  await importDialog.getByLabel('Replace contents').check();
+  const importButton = importDialog.getByRole('button', { name: 'Import database' });
+  await importDialog.locator('#import-confirm').fill('wrong');
+  await expect(importButton).toBeDisabled();
+  await importDialog.locator('#import-confirm').fill('app');
+  await expect(importButton).toBeEnabled();
+  await importDialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(importDialog).toBeHidden();
+  await expect(page.getByRole('status').filter({ hasText: 'Import queued' })).toHaveCount(0);
+
+  await open(page, POSTGRES);
+  await activateService(page, 'postgresql');
+  await refresh(page);
+  const pgDatabases = await panel(page, 'Databases');
+  await databaseRow(pgDatabases, 'app').getByRole('button', { name: 'Rename app' }).click();
+  const rename = page.getByRole('dialog', { name: 'Rename app' });
+  await rename.locator('#database-name').fill('e2e_pg_cancel');
+  const renameButton = rename.getByRole('button', { name: 'Rename database' });
+  await rename.locator('#database-rename-confirm').fill('wrong');
+  await expect(renameButton).toBeDisabled();
+  await rename.locator('#database-rename-confirm').fill('app');
+  await expect(renameButton).toBeEnabled();
+  await rename.getByRole('button', { name: 'Cancel' }).click();
+  await expect(rename).toBeHidden();
+  await expect(databaseRow(pgDatabases, 'app')).toHaveCount(1);
+  await expect(databaseRow(pgDatabases, 'e2e_pg_cancel')).toHaveCount(0);
+});
+
+test('unlink database and user dialogs are safe and preserve links until confirmed', async ({ page }) => {
+  await open(page, MYSQL);
+  await installMockHooks(page);
+  await linkDatabaseToSite(page, 's_blog', 'mysql', 'app', 'usr_app');
+  await refresh(page);
+
+  await selectTab(page, 'Users');
+  const users = await panel(page, 'Users');
+  const appUser = databaseRow(users, 'app');
+  await expect(appUser.getByRole('button', { name: 'Delete app' })).toBeDisabled();
+  await appUser.getByRole('button', { name: 'Unlink sites' }).click();
+  const unlinkUser = page.getByRole('dialog', { name: 'Unlink sites from app' });
+  await expect(unlinkUser.getByRole('link', { name: 'Open blog' })).toBeVisible();
+  await unlinkUser.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(unlinkUser).toBeHidden();
+  await expect(appUser.getByText('blog')).toBeVisible();
+  await expect(appUser.getByRole('button', { name: 'Delete app' })).toBeDisabled();
+
+  await page.evaluate(() => {
+    window.location.hash = '#/sites/blog';
+  });
+  await expect(page.getByRole('heading', { name: 'blog' })).toBeVisible();
+  const card = page.locator('article[aria-label="Database app"]');
+  await expect(card).toBeVisible();
+  await expect(card.getByText('Password managed', { exact: true })).toBeVisible();
+  await card.getByRole('button', { name: 'Unlink app' }).click();
+  const unlinkDatabase = page.getByRole('dialog', { name: 'Unlink app?' });
+  await expect(unlinkDatabase).toContainText('Only this site link is removed.');
+  await unlinkDatabase.getByRole('button', { name: 'Cancel' }).click();
+  await expect(unlinkDatabase).toBeHidden();
+  await expect(card).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Unlink app' })).toBeVisible();
+  await expectNoSecret(page);
+});
+
+test('a queued job reports progress through polling and finishes with a toast', async ({ page }) => {
+  await open(page, MYSQL);
+  await installMockHooks(page);
+
+  await page.evaluate(() => {
+    const api = (window as unknown as { __dbMock: Record<string, (...args: unknown[]) => Promise<unknown>> })
+      .__dbMock;
+    let polls = 0;
+    const stamp = new Date().toISOString();
+    api.createServiceBackup = async () => ({
+      id: 'job_queued',
+      service_id: 'mysql',
+      database: 'app',
+      kind: 'backup',
+      status: 'queued',
+      progress: 0,
+      message: 'Waiting for a worker',
+      created_at: stamp,
+      updated_at: stamp,
+    });
+    api.getDatabaseJob = async () => {
+      polls += 1;
+      return {
+        id: 'job_queued',
+        service_id: 'mysql',
+        database: 'app',
+        kind: 'backup',
+        status: polls < 2 ? 'running' : 'succeeded',
+        progress: polls < 2 ? 45 : 100,
+        message: polls < 2 ? 'Dumping tables' : 'Backup ready',
+        created_at: stamp,
+        updated_at: stamp,
+      };
+    };
+  });
+
+  const databases = await panel(page, 'Databases');
+  await databaseRow(databases, 'app').getByRole('button', { name: 'Back up app' }).click();
+  const jobCard = page.getByRole('status', { name: 'Database job' });
+  await expect(jobCard).toContainText('queued');
+  await expect(jobCard.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
+  await expect(jobCard).toContainText('running');
+  await expect(jobCard.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '45');
+  await expect(page.getByRole('status').filter({ hasText: 'backup succeeded' })).toBeVisible();
+  await expect(jobCard).toContainText('succeeded');
+  await expect(jobCard.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
+});
+
+test('a database SSE event refreshes the service inventory without a manual reload', async ({
+  page,
+}) => {
+  await open(page, MYSQL);
+  await installMockHooks(page);
+  const databases = await panel(page, 'Databases');
+  await expect(databases.locator('tbody tr')).toHaveCount(3);
+
+  await page.evaluate(async () => {
+    const api = (window as unknown as { __dbMock: Record<string, (...args: unknown[]) => Promise<unknown>> })
+      .__dbMock;
+    await api.createServiceDatabase('mysql', { name: 'e2e_sse' });
+  });
+  await expect(databaseRow(databases, 'e2e_sse')).toHaveCount(0);
+  await emitMockDaemonEvent(page, 'database.created', 'e2e_sse created');
+  await expect(databaseRow(databases, 'e2e_sse')).toHaveCount(1);
+
+  await page.evaluate(async () => {
+    const api = (window as unknown as { __dbMock: Record<string, (...args: unknown[]) => Promise<unknown>> })
+      .__dbMock;
+    await api.dropServiceDatabase('mysql', 'e2e_sse', { confirm: 'e2e_sse' });
+  });
+  await emitMockDaemonEvent(page, 'database.dropped', 'e2e_sse dropped');
+  await expect(databaseRow(databases, 'e2e_sse')).toHaveCount(0);
+});
+
+test('a browser refresh mid-job resumes the persisted running job', async ({ page }) => {
+  await open(page, MYSQL);
+  await installMockHooks(page);
+  const stamp = new Date().toISOString();
+  const running = {
+    id: 'job_midrun',
+    service_id: 'mysql',
+    database: 'app',
+    kind: 'backup',
+    status: 'running',
+    progress: 40,
+    message: 'Dumping tables',
+    created_at: stamp,
+    updated_at: stamp,
+  };
+
+  await page.evaluate(async (job) => {
+    const databaseMockPath = '/src/lib/databaseMock.ts';
+    const mod = (await import(databaseMockPath)) as {
+      seedMockDatabaseJobForTests: (value: Record<string, unknown>) => void;
+    };
+    mod.seedMockDatabaseJobForTests(job);
+    const api = (window as unknown as { __dbMock: Record<string, (...args: unknown[]) => Promise<unknown>> })
+      .__dbMock;
+    api.createServiceBackup = async () => job;
+  }, running);
+
+  const databases = await panel(page, 'Databases');
+  await databaseRow(databases, 'app').getByRole('button', { name: 'Back up app' }).click();
+  const jobCard = page.getByRole('status', { name: 'Database job' });
+  await expect(jobCard).toContainText('running');
+  await expect(jobCard.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '40');
+  expect(
+    await page.evaluate(() => sessionStorage.getItem('devstack.database.activeJob.mysql')),
+  ).toBe('job_midrun');
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'MySQL 8.4' })).toBeVisible();
+  const resumed = page.getByRole('status', { name: 'Database job' });
+  await expect(resumed).toContainText('running');
+  await expect(resumed.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '40');
+  await expect(resumed).toContainText('Dumping tables');
+});
+
+test('network failures show a banner, retry recovers, and failed mutations leave no partial state', async ({
+  page,
+}) => {
+  await open(page, MYSQL);
+  await installMockHooks(page);
+
+  await page.evaluate(() => {
+    const api = (window as unknown as { __dbMock: Record<string, unknown> }).__dbMock;
+    api.listServiceDatabases = async () => {
+      throw new TypeError('Failed to fetch');
+    };
+  });
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  const banner = page.getByRole('alert').filter({ hasText: 'Could not load databases' });
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText('Failed to fetch');
+  await page.evaluate(() => {
+    const api = (window as unknown as { __dbMock: Record<string, unknown> }).__dbMock;
+    const original = (window as unknown as { __dbOriginal: Record<string, unknown> }).__dbOriginal;
+    api.listServiceDatabases = original.listServiceDatabases;
+  });
+  await banner.getByRole('button', { name: 'Retry' }).click();
+  await expect(databaseRow(await panel(page, 'Databases'), 'app')).toHaveCount(1);
+
+  await selectTab(page, 'Users');
+  const users = await panel(page, 'Users');
+  await page.evaluate(() => {
+    const api = (window as unknown as { __dbMock: Record<string, unknown> }).__dbMock;
+    api.createServiceUser = async () => {
+      throw new TypeError('Network down');
+    };
+  });
+  await users.getByRole('button', { name: 'Create user' }).click();
+  const createDialog = page.getByRole('dialog', { name: 'Create database user' });
+  await createDialog.locator('#user-username').fill('e2e_net');
+  await createDialog.getByRole('button', { name: 'Create user' }).click();
+  await expect(createDialog.getByText('Network down')).toBeVisible();
+  await expect(createDialog).toBeVisible();
+  await createDialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(databaseRow(users, 'e2e_net')).toHaveCount(0);
+  await expect(users.locator('tbody tr')).toHaveCount(2);
+
+  await page.evaluate(() => {
+    const api = (window as unknown as { __dbMock: Record<string, unknown> }).__dbMock;
+    api.deleteServiceUser = async () => {
+      throw new TypeError('Network down');
+    };
+  });
+  const appUser = databaseRow(users, 'app');
+  await appUser.getByRole('button', { name: 'Delete app' }).click();
+  const deleteDialog = page.getByRole('dialog', { name: 'Delete user app@%?' });
+  await deleteDialog.getByRole('textbox').fill('app');
+  await deleteDialog.getByRole('button', { name: 'Delete user' }).click();
+  await expect(deleteDialog.getByText('Network down')).toBeVisible();
+  await expect(deleteDialog).toBeVisible();
+  await deleteDialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(databaseRow(users, 'app')).toHaveCount(1);
+});
+
+test('route changes close dialogs and clear revealed secrets', async ({ page }) => {
+  await open(page, MYSQL);
+  await selectTab(page, 'Users');
+  const users = await panel(page, 'Users');
+  const appUser = databaseRow(users, 'app');
+  await appUser.getByRole('button', { name: 'Reveal Password for app' }).click();
+  await expect(appUser.getByText(PASSWORD)).toBeVisible();
+  await users.getByRole('button', { name: 'Create user' }).click();
+  await expect(page.getByRole('dialog', { name: 'Create database user' })).toBeVisible();
+
+  await page.evaluate(() => {
+    window.location.hash = '#/sites/blog';
+  });
+  await expect(page.getByRole('heading', { name: 'blog' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expectNoSecret(page);
+
+  await page.evaluate(() => {
+    window.location.hash = '#/services/mysql?tab=users';
+  });
+  await expect(page.getByRole('heading', { name: 'MySQL 8.4' })).toBeVisible();
+  const returnedUsers = await panel(page, 'Users');
+  await expect(databaseRow(returnedUsers, 'app').getByText('••••••••')).toBeVisible();
+  await expectNoSecret(page);
+
+  await selectTab(page, 'Databases');
+  await (await panel(page, 'Databases')).getByRole('button', { name: 'Create database' }).click();
+  await expect(page.getByRole('dialog', { name: 'Create database' })).toBeVisible();
+  await page.evaluate(() => {
+    window.location.hash = '#/services/postgresql';
+  });
+  await expect(page.getByRole('heading', { name: 'PostgreSQL 18' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('keyboard-only create flow traps focus and exposes labelled controls', async ({
+  page,
+}, testInfo) => {
+  await open(page, MYSQL);
+  const databases = await panel(page, 'Databases');
+  const create = databases.getByRole('button', { name: 'Create database' });
+  await create.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Create database' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveAttribute('aria-modal', 'true');
+  const nameInput = dialog.getByLabel('Database name');
+  await expect(nameInput).toBeFocused();
+  await page.screenshot({
+    path: testInfo.outputPath('keyboard-create-dialog.png'),
+    fullPage: true,
+  });
+
+  for (let index = 0; index < 20; index += 1) {
+    await page.keyboard.press('Tab');
+    expect(
+      await page.evaluate(() => Boolean(document.activeElement?.closest('[role="dialog"]'))),
+      'focus escaped the dialog while tabbing',
+    ).toBe(true);
+  }
+  await page.screenshot({
+    path: testInfo.outputPath('keyboard-focus-trap.png'),
+    fullPage: true,
+  });
+
+  await nameInput.focus();
+  await page.keyboard.type('e2e_keyboard');
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('status').filter({ hasText: 'Database e2e_keyboard created' })).toBeVisible();
+  await expect(databaseRow(databases, 'e2e_keyboard')).toHaveCount(1);
+
+  await selectTab(page, 'Users');
+  const users = await panel(page, 'Users');
+  await users.getByRole('button', { name: 'Create user' }).click();
+  const userDialog = page.getByRole('dialog', { name: 'Create database user' });
+  await expect(userDialog.getByLabel('Username')).toBeVisible();
+  await expect(userDialog.getByLabel('Host')).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('keyboard-user-form.png'),
+    fullPage: true,
+  });
+  await page.keyboard.press('Escape');
+  await expect(userDialog).toBeHidden();
+});
+
+test('primary database text and controls meet WCAG AA contrast', async ({ page }) => {
+  await open(page, MYSQL);
+  await expect(page.getByRole('heading', { name: 'MySQL 8.4' })).toBeVisible();
+  const ratios = await page.evaluate(() => {
+    type RGBA = [number, number, number, number];
+
+    function parse(value: string): RGBA {
+      const match = value.match(/rgba?\(([^)]+)\)/);
+      if (!match) return [0, 0, 0, 1];
+      const parts = match[1].split(',').map((part) => Number(part.trim()));
+      return [parts[0], parts[1], parts[2], parts[3] ?? 1];
+    }
+
+    function luminance([r, g, b]: RGBA): number {
+      const channel = (value: number) => {
+        const scaled = value / 255;
+        return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    }
+
+    function background(element: Element | null): RGBA {
+      let current = element;
+      while (current) {
+        const color = parse(getComputedStyle(current).backgroundColor);
+        if (color[3] > 0) return color;
+        current = current.parentElement;
+      }
+      return [255, 255, 255, 1];
+    }
+
+    function ratio(element: Element | null): number {
+      if (!element) return 0;
+      const foreground = parse(getComputedStyle(element).color);
+      const bg = background(element);
+      const lighter = Math.max(luminance(foreground), luminance(bg));
+      const darker = Math.min(luminance(foreground), luminance(bg));
+      return (lighter + 0.05) / (darker + 0.05);
+    }
+
+    return {
+      heading: ratio(document.querySelector('h1')),
+      table: ratio(document.querySelector('tbody td')),
+      primary: ratio(document.querySelector('button.btn.primary')),
+      selectedTab: ratio(document.querySelector('[role="tab"][aria-selected="true"]')),
+    };
+  });
+  for (const [name, value] of Object.entries(ratios)) {
+    expect(value, `${name} contrast`).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+test('protected users keep edit, password and delete actions disabled', async ({ page }) => {
+  await open(page, MYSQL);
+  await installMockHooks(page);
+  await page.evaluate(() => {
+    const api = (window as unknown as { __dbMock: Record<string, unknown> }).__dbMock;
+    api.listServiceUsers = async () => ({
+      users: [
+        {
+          id: 'usr_app',
+          service_id: 'mysql',
+          engine: 'mysql',
+          username: 'app',
+          host: '%',
+          enabled: true,
+          managed: true,
+          password_managed: true,
+          grants: [{ database: 'app', preset: 'read_write_schema' }],
+          linked_sites: [],
+        },
+        {
+          id: 'usr_root',
+          service_id: 'mysql',
+          engine: 'mysql',
+          username: 'root',
+          host: '%',
+          enabled: true,
+          managed: false,
+          password_managed: false,
+          grants: [],
+          linked_sites: [],
+        },
+      ],
+    });
+  });
+  await selectTab(page, 'Users');
+  const users = await panel(page, 'Users');
+  const root = databaseRow(users, 'root');
+  await expect(root.getByText('Protected', { exact: true })).toBeVisible();
+  for (const action of ['Edit root', 'Delete root', 'Set password for root']) {
+    await expect(root.getByRole('button', { name: action })).toBeDisabled();
+  }
+});
+
+test('site database cards stay usable at desktop, tablet and mobile widths', async ({
+  page,
+}, testInfo) => {
+  await open(page, '#/sites/blog');
+  await installMockHooks(page);
+  await linkDatabaseToSite(page, 's_blog', 'mysql', 'app', 'usr_app');
+  await refresh(page);
+
+  const card = page.locator('article[aria-label="Database app"]');
+  await expect(card).toBeVisible();
+  await expect(card.getByText('Primary', { exact: true })).toBeVisible();
+  await expect(card.getByText('Password managed', { exact: true })).toBeVisible();
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 768, height: 1024 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(card.getByRole('button', { name: 'Unlink app' })).toBeVisible();
+    const width = await page.evaluate(() => ({
+      viewport: window.innerWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+    }));
+    expect(width.document, `site database card ${viewport.width}px overflow`).toBeLessThanOrEqual(
+      width.viewport,
+    );
+    expect(width.body, `site database card ${viewport.width}px body overflow`).toBeLessThanOrEqual(
+      width.viewport,
+    );
+    await page.screenshot({
+      path: testInfo.outputPath(`site-database-card-${viewport.width}.png`),
+      fullPage: true,
+    });
+  }
+  await expectNoSecret(page);
+});
+
+test('a stale slow failure cannot overwrite a fresh list and refresh keeps existing rows visible', async ({
+  page,
+}) => {
+  await open(page, MYSQL);
+  await installMockHooks(page);
+  const databases = await panel(page, 'Databases');
+  await expect(databaseRow(databases, 'app')).toHaveCount(1);
+
+  await page.evaluate(() => {
+    const api = (window as unknown as { __dbMock: Record<string, unknown> }).__dbMock;
+    let calls = 0;
+    api.listServiceDatabases = async () => {
+      calls += 1;
+      const call = calls;
+      (window as unknown as { __listCall: number }).__listCall = call;
+      if (call === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        throw new Error('stale failure');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      return {
+        databases: [
+          {
+            name: 'fresh_db',
+            service_id: 'mysql',
+            engine: 'mysql',
+            size_bytes: 0,
+            table_count: 0,
+            linked_sites: [],
+            managed: true,
+          },
+        ],
+      };
+    };
+  });
+
+  const refreshButton = page.getByRole('button', { name: 'Refresh', exact: true });
+  await refreshButton.click();
+  await page.waitForFunction(
+    () => (window as unknown as { __listCall?: number }).__listCall === 1,
+  );
+  await refreshButton.click();
+  await page.waitForFunction(
+    () => (window as unknown as { __listCall?: number }).__listCall === 2,
+  );
+  await expect(databaseRow(databases, 'app')).toHaveCount(1);
+  await expect(databases.getByText('Loading databases…')).toHaveCount(0);
+  await expect(databaseRow(databases, 'fresh_db')).toHaveCount(1);
+  await page.waitForTimeout(1400);
+  await expect(page.getByRole('alert').filter({ hasText: 'Could not load databases' })).toHaveCount(0);
+  await expect(databaseRow(databases, 'app')).toHaveCount(0);
+});
+
+test('a failed Redis ACL enable keeps the dialog open and retry succeeds', async ({ page }) => {
+  await open(page, REDIS);
+  await activateService(page, 'redis');
+  await refresh(page);
+  await installMockHooks(page);
+  await page.evaluate(async () => {
+    const api = (window as unknown as { __dbMock: Record<string, (...args: unknown[]) => Promise<unknown>> })
+      .__dbMock;
+    const original = api.enableRedisACLFile as (...args: unknown[]) => Promise<unknown>;
+    let calls = 0;
+    api.enableRedisACLFile = async (...args: unknown[]) => {
+      calls += 1;
+      if (calls === 1) {
+        const modulePath = '/src/lib/errors.ts';
+        const mod = (await import(modulePath)) as {
+          ApiError: new (code: string, message: string, status: number) => Error;
+        };
+        throw new mod.ApiError('REDIS_ACL_FAILED', 'Could not restart Redis.', 500);
+      }
+      return original(...args);
+    };
+  });
+
+  await page.getByRole('button', { name: 'Enable ACL persistence' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Enable Redis ACL persistence?' });
+  await dialog.getByRole('button', { name: 'Enable and restart' }).click();
+  await expect(dialog.getByText('Could not restart Redis.')).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Redis ACL persistence enabled' })).toHaveCount(0);
+
+  await dialog.getByRole('button', { name: 'Enable and restart' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Redis ACL persistence enabled' })).toBeVisible();
+  await expect(dialog).toBeHidden();
 });
