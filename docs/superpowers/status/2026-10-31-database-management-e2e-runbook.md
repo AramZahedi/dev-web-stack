@@ -3,7 +3,7 @@
 - **Purpose:** run the exhaustive E2E plan in fresh subagent contexts so the main session does not grow with full test transcripts.
 - **Plan:** `docs/superpowers/status/2026-10-31-database-management-e2e-plan.md`
 - **Model for every subagent:** `opencode-go/deepseek-v4.1-flash#max`
-- **Status:** cycles 0 (readiness), 1 (harness/fixtures), 2 (Playwright specs), 3 (Windows read-only), 4 (Linux core), 5 (Linux sites), 6 (Linux backup/import), 7 (Linux Redis/phpMyAdmin) and 8 (dashboard mock) done. No destructive real-install scenario has been started.
+- **Status:** cycles 0 (readiness), 1 (harness/fixtures), 2 (Playwright specs), 3 (Windows read-only), 4 (Linux core), 5 (Linux sites), 6 (Linux backup/import), 7 (Linux Redis/phpMyAdmin) and 8 (dashboard mock) done. **Paused after cycle 8 by user instruction; cycles 9-15 remain pending.** No destructive real-install scenario has been started.
 - **Main-session rule:** one batch = one spawn, one close. The subagent returns a short summary, evidence paths, and a status update; the main session records it and spawns the next batch.
 
 ## Hard constraints for every subagent
@@ -83,6 +83,22 @@ Recommended batched run: **16 spawn/close cycles** if the retry batch is needed 
 | 13 | Closeout | E2E-28: cleanup, results, residual risks, evidence index | all | Cleanup only | pending |
 | 14 | Retry/fix verification | Failed P0/P1 from cycles 0-13 | as needed | as needed | pending |
 | 15 | Release | Full gate, build Linux/Windows, tag, publish, verify assets | WIN/LIN/UI | No real-install mutation | pending |
+
+## Pause state after cycle 8
+
+- **Paused:** 2026-10-31, by user instruction. Do not spawn a new subagent
+  until the user explicitly resumes the run.
+- **Last verified HEAD:** `737d93a` (`docs(e2e): record cycle 8 final head`),
+  clean and equal to `origin/master`. No unmerged branches or extra worktrees.
+- **Real install:** MySQL 8.4.13 active; phpMyAdmin 5.2.3 active; both
+  loopback-only. `http://127.0.0.1:8082/` returns HTTP 200 after the controller
+  restarted only the `devstack` Docker daemon with `live-restore`.
+- **Completed:** cycles 0-8; E2E-00, 02-10, 12, 16-21 have passing evidence;
+  E2E-01 and the fixed-port sub-steps of E2E-06/E2E-20 are `BLOCKED` because
+  the real install owns 3306/8082.
+- **Pending:** cycle 9 live dashboard, 10 failure injection, 11 scale/performance,
+  12 parity/regression/audit, 13 closeout, 14 retry/fix verification, and 15
+  release. Release and shutdown have not started; the machine stays on.
 
 ## Safe subset while approval is unavailable
 
