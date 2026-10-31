@@ -132,6 +132,13 @@ else
 	c4_fail "${scenario}" "injected migration failure returned an error" "HTTP 200"
 fi
 c4_assert_eq "${scenario}" "redis.conf restored after restart failure" "$(c7_redis_config_hash)" "${config_before_failure}"
+if compgen -G "${devstack_home}/services/redis/config/redis.conf.bak*" >/dev/null; then
+	c4_pass "${scenario}" "redis.conf backup exists after the failed migration"
+	backup_file="$(compgen -G "${devstack_home}/services/redis/config/redis.conf.bak*" | head -1)"
+	c4_assert_eq "${scenario}" "redis.conf backup matches the pre-migration config" "$(sha256sum "${backup_file}" | awk '{print $1}')" "${config_before_failure}"
+else
+	c4_fail "${scenario}" "redis.conf backup exists after the failed migration" "no redis.conf.bak*"
+fi
 if [ ! -e "${c7_redis_acl}" ]; then
 	c4_pass "${scenario}" "seeded users.acl removed after rollback"
 else
