@@ -325,7 +325,7 @@ func (c *DockerServiceController) CreateUser(ctx context.Context, serviceID stri
 		} else if !errors.Is(err, databases.ErrNotFound) {
 			return model.DatabaseUser{}, err
 		}
-		return c.setRedisUser(ctx, serviceID, req)
+		return c.setRedisUser(ctx, serviceID, req, true)
 	}
 	if engine == nil {
 		return model.DatabaseUser{}, fmt.Errorf("%w: %s does not support users", databases.ErrUnsupported, engineID)

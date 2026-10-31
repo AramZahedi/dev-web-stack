@@ -1849,7 +1849,7 @@ func TestHelperRedisACLFileConfirmedMigrates(t *testing.T) {
 		t.Fatalf("config=%q err=%v", config, err)
 	}
 	aclInfo, err := os.Stat(filepath.Join(root, "services", "redis", "data", "users.acl"))
-	if err != nil || aclInfo.Mode().Perm() != 0o600 {
+	if err != nil || aclInfo.Mode().Perm() != 0o644 {
 		t.Fatalf("users.acl mode=%v err=%v", aclInfo, err)
 	}
 	if !runner.joinedCallsContains("restart") {
@@ -1874,7 +1874,7 @@ func TestHelperRedisExistingACLFileModeIsTightened(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(aclPath)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || info.Mode().Perm() != 0o644 {
 		t.Fatalf("users.acl mode=%v err=%v", info, err)
 	}
 	if runner.joinedCallsContains("restart") {
@@ -1947,7 +1947,7 @@ func TestHelperRedisACLFilePreservesConfigInodeAndMode(t *testing.T) {
 		t.Fatalf("redis.conf mode = %o", after.Mode().Perm())
 	}
 	aclInfo, err := os.Stat(filepath.Join(root, "services", "redis", "data", "users.acl"))
-	if err != nil || aclInfo.Mode().Perm() != 0o600 {
+	if err != nil || aclInfo.Mode().Perm() != 0o644 {
 		t.Fatalf("users.acl mode=%v err=%v", aclInfo.Mode(), err)
 	}
 }
@@ -2031,6 +2031,86 @@ func TestHelperRedisFullExcludesAdmin(t *testing.T) {
 	}
 	if strings.Contains(joined, "reset on >") {
 		t.Fatalf("password leaked into argv: %s", joined)
+	}
+}
+
+func TestHelperRedisACLFileMigrationRejectsForeignACLFile(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	configPath := filepath.Join(root, "services", "redis", "config", "redis.conf")
+	original := []byte("port 6379\naclfile /etc/redis/custom.acl\n")
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := c.runner.(*fakeCommandRunner)
+	runner.reset()
+	err := c.EnableRedisACLFileConfirmed(context.Background(), true)
+	if !errors.Is(err, databases.ErrUnsupported) {
+		t.Fatalf("err=%v, want ErrUnsupported", err)
+	}
+	after, readErr := os.ReadFile(configPath)
+	if readErr != nil || string(after) != string(original) {
+		t.Fatalf("foreign config changed: %q err=%v", after, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "services", "redis", "data", "users.acl")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("foreign aclfile created users.acl: %v", statErr)
+	}
+	if runner.joinedCallsContains("restart") {
+		t.Fatalf("foreign aclfile restarted Redis: %s", runner.joinedCalls())
+	}
+}
+
+func TestHelperRedisACLFileRestartFailureRollsBack(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	configPath := filepath.Join(root, "services", "redis", "config", "redis.conf")
+	original, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := c.runner.(*fakeCommandRunner)
+	restarts := 0
+	runner.handle = func(name string, args []string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "restart") {
+			restarts++
+			if restarts == 1 {
+				return nil, errors.New("injected restart failure")
+			}
+		}
+		return runner.defaultRun(name, args)
+	}
+	err = c.EnableRedisACLFileConfirmed(context.Background(), true)
+	if err == nil {
+		t.Fatal("migration succeeded despite the injected restart failure")
+	}
+	after, readErr := os.ReadFile(configPath)
+	if readErr != nil || string(after) != string(original) {
+		t.Fatalf("redis.conf not restored: %q err=%v", after, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "services", "redis", "data", "users.acl")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("seeded users.acl not removed: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "services", "redis", "config", ".aclfile-restart-pending")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("restart marker not removed: %v", statErr)
+	}
+	if restarts < 2 {
+		t.Fatalf("recovery restart not attempted: %d restart call(s)", restarts)
+	}
+}
+
+func TestHelperRedisSetUserRechecksExistingName(t *testing.T) {
+	c, root := databaseHelperFixture(t)
+	writeRedisConfig(t, root)
+	confirmRedisACLFile(t, c)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.aclList = "user default on nopass ~* &* +@all\nuser cache on #hash ~* +@read\n"
+	runner.reset()
+	_, err := c.setRedisUser(context.Background(), "redis", databases.CreateUserRequest{Username: "cache", AccessLevel: "read-only"}, true)
+	if !errors.Is(err, databases.ErrConflict) {
+		t.Fatalf("err=%v, want ErrConflict", err)
+	}
+	if runner.stdinContains("ACL SETUSER cache") {
+		t.Fatalf("existing Redis user was overwritten: %q", runner.stdin)
 	}
 }
 

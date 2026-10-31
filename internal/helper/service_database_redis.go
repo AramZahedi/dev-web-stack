@@ -163,7 +163,7 @@ func (c *DockerServiceController) ListRedisUsers(ctx context.Context, serviceID 
 
 // SetRedisUser creates or replaces a Redis ACL user.
 func (c *DockerServiceController) SetRedisUser(ctx context.Context, serviceID string, req databases.CreateUserRequest) (model.DatabaseUser, error) {
-	return c.setRedisUser(ctx, serviceID, req)
+	return c.setRedisUser(ctx, serviceID, req, false)
 }
 
 // DeleteRedisUser deletes a Redis ACL user.
@@ -209,7 +209,7 @@ func (c *DockerServiceController) findRedisUserByName(ctx context.Context, servi
 
 // SetRedisUser creates or replaces a Redis ACL user. The password is sent on
 // stdin; only non-secret ACL rules appear in argv.
-func (c *DockerServiceController) setRedisUser(ctx context.Context, serviceID string, req databases.CreateUserRequest) (model.DatabaseUser, error) {
+func (c *DockerServiceController) setRedisUser(ctx context.Context, serviceID string, req databases.CreateUserRequest, recheck bool) (model.DatabaseUser, error) {
 	if err := c.requireActive(ctx, serviceID); err != nil {
 		return model.DatabaseUser{}, err
 	}
@@ -235,6 +235,17 @@ func (c *DockerServiceController) setRedisUser(ctx context.Context, serviceID st
 	lock := c.databaseLock(serviceID)
 	lock.Lock()
 	defer lock.Unlock()
+	// Re-check under the same lock as the write when this call is the
+	// create-only path. CreateUser checks before this call; two concurrent
+	// creates could otherwise both pass and the second ACL SETUSER would
+	// overwrite the first user's password.
+	if recheck {
+		if _, err := c.findRedisUserByName(ctx, serviceID, req.Username); err == nil {
+			return model.DatabaseUser{}, fmt.Errorf("%w: Redis user %q already exists", databases.ErrConflict, req.Username)
+		} else if !errors.Is(err, databases.ErrNotFound) {
+			return model.DatabaseUser{}, err
+		}
+	}
 	password, err := credentials.NewSecret()
 	if err != nil {
 		return model.DatabaseUser{}, err
@@ -469,6 +480,9 @@ func (c *DockerServiceController) enableRedisACLFile(ctx context.Context, confir
 		return fmt.Errorf("read redis.conf: %w", err)
 	}
 	configHasACL := hasRedisACLFileLine(string(config))
+	if configured, ok := redisConfigACLFile(config); ok && configured != dbengine.NewRedisACL().ACLFile() {
+		return fmt.Errorf("%w: Redis already uses aclfile %q; manage it outside devstack", databases.ErrUnsupported, configured)
+	}
 	aclExists, aclInfo, err := inspectRedisACLFile(aclPath)
 	if err != nil {
 		return err
@@ -517,7 +531,7 @@ func (c *DockerServiceController) enableRedisACLFile(ctx context.Context, confir
 		if err := os.MkdirAll(filepath.Dir(aclPath), 0o700); err != nil {
 			return fmt.Errorf("create Redis data directory: %w", err)
 		}
-		if err := writeAtomicFile(aclPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		if err := writeAtomicFile(aclPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 			return fmt.Errorf("seed users.acl: %w", err)
 		}
 		changed = true
@@ -531,12 +545,40 @@ func (c *DockerServiceController) enableRedisACLFile(ctx context.Context, confir
 		return fmt.Errorf("write ACL restart marker: %w", err)
 	}
 	if err := c.Restart(ctx, services.IDRedis); err != nil {
-		return fmt.Errorf("restart Redis to load users.acl: %w", err)
+		rollbackErr := rollbackRedisACLFileMigration(configPath, config, configHasACL, aclPath, aclExists, markerPath)
+		var recoveryErr error
+		if rollbackErr == nil {
+			// The failed restart may have left Redis stopped. Bring it back on
+			// the restored config so a failed migration is not an outage.
+			recoveryErr = c.Restart(ctx, services.IDRedis)
+		}
+		return fmt.Errorf("restart Redis to load users.acl: %w (rollback: %v, recovery: %v)", err, rollbackErr, recoveryErr)
 	}
 	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove ACL restart marker: %w", err)
 	}
 	return nil
+}
+
+// rollbackRedisACLFileMigration restores the pre-migration state after a failed
+// restart. It removes only files this migration created; an existing user ACL
+// file and a pre-existing aclfile directive are left untouched.
+func rollbackRedisACLFileMigration(configPath string, original []byte, configHadACL bool, aclPath string, aclExisted bool, markerPath string) error {
+	var errs []error
+	if !configHadACL {
+		if err := writeFileInPlace(configPath, original, 0o644); err != nil {
+			errs = append(errs, fmt.Errorf("restore redis.conf: %w", err))
+		}
+	}
+	if !aclExisted {
+		if err := os.Remove(aclPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove seeded users.acl: %w", err))
+		}
+	}
+	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, fmt.Errorf("remove ACL restart marker: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 func inspectRedisACLFile(path string) (bool, os.FileInfo, error) {
@@ -555,10 +597,15 @@ func inspectRedisACLFile(path string) (bool, os.FileInfo, error) {
 }
 
 func ensureRedisACLFileMode(path string, info os.FileInfo) error {
-	if info != nil && info.Mode().Perm() == 0o600 {
+	// The official Redis image runs redis-server as the unprivileged redis user
+	// and its entrypoint deliberately skips permission fixes when /data contains
+	// non-default files such as users.acl. A 0600 root-owned file is therefore
+	// unreadable and Redis exits on restart. The file contains only SHA-256
+	// hashes, so 0644 is safe and matches the Windows agent path.
+	if info != nil && info.Mode().Perm() == 0o644 {
 		return nil
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := os.Chmod(path, 0o644); err != nil {
 		return fmt.Errorf("set users.acl mode: %w", err)
 	}
 	return nil
@@ -576,4 +623,21 @@ func hasRedisACLFileLine(config string) bool {
 		}
 	}
 	return false
+}
+
+// redisConfigACLFile returns the first configured aclfile path. The helper only
+// manages the container path /data/users.acl; a config that points elsewhere
+// must not be silently rewritten or restarted.
+func redisConfigACLFile(config []byte) (string, bool) {
+	for _, line := range strings.Split(string(config), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "aclfile") {
+			return strings.Trim(fields[1], `"'`), true
+		}
+	}
+	return "", false
 }
