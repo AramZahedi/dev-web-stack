@@ -660,6 +660,18 @@ func TestHelperCreateDatabaseUsesValidatedSQL(t *testing.T) {
 	}
 }
 
+func TestHelperCreateDatabaseMapsDuplicateToConflict(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.handleInput = func(string, []string, []byte) ([]byte, error) {
+		return nil, errors.New("ERROR 1007 (HY000): Can't create database 'app'; database exists")
+	}
+	_, err := c.CreateDatabase(context.Background(), "mysql", databases.CreateDatabaseRequest{Name: "app"})
+	if !errors.Is(err, databases.ErrConflict) {
+		t.Fatalf("err = %v, want DATABASE_CONFLICT", err)
+	}
+}
+
 func TestHelperCreateDatabaseRejectsInjection(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	runner := c.runner.(*fakeCommandRunner)

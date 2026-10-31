@@ -102,6 +102,9 @@ func (c *DockerServiceController) CreateDatabase(ctx context.Context, serviceID 
 	lock.Lock()
 	defer lock.Unlock()
 	if _, err := c.runDatabaseSQL(ctx, serviceID, sql); err != nil {
+		if isAlreadyExistsError(err) {
+			return model.Database{}, fmt.Errorf("%w: database %q already exists", databases.ErrConflict, req.Name)
+		}
 		return model.Database{}, err
 	}
 	return model.Database{
@@ -358,6 +361,9 @@ func (c *DockerServiceController) CreateUser(ctx context.Context, serviceID stri
 	lock.Lock()
 	if _, err := c.runDatabaseSQL(ctx, serviceID, sql); err != nil {
 		lock.Unlock()
+		if isAlreadyExistsError(err) {
+			return model.DatabaseUser{}, fmt.Errorf("%w: user %q already exists", databases.ErrConflict, req.Username)
+		}
 		return model.DatabaseUser{}, fmt.Errorf("create user: %s", scrubSecretText(err.Error(), password))
 	}
 	lock.Unlock()
@@ -708,6 +714,19 @@ func isGlobalGrantScope(database string) bool {
 	default:
 		return false
 	}
+}
+
+// isAlreadyExistsError reports engine duplicate-object errors so the API can
+// return DATABASE_CONFLICT instead of a generic helper failure.
+func isAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "already exists") ||
+		strings.Contains(text, "database exists") ||
+		strings.Contains(text, "duplicate entry") ||
+		strings.Contains(text, "duplicate key")
 }
 
 // engineError maps engine contract validation/unsupported errors to domain
