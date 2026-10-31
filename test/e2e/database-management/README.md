@@ -45,6 +45,32 @@ test/e2e/database-management/secret-scan.sh
 test/e2e/database-management/cleanup.sh
 ```
 
+## Cycle 4 Linux core scenarios
+
+`test/e2e/database-management/linux/` runs the Linux core batch against the
+product helper and daemon, not the harness containers:
+
+```bash
+wsl -d Ubuntu -u root -- bash -lc \
+  'cd /mnt/c/Users/Aram/Projects/Go/dev-web-stack && \
+   E2E_STAMP="$(date -u +%Y%m%dT%H%M%SZ)" \
+   bash test/e2e/database-management/linux/cycle4-run-all.sh'
+```
+
+| Script | Scenario | Notes |
+|---|---|---|
+| `cycle4-e2e01.sh` | E2E-01 lifecycle equivalent | PostgreSQL/Redis use product activate/restart/deactivate; MySQL/phpMyAdmin product activation is **BLOCKED** because this host already reserves 3306/8082 for the real install. Equivalent no-port/manual containers and phpMyAdmin login on a unique high port are verified. |
+| `cycle4-e2e02.sh` | E2E-02 databases/users | MySQL no-port container and PostgreSQL product service; create/list/reveal/rotate/grant/revoke/drop/rename/protected/site-link/API parity. |
+| `cycle4-e2e16.sh` | E2E-16 adversarial | Names, hosts, grants, passwords, concurrency, stale metadata, audit rows, SSE, and secret scans. |
+
+`cycle4-env.sh` owns the disposable home, helper socket/config, high daemon
+ports, Compose project helpers, safe SQL-client helpers, and cleanup. It
+refuses any distro other than `Ubuntu`, any home outside
+`/tmp/devstack-e2e-*`, and the real install paths. `cycle4-check.sh` records
+PASS/FAIL evidence per scenario. All generated passwords stay in
+`$E2E_HOME/secrets` or `$E2E_HOME/private`; evidence contains only hashes and
+redacted summaries.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
