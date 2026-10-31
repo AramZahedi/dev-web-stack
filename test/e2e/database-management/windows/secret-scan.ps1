@@ -52,9 +52,9 @@ function Scan-Path {
         foreach ($file in $files) {
             if (Test-PathSkipped -File $file.FullName) { continue }
             foreach ($pattern in $patterns) {
-                $matches = Select-String -LiteralPath $file.FullName -Pattern $pattern.Regex -AllMatches -ErrorAction SilentlyContinue
-                if ($matches) {
-                    foreach ($match in $matches) {
+                $found = Select-String -LiteralPath $file.FullName -Pattern $pattern.Regex -AllMatches -ErrorAction SilentlyContinue
+                if ($found) {
+                    foreach ($match in $found) {
                         Write-Output ("REDACTED {0}:{1} pattern={2}" -f $file.FullName, $match.LineNumber, $pattern.Name)
                         $hits++
                     }
@@ -62,9 +62,9 @@ function Scan-Path {
             }
             foreach ($value in $exact) {
                 if ([string]::IsNullOrWhiteSpace($value)) { continue }
-                $matches = Select-String -LiteralPath $file.FullName -Pattern $value -SimpleMatch -AllMatches -ErrorAction SilentlyContinue
-                if ($matches) {
-                    foreach ($match in $matches) {
+                $found = Select-String -LiteralPath $file.FullName -Pattern $value -SimpleMatch -AllMatches -ErrorAction SilentlyContinue
+                if ($found) {
+                    foreach ($match in $found) {
                         Write-Output ("REDACTED {0}:{1} pattern=exact-runtime-secret" -f $file.FullName, $match.LineNumber)
                         $hits++
                     }
