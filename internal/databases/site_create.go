@@ -23,6 +23,26 @@ func (m *Manager) ProvisionSiteDatabase(ctx context.Context, req SiteDatabaseReq
 	if strings.TrimSpace(req.Password) != "" {
 		return ProvisionedDatabase{}, fmt.Errorf("%w: the platform contract cannot store an external password; use a metadata-only link", ErrUnsupported)
 	}
+	if req.NewUser == nil && strings.TrimSpace(req.UserID) != "" && strings.TrimSpace(string(req.Grant)) != "" {
+		return ProvisionedDatabase{}, fmt.Errorf("%w: existing users are never auto-granted by site add", ErrInvalidRequest)
+	}
+	if req.NewUser != nil {
+		username := strings.TrimSpace(req.NewUser.Username)
+		if protectedUser(username) {
+			return ProvisionedDatabase{}, fmt.Errorf("%w: user %q is protected", ErrProtected, username)
+		}
+		// Reject an existing username before creating the database. Otherwise a
+		// failed Add Site leaves a new database behind with no site.
+		users, err := m.ListUsers(ctx, serviceID)
+		if err != nil {
+			return ProvisionedDatabase{}, err
+		}
+		for _, user := range users {
+			if strings.EqualFold(user.Username, username) {
+				return ProvisionedDatabase{}, fmt.Errorf("%w: user %q already exists", ErrConflict, username)
+			}
+		}
+	}
 	req.ServiceID = serviceID
 
 	var database model.Database

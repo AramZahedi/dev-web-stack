@@ -2100,6 +2100,63 @@ func TestLinkProvisionedDoesNotRegrant(t *testing.T) {
 	}
 }
 
+func TestProvisionSiteDatabaseRejectsDuplicateUserBeforeCreatingDatabase(t *testing.T) {
+	m, _, platform, _, _ := testManagerWithFakes(t)
+	platform.users = []model.DatabaseUser{{
+		ID: "usr_dup", ServiceID: "mysql", Username: "dup", Host: "%",
+	}}
+	_, err := m.ProvisionSiteDatabase(context.Background(), SiteDatabaseRequest{
+		ServiceID:   "mysql",
+		NewDatabase: &CreateDatabaseRequest{Name: "newdb"},
+		NewUser:     &CreateUserRequest{Username: "dup"},
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("error = %v, want ErrConflict", err)
+	}
+	for _, db := range platform.databases {
+		if db.Name == "newdb" {
+			t.Fatalf("duplicate user created an orphan database: %+v", platform.databases)
+		}
+	}
+}
+
+func TestProvisionSiteDatabaseRejectsGrantWithExistingUser(t *testing.T) {
+	m, st, platform, _, _ := testManagerWithFakes(t)
+	st.users = []model.DatabaseUserRecord{{
+		ID: "usr_app", ServiceID: "mysql", Username: "app", Host: "%",
+	}}
+	platform.databases = []model.Database{{Name: "app", ServiceID: "mysql", Engine: model.DatabaseMySQL}}
+	platform.users = []model.DatabaseUser{{
+		ID: "usr_app", ServiceID: "mysql", Username: "app", Host: "%",
+	}}
+	_, err := m.ProvisionSiteDatabase(context.Background(), SiteDatabaseRequest{
+		ServiceID: "mysql", Database: "app", UserID: "usr_app", Grant: "read_only",
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("error = %v, want ErrInvalidRequest", err)
+	}
+	if len(platform.databases) != 1 || platform.databases[0].Name != "app" {
+		t.Fatalf("existing database changed: %+v", platform.databases)
+	}
+}
+
+func TestProvisionSiteDatabaseRejectsProtectedNewUser(t *testing.T) {
+	m, _, platform, _, _ := testManagerWithFakes(t)
+	_, err := m.ProvisionSiteDatabase(context.Background(), SiteDatabaseRequest{
+		ServiceID:   "mysql",
+		NewDatabase: &CreateDatabaseRequest{Name: "newdb"},
+		NewUser:     &CreateUserRequest{Username: "root"},
+	})
+	if !errors.Is(err, ErrProtected) {
+		t.Fatalf("error = %v, want ErrProtected", err)
+	}
+	for _, db := range platform.databases {
+		if db.Name == "newdb" {
+			t.Fatalf("protected user created an orphan database: %+v", platform.databases)
+		}
+	}
+}
+
 func TestProvisionSiteDatabaseCreatesDefaultGrant(t *testing.T) {
 	m, st, _, _, _ := testManagerWithFakes(t)
 	result, err := m.ProvisionSiteDatabase(context.Background(), SiteDatabaseRequest{
