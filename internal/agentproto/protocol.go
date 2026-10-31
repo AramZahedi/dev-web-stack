@@ -46,6 +46,7 @@ const (
 	PathPathsValidate = "/v1/paths/validate"
 	PathSourceCopy    = "/v1/source/copy"
 	PathFS            = "/v1/fs"
+	PathFSMkdir       = "/v1/fs/mkdir"
 )
 
 // Site-scoped path helpers.
@@ -523,6 +524,12 @@ type FSEntry struct {
 type FSListing struct {
 	Path    string    `json:"path"`
 	Entries []FSEntry `json:"entries"`
+}
+
+// FSMkdirRequest creates one directory below the managed projects root.
+type FSMkdirRequest struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
 }
 
 // SourceCopyRequest moves a project between Windows and WSL with verification.
