@@ -357,6 +357,32 @@ func TestScaffoldSeedsBaseConfigs(t *testing.T) {
 	}
 }
 
+func TestScaffoldSeedsPhpMyAdminServerConfig(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data", "devstack")
+	runner := &fakeRunner{}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.Action(context.Background(), agentproto.ServiceRequest{ID: "phpmyadmin", Action: "install"}); err != nil {
+		t.Fatalf("install phpmyadmin: %v", err)
+	}
+	path := filepath.Join(root, "services", "phpmyadmin", "config", "config.user.inc.php")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"$cfg['Servers'][1]['host'] = 'db';",
+		"$cfg['Servers'][1]['port'] = '3306';",
+		"$cfg['Servers'][1]['auth_type'] = 'cookie';",
+	} {
+		if !strings.Contains(string(content), want) {
+			t.Errorf("phpMyAdmin config missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestStatusDecodesArrayObjectAndNDJSON(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "data", "devstack")
 	runner := &fakeInputRunner{
