@@ -88,8 +88,9 @@ Recommended batched run: **16 spawn/close cycles** if the retry batch is needed 
 
 - **Paused:** 2026-10-31, by user instruction. Do not spawn a new subagent
   until the user explicitly resumes the run.
-- **Last verified HEAD:** `737d93a` (`docs(e2e): record cycle 8 final head`),
-  clean and equal to `origin/master`. No unmerged branches or extra worktrees.
+- **Last verified HEAD:** `5462e94` (`docs(e2e): close cycle 8 and record pause
+  state`), clean and equal to `origin/master`. No unmerged branches or extra
+  worktrees.
 - **Real install:** MySQL 8.4.13 active; phpMyAdmin 5.2.3 active; both
   loopback-only. `http://127.0.0.1:8082/` returns HTTP 200 after the controller
   restarted only the `devstack` Docker daemon with `live-restore`.
