@@ -54,6 +54,33 @@ func TestDBRenameRejectsMariaDBBeforeAPICall(t *testing.T) {
 	}
 }
 
+func TestDBRenamePostgresRequiresConfirmation(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "db", "rename", "--service", "postgresql", "--name", "app", "--to", "app2")
+	if code != 1 || !strings.Contains(stderr, "CONFIRMATION_REQUIRED") {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if fake.databaseRenamed {
+		t.Fatal("rename API called without --yes")
+	}
+}
+
+func TestDBRenamePostgresSendsTypedConfirmation(t *testing.T) {
+	useTestSeams(t)
+	fake := &fakeClient{}
+	code, _, stderr := runCLIExit(t, fake, "db", "rename", "--service", "postgresql", "--name", "app", "--to", "app2", "--yes")
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if !fake.databaseRenamed {
+		t.Fatal("rename API was not called")
+	}
+	if fake.databaseRenameReq.Name != "app2" || fake.databaseRenameReq.Confirm != "app" {
+		t.Fatalf("rename request = %+v", fake.databaseRenameReq)
+	}
+}
+
 func TestDBDropRequiresYes(t *testing.T) {
 	useTestSeams(t)
 	fake := &fakeClient{}

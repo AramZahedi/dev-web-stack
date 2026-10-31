@@ -154,12 +154,17 @@ func (a *App) newDBRenameCmd() *cobra.Command {
 					Remediation: "Use `devstack db backup create`, `devstack db create`, and `devstack db import` instead.",
 				}
 			}
+			if err := a.requireDestructiveConfirmation(cmd,
+				fmt.Sprintf("Rename database %q to %q on service %q? Linked sites must be stopped.", name, to, service),
+				"Re-run with --yes to confirm the rename."); err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 			c, _, err := a.clientReady(ctx)
 			if err != nil {
 				return err
 			}
-			database, err := c.RenameServiceDatabase(ctx, service, name, databases.RenameDatabaseRequest{Name: to})
+			database, err := c.RenameServiceDatabase(ctx, service, name, databases.RenameDatabaseRequest{Name: to, Confirm: name})
 			if err != nil {
 				return err
 			}
