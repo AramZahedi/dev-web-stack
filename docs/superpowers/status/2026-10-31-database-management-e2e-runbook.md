@@ -70,7 +70,7 @@ Recommended batched run: **16 spawn/close cycles** if the retry batch is needed 
 | 0 | Readiness setup | R01-R04, R11-R12: tools, Docker/images, variables, dry-runs | WIN/LIN | No real-install mutation | done |
 | 1 | Harness and fixtures | R05, R07, R08: fixtures, seed/verify scripts, tracker, secret scanner, cleanup/rollback, isolation model | WIN/LIN | No real-install mutation | done |
 | 2 | Playwright specs | R06: database-management specs, live-dashboard config, browser install | UI | No | done |
-| 3 | Windows read-only | E2E-00, E2E-09 read-only, E2E-12 read-only, E2E-20 real-install login | WIN-REAL read-only | No | done (denied-reveal audit fix `9347f25`; live re-check after upgrade) |
+| 3 | Windows read-only | E2E-00, E2E-09 read-only, E2E-12 read-only, E2E-20 real-install login | WIN-REAL read-only | No | done (denied-reveal audit fix `9347f25`; hosts repair deferred; live re-check after upgrade) |
 | 4 | Linux core | E2E-01, E2E-02, E2E-16 | LIN disposable | Yes, disposable | pending |
 | 5 | Linux sites | E2E-03, E2E-04, E2E-05, E2E-06, E2E-17 | LIN disposable | Yes, disposable | pending |
 | 6 | Backup/import | E2E-07, E2E-18 | LIN disposable | Yes, disposable | pending |
@@ -105,7 +105,7 @@ If a batch would require a destructive real-install change and no disposable env
 | 0 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-0/` | R01-R04 and R11 ready; R12 tool smokes done, harness dry-runs deferred to cycle 1; real install untouched. |
 | 1 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-1/`, `dist/e2e/database-management/evidence/20261031t011321z-2677/HARNESS-SMOKE/` | R05/R07/R08 harness built; MySQL 8.4.13 + phpMyAdmin 5.2.3 pulled in Ubuntu engine; R12 harness smoke PASS at harness commit `4bc2e11`; real install untouched. Windows destructive DB tests remain BLOCKED on WSL `/data/devstack` isolation. |
 | 2 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-2/` | R06 complete: 17 database-management mock tests + 32 existing dashboard tests pass on Chromium/Firefox/WebKit (147/147); live config/spec added and skipped by default; full live auth BLOCKED on auth-disabled real install/no test token. |
-| 3 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-3/` | E2E-00/09/12/20 read-only PASS; phpMyAdmin 5.2.3 login/logout/restart PASS; denied-reveal audit gap fixed in `9347f25`, recorded in `d2cfa73`; live re-check pending upgrade; real install not mutated. |
+| 3 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-3/` | E2E-00/09/12/20 read-only PASS; phpMyAdmin 5.2.3 login/logout/restart PASS; denied-reveal audit gap fixed in `9347f25`, recorded in `d2cfa73`; final doctor hosts check failed (empty managed block, known limitation), repair deferred; live re-check pending upgrade. |
 | 4 | - | - | pending | - | - |
 | 5 | - | - | pending | - | - |
 | 6 | - | - | pending | - | - |
