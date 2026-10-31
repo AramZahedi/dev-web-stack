@@ -118,3 +118,9 @@ If a batch would require a destructive real-install change and no disposable env
 | 13 | - | - | pending | - | - |
 | 14 | - | - | pending | - | - |
 | 15 | - | - | pending | - | - |
+
+**Controller blocker (cycle 5):** the real phpMyAdmin at
+`http://127.0.0.1:8082/` timed out before cycle 5 and still timed out after the
+disposable Ubuntu distro was terminated. No real-install object was modified.
+The controller should restore the real WSL port-forward/relay state; cycle 5
+evidence is complete and the disposable environment is clean.
