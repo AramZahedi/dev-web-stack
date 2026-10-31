@@ -166,7 +166,7 @@ func TestParseMySQLDatabasesAndUsers(t *testing.T) {
 
 func TestParseMySQLGrants(t *testing.T) {
 	e := NewMySQL()
-	grants, err := e.ParseGrants([]byte("GRANT USAGE ON *.* TO `app`@`%`\nGRANT SELECT ON `app`.* TO `app`@`%`\nGRANT INSERT, UPDATE ON `app`.* TO `app`@`%`\nGRANT ALL PRIVILEGES ON `blog`.* TO `app`@`%`\n"))
+	grants, err := e.ParseGrants([]byte("GRANT USAGE ON *.* TO `app`@`%`\nGRANT SELECT, INSERT, UPDATE, DELETE ON `app`.* TO `app`@`%`\nGRANT ALL PRIVILEGES ON `blog`.* TO `app`@`%`\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +178,35 @@ func TestParseMySQLGrants(t *testing.T) {
 	}
 	if grants[1].Database != "blog" || grants[1].Preset != model.GrantAdmin {
 		t.Fatalf("blog grant = %+v", grants[1])
+	}
+}
+
+func TestParseMySQLGrantsKeepsPartialCustomGrant(t *testing.T) {
+	e := NewMySQL()
+	grants, err := e.ParseGrants([]byte("GRANT SELECT, INSERT ON `app`.* TO `app`@`%`\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || grants[0].Preset != model.GrantCustom {
+		t.Fatalf("partial grant = %+v, want custom", grants)
+	}
+}
+
+func TestParsePostgresGrantsKeepsPartialCustomGrant(t *testing.T) {
+	e := NewPostgreSQL()
+	grants, err := e.ParseGrants([]byte("app\tCONNECT\napp\tUSAGE\napp\tSELECT\napp\tINSERT\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || grants[0].Preset != model.GrantCustom {
+		t.Fatalf("partial grant = %+v, want custom", grants)
+	}
+	grants, err = e.ParseGrants([]byte("app\tCONNECT\napp\tUSAGE\napp\tSELECT\napp\tINSERT\napp\tUPDATE\napp\tDELETE\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || grants[0].Preset != model.GrantReadWrite {
+		t.Fatalf("read_write grant = %+v", grants)
 	}
 }
 
@@ -404,6 +433,20 @@ func TestPostgresGrantScriptFailsWhenQueryFails(t *testing.T) {
 	output, err := runPostgresScript(t, command)
 	if err == nil {
 		t.Fatalf("grant script masked the initial psql failure: %s", output)
+	}
+}
+
+func TestPostgresGrantScriptEmbedsValidatedRoleLiteral(t *testing.T) {
+	command, err := NewPostgreSQL().ListGrantsCommand("app", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(command, "\n")
+	if strings.Contains(joined, ":'role'") || strings.Contains(joined, "--set=role=") {
+		t.Fatalf("grant script still relies on an unexpanded psql variable: %s", joined)
+	}
+	if !strings.Contains(joined, "grantee = 'app'") {
+		t.Fatalf("grant script does not embed the quoted role: %s", joined)
 	}
 }
 

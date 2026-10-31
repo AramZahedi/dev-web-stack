@@ -620,6 +620,17 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 		}
 		desiredByDB[grant.Database] = grant
 	}
+	// PostgreSQL schema and table grants are database-local. Run them in the
+	// target database instead of the maintenance database, otherwise the role
+	// only receives CONNECT and the engine grant never matches the metadata.
+	runGrantSQL := func(database, sql string) error {
+		if engine.ID() == model.DatabasePostgreSQL {
+			_, err := c.runDatabaseSQLIn(ctx, serviceID, database, sql)
+			return err
+		}
+		_, err := c.runDatabaseSQL(ctx, serviceID, sql)
+		return err
+	}
 	for database, want := range desiredByDB {
 		have, ok := currentByDB[database]
 		if ok && grantsEqual(have, want) {
@@ -630,7 +641,7 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 			if err != nil {
 				return engineError(err)
 			}
-			if _, err := c.runDatabaseSQL(ctx, serviceID, sql); err != nil {
+			if err := runGrantSQL(database, sql); err != nil {
 				return err
 			}
 		}
@@ -638,7 +649,7 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 		if err != nil {
 			return engineError(err)
 		}
-		if _, err := c.runDatabaseSQL(ctx, serviceID, sql); err != nil {
+		if err := runGrantSQL(database, sql); err != nil {
 			return err
 		}
 	}
@@ -653,7 +664,7 @@ func (c *DockerServiceController) applyUserGrants(ctx context.Context, serviceID
 		if err != nil {
 			return engineError(err)
 		}
-		if _, err := c.runDatabaseSQL(ctx, serviceID, sql); err != nil {
+		if err := runGrantSQL(database, sql); err != nil {
 			return err
 		}
 	}

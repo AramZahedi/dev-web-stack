@@ -106,6 +106,29 @@ func ValidateIdentifier(name string) error {
 	return nil
 }
 
+// privilegeSetEqual reports whether the observed privilege list is exactly the
+// expected set (case-insensitive, order-independent). Preset inference uses it
+// so a partial custom grant is never promoted to a broader preset.
+func privilegeSetEqual(privileges []string, want ...string) bool {
+	seen := make(map[string]bool, len(privileges))
+	for _, raw := range privileges {
+		privilege := strings.ToUpper(strings.TrimSpace(raw))
+		if privilege == "" {
+			continue
+		}
+		seen[privilege] = true
+	}
+	if len(seen) != len(want) {
+		return false
+	}
+	for _, raw := range want {
+		if !seen[strings.ToUpper(strings.TrimSpace(raw))] {
+			return false
+		}
+	}
+	return true
+}
+
 // QuoteIdentifier validates and quotes an identifier for the engine.
 func QuoteIdentifier(engine model.DatabaseEngine, name string) (string, error) {
 	if err := ValidateIdentifier(name); err != nil {

@@ -406,33 +406,23 @@ func mysqlPrivileges(grant model.DatabaseGrant) ([]string, error) {
 }
 
 func mysqlGrantPreset(privileges []string) model.DatabaseGrantPreset {
-	hasSchema := false
-	hasWrite := false
-	hasRead := false
-	for _, raw := range privileges {
-		switch strings.ToUpper(strings.TrimSpace(raw)) {
-		case "ALL", "ALL PRIVILEGES":
-			return model.GrantAdmin
-		case "CREATE", "ALTER", "DROP", "INDEX", "REFERENCES", "TRIGGER",
-			"CREATE TEMPORARY TABLES", "LOCK TABLES", "EXECUTE",
-			"CREATE VIEW", "SHOW VIEW", "CREATE ROUTINE", "ALTER ROUTINE", "EVENT":
-			hasSchema = true
-		case "INSERT", "UPDATE", "DELETE":
-			hasWrite = true
-		case "SELECT":
-			hasRead = true
-		}
+	if privilegeSetEqual(privileges, "ALL PRIVILEGES") || privilegeSetEqual(privileges, "ALL") {
+		return model.GrantAdmin
 	}
-	switch {
-	case hasSchema:
-		return model.GrantReadWriteSchema
-	case hasWrite:
-		return model.GrantReadWrite
-	case hasRead:
+	if privilegeSetEqual(privileges, "SELECT") {
 		return model.GrantReadOnly
-	default:
-		return model.GrantCustom
 	}
+	if privilegeSetEqual(privileges, "SELECT", "INSERT", "UPDATE", "DELETE") {
+		return model.GrantReadWrite
+	}
+	if privilegeSetEqual(privileges,
+		"SELECT", "INSERT", "UPDATE", "DELETE",
+		"CREATE", "ALTER", "DROP", "INDEX", "REFERENCES",
+		"CREATE TEMPORARY TABLES", "LOCK TABLES", "EXECUTE",
+		"CREATE VIEW", "SHOW VIEW", "TRIGGER") {
+		return model.GrantReadWriteSchema
+	}
+	return model.GrantCustom
 }
 
 func splitPrivileges(value string) []string {

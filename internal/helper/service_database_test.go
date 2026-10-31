@@ -380,6 +380,24 @@ func databaseHelperFixture(t *testing.T) (*DockerServiceController, string) {
 	return ctrl, root
 }
 
+func TestHelperPostgresGrantsRunInTargetDatabase(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	user := model.DatabaseUser{ID: "usr_app", Username: "app"}
+	err := c.applyUserGrants(context.Background(), "postgresql", dbengine.NewPostgreSQL(), user,
+		[]model.DatabaseGrant{{Database: "app", Preset: model.GrantReadWrite}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := runner.joinedCalls()
+	if !strings.Contains(joined, "--dbname=app") {
+		t.Fatalf("PostgreSQL grant did not run in the target database: %s", joined)
+	}
+	if !strings.Contains(joined, "GRANT") {
+		t.Fatalf("PostgreSQL grant SQL was not executed: %s", joined)
+	}
+}
+
 func TestHelperDatabaseSecretIsPrivate(t *testing.T) {
 	c, root := databaseHelperFixture(t)
 	if err := c.writeDatabaseSecret("mysql", "usr_app", "s3cret"); err != nil {

@@ -161,13 +161,14 @@ func (*postgresEngine) ListGrantsCommand(username, host string) ([]string, error
 		return nil, err
 	}
 	// A role's table privileges live in each database, so the fixed script
-	// loops over connectable databases. The role name travels as a psql
-	// variable; it is never interpolated into shell syntax.
+	// loops over connectable databases. psql variables are not interpolated in
+	// --command, so the validated role is embedded as a quoted SQL literal.
+	role := QuoteLiteral(username)
 	script := `set -eu
 dbs=$(psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname=postgres --tuples-only --no-align --command="SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname") || exit 1
 printf '%s\n' "$dbs" | while IFS= read -r db; do
   [ -n "$db" ] || continue
-  psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname="$db" --tuples-only --no-align --field-separator="$(printf '\t')" --set=role=` + username + ` --command="SELECT current_database(), privilege_type FROM information_schema.role_table_grants WHERE grantee = :'role' UNION SELECT current_database(), privilege_type FROM information_schema.role_usage_grants WHERE grantee = :'role' UNION SELECT current_database(), 'CONNECT' WHERE has_database_privilege(:'role', current_database(), 'CONNECT')"
+  psql --no-psqlrc --set=ON_ERROR_STOP=1 --username=postgres --dbname="$db" --tuples-only --no-align --field-separator="$(printf '\t')" --command="SELECT current_database(), privilege_type FROM information_schema.role_table_grants WHERE grantee = ` + role + ` UNION SELECT current_database(), privilege_type FROM information_schema.role_usage_grants WHERE grantee = ` + role + ` UNION SELECT current_database(), 'CONNECT' WHERE has_database_privilege(` + role + `, current_database(), 'CONNECT') UNION SELECT current_database(), 'DATABASE CREATE' WHERE has_database_privilege(` + role + `, current_database(), 'CREATE') UNION SELECT current_database(), 'USAGE' WHERE has_schema_privilege(` + role + `, 'public', 'USAGE') UNION SELECT current_database(), 'CREATE' WHERE has_schema_privilege(` + role + `, 'public', 'CREATE')"
 done`
 	return []string{"sh", "-c", script}, nil
 }
@@ -373,31 +374,21 @@ func (*postgresEngine) RestoreCommand(database string) ([]string, error) {
 }
 
 func postgresGrantPreset(privileges []string) model.DatabaseGrantPreset {
-	hasSchema := false
-	hasWrite := false
-	hasRead := false
-	for _, raw := range privileges {
-		switch strings.ToUpper(strings.TrimSpace(raw)) {
-		case "ALL", "ALL PRIVILEGES":
-			return model.GrantAdmin
-		case "CREATE", "ALTER", "DROP", "TRUNCATE", "REFERENCES", "TRIGGER":
-			hasSchema = true
-		case "INSERT", "UPDATE", "DELETE":
-			hasWrite = true
-		case "SELECT":
-			hasRead = true
-		}
+	if privilegeSetEqual(privileges, "CONNECT", "USAGE", "CREATE", "DATABASE CREATE",
+		"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER") {
+		return model.GrantAdmin
 	}
-	switch {
-	case hasSchema:
-		return model.GrantReadWriteSchema
-	case hasWrite:
-		return model.GrantReadWrite
-	case hasRead:
+	if privilegeSetEqual(privileges, "CONNECT", "USAGE", "SELECT") {
 		return model.GrantReadOnly
-	default:
-		return model.GrantCustom
 	}
+	if privilegeSetEqual(privileges, "CONNECT", "USAGE", "SELECT", "INSERT", "UPDATE", "DELETE") {
+		return model.GrantReadWrite
+	}
+	if privilegeSetEqual(privileges, "CONNECT", "USAGE", "CREATE",
+		"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER") {
+		return model.GrantReadWriteSchema
+	}
+	return model.GrantCustom
 }
 
 func parseInt64(value string) (int64, error) {
