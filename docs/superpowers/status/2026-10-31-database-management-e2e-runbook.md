@@ -119,6 +119,9 @@ If a batch would require a destructive real-install change and no disposable env
 | 14 | - | - | pending | - | - |
 | 15 | - | - | pending | - | - |
 
+**Final pushed HEAD (cycle 8):** `31b89f7` (`docs(e2e): record cycle 8
+head`). Product fix `b1f9828`; test/docs `125ad25`.
+
 **Controller blocker (cycle 5, still open in cycles 6-7):** the real phpMyAdmin
 at `http://127.0.0.1:8082/` timed out before cycle 5, after cycle 5, after
 cycle 6, and again after cycle 7 terminated the disposable Ubuntu distro. A
