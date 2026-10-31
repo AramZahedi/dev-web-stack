@@ -58,7 +58,7 @@ type UserUpdateRequest struct {
 	ID          string      `json:"id"`
 	UserID      string      `json:"user_id"`
 	Enabled     *bool       `json:"enabled,omitempty"`
-	Grants      []GrantInfo `json:"grants,omitempty"`
+	Grants      []GrantInfo `json:"grants"`
 	AccessLevel string      `json:"access_level,omitempty"`
 }
 
