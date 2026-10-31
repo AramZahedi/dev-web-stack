@@ -223,6 +223,14 @@ $injection = @(
 foreach ($p in $injection) {
     $results.Add((Invoke-Probe ("db-injection-" + ($p -replace '[^A-Za-z0-9]', '_')) 'GET' ("/api/v1/services/mysql/databases/" + $p)))
 }
+$userInjection = @(
+    'usr_%27%20OR%201%3d1--',
+    'usr_%00',
+    'usr_%2e%2e%2fetc'
+)
+foreach ($p in $userInjection) {
+    $results.Add((Invoke-Probe ("user-injection-" + ($p -replace '[^A-Za-z0-9]', '_')) 'GET' ("/api/v1/services/mysql/users/" + $p)))
+}
 
 # G. Raw transport probes: declared body over 1 GiB and an oversized header.
 $cookieHeader = ''
