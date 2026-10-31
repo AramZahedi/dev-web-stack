@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -49,6 +50,12 @@ func TestTerminalWebSocketEndToEnd(t *testing.T) {
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		UID:      os.Getuid(),
 		Shell:    "/bin/sh",
+		// Production always resolves a global Node default before building a
+		// site shell; an unresolved default fails closed by design.
+		NodeDefault: &model.RuntimeBuild{
+			ID: "node-24", Kind: "node", Version: "24.9.0", Backend: model.BackendLocal,
+			Path: filepath.Join(home, "runtimes", "node", "24.9.0"),
+		},
 	})
 	t.Cleanup(manager.Close)
 	fx.server.terminal = manager
