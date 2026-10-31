@@ -225,6 +225,12 @@ Expected: binaries exist. Do not use a stale installed binary.
 
 ### Task 6: Live Windows/WSL E2E
 
+> **Authoritative plan:** `docs/superpowers/status/2026-10-31-database-management-e2e-plan.md`.
+> Run its machine-readiness audit and R01-R12 setup tasks first. The steps below
+> are the minimum happy path; the exhaustive plan adds upgrade/rollback,
+> phpMyAdmin, failure-injection, scale, security, and parity scenarios. Do not
+> claim the E2E gate from this task alone.
+
 Use the real install at `C:\Users\Aram\.devstack` and the merged binaries. Back up `state.db`, `config.yaml`, and the hosts block before starting. Record evidence under `dist/e2e/database-management/windows/`.
 
 - [ ] **Step 1: Install/activate the SQL services**
@@ -325,6 +331,10 @@ Record screenshots, page snapshots, and command output under `dist/e2e/database-
 ---
 
 ### Task 7: Live Linux helper E2E
+
+> **Authoritative plan:** `docs/superpowers/status/2026-10-31-database-management-e2e-plan.md`.
+> The current machine needs Docker/sqlite3 installed in Ubuntu 26.04 or Fedora 44,
+> or a disposable Debian 12 clone. Run R01-R12 before this task.
 
 Use a disposable Linux environment (a WSL distro or Linux host) with the merged `devstack` and `devstack-helper` binaries. Do not touch the Windows install.
 
