@@ -12,9 +12,17 @@ This harness is for **disposable environments only**. It refuses the real
 
 ## Quick start (Ubuntu WSL, root or docker-group user)
 
+From Windows PowerShell:
+
+```powershell
+wsl -d Ubuntu -u root -- bash -lc 'cd /mnt/c/Users/Aram/Projects/Go/dev-web-stack && bash test/e2e/database-management/smoke.sh'
+```
+
+From an Ubuntu WSL shell:
+
 ```bash
 cd /mnt/c/Users/Aram/Projects/Go/dev-web-stack
-wsl -d Ubuntu -u root -- bash test/e2e/database-management/smoke.sh
+bash test/e2e/database-management/smoke.sh
 ```
 
 `smoke.sh` is the R12 harness smoke, not an E2E scenario. It starts pinned
