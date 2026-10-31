@@ -1610,6 +1610,53 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/fs/mkdir:
+    post:
+      tags: [filesystem]
+      summary: Create a directory for the project picker
+      description: |
+        Creates one directory below the selected parent. The name must be a
+        single path segment, must not start with a dot, and must not exist.
+        WSL paths are confined to the managed projects root; local and Windows
+        paths are confined to the configured user home.
+      operationId: createFilesystemDirectory
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FsMkdirRequest"
+      responses:
+        "200":
+          description: The created directory, with an empty entry list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsListing"
+        "400":
+          description: Invalid name or parent path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Path is outside the configured root.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The directory already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/settings:
     get:
       tags: [settings]
@@ -3708,6 +3755,20 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/FsEntry"
+
+    FsMkdirRequest:
+      type: object
+      required: [path, name]
+      properties:
+        mode:
+          type: string
+          enum: [wsl, windows, local]
+        path:
+          type: string
+          description: Absolute parent directory.
+        name:
+          type: string
+          description: Single path segment; must not start with a dot.
 
     TerminalTicket:
       type: object

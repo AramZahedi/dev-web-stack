@@ -567,3 +567,13 @@ func (c *Client) BrowseFS(ctx context.Context, path string) (agentproto.FSListin
 	err := c.do(ctx, http.MethodGet, endpoint, nil, &out)
 	return out, err
 }
+
+// MkdirFS creates one directory below the managed projects root.
+func (c *Client) MkdirFS(ctx context.Context, path, name string) (agentproto.FSListing, error) {
+	var out agentproto.FSListing
+	err := c.do(ctx, http.MethodPost, agentproto.PathFSMkdir, agentproto.FSMkdirRequest{
+		Path: path,
+		Name: name,
+	}, &out)
+	return out, err
+}

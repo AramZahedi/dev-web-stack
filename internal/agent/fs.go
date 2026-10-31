@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -96,6 +97,96 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 		Path:    filepath.ToSlash(resolved),
 		Entries: out,
 	})
+}
+
+func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req agentproto.FSMkdirRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, "invalid folder request")
+		return
+	}
+	name, err := validateFolderName(req.Name)
+	if err != nil {
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+		return
+	}
+
+	projectsRoot := filepath.Join(s.config.Root, "projects")
+	root, err := filepath.EvalSymlinks(projectsRoot)
+	if err != nil {
+		writeAgentError(w, http.StatusNotFound, agentproto.CodeNotFound, "projects directory does not exist")
+		return
+	}
+	parent := strings.TrimSpace(req.Path)
+	if parent == "" || parent == "/" {
+		parent = projectsRoot
+	}
+	if !filepath.IsAbs(parent) {
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, "parent path must be absolute")
+		return
+	}
+	parent = filepath.Clean(parent)
+	if !pathInside(projectsRoot, parent) {
+		writeAgentError(w, http.StatusForbidden, agentproto.CodeForbidden, "directory is outside the managed projects root")
+		return
+	}
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeAgentError(w, http.StatusNotFound, agentproto.CodeNotFound, "parent directory does not exist")
+			return
+		}
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+		return
+	}
+	if !pathInside(root, resolvedParent) {
+		writeAgentError(w, http.StatusForbidden, agentproto.CodeForbidden, "directory is outside the managed projects root")
+		return
+	}
+
+	target := filepath.Join(resolvedParent, name)
+	if !pathInside(root, target) {
+		writeAgentError(w, http.StatusForbidden, agentproto.CodeForbidden, "directory is outside the managed projects root")
+		return
+	}
+	if err := os.Mkdir(target, 0o755); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			writeAgentError(w, http.StatusConflict, agentproto.CodeConflict, "directory already exists")
+			return
+		}
+		writeAgentError(w, http.StatusBadRequest, agentproto.CodeInvalidRequest, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(agentproto.FSListing{
+		Path:    filepath.ToSlash(target),
+		Entries: []agentproto.FSEntry{},
+	})
+}
+
+func validateFolderName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", errors.New("folder name is required")
+	}
+	if name == "." || name == ".." {
+		return "", errors.New("folder name is not allowed")
+	}
+	if strings.ContainsAny(name, `/\`) || strings.ContainsRune(name, 0) {
+		return "", errors.New("folder name must be a single path segment")
+	}
+	if strings.HasPrefix(name, ".") {
+		return "", errors.New("folder name must not start with a dot")
+	}
+	if len(name) > 128 {
+		return "", errors.New("folder name is too long")
+	}
+	return name, nil
 }
 
 func pathInside(root, target string) bool {

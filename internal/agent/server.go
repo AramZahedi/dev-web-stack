@@ -65,6 +65,7 @@ func NewServerWithRuntimeAndDocker(config Config, token string, identity TLSIden
 	mux.HandleFunc(agentproto.PathCA, server.handleCA)
 	mux.HandleFunc(agentproto.PathCAInstall, server.handleCAInstall)
 	mux.HandleFunc(agentproto.PathFS, server.handleFS)
+	mux.HandleFunc(agentproto.PathFSMkdir, server.handleFSMkdir)
 	if runtime != nil {
 		server.mountRuntime(mux, runtime)
 	}

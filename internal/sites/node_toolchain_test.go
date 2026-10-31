@@ -169,7 +169,7 @@ func TestSiteUpdateRequiresExplicitNodeVersion(t *testing.T) {
 	build := installSiteNodeBuild(t, fakes, "22.11.0")
 	path, sourceMode := fakes.root, "local"
 	if runtime.GOOS == "windows" {
-		path, sourceMode = "/home/aram/api", "wsl"
+		path, sourceMode = t.TempDir(), "windows"
 	}
 	site := createNodeToolchainSite(t, svc, CreateRequest{
 		Name: "api", Path: path, Kind: "node", SourceMode: sourceMode,

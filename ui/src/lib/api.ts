@@ -637,6 +637,18 @@ export async function browseFs(path: string, mode?: 'wsl' | 'windows' | 'local')
   }
 }
 
+export async function mkdirFs(
+  path: string,
+  name: string,
+  mode?: 'wsl' | 'windows' | 'local',
+): Promise<FsListing> {
+  if (isMockMode) return mockApi.mkdirFs(path, name, mode);
+  return request<FsListing>('/fs/mkdir', {
+    method: 'POST',
+    body: { path, name, mode: mode === 'local' ? undefined : mode },
+  });
+}
+
 export async function listServiceConfig(id: string): Promise<ServiceConfigList> {
   if (isMockMode) return mockApi.listServiceConfig(id);
   const response = await request<ServiceConfigList | ServiceConfigList['files']>(

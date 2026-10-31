@@ -2329,6 +2329,36 @@ export const mockApi = {
     };
   },
 
+  async mkdirFs(
+    path: string,
+    name: string,
+    _mode?: 'wsl' | 'windows' | 'local',
+  ): Promise<FsListing> {
+    await wait(120, 260);
+    let parent = path.trim();
+    if (!parent) {
+      throw new ApiError('INVALID_REQUEST', 'A directory path is required.', 400);
+    }
+    if (parent.length > 1) parent = parent.replace(/\/+$/, '');
+    if (!parent.startsWith('/')) {
+      throw new ApiError('INVALID_REQUEST', 'Directory path must be absolute.', 400);
+    }
+    if (!directories[parent]) {
+      throw new ApiError('NOT_FOUND', `Directory “${parent}” is not readable.`, 404);
+    }
+    const clean = name.trim();
+    if (!clean || clean === '.' || clean === '..' || /[\\/]/.test(clean) || clean.startsWith('.')) {
+      throw new ApiError('INVALID_REQUEST', 'Enter a single folder name without slashes.', 400);
+    }
+    const target = parent === '/' ? `/${clean}` : `${parent}/${clean}`;
+    if (directories[parent].includes(clean)) {
+      throw new ApiError('CONFLICT', 'Directory already exists.', 409);
+    }
+    directories[parent] = [...directories[parent], clean].sort();
+    directories[target] = [];
+    return { path: target, entries: [] };
+  },
+
   async getVhostStatus(): Promise<VhostStatus> {
     await wait(80, 180);
     return clone(vhostStatus);

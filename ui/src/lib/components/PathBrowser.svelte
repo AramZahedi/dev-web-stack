@@ -3,7 +3,7 @@
   import Button from './Button.svelte';
   import Skeleton from './Skeleton.svelte';
   import ErrorBanner from './ErrorBanner.svelte';
-  import { browseFs } from '../api';
+  import { browseFs, mkdirFs } from '../api';
   import { describeError } from '../errors';
   import type { FsListing } from '../types';
   import {
@@ -11,6 +11,7 @@
     CornerLeftUp,
     Folder,
     FolderOpen,
+    FolderPlus,
     House,
     RefreshCw,
   } from 'lucide-svelte';
@@ -29,8 +30,17 @@
   let loading = $state(false);
   let error = $state<{ code: string; message: string } | null>(null);
   let requestedPath = $state('/');
+  let creating = $state(false);
+  let newName = $state('');
+  let createError = $state('');
+  let createBusy = $state(false);
+  let createInput = $state<HTMLInputElement | null>(null);
   let previousOpen = false;
   let requestSeq = 0;
+
+  $effect(() => {
+    if (creating) createInput?.focus();
+  });
 
   const isWindows = $derived(mode === 'windows' || Boolean(listing?.path && /^[a-zA-Z]:[\\/]/.test(listing.path)));
   const rootPath = $derived(isWindows ? (listing?.path && /^[a-zA-Z]:/i.test(listing.path) ? listing.path.slice(0, 2) + '\\' : 'C:\\') : '/');
@@ -71,11 +81,40 @@
     }
   }
 
+  function toggleCreate(): void {
+    creating = !creating;
+    newName = '';
+    createError = '';
+  }
+
+  async function createFolder(): Promise<void> {
+    if (!listing || createBusy) return;
+    const name = newName.trim();
+    if (!name) {
+      createError = 'Enter a folder name.';
+      return;
+    }
+    createBusy = true;
+    createError = '';
+    try {
+      listing = await mkdirFs(listing.path, name, mode);
+      newName = '';
+      creating = false;
+    } catch (caught) {
+      createError = describeError(caught).message;
+    } finally {
+      createBusy = false;
+    }
+  }
+
   $effect(() => {
     if (open && !previousOpen) {
       previousOpen = true;
       listing = null;
       error = null;
+      creating = false;
+      newName = '';
+      createError = '';
       void browse(initialPath || rootPath);
     }
     if (!open) previousOpen = false;
@@ -170,7 +209,44 @@
       >
         <RefreshCw size={14} strokeWidth={2} aria-hidden="true" />
       </button>
+      <button
+        type="button"
+        class="new-folder"
+        aria-label="New folder"
+        title="New folder"
+        disabled={loading || !listing}
+        onclick={toggleCreate}
+      >
+        <FolderPlus size={14} strokeWidth={2} aria-hidden="true" />
+      </button>
     </div>
+
+    {#if creating}
+      <form
+        class="create-folder"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void createFolder();
+        }}
+      >
+        <input
+          bind:this={createInput}
+          bind:value={newName}
+          aria-label="New folder name"
+          placeholder="Folder name"
+          maxlength="128"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <Button type="submit" size="sm" variant="primary" loading={createBusy} disabled={!listing}>
+          Create
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onclick={toggleCreate}>Cancel</Button>
+      </form>
+      {#if createError}
+        <p class="create-error" role="alert">{createError}</p>
+      {/if}
+    {/if}
 
     <div class="surface">
       {#if error}
@@ -246,7 +322,8 @@
   }
 
   .up,
-  .refresh {
+  .refresh,
+  .new-folder {
     display: grid;
     place-items: center;
     flex: none;
@@ -260,15 +337,47 @@
   }
 
   .up:hover:not(:disabled),
-  .refresh:hover:not(:disabled) {
+  .refresh:hover:not(:disabled),
+  .new-folder:hover:not(:disabled) {
     color: var(--fg);
     border-color: var(--control-border);
   }
 
   .up:disabled,
-  .refresh:disabled {
+  .refresh:disabled,
+  .new-folder:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .create-folder {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .create-folder input {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    padding: 0 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--fg);
+    font: inherit;
+    font-size: 12.5px;
+  }
+
+  .create-folder input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .create-error {
+    margin: 0;
+    color: var(--danger);
+    font-size: 12px;
   }
 
   .crumbs {

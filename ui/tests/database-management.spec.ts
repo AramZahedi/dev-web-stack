@@ -567,6 +567,28 @@ test('Add Site reviews a new database without a password, then Site Detail revea
   await expectNoSecret(page);
 });
 
+test('Add Site can create a new project folder and use it', async ({ page }) => {
+  await open(page, '#/sites/new');
+  await page.getByRole('button', { name: 'Browse' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Choose a project folder' });
+  await dialog.getByRole('button', { name: 'New folder' }).click();
+  await dialog.getByLabel('New folder name').fill('brand-new');
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(dialog.getByText('Selected folder /home/dev/projects/brand-new')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Use this folder' }).click();
+  await expect(page.locator('#site-path')).toHaveValue('/home/dev/projects/brand-new');
+});
+
+test('Add Site prefills the path after choosing the projects root', async ({ page }) => {
+  await open(page, '#/sites/new');
+  await page.getByRole('button', { name: 'Browse' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Choose a project folder' });
+  await expect(dialog.getByText('Selected folder /home/dev/projects')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Use this folder' }).click();
+  await page.locator('#site-name').fill('Prefill App');
+  await expect(page.locator('#site-path')).toHaveValue('/home/dev/projects/prefill-app');
+});
+
 test('Add Site warns about an existing external user without changing grants', async ({ page }) => {
   await open(page, '#/sites/new');
   await page.locator('#site-name').fill('dbwarn');

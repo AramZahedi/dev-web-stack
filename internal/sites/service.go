@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/backend"
 	"github.com/AramZahedi/dev-web-stack/internal/build"
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
@@ -276,6 +277,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	}
 	site, err := s.newSite(ctx, req)
 	if err != nil {
+		return model.Site{}, err
+	}
+	if err := validateSourceRoot(site); err != nil {
 		return model.Site{}, err
 	}
 	var provisioned *databases.ProvisionedDatabase
@@ -871,6 +875,26 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	}
 	if removeErr != nil {
 		return fmt.Errorf("sites: remove PHP config for %q: %w", site.Name, removeErr)
+	}
+	return nil
+}
+
+// validateSourceRoot checks a Windows or WSL project root before any
+// service-wide database objects are provisioned or PHP files are staged. Local
+// paths are validated by newSite. The daemon runs on Windows for these modes.
+func validateSourceRoot(site model.Site) error {
+	if site.SourceMode == "" || site.SourceMode == model.SourceLocal || runtime.GOOS != "windows" {
+		return nil
+	}
+	info, err := os.Stat(site.HostPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("sites: project root %q does not exist", site.HostPath)
+		}
+		return fmt.Errorf("sites: project root %q is not accessible: %w", site.HostPath, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("sites: project root %q is not a directory", site.HostPath)
 	}
 	return nil
 }
@@ -1524,8 +1548,13 @@ func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts 
 		if site.Kind == model.SitePHP {
 			if s.deps.PHPBackend != nil {
 				if err := s.stopPHPGenerationForCleanup(ctx, site.ID, phpDefaultGeneration); err != nil {
-					phpStopFailed = true
-					errs = append(errs, fmt.Errorf("rollback: stop %q: %w", site.Name, err))
+					// A site that was never prepared has no master to stop. The
+					// staged generation is local-only, so remove it and release
+					// its port instead of retaining both for diagnosis.
+					if !errors.Is(err, agentproto.ErrNotFound) {
+						phpStopFailed = true
+						errs = append(errs, fmt.Errorf("rollback: stop %q: %w", site.Name, err))
+					}
 				}
 			}
 		} else if err := s.deps.Backend.Stop(ctx, site.ID, false); err != nil {

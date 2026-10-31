@@ -200,6 +200,25 @@
       .replace(/^-+|-+$/g, '');
   }
 
+  function browseRootFor(mode: SourceMode): string {
+    if (mode === 'wsl') return '/data/devstack/projects';
+    if (mode === 'windows') {
+      return settings?.home
+        ? `${settings.home}\\projects`
+        : settings?.user_home
+          ? `${settings.user_home}\\.devstack\\projects`
+          : 'C:\\';
+    }
+    return settings?.user_home ? `${settings.user_home}/projects` : '/';
+  }
+
+  function samePath(left: string, right: string, mode: SourceMode): boolean {
+    const normalize = (value: string) => value.trim().replace(/[\\/]+$/, '').replace(/\\/g, '/');
+    const a = normalize(left);
+    const b = normalize(right);
+    return mode === 'windows' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  }
+
   function defaultPathFor(slug: string, mode: SourceMode): string {
     if (!slug) return '';
     if (mode === 'wsl') {
@@ -214,15 +233,7 @@
   }
 
   const isWindowsHost = $derived(Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)));
-  const initialBrowsePath = $derived(
-    pathTouched && path
-      ? path
-      : sourceMode === 'wsl'
-        ? '/data/devstack/projects'
-        : sourceMode === 'windows'
-          ? (settings?.home ? `${settings.home}\\projects` : (settings?.user_home ? `${settings.user_home}\\.devstack\\projects` : 'C:\\'))
-          : (settings?.user_home ? `${settings.user_home}/projects` : '/')
-  );
+  const initialBrowsePath = $derived(pathTouched && path ? path : browseRootFor(sourceMode));
   const pathPlaceholder = $derived(
     sourceMode === 'windows'
       ? `${settings?.home ?? 'C:\\Users\\you\\.devstack'}\\projects\\my-app`
@@ -1858,8 +1869,14 @@
   initialPath={initialBrowsePath}
   mode={sourceMode}
   onselect={(selected) => {
-    path = selected;
-    pathTouched = true;
+    const root = browseRootFor(sourceMode);
+    if (samePath(selected, root, sourceMode)) {
+      pathTouched = false;
+      path = defaultPathFor(slugify(name), sourceMode) || selected;
+    } else {
+      path = selected;
+      pathTouched = true;
+    }
     clearError('path');
     validateField('path');
   }}

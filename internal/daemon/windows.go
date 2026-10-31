@@ -1437,6 +1437,14 @@ func (a *windowsAgentServiceAdapter) BrowseFS(ctx context.Context, path string) 
 	return c.BrowseFS(ctx, path)
 }
 
+func (a *windowsAgentServiceAdapter) MkdirFS(ctx context.Context, path, name string) (agentproto.FSListing, error) {
+	c, err := a.ensureAwake(ctx)
+	if err != nil {
+		return agentproto.FSListing{}, err
+	}
+	return c.MkdirFS(ctx, path, name)
+}
+
 // CopySource performs the verified source-mode move inside the managed distro.
 func (a *windowsAgentServiceAdapter) CopySource(ctx context.Context, req agentproto.SourceCopyRequest) (agentproto.SourceCopyResponse, error) {
 	c, err := a.ensureAwake(ctx)

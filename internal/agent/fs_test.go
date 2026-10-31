@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agent"
@@ -111,6 +112,81 @@ func TestAgentFSConfinesBrowseToProjects(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAgentFSMkdirCreatesFolder(t *testing.T) {
+	root := t.TempDir()
+	if _, err := agent.NewRuntime(root); err != nil {
+		t.Fatal(err)
+	}
+	server, identity := newTestAgentAt(t, root)
+	r := startAgentTestServer(t, server, identity, 1)
+	defer r.close()
+
+	resp := agentFSMkdir(t, r, "/", "app")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	var listing agentproto.FSListing
+	if err := json.NewDecoder(resp.Body).Decode(&listing); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, "projects", "app")
+	if listing.Path != filepath.ToSlash(want) {
+		t.Fatalf("path = %q, want %q", listing.Path, filepath.ToSlash(want))
+	}
+	if info, err := os.Stat(want); err != nil || !info.IsDir() {
+		t.Fatalf("created directory = %v, %v", info, err)
+	}
+
+	duplicate := agentFSMkdir(t, r, "/", "app")
+	defer duplicate.Body.Close()
+	if duplicate.StatusCode != http.StatusConflict {
+		t.Fatalf("duplicate status = %d, want %d", duplicate.StatusCode, http.StatusConflict)
+	}
+}
+
+func TestAgentFSMkdirRejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	if _, err := agent.NewRuntime(root); err != nil {
+		t.Fatal(err)
+	}
+	server, identity := newTestAgentAt(t, root)
+	r := startAgentTestServer(t, server, identity, 1)
+	defer r.close()
+
+	for _, name := range []string{"../escape", `..\escape`, ".hidden", "."} {
+		resp := agentFSMkdir(t, r, "/", name)
+		if resp.StatusCode != http.StatusBadRequest {
+			resp.Body.Close()
+			t.Fatalf("name %q: status = %d, want %d", name, resp.StatusCode, http.StatusBadRequest)
+		}
+		resp.Body.Close()
+	}
+	if _, err := os.Stat(filepath.Join(root, "escape")); !os.IsNotExist(err) {
+		t.Fatalf("traversal created a directory: %v", err)
+	}
+}
+
+func agentFSMkdir(t *testing.T, r testAgentRun, path, name string) *http.Response {
+	t.Helper()
+	body, err := json.Marshal(agentproto.FSMkdirRequest{Path: path, Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, r.url+agentproto.PathFSMkdir, strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(agentproto.HeaderAuth, agentproto.BearerPrefix+testToken)
+	req.Header.Set(agentproto.HeaderProtocol, agentproto.ProtocolVersion)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := r.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
 }
 
 func outsidePathStatus() int {

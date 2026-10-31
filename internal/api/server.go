@@ -69,6 +69,7 @@ const (
 	codeInvalidRequest      = "INVALID_REQUEST"
 	codeNotFound            = "NOT_FOUND"
 	codeForbidden           = "FORBIDDEN"
+	codeConflict            = "CONFLICT"
 	codeUnauthorized        = "UNAUTHORIZED"
 	codeDomainConflict      = "DOMAIN_CONFLICT"
 	codeHostsSyncFailed     = "HOSTS_SYNC_FAILED"
@@ -242,9 +243,10 @@ type PerformanceService interface {
 	GetBenchmark(ctx context.Context, id string) (performance.BenchmarkResult, error)
 }
 
-// WSLFSBrowser browses files inside the WSL environment.
+// WSLFSBrowser browses and creates directories inside the WSL environment.
 type WSLFSBrowser interface {
 	BrowseFS(ctx context.Context, path string) (agentproto.FSListing, error)
+	MkdirFS(ctx context.Context, path, name string) (agentproto.FSListing, error)
 }
 
 // ListenerPorts is the set of loopback listener ports the daemon bound at
@@ -501,6 +503,7 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/doctor/repair", s.handleDoctorRepair},
 
 		{http.MethodGet, "/api/v1/fs", s.handleFS},
+		{http.MethodPost, "/api/v1/fs/mkdir", s.handleFSMkdir},
 		{http.MethodGet, "/api/v1/settings", s.handleSettings},
 		{http.MethodPatch, "/api/v1/settings", s.handleUpdateSettings},
 
