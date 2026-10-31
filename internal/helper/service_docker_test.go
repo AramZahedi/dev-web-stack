@@ -948,14 +948,20 @@ func TestActivateMySQLToMariaDBRollsBackOnHealthFailure(t *testing.T) {
 func TestActivatePortConflictDoesNotStopNativeProcess(t *testing.T) {
 	fx := newControllerFixture(t)
 	fx.markInstalled(services.IDNginx)
-	fx.ctrl.WaitTimeout = time.Nanosecond
+	fx.ctrl.WaitTimeout = time.Minute
 	fx.sim.setContainer(services.IDApache, "running", "healthy")
 	fx.sim.setPort(8080, services.IDApache)
 	fx.sim.setNativePort(8080)
 
-	err := fx.ctrl.Activate(context.Background(), services.IDNginx)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	err := fx.ctrl.Activate(ctx, services.IDNginx)
 	if err == nil {
 		t.Fatal("Activate succeeded, want port conflict")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Activate waited %s for an occupied port; want a fast failure", elapsed)
 	}
 	var activationErr *helper.ServiceActivationError
 	if !errors.As(err, &activationErr) {

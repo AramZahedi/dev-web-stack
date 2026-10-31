@@ -627,32 +627,24 @@ func (c *DockerServiceController) waitReady(ctx context.Context, svc services.Se
 	}
 }
 
+// waitPortsFree probes the service's host ports once. A busy port is a
+// conflict, not a transient state: waiting for the full activation timeout
+// hides the actionable "already in use" error behind a generic client
+// deadline. Exclusive-group competitors are stopped synchronously before this
+// check, so a short probe is sufficient.
 func (c *DockerServiceController) waitPortsFree(ctx context.Context, svc services.Service) (int, error) {
-	deadline := c.Now().Add(c.waitTimeout())
-	for {
-		busy := 0
-		for _, port := range svc.Ports {
-			if port.Host <= 0 {
-				continue
-			}
-			if err := c.Probe(ctx, port.Host); err == nil {
-				busy = port.Host
-				break
-			}
-			if ctx.Err() != nil {
-				return 0, ctx.Err()
-			}
+	for _, port := range svc.Ports {
+		if port.Host <= 0 {
+			continue
 		}
-		if busy == 0 {
-			return 0, nil
+		if err := c.Probe(ctx, port.Host); err == nil {
+			return port.Host, nil
 		}
-		if !c.Now().Before(deadline) {
-			return busy, nil
-		}
-		if err := c.Sleep(ctx, servicePollInterval); err != nil {
-			return 0, err
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
 		}
 	}
+	return 0, nil
 }
 
 func (c *DockerServiceController) waitPortsReachable(ctx context.Context, svc services.Service) (int, error) {
