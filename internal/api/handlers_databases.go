@@ -1,6 +1,7 @@
 package api
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -384,9 +385,35 @@ func (s *Server) handleExportServiceDatabase(w http.ResponseWriter, r *http.Requ
 		s.writeServiceError(w, r, err)
 		return
 	}
-	if err := streamDownload(w, reader, database+".sql.gz", "application/gzip"); err != nil {
+	// The download contract is a gzip stream named <database>.sql.gz. The
+	// platform adapters stream the engine's plain logical dump, so compress it
+	// here for both the CLI and the dashboard.
+	if err := streamDownload(w, gzipReadCloser(reader), database+".sql.gz", "application/gzip"); err != nil {
 		s.logger.Warn("api: stream database export", "error", databases.RedactError(err))
 	}
+}
+
+// gzipReadCloser compresses a stream on the fly. Closing the returned reader
+// stops the compressor and closes the source.
+func gzipReadCloser(source io.ReadCloser) io.ReadCloser {
+	reader, writer := io.Pipe()
+	go func() {
+		gz := gzip.NewWriter(writer)
+		_, copyErr := io.Copy(gz, source)
+		closeErr := gz.Close()
+		sourceErr := source.Close()
+		switch {
+		case copyErr != nil:
+			_ = writer.CloseWithError(copyErr)
+		case closeErr != nil:
+			_ = writer.CloseWithError(closeErr)
+		case sourceErr != nil:
+			_ = writer.CloseWithError(sourceErr)
+		default:
+			_ = writer.Close()
+		}
+	}()
+	return reader
 }
 
 func (s *Server) handleGetDatabaseJob(w http.ResponseWriter, r *http.Request) {

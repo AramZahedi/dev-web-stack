@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -268,6 +269,29 @@ func TestDatabaseExportAndDownloadStream(t *testing.T) {
 		if rec.Body.Len() == 0 {
 			t.Fatalf("%s empty body", path)
 		}
+	}
+}
+
+func TestDatabaseExportIsGzip(t *testing.T) {
+	fx := newFixture(t, Config{Databases: &fakeDatabaseService{}})
+	rec := fx.request(t, http.MethodGet, "/api/v1/services/mysql/databases/app/export", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/gzip" {
+		t.Fatalf("content-type=%q", got)
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("export is not gzip: %v", err)
+	}
+	defer func() { _ = gz.Close() }()
+	data, err := io.ReadAll(gz)
+	if err != nil {
+		t.Fatalf("read export gzip: %v", err)
+	}
+	if string(data) != "dump" {
+		t.Fatalf("export body=%q", data)
 	}
 }
 
