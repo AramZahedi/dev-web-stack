@@ -50,10 +50,6 @@ export E2E_MYSQL_IMAGE="${mysql_image}" E2E_MARIADB_IMAGE="${mariadb_image}"
 export E2E_POSTGRES_IMAGE="${postgres_image}" E2E_REDIS_IMAGE="${redis_image}"
 export E2E_PHPMYADMIN_IMAGE="${phpmyadmin_image}"
 
-if [ "${start}" = "1" ]; then
-	e2e_start_all
-fi
-
 generate_fixtures() {
 	local out="${home}/fixtures/dumps"
 	mkdir -p "${out}"
@@ -272,6 +268,12 @@ mysql | mariadb | postgres | redis) engine_list="${engines}" ;;
 postgresql) engine_list="postgres" ;;
 *) e2e_die "unknown --engine ${engines}" ;;
 esac
+
+if [ "${start}" = "1" ]; then
+	for engine in ${engine_list}; do
+		e2e_start_service "${engine}"
+	done
+fi
 
 for engine in ${engine_list}; do
 	case "${engine}" in

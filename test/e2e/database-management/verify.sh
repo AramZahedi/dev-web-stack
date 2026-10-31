@@ -48,8 +48,9 @@ expect_redis_denied() {
 
 verify_images() {
 	e2e_section "pinned images"
-	local image digest
-	for image in "${mysql_image}" "${mariadb_image}" "${postgres_image}" "${redis_image}"; do
+	local service image digest
+	for service in "$@"; do
+		image="$(e2e_engine_image "${service}")"
 		docker image inspect "${image}" >/dev/null 2>&1 || fail "missing pinned image ${image}"
 		digest="${image##*@}"
 		if ! docker image inspect --format '{{json .RepoDigests}}' "${image}" | grep -q "${digest}"; then
@@ -62,7 +63,7 @@ verify_images() {
 verify_container_layout() {
 	e2e_section "container and network isolation"
 	local service container
-	for service in mysql mariadb postgres redis; do
+	for service in "$@"; do
 		container="$(e2e_container_name "${service}")"
 		[ "$(docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null || true)" = "true" ] ||
 			fail "${service} container is not running"
@@ -75,7 +76,7 @@ verify_container_layout() {
 	done
 	[ -n "$(docker network inspect --format '{{.Id}}' "${network}" 2>/dev/null || true)" ] ||
 		fail "network ${network} is missing"
-	e2e_log "network ${network} and four labelled containers are isolated"
+	e2e_log "network ${network} and $# labelled container(s) are isolated"
 }
 
 verify_mysql_family() {
@@ -283,8 +284,8 @@ postgresql) engine_list="postgres" ;;
 *) fail "unknown --engine ${engines}" ;;
 esac
 
-verify_images
-verify_container_layout
+verify_images ${engine_list}
+verify_container_layout ${engine_list}
 for engine in ${engine_list}; do
 	case "${engine}" in
 	mysql | mariadb) verify_mysql_family "${engine}" ;;
