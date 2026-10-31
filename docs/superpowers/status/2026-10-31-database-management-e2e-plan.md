@@ -84,7 +84,7 @@ This audit records what is already available on this machine and what must be in
 - [ ] **R03:** Install Docker in Ubuntu 26.04 and Fedora 44, or create a disposable Debian 12 clone with Docker. Verify `systemctl` and `docker info`. *(Partial, cycle 0: Ubuntu 26.04 has Docker 29.1.3 + Compose 2.40.3, systemd running, `docker info` healthy; Fedora 44 still lacks Docker.)*
 - [x] **R04:** Pull MariaDB, PostgreSQL, and Redis images; record digests and sizes. *(Cycle 0: MariaDB 11.8.9 `f16d7a34...` 458 MB, PostgreSQL 18.6 `edb0c08d...` 650 MB, Redis 8.8.3 `418e397f...` 209 MB in the Ubuntu engine.)*
 - [x] **R05:** Create `test/e2e/database-management/` fixtures, seed/verify scripts, result tracker, secret scanner, cleanup, and rollback scripts. *(Cycle 1: harness, fixtures, tracker, scanner, cleanup, rollback, and isolation docs created; R12 smoke PASS.)*
-- [ ] **R06:** Write the database-management Playwright specs and a live-dashboard Playwright config/spec.
+- [x] **R06:** Write the database-management Playwright specs and a live-dashboard Playwright config/spec. *(Cycle 2: 17 database-management mock tests and the 32 existing dashboard tests pass on Chromium, Firefox and WebKit (147/147); live config/spec added and skipped by default; full live auth remains BLOCKED because the real install has dashboard auth disabled and no test token was supplied.)*
 - [x] **R07:** Choose and document the Windows live-service isolation model:
   - **A (preferred):** stop the real daemon/helper, reconfigure the singleton helper to a disposable home, run tests, restore the real service. Test the handover on a disposable home first.
   - **B (fallback):** use **WIN-REAL** with the verified baseline backup/rollback and explicit approval.
