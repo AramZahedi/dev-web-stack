@@ -380,6 +380,32 @@ func databaseHelperFixture(t *testing.T) (*DockerServiceController, string) {
 	return ctrl, root
 }
 
+func TestHelperListUsersFiltersProtectedDatabaseGrants(t *testing.T) {
+	c, _ := databaseHelperFixture(t)
+	runner := c.runner.(*fakeCommandRunner)
+	runner.handle = func(name string, args []string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "list-users"):
+			return []byte("usr_app\tapp\t%\n"), nil
+		case strings.Contains(joined, "list-grants"):
+			return []byte("devstack\tread_write\npostgres\tread_only\napp\tread_only\n"), nil
+		default:
+			return runner.defaultRun(name, args)
+		}
+	}
+	users, err := c.ListUsers(context.Background(), "mysql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("users = %+v", users)
+	}
+	if len(users[0].Grants) != 1 || users[0].Grants[0].Database != "app" {
+		t.Fatalf("grants = %+v, want only app", users[0].Grants)
+	}
+}
+
 func TestHelperPostgresGrantsRunInTargetDatabase(t *testing.T) {
 	c, _ := databaseHelperFixture(t)
 	runner := c.runner.(*fakeCommandRunner)

@@ -289,7 +289,18 @@ func (c *DockerServiceController) ListUsers(ctx context.Context, serviceID strin
 		} else if grants, parseErr := engine.ParseGrants(grantOut); parseErr != nil {
 			slog.Default().Debug("database grant parsing failed", "service", serviceID, "user", users[i].Username, "error", parseErr)
 		} else {
-			users[i].Grants = grants
+			// Engine inventories include inherited PUBLIC grants on system
+			// databases (for example CONNECT/USAGE on "postgres" and
+			// "devstack"). They are not user-managed grants; returning them
+			// makes a later update re-submit a protected object and fail.
+			filtered := grants[:0]
+			for _, grant := range grants {
+				if engine.ProtectedDatabase(grant.Database) || isGlobalGrantScope(grant.Database) {
+					continue
+				}
+				filtered = append(filtered, grant)
+			}
+			users[i].Grants = filtered
 		}
 	}
 	return users, nil
