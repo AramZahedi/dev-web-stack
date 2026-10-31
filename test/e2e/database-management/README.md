@@ -323,6 +323,43 @@ Known residual risks are recorded in the runbook and
 token, there is no target-incomplete flag, and Linux replace imports can create
 two pre_import backups (manager + helper defense-in-depth).
 
+## Cycle 7 Redis and phpMyAdmin scripts
+
+The Linux Redis/phpMyAdmin batch lives in `linux/`:
+
+```bash
+# Redis users/password/ACL persistence (keeps the daemon alive for the UI check)
+E2E_STAMP=20261101t230000z E2E_SCENARIO_ENV=LIN-UBE E2E_UI_HOLD=1 \
+  bash linux/cycle7-e2e08.sh
+
+# Redis adversarial migration/persistence matrix
+E2E_STAMP=20261101t230000z E2E_SCENARIO_ENV=LIN-UBE \
+  bash linux/cycle7-e2e19.sh
+
+# phpMyAdmin matrix (keeps phpMyAdmin alive for the Playwright phases)
+E2E_STAMP=20261101t230000z E2E_SCENARIO_ENV=LIN-UBE \
+  bash linux/cycle7-e2e20.sh
+
+# Windows bridge for the phpMyAdmin Playwright phases
+pwsh -File windows/cycle7-pma-ui.ps1 -RunKey <run-key> \
+  -WslHome /tmp/devstack-e2e-<run-key> -EvidenceDir <evidence>/E2E-20 \
+  -Repo <repo>
+```
+
+`cycle7-env.sh` reuses `cycle6-env.sh`/`cycle5-env.sh`/`cycle4-env.sh`. Redis
+uses its fixed loopback 6379. MySQL/MariaDB run without published host ports and
+phpMyAdmin uses loopback `127.0.0.1:28082` because the real install owns
+3306/8082. `pma-login.js` reads the password from a 0600 file, prints metadata
+only, and saves screenshots; `redis-ui-check.js` verifies the Redis service has
+only Users and Password tabs. `cycle7-pma-ui.ps1` acknowledges each phase once
+so a slow page load cannot replay a phase.
+
+The Redis ACL file is intentionally `0644` and contains SHA-256 hashes only.
+The official Redis image runs as the unprivileged `redis` user and skips
+permission fixes when `/data` contains `users.acl`; a `0600` root-owned file
+makes Redis exit on restart. Do not tighten it to `0600` without also changing
+ownership inside the container.
+
 ## Pinned images
 
 | Image | Digest |
