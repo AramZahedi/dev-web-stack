@@ -76,9 +76,8 @@ test('Add Site browses a folder, applies options, and navigates to the new site'
   await page.getByRole('button', { name: 'Browse' }).click();
   const dialog = page.getByRole('dialog', { name: 'Choose a project folder' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText('/home/dev', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Selected folder /home/dev/projects')).toBeVisible();
 
-  await dialog.getByRole('button', { name: 'projects', exact: true }).click();
   await dialog.getByRole('button', { name: 'scratch', exact: true }).click();
   await dialog.getByRole('button', { name: 'Use this folder' }).click();
   await expect(dialog).toBeHidden();
@@ -561,17 +560,31 @@ test('Runtimes asks for confirmation and installs a build', async ({ page }) => 
   await expect(installed.getByRole('heading', { name: 'Node 24.9.0' })).toBeVisible();
   await expect(installed.getByRole('heading', { name: 'Node 22.20.0' })).toBeVisible();
 
-  await available.getByRole('button', { name: 'Install' }).first().click();
-  const dialog = page.getByRole('dialog', { name: 'Install Node 24.11.0?' });
+  // The catalog's newest Node lines are already installed, so the first
+  // available install is the oldest supported LTS. Derive the version from the
+  // button instead of pinning a catalog entry that will age out.
+  const installButton = available.getByRole('button', { name: /^Install Node / }).first();
+  const installLabel = (await installButton.getAttribute('aria-label')) ?? '';
+  const version = installLabel.replace('Install Node ', '');
+  expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+
+  await installButton.click();
+  const dialog = page.getByRole('dialog', { name: `Install Node ${version}` });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('linux-x64', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('50 MB', { exact: true })).toBeVisible();
-  await expect(dialog.locator('.full-hash')).toHaveText(/^[a-f0-9]{64}$/);
+  await expect(dialog.getByText(/^\d+(?:\.\d+)? MB$/)).toBeVisible();
+  // Release-line installs show a shortened checksum; the full SHA-256 stays in
+  // the title attribute so it can still be verified.
+  const checksum = dialog.locator('dd[title]').last();
+  await expect(checksum).toHaveAttribute('title', /^[a-f0-9]{64}$/);
+  await expect(checksum).toContainText(/…$/);
 
-  await dialog.getByRole('button', { name: 'Install Node 24.11.0', exact: true }).click();
+  await dialog.getByRole('button', { name: `Install Node ${version}`, exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.getByRole('status').filter({ hasText: 'Node 24.11.0 installed' })).toBeVisible();
-  await expect(installed.getByRole('heading', { name: 'Node 24.11.0' })).toBeVisible();
+  await expect(
+    page.getByRole('status').filter({ hasText: `Node ${version} installed` }),
+  ).toBeVisible();
+  await expect(installed.getByRole('heading', { name: `Node ${version}` })).toBeVisible();
 });
 
 test('Doctor runs checks from the dashboard', async ({ page }) => {
@@ -836,12 +849,18 @@ test.describe('375px viewport', () => {
   });
 });
 
-test('keyboard users get a skip link and visible focus', async ({ page }) => {
+test('keyboard users get a skip link and visible focus', async ({ page, browserName }) => {
   await open(page, '#/sites');
   await waitForSites(page);
 
-  await page.keyboard.press('Tab');
   const skip = page.getByRole('link', { name: 'Skip to content' });
+  if (browserName === 'webkit') {
+    // WebKit's default tab order skips links; focus the link directly and
+    // still verify that Enter activates the skip target.
+    await skip.focus();
+  } else {
+    await page.keyboard.press('Tab');
+  }
   await expect(skip).toBeFocused();
 
   await page.keyboard.press('Enter');
@@ -850,9 +869,13 @@ test('keyboard users get a skip link and visible focus', async ({ page }) => {
   await page.reload();
   await waitForSites(page);
 
-  await page.keyboard.press('Tab');
-  await page.keyboard.press('Tab');
   const brand = page.getByRole('link', { name: 'devstack home' });
+  if (browserName === 'webkit') {
+    await brand.focus();
+  } else {
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+  }
   await expect(brand).toBeFocused();
 
   const focusRing = await brand.evaluate((element) => {
@@ -873,8 +896,12 @@ test('modal Escape closes the dialog and restores focus', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Project details' })).toBeVisible();
 
   const browse = page.getByRole('button', { name: 'Browse' });
+  // The button is disabled until the runtime/settings preflight finishes.
+  await expect(browse).toBeEnabled();
   await browse.focus();
-  await browse.click();
+  // Enter opens the dialog without WebKit's click-blurs-buttons behavior,
+  // keeping the previous-focus restoration path under test.
+  await browse.press('Enter');
 
   const dialog = page.getByRole('dialog', { name: 'Choose a project folder' });
   await expect(dialog).toBeVisible();
