@@ -211,10 +211,10 @@ func TestHelperDockerMapsDatabaseList(t *testing.T) {
 	}
 }
 
-func TestResolveSiteEnvCanonicalizesPostgresLinks(t *testing.T) {
+func TestAgentDockerUsesAgentPostgresID(t *testing.T) {
 	api := &fakeDatabaseAPI{env: map[string]string{"DB_CONNECTION": "pgsql"}}
-	h := NewHelperDockerAPI(api)
-	_, err := h.ResolveSiteEnv(context.Background(), "postgresql", []model.DatabaseLink{{
+	a, _ := NewAgentDocker(api, "/data/devstack")
+	_, err := a.ResolveSiteEnv(context.Background(), "postgresql", []model.DatabaseLink{{
 		ServiceID: "postgresql", Database: "app", UserID: "usr_app", Username: "app",
 	}})
 	if err != nil {
@@ -225,7 +225,31 @@ func TestResolveSiteEnvCanonicalizesPostgresLinks(t *testing.T) {
 		t.Fatalf("request = %#v", api.lastReq)
 	}
 	if req.ServiceID != "postgres" || req.Links[0].ServiceID != "postgres" {
-		t.Fatalf("service ids = request %q link %q", req.ServiceID, req.Links[0].ServiceID)
+		t.Fatalf("agent service ids = request %q link %q, want postgres", req.ServiceID, req.Links[0].ServiceID)
+	}
+}
+
+func TestHelperDockerUsesCatalogPostgresID(t *testing.T) {
+	api := &fakeDatabaseAPI{env: map[string]string{"DB_CONNECTION": "pgsql"}}
+	h := NewHelperDockerAPI(api)
+	if _, err := h.CreateDatabase(context.Background(), "postgresql", databases.CreateDatabaseRequest{Name: "app"}); err != nil {
+		t.Fatal(err)
+	}
+	if api.lastService != "postgresql" {
+		t.Fatalf("helper CreateDatabase service id = %q, want postgresql", api.lastService)
+	}
+	_, err := h.ResolveSiteEnv(context.Background(), "postgresql", []model.DatabaseLink{{
+		ServiceID: "postgresql", Database: "app", UserID: "usr_app", Username: "app",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, ok := api.lastReq.(dbproto.SiteEnvRequest)
+	if !ok || len(req.Links) != 1 {
+		t.Fatalf("request = %#v", api.lastReq)
+	}
+	if req.ServiceID != "postgresql" || req.Links[0].ServiceID != "postgresql" {
+		t.Fatalf("helper service ids = request %q link %q, want postgresql", req.ServiceID, req.Links[0].ServiceID)
 	}
 }
 

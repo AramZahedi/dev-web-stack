@@ -49,6 +49,10 @@ type DatabaseAPIProvider func(context.Context) (DatabasePlatformAPI, error)
 // platform contract. It contains no engine logic.
 type databasePlatform struct {
 	provider DatabaseAPIProvider
+	// serviceIDMapper translates a catalog service ID to the ID expected by
+	// the concrete transport. The Windows agent uses "postgres"; the Linux
+	// helper catalog uses "postgresql". Nil keeps the agent mapping.
+	serviceIDMapper func(string) string
 }
 
 // NewHelperDocker creates the Linux privileged-helper adapter.
@@ -56,13 +60,17 @@ func NewHelperDocker(provider DatabaseAPIProvider) (*HelperDocker, error) {
 	if provider == nil {
 		return nil, errors.New("servicecontrol: helper database API provider is required")
 	}
-	return &HelperDocker{databasePlatform: &databasePlatform{provider: provider}}, nil
+	return &HelperDocker{databasePlatform: &databasePlatform{
+		provider:        provider,
+		serviceIDMapper: helperAPIID,
+	}}, nil
 }
 
 // NewHelperDockerAPI creates a helper adapter from a concrete API.
 func NewHelperDockerAPI(api DatabasePlatformAPI) *HelperDocker {
 	return &HelperDocker{databasePlatform: &databasePlatform{
-		provider: func(context.Context) (DatabasePlatformAPI, error) { return api, nil },
+		provider:        func(context.Context) (DatabasePlatformAPI, error) { return api, nil },
+		serviceIDMapper: helperAPIID,
 	}}
 }
 
@@ -87,19 +95,33 @@ func (p *databasePlatform) api(ctx context.Context) (DatabasePlatformAPI, error)
 	return api, nil
 }
 
-// databasePlatformServiceID maps catalog IDs to the transport IDs.
-func databasePlatformServiceID(serviceID string) string {
-	return agentAPIID(strings.TrimSpace(strings.ToLower(serviceID)))
+// transportServiceID maps a catalog ID to the ID expected by this transport.
+func (p *databasePlatform) transportServiceID(serviceID string) string {
+	normalized := strings.TrimSpace(strings.ToLower(serviceID))
+	if p != nil && p.serviceIDMapper != nil {
+		return p.serviceIDMapper(normalized)
+	}
+	return agentAPIID(normalized)
+}
+
+// helperAPIID maps the catalog PostgreSQL ID to the Linux helper catalog ID.
+// The helper catalog is the product catalog ("postgresql"); the Windows agent
+// keeps its historical "postgres" ID.
+func helperAPIID(id string) string {
+	if id == "postgres" {
+		return "postgresql"
+	}
+	return id
 }
 
 // databaseEngineForService maps a transport service ID to an engine.
 func databaseEngineForService(serviceID string) model.DatabaseEngine {
-	switch databasePlatformServiceID(serviceID) {
+	switch strings.TrimSpace(strings.ToLower(serviceID)) {
 	case "mysql":
 		return model.DatabaseMySQL
 	case "mariadb":
 		return model.DatabaseMariaDB
-	case "postgres":
+	case "postgres", "postgresql":
 		return model.DatabasePostgreSQL
 	case "redis":
 		return model.DatabaseRedis
@@ -159,7 +181,7 @@ func (p *databasePlatform) ListDatabases(ctx context.Context, serviceID string) 
 	if err != nil {
 		return nil, err
 	}
-	databasesList, err := api.ListDatabases(ctx, databasePlatformServiceID(serviceID))
+	databasesList, err := api.ListDatabases(ctx, p.transportServiceID(serviceID))
 	if err != nil {
 		return nil, mapDatabasePlatformError(err)
 	}
@@ -180,8 +202,8 @@ func (p *databasePlatform) CreateDatabase(ctx context.Context, serviceID string,
 	if err != nil {
 		return model.Database{}, err
 	}
-	response, err := api.CreateDatabase(ctx, databasePlatformServiceID(serviceID), dbproto.DatabaseCreateRequest{
-		ID: databasePlatformServiceID(serviceID), Name: req.Name, Charset: req.Charset, Collation: req.Collation,
+	response, err := api.CreateDatabase(ctx, p.transportServiceID(serviceID), dbproto.DatabaseCreateRequest{
+		ID: p.transportServiceID(serviceID), Name: req.Name, Charset: req.Charset, Collation: req.Collation,
 	})
 	if err != nil {
 		return model.Database{}, mapDatabasePlatformError(err)
@@ -200,8 +222,8 @@ func (p *databasePlatform) RenameDatabase(ctx context.Context, serviceID, name s
 	if err != nil {
 		return model.Database{}, err
 	}
-	response, err := api.RenameDatabase(ctx, databasePlatformServiceID(serviceID), name, dbproto.DatabaseRenameRequest{
-		ID: databasePlatformServiceID(serviceID), Name: name, NewName: req.Name,
+	response, err := api.RenameDatabase(ctx, p.transportServiceID(serviceID), name, dbproto.DatabaseRenameRequest{
+		ID: p.transportServiceID(serviceID), Name: name, NewName: req.Name,
 	})
 	if err != nil {
 		return model.Database{}, mapDatabasePlatformError(err)
@@ -220,8 +242,8 @@ func (p *databasePlatform) DropDatabase(ctx context.Context, serviceID, name str
 	if err != nil {
 		return err
 	}
-	return mapDatabasePlatformError(api.DropDatabase(ctx, databasePlatformServiceID(serviceID), name, dbproto.DatabaseDropRequest{
-		ID: databasePlatformServiceID(serviceID), Name: name, Confirm: req.Confirm,
+	return mapDatabasePlatformError(api.DropDatabase(ctx, p.transportServiceID(serviceID), name, dbproto.DatabaseDropRequest{
+		ID: p.transportServiceID(serviceID), Name: name, Confirm: req.Confirm,
 	}))
 }
 
@@ -230,7 +252,7 @@ func (p *databasePlatform) ListUsers(ctx context.Context, serviceID string) ([]m
 	if err != nil {
 		return nil, err
 	}
-	users, err := api.ListUsers(ctx, databasePlatformServiceID(serviceID))
+	users, err := api.ListUsers(ctx, p.transportServiceID(serviceID))
 	if err != nil {
 		return nil, mapDatabasePlatformError(err)
 	}
@@ -251,8 +273,8 @@ func (p *databasePlatform) CreateUser(ctx context.Context, serviceID string, req
 	if err != nil {
 		return model.DatabaseUser{}, err
 	}
-	response, err := api.CreateUser(ctx, databasePlatformServiceID(serviceID), dbproto.UserCreateRequest{
-		ID: databasePlatformServiceID(serviceID), Username: req.Username, Host: req.Host,
+	response, err := api.CreateUser(ctx, p.transportServiceID(serviceID), dbproto.UserCreateRequest{
+		ID: p.transportServiceID(serviceID), Username: req.Username, Host: req.Host,
 		Grants: req.Grants, AccessLevel: req.AccessLevel,
 	})
 	if err != nil {
@@ -272,8 +294,8 @@ func (p *databasePlatform) UpdateUser(ctx context.Context, serviceID, userID str
 	if err != nil {
 		return model.DatabaseUser{}, err
 	}
-	response, err := api.UpdateUser(ctx, databasePlatformServiceID(serviceID), userID, dbproto.UserUpdateRequest{
-		ID: databasePlatformServiceID(serviceID), UserID: userID, Enabled: req.Enabled,
+	response, err := api.UpdateUser(ctx, p.transportServiceID(serviceID), userID, dbproto.UserUpdateRequest{
+		ID: p.transportServiceID(serviceID), UserID: userID, Enabled: req.Enabled,
 		Grants: req.Grants, AccessLevel: req.AccessLevel,
 	})
 	if err != nil {
@@ -293,8 +315,8 @@ func (p *databasePlatform) DeleteUser(ctx context.Context, serviceID, userID str
 	if err != nil {
 		return err
 	}
-	return mapDatabasePlatformError(api.DeleteUser(ctx, databasePlatformServiceID(serviceID), userID, dbproto.UserDeleteRequest{
-		ID: databasePlatformServiceID(serviceID), UserID: userID, Confirm: req.Confirm, ReassignOwned: req.ReassignOwned,
+	return mapDatabasePlatformError(api.DeleteUser(ctx, p.transportServiceID(serviceID), userID, dbproto.UserDeleteRequest{
+		ID: p.transportServiceID(serviceID), UserID: userID, Confirm: req.Confirm, ReassignOwned: req.ReassignOwned,
 	}))
 }
 
@@ -303,7 +325,7 @@ func (p *databasePlatform) SetUserPassword(ctx context.Context, serviceID, userI
 	if err != nil {
 		return databases.Secret{}, err
 	}
-	response, err := api.SetUserPassword(ctx, databasePlatformServiceID(serviceID), userID)
+	response, err := api.SetUserPassword(ctx, p.transportServiceID(serviceID), userID)
 	if err != nil {
 		return databases.Secret{}, mapDatabasePlatformError(err)
 	}
@@ -321,7 +343,7 @@ func (p *databasePlatform) EnableRedisACLFile(ctx context.Context, serviceID str
 	if helper, ok := api.(interface {
 		EnableRedisACLFile(context.Context, string, bool) (helperproto.RedisACLFileResponse, error)
 	}); ok {
-		_, err := helper.EnableRedisACLFile(ctx, databasePlatformServiceID(serviceID), confirm)
+		_, err := helper.EnableRedisACLFile(ctx, p.transportServiceID(serviceID), confirm)
 		return mapDatabasePlatformError(err)
 	}
 	if agent, ok := api.(interface {
@@ -330,7 +352,7 @@ func (p *databasePlatform) EnableRedisACLFile(ctx context.Context, serviceID str
 		if !confirm {
 			return databases.ErrConfirmationRequired
 		}
-		return mapDatabasePlatformError(agent.EnableRedisACLFile(ctx, databasePlatformServiceID(serviceID)))
+		return mapDatabasePlatformError(agent.EnableRedisACLFile(ctx, p.transportServiceID(serviceID)))
 	}
 	return databases.ErrUnsupported
 }
@@ -340,7 +362,7 @@ func (p *databasePlatform) RevealUserPassword(ctx context.Context, serviceID, us
 	if err != nil {
 		return databases.Secret{}, err
 	}
-	response, err := api.RevealUserPassword(ctx, databasePlatformServiceID(serviceID), userID)
+	response, err := api.RevealUserPassword(ctx, p.transportServiceID(serviceID), userID)
 	if err != nil {
 		return databases.Secret{}, mapDatabasePlatformError(err)
 	}
@@ -352,7 +374,7 @@ func (p *databasePlatform) ListBackups(ctx context.Context, serviceID string) ([
 	if err != nil {
 		return nil, err
 	}
-	backups, err := api.ListBackups(ctx, databasePlatformServiceID(serviceID))
+	backups, err := api.ListBackups(ctx, p.transportServiceID(serviceID))
 	if err != nil {
 		return nil, mapDatabasePlatformError(err)
 	}
@@ -373,8 +395,8 @@ func (p *databasePlatform) CreateBackup(ctx context.Context, serviceID, database
 	if err != nil {
 		return model.DatabaseJob{}, err
 	}
-	job, err := api.CreateBackup(ctx, databasePlatformServiceID(serviceID), database, dbproto.BackupCreateRequest{
-		ID: databasePlatformServiceID(serviceID), Database: database, Kind: string(req.Kind),
+	job, err := api.CreateBackup(ctx, p.transportServiceID(serviceID), database, dbproto.BackupCreateRequest{
+		ID: p.transportServiceID(serviceID), Database: database, Kind: string(req.Kind),
 	})
 	if err != nil {
 		return model.DatabaseJob{}, mapDatabasePlatformError(err)
@@ -393,7 +415,7 @@ func (p *databasePlatform) DeleteBackup(ctx context.Context, serviceID, backupID
 	if err != nil {
 		return err
 	}
-	return mapDatabasePlatformError(api.DeleteBackup(ctx, databasePlatformServiceID(serviceID), backupID))
+	return mapDatabasePlatformError(api.DeleteBackup(ctx, p.transportServiceID(serviceID), backupID))
 }
 
 func (p *databasePlatform) RestoreBackup(ctx context.Context, serviceID, backupID string, req databases.RestoreBackupRequest) (model.DatabaseJob, error) {
@@ -401,8 +423,8 @@ func (p *databasePlatform) RestoreBackup(ctx context.Context, serviceID, backupI
 	if err != nil {
 		return model.DatabaseJob{}, err
 	}
-	job, err := api.RestoreBackup(ctx, databasePlatformServiceID(serviceID), backupID, dbproto.BackupRestoreRequest{
-		ID: databasePlatformServiceID(serviceID), BackupID: backupID, Target: req.Target,
+	job, err := api.RestoreBackup(ctx, p.transportServiceID(serviceID), backupID, dbproto.BackupRestoreRequest{
+		ID: p.transportServiceID(serviceID), BackupID: backupID, Target: req.Target,
 		Overwrite: req.Overwrite, Confirm: req.Confirm, PreRestoreBackup: req.PreRestoreBackup,
 	})
 	if err != nil {
@@ -419,8 +441,8 @@ func (p *databasePlatform) ImportDatabase(ctx context.Context, serviceID, databa
 	if err != nil {
 		return model.DatabaseJob{}, err
 	}
-	job, err := api.ImportDatabase(ctx, databasePlatformServiceID(serviceID), database, file, filename, dbproto.DatabaseImportRequest{
-		ID: databasePlatformServiceID(serviceID), Database: database, Mode: string(req.Mode),
+	job, err := api.ImportDatabase(ctx, p.transportServiceID(serviceID), database, file, filename, dbproto.DatabaseImportRequest{
+		ID: p.transportServiceID(serviceID), Database: database, Mode: string(req.Mode),
 		Confirm: req.Confirm, PreImportBackup: req.PreImportBackup,
 	})
 	if err != nil {
@@ -440,7 +462,7 @@ func (p *databasePlatform) ExportDatabase(ctx context.Context, serviceID, databa
 	if err != nil {
 		return nil, err
 	}
-	reader, err := api.ExportDatabase(ctx, databasePlatformServiceID(serviceID), database)
+	reader, err := api.ExportDatabase(ctx, p.transportServiceID(serviceID), database)
 	return reader, mapDatabasePlatformError(err)
 }
 
@@ -449,7 +471,7 @@ func (p *databasePlatform) DownloadBackup(ctx context.Context, serviceID, backup
 	if err != nil {
 		return nil, err
 	}
-	reader, err := api.DownloadBackup(ctx, databasePlatformServiceID(serviceID), backupID)
+	reader, err := api.DownloadBackup(ctx, p.transportServiceID(serviceID), backupID)
 	return reader, mapDatabasePlatformError(err)
 }
 
@@ -481,10 +503,10 @@ func (p *databasePlatform) ResolveSiteEnv(ctx context.Context, serviceID string,
 	normalized := make([]model.DatabaseLink, len(links))
 	copy(normalized, links)
 	for i := range normalized {
-		normalized[i].ServiceID = databasePlatformServiceID(normalized[i].ServiceID)
+		normalized[i].ServiceID = p.transportServiceID(normalized[i].ServiceID)
 	}
-	env, err := api.ResolveSiteEnv(ctx, databasePlatformServiceID(serviceID), dbproto.SiteEnvRequest{
-		ServiceID: databasePlatformServiceID(serviceID),
+	env, err := api.ResolveSiteEnv(ctx, p.transportServiceID(serviceID), dbproto.SiteEnvRequest{
+		ServiceID: p.transportServiceID(serviceID),
 		Links:     normalized,
 	})
 	if err != nil {
