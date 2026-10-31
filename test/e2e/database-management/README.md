@@ -294,6 +294,35 @@ containers or `C:\Users\Aram\.devstack`.
 restores it with a pre-rollback copy kept until verification passes. The
 Windows handover rollback is `windows/rollback.ps1`; see `windows/README.md`.
 
+## Cycle 6 backup/import scripts
+
+The Linux backup/restore/export/import batch lives in `linux/`:
+
+```bash
+# full batch: E2E-07 then E2E-18 in one disposable home
+E2E_STAMP=20261101t150000z E2E_SCENARIO_ENV=LIN-UBE E2E_JOB_TIMEOUT=1800 \
+  bash linux/cycle6-run-all.sh
+
+# individual scenarios (each starts its own home unless E2E_CYCLE6_SHARED=1)
+bash linux/cycle6-e2e07.sh
+bash linux/cycle6-e2e18.sh
+bash linux/cycle6-smoke.sh
+```
+
+`cycle6-env.sh` reuses `cycle5-env.sh`/`cycle4-env.sh`, adds a private daemon
+`TMPDIR` (`$home/tmp`) so import staging can be inspected, and adds job polling,
+backup kind/file helpers, API multipart helpers, and bounded tmpfs helpers.
+MySQL runs without published ports; PostgreSQL uses loopback 5432 and Redis
+6379. The near-1 GiB fixture is generated under the disposable `/tmp` home, not
+in the repository, and is removed after the run. The disk-full tests mount
+bounded 8 MiB tmpfs filesystems and never fill the host.
+
+Known residual risks are recorded in the runbook and
+`.superpowers/e2e-progress.md`: the CLI accepts absolute/`..` export paths
+(atomic write, final symlink replaced), backup delete has no typed confirmation
+token, there is no target-incomplete flag, and Linux replace imports can create
+two pre_import backups (manager + helper defense-in-depth).
+
 ## Pinned images
 
 | Image | Digest |

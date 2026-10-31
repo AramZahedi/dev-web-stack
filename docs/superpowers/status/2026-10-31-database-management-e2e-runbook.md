@@ -3,7 +3,7 @@
 - **Purpose:** run the exhaustive E2E plan in fresh subagent contexts so the main session does not grow with full test transcripts.
 - **Plan:** `docs/superpowers/status/2026-10-31-database-management-e2e-plan.md`
 - **Model for every subagent:** `opencode-go/deepseek-v4.1-flash#max`
-- **Status:** cycles 0 (readiness), 1 (harness/fixtures), 2 (Playwright specs), 3 (Windows read-only), 4 (Linux core) and 5 (Linux sites) done. No destructive real-install scenario has been started.
+- **Status:** cycles 0 (readiness), 1 (harness/fixtures), 2 (Playwright specs), 3 (Windows read-only), 4 (Linux core), 5 (Linux sites) and 6 (Linux backup/import) done. No destructive real-install scenario has been started.
 - **Main-session rule:** one batch = one spawn, one close. The subagent returns a short summary, evidence paths, and a status update; the main session records it and spawns the next batch.
 
 ## Hard constraints for every subagent
@@ -73,7 +73,7 @@ Recommended batched run: **16 spawn/close cycles** if the retry batch is needed 
 | 3 | Windows read-only | E2E-00, E2E-09 read-only, E2E-12 read-only, E2E-20 real-install login | WIN-REAL read-only | No | done (denied-reveal audit fix `9347f25`; hosts repair deferred; live re-check after upgrade) |
 | 4 | Linux core | E2E-01, E2E-02, E2E-16 | LIN disposable | Yes, disposable | done (E2E-01 BLOCKED: real install owns 3306/8082; E2E-02/16 PASS) |
 | 5 | Linux sites | E2E-03, E2E-04, E2E-05, E2E-06, E2E-17 | LIN disposable | Yes, disposable | done (E2E-03/04/05/17 PASS; E2E-06 guard PASS with product 3306 activation BLOCKED; 4 fixes; secret scan clean; real phpMyAdmin 8082 timeout is a controller blocker) |
-| 6 | Backup/import | E2E-07, E2E-18 | LIN disposable | Yes, disposable | pending |
+| 6 | Backup/import | E2E-07, E2E-18 | LIN disposable | Yes, disposable | done (E2E-07 130 checks PASS; E2E-18 115 checks PASS; 3 product fixes; secret scan clean; real phpMyAdmin 8082 timeout is a controller blocker) |
 | 7 | Redis/phpMyAdmin | E2E-08, E2E-19, E2E-20 Linux | LIN disposable | Yes, disposable | pending |
 | 8 | Dashboard mock | E2E-10, E2E-21 mock | UI-MOCK | No | pending |
 | 9 | Dashboard live | E2E-10, E2E-21 live | UI-LIVE | Read-only/limited | pending |
@@ -108,7 +108,7 @@ If a batch would require a destructive real-install change and no disposable env
 | 3 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-3/` | E2E-00/09/12/20 read-only PASS; phpMyAdmin 5.2.3 login/logout/restart PASS; denied-reveal audit gap fixed in `9347f25`, recorded in `d2cfa73`; final doctor hosts check failed (empty managed block, known limitation), repair deferred; live re-check pending upgrade. |
 | 4 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/evidence/20261031t200000z/` | E2E-02 (97 checks) and E2E-16 (82 checks) PASS; E2E-01 BLOCKED on fixed 3306/8082 with equivalent no-port lifecycle verified; 8 fixes/test commits; final secret scan clean. |
 | 5 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/evidence/20261031t223000z/`, `dist/e2e/database-management/evidence/20261031t230000z/C5-UI/` | E2E-03 (40 checks), E2E-04 (33), E2E-05 (40), E2E-06 (19, product 3306 activation BLOCKED), E2E-17 (58) PASS; live dashboard 4/4 PASS; final secret scan clean; real phpMyAdmin 8082 timeout is a controller blocker. Commits `0c982ad`, `0d9f7ac`, `6a0ca66`, `b6e2e9f`. |
-| 6 | - | - | pending | - | - |
+| 6 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/evidence/20261101t150000z/E2E-07/`, `dist/e2e/database-management/evidence/20261101t100000z/E2E-18/` | E2E-07 130/130 PASS and E2E-18 115/115 PASS; manual/pre-op backup kinds, stopped-service list/download/delete, overwrite restore with pre-restore backup, linked-site gate, gzip export file/stdout, merge/replace import with pre-import backup, staging 0600/cleanup, invalid/truncated dumps, cancel and daemon-restart reconciliation, Redis unsupported, near-1 GiB and over-1 GiB, bounded tmpfs disk-full, complex SQL, concurrency; 3 product fixes (`b9053c2`, `eaf7626`, `1b906ac`); final secret scan clean; real phpMyAdmin 8082 timeout remains a controller blocker. |
 | 7 | - | - | pending | - | - |
 | 8 | - | - | pending | - | - |
 | 9 | - | - | pending | - | - |
@@ -119,8 +119,10 @@ If a batch would require a destructive real-install change and no disposable env
 | 14 | - | - | pending | - | - |
 | 15 | - | - | pending | - | - |
 
-**Controller blocker (cycle 5):** the real phpMyAdmin at
+**Controller blocker (cycle 5, still open in cycle 6):** the real phpMyAdmin at
 `http://127.0.0.1:8082/` timed out before cycle 5 and still timed out after the
 disposable Ubuntu distro was terminated. No real-install object was modified.
 The controller should restore the real WSL port-forward/relay state; cycle 5
-evidence is complete and the disposable environment is clean.
+evidence is complete and the disposable environment is clean. Cycle 6
+re-verified the same timeout after terminating Ubuntu again; it did not touch
+the real `devstack` distro, helper, agent, containers, or `state.db`.
