@@ -103,7 +103,7 @@ If a batch would require a destructive real-install change and no disposable env
 | Cycle | Started | Finished | Result | Evidence | Notes |
 |---|---|---|---|---|---|
 | 0 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-0/` | R01-R04 and R11 ready; R12 tool smokes done, harness dry-runs deferred to cycle 1; real install untouched. |
-| 1 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-1/`, `dist/e2e/database-management/evidence/20261031t011046z-820/HARNESS-SMOKE/` | R05/R07/R08 harness built; MySQL 8.4.13 + phpMyAdmin 5.2.3 pulled in Ubuntu engine; R12 harness smoke PASS at harness commit `d185a4d`; real install untouched. Windows destructive DB tests remain BLOCKED on WSL `/data/devstack` isolation. |
+| 1 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-1/`, `dist/e2e/database-management/evidence/20261031t011321z-2677/HARNESS-SMOKE/` | R05/R07/R08 harness built; MySQL 8.4.13 + phpMyAdmin 5.2.3 pulled in Ubuntu engine; R12 harness smoke PASS at harness commit `4bc2e11`; real install untouched. Windows destructive DB tests remain BLOCKED on WSL `/data/devstack` isolation. |
 | 2 | - | - | pending | - | - |
 | 3 | - | - | pending | - | - |
 | 4 | - | - | pending | - | - |

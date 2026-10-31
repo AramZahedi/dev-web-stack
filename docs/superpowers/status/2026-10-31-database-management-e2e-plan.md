@@ -94,7 +94,7 @@ This audit records what is already available on this machine and what must be in
 - [ ] **R09:** Verify the helper binary starts on Ubuntu 26.04 and Fedora 44, or record those distros as unsupported and remove them from the gate.
 - [x] **R10:** Verify network access for image pulls, browser downloads, and package installs; record failures as blocked prerequisites. *(Cycle 0: Ubuntu apt installs, Playwright CDN downloads, and Docker Hub digest pulls all succeeded.)*
 - [x] **R11:** Define the shell variables used by the plan (`$ds`, `$home`, `$stamp`, `$svc`, `$id`) and the previous-binary source for E2E-14. *(Cycle 0: definitions and hashes recorded in `.superpowers/e2e-progress.md`; previous source is `dist/update-20261031/*.pre-upgrade` / `v0.3.1` at `40df5c0`.)*
-- [x] **R12:** Dry-run every harness script and the cleanup/rollback script before the first destructive scenario. *(Cycle 1: `HARNESS-SMOKE` PASS; seed/verify idempotency, secret scanner self-test, cleanup, and disposable-home snapshot/rollback verified. Evidence: `dist/e2e/database-management/evidence/20261031t011046z-820/HARNESS-SMOKE/`.)*
+- [x] **R12:** Dry-run every harness script and the cleanup/rollback script before the first destructive scenario. *(Cycle 1: `HARNESS-SMOKE` PASS; seed/verify idempotency, secret scanner self-test, cleanup, and disposable-home snapshot/rollback verified. Evidence: `dist/e2e/database-management/evidence/20261031t011321z-2677/HARNESS-SMOKE/`.)*
 
 ### What is executable today
 
