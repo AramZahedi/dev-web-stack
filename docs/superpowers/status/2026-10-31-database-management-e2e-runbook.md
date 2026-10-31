@@ -88,9 +88,15 @@ Recommended batched run: **16 spawn/close cycles** if the retry batch is needed 
 
 - **Paused:** 2026-10-31, by user instruction. Do not spawn a new subagent
   until the user explicitly resumes the run.
-- **Last verified HEAD:** `5462e94` (`docs(e2e): close cycle 8 and record pause
-  state`), clean and equal to `origin/master`. No unmerged branches or extra
-  worktrees.
+- **Last verified HEAD:** `0ac153d` (`fix(agent): create the WSL projects root
+  at startup`), clean and equal to `origin/master`. No unmerged branches or
+  extra worktrees.
+- **Post-pause bug fix:** the Add Site WSL folder browser failed with
+  `agent: not_found (HTTP 404)` because the agent never created its managed
+  `/data/devstack/projects` root. `0ac153d` adds that directory to the agent's
+  startup layout with regression tests. The running install was repaired by
+  creating the empty directory; `GET /api/v1/fs?mode=wsl&path=/data/devstack/projects`
+  now returns 200 with an empty listing, and no site/database/user data changed.
 - **Real install:** MySQL 8.4.13 active; phpMyAdmin 5.2.3 active; both
   loopback-only. `http://127.0.0.1:8082/` returns HTTP 200 after the controller
   restarted only the `devstack` Docker daemon with `live-restore`.
