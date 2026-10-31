@@ -105,7 +105,7 @@ If a batch would require a destructive real-install change and no disposable env
 | 0 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-0/` | R01-R04 and R11 ready; R12 tool smokes done, harness dry-runs deferred to cycle 1; real install untouched. |
 | 1 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-1/`, `dist/e2e/database-management/evidence/20261031t011321z-2677/HARNESS-SMOKE/` | R05/R07/R08 harness built; MySQL 8.4.13 + phpMyAdmin 5.2.3 pulled in Ubuntu engine; R12 harness smoke PASS at harness commit `4bc2e11`; real install untouched. Windows destructive DB tests remain BLOCKED on WSL `/data/devstack` isolation. |
 | 2 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-2/` | R06 complete: 17 database-management mock tests + 32 existing dashboard tests pass on Chromium/Firefox/WebKit (147/147); live config/spec added and skipped by default; full live auth BLOCKED on auth-disabled real install/no test token. |
-| 3 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-3/` | E2E-00/09/12/20 read-only PASS; phpMyAdmin 5.2.3 login/logout/restart PASS; denied-reveal audit gap fixed in `9347f25`; live re-check pending upgrade; real install not mutated. |
+| 3 | 2026-10-31 | 2026-10-31 | done | `dist/e2e/database-management/readiness/cycle-3/` | E2E-00/09/12/20 read-only PASS; phpMyAdmin 5.2.3 login/logout/restart PASS; denied-reveal audit gap fixed in `9347f25`, recorded in `d2cfa73`; live re-check pending upgrade; real install not mutated. |
 | 4 | - | - | pending | - | - |
 | 5 | - | - | pending | - | - |
 | 6 | - | - | pending | - | - |
