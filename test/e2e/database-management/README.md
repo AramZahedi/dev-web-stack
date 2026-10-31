@@ -71,6 +71,36 @@ PASS/FAIL evidence per scenario. All generated passwords stay in
 `$E2E_HOME/secrets` or `$E2E_HOME/private`; evidence contains only hashes and
 redacted summaries.
 
+## Cycle 5 Linux site scenarios
+
+`cycle5-run-all.sh` runs E2E-03, E2E-04, E2E-17, E2E-06, and E2E-05 in one
+disposable home. The helper runs as root with `allow_uid: 1000`; the daemon,
+CLI, site processes, and terminal PTY run as `aram` so the terminal path is
+real. MySQL/MariaDB containers run without published host ports; PostgreSQL
+uses fixed loopback 5432.
+
+```bash
+wsl -d Ubuntu -u root -- bash -lc \
+  'cd /mnt/c/Users/Aram/Projects/Go/dev-web-stack && \
+   E2E_STAMP="$(date -u +%Y%m%dT%H%M%SZ)" \
+   bash test/e2e/database-management/linux/cycle5-run-all.sh'
+```
+
+| Script | Scenario | Notes |
+|---|---|---|
+| `cycle5-e2e03.sh` | E2E-03 Add Site new DB/user | Dynamic env, secret-free state/php-fpm, reveal audit, terminal and PHP exec. |
+| `cycle5-e2e04.sh` | E2E-04 existing/metadata-only users | No auto-grant, external user, Set password, unsupported stdin, explicit grant + restart. |
+| `cycle5-e2e05.sh` | E2E-05 site deletion/uninstall | Marker preservation, keep-data vs delete-data, simulated deletion failure keeps links. |
+| `cycle5-e2e06.sh` | E2E-06 wrong-engine start | No-port MariaDB active; site start/API blocked; recovery on MySQL. Product 3306 activation is BLOCKED. |
+| `cycle5-e2e17.sh` | E2E-17 site adversarial | Multi-link env, reserved keys, Add Site validation, concurrency, stale links, restore/import gates. |
+| `cycle5-ui-setup.sh` | C5-UI live fixtures | Starts a daemon for `ui/playwright.live-site.config.ts`; stays alive until `$E2E_HOME/stop` exists. |
+
+The terminal probe is
+`test/e2e/database-management/linux/terminal-probe/`. It prints only
+`E2E_TERM` key/presence lines, never a password or DSN. The live dashboard
+config disables traces, screenshots, and video so a revealed password cannot be
+persisted.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
