@@ -500,6 +500,12 @@ func Run(ctx context.Context, opts Options) error {
 		shutdownWindowsServers(servers)
 		return err
 	}
+	// The installer may have replaced the managed hosts block with only the
+	// dashboard while the helper/agent were restarting. Reconcile registered
+	// sites once bootstrap has the helper and agent healthy.
+	if err := siteService.SyncHosts(ctx); err != nil {
+		logger.Warn("daemon: sync registered site hosts after bootstrap", "error", err)
+	}
 
 	pidPath := PidPath(cfg.Home)
 	if err := writePID(cfg.Home, os.Getpid()); err != nil {
