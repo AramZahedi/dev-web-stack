@@ -416,13 +416,26 @@ func (d *Docker) Action(ctx context.Context, req agentproto.ServiceRequest) (age
 	case "deactivate":
 		args = []string{"stop", string(service.ID)}
 	case "restart":
-		args = []string{"restart", string(service.ID)}
+		if service.ID == services.IDPHPMyAdmin {
+			// A plain restart keeps the old container mounts. Recreate so a new
+			// root-secret mount or migrated config takes effect.
+			args = []string{"up", "-d", "--no-deps", "--force-recreate", string(service.ID)}
+		} else {
+			args = []string{"restart", string(service.ID)}
+		}
 	case "uninstall":
 		args = []string{"stop", string(service.ID)}
 	default:
 		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: unsupported action %q", req.Action)
 	}
 	if service.ID == services.IDPHPMyAdmin && (req.Action == "activate" || req.Action == "restart") {
+		configDir := filepath.Join(d.root, "services", "phpmyadmin", "config")
+		if err := ensureRealDirectory(configDir, 0o755); err != nil {
+			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: secure phpMyAdmin config: %w", err)
+		}
+		if err := seedPhpMyAdminConfig(configDir); err != nil {
+			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: migrate phpMyAdmin config: %w", err)
+		}
 		if err := d.syncPhpMyAdminRootPassword(ctx); err != nil {
 			return agentproto.ServiceResponse{}, err
 		}

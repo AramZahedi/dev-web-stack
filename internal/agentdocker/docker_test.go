@@ -415,6 +415,60 @@ func TestActivatePhpMyAdminSyncsActiveRootSecret(t *testing.T) {
 	}
 }
 
+func TestRestartPhpMyAdminMigratesLegacyConfigAndSecret(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data", "devstack")
+	const secret = "root-secret-for-agent-restart"
+	mysqlSecrets := filepath.Join(root, "services", "mysql", "secrets")
+	if err := os.MkdirAll(mysqlSecrets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mysqlSecrets, "root_password"), []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(root, "services", "phpmyadmin", "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "config.user.inc.php")
+	if err := os.WriteFile(configPath, []byte(services.PhpMyAdminLegacyUserConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeInputRunner{output: map[string][]byte{
+		" ps ": []byte(`{"State":"running","Health":"healthy"}`),
+	}}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.Action(context.Background(), agentproto.ServiceRequest{ID: "phpmyadmin", Action: "restart"}); err != nil {
+		t.Fatalf("restart phpmyadmin: %v", err)
+	}
+	recreated := false
+	for _, call := range runner.calls {
+		joined := strings.Join(call, " ")
+		if strings.Contains(joined, "up -d --no-deps --force-recreate phpmyadmin") {
+			recreated = true
+		}
+	}
+	if !recreated {
+		t.Fatalf("restart did not recreate phpMyAdmin; calls = %v", runner.calls)
+	}
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "auth_type'] = 'config'") {
+		t.Fatalf("legacy config was not migrated:\n%s", content)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "services", "phpmyadmin", "secrets", "root_password"))
+	if err != nil {
+		t.Fatalf("read phpMyAdmin root secret: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != secret {
+		t.Fatalf("phpMyAdmin root secret = %q, want the active engine secret", got)
+	}
+}
+
 func TestStatusDecodesArrayObjectAndNDJSON(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "data", "devstack")
 	runner := &fakeInputRunner{
