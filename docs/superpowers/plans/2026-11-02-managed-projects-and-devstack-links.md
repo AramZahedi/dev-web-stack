@@ -339,4 +339,23 @@ Commit when the harness passes.
     UI `npm test` (377 tests), `npm run check`, Playwright Add Site flows,
     `build/windows/devstack-links.test.ps1` (92 assertions on PowerShell 5.1 and
     7), and PowerShell 5.1/7 parse checks.
-- [ ] Pushed, upgraded, real install verified
+- [x] Pushed, upgraded, real install verified
+  - `master` pushed through `5daea44`.
+  - Transactional `install.ps1 -Upgrade` completed: WSL backup, Windows
+    binaries rebuilt, helper restarted, agent health verified, user daemon
+    restarted, four links created.
+  - `fsutil reparsepoint query` confirmed two junctions (`0xa0000003`) and two
+    directory symlinks (`0xa000000c`) with the four expected targets.
+  - `C:\devstack\README.txt` names all four links, types, targets, separate
+    Windows/WSL data sets, link-path rejection, deletion safety, and repair.
+  - `GET /api/v1/settings` returned `C:\Users\Aram\.devstack\projects` and
+    `/data/devstack/projects`.
+  - Browse root returned `200`; parent, prefix sibling, Windows and WSL
+    outside paths returned `403`; outside mkdir returned `403`.
+  - Creating a site outside the root returned `400 PROJECT_OUTSIDE_ROOT`.
+  - The installed `static` source folder was absent before deployment. It was
+    restored with a minimal Node static fixture, built, started, and served at
+    `https://static.test`; the site was returned to `stopped` afterwards.
+  - `devstack doctor --repair` restored the empty hosts block; the subsequent
+    doctor run passed every check, including `projects-root`.
+
