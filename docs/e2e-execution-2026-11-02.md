@@ -19,7 +19,7 @@
 | Go vet | `go vet ./...` | PASS |
 | UI type check | `npm run check` | 0 errors, 0 warnings |
 | UI unit | `npm test` | 377 passed |
-| Mock E2E (Chromium/Firefox/WebKit) | `npm run test:e2e` | 190/192 passed; 2 transient failures (Chromium trace-close race, WebKit Redis reveal) passed on targeted rerun 6/6 |
+| Mock E2E (Chromium/Firefox/WebKit) | `npm run test:e2e` | 192/192 passed (64 per browser) |
 | Linux builtin E2E | `E2E_SKIP_BUILD=1 bash test/e2e/linux.sh` | PASS |
 | Database lifecycle E2E-01 | `cycle4-e2e01.sh` | 36/36 passed |
 | Database core E2E-02 | `cycle4-e2e02.sh` | 97/97 passed |
