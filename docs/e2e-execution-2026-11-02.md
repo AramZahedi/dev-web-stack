@@ -98,3 +98,60 @@
 - `b0b95f0` fix(daemon): resync site hosts after Windows bootstrap
 - `fc111f8` docs(e2e): record signed signon and final hosts verification
 - `abe7b22` test(ui): stabilize live phpMyAdmin signon navigation
+
+## 2026-11-03 full rerun
+
+All non-blocked, committed suites were rerun on the real Windows 11 host and
+the disposable Ubuntu WSL database harness.
+
+| Gate | Result |
+|---|---|
+| Go tests | PASS |
+| Go vet | PASS |
+| UI typecheck | 0 errors |
+| UI unit | 377/377 |
+| Mock E2E (Chromium/Firefox/WebKit) | 192/192 after one WebKit flake was rerun 64/64 |
+| Live phpMyAdmin signon | PASS |
+| Linux builtin E2E | PASS (external nginx skipped; not installed) |
+| DB cycle 4 | E2E-02 97/97, E2E-16 82/82; E2E-01 36/36 checks, intentional `BLOCKED` status for default fixed-port activation |
+| DB cycle 5 | E2E-03 40/40, E2E-04 33/33, E2E-17 58/58, E2E-06 19/19, E2E-05 40/40 |
+| DB cycle 6 | E2E-07 130/130, E2E-18 115/115 after the harness race fix |
+| DB cycle 7 | E2E-08 53/53, E2E-19 58/58 |
+| Windows installer contracts | 280/280 |
+| Windows lifecycle contracts | 41/41 |
+| Release contracts (workflow/archive/installer/Windows) | PASS |
+| Windows PowerShell release | 41/41 |
+| `C:\devstack` links | 92 assertions on PowerShell 5.1 and 92 on 7.5 |
+| Windows DB read-only probes | PASS; 16 CLI probes, 58 API probes |
+| Live site-database UI | 4/4 |
+| Windows/WSL vertical slice | all acceptance gates passed |
+| Final `devstack doctor` | all checks passed |
+| Hosts baseline | SHA-256 matches pre-run baseline |
+| PMA token access-log lines | 0 |
+
+### Fixes in this rerun
+
+- `7431280` — wait for the big-import job JSON after the CLI wrapper exits;
+  the Windows mount can expose the redirected file a fraction late.
+- `a1f2b02` — keep vertical-slice fixtures under the managed Windows and WSL
+  projects roots instead of the rejected `C:\devstack-test` / `/data/devstack-test`
+  paths.
+
+### Deferred / blocked
+
+- E2E-20: still asserts cookie auth and a published phpMyAdmin port; the live
+  signed-signon spec is the current gate.
+- Dashboard live auth spec: skipped because the real install has
+  `dashboard_auth: false`; prior auth-enabled live evidence remains.
+- DB cycles 9–15 (`DB-28`): paused by explicit instruction.
+- Clean-VM install/uninstall (`INST-24/25/29`): no disposable Windows VM.
+- H1–H6/L1–L2 lane suites: not implemented.
+
+### Incidents
+
+- The real hosts block lost `static.test` after the Linux E2E; `doctor --repair`
+  restored the exact baseline. Root cause remains open.
+- The Windows `wslrelay.exe` on 8082 hung after the suite churn; the documented
+  `wsl --terminate devstack` plus agent restart recovered it, and PMA signon
+  passed again.
+
