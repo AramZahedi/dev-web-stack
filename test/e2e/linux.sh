@@ -223,7 +223,10 @@ VHOST_HTTPS_PORT="${PICKED_PORT}"
 # External mode renders the dashboard vhost for 127.0.0.1:7070, and the daemon
 # refuses serving_mode=nginx|apache with another UI port. Keep the normal builtin
 # flow on a high port when 7070 is busy and skip only the external steps.
-if port_in_use 7070; then
+if [ -n "${E2E_UI_PORT:-}" ]; then
+	UI_PORT="${E2E_UI_PORT}"
+	printf 'e2e: using explicit UI port %s; external vhost mode requires 7070 and will be skipped\n' "${UI_PORT}"
+elif port_in_use 7070; then
 	pick_port
 	UI_PORT="${PICKED_PORT}"
 	printf 'e2e: port 7070 is in use; external vhost mode requires 7070 and will be skipped\n'

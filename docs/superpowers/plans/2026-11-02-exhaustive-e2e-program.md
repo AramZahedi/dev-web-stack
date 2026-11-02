@@ -247,7 +247,7 @@ git commit -m "test(e2e): add run preflight and host baseline"
 
 - [ ] **Step 1: Write the failing guard test**
 
-`run-context_test.sh` must assert: `e2e_guard` rejects `devstack`, `Ubuntu`, `FedoraLinux-44`, `C:\Users\Aram\.devstack`, `/data/devstack`, ports `80,443,3306,5432,6379,7070,7443,8080,8082,8443`, database/user names `laravel` and `root`, and any Docker container not labeled `devstack.e2e.run=<run>`; accepts `devstack-e2e-20261102T173000Z-a1b2c3-w1`, `...-golden`, `...-linstall`, and `/tmp/devstack-e2e/20261102T173000Z-a1b2c3/w1`; `e2e_port dashboard` for w1=24170 and w8=24870; `E2E_SERVICE_SLOT=1` is refused without the run-wide lease.
+`run-context_test.sh` must assert: `e2e_guard` rejects `devstack`, `Ubuntu`, `FedoraLinux-44`, `C:\Users\Aram\.devstack`, `/data/devstack`, ports `80,443,3306,5432,6379,7070,7443,8080,8082,8443`, database/user names `laravel` and `root`, and any Docker container not labeled `devstack.e2e.run=<run>`; accepts `devstack-e2e-20261102T173000Z-a1b2c3-w1`, `...-golden`, `...-linstall`, and `/tmp/devstack-e2e/20261102T173000Z-a1b2c3/w1`; `e2e_port dashboard` for w1=24170 and w8=24870; `E2E_SERVICE_SLOT=1` is refused without the run-wide lease; two workers cannot allocate the same backend HTTP/FastCGI port (D24 regression test).
 
 - [ ] **Step 2: Run it, verify it fails**
 
@@ -1080,6 +1080,7 @@ These were found during planning research. Each is a **candidate** until reprodu
 | D21 | Cycle5's UI fixture used `${home}/projects` while the product manages `${devstack_home}/projects` | H4/L1 | Use the managed root and disposable helper home; live database UI fixture now starts. |
 | D22 | Cycle6's near-1 GiB import wait was shorter than the upload; the job queues after upload finishes | H4 | Extend the harness wait to 30 minutes; 115/115 backup edge cases pass. |
 | D23 | Real-install hosts block lost `static.test` after the upgrade | W | `devstack doctor --repair` restored both managed domains; doctor is green. |
+| D24 | Site backend allocator is fixed to 41000–43999, so concurrent workers collide even when dashboard/proxy ports differ | H1/H2 | 3/5 concurrent Linux workers passed; add a per-run backend range or port lease before scaling past 3 workers. |
 
 ## 7. Gates and definition of done
 
