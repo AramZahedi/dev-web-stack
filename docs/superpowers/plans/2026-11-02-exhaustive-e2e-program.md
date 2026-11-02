@@ -256,7 +256,7 @@ Expected: FAIL because the functions do not exist.
 
 - [ ] **Step 3: Implement the context, guards, and ports**
 
-Use a single `E2E_PORT_BASE=$((24070 + 100 * worker))`; derive all other ports by offset. Keep the canonical protected-port list in one file and source it from both bash and PowerShell. The guard reads the real database name/user deny-list from a single file; `laravel` and `root` are hard failures even if a test asks for them.
+Use a single `E2E_PORT_BASE=$((24070 + 100 * worker))`; derive all other ports by offset. Keep the canonical protected-port list in one file and source it from both bash and PowerShell. Partition the backend ranges with `DEVSTACK_E2E_BACKEND_SLOT`/`DEVSTACK_E2E_BACKEND_SLOTS` (0-based slot, total slots) so no two workers allocate the same HTTP 41000–42999 or FastCGI 43000–43999 port; the full production range is used when the variables are absent. The guard reads the real database name/user deny-list from a single file; `laravel` and `root` are hard failures even if a test asks for them.
 
 - [ ] **Step 4: Run the test and a five-worker collision check**
 
@@ -1080,7 +1080,7 @@ These were found during planning research. Each is a **candidate** until reprodu
 | D21 | Cycle5's UI fixture used `${home}/projects` while the product manages `${devstack_home}/projects` | H4/L1 | Use the managed root and disposable helper home; live database UI fixture now starts. |
 | D22 | Cycle6's near-1 GiB import wait was shorter than the upload; the job queues after upload finishes | H4 | Extend the harness wait to 30 minutes; 115/115 backup edge cases pass. |
 | D23 | Real-install hosts block lost `static.test` after the upgrade | W | `devstack doctor --repair` restored both managed domains; doctor is green. |
-| D24 | Site backend allocator is fixed to 41000–43999, so concurrent workers collide even when dashboard/proxy ports differ | H1/H2 | 3/5 concurrent Linux workers passed; add a per-run backend range or port lease before scaling past 3 workers. |
+| D24 | Site backend allocator is fixed to 41000–43999, so concurrent workers collide even when dashboard/proxy ports differ | H1/H2 | Fixed with `DEVSTACK_E2E_BACKEND_SLOT`/`..._SLOTS` partitions; all 8 concurrent Linux workers passed. |
 | D25 | Importing/unregistering disposable WSL distros left Windows `wslrelay.exe` on 8082 hung | W | Terminate the managed `devstack` distro and restart the agent; verify HTTP 200 and PMA auto-login before the final baseline. |
 
 ## 7. Gates and definition of done

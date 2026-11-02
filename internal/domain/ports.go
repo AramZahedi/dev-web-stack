@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 )
@@ -46,16 +47,25 @@ type PortAllocator struct {
 	used     map[int]struct{}
 	nextHTTP int
 	nextFCGI int
+	httpLow  int
+	httpHigh int
+	fcgiLow  int
+	fcgiHigh int
 }
 
 // NewPortAllocator returns an allocator that never hands out the given
 // reserved ports, for example ports restored from persisted sites at startup.
 // Ports outside the backend ranges are ignored.
 func NewPortAllocator(reserved ...int) *PortAllocator {
+	httpLow, httpHigh, fcgiLow, fcgiHigh := backendSlotBounds()
 	p := &PortAllocator{
 		used:     make(map[int]struct{}, len(reserved)),
-		nextHTTP: httpPortLow,
-		nextFCGI: fastCGIPortLow,
+		nextHTTP: httpLow,
+		nextFCGI: fcgiLow,
+		httpLow:  httpLow,
+		httpHigh: httpHigh,
+		fcgiLow:  fcgiLow,
+		fcgiHigh: fcgiHigh,
 	}
 	for _, port := range reserved {
 		if _, _, ok := portRange(port); ok {
@@ -63,6 +73,35 @@ func NewPortAllocator(reserved ...int) *PortAllocator {
 		}
 	}
 	return p
+}
+
+// backendSlotBounds partitions the backend ranges for disposable parallel E2E
+// workers. It is a test-only seam: without the environment variables the full
+// production ranges are returned.
+func backendSlotBounds() (httpLow, httpHigh, fcgiLow, fcgiHigh int) {
+	httpLow, httpHigh = httpPortLow, httpPortHigh
+	fcgiLow, fcgiHigh = fastCGIPortLow, fastCGIPortHigh
+	slot, errSlot := strconv.Atoi(os.Getenv("DEVSTACK_E2E_BACKEND_SLOT"))
+	slots, errSlots := strconv.Atoi(os.Getenv("DEVSTACK_E2E_BACKEND_SLOTS"))
+	if errSlot != nil || errSlots != nil || slots < 1 || slot < 0 || slot >= slots {
+		return httpLow, httpHigh, fcgiLow, fcgiHigh
+	}
+	httpSpan := (httpPortHigh - httpPortLow + 1) / slots
+	fcgiSpan := (fastCGIPortHigh - fastCGIPortLow + 1) / slots
+	if httpSpan < 1 || fcgiSpan < 1 {
+		return httpLow, httpHigh, fcgiLow, fcgiHigh
+	}
+	httpLow = httpPortLow + slot*httpSpan
+	httpHigh = httpLow + httpSpan - 1
+	if slot == slots-1 {
+		httpHigh = httpPortHigh
+	}
+	fcgiLow = fastCGIPortLow + slot*fcgiSpan
+	fcgiHigh = fcgiLow + fcgiSpan - 1
+	if slot == slots-1 {
+		fcgiHigh = fastCGIPortHigh
+	}
+	return httpLow, httpHigh, fcgiLow, fcgiHigh
 }
 
 // Allocate reserves and returns a free port of the requested kind. Ports are
@@ -126,9 +165,9 @@ func (p *PortAllocator) Release(port int) {
 func (p *PortAllocator) bounds(kind PortKind) (low, high int, next *int, err error) {
 	switch kind {
 	case PortHTTP:
-		return httpPortLow, httpPortHigh, &p.nextHTTP, nil
+		return p.httpLow, p.httpHigh, &p.nextHTTP, nil
 	case PortFastCGI:
-		return fastCGIPortLow, fastCGIPortHigh, &p.nextFCGI, nil
+		return p.fcgiLow, p.fcgiHigh, &p.nextFCGI, nil
 	default:
 		return 0, 0, nil, fmt.Errorf("unknown port kind %d", int(kind))
 	}

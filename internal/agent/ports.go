@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,13 +27,25 @@ type portOwner struct {
 // PortAllocator reserves ports in the WSL backend ranges. Port probes always
 // bind loopback; no site backend binds to a public interface.
 type PortAllocator struct {
-	mu     sync.Mutex
-	bySite map[string]map[string]int
-	owners map[int]portOwner
+	mu       sync.Mutex
+	bySite   map[string]map[string]int
+	owners   map[int]portOwner
+	httpLow  int
+	httpHigh int
+	fcgiLow  int
+	fcgiHigh int
 }
 
 func NewPortAllocator() *PortAllocator {
-	return &PortAllocator{bySite: make(map[string]map[string]int), owners: make(map[int]portOwner)}
+	httpLow, httpHigh, fcgiLow, fcgiHigh := agentBackendSlotBounds()
+	return &PortAllocator{
+		bySite:   make(map[string]map[string]int),
+		owners:   make(map[int]portOwner),
+		httpLow:  httpLow,
+		httpHigh: httpHigh,
+		fcgiLow:  fcgiLow,
+		fcgiHigh: fcgiHigh,
+	}
 }
 
 // Allocate obtains a port for site and kind. An existing allocation is reused
@@ -42,7 +55,7 @@ func (a *PortAllocator) Allocate(site, kind string, requested int) (port int, re
 		return 0, false, err
 	}
 	kind = strings.ToLower(strings.TrimSpace(kind))
-	low, high, err := portBounds(kind)
+	low, high, err := a.portBounds(kind)
 	if err != nil {
 		return 0, false, err
 	}
@@ -86,7 +99,7 @@ func (a *PortAllocator) Restore(site, kind string, port int) error {
 		return err
 	}
 	kind = strings.ToLower(strings.TrimSpace(kind))
-	low, high, err := portBounds(kind)
+	low, high, err := a.portBounds(kind)
 	if err != nil {
 		return err
 	}
@@ -108,7 +121,7 @@ func (a *PortAllocator) Validate(site, kind string, port int) (bool, error) {
 		return false, err
 	}
 	kind = strings.ToLower(strings.TrimSpace(kind))
-	low, high, err := portBounds(kind)
+	low, high, err := a.portBounds(kind)
 	if err != nil {
 		return false, err
 	}
@@ -156,15 +169,44 @@ func (a *PortAllocator) reserveLocked(site, kind string, port int) int {
 	return port
 }
 
-func portBounds(kind string) (int, int, error) {
+func (a *PortAllocator) portBounds(kind string) (int, int, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "http":
-		return agentHTTPPortLow, agentHTTPPortHigh, nil
+		return a.httpLow, a.httpHigh, nil
 	case "fastcgi":
-		return agentFastCGIPortLow, agentFastCGIPortHigh, nil
+		return a.fcgiLow, a.fcgiHigh, nil
 	default:
 		return 0, 0, fmt.Errorf("agent: unsupported backend port kind %q", kind)
 	}
+}
+
+// agentBackendSlotBounds partitions the backend ranges for disposable parallel
+// E2E workers. It is a test-only seam; without the environment variables the
+// full production ranges are returned.
+func agentBackendSlotBounds() (httpLow, httpHigh, fcgiLow, fcgiHigh int) {
+	httpLow, httpHigh = agentHTTPPortLow, agentHTTPPortHigh
+	fcgiLow, fcgiHigh = agentFastCGIPortLow, agentFastCGIPortHigh
+	slot, errSlot := strconv.Atoi(os.Getenv("DEVSTACK_E2E_BACKEND_SLOT"))
+	slots, errSlots := strconv.Atoi(os.Getenv("DEVSTACK_E2E_BACKEND_SLOTS"))
+	if errSlot != nil || errSlots != nil || slots < 1 || slot < 0 || slot >= slots {
+		return httpLow, httpHigh, fcgiLow, fcgiHigh
+	}
+	httpSpan := (agentHTTPPortHigh - agentHTTPPortLow + 1) / slots
+	fcgiSpan := (agentFastCGIPortHigh - agentFastCGIPortLow + 1) / slots
+	if httpSpan < 1 || fcgiSpan < 1 {
+		return httpLow, httpHigh, fcgiLow, fcgiHigh
+	}
+	httpLow = agentHTTPPortLow + slot*httpSpan
+	httpHigh = httpLow + httpSpan - 1
+	if slot == slots-1 {
+		httpHigh = agentHTTPPortHigh
+	}
+	fcgiLow = agentFastCGIPortLow + slot*fcgiSpan
+	fcgiHigh = fcgiLow + fcgiSpan - 1
+	if slot == slots-1 {
+		fcgiHigh = agentFastCGIPortHigh
+	}
+	return httpLow, httpHigh, fcgiLow, fcgiHigh
 }
 
 func portAvailable(port int) bool {
