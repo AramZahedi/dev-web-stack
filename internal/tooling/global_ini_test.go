@@ -171,6 +171,37 @@ func TestGlobalIniTracksTheSelectedPHPLineDefaults(t *testing.T) {
 	}
 }
 
+func TestGlobalIniMigrationDropsManagedDirectivesFromAManualFile(t *testing.T) {
+	svc, _, paths, _, _ := newToolService(t)
+	ctx := context.Background()
+	legacy := "[PHP]\nmemory_limit = 1G\ncli.only = on\nextension = xdebug.so\nextension_dir = \"/tmp/php-ext\"\n"
+	iniPath := GlobalIniPath(paths)
+	if err := os.MkdirAll(filepath.Dir(iniPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(iniPath, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ini, err := svc.GlobalIni(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"memory_limit = 1G", "cli.only = on"} {
+		if !strings.Contains(ini.Content, want) {
+			t.Fatalf("migrated ini missing %q:\n%s", want, ini.Content)
+		}
+	}
+	for _, unwanted := range []string{"extension=xdebug.so", "/tmp/php-ext"} {
+		if strings.Contains(ini.Content, unwanted) {
+			t.Fatalf("migrated ini kept managed directive %q:\n%s", unwanted, ini.Content)
+		}
+	}
+	if !strings.Contains(ini.Raw, "cli.only = on") {
+		t.Fatalf("raw = %q, want the preserved manual directives", ini.Raw)
+	}
+}
+
 func TestRefreshPHPDefaultsRegeneratesOnlyTheMatchingCLILine(t *testing.T) {
 	svc, st, paths, _, _ := newToolService(t)
 	ctx := context.Background()

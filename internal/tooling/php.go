@@ -323,11 +323,7 @@ func (s *Service) loadOrMigrateCLIRawLocked(ctx context.Context, path string) (s
 	raw := ""
 	data, readErr := os.ReadFile(path)
 	if readErr == nil {
-		if section, extractErr := phpini.ExtractSiteSection(data); extractErr == nil {
-			raw = section
-		} else {
-			raw = string(data)
-		}
+		raw = migrateCLIRaw(data)
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return "", fmt.Errorf("tooling: read existing global php.ini: %w", readErr)
 	}
@@ -335,6 +331,58 @@ func (s *Service) loadOrMigrateCLIRawLocked(ctx context.Context, path string) (s
 		return "", fmt.Errorf("tooling: migrate %s: %w", CLIIniRawSettingKey, err)
 	}
 	return raw, nil
+}
+
+// migrateCLIRaw preserves the user-owned part of an old global ini. Generated
+// files contribute their raw section; a hand-edited file keeps its directives
+// but loses the managed extension block that the new renderer owns.
+func migrateCLIRaw(data []byte) string {
+	if section, err := phpini.ExtractSiteSection(data); err == nil {
+		return section
+	}
+	raw := strings.ReplaceAll(string(data), "\r\n", "\n")
+	raw = strings.ReplaceAll(raw, "\r", "\n")
+	if phpini.ValidateRaw(raw) == nil {
+		return raw
+	}
+	markers := []string{
+		phpini.BeginDefaultsMarker,
+		phpini.EndDefaultsMarker,
+		phpini.BeginSiteMarker,
+		phpini.EndSiteMarker,
+		phpini.BeginExtensionsMarker,
+		phpini.EndExtensionsMarker,
+	}
+	var kept []string
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+		reserved := false
+		for _, marker := range markers {
+			if strings.Contains(trimmed, marker) {
+				reserved = true
+				break
+			}
+		}
+		if reserved {
+			continue
+		}
+		if trimmed != "" && !strings.HasPrefix(trimmed, ";") && !strings.HasPrefix(trimmed, "[") {
+			key := trimmed
+			if index := strings.Index(trimmed, "="); index >= 0 {
+				key = strings.TrimSpace(trimmed[:index])
+			}
+			switch strings.ToLower(key) {
+			case "extension", "extension_dir", "zend_extension":
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	filtered := strings.Join(kept, "\n")
+	if phpini.ValidateRaw(filtered) == nil {
+		return filtered
+	}
+	return ""
 }
 
 // renderGlobalIniLocked composes the CLI ini from the build base, the shared
