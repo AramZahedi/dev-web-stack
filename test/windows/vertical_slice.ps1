@@ -20,7 +20,7 @@ param(
     [string]$WinSite = "win-slice",
     [string]$WslSite = "wsl-slice",
     [string]$PhpSite = "php-slice",
-    [string]$TestRoot = "C:\devstack-test\vertical-slice",
+    [string]$TestRoot = "",
     [switch]$KeepFixtures,
     [switch]$Help
 )
@@ -34,6 +34,9 @@ $installDir = if ($env:DEVSTACK_HOME) {
     Join-Path $env:USERPROFILE ".devstack"
 }
 $env:DEVSTACK_HOME = $installDir
+if (-not $PSBoundParameters.ContainsKey('TestRoot') -or [string]::IsNullOrWhiteSpace($TestRoot)) {
+    $TestRoot = Join-Path $installDir "projects\vertical-slice"
+}
 if (Test-Path (Join-Path $installDir "bin")) {
     $env:PATH = "$(Join-Path $installDir 'bin');$env:PATH"
 }
@@ -50,7 +53,7 @@ Parameters:
     -WinSite <name>     Name for Windows-mode static site (default: win-slice)
     -WslSite <name>     Name for WSL-mode static site (default: wsl-slice)
     -PhpSite <name>     Name for PHP-FPM test site (default: php-slice)
-    -TestRoot <path>    Local scratch path for test fixtures (default: C:\devstack-test\vertical-slice)
+    -TestRoot <path>    Local scratch path for test fixtures (default: <home>\projects\vertical-slice)
     -KeepFixtures       Preserve fixture sites and files upon completion
     -Help               Show this help message
 "@
@@ -147,7 +150,7 @@ New-Item -ItemType Directory -Force -Path $winRoot | Out-Null
 Set-Content -Path (Join-Path $winRoot "index.html") -Value "<h1>windows source ok</h1>" -NoNewline
 
 # 3.2 WSL Static Site
-$wslRoot = "/data/devstack-test/vertical-slice/wsl-static"
+$wslRoot = "/data/devstack/projects/vertical-slice/wsl-static"
 & wsl.exe -d devstack -- bash -lc "mkdir -p '$wslRoot' && printf '<h1>wsl source ok</h1>' > '$wslRoot/index.html'"
 if ($LASTEXITCODE -ne 0) { throw "could not create WSL fixture" }
 $wslUnc = "\\wsl.localhost\devstack" + ($wslRoot -replace "/", "\")
