@@ -1524,6 +1524,9 @@ test('keyboard-only create flow traps focus and exposes labelled controls', asyn
 test('primary database text and controls meet WCAG AA contrast', async ({ page }) => {
   await open(page, MYSQL);
   await expect(page.getByRole('heading', { name: 'MySQL 8.4' })).toBeVisible();
+  // The table body loads after the heading; measuring before the first row is
+  // rendered makes the contrast ratio read as 0.
+  await expect(page.locator('tbody td').first()).toBeVisible();
   const ratios = await page.evaluate(() => {
     type RGBA = [number, number, number, number];
 
