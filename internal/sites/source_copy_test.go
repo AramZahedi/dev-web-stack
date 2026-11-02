@@ -8,6 +8,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 )
 
 type fakeSourceCopier struct {
@@ -40,17 +41,17 @@ func TestChangeSourceModeCopiesBeforeUpdatingAndKeepsSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := svc.ChangeSourceMode(ctx, "blog", model.SourceWSL, `\\wsl.localhost\devstack\home\aram\blog`, false)
+	got, err := svc.ChangeSourceMode(ctx, "blog", model.SourceWSL, `\\wsl.localhost\devstack\data\devstack\projects\blog`, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if copier.calls != 1 {
 		t.Fatalf("copy calls = %d, want 1", copier.calls)
 	}
-	if copier.request.Mode != string(model.SourceWSL) || copier.request.Source != "/mnt/c/projects/blog" || copier.request.Destination != "/home/aram/blog" || copier.request.RemoveSource {
+	if copier.request.Mode != string(model.SourceWSL) || copier.request.Source != "/mnt/c/projects/blog" || copier.request.Destination != "/data/devstack/projects/blog" || copier.request.RemoveSource {
 		t.Fatalf("copy request = %+v", copier.request)
 	}
-	if got.SourceMode != model.SourceWSL || got.HostPath != `\\wsl.localhost\devstack\home\aram\blog` || got.BackendPath != "/home/aram/blog" {
+	if got.SourceMode != model.SourceWSL || got.HostPath != `\\wsl.localhost\devstack\data\devstack\projects\blog` || got.BackendPath != "/data/devstack/projects/blog" {
 		t.Fatalf("updated site paths = %+v", got)
 	}
 	stored, err := fakes.store.GetSite(ctx, site.ID)
@@ -78,11 +79,55 @@ func TestChangeSourceModeRequiresStoppedSiteBeforeCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := svc.ChangeSourceMode(ctx, "blog", model.SourceWSL, `\\wsl.localhost\devstack\home\aram\blog`, false); err == nil {
+	if _, err := svc.ChangeSourceMode(ctx, "blog", model.SourceWSL, `\\wsl.localhost\devstack\data\devstack\projects\blog`, false); err == nil {
 		t.Fatal("ChangeSourceMode succeeded for a running site")
 	}
 	if copier.calls != 0 {
 		t.Fatalf("copy calls = %d, want 0", copier.calls)
+	}
+}
+
+func TestChangeSourceModeRejectsDestinationOutsideManagedRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("source copy requires Windows source modes")
+	}
+	tests := []struct {
+		name        string
+		destination string
+	}{
+		{name: "root itself", destination: `\\wsl.localhost\devstack\data\devstack\projects`},
+		{name: "sibling prefix", destination: `\\wsl.localhost\devstack\data\devstack\projects-old\blog`},
+		{name: "outside root", destination: `\\wsl.localhost\devstack\home\aram\blog`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, fakes := newTestService(t)
+			copier := &fakeSourceCopier{response: agentproto.SourceCopyResponse{SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
+			svc.deps.SourceCopier = copier
+			site := model.Site{
+				ID: "site", Name: "blog", Domain: "blog.test", Kind: model.SiteStatic,
+				SourceMode: model.SourceWindows, HostPath: `C:\projects\blog`, BackendPath: "/mnt/c/projects/blog",
+				Status: model.StatusStopped, DesiredState: model.DesiredStopped,
+			}
+			if err := fakes.store.CreateSite(ctx, site); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := svc.ChangeSourceMode(ctx, "blog", model.SourceWSL, tc.destination, false)
+			if !errors.Is(err, pathmode.ErrOutsideProjectsRoot) {
+				t.Fatalf("ChangeSourceMode error = %v, want ErrOutsideProjectsRoot", err)
+			}
+			if copier.calls != 0 {
+				t.Fatalf("copy calls = %d, want 0 for a rejected destination", copier.calls)
+			}
+			stored, err := fakes.store.GetSite(ctx, site.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.SourceMode != site.SourceMode || stored.HostPath != site.HostPath || stored.BackendPath != site.BackendPath {
+				t.Fatalf("site changed after rejected destination: %+v", stored)
+			}
+		})
 	}
 }
 
@@ -102,7 +147,7 @@ func TestChangeSourceModeCopyFailureLeavesSiteUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := svc.ChangeSourceMode(ctx, "blog", model.SourceWSL, `\\wsl.localhost\devstack\home\aram\blog`, false); err == nil {
+	if _, err := svc.ChangeSourceMode(ctx, "blog", model.SourceWSL, `\\wsl.localhost\devstack\data\devstack\projects\blog`, false); err == nil {
 		t.Fatal("ChangeSourceMode succeeded after the copy failed")
 	}
 	stored, err := fakes.store.GetSite(ctx, site.ID)

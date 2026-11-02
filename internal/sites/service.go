@@ -968,6 +968,31 @@ func rejectSymlinkComponents(path string) error {
 	return nil
 }
 
+// validateManagedProjectPath confirms a translated source path is a strict
+// descendant of the managed projects root for mode. Every rejection wraps
+// pathmode.ErrOutsideProjectsRoot so the API can map it to a stable error code.
+func (s *Service) validateManagedProjectPath(name string, mode model.SourceMode, hostPath, backendPath string) error {
+	root, err := pathmode.ManagedProjectsRoot(mode, s.deps.Config.ProjectsRoot, s.deps.Config.Home)
+	if err != nil {
+		return fmt.Errorf("project folder for %q: %w", name, err)
+	}
+	if err := pathmode.ValidateManagedProjectPath(mode, hostPath, backendPath, root); err != nil {
+		return fmt.Errorf("project folder for %q: %w", name, err)
+	}
+	return nil
+}
+
+// validateManagedSitePath applies the managed root boundary to a persisted
+// site. Rows created before the policy existed may have no source mode, so the
+// mode defaults from the platform and site kind.
+func (s *Service) validateManagedSitePath(site model.Site) error {
+	mode := site.SourceMode
+	if strings.TrimSpace(string(mode)) == "" {
+		mode = pathmode.DefaultSourceMode(site.Kind, runtime.GOOS)
+	}
+	return s.validateManagedProjectPath(site.Name, mode, site.HostPath, site.BackendPath)
+}
+
 // newSite validates a create request and builds the row that will be
 // persisted. It performs no external side effects.
 func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, error) {
@@ -1000,6 +1025,9 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 			return model.Site{}, fmt.Errorf("sites: %w", err)
 		}
 		hostPath, backendPath = project, project
+	}
+	if err := s.validateManagedProjectPath(name, sourceMode, hostPath, backendPath); err != nil {
+		return model.Site{}, fmt.Errorf("sites: %w", err)
 	}
 	if kind != model.SitePHP {
 		if err := rejectPHPOnlyCreateFields(req); err != nil {
@@ -1340,8 +1368,13 @@ func (s *Service) applyUpdate(ctx context.Context, current model.Site, req Updat
 }
 
 // startLocked allocates a port if the row has none, prepares and starts the
-// backend, and persists the running state. The caller must hold s.mu.
+// backend, and persists the running state. The managed projects root is
+// enforced before the database guard or any backend work. The caller must hold
+// s.mu.
 func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site, error) {
+	if err := s.validateManagedSitePath(site); err != nil {
+		return site, fmt.Errorf("sites: %w", err)
+	}
 	if err := s.checkDatabaseGuard(ctx, site); err != nil {
 		return site, err
 	}

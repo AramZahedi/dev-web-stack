@@ -19,6 +19,8 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/hosts"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 )
 
 const (
@@ -159,6 +161,100 @@ func (s *Service) checkHosts(expected []string, expectedErr error) Check {
 	check.Status = StatusOK
 	check.Detail = fmt.Sprintf("%d registered domains match the managed block in %s", len(expected), path)
 	return check
+}
+
+// checkProjectsRoot verifies that every registered site path is a strict
+// descendant of the managed projects root for its source mode. Existing
+// external sites are reported, never deleted or moved.
+func (s *Service) checkProjectsRoot(ctx context.Context) Check {
+	check := Check{ID: "projects-root", Title: "Managed project folders"}
+	if s.deps.Store == nil {
+		check.Status = StatusSkipped
+		check.Detail = "site storage is not configured, so project folders cannot be inspected"
+		check.Remediation = "No action is required."
+		return check
+	}
+
+	sites, err := s.deps.Store.ListSites(ctx)
+	if err != nil {
+		check.Status = StatusFail
+		check.Detail = "cannot list the registered sites: " + errorDetail(err)
+		check.Remediation = "Run `devstack init` to recreate the devstack state, then rerun `devstack doctor`."
+		return check
+	}
+	if len(sites) == 0 {
+		check.Status = StatusOK
+		check.Detail = "no registered sites"
+		return check
+	}
+
+	platform := strings.TrimSpace(s.deps.Platform)
+	if platform == "" {
+		platform = runtime.GOOS
+	}
+	home := strings.TrimSpace(s.deps.Config.Home)
+	if home == "" {
+		home = strings.TrimSpace(s.deps.Home)
+	}
+
+	var issues []string
+	for _, site := range sites {
+		mode := projectSiteMode(site, platform)
+		root, err := pathmode.ManagedProjectsRoot(mode, s.deps.Config.ProjectsRoot, home)
+		if err != nil {
+			issues = append(issues, fmt.Sprintf("%s (cannot resolve its managed root: %v)", site.Name, err))
+			continue
+		}
+		if err := pathmode.ValidateManagedProjectPath(mode, site.HostPath, site.BackendPath, root); err != nil {
+			target := strings.TrimSpace(site.HostPath)
+			if mode == model.SourceWSL {
+				target = strings.TrimSpace(site.BackendPath)
+			}
+			if target == "" {
+				target = "no project folder"
+			}
+			issues = append(issues, fmt.Sprintf("%s (%s; allowed root %s)", site.Name, target, root))
+		}
+	}
+
+	if len(issues) != 0 {
+		check.Status = StatusFail
+		check.Detail = "site folders outside the managed projects root: " + strings.Join(issues, "; ")
+		check.Remediation = "Move the affected folder under its allowed projects root, then delete and re-register the site so devstack stores the new path."
+		return check
+	}
+
+	check.Status = StatusOK
+	check.Detail = fmt.Sprintf("%d registered sites are inside the managed projects root", len(sites))
+	return check
+}
+
+// projectSiteMode resolves the source mode of a stored site. Rows without a
+// mode use the path shape: a drive path is Windows, a UNC path is WSL, and
+// everything else follows the doctor's platform.
+func projectSiteMode(site model.Site, platform string) model.SourceMode {
+	if mode := model.SourceMode(strings.TrimSpace(string(site.SourceMode))); mode != "" {
+		return mode
+	}
+	host := strings.TrimSpace(site.HostPath)
+	if isWindowsDrivePath(host) {
+		return model.SourceWindows
+	}
+	if strings.HasPrefix(strings.ReplaceAll(host, "/", `\`), `\\`) {
+		return model.SourceWSL
+	}
+	if platform == "windows" {
+		return model.SourceWindows
+	}
+	return model.SourceLocal
+}
+
+func isWindowsDrivePath(value string) bool {
+	if len(value) < 2 || value[1] != ':' {
+		return false
+	}
+	c := value[0]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // parseManagedHosts extracts the domains from a single, complete managed block.

@@ -66,7 +66,8 @@ func (f *testFakes) addPHPSite(t *testing.T, buildID, version string) model.Site
 		t.Fatalf("upsert PHP runtime: %v", err)
 	}
 
-	docroot := filepath.Join(f.dir, name, "public")
+	project := filepath.Join(f.projectsRoot, name)
+	docroot := filepath.Join(project, "public")
 	if err := os.MkdirAll(docroot, 0o755); err != nil {
 		t.Fatalf("create PHP document root: %v", err)
 	}
@@ -76,7 +77,8 @@ func (f *testFakes) addPHPSite(t *testing.T, buildID, version string) model.Site
 		Name:         name,
 		Domain:       name + ".test",
 		Backend:      model.BackendLocal,
-		BackendPath:  filepath.Join(f.dir, name),
+		HostPath:     project,
+		BackendPath:  project,
 		Kind:         model.SitePHP,
 		PHPVersion:   version,
 		PHPBuild:     buildID,

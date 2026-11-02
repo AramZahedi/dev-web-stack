@@ -5,6 +5,7 @@ package sites
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -109,8 +110,13 @@ func TestWindowsPHPIniRawCRLFNormalization(t *testing.T) {
 	}
 	defer db.Close()
 
+	projectsRoot := filepath.Join(dir, "projects")
+	if err := os.MkdirAll(projectsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Default()
 	cfg.Home = dir
+	cfg.ProjectsRoot = projectsRoot
 	cfg.ServingMode = config.ServingModeBuiltin
 	cfg.WSLDistro = "devstack"
 
@@ -133,7 +139,7 @@ func TestWindowsPHPIniRawCRLFNormalization(t *testing.T) {
 		Name:       "winphp",
 		Kind:       "php",
 		SourceMode: "windows",
-		Path:       `C:\projects\winphp`,
+		Path:       filepath.Join(projectsRoot, "winphp"),
 		PHPVersion: "8.4",
 		PHPIniRaw:  "display_errors = On\r\nerror_reporting = E_ALL\r\n",
 	})

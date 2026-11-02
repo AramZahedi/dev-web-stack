@@ -30,19 +30,20 @@ var ctx = context.Background()
 // testFakes groups the simulated edges of the service with the real store,
 // router, and allocator used by the tests.
 type testFakes struct {
-	store   *store.Store
-	backend *fakeBackend
-	php     *fakePHPCommands
-	hosts   *fakeHosts
-	certs   *fakeCerts
-	vhosts  *fakeVhosts
-	proxy   *fakeProxy
-	router  *proxy.Router
-	ports   *domain.PortAllocator
-	config  config.Config
-	root    string
-	dbPath  string
-	order   *[]string
+	store        *store.Store
+	backend      *fakeBackend
+	php          *fakePHPCommands
+	hosts        *fakeHosts
+	certs        *fakeCerts
+	vhosts       *fakeVhosts
+	proxy        *fakeProxy
+	router       *proxy.Router
+	ports        *domain.PortAllocator
+	config       config.Config
+	projectsRoot string
+	root         string
+	dbPath       string
+	order        *[]string
 }
 
 // newTestService builds a Service against a temporary SQLite database, a real
@@ -60,7 +61,8 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 		_ = st.Close()
 	})
 
-	root := filepath.Join(dir, "project")
+	projectsRoot := filepath.Join(dir, "projects")
+	root := filepath.Join(projectsRoot, "project")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("create project root: %v", err)
 	}
@@ -104,6 +106,7 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 
 	cfg := config.Default()
 	cfg.Home = dir
+	cfg.ProjectsRoot = projectsRoot
 	router := proxy.NewRouter()
 	ports := domain.NewPortAllocator()
 
@@ -135,19 +138,20 @@ func newTestService(t *testing.T) (*Service, *testFakes) {
 	})
 
 	return svc, &testFakes{
-		store:   st,
-		backend: fb,
-		php:     fphp,
-		hosts:   fh,
-		certs:   fc,
-		vhosts:  fv,
-		proxy:   fp,
-		router:  router,
-		ports:   ports,
-		config:  cfg,
-		root:    root,
-		dbPath:  dbPath,
-		order:   &order,
+		store:        st,
+		backend:      fb,
+		php:          fphp,
+		hosts:        fh,
+		certs:        fc,
+		vhosts:       fv,
+		proxy:        fp,
+		router:       router,
+		ports:        ports,
+		config:       cfg,
+		projectsRoot: projectsRoot,
+		root:         root,
+		dbPath:       dbPath,
+		order:        &order,
 	}
 }
 
