@@ -2048,16 +2048,18 @@ func (f *fakeDoctorService) repairs() int {
 }
 
 type fakeHelperClient struct {
-	mu        sync.Mutex
-	status    helperproto.StatusResponse
-	statusErr error
-	targets   []trust.Target
-	trustErr  error
-	syncs     [][]string
-	homes     []string
-	installs  int
-	removes   int
-	statuses  int
+	mu             sync.Mutex
+	status         helperproto.StatusResponse
+	statusErr      error
+	targets        []trust.Target
+	statusTargets  []trust.Target
+	installTargets []trust.Target
+	trustErr       error
+	syncs          [][]string
+	homes          []string
+	installs       int
+	removes        int
+	statuses       int
 }
 
 func (f *fakeHelperClient) Status(context.Context) (helperproto.StatusResponse, error) {
@@ -2081,6 +2083,9 @@ func (f *fakeHelperClient) InstallTrust(_ context.Context, userHome string) ([]t
 	if f.trustErr != nil {
 		return nil, f.trustErr
 	}
+	if f.installTargets != nil {
+		return append([]trust.Target(nil), f.installTargets...), nil
+	}
 	return append([]trust.Target(nil), f.targets...), nil
 }
 
@@ -2102,6 +2107,9 @@ func (f *fakeHelperClient) TrustStatus(_ context.Context, userHome string) ([]tr
 	f.statuses++
 	if f.trustErr != nil {
 		return nil, f.trustErr
+	}
+	if f.statusTargets != nil {
+		return append([]trust.Target(nil), f.statusTargets...), nil
 	}
 	return append([]trust.Target(nil), f.targets...), nil
 }

@@ -172,7 +172,10 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "409":
-          description: Domain conflict, hosts-sync failure, or port conflict.
+          description: |
+            Domain conflict, hosts-sync failure, port conflict, or missing
+            system/browser trust that could not be repaired. TLS sites verify
+            and repair trust before they are created.
           content:
             application/json:
               schema:
@@ -333,6 +336,14 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            Missing system/browser trust that could not be repaired. TLS sites
+            verify and repair trust before starting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -373,6 +384,14 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            Missing system/browser trust that could not be repaired. TLS sites
+            verify and repair trust before restarting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
 

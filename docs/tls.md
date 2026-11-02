@@ -52,6 +52,14 @@ devstack trust repair
 Run it after installing `certutil`, after changing your Firefox profiles, or
 after a browser reports an untrusted certificate.
 
+Creating or starting a TLS site also verifies browser/system trust first. If
+the CA is missing, devstack repairs it automatically; if repair still leaves a
+target untrusted, the operation fails with `TRUST_MISSING` instead of publishing
+a site with a certificate warning. HTTP-only sites skip this check. On Windows,
+the targets are the machine root store (used by Chrome, Edge, and the OS) and
+the Firefox enterprise-root policy. On Linux, they are the OS anchor and each
+Chrome/Firefox NSS database.
+
 The full diagnostic and repair path is:
 
 ```sh

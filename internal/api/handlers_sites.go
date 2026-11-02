@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
+	"github.com/AramZahedi/dev-web-stack/internal/trust"
 )
 
 // siteNodeToolchainResolver is the narrow optional surface used to attach the
@@ -34,6 +36,66 @@ func (s *Server) siteResponse(r *http.Request, site model.Site) model.Site {
 	}
 	site.NodeToolchain = &summary
 	return site
+}
+
+// ensureBrowserTrust makes a TLS site's certificate usable by the operating
+// system and every browser before it is created or started. Trust installed by
+// `devstack init` can be missing after a manual removal, a partial install, or
+// a migrated home; failing closed is safer than publishing a site with a
+// certificate warning.
+func (s *Server) ensureBrowserTrust(ctx context.Context) error {
+	if s.helper == nil {
+		return nil
+	}
+	home := strings.TrimSpace(s.userHome())
+	if home == "" {
+		return fmt.Errorf("trust: user home is unavailable")
+	}
+	targets, err := s.helper.TrustStatus(ctx, home)
+	if err != nil {
+		return fmt.Errorf("trust: read browser trust: %w", err)
+	}
+	if trustTargetsOK(targets) {
+		return nil
+	}
+	targets, err = s.helper.InstallTrust(ctx, home)
+	if err != nil {
+		return fmt.Errorf("trust: install browser trust: %w", err)
+	}
+	if !trustTargetsOK(targets) {
+		return fmt.Errorf("trust: browser trust is not installed: %s", trustTargetFailures(targets))
+	}
+	return nil
+}
+
+func trustTargetsOK(targets []trust.Target) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	for _, target := range targets {
+		if !target.OK {
+			return false
+		}
+	}
+	return true
+}
+
+func trustTargetFailures(targets []trust.Target) string {
+	parts := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if target.OK {
+			continue
+		}
+		detail := strings.TrimSpace(target.Detail)
+		if detail == "" {
+			detail = "not installed"
+		}
+		parts = append(parts, target.Name+": "+detail)
+	}
+	if len(parts) == 0 {
+		return "no trust targets reported"
+	}
+	return strings.Join(parts, "; ")
 }
 
 // createSiteRequest is the dashboard/CLI create payload. domain is derived
@@ -157,6 +219,12 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	if err := model.ValidateSiteContracts(req.FrontControllerFile, req.FrontControllerMode, req.ApacheAllowOverride, req.SPAFallbackFile, req.Build); err != nil {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, err.Error(), nil)
 		return
+	}
+	if req.TLS {
+		if err := s.ensureBrowserTrust(r.Context()); err != nil {
+			s.writeServiceError(w, r, err)
+			return
+		}
 	}
 
 	site, err := s.sites.Create(r.Context(), sites.CreateRequest{
@@ -287,6 +355,19 @@ func (s *Server) handleSiteAction(w http.ResponseWriter, r *http.Request, action
 		return
 	}
 	ref := r.PathValue("ref")
+	if action == "start" || action == "restart" {
+		site, getErr := s.sites.Get(r.Context(), ref)
+		if getErr != nil {
+			s.writeServiceError(w, r, getErr)
+			return
+		}
+		if site.TLS {
+			if err := s.ensureBrowserTrust(r.Context()); err != nil {
+				s.writeServiceError(w, r, err)
+				return
+			}
+		}
+	}
 	var err error
 	switch action {
 	case "start":

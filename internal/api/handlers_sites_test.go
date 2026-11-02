@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/sites"
+	"github.com/AramZahedi/dev-web-stack/internal/trust"
 )
 
 func TestCreateSiteReturnsDatabaseWarnings(t *testing.T) {
@@ -129,6 +132,112 @@ func TestCreateSiteContractsValidationErrors(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("for payload %s: expected 400 Bad Request, got %d, body: %s", p, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestCreateTLSSiteRepairsMissingTrust(t *testing.T) {
+	fx := newFixture(t, Config{})
+	fx.helper.statusTargets = []trust.Target{{Name: "System trust store", OK: false, Detail: "not installed"}}
+	fx.helper.installTargets = []trust.Target{{Name: "System trust store", OK: true, Detail: "installed"}}
+
+	rec := fx.request(t, http.MethodPost, "/api/v1/sites", strings.NewReader(`{"name":"blog","path":"/tmp","kind":"static","tls":true}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	fx.helper.mu.Lock()
+	statuses, installs := fx.helper.statuses, fx.helper.installs
+	fx.helper.mu.Unlock()
+	if statuses != 1 || installs != 1 {
+		t.Fatalf("trust status=%d installs=%d, want 1 and 1", statuses, installs)
+	}
+	fx.sites.mu.Lock()
+	created := len(fx.sites.created)
+	fx.sites.mu.Unlock()
+	if created != 1 {
+		t.Fatalf("created sites = %d, want 1", created)
+	}
+}
+
+func TestCreateTLSSiteFailsClosedWhenTrustRemainsMissing(t *testing.T) {
+	fx := newFixture(t, Config{})
+	missing := []trust.Target{{Name: "System trust store", OK: false, Detail: "not installed"}}
+	fx.helper.statusTargets = missing
+	fx.helper.installTargets = missing
+
+	rec := fx.request(t, http.MethodPost, "/api/v1/sites", strings.NewReader(`{"name":"blog","path":"/tmp","kind":"static","tls":true}`))
+	assertError(t, rec, http.StatusConflict, codeTrustMissing)
+	fx.sites.mu.Lock()
+	created := len(fx.sites.created)
+	fx.sites.mu.Unlock()
+	if created != 0 {
+		t.Fatalf("created sites = %d, want 0", created)
+	}
+}
+
+func TestCreateHTTPOnlySiteSkipsTrustRepair(t *testing.T) {
+	fx := newFixture(t, Config{})
+	fx.helper.statusTargets = []trust.Target{{Name: "System trust store", OK: false, Detail: "not installed"}}
+
+	rec := fx.request(t, http.MethodPost, "/api/v1/sites", strings.NewReader(`{"name":"blog","path":"/tmp","kind":"static","tls":false}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	fx.helper.mu.Lock()
+	statuses, installs := fx.helper.statuses, fx.helper.installs
+	fx.helper.mu.Unlock()
+	if statuses != 0 || installs != 0 {
+		t.Fatalf("trust status=%d installs=%d, want 0 and 0", statuses, installs)
+	}
+}
+
+func TestStartTLSSiteRepairsMissingTrust(t *testing.T) {
+	fx := newFixture(t, Config{})
+	site, err := fx.sites.Create(context.Background(), sites.CreateRequest{
+		Name: "blog", Path: "/tmp", Kind: "static", TLS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx.helper.statusTargets = []trust.Target{{Name: "System trust store", OK: false, Detail: "not installed"}}
+	fx.helper.installTargets = []trust.Target{{Name: "System trust store", OK: true, Detail: "installed"}}
+
+	rec := fx.request(t, http.MethodPost, "/api/v1/sites/"+site.ID+"/start", nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	fx.helper.mu.Lock()
+	installs := fx.helper.installs
+	fx.helper.mu.Unlock()
+	if installs != 1 {
+		t.Fatalf("trust installs = %d, want 1", installs)
+	}
+	fx.sites.mu.Lock()
+	actions := append([]string(nil), fx.sites.actions...)
+	fx.sites.mu.Unlock()
+	if len(actions) != 1 || actions[0] != "start" {
+		t.Fatalf("actions = %v, want [start]", actions)
+	}
+}
+
+func TestStartTLSSiteFailsClosedWhenTrustRemainsMissing(t *testing.T) {
+	fx := newFixture(t, Config{})
+	site, err := fx.sites.Create(context.Background(), sites.CreateRequest{
+		Name: "blog", Path: "/tmp", Kind: "static", TLS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := []trust.Target{{Name: "System trust store", OK: false, Detail: "not installed"}}
+	fx.helper.statusTargets = missing
+	fx.helper.installTargets = missing
+
+	rec := fx.request(t, http.MethodPost, "/api/v1/sites/"+site.ID+"/start", nil)
+	assertError(t, rec, http.StatusConflict, codeTrustMissing)
+	fx.sites.mu.Lock()
+	actions := append([]string(nil), fx.sites.actions...)
+	fx.sites.mu.Unlock()
+	if len(actions) != 0 {
+		t.Fatalf("actions = %v, want none", actions)
 	}
 }
 
