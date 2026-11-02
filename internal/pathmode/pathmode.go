@@ -8,21 +8,97 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
+
+// WSLProjectsRoot is the fixed managed projects root inside the devstack WSL
+// distro. The agent owns the same directory beneath its /data/devstack root.
+const WSLProjectsRoot = "/data/devstack/projects"
 
 var (
 	// ErrInvalidSourceMode is returned for a mode the platform cannot use.
 	ErrInvalidSourceMode = errors.New("pathmode: invalid source mode")
 	// ErrInvalidPath is returned for an unsafe or unusable source path.
 	ErrInvalidPath = errors.New("pathmode: invalid source path")
+	// ErrOutsideProjectsRoot is returned when a site path is not a strict
+	// descendant of the managed projects root for its source mode.
+	ErrOutsideProjectsRoot = errors.New("pathmode: project folder is outside the managed projects root")
 
 	// distroPattern is the WSL distro-name shape used anywhere a name becomes
 	// part of a UNC path or a wsl.exe argument.
 	distroPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 )
+
+// ManagedProjectsRoot resolves the canonical projects root for a source mode.
+// Windows and local mode use the configured projects_root, falling back to
+// <home>/projects. WSL always uses WSLProjectsRoot.
+func ManagedProjectsRoot(mode model.SourceMode, projectsRoot, home string) (string, error) {
+	switch mode {
+	case model.SourceWSL:
+		return WSLProjectsRoot, nil
+	case model.SourceWindows, model.SourceLocal:
+		if value := strings.TrimSpace(projectsRoot); value != "" {
+			return filepath.Clean(value), nil
+		}
+		if value := strings.TrimSpace(home); value != "" {
+			return filepath.Join(value, "projects"), nil
+		}
+		return "", fmt.Errorf("%w: projects root is not configured", ErrOutsideProjectsRoot)
+	default:
+		return "", fmt.Errorf("%w: %q", ErrInvalidSourceMode, mode)
+	}
+}
+
+// ValidateManagedProjectPath confirms that a site path is a strict descendant
+// of the managed projects root for its source mode. WSL uses the backend path
+// because the agent owns symlink resolution there; Windows and local modes use
+// the host path and reject a resolved escape.
+func ValidateManagedProjectPath(mode model.SourceMode, hostPath, backendPath, root string) error {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return fmt.Errorf("%w: projects root is empty", ErrOutsideProjectsRoot)
+	}
+	switch mode {
+	case model.SourceWSL:
+		target := strings.TrimSpace(backendPath)
+		if !strictlyContains(root, target, false) {
+			return fmt.Errorf("%w: %q must be a subfolder of %q", ErrOutsideProjectsRoot, target, root)
+		}
+		return nil
+	case model.SourceWindows, model.SourceLocal:
+		target := strings.TrimSpace(hostPath)
+		windows := runtime.GOOS == "windows"
+		if !strictlyContains(root, target, windows) {
+			return fmt.Errorf("%w: %q must be a subfolder of %q", ErrOutsideProjectsRoot, target, root)
+		}
+		if err := ValidateContainedPath(root, target, windows); err != nil {
+			return fmt.Errorf("%w: %v", ErrOutsideProjectsRoot, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrInvalidSourceMode, mode)
+	}
+}
+
+// strictlyContains is ContainsPath plus an explicit rejection of the root
+// itself, independent of trailing separators or case.
+func strictlyContains(root, target string, windows bool) bool {
+	if !ContainsPath(root, target, windows) {
+		return false
+	}
+	clean := func(value string) string {
+		value = strings.ReplaceAll(strings.TrimSpace(value), `\`, "/")
+		value = path.Clean(value)
+		if windows {
+			value = strings.ToLower(value)
+		}
+		return strings.TrimRight(value, "/")
+	}
+	return clean(root) != clean(target)
+}
 
 // ValidateSourceMode enforces the platform matrix: Linux only local; Windows
 // only windows/wsl.
