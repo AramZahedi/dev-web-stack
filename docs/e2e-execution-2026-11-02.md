@@ -27,7 +27,7 @@
 | Site database E2E-03/04/05/06/17 | `cycle5-run-all.sh` plus E2E-06 rerun | 40/40, 33/33, 40/40, 19/19, 58/58 |
 | Backup/import E2E-07 | `cycle6-e2e07.sh` | 130/130 passed |
 | Backup edge cases E2E-18 | `cycle6-e2e18.sh` | 115/115 passed (near-1 GiB, disk-full, concurrency) |
-| Redis ACL E2E-08 | `cycle7-e2e08.sh` | 53/54 passed; only the optional live Redis tab wait timed out |
+| Redis ACL E2E-08 | `cycle7-e2e08.sh` | 53/53 passed |
 | Redis migration E2E-19 | `cycle7-e2e19.sh` | 58/58 passed |
 | Parallel Linux workers | 8 disposable WSL distros, distinct UI ports + backend slots | **8/8 passed** |
 | Live database UI (disposable daemon) | `playwright test -c playwright.live.config.ts --grep "Site Detail\|metadata-only\|reserved database\|Add Site review"` | 4 passed |
@@ -65,8 +65,7 @@
 
 | IDs | Reason | Next action |
 |---|---|---|
-| E2E-20 | The old PMA-config fixture still assumes a published high port; the product now uses no published ports and auto-login. | Covered by `pma-autologin.live.spec.ts`; update the fixture if a full config-reinstall run is required. |
-| E2E-08 live Redis tab | The optional live Redis dashboard tab check timed out waiting for its harness `ui-stop` file; the 53 non-UI Redis assertions passed. | Fix the fixture wait/cleanup and rerun the single UI check. |
+| E2E-20 | The old PMA-config fixture still assumes a published high port and an external Playwright driver; the product now uses no published ports and auto-login. | Covered by `pma-autologin.live.spec.ts`; update the fixture if a full config-reinstall run is required. |
 | DB-28 / cycles 9–15 | Paused by explicit user instruction. | Resume only with explicit approval. |
 | INST-24/25/29 | No disposable Windows VM, Windows Sandbox, Hyper-V, VirtualBox, VMware, or QEMU on this host. `-TestSandbox` does not prove uninstall/trust/hosts. | Provision a disposable VM, then run Task 17A. |
 | H1/H2/H3/H4/H5/H6/L1/L2 full 268-row runs | The 8-worker infrastructure is proven (8/8 concurrent Linux suites passed), but the lane-specific H1–H6/L1–L2 test suites are not yet implemented; this session ran the existing Linux/UI/API suites and the full database lifecycle matrix. | Implement Tasks 0–7 lane tests, then run the lane matrix. |

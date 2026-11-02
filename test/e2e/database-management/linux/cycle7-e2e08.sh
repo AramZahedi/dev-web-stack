@@ -236,7 +236,7 @@ c7_assert_no_secret_in_tree "${scenario}" "logs and config contain no read-only 
 c7_assert_no_secret_in_tree "${scenario}" "logs and config contain no default password" "${logs_dir}" "${secret_store}/redis_default.password"
 c7_scan "${scenario}"
 
-if [ "${E2E_UI_HOLD:-1}" = "1" ]; then
+if [ "${E2E_UI_HOLD:-0}" = "1" ]; then
 	python3 - "${evidence_dir}/${scenario}/ui-fixture.json" "http://127.0.0.1:${ui_port}" "${ro_id}" "${full_id}" <<'PY'
 import json, sys
 json.dump({
