@@ -1081,6 +1081,7 @@ These were found during planning research. Each is a **candidate** until reprodu
 | D22 | Cycle6's near-1 GiB import wait was shorter than the upload; the job queues after upload finishes | H4 | Extend the harness wait to 30 minutes; 115/115 backup edge cases pass. |
 | D23 | Real-install hosts block lost `static.test` after the upgrade | W | `devstack doctor --repair` restored both managed domains; doctor is green. |
 | D24 | Site backend allocator is fixed to 41000–43999, so concurrent workers collide even when dashboard/proxy ports differ | H1/H2 | 3/5 concurrent Linux workers passed; add a per-run backend range or port lease before scaling past 3 workers. |
+| D25 | Importing/unregistering disposable WSL distros left Windows `wslrelay.exe` on 8082 hung | W | Terminate the managed `devstack` distro and restart the agent; verify HTTP 200 and PMA auto-login before the final baseline. |
 
 ## 7. Gates and definition of done
 

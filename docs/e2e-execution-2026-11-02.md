@@ -58,6 +58,7 @@
 | D22 | Cycle6 large-import wait extended from 10 to 30 minutes; near-1 GiB uploads queue a job but take longer than the old wait. |
 | D23 | Real-install hosts block lost `static.test` after the upgrade; `devstack doctor --repair` restored both managed domains and doctor is green. |
 | D24 | Five concurrent WSL workers on distinct 24xxx dashboard ports: 3/5 passed; 2 failed because every worker allocates site backends from the same fixed 41000–43999 range. |
+| D25 | After importing/unregistering disposable WSL distros, Windows `wslrelay.exe` on 8082 hung. Terminating the managed `devstack` distro and restarting its agent recreated the relay; PMA returned HTTP 200 and auto-login passed again. |
 
 ## Blocked / not completed
 
