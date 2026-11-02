@@ -468,12 +468,18 @@ PY
 	c5_cli --json db import --service mysql --database e2e_big --file "${big_sql}" >"${big_out}" 2>"${big_out}.err" &
 	big_cli_pid=$!
 	big_job_id=""
+	# The CLI can exit a moment before its redirected JSON is visible on the
+	# Windows mount. Wait a bounded grace period after exit instead of treating
+	# the first empty read as a missing job.
+	dead_polls=0
 	for _ in $(seq 1 18000); do
 		big_job_id="$(c6_json_field "$(cat "${big_out}" 2>/dev/null || true)" id)"
 		[ -n "${big_job_id}" ] && break
 		if ! kill -0 "${big_cli_pid}" 2>/dev/null; then
-			[ -s "${big_out}" ] && break
-			[ -s "${big_out}.err" ] && break
+			dead_polls=$((dead_polls + 1))
+			[ "${dead_polls}" -ge 300 ] && break
+		else
+			dead_polls=0
 		fi
 		sleep 0.1
 	done
