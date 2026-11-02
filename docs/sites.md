@@ -8,15 +8,45 @@ server; Node sites run your development command on an allocated loopback port.
 Complete [installation](install.md) and `devstack init` first. The daemon must
 be running for site commands; they start it automatically when needed.
 
-The examples below use `$HOME/projects/...`; replace those paths with existing
-project directories on your machine. Create the example static directory with
-`mkdir -p` before adding the site.
+The examples below use `$HOME/.devstack/projects/...`, the default Linux local
+managed projects root. On Windows the roots are
+`%USERPROFILE%\.devstack\projects` for Windows mode and
+`\\wsl.localhost\devstack\data\devstack\projects` for WSL mode. Create the
+example static directory with `mkdir -p` before adding the site.
+
+## Managed project folders
+
+Every site path must be a **strict descendant** of its mode's managed projects
+root. The root itself is not a valid `--path`.
+
+| Mode | Root |
+|---|---|
+| Windows (`windows`) | configured `projects_root`, default `%USERPROFILE%\.devstack\projects` |
+| WSL (`wsl`) | `/data/devstack/projects` (`\\wsl.localhost\devstack\data\devstack\projects`) |
+| Linux local (`local`) | configured `projects_root`, default `~/.devstack/projects` |
+
+Containment is component-aware, so `projects-old/blog` is not inside `projects`.
+Windows comparisons are case-insensitive. Existing reparse points are resolved
+and rechecked; a link that escapes the root is rejected. Traversal segments
+(`..`) and the root path itself are rejected with a clear error.
+
+The restriction is enforced when a site is created, when a source-mode copy
+destination is chosen, and when a site starts or is reconciled. A site already
+registered outside the root is not deleted; it is blocked from starting and
+reported by `devstack doctor`. The folder browser and mkdir endpoint are confined
+to the same roots: browsing the root is allowed, selecting it as a site folder is
+not. Document roots remain relative to the site folder.
+
+The `C:\devstack` links (`Windows-Projects`, `WSL-Projects`, and the two install
+links) are navigation only. They are live views, not copies, and they are
+rejected as site paths. Use the canonical target path in `--path`, or pick a
+subfolder in the dashboard folder browser, which starts at the managed root.
 
 ## Add a static site
 
 ```sh
-mkdir -p "$HOME/projects/blog"
-cat >"$HOME/projects/blog/index.html" <<'HTML'
+mkdir -p "$HOME/.devstack/projects/blog"
+cat >"$HOME/.devstack/projects/blog/index.html" <<'HTML'
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Blog</title></head>
@@ -24,7 +54,7 @@ cat >"$HOME/projects/blog/index.html" <<'HTML'
 </html>
 HTML
 
-devstack site add --name blog --path "$HOME/projects/blog"
+devstack site add --name blog --path "$HOME/.devstack/projects/blog"
 ```
 
 The site is registered as `blog.test` and started immediately:
@@ -41,13 +71,13 @@ automatically.
 Serve a subdirectory with `--document-root`:
 
 ```sh
-devstack site add --name docs --path "$HOME/projects/docs" --document-root public
+devstack site add --name docs --path "$HOME/.devstack/projects/docs" --document-root public
 ```
 
 Serve `index.html` for client-side routes with `--spa`:
 
 ```sh
-devstack site add --name app --path "$HOME/projects/app" --document-root dist --spa
+devstack site add --name app --path "$HOME/.devstack/projects/app" --document-root dist --spa
 ```
 
 Add `--www` to serve `www.blog.test` as an alias, `--no-https` for HTTP only, or
@@ -70,7 +100,7 @@ site shell. Node server sites must expose an HTTP server on the port provided in
 `PATH`, and `NODE_EXTRA_CA_CERTS` pointing at the machine CA bundle.
 
 ```sh
-cd "$HOME/projects/api"
+cd "$HOME/.devstack/projects/api"
 # package.json should provide a start/dev script, for example:
 #   "dev": "node server.js"
 # and server.js should call app.listen(process.env.PORT, "127.0.0.1").
@@ -78,7 +108,7 @@ cd "$HOME/projects/api"
 devstack site add \
   --name api \
   --kind node \
-  --path "$HOME/projects/api" \
+  --path "$HOME/.devstack/projects/api" \
   --node 22.11.0 \
   --command "npm run dev"
 ```
@@ -89,14 +119,14 @@ Node index, verifies the official SHA-256, installs it after confirmation, and
 stores the exact installed version. Pass `--yes` to install without prompting:
 
 ```sh
-devstack site add --name api --kind node --path "$HOME/projects/api" \
+devstack site add --name api --kind node --path "$HOME/.devstack/projects/api" \
   --node 22 --command "npm run dev" --yes
 ```
 
 Static and PHP sites may omit `--node` and inherit the global default:
 
 ```sh
-devstack site add --name docs --kind static --path "$HOME/projects/docs"
+devstack site add --name docs --kind static --path "$HOME/.devstack/projects/docs"
 devstack site node docs 22.11.0      # pin an installed version
 devstack site node docs --clear      # return to the global default
 ```
@@ -163,7 +193,7 @@ daemon restart.
 | Flag | Meaning |
 |---|---|
 | `--name` | Site name; the domain is `<name>.test` |
-| `--path` | Absolute project directory |
+| `--path` | Absolute project directory; must be a strict descendant of the managed projects root |
 | `--kind` | `static` (default), `php`, or `node` |
 | `--php` | PHP version line, for example `8.4` (PHP sites only) |
 | `--php-build` | Exact PHP build id, for example `php@8.4.27-r1` (PHP sites only) |
@@ -188,13 +218,13 @@ options. Removing never deletes project files.
 PHP sites run on per-site `php-fpm` masters. Specify the PHP line:
 
 ```sh
-mkdir -p "$HOME/projects/mysite"
-echo '<?php phpinfo();' > "$HOME/projects/mysite/index.php"
+mkdir -p "$HOME/.devstack/projects/mysite"
+echo '<?php phpinfo();' > "$HOME/.devstack/projects/mysite/index.php"
 
 devstack site add \
   --name mysite \
   --kind php \
-  --path "$HOME/projects/mysite" \
+  --path "$HOME/.devstack/projects/mysite" \
   --php 8.4 \
   --front-controller
 ```
@@ -250,6 +280,8 @@ If a site says running but the URL fails:
 
 - PHP sites need an installed PHP build from the runtime catalog (see
   [PHP](php.md)).
+- Site paths must be strict descendants of the managed projects root; the root
+  itself, sibling prefixes, `..`, and escaping links are rejected.
 - An absolute `--document-root` must resolve inside the site's `--path`;
   symlink escapes and outside paths are rejected.
 - Builtin serving is the default; optional native nginx/Apache vhosts are

@@ -214,19 +214,56 @@ Pass `-InstallDir` explicitly to choose a different location. A fresh install
 over a completed installation is refused; use `-Upgrade` for the existing
 directory. `-DryRun` never writes to the install directory.
 
-### Optional compatibility junction
+### `C:\devstack` folder links
 
-Existing scripts that hardcode `C:\devstack` can keep working by replacing the
-old directory with a junction:
+A fresh install or upgrade of the standard `%USERPROFILE%\.devstack` install
+creates a real `C:\devstack` folder containing four navigation links and
+`README.txt`. The links make the managed locations easy to open without changing
+where devstack stores data:
+
+| Link | Type | Target |
+|---|---|---|
+| `C:\devstack\Windows-Install` | directory junction | `%USERPROFILE%\.devstack` |
+| `C:\devstack\Windows-Projects` | directory junction | `%USERPROFILE%\.devstack\projects` |
+| `C:\devstack\WSL-Install` | directory symbolic link | `\\wsl.localhost\devstack\data\devstack` |
+| `C:\devstack\WSL-Projects` | directory symbolic link | `\\wsl.localhost\devstack\data\devstack\projects` |
+
+The links are live views, not copies. Deleting a link removes only the link; the
+target data remains. `Windows-Projects` and `WSL-Projects` are separate data
+sets. The WSL links require the managed `devstack` distribution; the Windows
+links work without WSL. A `-SkipWSL` install creates the Windows links and skips
+the WSL links when the distro target is unavailable.
+
+When the installation root itself is `C:\devstack` (the legacy layout), that
+folder cannot also host the links. The installer warns and skips them; reinstall
+under `%USERPROFILE%\.devstack` to use the standard link layout.
+
+Do not use a link path as the **Project folder** when adding a site. Site paths
+must be strict descendants of the managed projects root, and link paths are
+rejected. Use the canonical target path shown above, or the dashboard folder
+browser, which starts at the correct managed root.
+
+`C:\devstack\README.txt` repeats this information with the exact targets for the
+current machine. The installer refreshes it on upgrade and repairs links that
+are missing or point at the wrong target.
+
+The old whole-folder junction from earlier releases is no longer recommended. If
+an older setup replaced `C:\devstack` with a single junction to
+`%USERPROFILE%\.devstack`, remove that junction before upgrading. The installer
+does not delete a reparse point at `C:\devstack`; it warns and leaves the links
+uncreated so no data is put at risk. Verify and remove the old link without
+touching its target:
 
 ```powershell
-New-Item -ItemType Junction -Path C:\devstack -Target $env:USERPROFILE\.devstack
+fsutil reparsepoint query C:\devstack
+cmd /c rmdir C:\devstack
 ```
 
-The junction is not a second installation. WSL, the helper service, the daemon
-task, and PATH must all point at `%USERPROFILE%\.devstack`. `uninstall.ps1`
-refuses to uninstall through a reparse point; run it without `-InstallDir` so it
-uses the profile manifest, then remove the junction manually.
+Never use `rmdir /s` or `Remove-Item -Recurse` on that junction. After it is
+gone, run `.\install.ps1 -Upgrade` to create the real folder, the four links, and
+`README.txt`. `uninstall.ps1` still refuses to uninstall through a reparse point;
+run it without `-InstallDir` so it uses the profile manifest, then remove the
+links manually.
 
 ---
 
