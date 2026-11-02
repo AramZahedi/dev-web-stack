@@ -155,16 +155,16 @@ func TestResolveDefaultRejectsMissingOrInvalid(t *testing.T) {
 	}
 }
 
-func TestGlobalIniPathAndEnsure(t *testing.T) {
-	home := t.TempDir()
-	paths := config.NewPaths(home)
-	build := fakePHPBuild(t, home, "8.4.12")
+func TestGlobalIniPathAndGenerate(t *testing.T) {
+	svc, _, paths, build, _ := newToolService(t)
+	ctx := context.Background()
 
-	if got, want := GlobalIniPath(paths), filepath.Join(home, "config", "cli", "php.ini"); got != want {
+	if got, want := GlobalIniPath(paths), filepath.Join(paths.Home, "config", "cli", "php.ini"); got != want {
 		t.Fatalf("GlobalIniPath = %q, want %q", got, want)
 	}
 	path := GlobalIniPath(paths)
-	if err := EnsureGlobalIni(build, path); err != nil {
+	ini, err := svc.GlobalIni(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
@@ -176,17 +176,13 @@ func TestGlobalIniPathAndEnsure(t *testing.T) {
 			t.Fatalf("mode = %04o, want 0644", perm)
 		}
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
+	text := ini.Content
 	wantExtensionDir := filepath.Join(build.Path, "lib", "php", "extensions")
 	if runtime.GOOS == "windows" {
 		wantExtensionDir = strings.ReplaceAll(wantExtensionDir, `\`, `\\`)
 	}
 	for _, want := range []string{
-		"memory_limit = 128M",
+		"memory_limit = 256M",
 		"extension_dir = \"" + wantExtensionDir + "\"",
 		"extension=phar.so",
 		"extension=openssl.so",
@@ -198,20 +194,24 @@ func TestGlobalIniPathAndEnsure(t *testing.T) {
 			t.Errorf("generated ini missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "site overrides") && strings.Contains(text, "memory_limit = 1G") {
-		t.Fatalf("global ini unexpectedly contains site overrides:\n%s", text)
+	if strings.Contains(text, "memory_limit = 1G") {
+		t.Fatalf("global ini unexpectedly contains a site override:\n%s", text)
 	}
 
 	// Re-running is deterministic and never leaves temporary files behind.
-	if err := EnsureGlobalIni(build, path); err != nil {
+	again, err := svc.GlobalIni(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if again.Content != ini.Content {
+		t.Fatal("global ini generation is not deterministic")
 	}
 	entries, err := os.ReadDir(filepath.Dir(path))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".php.ini") {
+		if strings.HasPrefix(entry.Name(), "php.ini-") {
 			t.Fatalf("temporary file left behind: %s", entry.Name())
 		}
 	}

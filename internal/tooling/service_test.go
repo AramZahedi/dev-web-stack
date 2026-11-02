@@ -243,8 +243,12 @@ func TestServiceGlobalIniReadWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Content != "[PHP]\nmemory_limit = 640M\n" {
-		t.Fatalf("content = %q", updated.Content)
+	if updated.Raw != "[PHP]\nmemory_limit = 640M\n" {
+		t.Fatalf("raw = %q", updated.Raw)
+	}
+	if !strings.Contains(updated.Content, "memory_limit = 640M") ||
+		!strings.Contains(updated.Content, "memory_limit = 256M") {
+		t.Fatalf("generated content missing defaults or raw override:\n%s", updated.Content)
 	}
 	if _, err := svc.SaveGlobalIni(ctx, "not ini\n"); err == nil {
 		t.Fatal("invalid ini accepted")

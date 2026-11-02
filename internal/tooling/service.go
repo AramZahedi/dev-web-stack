@@ -11,9 +11,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/phpini"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 )
 
@@ -64,10 +66,12 @@ type PHPDefaultStatus struct {
 	ShimInstalled bool                `json:"shim_installed"`
 }
 
-// GlobalIni is the editable machine-wide CLI php.ini.
+// GlobalIni is the generated machine-wide CLI php.ini plus the CLI-only raw
+// directives that are rendered after the shared PHP version defaults.
 type GlobalIni struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	Raw     string `json:"raw"`
 	BuildID string `json:"build_id,omitempty"`
 }
 
@@ -131,7 +135,7 @@ func (s *Service) SetPHPDefault(ctx context.Context, value string, force bool) (
 	if err := s.preflight(ctx, helperproto.ToolPHPDefault, force); err != nil {
 		return PHPDefaultStatus{}, err
 	}
-	if err := EnsureGlobalIni(build, GlobalIniPath(s.deps.Paths)); err != nil {
+	if err := s.ensureGlobalIniLocked(ctx, build); err != nil {
 		return PHPDefaultStatus{}, err
 	}
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
@@ -181,7 +185,7 @@ func (s *Service) ClearPHPDefault(ctx context.Context) (PHPDefaultStatus, error)
 	if err := s.preflight(ctx, helperproto.ToolPHPDefault, false); err != nil {
 		return PHPDefaultStatus{}, err
 	}
-	if err := EnsureGlobalIni(build, GlobalIniPath(s.deps.Paths)); err != nil {
+	if err := s.ensureGlobalIniLocked(ctx, build); err != nil {
 		return PHPDefaultStatus{}, err
 	}
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
@@ -199,44 +203,90 @@ func (s *Service) ClearPHPDefault(ctx context.Context) (PHPDefaultStatus, error)
 	return s.PHPDefault(ctx)
 }
 
-// GlobalIni returns the current global ini.
+// GlobalIni renders the machine-wide CLI php.ini from the selected build's
+// shared version defaults plus the persisted CLI-only raw directives. The file
+// is rewritten when defaults or raw overrides changed, so the shims always load
+// the same configuration the dashboard shows.
 func (s *Service) GlobalIni(ctx context.Context) (GlobalIni, error) {
-	build, err := ResolveDefault(ctx, s.deps.Store)
-	if err != nil {
-		return GlobalIni{}, err
-	}
-	path := GlobalIniPath(s.deps.Paths)
-	data, err := ReadGlobalIni(path)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := EnsureGlobalIni(build, path); err != nil {
-			return GlobalIni{}, err
-		}
-		data, err = ReadGlobalIni(path)
-	}
-	if err != nil {
-		return GlobalIni{}, err
-	}
-	return GlobalIni{Path: path, Content: string(data), BuildID: build.ID}, nil
-}
-
-// SaveGlobalIni validates and replaces the global ini. The Windows CLI shims
-// are refreshed first so a wrapper created before the ini wiring existed starts
-// loading the file without requiring a PHP-default change.
-func (s *Service) SaveGlobalIni(ctx context.Context, content string) (GlobalIni, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	build, err := ResolveDefault(ctx, s.deps.Store)
 	if err != nil {
 		return GlobalIni{}, err
 	}
+	path := GlobalIniPath(s.deps.Paths)
+	raw, err := s.loadOrMigrateCLIRawLocked(ctx, path)
+	if err != nil {
+		return GlobalIni{}, err
+	}
+	content, err := s.renderGlobalIniLocked(ctx, build, raw)
+	if err != nil {
+		return GlobalIni{}, err
+	}
+	existing, readErr := os.ReadFile(path)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return GlobalIni{}, fmt.Errorf("tooling: read global php.ini: %w", readErr)
+	}
+	if readErr != nil || string(existing) != string(content) {
+		if err := WriteGlobalIni(build, path, content); err != nil {
+			return GlobalIni{}, err
+		}
+	}
+	return GlobalIni{Path: path, Content: string(content), Raw: raw, BuildID: build.ID}, nil
+}
+
+// SaveGlobalIni validates and persists CLI-only raw directives, then regenerates
+// the global ini on top of the build's shared version defaults. The Windows CLI
+// shims are refreshed first so a wrapper created before the ini wiring existed
+// starts loading the file without requiring a PHP-default change.
+func (s *Service) SaveGlobalIni(ctx context.Context, raw string) (GlobalIni, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	build, err := ResolveDefault(ctx, s.deps.Store)
+	if err != nil {
+		return GlobalIni{}, err
+	}
+	if err := phpini.ValidateRaw(raw); err != nil {
+		return GlobalIni{}, fmt.Errorf("tooling: invalid CLI php.ini overrides: %w", err)
+	}
 	if err := s.ensureWindowsToolShims(build); err != nil {
 		return GlobalIni{}, err
 	}
 	path := GlobalIniPath(s.deps.Paths)
-	if err := WriteGlobalIni(build, path, []byte(content)); err != nil {
+	content, err := s.renderGlobalIniLocked(ctx, build, raw)
+	if err != nil {
 		return GlobalIni{}, err
 	}
-	return GlobalIni{Path: path, Content: content, BuildID: build.ID}, nil
+	if err := WriteGlobalIni(build, path, content); err != nil {
+		return GlobalIni{}, err
+	}
+	if err := s.deps.Store.SetSetting(ctx, CLIIniRawSettingKey, raw); err != nil {
+		return GlobalIni{}, fmt.Errorf("tooling: persist %s: %w", CLIIniRawSettingKey, err)
+	}
+	return GlobalIni{Path: path, Content: string(content), Raw: raw, BuildID: build.ID}, nil
+}
+
+// RefreshPHPDefaults regenerates the CLI ini when the saved defaults belong to
+// the line the machine-wide PHP default currently uses. It is called after the
+// dashboard saves shared PHP defaults.
+func (s *Service) RefreshPHPDefaults(ctx context.Context, version string) error {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	build, err := ResolveDefault(ctx, s.deps.Store)
+	if errors.Is(err, ErrNoPHPInstalled) || errors.Is(err, ErrPHPDefaultNotInstalled) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if catalog.LineOf(build.Version) != version {
+		return nil
+	}
+	return s.ensureGlobalIniLocked(ctx, build)
 }
 
 // Tools returns the helper's managed tool status.
@@ -311,7 +361,7 @@ func (s *Service) setPHPDefaultLocked(ctx context.Context, _ bool, force bool) (
 	if err := s.preflight(ctx, helperproto.ToolPHPDefault, force); err != nil {
 		return helperproto.ToolStatus{}, err
 	}
-	if err := EnsureGlobalIni(build, GlobalIniPath(s.deps.Paths)); err != nil {
+	if err := s.ensureGlobalIniLocked(ctx, build); err != nil {
 		return helperproto.ToolStatus{}, err
 	}
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {
@@ -366,7 +416,7 @@ func (s *Service) ensureGlobalPHP(ctx context.Context) error {
 		return nil
 	}
 	build := builds[0]
-	if err := EnsureGlobalIni(build, GlobalIniPath(s.deps.Paths)); err != nil {
+	if err := s.ensureGlobalIniLocked(ctx, build); err != nil {
 		return err
 	}
 	if _, err := EnsurePHPShims(build, s.deps.Paths, GlobalIniPath(s.deps.Paths)); err != nil {

@@ -191,6 +191,30 @@ generated ini names a missing `imap.so` and `devstack php --site <name> -- -m`
 reports the load failure. See
 [build/php/README.md](../build/php/README.md) for the blocked-entry record.
 
+## Global PHP CLI
+
+The machine-wide `php` and `composer` shims use the selected CLI default build
+and a generated `config/cli/php.ini`. The file is composed in this order:
+
+1. the build's base `php.ini`,
+2. the shared defaults for the build's PHP line (the same directives and
+   extension toggles sites inherit),
+3. CLI-only raw directives from the dashboard,
+4. a managed extension block, with Composer's required `phar`, `openssl`, and
+   `mbstring` extensions forced on.
+
+In the dashboard, **Settings → PHP CLI default → Edit PHP 8.x defaults** opens
+the shared line profile. Editing it updates the CLI ini and every running site
+on that line that still inherits the defaults. A site's own directives and
+extension overrides are applied only to that site and never change the CLI or
+the line profile.
+
+**Settings → Global CLI php.ini → CLI-only raw directives** holds advanced
+directives that apply only to the CLI. They are rendered after the shared
+defaults, so they can override them without touching site configuration.
+Changing the CLI default build regenerates the ini from that build's line
+defaults and keeps the CLI-only directives.
+
 ## Run PHP from a site
 
 ```sh

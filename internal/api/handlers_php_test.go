@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -367,5 +368,42 @@ func TestAPIPHPExecArgumentReturnsInvalidRequest(t *testing.T) {
 				t.Fatalf("message = %q, want php.ini guidance", body.Message)
 			}
 		})
+	}
+}
+
+func TestSavePHPDefaultsRefreshesCLIIniAndReportsFailure(t *testing.T) {
+	toolSvc := &fakeToolService{}
+	fx := newFixture(t, Config{Tooling: toolSvc})
+	fx.sites.phpSaveResult = sites.PHPDefaultsResult{
+		Defaults: model.PHPDefaults{
+			Version: "8.4",
+			Ini:     map[string]string{"memory_limit": "1G"},
+		},
+		Sites: []sites.PHPMigrationResult{},
+	}
+
+	rec := fx.request(t, http.MethodPut, "/api/v1/php/defaults/8.4",
+		strings.NewReader(`{"ini":{"memory_limit":"1G"}}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save defaults code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if toolSvc.refreshVersion != "8.4" {
+		t.Fatalf("refresh version = %q", toolSvc.refreshVersion)
+	}
+
+	toolSvc.refreshErr = errors.New("compose CLI php.ini failed")
+	rec = fx.request(t, http.MethodPut, "/api/v1/php/defaults/8.4",
+		strings.NewReader(`{"ini":{"memory_limit":"2G"}}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recoverable CLI failure code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Warnings) != 1 || !strings.Contains(response.Warnings[0], "CLI php.ini") {
+		t.Fatalf("warnings = %v", response.Warnings)
 	}
 }

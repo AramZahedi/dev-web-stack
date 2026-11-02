@@ -16,6 +16,9 @@ type phpDefaultRequest struct {
 }
 
 type globalIniRequest struct {
+	Raw string `json:"raw"`
+	// Content is the pre-raw-editor request field. It is accepted as a fallback
+	// so an older dashboard build cannot break during an upgrade.
 	Content string `json:"content"`
 }
 
@@ -87,7 +90,11 @@ func (s *Server) handleSaveGlobalIni(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &req) {
 		return
 	}
-	ini, err := s.tooling.SaveGlobalIni(r.Context(), req.Content)
+	raw := req.Raw
+	if strings.TrimSpace(raw) == "" && strings.TrimSpace(req.Content) != "" {
+		raw = req.Content
+	}
+	ini, err := s.tooling.SaveGlobalIni(r.Context(), raw)
 	if err != nil {
 		s.writeServiceError(w, r, err)
 		return

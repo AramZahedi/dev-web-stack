@@ -273,9 +273,10 @@ func Run(ctx context.Context, opts Options) error {
 	terminalService := newWindowsTerminalService(agentServices, logger)
 
 	toolingService := tooling.NewService(tooling.Deps{
-		Store:  st,
-		Paths:  paths,
-		Helper: adapter,
+		Store:     st,
+		Paths:     paths,
+		WSLDistro: cfg.WSLDistro,
+		Helper:    adapter,
 	})
 
 	hostsPath := opts.HostsPath

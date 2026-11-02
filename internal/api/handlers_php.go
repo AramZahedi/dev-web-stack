@@ -47,6 +47,14 @@ type phpDefaultsRequest struct {
 	Extensions map[string]bool   `json:"extensions"`
 }
 
+// phpDefaultsResponse keeps the site results and adds recoverable CLI refresh
+// failures, so saving shared defaults still succeeds when the CLI ini cannot be
+// regenerated.
+type phpDefaultsResponse struct {
+	sites.PHPDefaultsResult
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 // handlePHPInfo returns the effective PHP configuration of one site.
 func (s *Server) handlePHPInfo(w http.ResponseWriter, r *http.Request) {
 	if s.sites == nil {
@@ -179,7 +187,14 @@ func (s *Server) handleSavePHPDefaults(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	response := phpDefaultsResponse{PHPDefaultsResult: result}
+	if s.tooling != nil {
+		if err := s.tooling.RefreshPHPDefaults(r.Context(), result.Defaults.Version); err != nil {
+			response.Warnings = append(response.Warnings,
+				"PHP defaults were saved, but the CLI php.ini could not be regenerated: "+err.Error())
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleMigratePHP moves every site on a PHP line to a target build.

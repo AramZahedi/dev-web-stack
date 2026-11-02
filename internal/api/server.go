@@ -211,7 +211,8 @@ type ToolService interface {
 	SetPHPDefault(ctx context.Context, value string, force bool) (tooling.PHPDefaultStatus, error)
 	ClearPHPDefault(ctx context.Context) (tooling.PHPDefaultStatus, error)
 	GlobalIni(ctx context.Context) (tooling.GlobalIni, error)
-	SaveGlobalIni(ctx context.Context, content string) (tooling.GlobalIni, error)
+	SaveGlobalIni(ctx context.Context, raw string) (tooling.GlobalIni, error)
+	RefreshPHPDefaults(ctx context.Context, version string) error
 	Tools(ctx context.Context) ([]helperproto.ToolStatus, error)
 	InstallTool(ctx context.Context, id string, force bool) (helperproto.ToolStatus, error)
 	RemoveTool(ctx context.Context, id string) (helperproto.ToolStatus, error)

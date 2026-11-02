@@ -359,9 +359,10 @@ func Run(ctx context.Context, opts Options) error {
 	})
 
 	toolingService := tooling.NewService(tooling.Deps{
-		Store:  st,
-		Paths:  paths,
-		Helper: helper,
+		Store:     st,
+		Paths:     paths,
+		WSLDistro: cfg.WSLDistro,
+		Helper:    helper,
 	})
 	buildService := build.NewService(build.Deps{
 		Store:    st,

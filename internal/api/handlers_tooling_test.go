@@ -15,15 +15,17 @@ import (
 )
 
 type fakeToolService struct {
-	status     tooling.PHPDefaultStatus
-	ini        tooling.GlobalIni
-	tools      []helperproto.ToolStatus
-	lastValue  string
-	lastForce  bool
-	lastIni    string
-	lastID     string
-	setErr     error
-	clearCalls int
+	status         tooling.PHPDefaultStatus
+	ini            tooling.GlobalIni
+	tools          []helperproto.ToolStatus
+	lastValue      string
+	lastForce      bool
+	lastIni        string
+	lastID         string
+	setErr         error
+	refreshVersion string
+	refreshErr     error
+	clearCalls     int
 }
 
 func (f *fakeToolService) PHPDefault(context.Context) (tooling.PHPDefaultStatus, error) {
@@ -46,10 +48,15 @@ func (f *fakeToolService) GlobalIni(context.Context) (tooling.GlobalIni, error) 
 	return f.ini, nil
 }
 
-func (f *fakeToolService) SaveGlobalIni(_ context.Context, content string) (tooling.GlobalIni, error) {
-	f.lastIni = content
-	f.ini.Content = content
+func (f *fakeToolService) SaveGlobalIni(_ context.Context, raw string) (tooling.GlobalIni, error) {
+	f.lastIni = raw
+	f.ini.Raw = raw
 	return f.ini, nil
+}
+
+func (f *fakeToolService) RefreshPHPDefaults(_ context.Context, version string) error {
+	f.refreshVersion = version
+	return f.refreshErr
 }
 
 func (f *fakeToolService) Tools(context.Context) ([]helperproto.ToolStatus, error) {
@@ -135,12 +142,17 @@ func TestPHPDefaultHandlers(t *testing.T) {
 		t.Fatalf("ini = %+v", ini)
 	}
 
-	rec = fx.request(t, http.MethodPut, "/api/v1/php/default/ini", strings.NewReader(`{"content":"[PHP]\nmemory_limit = 1G\n"}`))
+	rec = fx.request(t, http.MethodPut, "/api/v1/php/default/ini", strings.NewReader(`{"raw":"memory_limit = 1G\n"}`))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT ini code = %d body=%s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(toolSvc.lastIni, "memory_limit") {
 		t.Fatalf("last ini = %q", toolSvc.lastIni)
+	}
+	var saved tooling.GlobalIni
+	decode(t, rec, &saved)
+	if saved.Raw != "memory_limit = 1G\n" {
+		t.Fatalf("saved raw = %q", saved.Raw)
 	}
 }
 

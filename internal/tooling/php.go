@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -22,6 +23,11 @@ const (
 	// DefaultPHPSettingKey is the store setting holding the machine-wide PHP
 	// CLI default. It is either a major.minor line or an exact build id.
 	DefaultPHPSettingKey = "php_default"
+
+	// CLIIniRawSettingKey stores advanced CLI-only php.ini directives. They are
+	// rendered after the shared per-version defaults so they can override them
+	// without changing site configuration.
+	CLIIniRawSettingKey = "php_cli_ini_raw"
 
 	// ComposerVersion, ComposerURL, ComposerSHA256, and ComposerSize pin the
 	// managed Composer PHAR. There is deliberately no fallback URL or version.
@@ -288,30 +294,263 @@ func buildRevision(id string) int {
 	return parsed.Revision
 }
 
-// EnsureGlobalIni composes and atomically writes the machine-wide CLI ini from
-// the selected build's base ini. It loads the Composer-required extensions when
-// the build provides them and never applies site overrides.
-func EnsureGlobalIni(build model.RuntimeBuild, path string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("tooling: global ini path is empty")
-	}
-	if strings.TrimSpace(build.Path) == "" {
-		return errors.New("tooling: PHP build path is empty")
-	}
-	base, err := os.ReadFile(filepath.Join(build.Path, "etc", "php.ini"))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("tooling: read PHP build base ini: %w", err)
-	}
-	extDir, extensions := composerExtensions(build.Path)
-	content, err := phpini.Compose(phpini.Config{
-		Base:         base,
-		Extensions:   extensions,
-		ExtensionDir: extDir,
-	})
+// ensureGlobalIniLocked renders and atomically writes the machine-wide CLI
+// ini. The caller must hold s.mu.
+func (s *Service) ensureGlobalIniLocked(ctx context.Context, build model.RuntimeBuild) error {
+	path := GlobalIniPath(s.deps.Paths)
+	raw, err := s.loadOrMigrateCLIRawLocked(ctx, path)
 	if err != nil {
-		return fmt.Errorf("tooling: compose global php.ini: %w", err)
+		return err
+	}
+	content, err := s.renderGlobalIniLocked(ctx, build, raw)
+	if err != nil {
+		return err
 	}
 	return WriteGlobalIni(build, path, content)
+}
+
+// loadOrMigrateCLIRawLocked returns the CLI-only raw directives. On first use,
+// it extracts the raw section from an existing generated ini (or preserves a
+// wholly manual file) so upgrading never discards user edits.
+func (s *Service) loadOrMigrateCLIRawLocked(ctx context.Context, path string) (string, error) {
+	value, err := s.deps.Store.GetSetting(ctx, CLIIniRawSettingKey)
+	if err == nil {
+		return value, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return "", fmt.Errorf("tooling: read %s: %w", CLIIniRawSettingKey, err)
+	}
+	raw := ""
+	data, readErr := os.ReadFile(path)
+	if readErr == nil {
+		if section, extractErr := phpini.ExtractSiteSection(data); extractErr == nil {
+			raw = section
+		} else {
+			raw = string(data)
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return "", fmt.Errorf("tooling: read existing global php.ini: %w", readErr)
+	}
+	if err := s.deps.Store.SetSetting(ctx, CLIIniRawSettingKey, raw); err != nil {
+		return "", fmt.Errorf("tooling: migrate %s: %w", CLIIniRawSettingKey, err)
+	}
+	return raw, nil
+}
+
+// renderGlobalIniLocked composes the CLI ini from the build base, the shared
+// PHP line defaults, the CLI-only raw section, and the resolved extension
+// block. Composer's required extensions are forced on so `composer` keeps
+// working even if a version profile disables them.
+func (s *Service) renderGlobalIniLocked(ctx context.Context, build model.RuntimeBuild, raw string) ([]byte, error) {
+	if strings.TrimSpace(build.Path) == "" {
+		return nil, errors.New("tooling: PHP build path is empty")
+	}
+	version := catalog.LineOf(build.Version)
+	defaults, err := s.phpDefaultsForLocked(ctx, version)
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := catalog.LoadPHP()
+	if err != nil {
+		return nil, err
+	}
+	builtin := make(map[string]bool)
+	for _, name := range manifest.BuiltinsFor(version) {
+		builtin[name] = true
+	}
+	composer := make(map[string]bool, 3)
+	for _, name := range []string{"phar", "openssl", "mbstring"} {
+		if builtin[name] {
+			continue
+		}
+		extension, ok := manifestExtension(manifest, name)
+		if !ok || !extensionSupportsVersion(extension, version) {
+			continue
+		}
+		composer[name] = true
+	}
+	resolved, err := manifest.ResolveWithDefaults(version, defaults.Extensions, composer)
+	if err != nil {
+		return nil, fmt.Errorf("tooling: resolve PHP %s CLI extensions: %w", version, err)
+	}
+	extensions := make([]phpini.Extension, 0, len(resolved))
+	for _, extension := range resolved {
+		extensions = append(extensions, phpini.Extension{
+			Name: extension.Name,
+			Type: string(extension.Type),
+			SO:   extension.SO,
+		})
+	}
+	base, err := readCLIBaseIni(build, s.deps.WSLDistro)
+	if err != nil {
+		return nil, err
+	}
+	extensionDir, err := phpCLIExtensionDir(build, s.deps.WSLDistro)
+	if err != nil {
+		return nil, err
+	}
+	content, err := phpini.Compose(phpini.Config{
+		Base:            base,
+		VersionDefaults: defaults.Ini,
+		Raw:             raw,
+		Extensions:      extensions,
+		ExtensionDir:    extensionDir,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("tooling: compose global php.ini: %w", err)
+	}
+	return content, nil
+}
+
+// phpDefaultsForLocked returns the shared per-version defaults, seeding the
+// store from the embedded manifest on first use. Built-in extensions are
+// removed from stored rows so a profile written before a line made a module
+// built-in cannot break CLI rendering.
+func (s *Service) phpDefaultsForLocked(ctx context.Context, version string) (model.PHPDefaults, error) {
+	defaults, err := s.deps.Store.GetPHPDefaults(ctx, version)
+	if err == nil {
+		return s.sanitizeCLIDefaultsLocked(ctx, defaults, version)
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return model.PHPDefaults{}, fmt.Errorf("tooling: read PHP %s defaults: %w", version, err)
+	}
+	manifest, err := catalog.LoadPHP()
+	if err != nil {
+		return model.PHPDefaults{}, err
+	}
+	seeded, ok := manifest.DefaultsFor(version)
+	if !ok {
+		return model.PHPDefaults{}, fmt.Errorf("tooling: no PHP defaults for version %q", version)
+	}
+	defaults = model.PHPDefaults{
+		Version:    version,
+		Ini:        seeded.Ini,
+		Extensions: seeded.Extensions,
+	}
+	if defaults.Ini == nil {
+		defaults.Ini = map[string]string{}
+	}
+	if defaults.Extensions == nil {
+		defaults.Extensions = map[string]bool{}
+	}
+	if err := s.deps.Store.SavePHPDefaults(ctx, defaults); err != nil {
+		return model.PHPDefaults{}, fmt.Errorf("tooling: seed PHP %s defaults: %w", version, err)
+	}
+	return defaults, nil
+}
+
+func (s *Service) sanitizeCLIDefaultsLocked(ctx context.Context, defaults model.PHPDefaults, version string) (model.PHPDefaults, error) {
+	manifest, err := catalog.LoadPHP()
+	if err != nil {
+		return model.PHPDefaults{}, err
+	}
+	changed := false
+	for _, name := range manifest.BuiltinsFor(version) {
+		if _, ok := defaults.Extensions[name]; !ok {
+			continue
+		}
+		delete(defaults.Extensions, name)
+		changed = true
+	}
+	if changed {
+		if err := s.deps.Store.SavePHPDefaults(ctx, defaults); err != nil {
+			return model.PHPDefaults{}, fmt.Errorf("tooling: sanitize PHP %s defaults: %w", version, err)
+		}
+	}
+	return defaults, nil
+}
+
+func manifestExtension(manifest catalog.PHPManifest, name string) (catalog.Extension, bool) {
+	for _, extension := range manifest.Extensions {
+		if extension.Name == name {
+			return extension, true
+		}
+	}
+	return catalog.Extension{}, false
+}
+
+func extensionSupportsVersion(extension catalog.Extension, version string) bool {
+	for _, supported := range extension.Versions {
+		if supported == version {
+			return true
+		}
+	}
+	return false
+}
+
+// readCLIBaseIni reads the selected build's base php.ini. A missing base is
+// valid: the embedded defaults still produce a complete file.
+func readCLIBaseIni(build model.RuntimeBuild, distro string) ([]byte, error) {
+	path := buildHostPath(build, joinBuildPath(build, "etc", "php.ini"), distro)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tooling: read PHP build base ini: %w", err)
+	}
+	return data, nil
+}
+
+// phpCLIExtensionDir locates the build's extension directory using the same
+// relocatable layout the site PHP renderer accepts. The returned path is the
+// POSIX path PHP inside WSL must load, not the Windows UNC path used to inspect
+// the build from the daemon host.
+func phpCLIExtensionDir(build model.RuntimeBuild, distro string) (string, error) {
+	root := joinBuildPath(build, "lib", "php", "extensions")
+	entries, err := os.ReadDir(buildHostPath(build, root, distro))
+	if err != nil {
+		return "", fmt.Errorf("tooling: PHP build %q extension directory: %w", build.ID, err)
+	}
+	var subdirectories []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			subdirectories = append(subdirectories, entry.Name())
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".so") {
+			return root, nil
+		}
+	}
+	if len(subdirectories) == 1 {
+		return joinBuildPath(build, "lib", "php", "extensions", subdirectories[0]), nil
+	}
+	return "", fmt.Errorf("tooling: PHP build %q has no unambiguous extension directory under %s", build.ID, root)
+}
+
+// joinBuildPath joins a build path in the path style the build records. WSL
+// builds always store POSIX paths; local builds use the host style.
+func joinBuildPath(build model.RuntimeBuild, parts ...string) string {
+	if build.Backend == model.BackendWSL || strings.HasPrefix(strings.TrimSpace(build.Path), "/") {
+		return path.Join(append([]string{build.Path}, parts...)...)
+	}
+	return filepath.Join(append([]string{build.Path}, parts...)...)
+}
+
+// buildHostPath maps a build-owned path to the daemon host. On Windows, WSL
+// builds are read through the distro's UNC share while PHP keeps seeing the
+// recorded POSIX path.
+func buildHostPath(build model.RuntimeBuild, value, distro string) string {
+	if runtime.GOOS != "windows" {
+		return filepath.FromSlash(value)
+	}
+	if build.Backend != model.BackendWSL && !strings.HasPrefix(strings.TrimSpace(build.Path), "/") {
+		return filepath.FromSlash(value)
+	}
+	if strings.TrimSpace(distro) == "" {
+		distro = "devstack"
+	}
+	return wslSharePrefix(distro) + strings.ReplaceAll(value, "/", `\`)
+}
+
+func wslSharePrefix(distro string) string {
+	for _, root := range []string{`\\wsl.localhost\`, `\\wsl$\`} {
+		candidate := root + distro
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return `\\wsl.localhost\` + distro
 }
 
 // WriteGlobalIni validates and atomically writes the global CLI ini with mode
@@ -351,55 +590,6 @@ func WriteGlobalIni(_ model.RuntimeBuild, path string, content []byte) error {
 		return fmt.Errorf("tooling: replace global ini: %w", err)
 	}
 	return nil
-}
-
-// ReadGlobalIni returns the global ini content and its path.
-func ReadGlobalIni(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("tooling: read global php.ini: %w", err)
-	}
-	return data, nil
-}
-
-// composerExtensions resolves the extensions Composer needs from an installed
-// build. Built-in modules that have no shared object are simply omitted.
-func composerExtensions(buildPath string) (string, []phpini.Extension) {
-	extDir := extensionDir(buildPath)
-	if extDir == "" {
-		return "", nil
-	}
-	var extensions []phpini.Extension
-	for _, name := range []string{"phar", "openssl", "mbstring"} {
-		if info, err := os.Stat(filepath.Join(extDir, name+".so")); err == nil && info.Mode().IsRegular() {
-			extensions = append(extensions, phpini.Extension{Name: name, Type: "extension", SO: name + ".so"})
-		}
-	}
-	return extDir, extensions
-}
-
-// extensionDir locates the build's extension directory using the same
-// relocatable layout the site PHP renderer accepts.
-func extensionDir(buildPath string) string {
-	root := filepath.Join(buildPath, "lib", "php", "extensions")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return ""
-	}
-	var subdirectories []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			subdirectories = append(subdirectories, entry.Name())
-			continue
-		}
-		if strings.HasSuffix(entry.Name(), ".so") {
-			return filepath.Clean(root)
-		}
-	}
-	if len(subdirectories) == 1 {
-		return filepath.Join(root, subdirectories[0])
-	}
-	return ""
 }
 
 // EnsurePHPShims writes wrappers for php, php-config, and phpize when the
