@@ -737,7 +737,7 @@
       addToast({
         kind: 'success',
         title: 'CLI php.ini overrides saved',
-        message: `${globalIni.path} was regenerated from PHP ${phpDefaultLine || 'defaults'} and its CLI-only directives.`,
+        message: `${globalIni.path} was regenerated from the PHP ${phpDefaultLine || 'default'} defaults and the CLI-only directives.`,
       });
     } catch (caught) {
       const described = describeError(caught);

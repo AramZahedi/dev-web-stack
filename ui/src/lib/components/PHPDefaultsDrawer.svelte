@@ -260,7 +260,7 @@
     {#if phase === 'result'}
       <div class="result">
         <p class="result-title">Defaults saved for PHP {activeVersion}.</p>
-        {#if cliShared}
+        {#if cliShared && warnings.length === 0}
           <p class="result-copy">
             The machine-wide CLI php.ini was regenerated from these defaults.
           </p>
