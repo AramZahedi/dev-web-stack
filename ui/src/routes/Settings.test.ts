@@ -26,6 +26,9 @@ vi.mock('../lib/api', () => ({
   removeTrust: vi.fn(),
   getPHPDefault: vi.fn(),
   listRuntimes: vi.fn(),
+  getPHPDefaults: vi.fn(),
+  savePHPDefaults: vi.fn(),
+  phpExtensions: vi.fn(),
   getGlobalIni: vi.fn(),
   saveGlobalIni: vi.fn(),
   setPHPDefault: vi.fn(),
@@ -132,6 +135,7 @@ const NODE_24_WSL: RuntimeBuild = {
 const INI: GlobalIni = {
   path: '/home/dev/.devstack/tools/php-default/php.ini',
   content: '[PHP]\nmemory_limit = 512M\n',
+  raw: 'memory_limit = 512M\n',
   build_id: PHP_84.id,
 };
 
@@ -153,6 +157,17 @@ beforeEach(() => {
   mockApi.getVhostStatus.mockResolvedValue(VHOSTS);
   mockApi.getPHPDefault.mockResolvedValue(DEFAULT_STATUS);
   mockApi.listRuntimes.mockResolvedValue([PHP_84, PHP_83, NODE_24, NODE_22]);
+  mockApi.listSites.mockResolvedValue([]);
+  mockApi.getPHPDefaults.mockResolvedValue({
+    version: '8.4',
+    ini: { memory_limit: '256M' },
+    extensions: {},
+  });
+  mockApi.phpExtensions.mockResolvedValue([]);
+  mockApi.savePHPDefaults.mockResolvedValue({
+    defaults: { version: '8.4', ini: { memory_limit: '1G' }, extensions: {} },
+    sites: [],
+  });
   mockApi.getGlobalIni.mockResolvedValue(INI);
   mockApi.saveGlobalIni.mockResolvedValue(INI);
   mockApi.setPHPDefault.mockResolvedValue({
@@ -315,8 +330,10 @@ describe('Settings tooling', () => {
     );
     expect(phpCard?.textContent).not.toContain('/usr/local/bin');
 
-    const ini = screen.getByLabelText('Global php.ini content') as HTMLTextAreaElement;
+    const ini = screen.getByLabelText('CLI-only raw directives') as HTMLTextAreaElement;
     expect(ini.value).toContain('memory_limit = 512M');
+    expect(screen.getByRole('button', { name: 'Edit PHP 8.4 defaults' })).toBeTruthy();
+    expect(screen.getByText('View generated php.ini')).toBeTruthy();
 
     expect(screen.getByRole('heading', { name: 'Composer' })).toBeTruthy();
     expect(screen.getByText('2.8.4')).toBeTruthy();
@@ -492,15 +509,27 @@ describe('Settings tooling', () => {
     );
   });
 
-  it('saves the global CLI php.ini content', async () => {
+  it('saves CLI-only php.ini overrides without replacing the generated defaults', async () => {
     render(Settings);
-    const ini = (await screen.findByLabelText('Global php.ini content')) as HTMLTextAreaElement;
-    const next = '[PHP]\nmemory_limit = 1G\ndisplay_errors = On\n';
+    const ini = (await screen.findByLabelText('CLI-only raw directives')) as HTMLTextAreaElement;
+    const next = 'memory_limit = 1G\ndisplay_errors = On\n';
     await fireEvent.input(ini, { target: { value: next } });
-    await fireEvent.click(screen.getByRole('button', { name: 'Save php.ini' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Save CLI overrides' }));
 
     await waitFor(() => expect(mockApi.saveGlobalIni).toHaveBeenCalledWith(next));
     expect(await screen.findByText('Saved')).toBeTruthy();
+  });
+
+  it('opens the shared PHP defaults editor from the CLI default card', async () => {
+    render(Settings);
+    const edit = await screen.findByRole('button', { name: 'Edit PHP 8.4 defaults' });
+    await fireEvent.click(edit);
+
+    const dialog = await screen.findByRole('dialog', { name: 'PHP 8.4 defaults' });
+    expect(
+      within(dialog).getByText(/machine-wide CLI default uses PHP 8.4/i),
+    ).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Save defaults' })).toBeTruthy();
   });
 
   it('updates and removes Composer through the managed tools API', async () => {

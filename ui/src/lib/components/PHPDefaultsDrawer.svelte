@@ -16,11 +16,20 @@
     version: string;
     versions: string[];
     sites: Site[];
+    cliDefaultVersion?: string;
     onclose: () => void;
     onsaved?: () => void;
   }
 
-  let { open, version, versions, sites, onclose, onsaved }: Props = $props();
+  let {
+    open,
+    version,
+    versions,
+    sites,
+    cliDefaultVersion = '',
+    onclose,
+    onsaved,
+  }: Props = $props();
 
   interface IniRow {
     id: number;
@@ -41,10 +50,18 @@
   let rows = $state<IniRow[]>([]);
   let overrides = $state<Record<string, boolean>>({});
   let results = $state<PHPMigrationResult[] | null>(null);
+  let warnings = $state<string[]>([]);
   let rowSeq = 0;
   let requestSeq = 0;
   let retryToken = $state(0);
   let wasOpen = false;
+
+  const cliShared = $derived(Boolean(cliDefaultVersion) && cliDefaultVersion === activeVersion);
+  const modalDescription = $derived(
+    cliShared
+      ? 'Shared php.ini directives and extension state for sites on this line and the machine-wide CLI default. A site can override them individually.'
+      : 'Shared php.ini directives and extension state for every site on this line. A site can override them individually.',
+  );
 
   const canSave = $derived(
     !loading &&
@@ -86,6 +103,7 @@
       activeVersion = version;
       phase = 'edit';
       results = null;
+      warnings = [];
       loadError = null;
       error = null;
     } else if (!open) {
@@ -106,6 +124,7 @@
     rows = [];
     overrides = {};
     results = null;
+    warnings = [];
     phase = 'edit';
     Promise.all([api.getPHPDefaults(target), api.phpExtensions(target)])
       .then(([defaults, catalog]) => {
@@ -208,6 +227,7 @@
         extensions: buildExtensions(),
       });
       results = result.sites;
+      warnings = result.warnings ?? [];
       phase = 'result';
       onsaved?.();
     } catch (caught) {
@@ -232,7 +252,7 @@
 <Modal
   {open}
   title={`PHP ${activeVersion} defaults`}
-  description="Shared php.ini directives and extension state for every site on this line. A site can override them individually."
+  description={modalDescription}
   size="lg"
   onclose={close}
 >
@@ -240,6 +260,11 @@
     {#if phase === 'result'}
       <div class="result">
         <p class="result-title">Defaults saved for PHP {activeVersion}.</p>
+        {#if cliShared}
+          <p class="result-copy">
+            The machine-wide CLI php.ini was regenerated from these defaults.
+          </p>
+        {/if}
         {#if results && results.length > 0}
           <p class="result-copy">Running sites on this line were re-applied independently.</p>
           <ul class="site-results" aria-label="Defaults apply results">
@@ -255,6 +280,13 @@
             No running sites on PHP {activeVersion} needed re-applying. New sites inherit these
             defaults.
           </p>
+        {/if}
+        {#if warnings.length > 0}
+          <div class="warning" role="alert">
+            {#each warnings as warning (warning)}
+              <p>{warning}</p>
+            {/each}
+          </div>
         {/if}
       </div>
     {:else if phase === 'confirm'}
@@ -410,6 +442,12 @@
                 <li class="mono">{site.name}</li>
               {/each}
             </ul>
+          {/if}
+          {#if cliShared}
+            <p class="cli-shared">
+              The machine-wide CLI default uses PHP {activeVersion}. Saving also regenerates its
+              php.ini from these defaults.
+            </p>
           {/if}
         </div>
       </div>
@@ -692,6 +730,31 @@
     color: var(--muted);
     font-size: 11.5px;
     line-height: 1.55;
+  }
+
+  .warning {
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+    border-left: 3px solid var(--warning);
+    border-radius: var(--radius);
+    background: var(--warning-soft);
+    color: var(--fg);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .warning p {
+    margin: 0;
+  }
+
+  .cli-shared {
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
   }
 
   .site-results {

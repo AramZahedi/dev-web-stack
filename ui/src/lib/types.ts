@@ -308,6 +308,7 @@ export interface PHPMigrationResult {
 export interface PHPDefaultsResult {
   defaults: PHPDefaults;
   sites: PHPMigrationResult[];
+  warnings?: string[];
 }
 
 export interface PHPExecResult {
@@ -740,10 +741,11 @@ export interface PHPDefaultStatus {
   shim_installed: boolean;
 }
 
-/** The editable machine-wide CLI php.ini. */
+/** The generated machine-wide CLI php.ini plus its CLI-only raw directives. */
 export interface GlobalIni {
   path: string;
   content: string;
+  raw: string;
   build_id?: string;
 }
 

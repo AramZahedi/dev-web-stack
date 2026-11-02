@@ -181,14 +181,9 @@ function seedPHPDefaults(): Record<string, PHPDefaults> {
 let phpDefaults = seedPHPDefaults();
 
 const DEFAULT_PHP_BUILD = 'php@8.4.4-r1';
-const DEFAULT_GLOBAL_INI = `; devstack global CLI php.ini
-[PHP]
-memory_limit = 512M
-display_errors = On
-date.timezone = UTC
-`;
+const DEFAULT_GLOBAL_INI_RAW = 'memory_limit = 512M\ndisplay_errors = On\ndate.timezone = UTC\n';
 let phpDefaultConfigured = DEFAULT_PHP_BUILD;
-let globalIniContent = DEFAULT_GLOBAL_INI;
+let globalIniRaw = DEFAULT_GLOBAL_INI_RAW;
 const seedToolStatuses: ToolStatus[] = [
   {
     id: 'php-default',
@@ -232,7 +227,7 @@ export function resetMockServiceStateForTests(): void {
   mockBenchmarks = [];
   mockConfigs = {};
   phpDefaultConfigured = DEFAULT_PHP_BUILD;
-  globalIniContent = DEFAULT_GLOBAL_INI;
+  globalIniRaw = DEFAULT_GLOBAL_INI_RAW;
 }
 
 const seedMockServices: ServiceView[] = [
@@ -1438,6 +1433,33 @@ function phpDefaultStatus(): PHPDefaultStatus {
   };
 }
 
+/** Mirrors the daemon's generated CLI ini: shared line defaults, CLI-only raw
+ * directives, then the managed extension block. */
+function renderGlobalIni(): string {
+  const build = phpDefaultBuild();
+  if (!build) return '';
+  const line = phpLineOf(build.version);
+  const defaults = phpDefaults[line] ?? phpDefaults['8.4'];
+  const resolved = resolvePHPExtensions(line, defaults.extensions, {});
+  const raw = globalIniRaw.replace(/\r\n/g, '\n').replace(/\n+$/, '');
+  const lines = [
+    '[PHP]',
+    '; BEGIN devstack version defaults',
+    ...Object.entries(defaults.ini).map(([key, value]) => `${key} = ${value}`),
+    '; END devstack version defaults',
+    '; BEGIN devstack site overrides',
+    ...(raw ? raw.split('\n') : []),
+    '; END devstack site overrides',
+    '[PHP]',
+    '; BEGIN devstack extensions (managed)',
+    `extension_dir = "${build.path}/lib/php/extensions"`,
+    ...resolved.map((extension) => `${extension.type}=${extension.so}`),
+    '; END devstack extensions (managed)',
+    '',
+  ];
+  return lines.join('\n');
+}
+
 function portsFor(site: Site, index: number): { http: number; fastcgi: number } {
   if (site.kind === 'php') return { http: 0, fastcgi: 43_000 + index };
   return { http: 41_000 + index + 1, fastcgi: 0 };
@@ -2218,18 +2240,20 @@ export const mockApi = {
     await wait(80, 160);
     return {
       path: '/home/dev/.devstack/tools/php-default/php.ini',
-      content: globalIniContent,
+      content: renderGlobalIni(),
+      raw: globalIniRaw,
       build_id: phpDefaultBuild()?.id,
     };
   },
 
-  async saveGlobalIni(content: string): Promise<GlobalIni> {
+  async saveGlobalIni(raw: string): Promise<GlobalIni> {
     await wait(220, 380);
-    globalIniContent = content;
+    globalIniRaw = raw;
     emitEvent('php.default.ini', undefined, 'The global CLI php.ini was saved');
     return {
       path: '/home/dev/.devstack/tools/php-default/php.ini',
-      content,
+      content: renderGlobalIni(),
+      raw: globalIniRaw,
       build_id: phpDefaultBuild()?.id,
     };
   },

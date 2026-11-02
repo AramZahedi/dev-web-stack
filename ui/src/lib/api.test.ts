@@ -622,6 +622,7 @@ describe('api client', () => {
     const ini = {
       path: '/home/dev/.devstack/tools/php-default/php.ini',
       content: '[PHP]\nmemory_limit = 512M\n',
+      raw: 'memory_limit = 512M\n',
       build_id: 'php@8.4.4-r1',
     };
     const tool = {
@@ -650,7 +651,7 @@ describe('api client', () => {
     });
     await expect(clearPHPDefault()).resolves.toMatchObject({ configured: 'php@8.4.4-r1' });
     await expect(getGlobalIni()).resolves.toMatchObject({ build_id: 'php@8.4.4-r1' });
-    await expect(saveGlobalIni(ini.content)).resolves.toMatchObject({ content: ini.content });
+    await expect(saveGlobalIni(ini.raw)).resolves.toMatchObject({ content: ini.content, raw: ini.raw });
     await expect(listTools()).resolves.toEqual([tool]);
     await expect(installTool('composer', true)).resolves.toEqual(tool);
     await expect(removeTool('composer')).resolves.toEqual(tool);
@@ -681,7 +682,7 @@ describe('api client', () => {
     const [saveIniUrl, saveIniInit] = fetchMock.mock.calls[5] as [string, RequestInit];
     expect(saveIniUrl).toBe('/api/v1/php/default/ini');
     expect(saveIniInit.method).toBe('PUT');
-    expect(JSON.parse(String(saveIniInit.body))).toEqual({ content: ini.content });
+    expect(JSON.parse(String(saveIniInit.body))).toEqual({ raw: ini.raw });
 
     const [listToolsUrl] = fetchMock.mock.calls[6] as [string, RequestInit];
     expect(listToolsUrl).toBe('/api/v1/tools');

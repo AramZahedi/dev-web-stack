@@ -526,9 +526,9 @@ export async function getGlobalIni(): Promise<GlobalIni> {
   return request<GlobalIni>('/php/default/ini');
 }
 
-export async function saveGlobalIni(content: string): Promise<GlobalIni> {
-  if (isMockMode) return mockApi.saveGlobalIni(content);
-  return request<GlobalIni>('/php/default/ini', { method: 'PUT', body: { content } });
+export async function saveGlobalIni(raw: string): Promise<GlobalIni> {
+  if (isMockMode) return mockApi.saveGlobalIni(raw);
+  return request<GlobalIni>('/php/default/ini', { method: 'PUT', body: { raw } });
 }
 
 export async function buildSite(ref: string): Promise<BuildResult> {

@@ -526,11 +526,19 @@ test('Settings manages the global PHP default, ini and Composer', async ({ page 
     page.getByRole('status').filter({ hasText: 'PHP CLI default saved' }),
   ).toBeVisible();
   await expect(phpCard.locator('.tooling-list')).toContainText('PHP 8.3.14');
+  await phpCard.getByRole('button', { name: 'Edit PHP 8.3 defaults' }).click();
+  const defaultsDialog = page.getByRole('dialog', { name: 'PHP 8.3 defaults' });
+  await expect(defaultsDialog).toContainText('machine-wide CLI default uses PHP 8.3');
+  await defaultsDialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(defaultsDialog).toBeHidden();
 
-  const ini = page.getByLabel('Global php.ini content');
-  await ini.fill('[PHP]\nmemory_limit = 1G\n');
-  await page.getByRole('button', { name: 'Save php.ini' }).click();
-  await expect(page.getByRole('status').filter({ hasText: 'Global php.ini saved' })).toBeVisible();
+  const ini = page.getByLabel('CLI-only raw directives');
+  await ini.fill('memory_limit = 1G\ndisplay_errors = On\n');
+  await page.getByRole('button', { name: 'Save CLI overrides' }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'CLI php.ini overrides saved' }),
+  ).toBeVisible();
+  await expect(page.getByText('View generated php.ini')).toBeVisible();
 
   await page.getByRole('button', { name: 'Update', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'composer updated' })).toBeVisible();

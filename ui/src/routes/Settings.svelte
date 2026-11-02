@@ -31,6 +31,7 @@
     RuntimeBuild,
     Settings,
     ServingMode,
+    Site,
     ToolStatus,
     TrustTarget,
     VhostStatus,
@@ -41,6 +42,7 @@
   import ConfirmDialog from '../lib/components/ConfirmDialog.svelte';
   import ErrorBanner from '../lib/components/ErrorBanner.svelte';
   import IconButton from '../lib/components/IconButton.svelte';
+  import PHPDefaultsDrawer from '../lib/components/PHPDefaultsDrawer.svelte';
   import Skeleton from '../lib/components/Skeleton.svelte';
   import VhostPreviewDrawer from '../lib/components/VhostPreviewDrawer.svelte';
 
@@ -82,10 +84,14 @@
   let nodeDefaultActionError = $state<{ code: string; message: string } | null>(null);
   let globalIni = $state<GlobalIni | null>(null);
   let globalIniContent = $state('');
+  let globalIniRaw = $state('');
   let globalIniError = $state<{ code: string; message: string } | null>(null);
   let globalIniLoading = $state(true);
   let globalIniSaving = $state(false);
   let globalIniSaved = $state(false);
+  let phpDefaultsOpen = $state(false);
+  let phpDefaultsVersion = $state('');
+  let sites = $state<Site[]>([]);
   let toolingRuntimes = $state<RuntimeBuild[]>([]);
   let tools = $state<ToolStatus[]>([]);
   let toolsError = $state<{ code: string; message: string } | null>(null);
@@ -201,6 +207,10 @@
   const globalIniPath = $derived(
     globalIni?.path ?? phpDefault?.global_ini ?? '—',
   );
+  const phpDefaultLine = $derived(phpLineOf(phpDefault?.build?.version));
+  const phpDefaultVersions = $derived(
+    Array.from(new Set(phpBuilds.map((build) => phpLineOf(build.version)).filter(Boolean))),
+  );
   let portDrafts = $state({ http_port: 0, https_port: 0, ui_port: 0 });
   let portsReady = $state(false);
   let portSaving = $state(false);
@@ -232,6 +242,11 @@
   function phpRevision(id: string): number {
     const match = /-r([1-9][0-9]*)$/.exec(id);
     return match ? Number.parseInt(match[1], 10) : 0;
+  }
+
+  function phpLineOf(version: string | undefined): string {
+    const match = /^(\d+\.\d+)/.exec(version ?? '');
+    return match ? match[1] : '';
   }
 
   function nodeVersionLabel(value: string): string {
@@ -370,11 +385,32 @@
     try {
       globalIni = await api.getGlobalIni();
       globalIniContent = globalIni.content;
+      globalIniRaw = globalIni.raw ?? '';
     } catch (caught) {
       globalIniError = describeError(caught);
     } finally {
       globalIniLoading = false;
     }
+  }
+
+  async function loadSites(): Promise<void> {
+    try {
+      sites = await api.listSites();
+    } catch {
+      // The affected-sites list is informational; the defaults editor still works.
+    }
+  }
+
+  function openPHPDefaults(): void {
+    if (!phpDefaultLine) return;
+    phpDefaultsVersion = phpDefaultLine;
+    phpDefaultsOpen = true;
+  }
+
+  function onPHPDefaultsSaved(): void {
+    void loadPHPDefault();
+    void loadGlobalIni();
+    void loadSites();
   }
 
   async function loadTools(initial = false): Promise<void> {
@@ -395,6 +431,7 @@
     void loadPHPDefault(true);
     void loadNodeDefault(true);
     void loadGlobalIni(true);
+    void loadSites();
     void loadTools(true);
     const refresh = () => {
       void load();
@@ -402,6 +439,7 @@
       void loadPHPDefault();
       void loadNodeDefault();
       void loadGlobalIni();
+      void loadSites();
       void loadTools();
     };
     window.addEventListener('devstack:refresh', refresh);
@@ -692,18 +730,19 @@
     globalIniError = null;
     globalIniSaved = false;
     try {
-      globalIni = await api.saveGlobalIni(globalIniContent);
+      globalIni = await api.saveGlobalIni(globalIniRaw);
       globalIniContent = globalIni.content;
+      globalIniRaw = globalIni.raw ?? '';
       globalIniSaved = true;
       addToast({
         kind: 'success',
-        title: 'Global php.ini saved',
-        message: `${globalIni.path} was written for the CLI default build.`,
+        title: 'CLI php.ini overrides saved',
+        message: `${globalIni.path} was regenerated from PHP ${phpDefaultLine || 'defaults'} and its CLI-only directives.`,
       });
     } catch (caught) {
       const described = describeError(caught);
       globalIniError = described;
-      toastError('Could not save the global php.ini', `${described.code}: ${described.message}`);
+      toastError('Could not save the CLI php.ini overrides', `${described.code}: ${described.message}`);
     } finally {
       globalIniSaving = false;
     }
@@ -1305,6 +1344,21 @@
               </Button>
             </div>
           </div>
+
+          {#if phpDefaultLine}
+            <div class="php-defaults">
+              <div>
+                <p class="tooling-label">PHP {phpDefaultLine} configuration</p>
+                <p class="tooling-hint">
+                  Ini directives and enabled extensions for this line. The CLI default and sites on
+                  PHP {phpDefaultLine} share these defaults; a site can override them individually.
+                </p>
+              </div>
+              <Button size="sm" variant="secondary" onclick={openPHPDefaults}>
+                Edit PHP {phpDefaultLine} defaults
+              </Button>
+            </div>
+          {/if}
         {/if}
       </Card>
 
@@ -1498,18 +1552,19 @@
             </div>
           {/if}
 
-          <label class="tooling-label" for="global-ini">Global php.ini content</label>
+          <label class="tooling-label" for="global-ini">CLI-only raw directives</label>
           <textarea
             id="global-ini"
             class="input mono global-ini"
-            rows="10"
+            rows="7"
             spellcheck="false"
-            bind:value={globalIniContent}
+            bind:value={globalIniRaw}
             oninput={() => (globalIniSaved = false)}
           ></textarea>
           <p class="tooling-hint">
-            This file is used by the machine-wide CLI shims. Site shells keep their own PHP
-            build and site ini, so editing here never changes a running site.
+            Rendered after the PHP {phpDefaultLine || 'default'} ini directives and before the managed
+            extension block. Use this for CLI-only advanced directives; shared ini and extensions are
+            edited from the PHP CLI default card above.
           </p>
           <div class="tooling-actions">
             <Button
@@ -1519,9 +1574,15 @@
               disabled={globalIniSaving || !globalIni}
               onclick={saveGlobalIni}
             >
-              Save php.ini
+              Save CLI overrides
             </Button>
           </div>
+          {#if globalIniContent}
+            <details class="generated-ini">
+              <summary>View generated php.ini</summary>
+              <pre class="mono">{globalIniContent}</pre>
+            </details>
+          {/if}
         {/if}
       </Card>
     </div>
@@ -1895,6 +1956,16 @@
   initialServer={previewServer}
   returnFocus={previewReturnFocus}
   onclose={() => (previewOpen = false)}
+/>
+
+<PHPDefaultsDrawer
+  open={phpDefaultsOpen}
+  version={phpDefaultsVersion || '8.4'}
+  versions={phpDefaultVersions}
+  sites={sites}
+  cliDefaultVersion={phpDefaultLine}
+  onclose={() => (phpDefaultsOpen = false)}
+  onsaved={onPHPDefaultsSaved}
 />
 
 <style>
@@ -2520,6 +2591,24 @@
     margin-top: 12px;
   }
 
+  .php-defaults {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .php-defaults > div {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-width: 56ch;
+  }
+
   .tooling-label {
     color: var(--fg);
     font-size: 11.5px;
@@ -2570,6 +2659,32 @@
     font-family: var(--font-mono);
     font-size: 10.5px;
     line-height: 1.55;
+  }
+
+  .generated-ini {
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+  }
+
+  .generated-ini summary {
+    padding: 7px 9px;
+    color: var(--muted);
+    font-size: 10.5px;
+    cursor: pointer;
+  }
+
+  .generated-ini pre {
+    margin: 0;
+    padding: 9px;
+    max-height: 260px;
+    overflow: auto;
+    border-top: 1px solid var(--border);
+    color: var(--fg);
+    font-size: 10px;
+    line-height: 1.55;
+    white-space: pre-wrap;
   }
 
   .tool-list {
