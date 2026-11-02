@@ -426,6 +426,28 @@ describe('AddSite Wave 2 fields', () => {
     expect(screen.queryByText(/Windows source mode requires/)).toBeNull();
   });
 
+  it('accepts a manual path under a projects root on another drive', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'D:\\Users\\Aram\\.devstack',
+      user_home: 'D:\\Users\\Aram',
+      projects_root: 'D:\\Users\\Aram\\.devstack\\projects',
+      wsl_distro: 'devstack',
+    });
+
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
+    await fireEvent.input(screen.getByLabelText(/Project folder/), {
+      target: { value: 'D:\\Users\\Aram\\.devstack\\projects\\demo' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByText('Domain and options')).toBeTruthy();
+    expect(screen.queryByText(/Use an absolute path inside/)).toBeNull();
+  });
+
   it('requires an explicit version for node sites', async () => {
     render(AddSite);
     await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());

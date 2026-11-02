@@ -154,7 +154,7 @@ export function isAbsolutePath(value: string): boolean {
   }
 
   const windowsPath = input.replace(/\//g, '\\');
-  if (/^C:\\/i.test(windowsPath)) {
+  if (/^[a-zA-Z]:\\/.test(windowsPath)) {
     return !windowsPath.slice(3).split('\\').some((part) => part === '..' || part.includes(':'));
   }
 
