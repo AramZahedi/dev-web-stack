@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -75,6 +76,40 @@ func TestResolveSiteByCWDAndExplicitOverride(t *testing.T) {
 	}
 	if got.Name != "shop" {
 		t.Fatalf("explicit override resolved %q", got.Name)
+	}
+}
+
+func TestResolveSiteMatchesWSLUNCAliases(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("WSL UNC aliases are a Windows path concern")
+	}
+	tests := []struct {
+		name string
+		host string
+		cwd  string
+	}{
+		{
+			name: "dollar cwd",
+			host: `\\wsl.localhost\devstack\data\devstack\projects\app`,
+			cwd:  `\\wsl$\devstack\data\devstack\projects\app\src\pages`,
+		},
+		{
+			name: "localhost cwd",
+			host: `\\wsl$\devstack\data\devstack\projects\app`,
+			cwd:  `\\wsl.localhost\devstack\data\devstack\projects\app\src\pages`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			list := []model.Site{{ID: "wsl", Name: "app", HostPath: tc.host}}
+			got, err := ResolveSite(list, "", tc.cwd)
+			if err != nil {
+				t.Fatalf("ResolveSite() = %v", err)
+			}
+			if got.Name != "app" {
+				t.Fatalf("resolved %q, want app", got.Name)
+			}
+		})
 	}
 }
 

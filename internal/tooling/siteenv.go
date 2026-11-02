@@ -71,18 +71,19 @@ func ResolveSite(sitesList []model.Site, ref, cwd string) (model.Site, error) {
 			return model.Site{}, fmt.Errorf("tooling: resolve current directory: %w", err)
 		}
 	}
+	cwd = canonicalSitePath(cwd)
 	absolute, err := filepath.Abs(cwd)
 	if err != nil {
 		return model.Site{}, fmt.Errorf("tooling: resolve current directory: %w", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
-		absolute = resolved
+		absolute = canonicalSitePath(resolved)
 	}
 
 	matches := make([]model.Site, 0, 1)
 	seen := make(map[string]struct{})
 	for _, site := range sitesList {
-		host := strings.TrimSpace(site.HostPath)
+		host := canonicalSitePath(strings.TrimSpace(site.HostPath))
 		if host == "" {
 			continue
 		}
@@ -91,7 +92,7 @@ func ResolveSite(sitesList []model.Site, ref, cwd string) (model.Site, error) {
 			continue
 		}
 		if resolved, err := filepath.EvalSymlinks(hostAbs); err == nil {
-			hostAbs = resolved
+			hostAbs = canonicalSitePath(resolved)
 		}
 		if !pathWithin(hostAbs, absolute) {
 			continue
