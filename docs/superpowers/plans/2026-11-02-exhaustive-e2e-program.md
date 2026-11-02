@@ -1079,7 +1079,7 @@ These were found during planning research. Each is a **candidate** until reprodu
 | D20 | phpMyAdmin required cookie login and did not use the managed root account | H4 | `auth_type=config`, root secret mount, migration/refresh on restart; live browser test green. |
 | D21 | Cycle5's UI fixture used `${home}/projects` while the product manages `${devstack_home}/projects` | H4/L1 | Use the managed root and disposable helper home; live database UI fixture now starts. |
 | D22 | Cycle6's near-1 GiB import wait was shorter than the upload; the job queues after upload finishes | H4 | Extend the harness wait to 30 minutes; 115/115 backup edge cases pass. |
-| D23 | Real-install hosts block lost `static.test` after the upgrade | W | `devstack doctor --repair` restored both managed domains; doctor is green. |
+| D23 | Real-install hosts block lost `static.test` after the upgrade or a WSL restart | W | Fixed: the keepalive calls `SyncHosts` on every WSL start; `devstack doctor` stays green across `wsl --terminate devstack`. |
 | D24 | Site backend allocator is fixed to 41000–43999, so concurrent workers collide even when dashboard/proxy ports differ | H1/H2 | Fixed with `DEVSTACK_E2E_BACKEND_SLOT`/`..._SLOTS` partitions; all 8 concurrent Linux workers passed. |
 | D25 | Importing/unregistering disposable WSL distros left Windows `wslrelay.exe` on 8082 hung | W | Terminate the managed `devstack` distro and restart the agent; verify HTTP 200 and PMA auto-login before the final baseline. |
 

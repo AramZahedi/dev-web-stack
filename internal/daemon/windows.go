@@ -485,7 +485,11 @@ func Run(ctx context.Context, opts Options) error {
 	if strings.TrimSpace(distro) == "" {
 		distro = "devstack"
 	}
-	go runWSLKeepalive(ctx, distro, logger)
+	go runWSLKeepalive(ctx, distro, logger, func(syncCtx context.Context) {
+		if err := siteService.SyncHosts(syncCtx); err != nil {
+			logger.Warn("daemon: sync registered site hosts after WSL start", "error", err)
+		}
+	})
 
 	if err := bootstrapWindows(ctx, steps); err != nil {
 		shutdownWindowsServers(servers)
@@ -1305,7 +1309,7 @@ func keepaliveBackoff(failures int, ranFor time.Duration) time.Duration {
 	return delay
 }
 
-func runWSLKeepalive(ctx context.Context, distro string, logger *slog.Logger) {
+func runWSLKeepalive(ctx context.Context, distro string, logger *slog.Logger, onStart func(context.Context)) {
 	if strings.TrimSpace(distro) == "" {
 		distro = "devstack"
 	}
@@ -1339,6 +1343,12 @@ func runWSLKeepalive(ctx context.Context, distro string, logger *slog.Logger) {
 			case <-time.After(delay):
 			}
 			continue
+		}
+
+		if onStart != nil {
+			syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			onStart(syncCtx)
+			cancel()
 		}
 
 		_ = cmd.Wait()

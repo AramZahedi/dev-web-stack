@@ -33,6 +33,7 @@
 | Live database UI (disposable daemon) | `playwright test -c playwright.live.config.ts --grep "Site Detail\|metadata-only\|reserved database\|Add Site review"` | 4 passed |
 | phpMyAdmin auto-login (live) | `npx playwright test -c playwright.live.config.ts --grep "phpMyAdmin auto-login"` | 1 passed |
 | Real upgrade | `install.ps1 -Upgrade` | PASS; daemon/helper/agent healthy |
+| WSL restart hosts recovery | `wsl --terminate devstack` then `devstack doctor` | PASS; `static.test` restored automatically |
 
 ## phpMyAdmin auto-login
 
@@ -56,7 +57,7 @@
 | D20 | phpMyAdmin auto-login as the active root user. |
 | D21 | Cycle5 UI fixtures now live under the managed projects root and use the disposable helper home. |
 | D22 | Cycle6 large-import wait extended from 10 to 30 minutes; near-1 GiB uploads queue a job but take longer than the old wait. |
-| D23 | Real-install hosts block lost `static.test` after the upgrade; `devstack doctor --repair` restored both managed domains and doctor is green. |
+| D23 | Real-install hosts block lost `static.test` after an upgrade or WSL restart. Fixed: the keepalive now calls `SyncHosts` on every WSL start; `doctor` stays green across `wsl --terminate devstack`. |
 | D24 | Eight concurrent WSL workers on distinct 24xxx dashboard ports and backend slots: **8/8 passed** after partitioning HTTP and FastCGI ranges. |
 | D25 | After importing/unregistering disposable WSL distros, Windows `wslrelay.exe` on 8082 hung. Terminating the managed `devstack` distro and restarting its agent recreated the relay; PMA returned HTTP 200 and auto-login passed again. |
 
