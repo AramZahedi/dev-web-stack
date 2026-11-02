@@ -38,11 +38,8 @@ func (r *Runtime) CopySource(ctx context.Context, req agentproto.SourceCopyReque
 	}
 	if req.Mode == "wsl" {
 		root := filepath.Join(r.root, "projects")
-		if destination == root || !pathmode.ContainsPath(root, destination, runtime.GOOS == "windows") {
-			return agentproto.SourceCopyResponse{}, errors.New("agent: copy destination is outside the managed projects root")
-		}
-		if err := pathmode.ValidateContainedPath(root, destination, runtime.GOOS == "windows"); err != nil {
-			return agentproto.SourceCopyResponse{}, fmt.Errorf("agent: copy destination: %w", err)
+		if err := pathmode.ValidateStrictlyContainedPath(root, destination, runtime.GOOS == "windows"); err != nil {
+			return agentproto.SourceCopyResponse{}, fmt.Errorf("agent: copy destination is outside the managed projects root: %w", err)
 		}
 	}
 	result, err := wsl.CopySource(ctx, source, destination, req.Mode, req.RemoveSource)

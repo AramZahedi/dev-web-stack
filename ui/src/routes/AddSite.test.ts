@@ -899,6 +899,36 @@ describe('AddSite Wave 2 fields', () => {
     expect(screen.queryByText(/must be inside/)).toBeNull();
   });
 
+  it('rejects a WSL path that uses backslashes inside a POSIX path', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\Users\\Aram\\.devstack',
+      user_home: 'C:\\Users\\Aram',
+      projects_root: 'C:\\Users\\Aram\\.devstack\\projects',
+      wsl_distro: 'devstack',
+    });
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
+    await fireEvent.click(screen.getByRole('radio', { name: /PHP/ }));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('radio', { name: /WSL distro/ }) as HTMLInputElement).checked,
+      ).toBe(true),
+    );
+    await fireEvent.input(screen.getByLabelText(/Project folder/), {
+      target: { value: '/data/devstack/projects\\demo' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(
+      (await screen.findAllByText(/Project folder must be inside \/data\/devstack\/projects\./))
+        .length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
   it('rejects a local project folder outside or equal to the managed root', async () => {
     render(AddSite);
     await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());

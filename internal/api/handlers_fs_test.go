@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -202,6 +203,18 @@ func TestHandleFSMkdirWSLConfinedToProjectsRoot(t *testing.T) {
 	}
 	if mockBrowser.mkdirPath != pathmode.WSLProjectsRoot {
 		t.Fatalf("default WSL mkdir path = %q, want %q", mockBrowser.mkdirPath, pathmode.WSLProjectsRoot)
+	}
+}
+
+func TestHandleFSMkdirDefaultParentUsesWindowsNamesOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows folder naming rules")
+	}
+	server := &Server{cfg: Config{UserHome: t.TempDir()}}
+	rec := httptest.NewRecorder()
+	server.handleFSMkdir(rec, httptest.NewRequest(http.MethodPost, "/api/v1/fs/mkdir", strings.NewReader(`{"name":"app:v2"}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
 }
 

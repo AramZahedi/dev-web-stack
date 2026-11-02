@@ -61,6 +61,23 @@ describe('normalizePathForCompare', () => {
     expect(normalizePathForCompare('/data/devstack/projects/../other', 'local')).toBe('');
     expect(normalizePathForCompare('C:\\projects\\..\\other', 'windows')).toBe('');
   });
+
+  it('treats backslashes literally on Linux and as separators on Windows', () => {
+    expect(normalizePathForCompare('/home/dev/.devstack/projects\\app', 'local')).toBe(
+      '/home/dev/.devstack/projects\\app',
+    );
+    expect(isStrictlyInsideRoot(LOCAL_ROOT, `${LOCAL_ROOT}\\app`, 'local')).toBe(false);
+    expect(isStrictlyInsideRoot(LOCAL_ROOT, `${LOCAL_ROOT}/app\\v2`, 'local')).toBe(true);
+    expect(normalizePathForCompare('C:\\Projects\\app', 'windows')).toBe('c:/projects/app');
+  });
+
+  it('rejects backslashes in POSIX WSL paths but accepts UNC aliases', () => {
+    expect(normalizePathForCompare(`${WSL_ROOT}\\app`, 'wsl')).toBe('');
+    expect(normalizePathForCompare(`${WSL_ROOT}/app\\v2`, 'wsl')).toBe('');
+    expect(
+      normalizePathForCompare('\\\\wsl.localhost\\devstack\\data\\devstack\\projects\\app\\v2', 'wsl'),
+    ).toBe('/data/devstack/projects/app/v2');
+  });
 });
 
 describe('isStrictlyInsideRoot', () => {

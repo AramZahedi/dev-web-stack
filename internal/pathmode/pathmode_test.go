@@ -130,6 +130,7 @@ func TestTranslateSource(t *testing.T) {
 		{"wsl dollar", model.SourceWSL, `\\wsl$\Ubuntu\home\aram\app`, `\\wsl.localhost\Ubuntu\home\aram\app`, "/home/aram/app", false},
 		{"wsl posix path", model.SourceWSL, `/data/devstack/projects/site`, `\\wsl.localhost\devstack\data\devstack\projects\site`, "/data/devstack/projects/site", false},
 		{"wsl posix colon", model.SourceWSL, `/data/devstack/projects/app:v2`, `\\wsl.localhost\devstack\data\devstack\projects\app:v2`, "/data/devstack/projects/app:v2", false},
+		{"wsl posix backslash", model.SourceWSL, `/data/devstack/projects/app\sub`, "", "", true},
 		{"wsl UNC colon", model.SourceWSL, `\\wsl.localhost\devstack\data\devstack\projects\app:v2`, `\\wsl.localhost\devstack\data\devstack\projects\app:v2`, "/data/devstack/projects/app:v2", false},
 		{"local", model.SourceLocal, "/home/aram/app", "/home/aram/app", "/home/aram/app", false},
 		{"local clean", model.SourceLocal, "/home/aram/./app/", "/home/aram/app", "/home/aram/app", false},

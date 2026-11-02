@@ -16,8 +16,8 @@ interface ParsedPath {
 
 const MANAGED_WSL_DISTRO = 'devstack';
 
-function parseSegments(value: string, allowColon = false): string[] | null {
-  const parts = value.split(/[\\/]+/);
+function parseSegments(value: string, allowColon = false, separators: RegExp = /[\\/]+/): string[] | null {
+  const parts = value.split(separators);
   const segments: string[] = [];
   for (const part of parts) {
     if (!part || part === '.') continue;
@@ -46,7 +46,11 @@ function parsePath(value: string, mode: PathRootMode): ParsedPath | null {
       return { key: `/${segments.join('/')}`, segments };
     }
     if (!input.startsWith('/')) return null;
-    const segments = parseSegments(input.slice(1), true);
+    // A POSIX WSL path cannot carry a literal backslash: the generated Windows
+    // UNC host path would treat it as a separator and diverge from the Linux
+    // backend path. The server rejects the same shape.
+    if (input.includes('\\')) return null;
+    const segments = parseSegments(input.slice(1), true, /\//);
     if (!segments) return null;
     return { key: `/${segments.join('/')}`, segments };
   }
@@ -65,7 +69,8 @@ function parsePath(value: string, mode: PathRootMode): ParsedPath | null {
   }
 
   if (!input.startsWith('/')) return null;
-  const segments = parseSegments(input.slice(1), true);
+  // On Linux a backslash is a literal filename character, not a separator.
+  const segments = parseSegments(input.slice(1), true, /\//);
   if (!segments) return null;
   return { key: `/${segments.join('/')}`, segments };
 }

@@ -192,6 +192,57 @@ func TestNodeRuntimeRejectsProjectOutsideManagedRoot(t *testing.T) {
 	}
 }
 
+func TestStaticAndPHPRuntimeRejectWSLProjectOutsideManagedRoot(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	projects := filepath.Join(root, "projects")
+	contained := filepath.Join(projects, "contained")
+	docroot := filepath.Join(contained, "public")
+	if err := os.MkdirAll(docroot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docroot, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	containedSpec := agentproto.SiteSpec{
+		ID:          "contained-static",
+		Kind:        "static",
+		SourceMode:  "wsl",
+		BackendPath: contained,
+	}
+	if _, err := runtime.PrepareSite(context.Background(), containedSpec); err != nil {
+		t.Fatalf("PrepareSite rejected a contained WSL project: %v", err)
+	}
+
+	outside := t.TempDir()
+	external := agentproto.SiteSpec{
+		ID:          "external-static",
+		Kind:        "static",
+		SourceMode:  "wsl",
+		BackendPath: outside,
+	}
+	if _, err := runtime.PrepareSite(context.Background(), external); err == nil {
+		t.Fatal("PrepareSite accepted a static WSL project outside the managed root")
+	}
+
+	phpExternal := external
+	phpExternal.ID = "external-php"
+	phpExternal.Kind = "php"
+	if _, err := runtime.PreparePHP(context.Background(), phpExternal.ID, agentproto.PHPPrepareRequest{Site: phpExternal}); err == nil {
+		t.Fatal("PreparePHP accepted a PHP WSL project outside the managed root")
+	}
+
+	// A site restored from persisted state bypasses Prepare. The start path must
+	// apply the same rule so an external project cannot be served.
+	runtime.mu.Lock()
+	runtime.sites[containedSpec.ID].spec.BackendPath = outside
+	runtime.sites[containedSpec.ID].documentRoot = outside
+	runtime.mu.Unlock()
+	if _, err := runtime.StartSite(context.Background(), containedSpec.ID); err == nil {
+		t.Fatal("StartSite served a persisted WSL project outside the managed root")
+	}
+}
+
 func TestAgentPortAllocatorValidatesAllocatesReusesAndReleases(t *testing.T) {
 	ports := NewPortAllocator()
 	first, reused, err := ports.Allocate("site-a", "http", 0)
@@ -668,6 +719,17 @@ func TestAgentCopySourceRejectsWSLDestinationOutsideManagedRoot(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("copy wrote outside the managed root: %v", entries)
+	}
+
+	alias := filepath.Join(projects, "alias")
+	if err := os.Symlink(projects, alias); err == nil {
+		if _, err := runtime.CopySource(context.Background(), agentproto.SourceCopyRequest{
+			Mode:        "wsl",
+			Source:      source,
+			Destination: alias,
+		}); err == nil {
+			t.Fatal("CopySource accepted a destination alias that resolves to the projects root")
+		}
 	}
 }
 

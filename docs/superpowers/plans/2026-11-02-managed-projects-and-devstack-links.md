@@ -317,5 +317,26 @@ Commit when the harness passes.
     UI `npm test` (374 tests), `npm run check`, Playwright Add Site flows,
     and `build/windows/devstack-links.test.ps1` (92 assertions on PowerShell
     5.1 and 7).
-- [ ] Combined review-and-fix round 2
+- [x] Combined review-and-fix round 2
+  - Fixed: a root alias (a link inside the root that resolves back to the root)
+    was accepted as a strict site child on Windows and as an agent copy
+    destination; strict resolved containment now rejects it.
+  - Fixed: agent prepare/start only confined Node and copy destinations. Static
+    and PHP WSL preparation, start, and reconcile now resolve the project and
+    require a strict descendant of the agent projects root.
+  - Fixed: PHP start validates the project generation under the same rule.
+  - Fixed: a POSIX WSL project path containing a backslash was accepted even
+    though the generated UNC host path would treat it as a separator; both the
+    server and the UI now reject that shape.
+  - Fixed: the UI path parser treated backslashes as separators for local Linux
+    paths, so `projects\app` looked contained when the server rejects it. Local
+    paths now split only on `/`; WSL POSIX paths reject backslashes and WSL UNC
+    paths still split on both separators.
+  - Fixed: `POST /fs/mkdir` applied Windows folder-name rules to an omitted
+    parent on Windows, and OpenAPI now documents the optional browse/mkdir
+    `mode` and default parent.
+  - Verified: `go test ./... -count=1`, `go vet ./...`, Linux cross-build,
+    UI `npm test` (377 tests), `npm run check`, Playwright Add Site flows,
+    `build/windows/devstack-links.test.ps1` (92 assertions on PowerShell 5.1 and
+    7), and PowerShell 5.1/7 parse checks.
 - [ ] Pushed, upgraded, real install verified

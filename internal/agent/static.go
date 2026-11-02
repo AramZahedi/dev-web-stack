@@ -49,6 +49,10 @@ func (r *Runtime) StartSite(ctx context.Context, id string) (agentproto.SiteActi
 		go r.watchNode(site.spec.ID, cmd, done)
 		return response, nil
 	}
+	if err := r.validateWSLProjectPath(site.spec); err != nil {
+		r.mu.Unlock()
+		return agentproto.SiteActionResponse{}, err
+	}
 	handler, err := staticserve.NewStaticHandler(site.documentRoot, site.spec.SPAFallback)
 	if err != nil {
 		r.mu.Unlock()

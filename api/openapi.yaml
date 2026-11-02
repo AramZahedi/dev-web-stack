@@ -1582,10 +1582,19 @@ paths:
       operationId: browseFilesystem
       security: []
       parameters:
+        - name: mode
+          in: query
+          required: false
+          description: Source namespace for the browse. Omit for the local/Windows root.
+          schema:
+            type: string
+            enum: [wsl, windows, local]
         - name: path
           in: query
-          required: true
-          description: Absolute directory path.
+          required: false
+          description: |
+            Absolute directory path. Defaults to the managed projects root for
+            the selected mode.
           schema:
             type: string
       responses:
@@ -3767,14 +3776,16 @@ components:
 
     FsMkdirRequest:
       type: object
-      required: [path, name]
+      required: [name]
       properties:
         mode:
           type: string
           enum: [wsl, windows, local]
         path:
           type: string
-          description: Absolute parent directory.
+          description: |
+            Absolute parent directory. Defaults to the managed projects root for
+            the selected mode.
         name:
           type: string
           description: Single path segment; must not start with a dot.

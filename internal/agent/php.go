@@ -408,6 +408,10 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 		return agentproto.SitePrepareResponse{}, fmt.Errorf("agent: invalid generation name %q", gen)
 	}
 
+	if err := r.validateWSLProjectPath(req.Site); err != nil {
+		return agentproto.SitePrepareResponse{}, err
+	}
+
 	docroot, err := resolvePHPDocumentRoot(req.Site)
 	if err != nil {
 		return agentproto.SitePrepareResponse{}, err
@@ -541,6 +545,10 @@ func (r *Runtime) StartPHP(ctx context.Context, id string, req agentproto.PHPAct
 			r.mu.Unlock()
 			return agentproto.SiteActionResponse{}, fmt.Errorf("agent: generation %q not prepared for site %q", gen, id)
 		}
+	}
+	if err := r.validateWSLProjectPath(targetGen.spec); err != nil {
+		r.mu.Unlock()
+		return agentproto.SiteActionResponse{}, err
 	}
 	oldGenName := site.activeGen
 	var oldProcess *fpmProcess

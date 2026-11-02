@@ -149,6 +149,26 @@ func TestValidateManagedProjectPathWindows(t *testing.T) {
 	})
 }
 
+func TestValidateManagedProjectPathRejectsRootAlias(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	// The lexical path is a strict child, but it resolves to the root itself.
+	if err := ValidateManagedProjectPath(model.SourceLocal, alias, "", root); !errors.Is(err, ErrOutsideProjectsRoot) {
+		t.Fatalf("root alias error = %v, want ErrOutsideProjectsRoot", err)
+	}
+	if err := ValidateStrictlyContainedPath(root, alias, runtime.GOOS == "windows"); err == nil {
+		t.Fatal("ValidateStrictlyContainedPath accepted a root alias")
+	}
+}
+
 func TestValidateManagedProjectPathAllowsSymlinkedRoot(t *testing.T) {
 	base := t.TempDir()
 	realRoot := filepath.Join(base, "real-projects")

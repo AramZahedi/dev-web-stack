@@ -45,7 +45,11 @@ its source mode. The root itself is not a valid site path.
 
 Containment is component-aware: `projects-old\mysite` is not inside `projects`.
 Windows comparisons are case-insensitive. Existing reparse points are resolved
-and rechecked, so a link inside the root that escapes it is rejected.
+and rechecked, so a link inside the root that escapes it is rejected. For WSL,
+use either the POSIX `/data/devstack/projects/mysite` form or the
+`\\wsl.localhost\devstack\data\devstack\projects\mysite` UNC form; a POSIX WSL
+path must not contain a backslash because the Windows host spelling cannot
+represent it unambiguously.
 
 The rule is enforced when a site is created, when a source-mode copy destination
 is selected, and when a site is started or reconciled. Existing sites outside the

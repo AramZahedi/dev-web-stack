@@ -154,7 +154,9 @@ func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 	}
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	raw := strings.TrimSpace(req.Path)
-	windowsNames := mode == "windows" || (mode == "" && raw != "" && filepath.VolumeName(raw) != "")
+	windowsNames := mode == "windows" ||
+		(mode == "" && raw != "" && filepath.VolumeName(raw) != "") ||
+		(mode == "" && raw == "" && runtime.GOOS == "windows")
 	name, err := validateFolderName(req.Name, windowsNames)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, err.Error(), nil)

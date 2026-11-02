@@ -93,6 +93,27 @@ func TestCreateRejectsSiblingOfProjectsRoot(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsRootAlias(t *testing.T) {
+	svc, fakes := newTestService(t)
+	root := managedTestRoot(t, fakes)
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("symlinks are unavailable on this host: %v", err)
+	}
+
+	_, err := svc.Create(ctx, CreateRequest{
+		Name: "alias", Path: alias, Kind: "static", SourceMode: string(managedTestMode()),
+	})
+	if !errors.Is(err, pathmode.ErrOutsideProjectsRoot) {
+		t.Fatalf("Create(root alias) error = %v, want ErrOutsideProjectsRoot", err)
+	}
+	if sites, err := fakes.store.ListSites(ctx); err != nil {
+		t.Fatal(err)
+	} else if len(sites) != 0 {
+		t.Fatalf("site persisted after rejecting the root alias: %+v", sites)
+	}
+}
+
 func TestCreateAcceptsChildOfProjectsRoot(t *testing.T) {
 	svc, fakes := newTestService(t)
 	root := managedTestRoot(t, fakes)

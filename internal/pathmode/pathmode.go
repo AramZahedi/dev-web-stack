@@ -72,7 +72,7 @@ func ValidateManagedProjectPath(mode model.SourceMode, hostPath, backendPath, ro
 		target := strings.TrimSpace(hostPath)
 		windows := runtime.GOOS == "windows"
 		if strictlyContains(root, target, windows) {
-			if err := ValidateContainedPath(root, target, windows); err != nil {
+			if err := ValidateStrictlyContainedPath(root, target, windows); err != nil {
 				return fmt.Errorf("%w: %v", ErrOutsideProjectsRoot, err)
 			}
 			return nil
@@ -264,9 +264,32 @@ func ContainsPath(root, target string, windows bool) bool {
 }
 
 // ValidateContainedPath confirms lexical containment and resolves symlinks or
-// Windows reparse-point ancestors before allowing an operation on a path.
+// Windows reparse-point ancestors before allowing an operation on a path. The
+// root itself is allowed; use ValidateStrictlyContainedPath when the operation
+// requires a descendant.
 func ValidateContainedPath(root, target string, windows bool) error {
-	if !ContainsPath(root, target, windows) {
+	return validateContainedPath(root, target, windows, false)
+}
+
+// ValidateStrictlyContainedPath is ValidateContainedPath plus an explicit
+// rejection of the root itself, in both its lexical and resolved spelling. It
+// closes aliases such as a junction inside the root that points back at the
+// root, which would otherwise register the root as a site or copy destination.
+func ValidateStrictlyContainedPath(root, target string, windows bool) error {
+	return validateContainedPath(root, target, windows, true)
+}
+
+func validateContainedPath(root, target string, windows, strict bool) error {
+	contained := func(base, candidate string) bool {
+		if strict {
+			return strictlyContains(base, candidate, windows)
+		}
+		return ContainsPath(base, candidate, windows)
+	}
+	if !contained(root, target) {
+		if strict {
+			return fmt.Errorf("%w: %q is not a strict descendant of %q", ErrInvalidPath, target, root)
+		}
 		return fmt.Errorf("%w: %q is outside %q", ErrInvalidPath, target, root)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(root)
@@ -277,7 +300,7 @@ func ValidateContainedPath(root, target string, windows bool) error {
 	if err != nil {
 		return fmt.Errorf("%w: resolve target %q: %v", ErrInvalidPath, target, err)
 	}
-	if !ContainsPath(resolvedRoot, resolvedTarget, windows) {
+	if !contained(resolvedRoot, resolvedTarget) {
 		return fmt.Errorf("%w: resolved path %q escapes %q", ErrInvalidPath, target, root)
 	}
 	return nil
@@ -336,6 +359,12 @@ func translateWindows(input string) (string, string, error) {
 
 func translateWSL(input string) (string, string, error) {
 	if strings.HasPrefix(input, "/") && !strings.HasPrefix(input, "//") {
+		// A backslash is a legal Linux filename character, but the Windows UNC
+		// host spelling would read it as a separator. Reject it instead of
+		// persisting a site whose host and backend paths disagree.
+		if strings.ContainsRune(input, '\\') {
+			return "", "", fmt.Errorf("%w: %q contains a backslash; use a WSL UNC path to separate components", ErrInvalidPath, input)
+		}
 		cleaned := path.Clean(input)
 		if cleaned == "/" {
 			return "", "", fmt.Errorf("%w: WSL path must not be the filesystem root", ErrInvalidPath)
