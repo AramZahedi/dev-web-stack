@@ -335,6 +335,8 @@ Filter only published host ports; keep container ports, health checks, network a
 Run: `bash test/e2e/service-slot/no-ports_test.sh`
 Expected: PASS while `Get-NetTCPConnection -LocalPort 3306,8082` still shows the real install's listeners; no new listener on 3306/8082; Windows reaches the PMA relay on 24186 (or the active worker's relay port).
 
+The seam is implemented as `DEVSTACK_E2E_NO_PUBLISHED_PORTS`/`suppress_published_ports` and is exercised by the Linux database lifecycle suites; fixed service ports stay out of Compose while catalog metadata remains available for credentials and status.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -1076,6 +1078,8 @@ These were found during planning research. Each is a **candidate** until reprodu
 | D19 | A second Docker engine in the shared WSL namespace cannot publish fixed ports while the real install engine is active. | H3/H4/H6 | Implemented `DEVSTACK_E2E_NO_PUBLISHED_PORTS`; DB lifecycle/core/adversarial and site/backup suites now pass with no host port publishing. |
 | D20 | phpMyAdmin required cookie login and did not use the managed root account | H4 | `auth_type=config`, root secret mount, migration/refresh on restart; live browser test green. |
 | D21 | Cycle5's UI fixture used `${home}/projects` while the product manages `${devstack_home}/projects` | H4/L1 | Use the managed root and disposable helper home; live database UI fixture now starts. |
+| D22 | Cycle6's near-1 GiB import wait was shorter than the upload; the job queues after upload finishes | H4 | Extend the harness wait to 30 minutes; 115/115 backup edge cases pass. |
+| D23 | Real-install hosts block lost `static.test` after the upgrade | W | `devstack doctor --repair` restored both managed domains; doctor is green. |
 
 ## 7. Gates and definition of done
 

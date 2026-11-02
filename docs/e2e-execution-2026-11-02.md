@@ -26,6 +26,9 @@
 | Database adversarial E2E-16 | `cycle4-e2e16.sh` | 82/82 passed |
 | Site database E2E-03/04/05/06/17 | `cycle5-run-all.sh` plus E2E-06 rerun | 40/40, 33/33, 40/40, 19/19, 58/58 |
 | Backup/import E2E-07 | `cycle6-e2e07.sh` | 130/130 passed |
+| Backup edge cases E2E-18 | `cycle6-e2e18.sh` | 115/115 passed (near-1 GiB, disk-full, concurrency) |
+| Redis ACL E2E-08 | `cycle7-e2e08.sh` | 53/54 passed; only the optional live Redis tab wait timed out |
+| Redis migration E2E-19 | `cycle7-e2e19.sh` | 58/58 passed |
 | Live database UI (disposable daemon) | `playwright test -c playwright.live.config.ts --grep "Site Detail\|metadata-only\|reserved database\|Add Site review"` | 4 passed |
 | phpMyAdmin auto-login (live) | `npx playwright test -c playwright.live.config.ts --grep "phpMyAdmin auto-login"` | 1 passed |
 | Real upgrade | `install.ps1 -Upgrade` | PASS; daemon/helper/agent healthy |
@@ -52,16 +55,17 @@
 | D20 | phpMyAdmin auto-login as the active root user. |
 | D21 | Cycle5 UI fixtures now live under the managed projects root and use the disposable helper home. |
 | D22 | Cycle6 large-import wait extended from 10 to 30 minutes; near-1 GiB uploads queue a job but take longer than the old wait. |
+| D23 | Real-install hosts block lost `static.test` after the upgrade; `devstack doctor --repair` restored both managed domains and doctor is green. |
 
 ## Blocked / not completed
 
 | IDs | Reason | Next action |
 |---|---|---|
-| E2E-18 near-1 GiB import | Long-running upload exceeds the original 10-minute harness wait; the product queues the job and the harness wait was extended to 30 minutes. | Finish the timed rerun and record PASS/BLOCKED. |
-| E2E-19/20 | Not yet run in this session. | Run cycle7 Redis/CLI scenarios after the backup suite. |
+| E2E-20 | The old PMA-config fixture still assumes a published high port; the product now uses no published ports and auto-login. | Covered by `pma-autologin.live.spec.ts`; update the fixture if a full config-reinstall run is required. |
+| E2E-08 live Redis tab | The optional live Redis dashboard tab check timed out waiting for its harness `ui-stop` file; the 53 non-UI Redis assertions passed. | Fix the fixture wait/cleanup and rerun the single UI check. |
 | DB-28 / cycles 9–15 | Paused by explicit user instruction. | Resume only with explicit approval. |
 | INST-24/25/29 | No disposable Windows VM, Windows Sandbox, Hyper-V, VirtualBox, VMware, or QEMU on this host. `-TestSandbox` does not prove uninstall/trust/hosts. | Provision a disposable VM, then run Task 17A. |
-| H1/H2/H3/H4/H5/H6/L1/L2 full 268-row runs | The 8-worker harness (Tasks 0–7) is planned but not yet implemented; this session ran the existing Linux/UI/API suites instead. | Implement Tasks 0–7, then run the lane matrix. |
+| H1/H2/H3/H4/H5/H6/L1/L2 full 268-row runs | The 8-worker harness (Tasks 0–7) is planned but not yet implemented; this session ran the existing Linux/UI/API suites and the full database lifecycle matrix. | Implement Tasks 0–7, then run the lane matrix. |
 
 ## Cleanup
 

@@ -215,7 +215,7 @@ c4_assert_eq "${scenario}" "default password reveal is audited" "${audit_reveal}
 
 c7_section "E2E-08 Redis site links are rejected"
 c5_create_project e2e08-site >/dev/null
-c5_cli --json site add --name e2e08-site --path "${home}/projects/e2e08-site" --kind static \
+c5_cli --json site add --name e2e08-site --path "${devstack_home}/projects/e2e08-site" --kind static \
 	>"${evidence_dir}/${scenario}/site-add.json" 2>"${evidence_dir}/${scenario}/site-add.err"
 c6_expect_cli_code "${scenario}" "CLI rejects a site link to Redis" DATABASE_UNSUPPORTED \
 	"${evidence_dir}/${scenario}/link-cli.json" \
