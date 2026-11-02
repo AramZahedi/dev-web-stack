@@ -116,6 +116,7 @@ func TestHandleFSWSLConfinedToProjectsRoot(t *testing.T) {
 		"/etc",
 		"/data/devstack",
 		"/data/devstack/projects-old",
+		"/data/devstack/projects\\site",
 		"/data/other",
 	} {
 		mockBrowser.requestedPath = ""
@@ -133,7 +134,7 @@ func TestHandleFSWSLConfinedToProjectsRoot(t *testing.T) {
 		}
 	}
 
-	for _, path := range []string{pathmode.WSLProjectsRoot, pathmode.WSLProjectsRoot + "/site-one"} {
+	for _, path := range []string{pathmode.WSLProjectsRoot, pathmode.WSLProjectsRoot + "/site-one", pathmode.WSLProjectsRoot + "/app:v2"} {
 		mockBrowser.requestedPath = ""
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/fs?mode=wsl&path="+url.QueryEscape(path), nil)
 		rec := httptest.NewRecorder()
@@ -159,7 +160,7 @@ func TestHandleFSWSLConfinedToProjectsRoot(t *testing.T) {
 }
 
 func TestHandleFSMkdirWSLConfinedToProjectsRoot(t *testing.T) {
-	for _, path := range []string{"/", "/etc", "/data/devstack", "/data/devstack/projects-old"} {
+	for _, path := range []string{"/", "/etc", "/data/devstack", "/data/devstack/projects-old", "/data/devstack/projects\\site"} {
 		mockBrowser := &fakeWSLFSBrowser{}
 		server := &Server{cfg: Config{UserHome: t.TempDir(), WSLFS: mockBrowser}}
 		body := fmt.Sprintf(`{"mode":"wsl","path":%q,"name":"app"}`, path)
@@ -173,7 +174,7 @@ func TestHandleFSMkdirWSLConfinedToProjectsRoot(t *testing.T) {
 		}
 	}
 
-	for _, path := range []string{pathmode.WSLProjectsRoot, pathmode.WSLProjectsRoot + "/child"} {
+	for _, path := range []string{pathmode.WSLProjectsRoot, pathmode.WSLProjectsRoot + "/child", pathmode.WSLProjectsRoot + "/app:v2"} {
 		mockBrowser := &fakeWSLFSBrowser{
 			mkdirListing: agentproto.FSListing{Path: path + "/app", Entries: []agentproto.FSEntry{}},
 		}
@@ -201,6 +202,15 @@ func TestHandleFSMkdirWSLConfinedToProjectsRoot(t *testing.T) {
 	}
 	if mockBrowser.mkdirPath != pathmode.WSLProjectsRoot {
 		t.Fatalf("default WSL mkdir path = %q, want %q", mockBrowser.mkdirPath, pathmode.WSLProjectsRoot)
+	}
+}
+
+func TestValidateFolderNameColonIsWindowsOnly(t *testing.T) {
+	if _, err := validateFolderName("app:v2", true); err == nil {
+		t.Fatal("Windows folder name accepted a colon")
+	}
+	if _, err := validateFolderName("app:v2", false); err != nil {
+		t.Fatalf("Linux folder name rejected a colon: %v", err)
 	}
 }
 

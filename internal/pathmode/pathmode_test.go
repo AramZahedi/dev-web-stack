@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
@@ -35,7 +36,7 @@ func TestValidateSourceMode(t *testing.T) {
 	}
 }
 
-func TestTranslateSourceEnforcesConfiguredDistroAndCDrive(t *testing.T) {
+func TestTranslateSourceEnforcesConfiguredDistroAndDrivePaths(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mode   model.SourceMode
@@ -51,7 +52,7 @@ func TestTranslateSourceEnforcesConfiguredDistroAndCDrive(t *testing.T) {
 		{"invalid configured distro", model.SourceWSL, `/home/aram/site`, `..\Other`, false},
 		{"UNC distro with traversal", model.SourceWSL, `\\wsl.localhost\..\home`, "..", false},
 		{"C drive", model.SourceWindows, `C:\devstack\projects\site`, "", true},
-		{"other drive", model.SourceWindows, `D:\projects\site`, "", false},
+		{"other drive", model.SourceWindows, `D:\projects\site`, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host, backend, err := TranslateSourceForDistro(tc.mode, tc.path, tc.distro)
@@ -87,6 +88,12 @@ func TestContainedPathUsesWindowsCaseInsensitiveBoundaries(t *testing.T) {
 	if ContainsPath("/projects/Site", "/projects/site/public", false) {
 		t.Fatal("Linux containment should remain case-sensitive")
 	}
+	if ContainsPath("/projects/site", `/projects/site\public`, false) {
+		t.Fatal("Linux containment treated a backslash as a separator")
+	}
+	if !ContainsPath(`C:\projects\site`, `C:\projects\site\public`, true) {
+		t.Fatal("Windows containment rejected a backslash child")
+	}
 }
 
 func TestValidateContainedPathRejectsSymlinkEscape(t *testing.T) {
@@ -100,7 +107,8 @@ func TestValidateContainedPathRejectsSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("symlinks are unavailable on this host: %v", err)
 	}
-	if err := ValidateContainedPath(inside, filepath.Join(link, "secret"), false); err == nil {
+	windows := runtime.GOOS == "windows"
+	if err := ValidateContainedPath(inside, filepath.Join(link, "secret"), windows); err == nil {
 		t.Fatal("symlink escape was accepted")
 	}
 }
@@ -115,11 +123,14 @@ func TestTranslateSource(t *testing.T) {
 		wantErr bool
 	}{
 		{"windows drive", model.SourceWindows, `C:\Users\Aram\app`, `C:\Users\Aram\app`, "/mnt/c/Users/Aram/app", false},
+		{"windows other drive", model.SourceWindows, `D:\Projects\app`, `D:\Projects\app`, "/mnt/d/Projects/app", false},
 		{"windows slashes", model.SourceWindows, `C:/Users/Aram/app/`, `C:\Users\Aram\app`, "/mnt/c/Users/Aram/app", false},
 		{"windows lowercase C drive", model.SourceWindows, `c:\code\app`, `C:\code\app`, "/mnt/c/code/app", false},
 		{"wsl localhost", model.SourceWSL, `\\wsl.localhost\Ubuntu\home\aram\app`, `\\wsl.localhost\Ubuntu\home\aram\app`, "/home/aram/app", false},
 		{"wsl dollar", model.SourceWSL, `\\wsl$\Ubuntu\home\aram\app`, `\\wsl.localhost\Ubuntu\home\aram\app`, "/home/aram/app", false},
 		{"wsl posix path", model.SourceWSL, `/data/devstack/projects/site`, `\\wsl.localhost\devstack\data\devstack\projects\site`, "/data/devstack/projects/site", false},
+		{"wsl posix colon", model.SourceWSL, `/data/devstack/projects/app:v2`, `\\wsl.localhost\devstack\data\devstack\projects\app:v2`, "/data/devstack/projects/app:v2", false},
+		{"wsl UNC colon", model.SourceWSL, `\\wsl.localhost\devstack\data\devstack\projects\app:v2`, `\\wsl.localhost\devstack\data\devstack\projects\app:v2`, "/data/devstack/projects/app:v2", false},
 		{"local", model.SourceLocal, "/home/aram/app", "/home/aram/app", "/home/aram/app", false},
 		{"local clean", model.SourceLocal, "/home/aram/./app/", "/home/aram/app", "/home/aram/app", false},
 		{"empty", model.SourceWindows, "", "", "", true},
@@ -164,7 +175,10 @@ func TestProxyDocumentRoot(t *testing.T) {
 	}{
 		{"windows", model.Site{SourceMode: model.SourceWindows, HostPath: `C:\app`, DocumentRoot: "public"}, `C:\app\public`, false},
 		{"wsl", model.Site{SourceMode: model.SourceWSL, HostPath: `\\wsl.localhost\Ubuntu\home\a\app`, DocumentRoot: "public"}, `\\wsl.localhost\Ubuntu\home\a\app\public`, false},
+		{"wsl colon document root", model.Site{SourceMode: model.SourceWSL, HostPath: `\\wsl.localhost\devstack\data\devstack\projects\app`, DocumentRoot: "dir:v2"}, `\\wsl.localhost\devstack\data\devstack\projects\app\dir:v2`, false},
 		{"local", model.Site{SourceMode: model.SourceLocal, HostPath: "/home/a/app", DocumentRoot: "public"}, "/home/a/app/public", false},
+		{"local colon document root", model.Site{SourceMode: model.SourceLocal, HostPath: "/home/a/app", DocumentRoot: "dir:v2"}, "/home/a/app/dir:v2", false},
+		{"windows colon document root", model.Site{SourceMode: model.SourceWindows, HostPath: `C:\app`, DocumentRoot: "dir:v2"}, "", true},
 		{"empty root", model.Site{SourceMode: model.SourceWindows, HostPath: `C:\app`}, `C:\app`, false},
 		{"dot root", model.Site{SourceMode: model.SourceWindows, HostPath: `C:\app`, DocumentRoot: "."}, `C:\app`, false},
 		{"absolute", model.Site{SourceMode: model.SourceWindows, HostPath: `C:\app`, DocumentRoot: `C:\other`}, "", true},

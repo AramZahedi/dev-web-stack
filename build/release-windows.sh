@@ -474,6 +474,7 @@ printf 'release-windows: generating internal checksums manifest\n'
 		uninstall.ps1 \
 		$( [ -f devstack-daemon-task.ps1 ] && echo "devstack-daemon-task.ps1" ) \
 		$( [ -f devstack-daemon.vbs ] && echo "devstack-daemon.vbs" ) \
+		$( [ -f devstack-links.ps1 ] && echo "devstack-links.ps1" ) \
 		README.md \
 		$( [ -f LICENSE ] && echo "LICENSE" ) \
 		build/wsl/agent.service \

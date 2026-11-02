@@ -176,6 +176,9 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 		if strings.TrimSpace(spec.BackendPath) == "" || !filepath.IsAbs(spec.BackendPath) {
 			return agentproto.SitePrepareResponse{}, errors.New("agent: node site backend_path must be an absolute WSL path")
 		}
+		if err := r.validateNodeProjectPath(spec); err != nil {
+			return agentproto.SitePrepareResponse{}, err
+		}
 	} else {
 		var err error
 		docroot, err = resolveStaticDocumentRoot(spec)
@@ -215,6 +218,33 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 	}
 	r.mu.Unlock()
 	return agentproto.SitePrepareResponse{BackendHost: "127.0.0.1", HTTPPort: port, FastCGIPort: spec.FastCGIPort}, nil
+}
+
+// validateNodeProjectPath rejects a WSL-source node project whose resolved
+// folder leaves the agent's managed projects root. Static and PHP preparation
+// already reject symlinked project paths; Node previously accepted any absolute
+// path, which let a symlinked folder inside the root start outside it. Windows
+// source mode is checked by the daemon against the Windows projects root.
+func (r *Runtime) validateNodeProjectPath(spec agentproto.SiteSpec) error {
+	if !strings.EqualFold(strings.TrimSpace(spec.SourceMode), "wsl") {
+		return nil
+	}
+	project := strings.TrimSpace(spec.BackendPath)
+	root := filepath.Join(r.root, "projects")
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("agent: resolve managed projects root: %w", err)
+	}
+	resolvedProject, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		return fmt.Errorf("agent: resolve node project folder: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedProject)
+	if err != nil || rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return errors.New("agent: node project folder is outside the managed projects root")
+	}
+	return nil
 }
 
 // Environment adds the managed CA bundle to site or terminal environments
@@ -496,7 +526,7 @@ func ctxErr(ctx context.Context) error {
 }
 
 var (
-	agentDatabaseUserIDPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	agentDatabaseUserIDPattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	agentExistingUsernamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 )
 

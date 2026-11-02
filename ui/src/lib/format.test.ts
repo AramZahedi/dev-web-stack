@@ -8,6 +8,7 @@ describe('format helpers', () => {
     expect(isAbsolutePath('D:\\projects\\site')).toBe(true);
     expect(isAbsolutePath('\\\\wsl.localhost\\devstack\\home\\aram\\site')).toBe(true);
     expect(isAbsolutePath('\\\\wsl$\\devstack\\home\\aram\\site')).toBe(true);
+    expect(isAbsolutePath('\\\\wsl.localhost\\devstack\\data\\devstack\\projects\\app:v2')).toBe(true);
     expect(isAbsolutePath('\\\\server\\share\\site')).toBe(false);
     expect(isAbsolutePath('\\\\?\\C:\\site')).toBe(false);
     expect(isAbsolutePath('C:\\site\\..\\other')).toBe(false);

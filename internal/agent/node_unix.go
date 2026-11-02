@@ -23,6 +23,9 @@ import (
 // port. The caller holds r.mu. The returned done channel closes after the
 // process has been reaped by watchNode.
 func (r *Runtime) startNodeLocked(site *runtimeSite) (agentproto.SiteActionResponse, *exec.Cmd, chan struct{}, error) {
+	if err := r.validateNodeProjectPath(site.spec); err != nil {
+		return agentproto.SiteActionResponse{}, nil, nil, err
+	}
 	nodeRoot, err := r.nodeRuntimePathLocked(site.spec.RuntimeVersion)
 	if err != nil {
 		return agentproto.SiteActionResponse{}, nil, nil, err

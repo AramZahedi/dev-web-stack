@@ -230,31 +230,13 @@ func (s *Service) checkProjectsRoot(ctx context.Context) Check {
 }
 
 // projectSiteMode resolves the source mode of a stored site. Rows without a
-// mode use the path shape: a drive path is Windows, a UNC path is WSL, and
-// everything else follows the doctor's platform.
+// mode use the shared path-shape inference: a drive path is Windows, a UNC path
+// is WSL, and everything else follows the doctor's platform.
 func projectSiteMode(site model.Site, platform string) model.SourceMode {
 	if mode := model.SourceMode(strings.TrimSpace(string(site.SourceMode))); mode != "" {
 		return mode
 	}
-	host := strings.TrimSpace(site.HostPath)
-	if isWindowsDrivePath(host) {
-		return model.SourceWindows
-	}
-	if strings.HasPrefix(strings.ReplaceAll(host, "/", `\`), `\\`) {
-		return model.SourceWSL
-	}
-	if platform == "windows" {
-		return model.SourceWindows
-	}
-	return model.SourceLocal
-}
-
-func isWindowsDrivePath(value string) bool {
-	if len(value) < 2 || value[1] != ':' {
-		return false
-	}
-	c := value[0]
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	return pathmode.InferSourceMode(site.HostPath, platform)
 }
 
 // parseManagedHosts extracts the domains from a single, complete managed block.

@@ -984,11 +984,11 @@ func (s *Service) validateManagedProjectPath(name string, mode model.SourceMode,
 
 // validateManagedSitePath applies the managed root boundary to a persisted
 // site. Rows created before the policy existed may have no source mode, so the
-// mode defaults from the platform and site kind.
+// mode is inferred from the stored path shape using the same rule as doctor.
 func (s *Service) validateManagedSitePath(site model.Site) error {
 	mode := site.SourceMode
 	if strings.TrimSpace(string(mode)) == "" {
-		mode = pathmode.DefaultSourceMode(site.Kind, runtime.GOOS)
+		mode = pathmode.InferSourceMode(site.HostPath, runtime.GOOS)
 	}
 	return s.validateManagedProjectPath(site.Name, mode, site.HostPath, site.BackendPath)
 }
@@ -1904,6 +1904,9 @@ func backendSpec(site model.Site) backend.SiteSpec {
 // environment values are process-only: they go into RuntimeEnv, never into
 // Env, so they cannot be persisted with the site or rendered into config.
 func (s *Service) backendSpecFor(ctx context.Context, site model.Site) backend.SiteSpec {
+	if strings.TrimSpace(string(site.SourceMode)) == "" {
+		site.SourceMode = pathmode.InferSourceMode(site.HostPath, runtime.GOOS)
+	}
 	spec := backendSpec(site)
 	if toolchain, err := s.ResolveNodeToolchain(ctx, site); err == nil {
 		spec.RuntimeVersion = toolchain.Version

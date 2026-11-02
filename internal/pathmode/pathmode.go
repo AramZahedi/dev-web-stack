@@ -71,16 +71,49 @@ func ValidateManagedProjectPath(mode model.SourceMode, hostPath, backendPath, ro
 	case model.SourceWindows, model.SourceLocal:
 		target := strings.TrimSpace(hostPath)
 		windows := runtime.GOOS == "windows"
-		if !strictlyContains(root, target, windows) {
+		if strictlyContains(root, target, windows) {
+			if err := ValidateContainedPath(root, target, windows); err != nil {
+				return fmt.Errorf("%w: %v", ErrOutsideProjectsRoot, err)
+			}
+			return nil
+		}
+		// Local mode canonicalizes the project path before it is persisted, so
+		// a configured projects_root that is itself a symlink or junction would
+		// otherwise look like an escape. Compare the resolved forms as well;
+		// the target must still be a strict descendant of the resolved root.
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
 			return fmt.Errorf("%w: %q must be a subfolder of %q", ErrOutsideProjectsRoot, target, root)
 		}
-		if err := ValidateContainedPath(root, target, windows); err != nil {
-			return fmt.Errorf("%w: %v", ErrOutsideProjectsRoot, err)
+		resolvedTarget, err := resolveExistingPrefix(target)
+		if err != nil || !strictlyContains(resolvedRoot, resolvedTarget, windows) {
+			return fmt.Errorf("%w: %q must be a subfolder of %q", ErrOutsideProjectsRoot, target, root)
 		}
 		return nil
 	default:
 		return fmt.Errorf("%w: %q", ErrInvalidSourceMode, mode)
 	}
+}
+
+// InferSourceMode derives the source mode for a persisted site row that has no
+// explicit mode. Drive paths are Windows, UNC paths are WSL, and everything else
+// follows the platform default. It mirrors the doctor's legacy-row inference so
+// start/reconcile and diagnostics agree on the allowed root.
+func InferSourceMode(hostPath, platform string) model.SourceMode {
+	host := strings.TrimSpace(hostPath)
+	if len(host) >= 2 && host[1] == ':' {
+		c := host[0]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			return model.SourceWindows
+		}
+	}
+	if strings.HasPrefix(strings.ReplaceAll(host, "/", `\`), `\\`) {
+		return model.SourceWSL
+	}
+	if strings.TrimSpace(platform) == "windows" {
+		return model.SourceWindows
+	}
+	return model.SourceLocal
 }
 
 // strictlyContains is ContainsPath plus an explicit rejection of the root
@@ -90,7 +123,10 @@ func strictlyContains(root, target string, windows bool) bool {
 		return false
 	}
 	clean := func(value string) string {
-		value = strings.ReplaceAll(strings.TrimSpace(value), `\`, "/")
+		value = strings.TrimSpace(value)
+		if windows {
+			value = strings.ReplaceAll(value, `\`, "/")
+		}
 		value = path.Clean(value)
 		if windows {
 			value = strings.ToLower(value)
@@ -205,10 +241,15 @@ func ValidateCreatedPath(value string) error {
 }
 
 // ContainsPath reports whether target is root or a descendant of root. Windows
-// paths use case-insensitive comparison and a component boundary.
+// paths use case-insensitive comparison and a component boundary. Backslashes
+// are path separators only on Windows; on Linux they are literal filename
+// characters, so a "projects\\app" alias must not look contained.
 func ContainsPath(root, target string, windows bool) bool {
 	clean := func(value string) string {
-		value = strings.ReplaceAll(strings.TrimSpace(value), `\`, "/")
+		value = strings.TrimSpace(value)
+		if windows {
+			value = strings.ReplaceAll(value, `\`, "/")
+		}
 		value = path.Clean(value)
 		if windows {
 			value = strings.ToLower(value)
@@ -274,9 +315,6 @@ func translateWindows(input string) (string, string, error) {
 	if !((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) {
 		return "", "", fmt.Errorf("%w: %q has no drive letter", ErrInvalidPath, input)
 	}
-	if drive != 'C' && drive != 'c' {
-		return "", "", fmt.Errorf("%w: only the C: drive is supported, got %q", ErrInvalidPath, drive)
-	}
 	rest := strings.TrimPrefix(slashed[3:], `\`)
 	rest = strings.TrimRight(rest, `\`)
 	if rest == "" {
@@ -305,9 +343,6 @@ func translateWSL(input string) (string, string, error) {
 		for _, component := range strings.Split(strings.Trim(cleaned, "/"), "/") {
 			if component == "" || component == "." || component == ".." {
 				return "", "", fmt.Errorf("%w: %q has an invalid component", ErrInvalidPath, input)
-			}
-			if strings.Contains(component, ":") {
-				return "", "", fmt.Errorf("%w: %q contains an alternate data stream", ErrInvalidPath, input)
 			}
 		}
 		host := `\\wsl.localhost\devstack\` + strings.ReplaceAll(strings.TrimPrefix(cleaned, "/"), "/", `\`)
@@ -341,9 +376,6 @@ func translateWSL(input string) (string, string, error) {
 	for _, component := range strings.Split(inside, "/") {
 		if component == "" || component == "." || component == ".." {
 			return "", "", fmt.Errorf("%w: %q has an invalid component", ErrInvalidPath, input)
-		}
-		if strings.Contains(component, ":") {
-			return "", "", fmt.Errorf("%w: %q contains an alternate data stream", ErrInvalidPath, input)
 		}
 	}
 	host := `\\wsl.localhost\` + distro + `\` + strings.ReplaceAll(inside, "/", `\`)
@@ -379,7 +411,10 @@ func ProxyDocumentRoot(site model.Site) (string, error) {
 		if component == "" || component == "." || component == ".." {
 			return "", fmt.Errorf("%w: document root %q has an invalid component", ErrInvalidPath, root)
 		}
-		if strings.Contains(component, ":") {
+		// ':' is a legal Linux filename character. It is only a stream
+		// separator in Windows source mode (and for legacy rows with no mode).
+		if strings.Contains(component, ":") &&
+			site.SourceMode != model.SourceWSL && site.SourceMode != model.SourceLocal {
 			return "", fmt.Errorf("%w: document root %q contains a stream name", ErrInvalidPath, root)
 		}
 	}

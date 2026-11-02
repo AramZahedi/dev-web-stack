@@ -163,7 +163,8 @@ export function isAbsolutePath(value: string): boolean {
     wslPath &&
       wslPath[1] !== '.' &&
       wslPath[1] !== '..' &&
-      !wslPath[2].split('\\').some((part) => part === '.' || part === '..' || part.includes(':')),
+      // Linux path components may contain ':', so only reject traversal here.
+      !wslPath[2].split('\\').some((part) => part === '.' || part === '..'),
   );
 }
 

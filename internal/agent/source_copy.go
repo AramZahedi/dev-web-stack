@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	"github.com/AramZahedi/dev-web-stack/internal/wsl"
 )
 
@@ -33,6 +35,15 @@ func (r *Runtime) CopySource(ctx context.Context, req agentproto.SourceCopyReque
 	destination = filepath.Clean(destination)
 	if source == "/" || destination == "/" {
 		return agentproto.SourceCopyResponse{}, errors.New("agent: source and destination must not be the filesystem root")
+	}
+	if req.Mode == "wsl" {
+		root := filepath.Join(r.root, "projects")
+		if destination == root || !pathmode.ContainsPath(root, destination, runtime.GOOS == "windows") {
+			return agentproto.SourceCopyResponse{}, errors.New("agent: copy destination is outside the managed projects root")
+		}
+		if err := pathmode.ValidateContainedPath(root, destination, runtime.GOOS == "windows"); err != nil {
+			return agentproto.SourceCopyResponse{}, fmt.Errorf("agent: copy destination: %w", err)
+		}
 	}
 	result, err := wsl.CopySource(ctx, source, destination, req.Mode, req.RemoveSource)
 	if err != nil {

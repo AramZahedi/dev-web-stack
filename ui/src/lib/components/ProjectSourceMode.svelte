@@ -25,7 +25,7 @@
         />
         <span class="option-copy">
           <strong>Windows drive</strong>
-          <span>Project files stay on C: and are read by WSL.</span>
+          <span>Project files stay on a Windows drive and are read by WSL.</span>
         </span>
       </label>
       <label class="source-option" class:selected={mode === 'wsl'}>

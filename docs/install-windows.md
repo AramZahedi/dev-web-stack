@@ -234,6 +234,11 @@ sets. The WSL links require the managed `devstack` distribution; the Windows
 links work without WSL. A `-SkipWSL` install creates the Windows links and skips
 the WSL links when the distro target is unavailable.
 
+`Windows-Projects` targets the default `%USERPROFILE%\.devstack\projects`. If
+`projects_root` in `config.yaml` points somewhere else, that configured path is
+the managed root for Windows-mode sites; the link still opens the default
+location.
+
 When the installation root itself is `C:\devstack` (the legacy layout), that
 folder cannot also host the links. The installer warns and skips them; reinstall
 under `%USERPROFILE%\.devstack` to use the standard link layout.

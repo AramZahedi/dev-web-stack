@@ -46,6 +46,16 @@ describe('normalizePathForCompare', () => {
     ).toBe('/data/devstack/projects/app');
   });
 
+  it('allows colons in Linux and WSL folder names but not Windows components', () => {
+    expect(normalizePathForCompare('/data/devstack/projects/app:v2', 'local')).toBe(
+      '/data/devstack/projects/app:v2',
+    );
+    expect(normalizePathForCompare('/data/devstack/projects/app:v2', 'wsl')).toBe(
+      '/data/devstack/projects/app:v2',
+    );
+    expect(normalizePathForCompare('C:\\projects\\file:stream', 'windows')).toBe('');
+  });
+
   it('rejects relative paths and parent components', () => {
     expect(normalizePathForCompare('projects/app', 'local')).toBe('');
     expect(normalizePathForCompare('/data/devstack/projects/../other', 'local')).toBe('');
@@ -94,6 +104,18 @@ describe('isStrictlyInsideRoot', () => {
     expect(isStrictlyInsideRoot('/home/dev/.devstack/Projects', '/home/dev/.devstack/projects/app', 'local')).toBe(
       false,
     );
+  });
+
+  it('accepts Linux folder names containing a colon', () => {
+    expect(isStrictlyInsideRoot(WSL_ROOT, `${WSL_ROOT}/app:v2`, 'wsl')).toBe(true);
+    expect(isStrictlyInsideRoot(LOCAL_ROOT, `${LOCAL_ROOT}/app:v2`, 'local')).toBe(true);
+    expect(
+      isStrictlyInsideRoot(
+        WSL_ROOT,
+        '\\\\wsl.localhost\\devstack\\data\\devstack\\projects\\app:v2',
+        'wsl',
+      ),
+    ).toBe(true);
   });
 
   it('rejects any parent component even when the cleaned path would be inside', () => {

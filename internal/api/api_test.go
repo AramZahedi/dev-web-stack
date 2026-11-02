@@ -1185,6 +1185,55 @@ func TestFSBrowserUsesConfiguredProjectsRoot(t *testing.T) {
 	assertError(t, rec, http.StatusForbidden, codeForbidden)
 }
 
+func TestFSBrowserKeepsLexicalPathsWhenProjectsRootIsSymlink(t *testing.T) {
+	realRoot := filepath.Join(t.TempDir(), "real-projects")
+	if err := os.MkdirAll(filepath.Join(realRoot, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(t.TempDir(), "projects")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+	fx := newFixture(t, Config{UserHome: t.TempDir(), ProjectsRoot: linkRoot})
+
+	rec := fx.request(t, "GET", "/api/v1/fs", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("symlinked root browse code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var listing fsListing
+	decode(t, rec, &listing)
+	if listing.Path != linkRoot {
+		t.Fatalf("listing path = %q, want lexical root %q", listing.Path, linkRoot)
+	}
+	if len(listing.Entries) != 1 || listing.Entries[0].Path != filepath.Join(linkRoot, "app") {
+		t.Fatalf("listing entries = %+v, want lexical child path", listing.Entries)
+	}
+
+	// The returned child path must be accepted by the browser; otherwise the
+	// UI clamps it back to the root and appears to loop.
+	rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(listing.Entries[0].Path), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("child browse code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	decode(t, rec, &listing)
+	if listing.Path != filepath.Join(linkRoot, "app") {
+		t.Fatalf("child listing path = %q", listing.Path)
+	}
+
+	body := fmt.Sprintf(`{"path":%q,"name":"created"}`, linkRoot)
+	rec = fx.request(t, "POST", "/api/v1/fs/mkdir", strings.NewReader(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("symlinked root mkdir code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	decode(t, rec, &listing)
+	if listing.Path != filepath.Join(linkRoot, "created") {
+		t.Fatalf("mkdir path = %q, want lexical child", listing.Path)
+	}
+	if info, err := os.Stat(filepath.Join(realRoot, "created")); err != nil || !info.IsDir() {
+		t.Fatalf("created directory = %v, %v", info, err)
+	}
+}
+
 func TestSettingsUsesStoreOverrides(t *testing.T) {
 	home := t.TempDir()
 	fx := newFixture(t, Config{UserHome: home})

@@ -16,15 +16,16 @@ interface ParsedPath {
 
 const MANAGED_WSL_DISTRO = 'devstack';
 
-function parseSegments(value: string): string[] | null {
+function parseSegments(value: string, allowColon = false): string[] | null {
   const parts = value.split(/[\\/]+/);
   const segments: string[] = [];
   for (const part of parts) {
     if (!part || part === '.') continue;
     if (part === '..') return null;
-    // Alternate data streams, drive letters and device syntax do not belong
-    // in an individual path component.
-    if (part.includes(':') || part.includes('\0')) return null;
+    // Windows rejects alternate data streams, drive letters and device syntax
+    // in an individual path component. Linux (local and WSL) allows ':' in a
+    // directory name, so only reject NUL there.
+    if (part.includes('\0') || (!allowColon && part.includes(':'))) return null;
     segments.push(part);
   }
   return segments;
@@ -40,12 +41,12 @@ function parsePath(value: string, mode: PathRootMode): ParsedPath | null {
       // Only the managed devstack distro is a valid WSL namespace. Other
       // distros are rejected even when their Linux path looks similar.
       if (unc[1].toLowerCase() !== MANAGED_WSL_DISTRO) return null;
-      const segments = parseSegments(unc[2] ?? '');
+      const segments = parseSegments(unc[2] ?? '', true);
       if (!segments) return null;
       return { key: `/${segments.join('/')}`, segments };
     }
     if (!input.startsWith('/')) return null;
-    const segments = parseSegments(input.slice(1));
+    const segments = parseSegments(input.slice(1), true);
     if (!segments) return null;
     return { key: `/${segments.join('/')}`, segments };
   }
@@ -64,7 +65,7 @@ function parsePath(value: string, mode: PathRootMode): ParsedPath | null {
   }
 
   if (!input.startsWith('/')) return null;
-  const segments = parseSegments(input.slice(1));
+  const segments = parseSegments(input.slice(1), true);
   if (!segments) return null;
   return { key: `/${segments.join('/')}`, segments };
 }

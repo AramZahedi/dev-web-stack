@@ -307,6 +307,15 @@ Commit when the harness passes.
   - UI `npm test` (370 tests) and `npm run check` (0 errors, 0 warnings)
   - Playwright Add Site flows (2 passed)
   - `build/windows/devstack-links.test.ps1` (87 assertions on PowerShell 5.1 and 7)
-- [ ] Combined review-and-fix round 1
+- [x] Combined review-and-fix round 1
+  - Fixed: symlinked `projects_root` browser path loop, Linux/WSL colon
+    folder names (UI, pathmode, proxy document root, API mkdir), backslash
+    aliases on Linux, legacy empty-source-mode inference on start, WSL node
+    symlink escape, WSL copy-destination symlink escape, real-file link
+    refusal coverage, and the shell release checksum manifest.
+  - Verified: `go test ./... -count=1`, `go vet ./...`, Linux cross-build,
+    UI `npm test` (374 tests), `npm run check`, Playwright Add Site flows,
+    and `build/windows/devstack-links.test.ps1` (92 assertions on PowerShell
+    5.1 and 7).
 - [ ] Combined review-and-fix round 2
 - [ ] Pushed, upgraded, real install verified

@@ -128,12 +128,16 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, fsEntry{
 			Name: entry.Name(),
-			Path: filepath.Join(resolved, entry.Name()),
+			// Keep the caller's lexical path. The resolved directory is what
+			// gets read, but returning resolved paths would break the browser
+			// when the configured projects root is itself a junction or link:
+			// the UI's lexical root would no longer contain the child paths.
+			Path: filepath.Join(target, entry.Name()),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 
-	writeJSON(w, http.StatusOK, fsListing{Path: resolved, Entries: out})
+	writeJSON(w, http.StatusOK, fsListing{Path: target, Entries: out})
 }
 
 type fsMkdirRequest struct {
@@ -251,7 +255,10 @@ func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory cannot be created: "+err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, fsListing{Path: target, Entries: []fsEntry{}})
+	// Return the parent spelling the caller used (not the resolved parent) so a
+	// projects root that is a junction or symlink stays within the UI's
+	// lexical root.
+	writeJSON(w, http.StatusOK, fsListing{Path: filepath.Join(parent, name), Entries: []fsEntry{}})
 }
 
 func validateFolderName(raw string, windows bool) (string, error) {
@@ -272,6 +279,9 @@ func validateFolderName(raw string, windows bool) (string, error) {
 		return "", errors.New("folder name is too long")
 	}
 	if windows {
+		if strings.ContainsRune(name, ':') {
+			return "", errors.New("folder name must not contain a colon on Windows")
+		}
 		trimmed := strings.TrimRight(name, ". ")
 		if trimmed != name {
 			return "", errors.New("folder name must not end with a dot or space")

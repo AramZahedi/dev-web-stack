@@ -71,11 +71,13 @@ func TestValidateManagedProjectPathWSL(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "child", backend: root + "/app"},
+		{name: "colon child", backend: root + "/app:v2"},
 		{name: "nested child", backend: root + "/team/app"},
 		{name: "root itself", backend: root, wantErr: true},
 		{name: "root with trailing slash", backend: root + "/", wantErr: true},
 		{name: "sibling prefix", backend: root + "-old/app", wantErr: true},
 		{name: "sibling component", backend: "/data/devstack/projects2/app", wantErr: true},
+		{name: "backslash alias", backend: root + `\app`, wantErr: true},
 		{name: "outside", backend: "/data/devstack/system", wantErr: true},
 		{name: "empty", backend: "", wantErr: true},
 	} {
@@ -145,4 +147,56 @@ func TestValidateManagedProjectPathWindows(t *testing.T) {
 			t.Fatalf("err = %v, want ErrOutsideProjectsRoot", err)
 		}
 	})
+}
+
+func TestValidateManagedProjectPathAllowsSymlinkedRoot(t *testing.T) {
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real-projects")
+	child := filepath.Join(realRoot, "app")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(base, "projects")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	// A lexical child of the symlinked root is accepted.
+	if err := ValidateManagedProjectPath(model.SourceLocal, filepath.Join(linkRoot, "app"), "", linkRoot); err != nil {
+		t.Fatalf("lexical child of a symlinked root was rejected: %v", err)
+	}
+	// Local mode canonicalizes the project path before validation, so the
+	// resolved child must also be accepted.
+	if err := ValidateManagedProjectPath(model.SourceLocal, child, "", linkRoot); err != nil {
+		t.Fatalf("resolved child of a symlinked root was rejected: %v", err)
+	}
+	// The root itself stays invalid in both spellings.
+	for _, target := range []string{linkRoot, realRoot} {
+		if err := ValidateManagedProjectPath(model.SourceLocal, target, "", linkRoot); !errors.Is(err, ErrOutsideProjectsRoot) {
+			t.Fatalf("target %q: err = %v, want ErrOutsideProjectsRoot", target, err)
+		}
+	}
+}
+
+func TestInferSourceMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		platform string
+		want     model.SourceMode
+	}{
+		{name: "drive on windows", host: `C:\Users\dev\.devstack\projects\app`, platform: "windows", want: model.SourceWindows},
+		{name: "drive on linux", host: `D:\projects\app`, platform: "linux", want: model.SourceWindows},
+		{name: "UNC on windows", host: `\\wsl.localhost\devstack\data\devstack\projects\app`, platform: "windows", want: model.SourceWSL},
+		{name: "legacy wsl dollar UNC", host: `\\wsl$\devstack\data\devstack\projects\app`, platform: "windows", want: model.SourceWSL},
+		{name: "linux local", host: "/home/dev/.devstack/projects/app", platform: "linux", want: model.SourceLocal},
+		{name: "windows fallback", host: "/home/dev/.devstack/projects/app", platform: "windows", want: model.SourceWindows},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := InferSourceMode(tt.host, tt.platform); got != tt.want {
+				t.Fatalf("InferSourceMode(%q, %q) = %q, want %q", tt.host, tt.platform, got, tt.want)
+			}
+		})
+	}
 }

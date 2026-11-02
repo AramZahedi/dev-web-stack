@@ -871,6 +871,34 @@ describe('AddSite Wave 2 fields', () => {
     expect(mockApi.createSite).not.toHaveBeenCalled();
   });
 
+  it('accepts a WSL folder name containing a colon', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\Users\\Aram\\.devstack',
+      user_home: 'C:\\Users\\Aram',
+      projects_root: 'C:\\Users\\Aram\\.devstack\\projects',
+      wsl_distro: 'devstack',
+    });
+    render(AddSite);
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
+    await fireEvent.click(screen.getByRole('radio', { name: /PHP/ }));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('radio', { name: /WSL distro/ }) as HTMLInputElement).checked,
+      ).toBe(true),
+    );
+    await fireEvent.input(screen.getByLabelText(/Project folder/), {
+      target: { value: '/data/devstack/projects/app:v2' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByText('How should it run?')).toBeTruthy();
+    expect(screen.queryByText(/Use an absolute path inside/)).toBeNull();
+    expect(screen.queryByText(/must be inside/)).toBeNull();
+  });
+
   it('rejects a local project folder outside or equal to the managed root', async () => {
     render(AddSite);
     await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());

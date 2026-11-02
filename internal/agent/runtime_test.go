@@ -160,6 +160,38 @@ func TestStaticRuntimeRejectsEscapingAndSymlinkDocumentRoots(t *testing.T) {
 	}
 }
 
+func TestNodeRuntimeRejectsProjectOutsideManagedRoot(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	projects := filepath.Join(root, "projects")
+	contained := filepath.Join(projects, "contained")
+	if err := os.MkdirAll(contained, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := agentproto.SiteSpec{
+		ID:             "node-site",
+		Kind:           "node",
+		SourceMode:     "wsl",
+		BackendPath:    contained,
+		Command:        "npm start",
+		RuntimeVersion: "24.0.0",
+	}
+	if _, err := runtime.PrepareSite(context.Background(), spec); err != nil {
+		t.Fatalf("PrepareSite rejected a contained WSL project: %v", err)
+	}
+
+	outside := t.TempDir()
+	escape := filepath.Join(projects, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	spec.ID = "node-escape"
+	spec.BackendPath = filepath.Join(escape, "app")
+	if _, err := runtime.PrepareSite(context.Background(), spec); err == nil {
+		t.Fatal("PrepareSite accepted a node project that resolves outside the managed root")
+	}
+}
+
 func TestAgentPortAllocatorValidatesAllocatesReusesAndReleases(t *testing.T) {
 	ports := NewPortAllocator()
 	first, reused, err := ports.Allocate("site-a", "http", 0)
@@ -596,6 +628,46 @@ func TestAgentCopySourceRejectsRelativeOrUnknownPaths(t *testing.T) {
 		if _, err := runtime.CopySource(context.Background(), request); err == nil {
 			t.Fatalf("CopySource accepted %+v", request)
 		}
+	}
+}
+
+func TestAgentCopySourceRejectsWSLDestinationOutsideManagedRoot(t *testing.T) {
+	runtime, root := newTestRuntimeOnly(t)
+	projects := filepath.Join(root, "projects")
+	source := filepath.Join(projects, "source")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runtime.CopySource(context.Background(), agentproto.SourceCopyRequest{
+		Mode:        "wsl",
+		Source:      source,
+		Destination: projects,
+	}); err == nil {
+		t.Fatal("CopySource accepted the projects root itself as a destination")
+	}
+
+	outside := t.TempDir()
+	escape := filepath.Join(projects, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := runtime.CopySource(context.Background(), agentproto.SourceCopyRequest{
+		Mode:        "wsl",
+		Source:      source,
+		Destination: filepath.Join(escape, "copied"),
+	}); err == nil {
+		t.Fatal("CopySource accepted a destination whose parent leaves the managed root")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("copy wrote outside the managed root: %v", entries)
 	}
 }
 

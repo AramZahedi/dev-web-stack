@@ -192,3 +192,41 @@ func TestReconcileRejectsExternalSiteBeforeBackend(t *testing.T) {
 		t.Fatalf("backend prepared=%d started=%d for an external site", fakes.backend.genericPrepareCalls, fakes.backend.startCount())
 	}
 }
+
+func TestValidateManagedSitePathInfersLegacyModeFromPath(t *testing.T) {
+	svc, fakes := newTestService(t)
+	root := managedTestRoot(t, fakes)
+
+	t.Run("static wsl row without a mode", func(t *testing.T) {
+		site := model.Site{
+			Name:        "legacy-wsl",
+			Kind:        model.SiteStatic,
+			HostPath:    `\\wsl.localhost\devstack\data\devstack\projects\legacy-wsl`,
+			BackendPath: "/data/devstack/projects/legacy-wsl",
+		}
+		if err := svc.validateManagedSitePath(site); err != nil {
+			t.Fatalf("legacy WSL static row was rejected: %v", err)
+		}
+	})
+
+	t.Run("php windows row without a mode", func(t *testing.T) {
+		child := filepath.Join(root, "legacy-php")
+		site := model.Site{
+			Name:        "legacy-php",
+			Kind:        model.SitePHP,
+			HostPath:    child,
+			BackendPath: child,
+		}
+		if err := svc.validateManagedSitePath(site); err != nil {
+			t.Fatalf("legacy Windows PHP row was rejected: %v", err)
+		}
+	})
+
+	t.Run("external row without a mode is still rejected", func(t *testing.T) {
+		host, backend := externalTestPath(t)
+		site := model.Site{Name: "legacy-external", Kind: model.SiteStatic, HostPath: host, BackendPath: backend}
+		if err := svc.validateManagedSitePath(site); !errors.Is(err, pathmode.ErrOutsideProjectsRoot) {
+			t.Fatalf("err = %v, want ErrOutsideProjectsRoot", err)
+		}
+	})
+}

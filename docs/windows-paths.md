@@ -68,7 +68,9 @@ The Windows installer creates a real `C:\devstack` folder with four links:
 They are live views, not copies. Deleting a link removes only the link; the
 target and its data remain. The WSL links require the managed `devstack`
 distribution. `C:\devstack\README.txt` documents the exact targets and repair
-steps.
+steps. `Windows-Projects` targets the default `%USERPROFILE%\.devstack\projects`;
+if `projects_root` is configured elsewhere, that configured path is the managed
+root for Windows-mode sites.
 
 The links are never valid site paths. Use the canonical target instead:
 `C:\devstack\Windows-Projects\mysite` is rejected, while

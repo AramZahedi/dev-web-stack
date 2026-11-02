@@ -356,8 +356,9 @@ $fullLinksRoot\Windows-Install
 $fullLinksRoot\Windows-Projects
     Type:   directory junction
     Target: $windowsProjectsTarget
-    Windows-mode project folders on NTFS. This is the Windows managed projects
-    root.
+    Windows-mode project folders on NTFS. This is the default Windows managed
+    projects root; if config.yaml sets projects_root to another directory, that
+    configured path is the managed root instead.
 
 $fullLinksRoot\WSL-Install
     Type:   directory symbolic link

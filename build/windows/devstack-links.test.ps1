@@ -184,6 +184,7 @@ $wslProjectsTarget = Join-Path $tempRoot "wsl-projects"
 $dryLinksRoot = Join-Path $tempRoot "dry-links"
 $legacyRoot = Join-Path $tempRoot "legacy-root"
 $skipLinksRoot = Join-Path $tempRoot "skip-links"
+$fileLinksRoot = Join-Path $tempRoot "file-links"
 $missingWSLTarget = Join-Path $tempRoot "missing-wsl"
 $oldJunctionTarget = Join-Path $tempRoot "old-junction-target"
 $oldJunction = Join-Path $tempRoot "old-devstack"
@@ -283,6 +284,19 @@ try {
     Assert-True (@($refusalInstall.Warnings).Count -ge 1) "Install-DevstackLinks reports the refused link as a warning"
     Assert-True (Test-Path -LiteralPath $markerPath -PathType Leaf) "the refused real directory survives a full install run"
 
+    Write-Step "A real file at a link name is refused and preserved"
+    New-Item -ItemType Directory -Force -Path $fileLinksRoot | Out-Null
+    $fileLinkPath = Join-Path $fileLinksRoot "Windows-Install"
+    $realFilePath = Join-Path $tempRoot "not-a-link.txt"
+    Set-Content -LiteralPath $realFilePath -Value "real file data" -Encoding Ascii
+    Copy-Item -LiteralPath $realFilePath -Destination $fileLinkPath
+    $fileRefusal = Install-DevstackLinks -LinksRoot $fileLinksRoot -WindowsRoot $windowsRoot -WSLDistro "devstack" -WSLInstallTarget $wslInstallTarget -WSLProjectsTarget $wslProjectsTarget
+    Assert-True (@($fileRefusal.Warnings).Count -ge 1) "Install-DevstackLinks reports the refused file as a warning"
+    Assert-True ([string]::Join(" ", @($fileRefusal.Warnings)) -match 'Refusing to replace a real file or directory') "the warning explains that a real file is refused"
+    Assert-Equal "real file data" ([System.IO.File]::ReadAllText($fileLinkPath).Trim()) "the real file content is untouched"
+    Assert-True (Test-Path -LiteralPath (Join-Path $fileLinksRoot "Windows-Projects") -PathType Container) "the other Windows link is still created"
+    Assert-True (Test-Path -LiteralPath (Join-Path $fileLinksRoot "README.txt") -PathType Leaf) "README.txt is still written"
+
     Write-Step "DryRun creates nothing"
     $dryRun = Install-DevstackLinks -LinksRoot $dryLinksRoot -WindowsRoot $windowsRoot -WSLDistro "devstack" -WSLInstallTarget $wslInstallTarget -WSLProjectsTarget $wslProjectsTarget -DryRun
     Assert-True (-not (Test-Path -LiteralPath $dryLinksRoot)) "DryRun does not create the links root"
@@ -334,6 +348,9 @@ try {
         (Join-Path $skipLinksRoot "Windows-Projects"),
         (Join-Path $skipLinksRoot "WSL-Install"),
         (Join-Path $skipLinksRoot "WSL-Projects"),
+        (Join-Path $fileLinksRoot "Windows-Projects"),
+        (Join-Path $fileLinksRoot "WSL-Install"),
+        (Join-Path $fileLinksRoot "WSL-Projects"),
         $oldJunction
     )) {
         Remove-TestLink $path
