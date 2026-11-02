@@ -154,4 +154,3 @@ the disposable Ubuntu WSL database harness.
 - The Windows `wslrelay.exe` on 8082 hung after the suite churn; the documented
   `wsl --terminate devstack` plus agent restart recovered it, and PMA signon
   passed again.
-
