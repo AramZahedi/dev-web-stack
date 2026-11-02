@@ -207,6 +207,10 @@ if [ -f "${REPO_ROOT}/build/windows/devstack-daemon.vbs" ]; then
 	cp "${REPO_ROOT}/build/windows/devstack-daemon.vbs" "${STAGE}/devstack-daemon.vbs"
 	chmod 0644 "${STAGE}/devstack-daemon.vbs"
 fi
+if [ -f "${REPO_ROOT}/build/windows/devstack-links.ps1" ]; then
+	cp "${REPO_ROOT}/build/windows/devstack-links.ps1" "${STAGE}/devstack-links.ps1"
+	chmod 0644 "${STAGE}/devstack-links.ps1"
+fi
 cp "${REPO_ROOT}/README.md" "${STAGE}/README.md"
 chmod 0644 "${STAGE}/README.md"
 if [ -f "${REPO_ROOT}/LICENSE" ]; then

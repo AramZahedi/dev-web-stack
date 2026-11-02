@@ -136,8 +136,31 @@ repository now.
   backups/             pre-migration and operational backups
 ```
 
-Site project files are **not** stored in `sites/` today. Users create sites from arbitrary
-paths; the generated per-site configuration is under `sites/`.
+### Managed project boundary
+
+Site project files are **not** stored in `sites/` today. Every site lives under a
+managed projects root, and that root is a hard boundary:
+
+| Mode | Root |
+|---|---|
+| Windows (`windows`) | configured `projects_root`, default `%USERPROFILE%\.devstack\projects` |
+| WSL (`wsl`) | `/data/devstack/projects` in the managed distro |
+| Linux local (`local`) | configured `projects_root`, default `~/.devstack/projects` |
+
+A site path must be a **strict descendant** of its root. The root itself is
+invalid, containment is component-aware (`projects-old` is not inside
+`projects`), Windows comparison is case-insensitive, and resolved reparse points
+that escape the root are rejected. Enforcement applies on create, on the
+source-mode copy destination, and on start/reconcile. Existing sites outside the
+root are not deleted; they are blocked from starting and reported by
+`devstack doctor`. The filesystem browser and mkdir API are confined to the same
+roots: the root is browsable but cannot be selected as a site folder.
+
+On Windows, `C:\devstack` is a real folder that contains four navigation links
+(`Windows-Install`, `Windows-Projects`, `WSL-Install`, `WSL-Projects`) and a
+`README.txt`. The links are live views of the install and projects roots, not
+copies, and they are never accepted as site paths. The canonical target path is
+what the daemon stores and validates.
 
 ### SQLite tables (current)
 
@@ -401,12 +424,14 @@ service lifecycle paths exist.
 - Helper protocol is versioned and validates site/vhost data.
 - No arbitrary shell commands or file paths cross the helper boundary.
 - CA private key is helper-owned.
-- Site paths are validated and symlink-escaped paths are rejected.
+- Site paths must be strict descendants of the managed projects root; the root,
+  sibling prefixes, traversal, and symlink/reparse escapes are rejected.
 - Static serving uses `os.Root` containment.
 - PHP source/backup files and dotfiles are denied.
 - HSTS is stripped even if an upstream sends it.
 - `/api/v1/fs` directory browsing requires an active dashboard session, fails closed
-  when the user home cannot be resolved, and is confined to the user's home directory.
+  when the managed projects root cannot be resolved, and is confined to that root.
+  The root itself is browsable, but it cannot be selected as a site folder.
 - Client `Proxy` headers are stripped as hop-by-hop headers before FastCGI/CGI dispatch.
 - The helper's `validateBackendOwnership` requires vhost backend paths to be owned by
   `allow_uid` (or located under the allowed home) before installing native vhosts.
@@ -448,7 +473,8 @@ service lifecycle paths exist.
 - Still pending: external-site Docker mounts, real root host-tuning acceptance, and
   live Wave 3 benchmark evidence. Per-site PHP-FPM pool sizing and OPcache/realpath ini
   values are persisted and applied through the site validate/swap flow.
-- Docker web servers currently serve only sites under the managed `projects/` root.
+- All sites must live under the managed projects root. Docker web servers use that
+  root for their mounts; external-site bind mounts remain a follow-up.
 - The official MySQL entrypoint can retain password values in the container process
   environment; Compose files/logs do not contain them.
 

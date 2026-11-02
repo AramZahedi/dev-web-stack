@@ -45,11 +45,18 @@ servers. Docker nginx/Apache are managed by the service layer; `vhost use builti
 the explicit Docker→builtin switch. The dashboard exposes lifecycle, configuration,
 performance, benchmark, and terminal surfaces.
 
-### K7 — Docker web servers require sites under the managed projects root
+### K7 — Managed projects root is a hard boundary
 
-Docker nginx/Apache vhosts currently reject sites outside `<devstack-home>/projects`;
-those sites remain available through builtin/native serving. External-site bind mounts
-and per-site Docker mounts remain a follow-up.
+Every site path must be a strict descendant of its mode's managed projects root.
+The root itself, sibling prefixes such as `projects-old`, traversal segments, and
+links that resolve outside the root are rejected on create, source-mode copy, and
+start/reconcile. Existing sites outside the root are not deleted; they are
+blocked from starting and reported by `devstack doctor`.
+
+Docker nginx/Apache vhosts use the same root for their mounts. External-site bind
+mounts and per-site Docker mounts remain a follow-up. On Windows, the four
+`C:\devstack` links are navigation only and are never valid site paths; use the
+canonical target path.
 
 ### K8 — Official MySQL process environment retains passwords
 
@@ -171,8 +178,8 @@ acceptance run exists yet.
   performance preview/apply/reset/benchmarks, site terminal, and editable listener ports
   are implemented.
 - ImageMagick CLI is descoped; PHP `imagick` remains available.
-- Docker web servers require sites under the managed projects root (K7).
-- External-site Docker mounts and real host-tuning acceptance remain (K1/K7/K12).
+- Site paths outside the managed projects root are rejected (K7).
+- External-site Docker mounts and real host-tuning acceptance remain (K1/K12).
 - `install.sh` adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
   existing helper config and restarts it. A manually managed config without
   `service_root` leaves the service API at helper NOT_IMPLEMENTED until fixed.

@@ -100,6 +100,21 @@ if (-not $psExe -or -not (Test-Path $psExe)) {
 
 # Determine effective target directory
 $repoRoot = $PSScriptRoot
+$managedWSLDistro = "devstack"
+
+# The C:\devstack navigation links live in build\windows for a source checkout.
+# Release payloads stage helper scripts at the payload root, so accept both
+# locations while keeping the dot-source path absolute.
+$devstackLinksHelper = Join-Path $PSScriptRoot "build\windows\devstack-links.ps1"
+if (-not (Test-Path -LiteralPath $devstackLinksHelper)) {
+    $devstackLinksHelper = Join-Path $PSScriptRoot "devstack-links.ps1"
+}
+if (Test-Path -LiteralPath $devstackLinksHelper) {
+    . $devstackLinksHelper
+} else {
+    Write-Host "devstack installer: Warning: devstack-links.ps1 was not found; C:\devstack links will not be created."
+}
+
 $isSandbox = -not [string]::IsNullOrEmpty($TestSandbox)
 $script:InstallDirExplicit = $PSBoundParameters.ContainsKey("InstallDir")
 $userProf = if ($env:USERPROFILE) { $env:USERPROFILE } else { "C:\Users\$env:USERNAME" }
@@ -157,6 +172,45 @@ $targetItem = Get-Item -LiteralPath $targetDir -Force -ErrorAction SilentlyConti
 if ($null -ne $targetItem -and (($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
     Write-InstallerError "Refusing to install through a reparse point/junction at '$targetDir'."
     exit 1
+}
+
+function Invoke-DevstackLinkSetup {
+    [CmdletBinding()]
+    param(
+        [switch]$SkipWSLPhase
+    )
+
+    if (-not (Get-Command Install-DevstackLinks -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    # TestSandbox must never touch the real C:\devstack. A dry run is also a
+    # read-only operation. Both still report what would happen.
+    $linksDryRun = [bool]$DryRun -or [bool]$isSandbox
+    try {
+        $linksResult = Install-DevstackLinks -LinksRoot "C:\devstack" -WindowsRoot $targetDir -WSLDistro $managedWSLDistro -SkipWSL:$SkipWSLPhase -DryRun:$linksDryRun
+    } catch {
+        Write-Host "devstack installer: Warning: devstack links were not created: $($_.Exception.Message)"
+        return
+    }
+
+    foreach ($warning in @($linksResult.Warnings)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$warning)) {
+            Write-Host "devstack installer: Warning: $warning"
+        }
+    }
+
+    $createdLinks = @($linksResult.Created)
+    $plannedLinks = @($linksResult.Planned)
+    $skippedLinks = @($linksResult.Skipped)
+    if ($createdLinks.Count -gt 0) {
+        Write-Host "devstack installer: Created $($createdLinks.Count) devstack link(s) under $($linksResult.LinksRoot)."
+    } elseif ($plannedLinks.Count -gt 0) {
+        $linkMode = if ($isSandbox) { "TestSandbox" } else { "DryRun" }
+        Write-Host "devstack installer: [$linkMode] Would create $($plannedLinks.Count) devstack link item(s) under $($linksResult.LinksRoot)."
+    } elseif ($skippedLinks.Count -gt 0) {
+        Write-Host "devstack installer: devstack links under $($linksResult.LinksRoot) are present or intentionally skipped."
+    }
 }
 
 $script:LoggedTestOverrides = @{}
@@ -1128,6 +1182,8 @@ rm -rf /data/devstack.rollback-tmp
         }
     }
 
+    Invoke-DevstackLinkSetup -SkipWSLPhase:$SkipWSL
+
     Write-Host "devstack installer: Upgrade completed successfully."
     exit 0
 }
@@ -1314,6 +1370,7 @@ if ($SkipWSL) {
         try { Start-ScheduledTask -TaskName "devstack-daemon" -ErrorAction SilentlyContinue } catch {}
         try { & schtasks.exe /Run /TN "devstack-daemon" 2>$null | Out-Null } catch {}
     }
+    Invoke-DevstackLinkSetup -SkipWSLPhase
     Write-Host "devstack installer: System phase completed successfully."
     exit 0
 }
@@ -1883,6 +1940,7 @@ if (-not $DryRun) {
 }
 
 Write-Host "devstack installer: WSL phase completed successfully."
+Invoke-DevstackLinkSetup
 if (-not $DryRun -and -not $isSandbox) {
     # Start the logon task in this session too; without a running daemon the
     # WSL keepalive does not exist and the distro is eligible for idle shutdown.

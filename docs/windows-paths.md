@@ -15,7 +15,7 @@ devstack provides two distinct source modes when adding a site:
 
 | Source Mode | Physical Location | Path Syntax | Recommended For | Performance Characteristics |
 |---|---|---|---|---|
-| **Windows Mode** (`windows`) | Windows NTFS drive | `%USERPROFILE%\.devstack\projects\mysite` or `C:\Users\Aram\...\mysite` | Projects edited with Windows tools that require native NTFS file events / watchers. | Fastest IDE indexing; slightly slower runtime I/O via 9P (`/mnt/c/`). |
+| **Windows Mode** (`windows`) | Windows NTFS drive | `%USERPROFILE%\.devstack\projects\mysite` (or the configured projects root) | Projects edited with Windows tools that require native NTFS file events / watchers. | Fastest IDE indexing; slightly slower runtime I/O via 9P (`/mnt/c/`). |
 | **WSL Mode** (`wsl`) | WSL2 Linux ext4 disk | `\\wsl.localhost\devstack\data\devstack\projects\mysite` | Heavy PHP/Node applications (Laravel, Symfony, Nuxt, Next) with large `vendor/` and `node_modules/`. | Maximum execution speed on native Linux ext4; IDE connects via WSL remote or UNC. |
 
 ### Selecting Source Mode
@@ -24,13 +24,56 @@ When creating a site via CLI:
 
 ```powershell
 # Windows source mode (NTFS)
-devstack site add --name my-app --path C:\projects\my-app --kind php --source-mode windows
+devstack site add --name my-app --path "$env:USERPROFILE\.devstack\projects\my-app" --kind php --source-mode windows
 
 # WSL source mode (ext4)
 devstack site add --name fast-app --path \\wsl.localhost\devstack\data\devstack\projects\fast-app --kind php --source-mode wsl
 ```
 
 You can also toggle or choose the source mode directly in the Add Site and Site Detail views in the web dashboard.
+
+### Managed projects root (hard restriction)
+
+Every site path must be a **strict descendant** of the managed projects root for
+its source mode. The root itself is not a valid site path.
+
+| Mode | Root |
+|---|---|
+| Windows (`windows`) | configured `projects_root`, default `%USERPROFILE%\.devstack\projects` |
+| WSL (`wsl`) | `/data/devstack/projects` in the managed distro (`\\wsl.localhost\devstack\data\devstack\projects`) |
+| Linux local (`local`) | configured `projects_root`, default `~/.devstack/projects` |
+
+Containment is component-aware: `projects-old\mysite` is not inside `projects`.
+Windows comparisons are case-insensitive. Existing reparse points are resolved
+and rechecked, so a link inside the root that escapes it is rejected.
+
+The rule is enforced when a site is created, when a source-mode copy destination
+is selected, and when a site is started or reconciled. Existing sites outside the
+root are not deleted; they are blocked from starting and reported by
+`devstack doctor`. The folder browser and mkdir endpoint are confined to the same
+roots. Browsing the root itself is allowed, but selecting it as a site folder is
+not. Document roots stay relative to the site folder.
+
+### The `C:\devstack` links are navigation only
+
+The Windows installer creates a real `C:\devstack` folder with four links:
+
+| Link | Type | Target |
+|---|---|---|
+| `C:\devstack\Windows-Install` | junction | `%USERPROFILE%\.devstack` |
+| `C:\devstack\Windows-Projects` | junction | `%USERPROFILE%\.devstack\projects` |
+| `C:\devstack\WSL-Install` | directory symlink | `\\wsl.localhost\devstack\data\devstack` |
+| `C:\devstack\WSL-Projects` | directory symlink | `\\wsl.localhost\devstack\data\devstack\projects` |
+
+They are live views, not copies. Deleting a link removes only the link; the
+target and its data remain. The WSL links require the managed `devstack`
+distribution. `C:\devstack\README.txt` documents the exact targets and repair
+steps.
+
+The links are never valid site paths. Use the canonical target instead:
+`C:\devstack\Windows-Projects\mysite` is rejected, while
+`%USERPROFILE%\.devstack\projects\mysite` is accepted. Repair missing or stale
+links with an elevated `.\install.ps1 -Upgrade`.
 
 ---
 
@@ -43,8 +86,9 @@ requests cross the process boundaries:
 ┌─────────────────────────────────┐               ┌─────────────────────────────────┐
 │          Windows Host           │               │        WSL2 Linux Distro        │
 │                                 │               │                                 │
-│  C:\projects\my-app             │ ────────────► │  /mnt/c/projects/my-app         │
-│  (DOS Drive Path)               │  translation  │  (9P Automount Path)            │
+│  C:\Users\Aram\.devstack\       │ ────────────► │  /mnt/c/Users/Aram/.devstack/   │
+│  projects\my-app                │  translation  │  projects/my-app                │
+│  (DOS Drive Path)               │               │  (9P Automount Path)            │
 │                                 │               │                                 │
 │  \\wsl.localhost\devstack\data\ │ ────────────► │  /data/devstack/projects/app    │
 │  devstack\projects\app (UNC)    │  translation  │  (Native Linux ext4 Path)       │
@@ -73,8 +117,15 @@ Because UNC shares can present security ambiguity, devstack **never relies on Wi
 
 All filesystem access, traversal, and validation is verified on the agent side using POSIX primitives:
 - **Canonicalization:** The agent resolves real paths using `realpath(3)` and `lstat(2)` to verify the canonical target.
-- **Directory Traversal:** Any path attempting traversal (`..`) outside the declared site root is immediately rejected with error code `PATH_ESCAPE`.
+- **Directory Traversal:** Any path attempting traversal (`..`) outside the declared site root or managed projects root is immediately rejected with error code `PATH_ESCAPE`.
 - **Symlinks and Windows Junctions:** Cross-boundary symbolic links and NTFS directory junctions pointing outside project boundaries are strictly rejected to prevent privilege escalation or data leakage.
+
+The managed projects root is a hard boundary, not a suggested default. A site
+path is accepted only when it is a strict descendant of the root. The root
+itself, a sibling such as `projects-old`, a `..` segment, or a link that resolves
+outside the root is rejected before the backend is started. This is enforced at
+create time, at the source-mode copy destination, and on every start or
+reconcile.
 
 ### Safe Source Mode Migration
 
@@ -116,9 +167,9 @@ php -v
 # /data/devstack/runtimes/php/8.4/bin/php -v
 
 # Executed with file paths:
-php C:\projects\my-app\artisan migrate
+php C:\Users\Aram\.devstack\projects\my-app\artisan migrate
 # Routes inside WSL to:
-# /data/devstack/runtimes/php/8.4/bin/php /mnt/c/projects/my-app/artisan migrate
+# /data/devstack/runtimes/php/8.4/bin/php /mnt/c/Users/Aram/.devstack/projects/my-app/artisan migrate
 ```
 
 ---
