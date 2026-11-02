@@ -574,19 +574,20 @@ test('Add Site can create a new project folder and use it', async ({ page }) => 
   await dialog.getByRole('button', { name: 'New folder' }).click();
   await dialog.getByLabel('New folder name').fill('brand-new');
   await dialog.getByRole('button', { name: 'Create', exact: true }).click();
-  await expect(dialog.getByText('Selected folder /home/dev/projects/brand-new')).toBeVisible();
+  await expect(dialog.getByText('Selected folder /home/dev/.devstack/projects/brand-new')).toBeVisible();
   await dialog.getByRole('button', { name: 'Use this folder' }).click();
-  await expect(page.locator('#site-path')).toHaveValue('/home/dev/projects/brand-new');
+  await expect(page.locator('#site-path')).toHaveValue('/home/dev/.devstack/projects/brand-new');
 });
 
 test('Add Site prefills the path after choosing the projects root', async ({ page }) => {
   await open(page, '#/sites/new');
   await page.getByRole('button', { name: 'Browse' }).click();
   const dialog = page.getByRole('dialog', { name: 'Choose a project folder' });
-  await expect(dialog.getByText('Selected folder /home/dev/projects')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'WSL Projects' })).toBeVisible();
+  await expect(dialog.getByText('Selected folder /home/dev/.devstack/projects')).toBeVisible();
   await dialog.getByRole('button', { name: 'Use this folder' }).click();
   await page.locator('#site-name').fill('Prefill App');
-  await expect(page.locator('#site-path')).toHaveValue('/home/dev/projects/prefill-app');
+  await expect(page.locator('#site-path')).toHaveValue('/home/dev/.devstack/projects/prefill-app');
 });
 
 test('Add Site warns about an existing external user without changing grants', async ({ page }) => {

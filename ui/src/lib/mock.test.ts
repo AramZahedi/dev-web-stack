@@ -29,7 +29,7 @@ describe('mock vhost previews', () => {
     const nginx = (await mockApi.previewVhost('blog', 'nginx')).content;
     expect(count(nginx, 'listen 80;')).toBe(1);
     expect(count(nginx, 'listen 443 ssl http2;')).toBe(1);
-    expect(count(nginx, 'root /home/dev/projects/blog/public;')).toBe(2);
+    expect(count(nginx, 'root /home/dev/.devstack/projects/blog/public;')).toBe(2);
     expect(nginx).toContain('server_name blog.test www.blog.test;');
     expect(nginx).not.toContain('return 308');
 
@@ -73,15 +73,15 @@ describe('mock vhost previews', () => {
     await mockApi.updateSite(BLOG, { document_root: '/srv/www/blog/public' });
     let nginx = (await mockApi.previewVhost('blog', 'nginx')).content;
     expect(nginx).toContain('root /srv/www/blog/public;');
-    expect(nginx).not.toContain('/home/dev/projects/blog/srv/www');
+    expect(nginx).not.toContain('/home/dev/.devstack/projects/blog/srv/www');
     let apache = (await mockApi.previewVhost('blog', 'apache')).content;
     expect(apache).toContain('DocumentRoot "/srv/www/blog/public"');
 
     await mockApi.updateSite(BLOG, { document_root: 'public' });
     nginx = (await mockApi.previewVhost('blog', 'nginx')).content;
-    expect(nginx).toContain('root /home/dev/projects/blog/public;');
+    expect(nginx).toContain('root /home/dev/.devstack/projects/blog/public;');
     apache = (await mockApi.previewVhost('blog', 'apache')).content;
-    expect(apache).toContain('DocumentRoot "/home/dev/projects/blog/public"');
+    expect(apache).toContain('DocumentRoot "/home/dev/.devstack/projects/blog/public"');
   });
 
   it('renders branded 503 vhosts for stopped sites', async () => {
@@ -91,7 +91,7 @@ describe('mock vhost previews', () => {
     expect(count(nginx, 'return 503')).toBe(2);
     expect(count(nginx, 'listen 443 ssl http2;')).toBe(1);
     expect(nginx).toContain('/etc/devstack/tls/s_blog.crt;');
-    expect(nginx).not.toContain('root /home/dev/projects/blog/public;');
+    expect(nginx).not.toContain('root /home/dev/.devstack/projects/blog/public;');
 
     const apache = (await mockApi.previewVhost('blog', 'apache')).content;
     expect(count(apache, 'ErrorDocument 503')).toBe(2);
@@ -114,7 +114,7 @@ describe('mock PHP 8.5 built-ins', () => {
   it('treats OPcache as built in and never emits opcache.so', async () => {
     const site = await mockApi.createSite({
       name: 'php85-check',
-      path: '/home/dev/projects/scratch',
+      path: '/home/dev/.devstack/projects/scratch',
       kind: 'php',
       php_version: '8.5',
       php_build: 'php@8.5.0-r1',
@@ -268,7 +268,7 @@ describe('mock service actions', () => {
     await expect(
       mockApi.createSite({
         name: 'build-empty-output',
-        path: '/home/dev/projects/scratch',
+        path: '/home/dev/.devstack/projects/scratch',
         kind: 'static',
         build: {
           node_version: '24.9.0',
@@ -284,7 +284,7 @@ describe('mock service actions', () => {
 
     const stopped = await mockApi.createSite({
       name: 'build-missing-output',
-      path: '/home/dev/projects/scratch',
+      path: '/home/dev/.devstack/projects/scratch',
       kind: 'static',
       build: {
         node_version: '24.9.0',
@@ -298,7 +298,7 @@ describe('mock service actions', () => {
 
     const ready = await mockApi.createSite({
       name: 'build-ready-output',
-      path: '/home/dev/projects/scratch',
+      path: '/home/dev/.devstack/projects/scratch',
       kind: 'static',
       build: {
         node_version: '24.9.0',
@@ -314,7 +314,7 @@ describe('mock service actions', () => {
     const result = await mockApi.buildSite('blog');
     expect(result.success).toBe(true);
     expect(result.duration_ms).toBeGreaterThan(0);
-    expect(result.output_path).toBe('/home/dev/projects/blog/public');
+    expect(result.output_path).toBe('/home/dev/.devstack/projects/blog/public');
 
     const logs = await mockApi.getBuildLogs('blog', 5);
     expect(logs.content).toContain('built in');
@@ -376,5 +376,85 @@ describe('mock node default', () => {
     expect(status.source).toBe('newest');
     expect(status.build?.version).toBe('24.9.0');
     expect(status.shim_installed).toBe(true);
+  });
+});
+
+describe('mock managed projects roots', () => {
+  afterEach(() => {
+    resetMockServiceStateForTests();
+  });
+
+  it('seeds both managed roots', async () => {
+    const settings = await mockApi.settings();
+    expect(settings.projects_root).toBe('/home/dev/.devstack/projects');
+    expect(settings.wsl_projects_root).toBe('/data/devstack/projects');
+  });
+
+  it('browses the local projects root and rejects paths outside it', async () => {
+    const listing = await mockApi.browseFs('/home/dev/.devstack/projects', 'local');
+    expect(listing.path).toBe('/home/dev/.devstack/projects');
+    expect(listing.entries.map((entry) => entry.name)).toContain('scratch');
+    expect(listing.entries.map((entry) => entry.name)).not.toContain('projects');
+
+    await expect(mockApi.browseFs('/home/dev/.devstack/projects/scratch', 'local')).resolves.toMatchObject({
+      path: '/home/dev/.devstack/projects/scratch',
+    });
+    await expect(mockApi.browseFs('/home/dev', 'local')).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      status: 403,
+    });
+    await expect(
+      mockApi.browseFs('/home/dev/.devstack/projects-old', 'local'),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+    await expect(
+      mockApi.browseFs('/home/dev/.devstack/projects/app/../other', 'local'),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+  });
+
+  it('keeps NOT_FOUND for missing directories inside the root', async () => {
+    await expect(
+      mockApi.browseFs('/home/dev/.devstack/projects/missing', 'local'),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+
+  it('confines WSL browsing to the managed distro root', async () => {
+    await expect(mockApi.browseFs('/data/devstack/projects', 'wsl')).resolves.toMatchObject({
+      path: '/data/devstack/projects',
+    });
+    await expect(
+      mockApi.browseFs('\\\\wsl.localhost\\devstack\\data\\devstack\\projects', 'wsl'),
+    ).resolves.toMatchObject({ path: '/data/devstack/projects' });
+    await expect(
+      mockApi.browseFs('\\\\wsl.localhost\\Ubuntu\\data\\devstack\\projects', 'wsl'),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+    await expect(
+      mockApi.browseFs('/home/dev/.devstack/projects', 'wsl'),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+  });
+
+  it('confines new folders to the managed root', async () => {
+    await expect(mockApi.mkdirFs('/home/dev', 'outside', 'local')).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      status: 403,
+    });
+
+    const created = await mockApi.mkdirFs(
+      '/home/dev/.devstack/projects',
+      'created-in-test',
+      'local',
+    );
+    expect(created.path).toBe('/home/dev/.devstack/projects/created-in-test');
+    expect(created.entries).toEqual([]);
+  });
+
+  it('seeds demo and scratch folders under both roots', async () => {
+    const local = await mockApi.browseFs('/home/dev/.devstack/projects', 'local');
+    const names = local.entries.map((entry) => entry.name);
+    expect(names).toEqual(expect.arrayContaining(['demo', 'scratch']));
+
+    const wsl = await mockApi.browseFs('/data/devstack/projects', 'wsl');
+    expect(wsl.entries.map((entry) => entry.name)).toEqual(
+      expect.arrayContaining(['demo', 'scratch']),
+    );
   });
 });

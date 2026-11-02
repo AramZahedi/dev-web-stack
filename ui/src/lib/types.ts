@@ -358,6 +358,10 @@ export interface Settings {
   pid_path?: string;
   /** Optional convenience field; real daemons may omit it. */
   user_home?: string;
+  /** Effective managed projects root for Windows/local source modes. */
+  projects_root?: string;
+  /** Fixed managed projects root inside the devstack WSL distro. */
+  wsl_projects_root?: string;
 }
 
 export interface SettingsUpdate {
