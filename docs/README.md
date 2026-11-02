@@ -16,6 +16,7 @@ machine, and the design/plan for the next milestone.
 | [Planned service platform](planned-services.md) | High-level overview of the service platform; detailed spec linked below |
 | [Known issues](known-issues.md) | Current bugs, parked work, and limitations that should not be mistaken for completed features |
 | [Glossary](glossary.md) | Project terminology: sites, modes, services, conflicts, providers |
+| [E2E coverage inventory](e2e-coverage.md) | Complete feature inventory, coverage codes, priorities, and the definition of done for full-coverage E2E testing |
 | [Developer guide](development.md) | build/test/debug, package boundaries, migrations, release, commit discipline |
 
 ## Current design and plans
