@@ -180,6 +180,28 @@ func (s *Server) auditServiceCredentials(id services.ID, action string, success 
 	)
 }
 
+// handlePHPMyAdminSignon issues a short-lived tokenized signon URL. The token
+// is single-use and never contains the root password.
+func (s *Server) handlePHPMyAdminSignon(w http.ResponseWriter, r *http.Request) {
+	if s.services == nil {
+		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "service manager is not available", nil)
+		return
+	}
+	id := services.ID(strings.TrimSpace(r.PathValue("id")))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "service id is required", nil)
+		return
+	}
+	signon, err := s.services.IssuePHPMyAdminSignon(r.Context(), id)
+	if err != nil {
+		s.logger.Info("phpMyAdmin signon denied", "service", string(id), "success", false)
+		s.writeServiceError(w, r, err)
+		return
+	}
+	s.logger.Info("phpMyAdmin signon issued", "service", string(id), "success", true, "expires_at", signon.ExpiresAt)
+	writeJSON(w, http.StatusOK, signon)
+}
+
 func (s *Server) handleRevealServiceCredentials(w http.ResponseWriter, r *http.Request) {
 	if s.services == nil {
 		writeError(w, http.StatusServiceUnavailable, codeServiceUnavailable, "service manager is not available", nil)

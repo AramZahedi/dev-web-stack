@@ -159,7 +159,7 @@
 | E2E-DB-22 | SSE inventory refresh and overlapping responses | P1 | H4 | L1 | `test/e2e/worker/h4/`, `ui/tests/live/database-management.live.spec.ts` | nightly |
 | E2E-DB-23 | Redis password and ACL-file persistence | P1 | H4 | L1 | `test/e2e/worker/h4/`, `ui/tests/live/database-management.live.spec.ts` | nightly |
 | E2E-DB-24 | Site database link, unlink, and environment resolution | P0 | H4 | L1 | `test/e2e/worker/h4/`, `ui/tests/live/database-management.live.spec.ts` | release |
-| E2E-DB-25 | phpMyAdmin auto-login as the active MySQL/MariaDB root user, active-database follow, and PMA UI access | P1 | H4 | L1 | `test/e2e/worker/h4/`, `ui/tests/live/database-management.live.spec.ts`, `ui/tests/live/pma-autologin.live.spec.ts` | nightly |
+| E2E-DB-25 | phpMyAdmin signed one-time signon from the dashboard as the active MySQL/MariaDB root user, with direct manual login and replay/expiry rejection | P1 | H4 | L1 | `test/e2e/worker/h4/`, `ui/tests/live/database-management.live.spec.ts`, `ui/tests/live/pma-autologin.live.spec.ts` | nightly |
 | E2E-DB-26 | Keyboard, focus, contrast, and responsive database screens | P2 | L1 | H4 | `ui/tests/live/`, `ui/tests/` | extended |
 | E2E-DB-27 | MariaDB and MySQL-family parity | P1 | H4 | L1 | `test/e2e/worker/h4/`, `ui/tests/live/database-management.live.spec.ts` | nightly |
 | E2E-DB-28 | Database E2E cycles 9-15 completion | P1 | BLOCKED |  | — | blocked |

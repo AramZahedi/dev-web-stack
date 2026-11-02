@@ -27,8 +27,22 @@ func standaloneServices() []Service {
 					SELinux:       true,
 				},
 				{
+					HostSubdir:    "config/signon.php",
+					ContainerPath: "/var/www/html/signon.php",
+					ReadOnly:      true,
+					Area:          MountService,
+					SELinux:       true,
+				},
+				{
 					HostSubdir:    "phpmyadmin/root_password",
 					ContainerPath: "/run/secrets/root_password",
+					ReadOnly:      true,
+					Area:          MountSecrets,
+					SELinux:       true,
+				},
+				{
+					HostSubdir:    "phpmyadmin/signon_key",
+					ContainerPath: "/run/secrets/signon_key",
 					ReadOnly:      true,
 					Area:          MountSecrets,
 					SELinux:       true,

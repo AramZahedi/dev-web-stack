@@ -27,21 +27,41 @@ func TestPhpMyAdminPreparerSeedsUserConfig(t *testing.T) {
 	for _, want := range []string{
 		"$cfg['Servers'][1]['host'] = 'db';",
 		"$cfg['Servers'][1]['port'] = '3306';",
-		"$cfg['Servers'][1]['auth_type'] = 'config';",
-		"$cfg['Servers'][1]['user'] = 'root';",
-		"/run/secrets/root_password",
+		"$cfg['Servers'][1]['auth_type'] = 'signon';",
+		"$cfg['Servers'][1]['SignonSession'] = 'devstack_signon';",
+		"/signon.php",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("config.user.inc.php missing %q:\n%s", want, content)
 		}
 	}
-	for _, forbidden := range []string{"root_password =", "devstack_password =", "password' = '"} {
+	for _, forbidden := range []string{"auth_type'] = 'config'", "auth_type'] = 'cookie'", "password'] = '"} {
 		if strings.Contains(strings.ToLower(content), forbidden) {
-			t.Errorf("config.user.inc.php contains credential material %q:\n%s", forbidden, content)
+			t.Errorf("config.user.inc.php contains insecure or credential material %q:\n%s", forbidden, content)
 		}
 	}
 	requireTestMode(t, path, 0o644)
 	requireTestMode(t, filepath.Dir(path), 0o755)
+	signonPath := filepath.Join(root, "services", "phpmyadmin", "config", "signon.php")
+	if content := readTestFile(t, signonPath); !strings.Contains(content, "devstack_signon_verify_token") {
+		t.Fatalf("signon.php missing token validation:\n%s", content)
+	}
+	requireTestMode(t, signonPath, 0o644)
+	keyPath := filepath.Join(root, "secrets", "phpmyadmin", "signon_key")
+	key := strings.TrimSpace(readTestFile(t, keyPath))
+	if len(key) != 64 {
+		t.Fatalf("signon_key length = %d, want 64 hex characters", len(key))
+	}
+	requireTestMode(t, keyPath, 0o644)
+	if got := strings.TrimSpace(readTestFile(t, filepath.Join(root, "services", "phpmyadmin", "secrets", "signon_key"))); got != key {
+		t.Fatalf("agent signon_key = %q, want the same key", got)
+	}
+	if err := prep.PrepareActivate(context.Background(), svc); err != nil {
+		t.Fatalf("PrepareActivate() = %v", err)
+	}
+	if got := strings.TrimSpace(readTestFile(t, keyPath)); got != key {
+		t.Fatal("PrepareActivate() rotated an existing signon key")
+	}
 }
 
 func TestPhpMyAdminPreparerDoesNotOverwriteEditedConfig(t *testing.T) {
@@ -130,26 +150,35 @@ func TestPhpMyAdminPreparerLeavesSecretWhenNoDatabaseIsActive(t *testing.T) {
 }
 
 func TestPhpMyAdminPreparerMigratesLegacyGeneratedConfig(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "services", "phpmyadmin", "config", "config.user.inc.php")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(services.PhpMyAdminLegacyUserConfig), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	prep := NewPhpMyAdminPreparer(root)
-	svc, _ := services.DefaultCatalog().Get(services.IDPHPMyAdmin)
+	for name, legacy := range map[string]string{
+		"cookie":      services.PhpMyAdminLegacyUserConfig,
+		"config-auth": services.PhpMyAdminConfigAuthUserConfig,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "services", "phpmyadmin", "config", "config.user.inc.php")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			prep := NewPhpMyAdminPreparer(root)
+			svc, _ := services.DefaultCatalog().Get(services.IDPHPMyAdmin)
 
-	if err := prep.PrepareActivate(context.Background(), svc); err != nil {
-		t.Fatalf("PrepareActivate() = %v", err)
-	}
-	content := readTestFile(t, path)
-	if strings.Contains(content, "auth_type'] = 'cookie'") {
-		t.Fatal("legacy generated config was not migrated to auto-login")
-	}
-	if !strings.Contains(content, "auth_type'] = 'config'") {
-		t.Fatalf("migrated config missing auto-login:\n%s", content)
+			if err := prep.PrepareActivate(context.Background(), svc); err != nil {
+				t.Fatalf("PrepareActivate() = %v", err)
+			}
+			content := readTestFile(t, path)
+			for _, forbidden := range []string{"auth_type'] = 'cookie'", "auth_type'] = 'config'"} {
+				if strings.Contains(content, forbidden) {
+					t.Fatalf("legacy generated config was not migrated to signon:\n%s", content)
+				}
+			}
+			if !strings.Contains(content, "auth_type'] = 'signon'") {
+				t.Fatalf("migrated config missing signon auth:\n%s", content)
+			}
+		})
 	}
 }
 

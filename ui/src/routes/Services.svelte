@@ -162,12 +162,30 @@
     return service.installed && service.active;
   }
 
-  function phpMyAdminURL(service: ServiceView): string {
-    const port =
-      service.ports?.find((entry) => entry.host === 8082 || entry.container === 8082)?.host ??
-      service.ports?.[0]?.host ??
-      8082;
-    return `http://127.0.0.1:${port}/`;
+  async function openPhpMyAdmin(service: ServiceView): Promise<void> {
+    if (busy) return;
+    clearActionError(service.id);
+    const popup = window.open('', '_blank');
+    if (popup) popup.opener = null;
+    busy = `${service.id}:signon`;
+    try {
+      const signon = await api.issuePHPMyAdminSignon(service.id);
+      if (popup) {
+        popup.location.href = signon.url;
+      } else {
+        throw new Error('Allow pop-ups for the dashboard to open phpMyAdmin.');
+      }
+    } catch (caught) {
+      if (popup) popup.close();
+      const described = describeError(caught);
+      actionErrors = { ...actionErrors, [service.id]: described };
+      toastError(
+        'Could not open phpMyAdmin',
+        `${described.code}: ${described.message}`,
+      );
+    } finally {
+      busy = null;
+    }
   }
 
   function actionError(service: ServiceView): DescribedError | undefined {
@@ -602,15 +620,15 @@
                     {/if}
 
                     {#if service.id === 'phpmyadmin' && active}
-                      <a
+                      <button
                         class="external-link"
-                        href={phpMyAdminURL(service)}
-                        target="_blank"
-                        rel="noreferrer"
+                        type="button"
+                        disabled={Boolean(busy)}
+                        onclick={() => openPhpMyAdmin(service)}
                       >
                         <ExternalLink size={13} strokeWidth={2} aria-hidden="true" />
                         Open phpMyAdmin
-                      </a>
+                      </button>
                     {/if}
 
                     {#if installed}
@@ -1150,6 +1168,7 @@
     font-weight: 500;
     text-decoration: none;
     white-space: nowrap;
+    cursor: pointer;
   }
 
   .external-link:hover,

@@ -2078,6 +2078,42 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/v1/services/{id}/signon:
+    post:
+      tags: [services]
+      summary: Issue a one-time phpMyAdmin signon URL
+      description: |
+        Returns a short-lived HMAC-signed URL consumed once by phpMyAdmin's
+        signon page. Only phpMyAdmin is supported. The root password never
+        appears in the response or URL.
+      operationId: issuePHPMyAdminSignon
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ServiceID"
+      responses:
+        "200":
+          description: The one-time signon URL and expiry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PHPMyAdminSignon"
+        "400":
+          description: The service is not phpMyAdmin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: phpMyAdmin or its database is not active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/HelperServiceUnavailable"
+
   /api/v1/services/{id}/config:
     get:
       tags: [services]
@@ -4431,6 +4467,18 @@ components:
           type: string
         port:
           type: integer
+
+    PHPMyAdminSignon:
+      type: object
+      required: [url, expires_at]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: One-time phpMyAdmin signon URL containing the signed token in its fragment; the fragment is not sent to the server access log.
+        expires_at:
+          type: string
+          format: date-time
 
     ServiceConfigConflict:
       type: object

@@ -6,6 +6,8 @@ package agentdocker
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -436,7 +438,13 @@ func (d *Docker) Action(ctx context.Context, req agentproto.ServiceRequest) (age
 		if err := seedPhpMyAdminConfig(configDir); err != nil {
 			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: migrate phpMyAdmin config: %w", err)
 		}
+		if err := writeAtomic(filepath.Join(configDir, "signon.php"), []byte(services.PhpMyAdminSignonScript), 0o644); err != nil {
+			return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: write phpMyAdmin signon script: %w", err)
+		}
 		if err := d.syncPhpMyAdminRootPassword(ctx); err != nil {
+			return agentproto.ServiceResponse{}, err
+		}
+		if err := d.syncPhpMyAdminSignonKey(); err != nil {
 			return agentproto.ServiceResponse{}, err
 		}
 	}
@@ -831,21 +839,51 @@ EOSQL
 	return nil
 }
 
-// seedPhpMyAdminConfig writes the auto-login config when missing and migrates
-// only the exact legacy generated file. Operator-edited files are preserved.
+// seedPhpMyAdminConfig writes the signon config when missing, migrates the
+// exact generated legacy files, and always refreshes the signon script.
 func seedPhpMyAdminConfig(configDir string) error {
 	path := filepath.Join(configDir, "config.user.inc.php")
 	content, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return os.WriteFile(path, []byte(services.PhpMyAdminUserConfig), 0o644)
-	}
-	if err != nil {
+		if err := os.WriteFile(path, []byte(services.PhpMyAdminUserConfig), 0o644); err != nil {
+			return err
+		}
+	} else if err != nil {
 		return err
+	} else {
+		current := strings.TrimSpace(string(content))
+		if current == strings.TrimSpace(services.PhpMyAdminLegacyUserConfig) ||
+			current == strings.TrimSpace(services.PhpMyAdminConfigAuthUserConfig) {
+			if err := writeAtomic(path, []byte(services.PhpMyAdminUserConfig), 0o644); err != nil {
+				return err
+			}
+		}
 	}
-	if strings.TrimSpace(string(content)) != strings.TrimSpace(services.PhpMyAdminLegacyUserConfig) {
+	return writeAtomic(filepath.Join(configDir, "signon.php"), []byte(services.PhpMyAdminSignonScript), 0o644)
+}
+
+// syncPhpMyAdminSignonKey ensures the HMAC key exists and is readable by the
+// phpMyAdmin container.
+func (d *Docker) syncPhpMyAdminSignonKey() error {
+	dir := filepath.Join(d.root, "services", "phpmyadmin", "secrets")
+	if err := ensureRealDirectory(dir, 0o700); err != nil {
+		return fmt.Errorf("agentdocker: secure phpMyAdmin secrets: %w", err)
+	}
+	path := filepath.Join(dir, "signon_key")
+	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) >= 32 {
+		if err := os.Chmod(path, 0o644); err != nil {
+			return fmt.Errorf("agentdocker: secure phpMyAdmin signon key: %w", err)
+		}
 		return nil
 	}
-	return writeAtomic(path, []byte(services.PhpMyAdminUserConfig), 0o644)
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return fmt.Errorf("agentdocker: generate phpMyAdmin signon key: %w", err)
+	}
+	if err := writeAtomic(path, []byte(hex.EncodeToString(raw)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("agentdocker: write phpMyAdmin signon key: %w", err)
+	}
+	return nil
 }
 
 // syncPhpMyAdminRootPassword copies the active MySQL-family root secret into

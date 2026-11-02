@@ -76,17 +76,27 @@ func TestDefaultCatalogIncludesPhpMyAdmin(t *testing.T) {
 			}
 		}
 	}
-	if len(svc.Config) != 2 {
-		t.Fatalf("phpmyadmin config mounts = %+v, want the user config and the root secret", svc.Config)
+	if len(svc.Config) != 4 {
+		t.Fatalf("phpmyadmin config mounts = %+v, want config, signon script, root secret, and signon key", svc.Config)
 	}
 	configMount := svc.Config[0]
 	if configMount.ContainerPath != "/etc/phpmyadmin/config.user.inc.php" || !configMount.ReadOnly || configMount.Area != MountService {
 		t.Errorf("phpmyadmin config mount = %+v, want the read-only user config file", configMount)
 	}
-	secretMount := svc.Config[1]
+	signonMount := svc.Config[1]
+	if signonMount.Area != MountService || signonMount.HostSubdir != "config/signon.php" ||
+		signonMount.ContainerPath != "/var/www/html/signon.php" || !signonMount.ReadOnly {
+		t.Errorf("phpmyadmin signon mount = %+v, want the read-only signon script", signonMount)
+	}
+	secretMount := svc.Config[2]
 	if secretMount.Area != MountSecrets || secretMount.HostSubdir != "phpmyadmin/root_password" ||
 		secretMount.ContainerPath != "/run/secrets/root_password" || !secretMount.ReadOnly {
 		t.Errorf("phpmyadmin secret mount = %+v, want the read-only root password file", secretMount)
+	}
+	keyMount := svc.Config[3]
+	if keyMount.Area != MountSecrets || keyMount.HostSubdir != "phpmyadmin/signon_key" ||
+		keyMount.ContainerPath != "/run/secrets/signon_key" || !keyMount.ReadOnly {
+		t.Errorf("phpmyadmin key mount = %+v, want the read-only signon key", keyMount)
 	}
 	if len(svc.Data) != 0 {
 		t.Errorf("phpmyadmin data mounts = %+v, want none", svc.Data)

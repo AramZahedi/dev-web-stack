@@ -16,6 +16,7 @@ vi.mock('../lib/api', () => ({
   serviceLogs: vi.fn(),
   revealServiceCredentials: vi.fn(),
   rotateServiceCredentials: vi.fn(),
+  issuePHPMyAdminSignon: vi.fn(),
   listSites: vi.fn(),
   getPerformance: vi.fn(),
   setPerformanceProfile: vi.fn(),
@@ -347,17 +348,28 @@ describe('Services', () => {
   });
 
   it('opens phpMyAdmin only for an active phpMyAdmin service', async () => {
+    const popup = { location: { href: '' }, close: vi.fn(), opener: null };
+    const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+    vi.mocked(api.issuePHPMyAdminSignon).mockResolvedValue({
+      url: 'http://127.0.0.1:8082/signon.php#token=one-time',
+      expires_at: new Date(Date.now() + 30_000).toISOString(),
+    });
     render(Services);
 
-    const link = await screen.findByRole('link', { name: /Open phpMyAdmin/ });
-    expect(link.getAttribute('href')).toBe('http://127.0.0.1:8082/');
-    expect(link.getAttribute('target')).toBe('_blank');
+    const button = await screen.findByRole('button', { name: /Open phpMyAdmin/ });
+    await fireEvent.click(button);
+    await waitFor(() => {
+      expect(api.issuePHPMyAdminSignon).toHaveBeenCalledWith('phpmyadmin');
+      expect(popup.location.href).toBe('http://127.0.0.1:8082/signon.php#token=one-time');
+    });
+    expect(open).toHaveBeenCalledWith('', '_blank');
 
     mockApi.listServices.mockResolvedValue([{ ...PHPMYADMIN, active: false, state: 'installed' }]);
     window.dispatchEvent(new Event('devstack:refresh'));
     await waitFor(() => {
-      expect(screen.queryByRole('link', { name: /Open phpMyAdmin/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: /Open phpMyAdmin/ })).toBeNull();
     });
+    open.mockRestore();
   });
 
   it('does not show optimistic active state while activation is in flight', async () => {

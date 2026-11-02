@@ -1,29 +1,59 @@
 import { expect, test } from '@playwright/test';
 
 /**
- * Live phpMyAdmin auto-login check.
+ * Live phpMyAdmin signon check.
  *
- * The dashboard's "Open phpMyAdmin" link points at this URL. With config
- * authentication, the page must render the active database directly and never
- * show a username/password form. This spec never reads or prints the root
- * password; it only checks the effective server and the absence of a login
- * form.
+ * The dashboard issues a short-lived HMAC token in the URL fragment. The
+ * fragment is never sent to the server access log; signon.php reads it and
+ * POSTs it once. Direct access shows the manual form, and replay is rejected.
  */
 const LIVE = process.env.DEVSTACK_E2E_LIVE === '1';
 const PMA_URL = (process.env.DEVSTACK_E2E_PMA_URL?.trim() || 'http://127.0.0.1:8082/').replace(/\/+$/, '') + '/';
 
-test.skip(!LIVE, 'Set DEVSTACK_E2E_LIVE=1 to run the phpMyAdmin auto-login check.');
+test.skip(!LIVE, 'Set DEVSTACK_E2E_LIVE=1 to run the phpMyAdmin signon check.');
 
-test('phpMyAdmin auto-login opens the active database as root', async ({ page }) => {
-  const errors: string[] = [];
-  page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
+test('phpMyAdmin signs in from the dashboard and rejects replayed/direct access', async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  await page.goto('/#/services', { waitUntil: 'networkidle' });
+  const button = page.getByRole('button', { name: /Open phpMyAdmin/ });
+  await expect(button).toBeVisible();
+  const [popup] = await Promise.all([context.waitForEvent('page'), button.click()]);
+  await popup.waitForLoadState('domcontentloaded');
+  await expect(popup.locator('input[name="user"], input[name="pma_username"]')).toHaveCount(0);
+  await expect(popup.locator('body')).toContainText('Server: db:3306');
+  await popup.close();
+
+  const sessionResponse = await context.request.get('/api/v1/session');
+  expect(sessionResponse.ok()).toBe(true);
+  const session = (await sessionResponse.json()) as { csrf_token?: string };
+  expect(session.csrf_token).toMatch(/^[a-f0-9]{64}$/);
+  const signonResponse = await context.request.post('/api/v1/services/phpmyadmin/signon', {
+    headers: { 'X-CSRF-Token': session.csrf_token ?? '' },
   });
+  expect(signonResponse.ok()).toBe(true);
+  const signon = (await signonResponse.json()) as { url?: string };
+  expect(signon.url).toContain('/signon.php#token=');
 
-  await page.goto(PMA_URL, { waitUntil: 'networkidle' });
-  await expect(page.locator('input[name="pma_username"], input[name="pma_password"]')).toHaveCount(0);
-  await expect(page.locator('body')).toContainText('Server: db:3306');
-  await expect(page.locator('body')).not.toContainText('Access denied');
-  await expect(page.locator('body')).not.toContainText('Cannot connect: invalid settings');
-  expect(errors, `console errors: ${errors.join(' | ')}`).toEqual([]);
+  const firstContext = await browser.newContext();
+  const first = await firstContext.newPage();
+  await first.goto(signon.url ?? '', { waitUntil: 'domcontentloaded' });
+  await expect(first.locator('body')).toContainText('Server: db:3306');
+  await firstContext.close();
+
+  const replayContext = await browser.newContext();
+  const replay = await replayContext.newPage();
+  await replay.goto(signon.url ?? '', { waitUntil: 'domcontentloaded' });
+  await expect(replay.locator('body')).not.toContainText('Server: db:3306');
+  await expect(replay.locator('body')).toContainText(/invalid|expired|already been used/i);
+  await replayContext.close();
+
+  const directContext = await browser.newContext();
+  const direct = await directContext.newPage();
+  await direct.goto(PMA_URL, { waitUntil: 'domcontentloaded' });
+  await expect(direct.locator('input[name="user"]')).toBeVisible();
+  await expect(direct.locator('body')).not.toContainText('Server: db:3306');
+  await directContext.close();
+  await context.close();
 });

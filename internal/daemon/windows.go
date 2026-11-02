@@ -215,6 +215,11 @@ func Run(ctx context.Context, opts Options) error {
 		serviceCatalog,
 		preparers,
 	)
+	signonDistro := cfg.WSLDistro
+	if strings.TrimSpace(signonDistro) == "" {
+		signonDistro = "devstack"
+	}
+	serviceManager.SetSignonKeyPath(`\\wsl$\` + signonDistro + `\data\devstack\services\phpmyadmin\secrets\signon_key`)
 	databaseManager := newDatabaseManager(st, agentDocker, serviceManager, logger)
 	if err := databaseManager.ReconcileJobs(ctx); err != nil {
 		logger.Warn("daemon: reconcile database jobs", "error", err)

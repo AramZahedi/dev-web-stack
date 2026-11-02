@@ -631,7 +631,7 @@ Use TDD, full Go gate, commit, push. If RT-17/18 require a test-only catalog sea
 
 - [ ] **Step 1: Write the failing service lifecycle test**
 
-Cover catalog/groups, install/pull/scaffold, activate/deactivate/restart, uninstall keep-data vs delete-data, exclusive conflicts, health badges, logs, credentials reveal/copy/rotate, PMA launch only when active and auto-login as root, config list/view/diff/apply/reset/keep/use/merge, deactivation impact, SSE, loading/empty/error/in-flight, Docker down/pull failure/health timeout, port conflict/stale container.
+Cover catalog/groups, install/pull/scaffold, activate/deactivate/restart, uninstall keep-data vs delete-data, exclusive conflicts, health badges, logs, credentials reveal/copy/rotate, PMA launch only when active and signed one-time root signon, config list/view/diff/apply/reset/keep/use/merge, deactivation impact, SSE, loading/empty/error/in-flight, Docker down/pull failure/health timeout, port conflict/stale container.
 
 - [ ] **Step 2: Write the settings/serving/performance cases**
 
@@ -678,13 +678,16 @@ Cover create/list/download/delete, restore with overwrite confirmation, import S
 
 - [ ] **Step 4: Write Redis/PMA/parity**
 
-Cover Redis password + ACL persistence, **phpMyAdmin auto-login as the active root user**, active-database follow, MariaDB/MySQL parity through normalized JSON. For PMA, assert:
-  - the dashboard's `Open phpMyAdmin` link opens the PMA UI without a login form;
-  - the logged-in user is `root` and the server is the active engine (`db:3306`);
-  - `config.user.inc.php` contains `auth_type = 'config'` and no literal password;
-  - `services/phpmyadmin/secrets/root_password` matches the active engine's root secret and is mode `0644` inside a `0700` directory;
-  - switching MySQL→MariaDB and rotating the engine credentials refreshes the PMA secret and the next open still auto-logs in;
-  - no root password appears in HTML, logs, traces, screenshots, API payloads, or evidence.
+Cover Redis password + ACL persistence, **phpMyAdmin signed one-time signon as the active root user**, active-database follow, MariaDB/MySQL parity through normalized JSON. For PMA, assert:
+  - the dashboard's `Open phpMyAdmin` button calls the signon API and opens the returned URL;
+  - the token is in the URL fragment; `signon.php` reads it, clears the fragment, and POSTs it once, so it never appears in server access logs;
+  - the popup logs in as `root` with no password prompt, and the server is the active engine (`db:3306`);
+  - `config.user.inc.php` uses `auth_type = 'signon'`, `SignonSession = 'devstack_signon'`, and contains no literal password;
+  - `services/phpmyadmin/secrets/root_password` and `signon_key` match their mounted copies and are mode `0644` inside a `0700` directory;
+  - direct `http://127.0.0.1:8082/` shows the manual signon form, not an automatic root session;
+  - a replayed, tampered, or expired token is rejected; the token is single-use and expires in ~30 seconds;
+  - switching MySQL→MariaDB and rotating credentials refreshes the PMA root secret and the next signon still works;
+  - no root password or signon token appears in HTML, logs, traces, screenshots, API payloads, or evidence.
 
 - [ ] **Step 5: Run against H4, verify failures**
 
@@ -920,7 +923,7 @@ Expected: FAIL on D1 (reconcile bypass) or D11 (no clock seam).
 
 - [ ] **Step 5: Restore trust and verify actual values, then commit**
 
-Restore the CA thumbprints, Firefox enterprise policy, helper service/DACL, firewall rules, and hosts bytes from `HostBaseline`; assert actual values, not counts. Include the PMA auto-login browser check in the same browser matrix (Open phpMyAdmin → no login form → root/db:3306).
+Restore the CA thumbprints, Firefox enterprise policy, helper service/DACL, firewall rules, and hosts bytes from `HostBaseline`; assert actual values, not counts. Include the PMA signed-signon browser check in the same browser matrix (Open phpMyAdmin → no login form → root/db:3306; direct access → manual form; replay → rejected).
 
 #### Task 19: W4 — Windows source modes, agent, fixed ports, multi-user
 
@@ -1076,7 +1079,7 @@ These were found during planning research. Each is a **candidate** until reprodu
 | D17 | Disposable helper homes could not set `allow_home`/`skip_trust_update`, so trust preflight wrote to the real user home or failed unprivileged | H1/H5 | Helper config/flag support, fail-closed temp anchor test; fixed |
 | D18 | Linux E2E fixtures lived outside the managed projects root and site add was rejected | H1 | Move fixtures under the managed root; Linux E2E and cycle5 fixture setup use managed paths. |
 | D19 | A second Docker engine in the shared WSL namespace cannot publish fixed ports while the real install engine is active. | H3/H4/H6 | Implemented `DEVSTACK_E2E_NO_PUBLISHED_PORTS`; DB lifecycle/core/adversarial and site/backup suites now pass with no host port publishing. |
-| D20 | phpMyAdmin required cookie login and did not use the managed root account | H4 | `auth_type=config`, root secret mount, migration/refresh on restart; live browser test green. |
+| D20 | phpMyAdmin required cookie login and did not use the managed root account | H4 | Signed one-time signon token, signon.php, 30s expiry, single-use nonce, manual form, replay/tamper rejection; live browser test green. |
 | D21 | Cycle5's UI fixture used `${home}/projects` while the product manages `${devstack_home}/projects` | H4/L1 | Use the managed root and disposable helper home; live database UI fixture now starts. |
 | D22 | Cycle6's near-1 GiB import wait was shorter than the upload; the job queues after upload finishes | H4 | Extend the harness wait to 30 minutes; 115/115 backup edge cases pass. |
 | D23 | Real-install hosts block lost `static.test` after the upgrade or a WSL restart | W | Fixed: the keepalive calls `SyncHosts` on every WSL start; `devstack doctor` stays green across `wsl --terminate devstack`. |

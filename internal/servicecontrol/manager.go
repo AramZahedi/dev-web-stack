@@ -71,13 +71,14 @@ type UninstallResult struct {
 type Manager struct {
 	// mu serializes lifecycle mutations so exclusive-group checks and the
 	// helper action that follows them are one critical section.
-	mu        sync.Mutex
-	root      string
-	store     Store
-	helper    Helper
-	catalog   services.Catalog
-	preparers map[services.ID]Preparer
-	now       func() time.Time
+	mu            sync.Mutex
+	root          string
+	store         Store
+	helper        Helper
+	catalog       services.Catalog
+	preparers     map[services.ID]Preparer
+	now           func() time.Time
+	signonKeyPath string
 }
 
 // transitionMarker identifies the Manager that owns the current lifecycle

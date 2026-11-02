@@ -29,6 +29,7 @@ import type {
   PerformanceState,
   PerformanceValues,
   PHPInfo,
+  PHPMyAdminSignon,
   PHPMigrationRequest,
   PHPMigrationResult,
   PHPDefaultStatus,
@@ -479,6 +480,16 @@ export async function rotateServiceCredentials(id: string): Promise<ServiceCrede
   return request<ServiceCredentials>(`${servicePath(id)}/credentials/rotate`, {
     method: 'POST',
   });
+}
+
+export async function issuePHPMyAdminSignon(id: string): Promise<PHPMyAdminSignon> {
+  if (isMockMode) {
+    return {
+      url: 'http://127.0.0.1:8082/signon.php#token=mock-token',
+      expires_at: new Date(Date.now() + 30_000).toISOString(),
+    };
+  }
+  return request<PHPMyAdminSignon>(`${servicePath(id)}/signon`, { method: 'POST' });
 }
 
 export async function listTools(): Promise<ToolStatus[]> {

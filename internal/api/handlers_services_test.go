@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AramZahedi/dev-web-stack/internal/databases"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/servicecontrol"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
@@ -32,6 +33,8 @@ type fakeServiceCoordinator struct {
 	tail            int
 	logs            string
 	credentials     servicecontrol.Credentials
+	signon          servicecontrol.PHPMyAdminSignon
+	signonErr       error
 	uninstallResult servicecontrol.UninstallResult
 }
 
@@ -102,6 +105,43 @@ func (f *fakeServiceCoordinator) Credentials(_ context.Context, id services.ID) 
 func (f *fakeServiceCoordinator) RotateCredentials(_ context.Context, id services.ID) (servicecontrol.Credentials, error) {
 	f.record("rotate_credentials", id)
 	return f.credentials, f.credentialsErr
+}
+
+func (f *fakeServiceCoordinator) IssuePHPMyAdminSignon(_ context.Context, id services.ID) (servicecontrol.PHPMyAdminSignon, error) {
+	f.record("signon", id)
+	return f.signon, f.signonErr
+}
+
+func TestPHPMyAdminSignonEndpoint(t *testing.T) {
+	fakeCoord := &fakeServiceCoordinator{
+		signon: servicecontrol.PHPMyAdminSignon{
+			URL: "http://127.0.0.1:8082/signon.php?token=test-token",
+		},
+	}
+	fx := newFixture(t, Config{Services: fakeCoord})
+	rec := fx.request(t, http.MethodPost, "/api/v1/services/phpmyadmin/signon", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST signon returned %d: %s", rec.Code, rec.Body.String())
+	}
+	var got servicecontrol.PHPMyAdminSignon
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.URL == "" {
+		t.Fatal("signon URL is empty")
+	}
+	if len(fakeCoord.calls) == 0 || fakeCoord.calls[len(fakeCoord.calls)-1] != "signon:phpmyadmin" {
+		t.Fatalf("calls = %v", fakeCoord.calls)
+	}
+}
+
+func TestPHPMyAdminSignonEndpointRejectsInactive(t *testing.T) {
+	fakeCoord := &fakeServiceCoordinator{signonErr: databases.ErrServiceInactive}
+	fx := newFixture(t, Config{Services: fakeCoord})
+	rec := fx.request(t, http.MethodPost, "/api/v1/services/phpmyadmin/signon", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST signon returned %d: %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestListServices(t *testing.T) {

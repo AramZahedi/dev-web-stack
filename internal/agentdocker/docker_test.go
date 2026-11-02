@@ -375,13 +375,20 @@ func TestScaffoldSeedsPhpMyAdminServerConfig(t *testing.T) {
 	for _, want := range []string{
 		"$cfg['Servers'][1]['host'] = 'db';",
 		"$cfg['Servers'][1]['port'] = '3306';",
-		"$cfg['Servers'][1]['auth_type'] = 'config';",
-		"$cfg['Servers'][1]['user'] = 'root';",
-		"/run/secrets/root_password",
+		"$cfg['Servers'][1]['auth_type'] = 'signon';",
+		"$cfg['Servers'][1]['SignonSession'] = 'devstack_signon';",
+		"/signon.php",
 	} {
 		if !strings.Contains(string(content), want) {
 			t.Errorf("phpMyAdmin config missing %q:\n%s", want, content)
 		}
+	}
+	signon, err := os.ReadFile(filepath.Join(root, "services", "phpmyadmin", "config", "signon.php"))
+	if err != nil {
+		t.Fatalf("read signon.php: %v", err)
+	}
+	if !strings.Contains(string(signon), "devstack_signon_verify_token") {
+		t.Fatal("signon.php missing token validation")
 	}
 }
 
@@ -412,6 +419,13 @@ func TestActivatePhpMyAdminSyncsActiveRootSecret(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(data)); got != secret {
 		t.Fatalf("phpMyAdmin root secret = %q, want the active engine secret", got)
+	}
+	key, err := os.ReadFile(filepath.Join(root, "services", "phpmyadmin", "secrets", "signon_key"))
+	if err != nil {
+		t.Fatalf("read phpMyAdmin signon key: %v", err)
+	}
+	if len(strings.TrimSpace(string(key))) != 64 {
+		t.Fatalf("phpMyAdmin signon key length = %d, want 64", len(strings.TrimSpace(string(key))))
 	}
 }
 
@@ -457,8 +471,8 @@ func TestRestartPhpMyAdminMigratesLegacyConfigAndSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(content), "auth_type'] = 'config'") {
-		t.Fatalf("legacy config was not migrated:\n%s", content)
+	if !strings.Contains(string(content), "auth_type'] = 'signon'") {
+		t.Fatalf("legacy config was not migrated to signon:\n%s", content)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "services", "phpmyadmin", "secrets", "root_password"))
 	if err != nil {
@@ -466,6 +480,13 @@ func TestRestartPhpMyAdminMigratesLegacyConfigAndSecret(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(data)); got != secret {
 		t.Fatalf("phpMyAdmin root secret = %q, want the active engine secret", got)
+	}
+	key, err := os.ReadFile(filepath.Join(root, "services", "phpmyadmin", "secrets", "signon_key"))
+	if err != nil {
+		t.Fatalf("read phpMyAdmin signon key: %v", err)
+	}
+	if len(strings.TrimSpace(string(key))) != 64 {
+		t.Fatalf("phpMyAdmin signon key length = %d, want 64", len(strings.TrimSpace(string(key))))
 	}
 }
 

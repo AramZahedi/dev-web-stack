@@ -2,6 +2,8 @@ package servicecontrol
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -12,16 +14,10 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
 
-// PhpMyAdminPreparer seeds the small phpMyAdmin user config that points the
-// container at the fixed "db" Compose network alias. The catalog environment
-// still carries PMA_HOST=host.docker.internal for host-gateway compatibility,
-// but the alias is what survives MySQL/MariaDB switches on native Linux Docker.
-//
-// The same preparer keeps a stable copy of the active MySQL-family root
-// password at <root>/secrets/phpmyadmin/root_password. The catalog mounts that
-// file read-only at /run/secrets/root_password, and config.user.inc.php uses
-// config authentication as root, so the Open phpMyAdmin button logs in without
-// a password prompt. The password never appears in the PHP config file.
+// PhpMyAdminPreparer seeds the phpMyAdmin signon config, the signon script,
+// the active root secret, and the token-signing key. The catalog mounts these
+// read-only into the container. The root password is never written into the PHP
+// config; signon.php reads it from /run/secrets/root_password.
 type PhpMyAdminPreparer struct {
 	Root  string
 	Store Store
@@ -51,7 +47,7 @@ func NewPhpMyAdminPreparers(root string, stores ...Store) map[services.ID]Prepar
 	}
 }
 
-// PrepareInstall seeds config.user.inc.php and refreshes the auto-login secret.
+// PrepareInstall seeds the signon config and refreshes the root/key secrets.
 func (p *PhpMyAdminPreparer) PrepareInstall(ctx context.Context, svc services.Service) error {
 	return p.prepare(ctx, svc)
 }
@@ -73,12 +69,12 @@ func (p *PhpMyAdminPreparer) CleanupActivate(context.Context, services.Service, 
 
 // Credentials is unsupported: phpMyAdmin uses the active root secret directly.
 func (p *PhpMyAdminPreparer) Credentials(context.Context, services.ID) (Credentials, error) {
-	return Credentials{}, fmt.Errorf("%w: phpMyAdmin uses config authentication", ErrCredentialsUnsupported)
+	return Credentials{}, fmt.Errorf("%w: phpMyAdmin uses signon authentication", ErrCredentialsUnsupported)
 }
 
 // RotateCredentials is unsupported for phpMyAdmin itself.
 func (p *PhpMyAdminPreparer) RotateCredentials(context.Context, services.ID) (Credentials, error) {
-	return Credentials{}, fmt.Errorf("%w: phpMyAdmin uses config authentication", ErrCredentialsUnsupported)
+	return Credentials{}, fmt.Errorf("%w: phpMyAdmin uses signon authentication", ErrCredentialsUnsupported)
 }
 
 func (p *PhpMyAdminPreparer) prepare(ctx context.Context, svc services.Service) error {
@@ -99,6 +95,12 @@ func (p *PhpMyAdminPreparer) prepare(ctx context.Context, svc services.Service) 
 	if err := p.seedUserConfig(filepath.Join(configDir, "config.user.inc.php")); err != nil {
 		return err
 	}
+	if err := writePhpMyAdminFile(filepath.Join(configDir, "signon.php"), services.PhpMyAdminSignonScript); err != nil {
+		return err
+	}
+	if err := p.syncSignonKey(); err != nil {
+		return err
+	}
 	return p.syncRootPassword(ctx)
 }
 
@@ -112,11 +114,30 @@ func (p *PhpMyAdminPreparer) seedUserConfig(path string) error {
 	if err != nil {
 		return fmt.Errorf("read phpMyAdmin user config: %w", err)
 	}
-	if strings.TrimSpace(string(content)) != strings.TrimSpace(services.PhpMyAdminLegacyUserConfig) {
+	current := strings.TrimSpace(string(content))
+	if current != strings.TrimSpace(services.PhpMyAdminLegacyUserConfig) &&
+		current != strings.TrimSpace(services.PhpMyAdminConfigAuthUserConfig) {
 		return nil
 	}
-	if err := os.WriteFile(path, []byte(services.PhpMyAdminUserConfig), 0o644); err != nil {
+	if err := writePhpMyAdminFile(path, services.PhpMyAdminUserConfig); err != nil {
 		return fmt.Errorf("migrate phpMyAdmin user config: %w", err)
+	}
+	return nil
+}
+
+// writePhpMyAdminFile atomically replaces a generated file with mode 0644.
+func writePhpMyAdminFile(path, content string) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	return nil
 }
@@ -164,41 +185,82 @@ func (p *PhpMyAdminPreparer) syncRootPassword(ctx context.Context) error {
 		filepath.Join(p.Root, "secrets", "phpmyadmin"),
 		filepath.Join(p.Root, "services", "phpmyadmin", "secrets"),
 	} {
-		if err := writePhpMyAdminSecret(dir, secret); err != nil {
+		if err := writePhpMyAdminSecret(dir, "root_password", secret); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// writePhpMyAdminSecret writes the stable root secret into one service layout.
+// syncSignonKey ensures the 32-byte HMAC key exists in both service layouts.
+func (p *PhpMyAdminPreparer) syncSignonKey() error {
+	key, err := readPhpMyAdminSecret(p.Root, "signon_key")
+	if errors.Is(err, os.ErrNotExist) || key == "" {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return fmt.Errorf("generate phpMyAdmin signon key: %w", err)
+		}
+		key = hex.EncodeToString(raw)
+	} else if err != nil {
+		return fmt.Errorf("read phpMyAdmin signon key: %w", err)
+	}
+	for _, dir := range []string{
+		filepath.Join(p.Root, "secrets", "phpmyadmin"),
+		filepath.Join(p.Root, "services", "phpmyadmin", "secrets"),
+	} {
+		if err := writePhpMyAdminSecret(dir, "signon_key", key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readPhpMyAdminSecret reads one stable phpMyAdmin secret, checking the Linux
+// helper layout and the Windows/WSL agent layout.
+func readPhpMyAdminSecret(root, name string) (string, error) {
+	paths := []string{
+		filepath.Join(root, "secrets", "phpmyadmin", name),
+		filepath.Join(root, "services", "phpmyadmin", "secrets", name),
+	}
+	var lastErr error
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return strings.TrimSpace(string(data)), nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+// writePhpMyAdminSecret writes one stable secret into a service layout.
 // The directory is private; the file itself is 0644 so the unprivileged
 // phpMyAdmin process can read the bind mount.
-func writePhpMyAdminSecret(dir, secret string) error {
+func writePhpMyAdminSecret(dir, name, secret string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create phpMyAdmin secret directory: %w", err)
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return fmt.Errorf("secure phpMyAdmin secret directory: %w", err)
 	}
-	target := filepath.Join(dir, "root_password")
+	target := filepath.Join(dir, name)
 	if current, readErr := os.ReadFile(target); readErr == nil && strings.TrimSpace(string(current)) == secret {
 		if chmodErr := os.Chmod(target, 0o644); chmodErr != nil {
-			return fmt.Errorf("secure phpMyAdmin root secret: %w", chmodErr)
+			return fmt.Errorf("secure phpMyAdmin %s: %w", name, chmodErr)
 		}
 		return nil
 	}
 	tmp := target + ".tmp"
 	if err := os.WriteFile(tmp, []byte(secret+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write phpMyAdmin root secret: %w", err)
+		return fmt.Errorf("write phpMyAdmin %s: %w", name, err)
 	}
 	if err := os.Chmod(tmp, 0o644); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("secure phpMyAdmin root secret: %w", err)
+		return fmt.Errorf("secure phpMyAdmin %s: %w", name, err)
 	}
 	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("replace phpMyAdmin root secret: %w", err)
+		return fmt.Errorf("replace phpMyAdmin %s: %w", name, err)
 	}
 	return nil
 }

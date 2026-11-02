@@ -712,6 +712,12 @@ export interface ServiceCredentials {
   port: number;
 }
 
+/** Short-lived signed phpMyAdmin signon URL. */
+export interface PHPMyAdminSignon {
+  url: string;
+  expires_at: string;
+}
+
 export interface ServiceLogsResponse {
   logs: string;
 }

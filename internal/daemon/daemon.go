@@ -255,6 +255,7 @@ func Run(ctx context.Context, opts Options) error {
 		serviceCatalog,
 		nil,
 	)
+	serviceManager.SetSignonKeyPath(filepath.Join(cfg.Home, "services", "phpmyadmin", "secrets", "signon_key"))
 	helperDatabase, err := servicecontrol.NewHelperDocker(func(ctx context.Context) (servicecontrol.DatabasePlatformAPI, error) {
 		api, ok := any(helper).(servicecontrol.DatabasePlatformAPI)
 		if !ok {

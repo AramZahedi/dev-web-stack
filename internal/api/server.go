@@ -185,6 +185,7 @@ type ServiceService interface {
 	Logs(ctx context.Context, id services.ID, tail int) (string, error)
 	Credentials(ctx context.Context, id services.ID) (servicecontrol.Credentials, error)
 	RotateCredentials(ctx context.Context, id services.ID) (servicecontrol.Credentials, error)
+	IssuePHPMyAdminSignon(ctx context.Context, id services.ID) (servicecontrol.PHPMyAdminSignon, error)
 }
 
 // ServiceConfigService is the service config manifest/read/diff/apply/reset
@@ -301,6 +302,10 @@ func (readOnlyServiceService) Credentials(context.Context, services.ID) (service
 
 func (readOnlyServiceService) RotateCredentials(context.Context, services.ID) (servicecontrol.Credentials, error) {
 	return servicecontrol.Credentials{}, errServiceManagerUnavailable
+}
+
+func (readOnlyServiceService) IssuePHPMyAdminSignon(context.Context, services.ID) (servicecontrol.PHPMyAdminSignon, error) {
+	return servicecontrol.PHPMyAdminSignon{}, errServiceManagerUnavailable
 }
 
 // Config configures the API server. AllowedHosts is additive to the required
@@ -532,6 +537,7 @@ func (s *Server) apiRoutes() []route {
 		{http.MethodPost, "/api/v1/services/{id}/config/reset", s.handleServiceConfigReset},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/reveal", s.handleRevealServiceCredentials},
 		{http.MethodPost, "/api/v1/services/{id}/credentials/rotate", s.handleRotateServiceCredentials},
+		{http.MethodPost, "/api/v1/services/{id}/signon", s.handlePHPMyAdminSignon},
 
 		{http.MethodGet, "/api/v1/services/{id}/database-impact", s.handleServiceDatabaseImpact},
 		{http.MethodGet, "/api/v1/services/{id}/databases", s.handleListServiceDatabases},

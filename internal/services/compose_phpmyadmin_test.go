@@ -57,16 +57,24 @@ func TestRenderComposePhpMyAdmin(t *testing.T) {
 	if len(svc.ExtraHosts) != 1 || svc.ExtraHosts[0] != "host.docker.internal:host-gateway" {
 		t.Errorf("extra_hosts = %v, want [host.docker.internal:host-gateway]", svc.ExtraHosts)
 	}
-	if len(svc.Volumes) != 2 {
-		t.Fatalf("phpmyadmin volumes = %+v, want the user config and root secret", svc.Volumes)
+	if len(svc.Volumes) != 4 {
+		t.Fatalf("phpmyadmin volumes = %+v, want config, signon script, root secret, and signon key", svc.Volumes)
 	}
 	if svc.Volumes[0].Source != "/data/devstack/services/phpmyadmin/config/config.user.inc.php" ||
 		svc.Volumes[0].Target != "/etc/phpmyadmin/config.user.inc.php" || !svc.Volumes[0].ReadOnly {
 		t.Errorf("phpmyadmin config volume = %+v, want the read-only user config", svc.Volumes[0])
 	}
-	if svc.Volumes[1].Source != "/data/devstack/secrets/phpmyadmin/root_password" ||
-		svc.Volumes[1].Target != "/run/secrets/root_password" || !svc.Volumes[1].ReadOnly {
-		t.Errorf("phpmyadmin secret volume = %+v, want the read-only root password", svc.Volumes[1])
+	if svc.Volumes[1].Source != "/data/devstack/services/phpmyadmin/config/signon.php" ||
+		svc.Volumes[1].Target != "/var/www/html/signon.php" || !svc.Volumes[1].ReadOnly {
+		t.Errorf("phpmyadmin signon volume = %+v, want the read-only signon script", svc.Volumes[1])
+	}
+	if svc.Volumes[2].Source != "/data/devstack/secrets/phpmyadmin/root_password" ||
+		svc.Volumes[2].Target != "/run/secrets/root_password" || !svc.Volumes[2].ReadOnly {
+		t.Errorf("phpmyadmin secret volume = %+v, want the read-only root password", svc.Volumes[2])
+	}
+	if svc.Volumes[3].Source != "/data/devstack/secrets/phpmyadmin/signon_key" ||
+		svc.Volumes[3].Target != "/run/secrets/signon_key" || !svc.Volumes[3].ReadOnly {
+		t.Errorf("phpmyadmin key volume = %+v, want the read-only signon key", svc.Volumes[3])
 	}
 	for _, id := range []string{"mysql", "mariadb"} {
 		network, ok := doc.Services[id].Networks["default"]
