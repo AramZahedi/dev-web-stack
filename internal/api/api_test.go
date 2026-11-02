@@ -108,6 +108,9 @@ func newFixture(t *testing.T, cfg Config) *apiFixture {
 	t.Helper()
 
 	dir := t.TempDir()
+	// Keep handler paths and config writes inside the test. The real install
+	// exports DEVSTACK_HOME machine-wide, and devstackHome honors it.
+	t.Setenv("DEVSTACK_HOME", filepath.Join(dir, ".devstack"))
 	st, err := store.Open(filepath.Join(dir, "state.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)

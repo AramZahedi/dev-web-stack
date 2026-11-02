@@ -25,6 +25,9 @@ func settingsTestHome(t *testing.T) (string, *apiFixture) {
 		UserHome:  userHome,
 		Listeners: ListenerPorts{HTTPPort: 8080, HTTPSPort: 8443, UIPort: 7070},
 	})
+	// The settings handler persists to the resolved machine home, so point it
+	// at the config seeded above rather than the fixture's default temp home.
+	t.Setenv("DEVSTACK_HOME", home)
 	return home, fx
 }
 
