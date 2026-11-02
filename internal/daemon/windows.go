@@ -35,6 +35,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	perfservice "github.com/AramZahedi/dev-web-stack/internal/performance/service"
 	"github.com/AramZahedi/dev-web-stack/internal/platform"
 	"github.com/AramZahedi/dev-web-stack/internal/ports"
@@ -311,6 +312,7 @@ func Run(ctx context.Context, opts Options) error {
 	apiServer := api.NewServer(st, siteService, runtimeService, doctorService, logStore, adapter, api.Config{
 		UserHome:         cfg.Home,
 		ProjectsRoot:     cfg.ProjectsRoot,
+		WSLProjectsRoot:  pathmode.WSLProjectsRoot,
 		MaxBodyBytes:     int64(cfg.MaxRequestBodyMB) << 20,
 		AuthToken:        authToken,
 		Listeners:        api.ListenerPorts{HTTPPort: cfg.HTTPPort, HTTPSPort: cfg.HTTPSPort, UIPort: cfg.UIPort},

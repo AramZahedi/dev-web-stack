@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 )
 
 func settingsTestHome(t *testing.T) (string, *apiFixture) {
@@ -51,6 +52,65 @@ func settingsFreePort(t *testing.T, used map[int]bool) int {
 	}
 	t.Fatal("could not allocate a distinct test port")
 	return 0
+}
+
+type settingsRoots struct {
+	ProjectsRoot    string `json:"projects_root"`
+	WSLProjectsRoot string `json:"wsl_projects_root"`
+}
+
+func readSettingsRoots(t *testing.T, fx *apiFixture) settingsRoots {
+	t.Helper()
+	rec := fx.request(t, http.MethodGet, "/api/v1/settings", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /settings = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out settingsRoots
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	return out
+}
+
+func TestSettingsReportsProjectsRoots(t *testing.T) {
+	t.Run("defaults below the user home", func(t *testing.T) {
+		userHome := t.TempDir()
+		fx := newFixture(t, Config{UserHome: userHome})
+		got := readSettingsRoots(t, fx)
+		if want := filepath.Join(userHome, "projects"); got.ProjectsRoot != want {
+			t.Fatalf("projects_root = %q, want %q", got.ProjectsRoot, want)
+		}
+		if got.WSLProjectsRoot != pathmode.WSLProjectsRoot {
+			t.Fatalf("wsl_projects_root = %q, want %q", got.WSLProjectsRoot, pathmode.WSLProjectsRoot)
+		}
+	})
+
+	t.Run("configured root survives a store home override", func(t *testing.T) {
+		userHome := t.TempDir()
+		root := filepath.Join(t.TempDir(), "managed-projects")
+		fx := newFixture(t, Config{UserHome: userHome, ProjectsRoot: root})
+		if err := fx.store.SetSetting(context.Background(), "home", filepath.Join(userHome, "custom-devstack")); err != nil {
+			t.Fatalf("set home: %v", err)
+		}
+		got := readSettingsRoots(t, fx)
+		if got.ProjectsRoot != root {
+			t.Fatalf("projects_root = %q, want configured %q", got.ProjectsRoot, root)
+		}
+		if got.WSLProjectsRoot != pathmode.WSLProjectsRoot {
+			t.Fatalf("wsl_projects_root = %q, want %q", got.WSLProjectsRoot, pathmode.WSLProjectsRoot)
+		}
+	})
+
+	t.Run("user home fallback keeps the root non-empty", func(t *testing.T) {
+		fx := newFixture(t, Config{})
+		got := readSettingsRoots(t, fx)
+		if strings.TrimSpace(got.ProjectsRoot) == "" {
+			t.Fatal("projects_root is empty")
+		}
+		if strings.TrimSpace(got.WSLProjectsRoot) == "" {
+			t.Fatal("wsl_projects_root is empty")
+		}
+	})
 }
 
 func TestPatchSettingsPersistsListenerPortsAndReportsRestart(t *testing.T) {
