@@ -16,7 +16,7 @@ c5_ensure_base
 c5_install_php
 
 c5_create_project e2e-smoke-static >/dev/null
-c5_cli --json site add --name e2e-smoke --path "${home}/projects/e2e-smoke-static" --kind static \
+c5_cli --json site add --name e2e-smoke --path "${devstack_home}/projects/e2e-smoke-static" --kind static \
 	--database-service mysql --database-new e2e_smoke_app --database-user-new e2e_smoke_user \
 	--database-grant read_write >"${evidence_dir}/${scenario}/site-add.json"
 c4_pass "${scenario}" "site add with new database and user"
@@ -35,7 +35,7 @@ c4_assert_contains "${scenario}" "terminal DB_PASSWORD present" "$(cat "${eviden
 
 c5_create_project e2e-smoke-php php >/dev/null
 uid="$(c5_user_id mysql e2e_smoke_user)"
-c5_cli --json site add --name e2e-smoke-php --path "${home}/projects/e2e-smoke-php" --kind php --php 8.4 \
+c5_cli --json site add --name e2e-smoke-php --path "${devstack_home}/projects/e2e-smoke-php" --kind php --php 8.4 \
 	--database-service mysql --database e2e_smoke_app --database-user "${uid}" >"${evidence_dir}/${scenario}/php-site-add.json"
 c5_cli --json site start e2e-smoke-php >"${evidence_dir}/${scenario}/php-site-start.json"
 php_site="$(c5_site_id e2e-smoke-php)"

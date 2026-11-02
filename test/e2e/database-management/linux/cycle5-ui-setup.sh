@@ -16,7 +16,7 @@ c5_init
 c5_ensure_base
 
 c5_create_project e2e-ui-managed >/dev/null
-c5_cli --json site add --name e2e-ui-managed --path "${home}/projects/e2e-ui-managed" --kind static \
+c5_cli --json site add --name e2e-ui-managed --path "${devstack_home}/projects/e2e-ui-managed" --kind static \
 	--database-service mysql --database-new e2e_ui_app --database-user-new e2e_ui_user \
 	--database-grant read_write >"${evidence_dir}/${scenario}/managed-site.json" 2>"${evidence_dir}/${scenario}/managed-site.err"
 uid="$(c5_user_id mysql e2e_ui_user)"
@@ -31,13 +31,13 @@ SQL
 c5_cli --json db user list --service mysql >/dev/null 2>&1
 ext_uid="$(c5_user_id mysql e2e_ui_external)"
 c5_create_project e2e-ui-external >/dev/null
-c5_cli --json site add --name e2e-ui-external --path "${home}/projects/e2e-ui-external" --kind static \
+c5_cli --json site add --name e2e-ui-external --path "${devstack_home}/projects/e2e-ui-external" --kind static \
 	>"${evidence_dir}/${scenario}/external-site.json" 2>"${evidence_dir}/${scenario}/external-site.err"
 c5_cli --json db link --site e2e-ui-external --service mysql --database e2e_ui_app --user-id "${ext_uid}" \
 	>"${evidence_dir}/${scenario}/external-link.json" 2>"${evidence_dir}/${scenario}/external-link.err"
 
 c5_create_project e2e-ui-reserved >/dev/null
-c5_cli --json site add --name e2e-ui-reserved --path "${home}/projects/e2e-ui-reserved" --kind static \
+c5_cli --json site add --name e2e-ui-reserved --path "${devstack_home}/projects/e2e-ui-reserved" --kind static \
 	--env 'DB_HOST=evil' --env 'DB_PASSWORD=leaked' --env 'DATABASE_URL=mysql://evil' \
 	--database-service mysql --database e2e_ui_app --database-user "${uid}" \
 	>"${private}/reserved-site.json" 2>"${evidence_dir}/${scenario}/reserved-site.err"

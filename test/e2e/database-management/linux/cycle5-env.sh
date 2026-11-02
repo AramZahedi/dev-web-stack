@@ -74,6 +74,8 @@ state_dir: ${helper_state}
 hosts: ${hosts_file}
 trust_dir: ${trust_dir}
 allow_uid: ${c5_uid}
+allow_home: ${home}
+skip_trust_update: true
 forward_http_port: ${forward_http_port}
 forward_https_port: ${forward_https_port}
 proxy_http_port: ${proxy_http_port}
@@ -120,7 +122,7 @@ c5_stop_helper() {
 }
 
 c5_cli() {
-	runuser -u "${c5_user}" -- env HOME="${c5_user_home}" \
+	runuser -u "${c5_user}" -- env HOME="${home}" \
 		"${ds}" --home "${devstack_home}" --helper-socket "${helper_socket}" "$@"
 }
 
@@ -128,7 +130,7 @@ c5_start_daemon() {
 	if [ -n "${daemon_pid}" ] && kill -0 "${daemon_pid}" 2>/dev/null; then
 		return 0
 	fi
-	runuser -u "${c5_user}" -- env HOME="${c5_user_home}" \
+	runuser -u "${c5_user}" -- env HOME="${home}" \
 		"${ds}" --home "${devstack_home}" --helper-socket "${helper_socket}" daemon run \
 		--http-port "${proxy_http_port}" --https-port "${proxy_https_port}" \
 		--ui-port "${ui_port}" --log-level debug >>"${logs_dir}/daemon.log" 2>&1 &
@@ -311,7 +313,7 @@ c5_ensure_base() {
 }
 
 c5_create_project() {
-	local name="$1" kind="${2:-static}" dir="${home}/projects/$1"
+	local name="$1" kind="${2:-static}" dir="${devstack_home}/projects/$1"
 	mkdir -p "${dir}"
 	case "${kind}" in
 	php) printf '<?php echo "ok";\n' >"${dir}/index.php" ;;
@@ -463,7 +465,7 @@ c5_terminal_probe() {
 	c5_api_session
 	ticket="$(c5_api_post "/api/v1/sites/${site}/terminal/session" '{}' | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ticket", ""))')"
 	[ -n "${ticket}" ] || c5_die "terminal ticket missing for ${site}"
-	( cd "${repo}" && runuser -u "${c5_user}" -- env HOME="${c5_user_home}" \
+	( cd "${repo}" && runuser -u "${c5_user}" -- env HOME="${home}" \
 		PATH="/usr/local/go/bin:/usr/bin:/bin" \
 		go run ./test/e2e/database-management/linux/terminal-probe \
 		-base "http://127.0.0.1:${ui_port}" -site "${site}" -ticket "${ticket}" ) >"${out}" 2>"${out}.err"

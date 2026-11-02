@@ -21,7 +21,7 @@ c5_cli --json db create --service mysql --name e2e06_app >/dev/null 2>&1 || true
 c5_cli --json db user create --service mysql --name e2e06_user --grant e2e06_app:read_write >/dev/null 2>&1 || true
 uid="$(c5_user_id mysql e2e06_user)"
 c5_create_project e2e06-static >/dev/null
-c5_cli --json site add --name e2e06-site --path "${home}/projects/e2e06-static" --kind static \
+c5_cli --json site add --name e2e06-site --path "${devstack_home}/projects/e2e06-static" --kind static \
 	>"${evidence_dir}/${scenario}/site-add.json" 2>"${evidence_dir}/${scenario}/site-add.err" &&
 	c4_pass "${scenario}" "MySQL-linked site created" || c4_fail "${scenario}" "MySQL-linked site created"
 c5_cli --json db link --site e2e06-site --service mysql --database e2e06_app --user-id "${uid}" --primary \

@@ -19,7 +19,7 @@ c5_install_php
 
 c5_create_project e2e03-static >/dev/null
 site_json="${evidence_dir}/${scenario}/site-add.json"
-if c5_cli --json site add --name e2e03-site --path "${home}/projects/e2e03-static" --kind static \
+if c5_cli --json site add --name e2e03-site --path "${devstack_home}/projects/e2e03-static" --kind static \
 	--database-service mysql --database-new e2e03_app --database-user-new e2e03_user \
 	--database-grant read_write >"${site_json}" 2>"${site_json}.err"; then
 	c4_pass "${scenario}" "Add Site created the site, database, user, and link"
@@ -110,7 +110,7 @@ c5_assert_file_lacks_secret "${scenario}" "persisted site env has no generated p
 
 # PHP site with the same database/user, used for php-fpm.conf and PHP exec.
 c5_create_project e2e03-php php >/dev/null
-if c5_cli --json site add --name e2e03-php --path "${home}/projects/e2e03-php" --kind php --php 8.4 \
+if c5_cli --json site add --name e2e03-php --path "${devstack_home}/projects/e2e03-php" --kind php --php 8.4 \
 	--database-service mysql --database e2e03_app --database-user "${uid}" \
 	>"${evidence_dir}/${scenario}/php-site-add.json" 2>"${evidence_dir}/${scenario}/php-site-add.err"; then
 	c4_pass "${scenario}" "PHP site linked to the same database/user"

@@ -54,7 +54,7 @@ done
 [ -n "${uid}" ] && c4_pass "${scenario}" "multi-link user prepared" || c4_fail "${scenario}" "multi-link user prepared"
 
 c5_create_project e2e17-multi >/dev/null
-c5_cli --json site add --name e2e17-site --path "${home}/projects/e2e17-multi" --kind static >/dev/null 2>&1 ||
+c5_cli --json site add --name e2e17-site --path "${devstack_home}/projects/e2e17-multi" --kind static >/dev/null 2>&1 ||
 	c5_fail "${scenario}" "multi-link site created"
 c5_cli --json db link --site e2e17-site --service mysql --database e2e17_app --user-id "${uid}" --primary >/dev/null 2>&1 &&
 	c4_pass "${scenario}" "primary database linked" || c4_fail "${scenario}" "primary database linked"
@@ -100,7 +100,7 @@ fi
 
 # Reserved env keys: link values must win at runtime.
 c5_create_project e2e17-reserved >/dev/null
-c5_cli --json site add --name e2e17-reserved --path "${home}/projects/e2e17-reserved" --kind static \
+c5_cli --json site add --name e2e17-reserved --path "${devstack_home}/projects/e2e17-reserved" --kind static \
 	--env 'DB_HOST=evil' --env 'DB_PASSWORD=leaked' --env 'DATABASE_URL=mysql://evil' \
 	--database-service mysql --database e2e17_app --database-user "${uid}" >/dev/null 2>&1 &&
 	c4_pass "${scenario}" "site with reserved env keys created" || c4_fail "${scenario}" "site with reserved env keys created"
@@ -129,9 +129,9 @@ else
 fi
 
 # Add Site validation.
-expect_fail "duplicate database name rejected" c5_cli --json site add --name e2e17-dupdb --path "${home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_app --database-user-new e2e17_dup1
+expect_fail "duplicate database name rejected" c5_cli --json site add --name e2e17-dupdb --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_app --database-user-new e2e17_dup1
 site_exists e2e17-dupdb && c4_fail "${scenario}" "duplicate database did not create a site" || c4_pass "${scenario}" "duplicate database did not create a site"
-expect_fail "duplicate user name rejected" c5_cli --json site add --name e2e17-dupuser --path "${home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_dupdb --database-user-new e2e17_user
+expect_fail "duplicate user name rejected" c5_cli --json site add --name e2e17-dupuser --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_dupdb --database-user-new e2e17_user
 site_exists e2e17-dupuser && c4_fail "${scenario}" "duplicate user did not create a site" || c4_pass "${scenario}" "duplicate user did not create a site"
 if c5_cli --json db list --service mysql | grep -q '"name":"e2e17_dupdb"'; then
 	c4_fail "${scenario}" "duplicate user rejection did not leave an orphan database"
@@ -139,21 +139,21 @@ if c5_cli --json db list --service mysql | grep -q '"name":"e2e17_dupdb"'; then
 else
 	c4_pass "${scenario}" "duplicate user rejection did not leave an orphan database"
 fi
-expect_fail "protected database rejected" c5_cli --json site add --name e2e17-protected-db --path "${home}/projects/e2e17-multi" --kind static --database-service mysql --database-new mysql --database-user-new e2e17_p1
-expect_fail "protected user rejected" c5_cli --json site add --name e2e17-protected-user --path "${home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_p2 --database-user-new root
-expect_fail "invalid database name rejected" c5_cli --json site add --name e2e17-bad-db --path "${home}/projects/e2e17-multi" --kind static --database-service mysql --database-new 'bad name' --database-user-new e2e17_b1
-expect_fail "invalid username rejected" c5_cli --json site add --name e2e17-bad-user --path "${home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_b2 --database-user-new 'bad-name'
-expect_fail "SQL injection name rejected" c5_cli --json site add --name e2e17-inject --path "${home}/projects/e2e17-multi" --kind static --database-service mysql --database-new 'e2e;drop' --database-user-new e2e17_i1
-expect_fail "missing service rejected" c5_cli --json site add --name e2e17-missing-svc --path "${home}/projects/e2e17-multi" --kind static --database-service nope --database-new e2e17_m1 --database-user-new e2e17_m2
-expect_fail "inactive service rejected" c5_cli --json site add --name e2e17-inactive --path "${home}/projects/e2e17-multi" --kind static --database-service postgresql --database-new e2e17_i2 --database-user-new e2e17_i3
-expect_fail "invalid grant rejected" c5_cli --json site add --name e2e17-grant --path "${home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_g1 --database-user-new e2e17_g2 --database-grant nope
-expect_fail "existing user with grant flag rejected" c5_cli --json site add --name e2e17-existing-grant --path "${home}/projects/e2e17-multi" --kind static --database-service mysql --database e2e17_app --database-user "${uid}" --database-grant read_only
+expect_fail "protected database rejected" c5_cli --json site add --name e2e17-protected-db --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service mysql --database-new mysql --database-user-new e2e17_p1
+expect_fail "protected user rejected" c5_cli --json site add --name e2e17-protected-user --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_p2 --database-user-new root
+expect_fail "invalid database name rejected" c5_cli --json site add --name e2e17-bad-db --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service mysql --database-new 'bad name' --database-user-new e2e17_b1
+expect_fail "invalid username rejected" c5_cli --json site add --name e2e17-bad-user --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_b2 --database-user-new 'bad-name'
+expect_fail "SQL injection name rejected" c5_cli --json site add --name e2e17-inject --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service mysql --database-new 'e2e;drop' --database-user-new e2e17_i1
+expect_fail "missing service rejected" c5_cli --json site add --name e2e17-missing-svc --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service nope --database-new e2e17_m1 --database-user-new e2e17_m2
+expect_fail "inactive service rejected" c5_cli --json site add --name e2e17-inactive --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service postgresql --database-new e2e17_i2 --database-user-new e2e17_i3
+expect_fail "invalid grant rejected" c5_cli --json site add --name e2e17-grant --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service mysql --database-new e2e17_g1 --database-user-new e2e17_g2 --database-grant nope
+expect_fail "existing user with grant flag rejected" c5_cli --json site add --name e2e17-existing-grant --path "${devstack_home}/projects/e2e17-multi" --kind static --database-service mysql --database e2e17_app --database-user "${uid}" --database-grant read_only
 
 # API parity: an existing user with a grant flag must be rejected, not silently ignored.
 c5_api_session
 api_grant_status="$(curl -sS -o "${private}/api-existing-grant.json" -w '%{http_code}' -b "${private}/cookies.txt" \
 	-H "X-CSRF-Token: ${csrf}" -H 'Content-Type: application/json' -X POST \
-	--data "{\"name\":\"e2e17-api-grant\",\"path\":\"${home}/projects/e2e17-multi\",\"kind\":\"static\",\"database\":{\"service_id\":\"mysql\",\"database\":\"e2e17_app\",\"user_id\":\"${uid}\",\"grant\":\"read_only\"}}" \
+	--data "{\"name\":\"e2e17-api-grant\",\"path\":\"${devstack_home}/projects/e2e17-multi\",\"kind\":\"static\",\"database\":{\"service_id\":\"mysql\",\"database\":\"e2e17_app\",\"user_id\":\"${uid}\",\"grant\":\"read_only\"}}" \
 	"http://127.0.0.1:${ui_port}/api/v1/sites")"
 if [ "${api_grant_status}" = "400" ] || [ "${api_grant_status}" = "409" ]; then
 	c4_pass "${scenario}" "API rejects an existing user with a grant flag"
@@ -169,7 +169,7 @@ fi
 
 # Concurrent link attempts: one winner, one conflict.
 c5_create_project e2e17-race >/dev/null
-c5_cli --json site add --name e2e17-race --path "${home}/projects/e2e17-race" --kind static >/dev/null 2>&1 || true
+c5_cli --json site add --name e2e17-race --path "${devstack_home}/projects/e2e17-race" --kind static >/dev/null 2>&1 || true
 set +e
 c5_cli --json db link --site e2e17-race --service mysql --database e2e17_app --user-id "${uid}" --primary >"${private}/race1.json" 2>&1 & p1=$!
 c5_cli --json db link --site e2e17-race --service mysql --database e2e17_app --user-id "${uid}" >"${private}/race2.json" 2>&1 & p2=$!
@@ -185,7 +185,7 @@ c4_assert_eq "${scenario}" "concurrent duplicate links leave one link" "${race_l
 
 # Concurrent link and site deletion: no orphan link.
 c5_create_project e2e17-delrace >/dev/null
-c5_cli --json site add --name e2e17-delrace --path "${home}/projects/e2e17-delrace" --kind static >/dev/null 2>&1 || true
+c5_cli --json site add --name e2e17-delrace --path "${devstack_home}/projects/e2e17-delrace" --kind static >/dev/null 2>&1 || true
 delrace_id="$(c5_site_id e2e17-delrace)"
 set +e
 c5_cli --json db link --site e2e17-delrace --service mysql --database e2e17_app --user-id "${uid}" --primary >"${private}/delrace-link.json" 2>&1 & p1=$!
@@ -202,7 +202,7 @@ c5_cli --json db create --service mysql --name e2e17_drop >/dev/null 2>&1 || tru
 c5_cli --json db user create --service mysql --name e2e17_drop_user --grant e2e17_drop:read_write >/dev/null 2>&1 || true
 drop_uid="$(c5_user_id mysql e2e17_drop_user)"
 c5_create_project e2e17-drop >/dev/null
-c5_cli --json site add --name e2e17-drop-site --path "${home}/projects/e2e17-drop" --kind static >/dev/null 2>&1 || true
+c5_cli --json site add --name e2e17-drop-site --path "${devstack_home}/projects/e2e17-drop" --kind static >/dev/null 2>&1 || true
 c5_cli --json db link --site e2e17-drop-site --service mysql --database e2e17_drop --user-id "${drop_uid}" --primary >/dev/null 2>&1 || true
 c5_cli --json site stop e2e17-drop-site >/dev/null 2>&1 || true
 c5_cli --json db drop --service mysql --name e2e17_drop --yes >/dev/null 2>&1 &&

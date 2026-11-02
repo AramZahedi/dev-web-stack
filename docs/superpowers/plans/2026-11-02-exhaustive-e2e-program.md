@@ -170,7 +170,7 @@ Remove-Item Env:GOOS,Env:GOARCH
 
 Each worker runs the unprivileged E2E model already proven by `test/e2e/linux.sh` and `cycle4-env.sh`:
 
-- Helper process as root with a temp config: `socket`, `state_dir`, `hosts`, `trust_dir`, `allow_uid`, high `forward_*`/`proxy_*`/`vhost_*` ports, temp vhost/nginx/Apache paths.
+- Helper process as root with a temp config: `socket`, `state_dir`, `hosts`, `trust_dir`, `allow_uid`, `allow_home: $E2E_HOME`, `skip_trust_update: true`, high `forward_*`/`proxy_*`/`vhost_*` ports, temp vhost/nginx/Apache paths.
 - Daemon as UID 1000 with `DEVSTACK_HOME=/tmp/devstack-e2e/<run>/wN`, helper socket, high `proxy_http_port`/`proxy_https_port`/dashboard port.
 - No systemd unit, no `/etc/hosts`, no real trust store, no `/data/devstack`.
 - **Non-Docker lanes** (H1, H2, H5, L1, L2) never start Docker and never bind a fixed service port.
@@ -1070,6 +1070,12 @@ These were found during planning research. Each is a **candidate** until reprodu
 | D13 | Runtime catalog has no test seam for download failure/checksum/disk-full | H2 | Test-only seam or explicit simulated catalog; no production behavior change |
 | D14 | `e2e.spec.ts` lacks the DB spec's global leak/error guard | L1 | Shared leak/console/request guard on every mock spec |
 | D15 | Service data deletion trusts a client boolean, not a typed confirmation | H3 | Server-side exact confirmation or documented API-only policy |
+| D16 | Service activation used the generic 30s client timeout; first PostgreSQL boot exceeded it | H3/H4 | Long-running client path + caller cancellation test; fixed |
+| D17 | Disposable helper homes could not set `allow_home`/`skip_trust_update`, so trust preflight wrote to the real user home or failed unprivileged | H1/H5 | Helper config/flag support, fail-closed temp anchor test; fixed |
+| D18 | Linux E2E fixtures lived outside the managed projects root and site add was rejected | H1 | Move fixtures under the managed root; Linux E2E and cycle5 fixture setup use managed paths. |
+| D19 | A second Docker engine in the shared WSL namespace cannot publish ports while the real install engine is active (port proxy/DNAT conflict) | H3/H4/H6 | Use the serialized service slot with no published ports; database cycles 4-8 remain blocked until that slot exists. |
+| D20 | phpMyAdmin required cookie login and did not use the managed root account | H4 | `auth_type=config`, root secret mount, migration/refresh on restart; live browser test green. |
+| D21 | Cycle5's UI fixture used `${home}/projects` while the product manages `${devstack_home}/projects` | H4/L1 | Use the managed root and disposable helper home; live database UI fixture now starts. |
 
 ## 7. Gates and definition of done
 

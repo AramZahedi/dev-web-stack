@@ -1,0 +1,71 @@
+# E2E Execution Report — 2026-11-02
+
+**Plan:** `docs/superpowers/plans/2026-11-02-exhaustive-e2e-program.md`
+**Matrix:** `docs/e2e-lane-matrix.md`
+**Inventory:** `docs/e2e-coverage.md`
+
+## Environment
+
+- Windows 11 Pro build 26300, Ryzen 9 7940HX, 31.2 GB RAM, ~210 GiB free.
+- WSL 3.0.3, Ubuntu 26.04, real `devstack` distro.
+- Real install: `C:\Users\Aram\.devstack`, MySQL and phpMyAdmin active, `static` stopped.
+- All WSL distros share one network namespace; the real install holds 3306 and 8082.
+
+## Completed and verified
+
+| Area | Command | Result |
+|---|---|---|
+| Go unit/integration | `go test ./... -count=1` | PASS |
+| Go vet | `go vet ./...` | PASS |
+| UI type check | `npm run check` | 0 errors, 0 warnings |
+| UI unit | `npm test` | 377 passed |
+| Mock E2E (Chromium/Firefox/WebKit) | `npm run test:e2e` | 190/192 passed; 2 transient failures (Chromium trace-close race, WebKit Redis reveal) passed on targeted rerun 6/6 |
+| Linux builtin E2E | `E2E_SKIP_BUILD=1 bash test/e2e/linux.sh` | PASS |
+| Live database UI (disposable daemon) | `playwright test -c playwright.live.config.ts --grep "Site Detail\|metadata-only\|reserved database\|Add Site review"` | 4 passed |
+| phpMyAdmin auto-login (live) | `npx playwright test -c playwright.live.config.ts --grep "phpMyAdmin auto-login"` | 1 passed |
+| Real upgrade | `install.ps1 -Upgrade` | PASS; daemon/helper/agent healthy |
+
+## phpMyAdmin auto-login
+
+- `config.user.inc.php` uses `auth_type = 'config'`, `user = 'root'`, and reads the root secret from `/run/secrets/root_password`.
+- The active MySQL/MariaDB root secret is copied to `services/phpmyadmin/secrets/root_password` on PMA activation, engine switch, credential rotation, and restart.
+- Restart recreates the PMA container so new mounts take effect.
+- Live browser check opens `http://127.0.0.1:8082/`, sees **no login form**, and reports `Server: db:3306`.
+- Verified effective PHP config: `auth=config user=root host=db port=3306 passlen=64`.
+- No root password is written into the PHP config or evidence.
+
+## Defects fixed during execution
+
+| ID | Fix |
+|---|---|
+| D1 | TLS site create/start/restart now runs the trust preflight and repairs or fails closed. |
+| D2 | Daemon startup restores the managed hosts block after upgrade. |
+| D16 | Service activation ignores the generic 30-second client timeout; caller cancellation still works. |
+| D17 | Helper config supports `allow_home` and `skip_trust_update` for disposable homes. |
+| D18 | Linux E2E fixtures now live under the managed projects root. |
+| D20 | phpMyAdmin auto-login as the active root user. |
+| D21 | Cycle5 UI fixtures now live under the managed projects root and use the disposable helper home. |
+
+## Blocked / not completed
+
+| IDs | Reason | Next action |
+|---|---|---|
+| DB cycles 4–8 | A second Docker engine in the shared WSL namespace cannot publish ports while the real install engine is active. The port proxy listens but DNAT to the container times out; direct container-IP access works. | Implement Task 2A’s serialized service slot with `DEVSTACK_E2E_NO_PUBLISHED_PORTS=1` and high-port relays, then rerun cycles 4–8. |
+| DB-28 / cycles 9–15 | Paused by explicit user instruction. | Resume only with explicit approval. |
+| INST-24/25/29 | No disposable Windows VM, Windows Sandbox, Hyper-V, VirtualBox, VMware, or QEMU on this host. `-TestSandbox` does not prove uninstall/trust/hosts. | Provision a disposable VM, then run Task 17A. |
+| H1/H2/H3/H4/H5/H6/L1/L2 full 268-row runs | The 8-worker harness (Tasks 0–7) is planned but not yet implemented; this session ran the existing Linux/UI/API suites instead. | Implement Tasks 0–7, then run the lane matrix. |
+
+## Cleanup
+
+- Temporary PMA probe scripts and debug homes were removed.
+- Real install baseline restored; `devstack doctor` remains green.
+- Database debug containers/networks in the Ubuntu engine were removed.
+- No `laravel` database or user was dropped.
+
+## Commits
+
+- `3caedc3` feat(services): auto-login phpMyAdmin as active root user
+- `b69e0ef` fix(agent): recreate phpMyAdmin on restart so auto-login mounts apply
+- `1ab3117` docs(e2e): revise plan for serialized service slot and executed gates
+- `8f31a28` fix(e2e): support disposable helper homes and long service activation
+- `35eb441` test(e2e): add live phpMyAdmin auto-login coverage

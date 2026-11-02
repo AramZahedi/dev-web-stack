@@ -49,7 +49,7 @@ SQL
 c4_pass "${scenario}" "marker row seeded"
 
 c5_create_project e2e05-static >/dev/null
-c5_cli --json site add --name e2e05-site --path "${home}/projects/e2e05-static" --kind static \
+c5_cli --json site add --name e2e05-site --path "${devstack_home}/projects/e2e05-static" --kind static \
 	>"${evidence_dir}/${scenario}/site-add.json" 2>"${evidence_dir}/${scenario}/site-add.err" &&
 	c4_pass "${scenario}" "site created" || c4_fail "${scenario}" "site created"
 c5_cli --json db link --site e2e05-site --service postgresql --database e2e05_app --user-id "${uid}" --primary \
@@ -92,7 +92,7 @@ marker="$(c4_psql_root_query -d e2e05_app -tAc 'SELECT label FROM e2e05_marker W
 c4_assert_eq "${scenario}" "marker row remains after site removal" "${marker}" "site-marker"
 
 c5_create_project e2e05-static-2 >/dev/null
-c5_cli --json site add --name e2e05-site2 --path "${home}/projects/e2e05-static-2" --kind static \
+c5_cli --json site add --name e2e05-site2 --path "${devstack_home}/projects/e2e05-static-2" --kind static \
 	>"${evidence_dir}/${scenario}/site2-add.json" 2>"${evidence_dir}/${scenario}/site2-add.err" &&
 	c4_pass "${scenario}" "replacement site created" || c4_fail "${scenario}" "replacement site created"
 c5_cli --json db link --site e2e05-site2 --service postgresql --database e2e05_app --user-id "${uid}" --primary \
@@ -164,7 +164,7 @@ c5_cli --json db user create --service postgresql --name e2e05_fail_user --grant
 fail_uid="$(c5_user_id postgresql e2e05_fail_user)"
 [ -n "${fail_uid}" ] && c4_pass "${scenario}" "failure-simulation user created" || c4_fail "${scenario}" "failure-simulation user created"
 c5_create_project e2e05-fail >/dev/null
-c5_cli --json site add --name e2e05-fail-site --path "${home}/projects/e2e05-fail" --kind static >/dev/null 2>&1 || true
+c5_cli --json site add --name e2e05-fail-site --path "${devstack_home}/projects/e2e05-fail" --kind static >/dev/null 2>&1 || true
 c5_cli --json db link --site e2e05-fail-site --service postgresql --database e2e05_fail_app --user-id "${fail_uid}" --primary >/dev/null 2>&1 || true
 fail_link="$(c5_link_id e2e05-fail-site e2e05_fail_app)"
 [ -n "${fail_link}" ] && c4_pass "${scenario}" "failure-simulation link created" || c4_fail "${scenario}" "failure-simulation link created"

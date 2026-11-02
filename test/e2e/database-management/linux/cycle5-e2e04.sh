@@ -24,7 +24,7 @@ uid="$(c5_user_id mysql e2e04_existing)"
 [ -n "${uid}" ] && c4_pass "${scenario}" "existing user id resolved" || c4_fail "${scenario}" "existing user id resolved"
 
 c5_create_project e2e04-static >/dev/null
-c5_cli --json site add --name e2e04-site --path "${home}/projects/e2e04-static" --kind static \
+c5_cli --json site add --name e2e04-site --path "${devstack_home}/projects/e2e04-static" --kind static \
 	>"${evidence_dir}/${scenario}/site-add.json" 2>"${evidence_dir}/${scenario}/site-add.err" &&
 	c4_pass "${scenario}" "site created without a database" || c4_fail "${scenario}" "site created without a database"
 
@@ -96,7 +96,7 @@ ext_uid="$(c5_user_id mysql e2e04_external)"
 [ -n "${ext_uid}" ] && c4_pass "${scenario}" "external user id resolved" || c4_fail "${scenario}" "external user id resolved"
 
 c5_create_project e2e04-external >/dev/null
-c5_cli --json site add --name e2e04-external --path "${home}/projects/e2e04-external" --kind static \
+c5_cli --json site add --name e2e04-external --path "${devstack_home}/projects/e2e04-external" --kind static \
 	>"${evidence_dir}/${scenario}/external-site-add.json" 2>"${evidence_dir}/${scenario}/external-site-add.err" &&
 	c4_pass "${scenario}" "external-link site created" || c4_fail "${scenario}" "external-link site created"
 c5_cli --json db link --site e2e04-external --service mysql --database e2e04_target --user-id "${ext_uid}" \
@@ -180,7 +180,7 @@ start_ns="$(date +%s%N)"
 set +e
 stdin_output="$(timeout 5 runuser -u "${c5_user}" -- env HOME="${c5_user_home}" \
 	"${ds}" --home "${devstack_home}" --helper-socket "${helper_socket}" --json \
-	site add --name e2e04-stdin --path "${home}/projects/e2e04-static" --kind static \
+	site add --name e2e04-stdin --path "${devstack_home}/projects/e2e04-static" --kind static \
 	--database-service mysql --database e2e04_target --database-user "${uid}" \
 	--database-user-password-stdin <"${fifo}" 2>&1)"
 stdin_status=$?
