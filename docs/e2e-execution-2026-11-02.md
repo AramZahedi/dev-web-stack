@@ -81,3 +81,7 @@
 - `1ab3117` docs(e2e): revise plan for serialized service slot and executed gates
 - `8f31a28` fix(e2e): support disposable helper homes and long service activation
 - `35eb441` test(e2e): add live phpMyAdmin auto-login coverage
+- `76535cf` test(e2e): run live database UI against managed-root fixtures
+- `18c48d5` test(e2e): add no-published-ports service slot and fix lifecycle fixtures
+- `ce16f26` docs(e2e): record green database lifecycle and backup suites
+- `b4cd626` test(e2e): use managed roots for cycle7 fixtures and record results
