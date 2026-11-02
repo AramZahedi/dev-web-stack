@@ -60,7 +60,7 @@
 | D20 | phpMyAdmin signed one-time signon as the active root user; direct access shows a manual form and replay/tamper/expiry are rejected. |
 | D21 | Cycle5 UI fixtures now live under the managed projects root and use the disposable helper home. |
 | D22 | Cycle6 large-import wait extended from 10 to 30 minutes; near-1 GiB uploads queue a job but take longer than the old wait. |
-| D23 | Real-install hosts block lost `static.test` after an upgrade or WSL restart. Fixed: the keepalive now calls `SyncHosts` on every WSL start; `doctor` stays green across `wsl --terminate devstack`. |
+| D23 | Real-install hosts block lost `static.test` after an upgrade or WSL restart. Fixed: keepalive and post-bootstrap both call `SyncHosts`; `doctor` stays green across both. |
 | D24 | Eight concurrent WSL workers on distinct 24xxx dashboard ports and backend slots: **8/8 passed** after partitioning HTTP and FastCGI ranges. |
 | D25 | After importing/unregistering disposable WSL distros, Windows `wslrelay.exe` on 8082 hung. Terminating the managed `devstack` distro and restarting its agent recreated the relay; PMA returned HTTP 200 and auto-login passed again. |
 
@@ -91,3 +91,8 @@
 - `18c48d5` test(e2e): add no-published-ports service slot and fix lifecycle fixtures
 - `ce16f26` docs(e2e): record green database lifecycle and backup suites
 - `b4cd626` test(e2e): use managed roots for cycle7 fixtures and record results
+- `2612217` feat(e2e): partition backend ports for parallel workers
+- `84eb656` fix(daemon): restore managed hosts on every WSL keepalive start
+- `8a21ff5` test(e2e): skip optional Redis UI hold in standalone runs
+- `e914258` feat(services): replace phpMyAdmin config auth with signed one-time signon
+- `b0b95f0` fix(daemon): resync site hosts after Windows bootstrap
