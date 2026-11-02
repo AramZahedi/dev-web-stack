@@ -879,25 +879,91 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	return nil
 }
 
-// ensureSourceRoot creates a missing Windows or WSL project root before any
-// service-wide database objects are provisioned or PHP files are staged. Local
-// paths are validated by newSite. The daemon runs on Windows for these modes.
+// ensureSourceRoot creates a missing Windows or WSL project root and the
+// configured PHP document root before any service-wide database objects are
+// provisioned or PHP files are staged. Local paths are validated by newSite.
+// The daemon runs on Windows for these modes.
 func ensureSourceRoot(site model.Site) error {
 	if site.SourceMode == "" || site.SourceMode == model.SourceLocal || runtime.GOOS != "windows" {
 		return nil
 	}
-	info, err := os.Stat(site.HostPath)
+	if err := ensureDirectory(site.HostPath, "project root"); err != nil {
+		return err
+	}
+	// The agent rejects symlinked project roots when it resolves PHP and static
+	// document roots. Node sites do not use that rule, so leave them unchanged.
+	if site.Kind != model.SiteNode {
+		if err := rejectSymlinkComponents(site.HostPath); err != nil {
+			return fmt.Errorf("sites: project root %q is not safe: %w", site.HostPath, err)
+		}
+	}
+	if site.Kind != model.SitePHP {
+		return nil
+	}
+	documentRoot := strings.TrimSpace(site.DocumentRoot)
+	if documentRoot == "" || documentRoot == "." {
+		return nil
+	}
+	// newSite already rejects these through pathmode.ProxyDocumentRoot. Keep
+	// the guard so this helper stays safe when called directly.
+	if filepath.IsAbs(documentRoot) || strings.HasPrefix(filepath.ToSlash(documentRoot), "/") {
+		return fmt.Errorf("sites: document root %q must be relative to the project root", documentRoot)
+	}
+	target := filepath.Join(site.HostPath, filepath.FromSlash(documentRoot))
+	if err := pathmode.ValidateContainedPath(site.HostPath, target, true); err != nil {
+		return fmt.Errorf("sites: document root %q is not safe: %w", documentRoot, err)
+	}
+	if err := ensureDirectory(target, fmt.Sprintf("document root %q", documentRoot)); err != nil {
+		return err
+	}
+	if err := rejectSymlinkComponents(target); err != nil {
+		return fmt.Errorf("sites: document root %q is not safe: %w", documentRoot, err)
+	}
+	return nil
+}
+
+// ensureDirectory creates one managed directory when it is missing and verifies
+// that an existing path is a directory rather than a file.
+func ensureDirectory(path, label string) error {
+	info, err := os.Stat(path)
 	if err == nil {
 		if !info.IsDir() {
-			return fmt.Errorf("sites: project root %q is not a directory", site.HostPath)
+			return fmt.Errorf("sites: %s %q is not a directory", label, path)
 		}
 		return nil
 	}
 	if !os.IsNotExist(err) {
-		return fmt.Errorf("sites: project root %q is not accessible: %w", site.HostPath, err)
+		return fmt.Errorf("sites: %s %q is not accessible: %w", label, path, err)
 	}
-	if err := os.MkdirAll(site.HostPath, 0o755); err != nil {
-		return fmt.Errorf("sites: create project root %q: %w", site.HostPath, err)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("sites: create %s %q: %w", label, path, err)
+	}
+	return nil
+}
+
+// rejectSymlinkComponents mirrors the agent's document-root rule. A symlinked
+// project or document-root component would make the agent reject the site
+// after databases and users were already provisioned.
+func rejectSymlinkComponents(path string) error {
+	volume := filepath.VolumeName(path)
+	clean := filepath.Clean(path)
+	rel := strings.TrimPrefix(clean, volume)
+	current := volume + string(filepath.Separator)
+	for _, component := range strings.Split(strings.TrimPrefix(rel, string(filepath.Separator)), string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink component %q is not allowed", current)
+		}
 	}
 	return nil
 }

@@ -387,7 +387,18 @@
     }
 
     if (kind === 'static' || kind === 'php') {
-      if (!documentRoot.trim()) next.document_root = 'Enter a document root. Use . to serve the project root.';
+      const root = documentRoot.trim();
+      if (!root) {
+        next.document_root = 'Enter a document root. Use . to serve the project root.';
+      } else if (
+        root !== '.' &&
+        (root.startsWith('/') ||
+          root.startsWith('\\') ||
+          /^[a-z]:/i.test(root) ||
+          root.split(/[\\/]/).some((part) => part === '..' || part === '.' || part === ''))
+      ) {
+        next.document_root = 'Use a relative path inside the project, for example public.';
+      }
     }
     if (kind === 'php') {
       if (!phpBuild) next.php_build = 'Install a PHP build before adding a PHP site.';

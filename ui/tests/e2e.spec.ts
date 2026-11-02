@@ -170,7 +170,19 @@ test('PHP site creation, ini/extensions, and failed build switch roll back', asy
   const build = page.locator('#php-build');
   await expect(build).toBeVisible();
   await build.selectOption(PHP_BUILD);
+
+  // A leading slash is a common web-server spelling; the field is relative to
+  // the project, so reject it with guidance before the request is sent.
+  await page.locator('#php-document-root').fill('/public');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(
+    page.getByText('Use a relative path inside the project, for example public.', { exact: true }),
+  ).toBeVisible();
   await page.locator('#php-document-root').fill('public');
+  await expect(
+    page.getByText('Use a relative path inside the project, for example public.', { exact: true }),
+  ).toBeHidden();
+
   await expect(page.getByRole('switch', { name: 'Front controller' })).toHaveAttribute(
     'aria-checked',
     'true',
