@@ -38,6 +38,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/ipc"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	perfservice "github.com/AramZahedi/dev-web-stack/internal/performance/service"
 	"github.com/AramZahedi/dev-web-stack/internal/proxy"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
@@ -409,9 +410,11 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 	apiServer := api.NewServer(st, siteService, nodeRuntimes, doctorService, logStore, helper, api.Config{
-		UserHome:     userHome,
-		MaxBodyBytes: int64(cfg.MaxRequestBodyMB) << 20,
-		AuthToken:    authToken,
+		UserHome:        userHome,
+		ProjectsRoot:    cfg.ProjectsRoot,
+		WSLProjectsRoot: pathmode.WSLProjectsRoot,
+		MaxBodyBytes:    int64(cfg.MaxRequestBodyMB) << 20,
+		AuthToken:       authToken,
 		Listeners: api.ListenerPorts{
 			HTTPPort:  cfg.HTTPPort,
 			HTTPSPort: cfg.HTTPSPort,

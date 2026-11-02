@@ -37,6 +37,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	"github.com/AramZahedi/dev-web-stack/internal/performance"
 	"github.com/AramZahedi/dev-web-stack/internal/phpfpm"
 	"github.com/AramZahedi/dev-web-stack/internal/phpini"
@@ -105,6 +106,8 @@ const (
 	codeConfigResetUnavailable = "CONFIG_RESET_UNAVAILABLE"
 	codeConfigValidationFailed = "CONFIG_VALIDATION_FAILED"
 	codeConfigReloadFailed     = "CONFIG_RELOAD_FAILED"
+
+	codeProjectOutsideRoot = "PROJECT_OUTSIDE_ROOT"
 
 	codeDatabaseNotFound        = "DATABASE_NOT_FOUND"
 	codeDatabaseConflict        = "DATABASE_CONFLICT"
@@ -307,11 +310,12 @@ func (readOnlyServiceService) RotateCredentials(context.Context, services.ID) (s
 // machine setting returned by GET /settings and should be passed explicitly by
 // the daemon. A nil UI serves the embedded dashboard (when one has been built).
 type Config struct {
-	UI           fs.FS
-	UserHome     string
-	ProjectsRoot string
-	MaxBodyBytes int64
-	AllowedHosts []string
+	UI              fs.FS
+	UserHome        string
+	ProjectsRoot    string
+	WSLProjectsRoot string
+	MaxBodyBytes    int64
+	AllowedHosts    []string
 	// AuthToken is the per-install dashboard secret. When non-empty, every API
 	// request except health and the auth bootstrap must present it as the
 	// X-Devstack-Token header or the devstack_auth cookie. The SID-authenticated
@@ -684,6 +688,8 @@ func (s *Server) handleAPINotFound(w http.ResponseWriter, _ *http.Request) {
 type settingsResponse struct {
 	Home                string `json:"home"`
 	UserHome            string `json:"user_home"`
+	ProjectsRoot        string `json:"projects_root"`
+	WSLProjectsRoot     string `json:"wsl_projects_root"`
 	WSLDistro           string `json:"wsl_distro"`
 	HTTPPort            int    `json:"http_port"`
 	HTTPSPort           int    `json:"https_port"`
@@ -713,6 +719,8 @@ func (s *Server) currentSettings(ctx context.Context) settingsResponse {
 	defaults := config.Default()
 	out := settingsResponse{
 		UserHome:            s.userHome(),
+		ProjectsRoot:        s.projectsRoot(),
+		WSLProjectsRoot:     s.wslProjectsRoot(),
 		WSLDistro:           defaults.WSLDistro,
 		HTTPPort:            defaults.HTTPPort,
 		HTTPSPort:           defaults.HTTPSPort,
@@ -807,6 +815,30 @@ func (s *Server) userHome() string {
 		return home
 	}
 	return ""
+}
+
+// projectsRoot resolves the effective managed projects root for local and
+// Windows library operations. The configured root wins; otherwise it is
+// <user home>/projects, which preserves the historical API behavior for
+// installations that never set projects_root.
+func (s *Server) projectsRoot() string {
+	if root := strings.TrimSpace(s.cfg.ProjectsRoot); root != "" {
+		return filepath.Clean(root)
+	}
+	if home := strings.TrimSpace(s.userHome()); home != "" {
+		return filepath.Join(home, "projects")
+	}
+	return ""
+}
+
+// wslProjectsRoot resolves the managed projects root inside the WSL distro.
+// The daemon passes the shared constant; the fallback keeps read-only API
+// harnesses and tests confined to the same root.
+func (s *Server) wslProjectsRoot() string {
+	if root := strings.TrimSpace(s.cfg.WSLProjectsRoot); root != "" {
+		return path.Clean(root)
+	}
+	return pathmode.WSLProjectsRoot
 }
 
 // randomSessionValue returns 32 random bytes encoded as hex.
@@ -1111,6 +1143,8 @@ func classifyError(err error) (int, string, string, any) {
 		return http.StatusConflict, codeDatabaseConflict, err.Error(), nil
 	case errors.Is(err, databases.ErrInvalidRequest):
 		return http.StatusBadRequest, codeInvalidRequest, err.Error(), nil
+	case errors.Is(err, pathmode.ErrOutsideProjectsRoot):
+		return http.StatusBadRequest, codeProjectOutsideRoot, err.Error(), nil
 	}
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, services.ErrNotFound) {
 		return http.StatusNotFound, codeNotFound, err.Error(), nil

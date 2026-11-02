@@ -34,6 +34,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	runtimemgr "github.com/AramZahedi/dev-web-stack/internal/runtime"
 	"github.com/AramZahedi/dev-web-stack/internal/serviceconfig"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
@@ -409,22 +410,20 @@ func TestLogsStreamRejectsInvalidFollow(t *testing.T) {
 }
 
 func TestFSBrowserListsDirsAndRejectsFiles(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	h := newTestAPI(t)
-	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+	home := t.TempDir()
+	root := filepath.Join(home, "projects")
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("nope"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("nope"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1/api/v1/fs?path="+url.QueryEscape(dir), nil))
+	fx := newFixture(t, Config{UserHome: home})
+	rec := fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(root), nil)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "sub") || strings.Contains(rec.Body.String(), "nope") {
 		t.Fatalf("browse response = %d %q", rec.Code, rec.Body.String())
 	}
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://127.0.0.1/api/v1/fs?path="+url.QueryEscape(filepath.Join(dir, "secret.txt")), nil))
+	rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(filepath.Join(root, "secret.txt")), nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("file browse code = %d", rec.Code)
 	}
@@ -1094,41 +1093,96 @@ func TestEmbeddedDashboardServesBuiltDist(t *testing.T) {
 	}
 }
 
-func TestFSBrowserConfinedToUserHome(t *testing.T) {
+func TestFSBrowserConfinedToProjectsRoot(t *testing.T) {
 	home := t.TempDir()
-	if err := os.Mkdir(filepath.Join(home, "projects"), 0o755); err != nil {
+	projects := filepath.Join(home, "projects")
+	if err := os.MkdirAll(filepath.Join(projects, "alpha"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(home, "alpha"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(home, "projects-old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	outside := t.TempDir()
 	fx := newFixture(t, Config{UserHome: home})
 
-	rec := fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(home), nil)
+	// An omitted path defaults to the projects root, not the user home.
+	rec := fx.request(t, "GET", "/api/v1/fs", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("home browse code = %d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("default browse code = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var listing fsListing
 	decode(t, rec, &listing)
-	if listing.Path != home || len(listing.Entries) != 2 ||
-		listing.Entries[0].Name != "alpha" || listing.Entries[1].Name != "projects" {
-		t.Fatalf("listing = %+v", listing)
+	if listing.Path != projects || len(listing.Entries) != 1 || listing.Entries[0].Name != "alpha" {
+		t.Fatalf("default listing = %+v", listing)
 	}
 
-	rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(outside), nil)
-	assertError(t, rec, http.StatusForbidden, codeForbidden)
+	// The projects root itself is browsable.
+	rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(projects), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("root browse code = %d body=%s", rec.Code, rec.Body.String())
+	}
 
-	if err := os.Symlink(outside, filepath.Join(home, "escape")); err == nil {
-		rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(filepath.Join(home, "escape")), nil)
+	// The parent, a prefix sibling, and any unrelated directory are forbidden,
+	// including an outside path that does not exist yet.
+	for _, path := range []string{home, filepath.Join(home, "projects-old"), outside, filepath.Join(outside, "missing")} {
+		rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(path), nil)
+		assertError(t, rec, http.StatusForbidden, codeForbidden)
+	}
+
+	// Traversal is a request-shape error, not a containment decision.
+	rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(projects+string(filepath.Separator)+".."+string(filepath.Separator)+"projects-old"), nil)
+	assertError(t, rec, http.StatusBadRequest, codeInvalidRequest)
+
+	// A symlink below the root that resolves outside is forbidden.
+	if err := os.Symlink(outside, filepath.Join(projects, "escape")); err == nil {
+		rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(filepath.Join(projects, "escape")), nil)
 		assertError(t, rec, http.StatusForbidden, codeForbidden)
 	}
 
 	rec = fx.request(t, "GET", "/api/v1/fs?path=relative/path", nil)
 	assertError(t, rec, http.StatusBadRequest, codeInvalidRequest)
 
-	rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(filepath.Join(home, "missing")), nil)
+	rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(filepath.Join(projects, "missing")), nil)
 	assertError(t, rec, http.StatusNotFound, codeNotFound)
+}
+
+func TestFSBrowserUsesConfiguredProjectsRoot(t *testing.T) {
+	home := t.TempDir()
+	// The decoy below the user home proves the configured root wins.
+	if err := os.MkdirAll(filepath.Join(home, "projects", "decoy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "managed-projects")
+	if err := os.MkdirAll(filepath.Join(root, "site"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fx := newFixture(t, Config{UserHome: home, ProjectsRoot: root})
+
+	rec := fx.request(t, "GET", "/api/v1/fs", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configured root browse code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var listing fsListing
+	decode(t, rec, &listing)
+	if listing.Path != root || len(listing.Entries) != 1 || listing.Entries[0].Name != "site" {
+		t.Fatalf("configured root listing = %+v", listing)
+	}
+
+	rec = fx.request(t, "GET", "/api/v1/fs?path="+url.QueryEscape(filepath.Join(home, "projects")), nil)
+	assertError(t, rec, http.StatusForbidden, codeForbidden)
+
+	// mkdir uses the same resolver: an omitted parent creates below the
+	// configured root, and the decoy below the user home is forbidden.
+	rec = fx.request(t, "POST", "/api/v1/fs/mkdir", strings.NewReader(`{"name":"created"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configured root mkdir code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if info, err := os.Stat(filepath.Join(root, "created")); err != nil || !info.IsDir() {
+		t.Fatalf("created directory = %v, %v", info, err)
+	}
+	body := fmt.Sprintf(`{"path":%q,"name":"app"}`, filepath.Join(home, "projects"))
+	rec = fx.request(t, "POST", "/api/v1/fs/mkdir", strings.NewReader(body))
+	assertError(t, rec, http.StatusForbidden, codeForbidden)
 }
 
 func TestSettingsUsesStoreOverrides(t *testing.T) {
@@ -1161,6 +1215,7 @@ func TestSettingsUsesStoreOverrides(t *testing.T) {
 	for _, key := range []string{
 		"home", "user_home", "wsl_distro", "http_port", "https_port", "ui_port", "auto_start_sites",
 		"graceful_stop_seconds", "max_request_body_mb", "log_max_mb", "log_keep",
+		"projects_root", "wsl_projects_root",
 	} {
 		if _, ok := raw[key]; !ok {
 			t.Fatalf("settings missing %q: %v", key, raw)
@@ -1168,6 +1223,12 @@ func TestSettingsUsesStoreOverrides(t *testing.T) {
 	}
 	if raw["home"] != filepath.Join(home, "custom-devstack") {
 		t.Fatalf("home = %v", raw["home"])
+	}
+	if raw["projects_root"] != filepath.Join(home, "projects") {
+		t.Fatalf("projects_root = %v, want %v", raw["projects_root"], filepath.Join(home, "projects"))
+	}
+	if raw["wsl_projects_root"] != pathmode.WSLProjectsRoot {
+		t.Fatalf("wsl_projects_root = %v, want %v", raw["wsl_projects_root"], pathmode.WSLProjectsRoot)
 	}
 	if raw["wsl_distro"] != "Devstack-Test" {
 		t.Fatalf("wsl_distro = %v", raw["wsl_distro"])
@@ -1257,6 +1318,14 @@ func TestClassifyDockerWebConflictAsConfigConflict(t *testing.T) {
 	}
 	if _, ok := detailsMap["conflicts"]; !ok {
 		t.Fatalf("details = %+v, want conflicts", detailsMap)
+	}
+}
+
+func TestClassifyOutsideProjectsRoot(t *testing.T) {
+	err := fmt.Errorf("site create: %w", pathmode.ErrOutsideProjectsRoot)
+	status, code, _, _ := classifyError(err)
+	if status != http.StatusBadRequest || code != codeProjectOutsideRoot {
+		t.Fatalf("classify = %d/%s, want 400/%s", status, code, codeProjectOutsideRoot)
 	}
 }
 

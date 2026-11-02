@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 )
 
 // fsEntry is one browsable directory.
@@ -30,11 +32,16 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 	raw := strings.TrimSpace(r.URL.Query().Get("path"))
 
 	if mode == "wsl" || (raw != "" && strings.HasPrefix(raw, "/") && !filepath.IsAbs(raw)) {
-		if raw != "" {
-			if strings.ContainsRune(raw, 0) || !strings.HasPrefix(raw, "/") || hasParentPathSegment(raw) {
-				writeError(w, http.StatusBadRequest, codeInvalidRequest, "WSL directory path must be absolute and must not contain '..' segments", nil)
-				return
-			}
+		if raw == "" {
+			raw = s.wslProjectsRoot()
+		}
+		if strings.ContainsRune(raw, 0) || !strings.HasPrefix(raw, "/") || hasParentPathSegment(raw) {
+			writeError(w, http.StatusBadRequest, codeInvalidRequest, "WSL directory path must be absolute and must not contain '..' segments", nil)
+			return
+		}
+		if !pathmode.ContainsPath(s.wslProjectsRoot(), raw, false) {
+			writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the managed WSL projects root", nil)
+			return
 		}
 		browser := s.wslFS
 		if browser == nil {
@@ -54,11 +61,8 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if raw == "" {
-		if s.cfg.ProjectsRoot != "" {
-			raw = s.cfg.ProjectsRoot
-		} else if s.cfg.UserHome != "" {
-			raw = filepath.Join(s.cfg.UserHome, "projects")
-		} else {
+		raw = s.projectsRoot()
+		if raw == "" {
 			writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path is required", nil)
 			return
 		}
@@ -67,12 +71,26 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path contains a NUL byte", nil)
 		return
 	}
+	if hasParentPathSegment(raw) {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path must not contain '..' segments", nil)
+		return
+	}
 	if !filepath.IsAbs(raw) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path must be absolute", nil)
 		return
 	}
 
 	target := filepath.Clean(raw)
+	baseLexical, baseResolved, err := s.projectsRootPaths()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, codeInternal, "projects root cannot be resolved", nil)
+		return
+	}
+	if !withinDirectory(baseLexical, target) && !withinDirectory(baseResolved, target) {
+		writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured projects root", nil)
+		return
+	}
+
 	info, err := os.Stat(target)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -92,21 +110,8 @@ func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	home := strings.TrimSpace(s.userHome())
-	if home == "" {
-		writeError(w, http.StatusInternalServerError, codeInternal, "user home is not configured", nil)
-		return
-	}
-	base, err := filepath.Abs(home)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, codeInternal, "user home cannot be resolved", nil)
-		return
-	}
-	if evaluated, err := filepath.EvalSymlinks(base); err == nil {
-		base = evaluated
-	}
-	if !withinDirectory(base, resolved) {
-		writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured user home", nil)
+	if !withinDirectory(baseResolved, resolved) {
+		writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured projects root", nil)
 		return
 	}
 
@@ -153,11 +158,16 @@ func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if mode == "wsl" || (mode == "" && raw != "" && strings.HasPrefix(raw, "/") && !filepath.IsAbs(raw)) {
-		if raw != "" {
-			if strings.ContainsRune(raw, 0) || !strings.HasPrefix(raw, "/") || hasParentPathSegment(raw) {
-				writeError(w, http.StatusBadRequest, codeInvalidRequest, "WSL directory path must be absolute and must not contain '..' segments", nil)
-				return
-			}
+		if raw == "" {
+			raw = s.wslProjectsRoot()
+		}
+		if strings.ContainsRune(raw, 0) || !strings.HasPrefix(raw, "/") || hasParentPathSegment(raw) {
+			writeError(w, http.StatusBadRequest, codeInvalidRequest, "WSL directory path must be absolute and must not contain '..' segments", nil)
+			return
+		}
+		if !pathmode.ContainsPath(s.wslProjectsRoot(), raw, false) {
+			writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the managed WSL projects root", nil)
+			return
 		}
 		browser := s.wslFS
 		if browser == nil {
@@ -182,11 +192,8 @@ func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 
 	parent := raw
 	if parent == "" {
-		if s.cfg.ProjectsRoot != "" {
-			parent = s.cfg.ProjectsRoot
-		} else if s.cfg.UserHome != "" {
-			parent = filepath.Join(s.cfg.UserHome, "projects")
-		} else {
+		parent = s.projectsRoot()
+		if parent == "" {
 			writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path is required", nil)
 			return
 		}
@@ -195,11 +202,25 @@ func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path contains a NUL byte", nil)
 		return
 	}
+	if hasParentPathSegment(parent) {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path must not contain '..' segments", nil)
+		return
+	}
 	if !filepath.IsAbs(parent) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "directory path must be absolute", nil)
 		return
 	}
-	resolvedParent, err := filepath.EvalSymlinks(filepath.Clean(parent))
+	parent = filepath.Clean(parent)
+	baseLexical, baseResolved, err := s.projectsRootPaths()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, codeInternal, "projects root cannot be resolved", nil)
+		return
+	}
+	if !withinDirectory(baseLexical, parent) && !withinDirectory(baseResolved, parent) {
+		writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured projects root", nil)
+		return
+	}
+	resolvedParent, err := filepath.EvalSymlinks(parent)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			writeError(w, http.StatusNotFound, codeNotFound, "directory does not exist", nil)
@@ -213,26 +234,13 @@ func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, codeInvalidRequest, "path is not a directory", nil)
 		return
 	}
-	home := strings.TrimSpace(s.userHome())
-	if home == "" {
-		writeError(w, http.StatusInternalServerError, codeInternal, "user home is not configured", nil)
-		return
-	}
-	base, err := filepath.Abs(home)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, codeInternal, "user home cannot be resolved", nil)
-		return
-	}
-	if evaluated, err := filepath.EvalSymlinks(base); err == nil {
-		base = evaluated
-	}
-	if !withinDirectory(base, resolvedParent) {
-		writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured user home", nil)
+	if !withinDirectory(baseResolved, resolvedParent) {
+		writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured projects root", nil)
 		return
 	}
 	target := filepath.Join(resolvedParent, name)
-	if !withinDirectory(base, target) {
-		writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured user home", nil)
+	if !withinDirectory(baseResolved, target) {
+		writeError(w, http.StatusForbidden, codeForbidden, "directory is outside the configured projects root", nil)
 		return
 	}
 	if err := os.Mkdir(target, 0o755); err != nil {
@@ -282,19 +290,32 @@ func validateFolderName(raw string, windows bool) (string, error) {
 }
 
 // withinDirectory reports whether target is base or a descendant of base. Both
-// paths must already be absolute (and, when possible, symlink-resolved).
+// paths must already be absolute (and, when possible, symlink-resolved). The
+// comparison is component-aware and case-insensitive on Windows.
 func withinDirectory(base, target string) bool {
-	rel, err := filepath.Rel(base, target)
+	return pathmode.ContainsPath(base, target, runtime.GOOS == "windows")
+}
+
+// projectsRootPaths returns the absolute projects root and its symlink-resolved
+// form. The lexical form rejects outside paths before touching the filesystem;
+// the resolved form catches a symlink or reparse point that escapes the root.
+// A root that cannot be resolved yet (for example, one that has not been
+// created) keeps its lexical form.
+func (s *Server) projectsRootPaths() (lexical, resolved string, err error) {
+	root := s.projectsRoot()
+	if root == "" {
+		return "", "", errors.New("projects root is not configured")
+	}
+	lexical, err = filepath.Abs(root)
 	if err != nil {
-		return false
+		return "", "", err
 	}
-	if rel == "." {
-		return true
+	lexical = filepath.Clean(lexical)
+	resolved = lexical
+	if evaluated, err := filepath.EvalSymlinks(lexical); err == nil {
+		resolved = evaluated
 	}
-	if rel == ".." || filepath.IsAbs(rel) {
-		return false
-	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return lexical, resolved, nil
 }
 
 func hasParentPathSegment(p string) bool {

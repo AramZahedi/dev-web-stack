@@ -1575,8 +1575,10 @@ paths:
       summary: List subdirectories for the project picker
       description: |
         Absolute directories only. Files are never listed and file contents are
-        never returned. When the server has a configured user home, paths are
-        resolved through symlinks and confined to that home.
+        never returned. Paths are resolved through symlinks and confined to the
+        managed projects root: the configured `projects_root`, or
+        `<user home>/projects` when unset. Browsing the root itself is allowed.
+        WSL paths are confined to `wsl_projects_root`.
       operationId: browseFilesystem
       security: []
       parameters:
@@ -1602,7 +1604,10 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: Path is outside the configured user home.
+          description: |
+            Path is outside the managed projects root (FORBIDDEN). This includes
+            the parent, a prefix sibling such as `projects-old`, and a symlink
+            that resolves outside the root.
           content:
             application/json:
               schema:
@@ -1617,8 +1622,9 @@ paths:
       description: |
         Creates one directory below the selected parent. The name must be a
         single path segment, must not start with a dot, and must not exist.
-        WSL paths are confined to the managed projects root; local and Windows
-        paths are confined to the configured user home.
+        WSL parents are confined to `wsl_projects_root`; local and Windows
+        parents are confined to the configured `projects_root` (or
+        `<user home>/projects` when unset). The root itself is a valid parent.
       operationId: createFilesystemDirectory
       security: []
       requestBody:
@@ -1643,7 +1649,9 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: Path is outside the configured root.
+          description: |
+            Parent path is outside the managed projects root (FORBIDDEN), or a
+            symlinked parent resolves outside the root.
           content:
             application/json:
               schema:
@@ -3074,6 +3082,7 @@ components:
             - PORT_IN_USE
             - PAYLOAD_TOO_LARGE
             - FORBIDDEN
+            - PROJECT_OUTSIDE_ROOT
             - UNAUTHORIZED
             - HELPER_UNAVAILABLE
             - HELPER_ERROR
@@ -3787,6 +3796,8 @@ components:
       required:
         - home
         - user_home
+        - projects_root
+        - wsl_projects_root
         - wsl_distro
         - http_port
         - https_port
@@ -3804,6 +3815,17 @@ components:
           description: Machine root under which devstack keeps state.
         user_home:
           type: string
+        projects_root:
+          type: string
+          description: |
+            Effective managed projects root for Windows and local sites. The
+            configured `projects_root`, or `<user home>/projects` when unset.
+            Never empty while a user home is available.
+        wsl_projects_root:
+          type: string
+          description: |
+            Effective managed projects root inside the WSL distro. Fixed at
+            `/data/devstack/projects` for the managed distro.
         wsl_distro:
           type: string
         http_port:
