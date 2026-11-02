@@ -235,6 +235,10 @@ try {
     Assert-True ($readmeText -match 'install\.ps1 -Upgrade') "README.txt documents repair with install.ps1 -Upgrade"
     Assert-True ($readmeText -match 'WSL links require') "README.txt explains the WSL dependency"
 
+    Write-Step "PowerShell 5.1 UNC target spelling compares equal to a UNC path"
+    Assert-True (Test-DevstackPathEqual 'UNC\wsl.localhost\devstack\data\devstack' '\\wsl.localhost\devstack\data\devstack') "UNC-prefixed target matches a UNC path"
+    Assert-True (Test-DevstackPathEqual '\??\UNC\wsl.localhost\devstack\data\devstack' '\\wsl.localhost\devstack\data\devstack') "NT UNC target matches a UNC path"
+
     Write-Step "Second install is idempotent"
     $second = Install-DevstackLinks -LinksRoot $linksRoot -WindowsRoot $windowsRoot -WSLDistro "devstack" -WSLInstallTarget $wslInstallTarget -WSLProjectsTarget $wslProjectsTarget
     Assert-Equal 0 @($second.Created).Count "second run created no links"

@@ -53,6 +53,13 @@ function Get-DevstackNormalizedLinkTarget {
         $value = $value.Substring(4)
     }
 
+    # Windows PowerShell 5.1 renders the target of a UNC directory symlink as
+    # "UNC\server\share\..." even though the stored target is "\\server\share".
+    # Normalize that spelling so an unchanged link is recognized as unchanged.
+    if ($value.StartsWith('UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $value = '\\' + $value.Substring(4)
+    }
+
     return $value.TrimEnd('\', '/')
 }
 
