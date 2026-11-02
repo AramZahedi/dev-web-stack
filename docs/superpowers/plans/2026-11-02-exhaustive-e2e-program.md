@@ -652,7 +652,7 @@ Run `service-slot/down.sh h3 w3`, then `e2e_secret_scan` and commit.
 
 **Files:**
 - Create: `test/e2e/worker/h4/run.sh`, `db-core.sh`, `db-users.sh`, `db-backup.sh`, `db-jobs.sh`, `db-redis-pma.sh`, `db-parity.sh`
-- Create: `ui/tests/live/database-management.live.spec.ts`
+- Create: `ui/tests/live/database-management.live.spec.ts`, `ui/tests/live/pma-autologin.live.spec.ts`
 - Reuse: `test/e2e/database-management/fixtures/**` (SQL, dumps, Redis ACL); do **not** run cycles 9-15.
 - Modify: `ui/playwright.live.config.ts`
 
