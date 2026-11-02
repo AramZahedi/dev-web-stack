@@ -1820,6 +1820,27 @@ func (s *Service) syncHosts(ctx context.Context, domains []string) error {
 	return s.deps.Helper.SyncHosts(ctx, domains)
 }
 
+// SyncHosts restores the dashboard and every registered site domain in the
+// managed hosts block. Daemon startup calls this after an upgrade or a helper
+// restart, when the block can legitimately be empty even though sites are
+// already registered.
+func (s *Service) SyncHosts(ctx context.Context) error {
+	ctx = nonNilContext(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deps.Store == nil {
+		return errors.New("sites: store is not configured")
+	}
+	if s.deps.Helper == nil {
+		return errors.New("sites: hosts manager is not configured")
+	}
+	domains, err := s.hostsFor(ctx, "", nil)
+	if err != nil {
+		return err
+	}
+	return s.syncHosts(ctx, domains)
+}
+
 // reserveExistingPorts restores the allocator's view of ports recorded for
 // persisted sites. Failures are ignored because NewService cannot return an
 // error; allocation still probes each candidate port before handing it out.

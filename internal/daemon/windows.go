@@ -471,6 +471,9 @@ func Run(ctx context.Context, opts Options) error {
 			if err := siteService.ReconcileServingMode(ctx); err != nil {
 				logger.Warn("daemon: reconcile Windows serving mode", "error", err)
 			}
+			if err := siteService.SyncHosts(ctx); err != nil {
+				logger.Warn("daemon: sync registered site hosts", "error", err)
+			}
 			if err := siteService.RebuildRoutes(ctx); err != nil {
 				logger.Warn("daemon: rebuild routes", "error", err)
 			}

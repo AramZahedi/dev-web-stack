@@ -478,6 +478,9 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	d.persistSettings(ctx)
+	if err := siteService.SyncHosts(ctx); err != nil {
+		logger.Warn("daemon: sync registered site hosts; continuing so the API can repair it", "error", err)
+	}
 	if cfg.ServingMode == config.ServingModeBuiltin {
 		if err := siteService.RebuildRoutes(ctx); err != nil {
 			return fmt.Errorf("daemon: publish routes: %w", err)
