@@ -21,6 +21,11 @@
 | UI unit | `npm test` | 377 passed |
 | Mock E2E (Chromium/Firefox/WebKit) | `npm run test:e2e` | 190/192 passed; 2 transient failures (Chromium trace-close race, WebKit Redis reveal) passed on targeted rerun 6/6 |
 | Linux builtin E2E | `E2E_SKIP_BUILD=1 bash test/e2e/linux.sh` | PASS |
+| Database lifecycle E2E-01 | `cycle4-e2e01.sh` | 36/36 passed |
+| Database core E2E-02 | `cycle4-e2e02.sh` | 97/97 passed |
+| Database adversarial E2E-16 | `cycle4-e2e16.sh` | 82/82 passed |
+| Site database E2E-03/04/05/06/17 | `cycle5-run-all.sh` plus E2E-06 rerun | 40/40, 33/33, 40/40, 19/19, 58/58 |
+| Backup/import E2E-07 | `cycle6-e2e07.sh` | 130/130 passed |
 | Live database UI (disposable daemon) | `playwright test -c playwright.live.config.ts --grep "Site Detail\|metadata-only\|reserved database\|Add Site review"` | 4 passed |
 | phpMyAdmin auto-login (live) | `npx playwright test -c playwright.live.config.ts --grep "phpMyAdmin auto-login"` | 1 passed |
 | Real upgrade | `install.ps1 -Upgrade` | PASS; daemon/helper/agent healthy |
@@ -43,14 +48,17 @@
 | D16 | Service activation ignores the generic 30-second client timeout; caller cancellation still works. |
 | D17 | Helper config supports `allow_home` and `skip_trust_update` for disposable homes. |
 | D18 | Linux E2E fixtures now live under the managed projects root. |
+| D19 | `DEVSTACK_E2E_NO_PUBLISHED_PORTS` lets the disposable helper run all fixed-port services without touching the real install's 3306/5432/6379/8082. |
 | D20 | phpMyAdmin auto-login as the active root user. |
 | D21 | Cycle5 UI fixtures now live under the managed projects root and use the disposable helper home. |
+| D22 | Cycle6 large-import wait extended from 10 to 30 minutes; near-1 GiB uploads queue a job but take longer than the old wait. |
 
 ## Blocked / not completed
 
 | IDs | Reason | Next action |
 |---|---|---|
-| DB cycles 4–8 | A second Docker engine in the shared WSL namespace cannot publish ports while the real install engine is active. The port proxy listens but DNAT to the container times out; direct container-IP access works. | Implement Task 2A’s serialized service slot with `DEVSTACK_E2E_NO_PUBLISHED_PORTS=1` and high-port relays, then rerun cycles 4–8. |
+| E2E-18 near-1 GiB import | Long-running upload exceeds the original 10-minute harness wait; the product queues the job and the harness wait was extended to 30 minutes. | Finish the timed rerun and record PASS/BLOCKED. |
+| E2E-19/20 | Not yet run in this session. | Run cycle7 Redis/CLI scenarios after the backup suite. |
 | DB-28 / cycles 9–15 | Paused by explicit user instruction. | Resume only with explicit approval. |
 | INST-24/25/29 | No disposable Windows VM, Windows Sandbox, Hyper-V, VirtualBox, VMware, or QEMU on this host. `-TestSandbox` does not prove uninstall/trust/hosts. | Provision a disposable VM, then run Task 17A. |
 | H1/H2/H3/H4/H5/H6/L1/L2 full 268-row runs | The 8-worker harness (Tasks 0–7) is planned but not yet implemented; this session ran the existing Linux/UI/API suites instead. | Implement Tasks 0–7, then run the lane matrix. |

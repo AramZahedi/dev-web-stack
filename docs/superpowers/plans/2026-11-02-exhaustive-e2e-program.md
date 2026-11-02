@@ -1073,7 +1073,7 @@ These were found during planning research. Each is a **candidate** until reprodu
 | D16 | Service activation used the generic 30s client timeout; first PostgreSQL boot exceeded it | H3/H4 | Long-running client path + caller cancellation test; fixed |
 | D17 | Disposable helper homes could not set `allow_home`/`skip_trust_update`, so trust preflight wrote to the real user home or failed unprivileged | H1/H5 | Helper config/flag support, fail-closed temp anchor test; fixed |
 | D18 | Linux E2E fixtures lived outside the managed projects root and site add was rejected | H1 | Move fixtures under the managed root; Linux E2E and cycle5 fixture setup use managed paths. |
-| D19 | A second Docker engine in the shared WSL namespace cannot publish ports while the real install engine is active (port proxy/DNAT conflict) | H3/H4/H6 | Use the serialized service slot with no published ports; database cycles 4-8 remain blocked until that slot exists. |
+| D19 | A second Docker engine in the shared WSL namespace cannot publish fixed ports while the real install engine is active. | H3/H4/H6 | Implemented `DEVSTACK_E2E_NO_PUBLISHED_PORTS`; DB lifecycle/core/adversarial and site/backup suites now pass with no host port publishing. |
 | D20 | phpMyAdmin required cookie login and did not use the managed root account | H4 | `auth_type=config`, root secret mount, migration/refresh on restart; live browser test green. |
 | D21 | Cycle5's UI fixture used `${home}/projects` while the product manages `${devstack_home}/projects` | H4/L1 | Use the managed root and disposable helper home; live database UI fixture now starts. |
 
