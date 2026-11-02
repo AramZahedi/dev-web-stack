@@ -74,6 +74,9 @@ type Config struct {
 	// TrustDir overrides the system CA anchor directory. When empty the
 	// distribution's anchor directory is detected.
 	TrustDir string
+	// TrustSkipUpdate skips the distribution trust refresh command. It is used
+	// only for disposable E2E helper homes with a temporary anchor directory.
+	TrustSkipUpdate bool
 	// Runner executes system trust-update commands. A nil runner uses
 	// os/exec.
 	Runner CommandRunner
@@ -509,7 +512,9 @@ func (s *Server) trustStatus(ctx context.Context, req helperproto.TrustRequest) 
 }
 
 func (s *Server) newTrustManager(home string) *TrustManager {
-	return NewTrustManager(s.authority.RootPEM(), home, s.cfg.Runner, s.cfg.TrustDir)
+	manager := NewTrustManager(s.authority.RootPEM(), home, s.cfg.Runner, s.cfg.TrustDir)
+	manager.skipUpdate = s.cfg.TrustSkipUpdate
+	return manager
 }
 
 // forwardListenPorts resolves the privileged listen ports. They are fixed by

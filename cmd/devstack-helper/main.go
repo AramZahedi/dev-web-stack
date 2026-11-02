@@ -47,6 +47,8 @@ type options struct {
 	hosts            string
 	trustDir         string
 	allowUID         int
+	allowHome        string
+	skipTrustUpdate  bool
 	httpPort         int
 	httpsPort        int
 	proxyHTTPPort    int
@@ -112,6 +114,8 @@ func parseOptions(args []string) (options, error) {
 	flags.StringVar(&opts.hosts, "hosts", opts.hosts, "hosts file to manage")
 	flags.StringVar(&opts.trustDir, "trust-dir", opts.trustDir, "system CA anchor directory (empty detects)")
 	flags.IntVar(&opts.allowUID, "allow-uid", opts.allowUID, "only UID permitted to call the helper")
+	flags.StringVar(&opts.allowHome, "allow-home", opts.allowHome, "home directory permitted for trust operations (empty resolves allow-uid)")
+	flags.BoolVar(&opts.skipTrustUpdate, "skip-trust-update", opts.skipTrustUpdate, "skip the system trust refresh command for a disposable anchor directory")
 	flags.IntVar(&opts.httpPort, "http-port", opts.httpPort, "privileged HTTP listen port")
 	flags.IntVar(&opts.httpsPort, "https-port", opts.httpsPort, "privileged HTTPS listen port")
 	flags.IntVar(&opts.proxyHTTPPort, "proxy-http", opts.proxyHTTPPort, "daemon HTTP proxy port")
@@ -158,8 +162,10 @@ func newHelperServer(opts options, logger *slog.Logger) (*helper.Server, error) 
 		SocketPath:       opts.socket,
 		HostsPath:        opts.hosts,
 		AllowUID:         opts.allowUID,
+		AllowHome:        opts.allowHome,
 		CADir:            opts.caDir(),
 		TrustDir:         opts.trustDir,
+		TrustSkipUpdate:  opts.skipTrustUpdate,
 		ForwardHTTPPort:  opts.httpPort,
 		ForwardHTTPSPort: opts.httpsPort,
 		ProxyHTTPPort:    opts.proxyHTTPPort,

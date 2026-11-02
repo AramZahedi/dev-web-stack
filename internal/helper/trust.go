@@ -53,9 +53,10 @@ type TrustManager struct {
 	ownerGID int
 	ownerErr error
 
-	anchorDir string
-	fedora    bool
-	systemOK  bool
+	anchorDir  string
+	fedora     bool
+	systemOK   bool
+	skipUpdate bool
 }
 
 // NewTrustManager returns a TrustManager for userHome. An empty anchorDir
@@ -150,8 +151,10 @@ func (m *TrustManager) installAnchor(ctx context.Context) Target {
 		return Target{Name: "OS", OK: false, Detail: "write anchor: " + detailError(err)}
 	}
 	name, args := anchorUpdateCommand(m.fedora)
-	if _, err := m.runner.Run(ctx, name, args...); err != nil {
-		return Target{Name: "OS", OK: false, Detail: "anchor installed but " + name + " failed: " + detailError(err)}
+	if !m.skipUpdate {
+		if _, err := m.runner.Run(ctx, name, args...); err != nil {
+			return Target{Name: "OS", OK: false, Detail: "anchor installed but " + name + " failed: " + detailError(err)}
+		}
 	}
 	return Target{Name: "OS", OK: true, Detail: "installed"}
 }
@@ -179,8 +182,10 @@ func (m *TrustManager) removeAnchor(ctx context.Context) Target {
 		return Target{Name: "OS", OK: false, Detail: "remove anchor: " + detailError(err)}
 	}
 	name, args := anchorUpdateCommand(m.fedora)
-	if _, err := m.runner.Run(ctx, name, args...); err != nil {
-		return Target{Name: "OS", OK: false, Detail: "anchor removed but " + name + " failed: " + detailError(err)}
+	if !m.skipUpdate {
+		if _, err := m.runner.Run(ctx, name, args...); err != nil {
+			return Target{Name: "OS", OK: false, Detail: "anchor removed but " + name + " failed: " + detailError(err)}
+		}
 	}
 	return Target{Name: "OS", OK: true, Detail: "removed"}
 }

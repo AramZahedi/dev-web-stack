@@ -41,11 +41,11 @@ HELPER_SOCKET="${HELPER_RUN}/helper.sock"
 HELPER_CONFIG="${TMP}/helper.yaml"
 HOSTS_FILE="${TMP}/hosts"
 TRUST_DIR="${TMP}/trust"
-SITE_ROOT="${TMP}/site"
+SITE_ROOT="${DEVSTACK_HOME}/projects/blog"
 RESPONSE="${TMP}/response.html"
-REDIRECT_ROOT="${TMP}/redirect-site"
+REDIRECT_ROOT="${DEVSTACK_HOME}/projects/redirect-site"
 REDIRECT_HEADERS="${LOG_DIR}/redirect-headers.txt"
-NODE_ROOT="${TMP}/node-site"
+NODE_ROOT="${DEVSTACK_HOME}/projects/node-site"
 
 VHOST_ROOT="${TMP}/vhost-root"
 VHOST_STATE="${TMP}/vhost-state/vhosts.json"
@@ -395,6 +395,8 @@ state_dir: ${HELPER_STATE}
 hosts: ${HOSTS_FILE}
 trust_dir: ${TRUST_DIR}
 allow_uid: $(id -u)
+allow_home: ${E2E_HOME}
+skip_trust_update: true
 forward_http_port: ${FORWARD_HTTP_PORT}
 forward_https_port: ${FORWARD_HTTPS_PORT}
 proxy_http_port: ${PROXY_HTTP_PORT}

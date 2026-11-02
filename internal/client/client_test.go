@@ -36,6 +36,7 @@ type fakeAPI struct {
 	err                   error
 	delay                 time.Duration
 	buildDelay            time.Duration
+	serviceDelay          time.Duration
 	wrongDatabaseEnvelope bool
 	nullDatabaseEnv       bool
 	databaseResponseBody  string
@@ -440,6 +441,9 @@ func (f *fakeAPI) mux() *http.ServeMux {
 	})
 	mux.HandleFunc("POST /api/v1/services/{id}/{action}", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
+		if f.serviceDelay > 0 {
+			time.Sleep(f.serviceDelay)
+		}
 		f.writeErrorOr(w, func() {
 			writeTestJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		})
@@ -1302,6 +1306,39 @@ func TestBuildSiteIgnoresDefaultClientTimeout(t *testing.T) {
 	}
 	if !result.Success {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestActivateServiceIgnoresDefaultClientTimeout(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{serviceDelay: 80 * time.Millisecond}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	c.timeout = 10 * time.Millisecond
+
+	if err := c.ActivateService(context.Background(), "postgresql"); err != nil {
+		t.Fatalf("ActivateService used the generic request timeout: %v", err)
+	}
+}
+
+func TestActivateServiceStillHonorsCallerCancellation(t *testing.T) {
+	home := t.TempDir()
+	api := &fakeAPI{serviceDelay: 200 * time.Millisecond}
+	startFakeAPI(t, home, api)
+	c, err := New(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := c.ActivateService(ctx, "postgresql"); err == nil {
+		t.Fatal("ActivateService ignored caller cancellation")
 	}
 }
 

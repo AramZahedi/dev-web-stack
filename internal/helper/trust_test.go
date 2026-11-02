@@ -120,6 +120,51 @@ func installFakeCertutil(t *testing.T) string {
 	return path
 }
 
+func TestTrustInstallSkipUpdateWritesAnchorOnly(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	runner := &fakeRunner{}
+	authority := newTestAuthority(t)
+	anchorDir := t.TempDir()
+	tm := NewTrustManager(authority.RootPEM(), t.TempDir(), runner, anchorDir)
+	tm.skipUpdate = true
+
+	targets, err := tm.Install(context.Background())
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if len(targets) == 0 {
+		t.Fatal("Install returned no targets")
+	}
+	if _, err := os.Stat(anchorFilePath(anchorDir)); err != nil {
+		t.Fatalf("anchor missing: %v", err)
+	}
+	if runner.called("update-ca-certificates") || runner.called("update-ca-trust") {
+		t.Fatalf("skipUpdate still ran a trust refresh: %v", runner.calls)
+	}
+}
+
+func TestTrustRemoveSkipUpdateRemovesAnchorOnly(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	runner := &fakeRunner{}
+	authority := newTestAuthority(t)
+	anchorDir := t.TempDir()
+	tm := NewTrustManager(authority.RootPEM(), t.TempDir(), runner, anchorDir)
+	tm.skipUpdate = true
+	if _, err := tm.Install(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner.calls = nil
+	if _, err := tm.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(anchorFilePath(anchorDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("anchor still exists: %v", err)
+	}
+	if runner.called("update-ca-certificates") || runner.called("update-ca-trust") {
+		t.Fatalf("skipUpdate still ran a trust refresh: %v", runner.calls)
+	}
+}
+
 func TestTrustInstallWritesAnchorAndCallsUpdate(t *testing.T) {
 	// Force a deterministic "no certutil" result so this test exercises only
 	// the OS anchor store.

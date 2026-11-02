@@ -470,7 +470,9 @@ func (c *Client) GetService(ctx context.Context, id string) (services.View, erro
 }
 
 func (c *Client) serviceAction(ctx context.Context, id, action string) error {
-	return c.doJSON(ctx, http.MethodPost, "/api/v1/services/"+url.PathEscape(id)+"/"+action, nil, nil)
+	// Activation pulls and starts a container and waits for health; a first
+	// PostgreSQL boot can exceed the generic 30-second request timeout.
+	return c.doJSONNoTimeout(ctx, http.MethodPost, "/api/v1/services/"+url.PathEscape(id)+"/"+action, nil, nil)
 }
 
 // InstallService pulls the service image and scaffolds its directories.

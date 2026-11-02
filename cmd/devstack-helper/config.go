@@ -20,11 +20,13 @@ import (
 // The systemd unit always passes --config /etc/devstack/helper.yaml. Command
 // line flags are parsed after the file and therefore override it.
 type fileConfig struct {
-	Socket   *string `yaml:"socket"`
-	StateDir *string `yaml:"state_dir"`
-	Hosts    *string `yaml:"hosts"`
-	TrustDir *string `yaml:"trust_dir"`
-	AllowUID *int    `yaml:"allow_uid"`
+	Socket          *string `yaml:"socket"`
+	StateDir        *string `yaml:"state_dir"`
+	Hosts           *string `yaml:"hosts"`
+	TrustDir        *string `yaml:"trust_dir"`
+	AllowUID        *int    `yaml:"allow_uid"`
+	AllowHome       *string `yaml:"allow_home"`
+	SkipTrustUpdate *bool   `yaml:"skip_trust_update"`
 
 	ForwardHTTPPort  *int  `yaml:"forward_http_port"`
 	ForwardHTTPSPort *int  `yaml:"forward_https_port"`
@@ -131,6 +133,12 @@ func (cfg fileConfig) apply(opts *options) {
 	}
 	if cfg.AllowUID != nil {
 		opts.allowUID = *cfg.AllowUID
+	}
+	if cfg.AllowHome != nil {
+		opts.allowHome = *cfg.AllowHome
+	}
+	if cfg.SkipTrustUpdate != nil {
+		opts.skipTrustUpdate = *cfg.SkipTrustUpdate
 	}
 	if cfg.ForwardHTTPPort != nil {
 		opts.httpPort = *cfg.ForwardHTTPPort
