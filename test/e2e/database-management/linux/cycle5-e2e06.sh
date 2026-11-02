@@ -34,17 +34,16 @@ c5_cli --json service deactivate mysql >"${evidence_dir}/${scenario}/deactivate-
 	c4_pass "${scenario}" "MySQL deactivated" || c4_fail "${scenario}" "MySQL deactivated"
 if c5_service_active mysql; then c4_fail "${scenario}" "MySQL inactive after deactivation"; else c4_pass "${scenario}" "MySQL inactive after deactivation"; fi
 
-# Product activation is expected to fail on the occupied fixed 3306 port. This
-# is the BLOCKED sub-step; the guard itself is verified with a no-port MariaDB.
+# Product activation now runs with no published ports, so the real install's
+# 3306 relay is not touched. Verify the product lifecycle directly.
 set +e
 c5_cli --json service activate mariadb >"${evidence_dir}/${scenario}/activate-mariadb-product.json" 2>"${evidence_dir}/${scenario}/activate-mariadb-product.err"
 product_status=$?
 set -e
-if [ "${product_status}" -ne 0 ] && grep -qE '3306|already in use' "${evidence_dir}/${scenario}/activate-mariadb-product.err" "${evidence_dir}/${scenario}/activate-mariadb-product.json"; then
-	c4_note "${scenario}" "BLOCKED: product MariaDB activation on 3306 refused because the real install's relay owns the port; a no-port MariaDB container verifies the guard instead."
-	c4_pass "${scenario}" "product MariaDB activation on 3306 fails closed (BLOCKED sub-step)"
+if [ "${product_status}" -eq 0 ]; then
+	c4_pass "${scenario}" "product MariaDB activation with no published port"
 else
-	c4_fail "${scenario}" "product MariaDB activation on 3306 fails closed (BLOCKED sub-step)"
+	c4_fail "${scenario}" "product MariaDB activation with no published port" "$(cat "${evidence_dir}/${scenario}/activate-mariadb-product.err" 2>/dev/null | head -1)"
 fi
 
 c5_cli --json service install mariadb >"${evidence_dir}/${scenario}/install-mariadb.json" 2>"${evidence_dir}/${scenario}/install-mariadb.err" &&

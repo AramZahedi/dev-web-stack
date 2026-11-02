@@ -113,16 +113,20 @@ type Service struct {
 	Data           []Mount
 	DependsOn      []ID
 
-	Environment     map[string]string
-	ExtraHosts      []string
-	Healthcheck     *Healthcheck
-	Entrypoint      []string
-	Command         []string
-	ValidateCommand []string
-	ReloadCommand   []string
-	SecurityOpts    []string
-	CapAdd          []string
-	Ulimits         []Ulimit
+	Environment map[string]string
+	ExtraHosts  []string
+	// SuppressPublishedPorts is a test-only E2E seam: the service keeps its
+	// catalog host ports for credentials/status, but Compose does not publish
+	// them. Used when the real install owns fixed ports in a shared WSL netns.
+	SuppressPublishedPorts bool
+	Healthcheck            *Healthcheck
+	Entrypoint             []string
+	Command                []string
+	ValidateCommand        []string
+	ReloadCommand          []string
+	SecurityOpts           []string
+	CapAdd                 []string
+	Ulimits                []Ulimit
 }
 
 // Catalog holds all known service definitions.
@@ -145,6 +149,18 @@ func DefaultCatalog() Catalog {
 }
 
 // Get looks up a service by ID.
+// WithoutPublishedPorts returns a copy of the catalog whose services keep their
+// host-port metadata but render no Compose `ports:` entries. It is used only by
+// disposable E2E helpers that share a network namespace with the real install.
+func WithoutPublishedPorts(c Catalog) Catalog {
+	out := Catalog{Services: make([]Service, len(c.Services))}
+	copy(out.Services, c.Services)
+	for i := range out.Services {
+		out.Services[i].SuppressPublishedPorts = true
+	}
+	return out
+}
+
 func (c Catalog) Get(id ID) (Service, bool) {
 	for _, s := range c.Services {
 		if s.ID == id {

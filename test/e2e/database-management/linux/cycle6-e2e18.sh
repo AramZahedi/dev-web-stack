@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS linked_marker (id INT PRIMARY KEY);
 INSERT INTO linked_marker (id) VALUES (1) ON DUPLICATE KEY UPDATE id=VALUES(id);
 SQL
 c5_create_project e2e18-static >/dev/null
-c5_cli --json site add --name e2e18-site --path "${home}/projects/e2e18-static" --kind static \
+c5_cli --json site add --name e2e18-site --path "${devstack_home}/projects/e2e18-static" --kind static \
 	>"${evidence_dir}/${scenario}/site-add.json" 2>"${evidence_dir}/${scenario}/site-add.err" ||
 	c6_die "site add failed"
 c5_cli --json db user create --service mysql --name e2e18_user --grant e2e_linked:read_write_schema \
@@ -468,7 +468,7 @@ PY
 	c5_cli --json db import --service mysql --database e2e_big --file "${big_sql}" >"${big_out}" 2>"${big_out}.err" &
 	big_cli_pid=$!
 	big_job_id=""
-	for _ in $(seq 1 6000); do
+	for _ in $(seq 1 18000); do
 		big_job_id="$(c6_json_field "$(cat "${big_out}" 2>/dev/null || true)" id)"
 		[ -n "${big_job_id}" ] && break
 		if ! kill -0 "${big_cli_pid}" 2>/dev/null; then

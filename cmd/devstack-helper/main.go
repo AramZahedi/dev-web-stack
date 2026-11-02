@@ -41,29 +41,30 @@ const (
 // defaults, are optionally replaced by --config, and are finally overridden by
 // explicit command-line flags.
 type options struct {
-	configPath       string
-	socket           string
-	stateDir         string
-	hosts            string
-	trustDir         string
-	allowUID         int
-	allowHome        string
-	skipTrustUpdate  bool
-	httpPort         int
-	httpsPort        int
-	proxyHTTPPort    int
-	proxyHTTPSPort   int
-	autoForward      bool
-	vhostRoot        string
-	vhostState       string
-	vhostHTTPPort    int
-	vhostHTTPSPort   int
-	nginxIncludeDir  string
-	apacheIncludeDir string
-	serviceRoot      string
-	toolRoot         string
-	toolBinDir       string
-	logLevel         string
+	configPath             string
+	socket                 string
+	stateDir               string
+	hosts                  string
+	trustDir               string
+	allowUID               int
+	allowHome              string
+	skipTrustUpdate        bool
+	suppressPublishedPorts bool
+	httpPort               int
+	httpsPort              int
+	proxyHTTPPort          int
+	proxyHTTPSPort         int
+	autoForward            bool
+	vhostRoot              string
+	vhostState             string
+	vhostHTTPPort          int
+	vhostHTTPSPort         int
+	nginxIncludeDir        string
+	apacheIncludeDir       string
+	serviceRoot            string
+	toolRoot               string
+	toolBinDir             string
+	logLevel               string
 }
 
 func (o options) caDir() string {
@@ -116,6 +117,7 @@ func parseOptions(args []string) (options, error) {
 	flags.IntVar(&opts.allowUID, "allow-uid", opts.allowUID, "only UID permitted to call the helper")
 	flags.StringVar(&opts.allowHome, "allow-home", opts.allowHome, "home directory permitted for trust operations (empty resolves allow-uid)")
 	flags.BoolVar(&opts.skipTrustUpdate, "skip-trust-update", opts.skipTrustUpdate, "skip the system trust refresh command for a disposable anchor directory")
+	flags.BoolVar(&opts.suppressPublishedPorts, "suppress-published-ports", opts.suppressPublishedPorts, "keep fixed service ports out of rendered Compose (disposable E2E only)")
 	flags.IntVar(&opts.httpPort, "http-port", opts.httpPort, "privileged HTTP listen port")
 	flags.IntVar(&opts.httpsPort, "https-port", opts.httpsPort, "privileged HTTPS listen port")
 	flags.IntVar(&opts.proxyHTTPPort, "proxy-http", opts.proxyHTTPPort, "daemon HTTP proxy port")
@@ -159,29 +161,30 @@ func parseOptions(args []string) (options, error) {
 // startup test so temp-dir/high-port behavior is exercised directly.
 func newHelperServer(opts options, logger *slog.Logger) (*helper.Server, error) {
 	return helper.NewServer(helper.Config{
-		SocketPath:       opts.socket,
-		HostsPath:        opts.hosts,
-		AllowUID:         opts.allowUID,
-		AllowHome:        opts.allowHome,
-		CADir:            opts.caDir(),
-		TrustDir:         opts.trustDir,
-		TrustSkipUpdate:  opts.skipTrustUpdate,
-		ForwardHTTPPort:  opts.httpPort,
-		ForwardHTTPSPort: opts.httpsPort,
-		ProxyHTTPPort:    opts.proxyHTTPPort,
-		ProxyHTTPSPort:   opts.proxyHTTPSPort,
-		ProxyConfigPath:  opts.configPath,
-		AutoForward:      opts.autoForward,
-		VhostRoot:        opts.vhostRoot,
-		VhostStatePath:   opts.vhostState,
-		VhostHTTPPort:    opts.vhostHTTPPort,
-		VhostHTTPSPort:   opts.vhostHTTPSPort,
-		NginxIncludeDir:  opts.nginxIncludeDir,
-		ApacheIncludeDir: opts.apacheIncludeDir,
-		ServiceRoot:      opts.serviceRoot,
-		ToolRoot:         opts.toolRoot,
-		ToolBinDir:       opts.toolBinDir,
-		Logger:           logger,
+		SocketPath:             opts.socket,
+		HostsPath:              opts.hosts,
+		AllowUID:               opts.allowUID,
+		AllowHome:              opts.allowHome,
+		CADir:                  opts.caDir(),
+		TrustDir:               opts.trustDir,
+		TrustSkipUpdate:        opts.skipTrustUpdate,
+		SuppressPublishedPorts: opts.suppressPublishedPorts,
+		ForwardHTTPPort:        opts.httpPort,
+		ForwardHTTPSPort:       opts.httpsPort,
+		ProxyHTTPPort:          opts.proxyHTTPPort,
+		ProxyHTTPSPort:         opts.proxyHTTPSPort,
+		ProxyConfigPath:        opts.configPath,
+		AutoForward:            opts.autoForward,
+		VhostRoot:              opts.vhostRoot,
+		VhostStatePath:         opts.vhostState,
+		VhostHTTPPort:          opts.vhostHTTPPort,
+		VhostHTTPSPort:         opts.vhostHTTPSPort,
+		NginxIncludeDir:        opts.nginxIncludeDir,
+		ApacheIncludeDir:       opts.apacheIncludeDir,
+		ServiceRoot:            opts.serviceRoot,
+		ToolRoot:               opts.toolRoot,
+		ToolBinDir:             opts.toolBinDir,
+		Logger:                 logger,
 	})
 }
 

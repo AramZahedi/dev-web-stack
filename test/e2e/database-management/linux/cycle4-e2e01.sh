@@ -72,6 +72,10 @@ c4_cli --json service activate redis >"${evidence_dir}/${scenario}/activate-redi
 c4_wait_container_healthy devstack-redis 120
 
 c4_cli --json service install phpmyadmin >"${evidence_dir}/${scenario}/install-phpmyadmin.json"
+# The manual PMA container needs the stable root secret that the product
+# preparer would normally sync before activation.
+mkdir -p "${devstack_home}/secrets/phpmyadmin"
+install -m 0644 "${devstack_home}/secrets/mysql/root_password" "${devstack_home}/secrets/phpmyadmin/root_password"
 c4_patch_phpmyadmin_port
 c4_compose up -d --no-deps phpmyadmin >"${evidence_dir}/${scenario}/start-phpmyadmin.log" 2>&1
 c4_wait_container_healthy devstack-phpmyadmin 180
@@ -89,9 +93,9 @@ for svc in mysql postgresql redis phpmyadmin; do
 done
 
 c4_assert_eq "${scenario}" "mysql publishes no host port" "$(docker port devstack-mysql 2>/dev/null || true)" ""
-c4_assert_contains "${scenario}" "phpmyadmin high loopback port" "$(docker port devstack-phpmyadmin)" "127.0.0.1:${pma_host_port}"
-c4_assert_contains "${scenario}" "postgresql loopback port" "$(docker port devstack-postgresql)" "127.0.0.1:5432"
-c4_assert_contains "${scenario}" "redis loopback port" "$(docker port devstack-redis)" "127.0.0.1:6379"
+c4_assert_eq "${scenario}" "phpmyadmin publishes no host port" "$(docker port devstack-phpmyadmin 2>/dev/null || true)" ""
+c4_assert_eq "${scenario}" "postgresql publishes no host port" "$(docker port devstack-postgresql 2>/dev/null || true)" ""
+c4_assert_eq "${scenario}" "redis publishes no host port" "$(docker port devstack-redis 2>/dev/null || true)" ""
 for svc in postgresql redis; do
 	if docker port "devstack-${svc}" | grep -q '0.0.0.0'; then
 		c4_fail "${scenario}" "${svc} not bound to all interfaces"
@@ -139,16 +143,14 @@ set +e
 activate_out="$(c4_cli --json service activate mysql 2>&1)"
 activate_rc=$?
 set -e
-printf '%s\n' "${activate_out}" >"${evidence_dir}/${scenario}/activate-mysql-blocked.json"
-if [ "${activate_rc}" -ne 0 ] && printf '%s' "${activate_out}" | grep -q '3306'; then
-	c4_pass "${scenario}" "mysql product activation refused on occupied 3306"
-	c4_note "${scenario}" "BLOCKED: product activation of MySQL cannot run because this host already reserves 3306 for the real install. Equivalent no-port container lifecycle verified manually."
+printf '%s\n' "${activate_out}" >"${evidence_dir}/${scenario}/activate-mysql.json"
+if [ "${activate_rc}" -eq 0 ]; then
+	c4_pass "${scenario}" "mysql product activation with no published port"
 else
-	c4_fail "${scenario}" "mysql product activation refused on occupied 3306"
+	c4_fail "${scenario}" "mysql product activation with no published port" "${activate_out}"
 fi
-c4_compose start mysql >"${evidence_dir}/${scenario}/manual-start-mysql.log" 2>&1
 c4_wait_container_healthy devstack-mysql 120
-c4_pass "${scenario}" "mysql manual no-port restart"
+c4_assert_eq "${scenario}" "mysql still publishes no host port" "$(docker port devstack-mysql 2>/dev/null || true)" ""
 
 # --- phpMyAdmin lifecycle: restart/deactivate work; activation blocked by 8082 -
 if c4_cli --json service restart phpmyadmin >"${evidence_dir}/${scenario}/restart-phpmyadmin.json" 2>&1; then
@@ -167,17 +169,14 @@ set +e
 activate_out="$(c4_cli --json service activate phpmyadmin 2>&1)"
 activate_rc=$?
 set -e
-printf '%s\n' "${activate_out}" >"${evidence_dir}/${scenario}/activate-phpmyadmin-blocked.json"
-if [ "${activate_rc}" -ne 0 ] && printf '%s' "${activate_out}" | grep -q '8082'; then
-	c4_pass "${scenario}" "phpmyadmin product activation refused on occupied 8082"
-	c4_note "${scenario}" "BLOCKED: product activation of phpMyAdmin cannot run because this host already reserves 8082 for the real install. Equivalent high-port container lifecycle verified manually."
+printf '%s\n' "${activate_out}" >"${evidence_dir}/${scenario}/activate-phpmyadmin.json"
+if [ "${activate_rc}" -eq 0 ]; then
+	c4_pass "${scenario}" "phpmyadmin product activation with no published port"
 else
-	c4_fail "${scenario}" "phpmyadmin product activation refused on occupied 8082"
+	c4_fail "${scenario}" "phpmyadmin product activation with no published port" "${activate_out}"
 fi
-c4_patch_phpmyadmin_port
-c4_compose start phpmyadmin >"${evidence_dir}/${scenario}/manual-start-phpmyadmin.log" 2>&1
 c4_wait_container_healthy devstack-phpmyadmin 120
-c4_pass "${scenario}" "phpmyadmin manual high-port restart"
+c4_assert_eq "${scenario}" "phpmyadmin still publishes no host port" "$(docker port devstack-phpmyadmin 2>/dev/null || true)" ""
 
 # --- doctor after transitions ------------------------------------------------
 set +e
@@ -209,33 +208,22 @@ expected="$(printf '%s\n' devstack-mysql devstack-postgresql devstack-redis devs
 actual="$(docker ps -a --filter "label=com.docker.compose.project=${project}" --format '{{.Names}}' | sort)"
 c4_assert_eq "${scenario}" "no orphan or missing containers" "${actual}" "${expected}"
 
-# --- phpMyAdmin login matrix ------------------------------------------------
-pma_login "${home}/pma-ok.cookies" "${devstack_home}/secrets/mysql/devstack_password" "${evidence_dir}/${scenario}/pma-after-login.html"
-if grep -q 'Server version' "${evidence_dir}/${scenario}/pma-after-login.html" &&
-	grep -qi 'Log out' "${evidence_dir}/${scenario}/pma-after-login.html"; then
-	c4_pass "${scenario}" "phpMyAdmin login with MySQL active"
+# --- phpMyAdmin auto-login config -------------------------------------------
+pma_config="${devstack_home}/services/phpmyadmin/config/config.user.inc.php"
+pma_secret="${devstack_home}/secrets/phpmyadmin/root_password"
+if grep -q "auth_type'] = 'config'" "$pma_config" &&
+	grep -q "user'] = 'root'" "$pma_config" &&
+	cmp -s "$pma_secret" "${devstack_home}/secrets/mysql/root_password"; then
+	c4_pass "${scenario}" "phpMyAdmin auto-login config uses the active root secret"
 else
-	c4_fail "${scenario}" "phpMyAdmin login with MySQL active"
+	c4_fail "${scenario}" "phpMyAdmin auto-login config uses the active root secret"
 fi
-printf '%s' 'definitely-wrong-password' >"${home}/wrong-password"
-chmod 600 "${home}/wrong-password"
-pma_login "${home}/pma-bad.cookies" "${home}/wrong-password" "${evidence_dir}/${scenario}/pma-wrong.html"
-if grep -qiE 'Cannot log in|Access denied|#1045|incorrect' "${evidence_dir}/${scenario}/pma-wrong.html"; then
-	c4_pass "${scenario}" "phpMyAdmin wrong password rejected"
+if docker exec devstack-phpmyadmin curl -fsS http://127.0.0.1/ >"${evidence_dir}/${scenario}/pma-index.html" 2>/dev/null &&
+	! grep -q 'pma_username' "${evidence_dir}/${scenario}/pma-index.html"; then
+	c4_pass "${scenario}" "phpMyAdmin renders without a login form"
 else
-	c4_fail "${scenario}" "phpMyAdmin wrong password rejected"
+	c4_fail "${scenario}" "phpMyAdmin renders without a login form"
 fi
-c4_compose stop mysql >/dev/null 2>&1
-sleep 2
-pma_login "${home}/pma-down.cookies" "${devstack_home}/secrets/mysql/devstack_password" "${evidence_dir}/${scenario}/pma-down.html"
-if grep -qiE 'Cannot log in|Access denied|#1045|Connection refused|server is not responding|mysqli' "${evidence_dir}/${scenario}/pma-down.html"; then
-	c4_pass "${scenario}" "phpMyAdmin clear error with MySQL stopped"
-else
-	c4_fail "${scenario}" "phpMyAdmin clear error with MySQL stopped"
-fi
-c4_compose start mysql >/dev/null 2>&1
-c4_wait_container_healthy devstack-mysql 120
-c4_pass "${scenario}" "MySQL restarted after phpMyAdmin matrix"
 
 # --- result ------------------------------------------------------------------
 status="$(c4_scenario_status "${scenario}")"

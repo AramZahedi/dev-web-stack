@@ -286,9 +286,9 @@ c4_expect_code "${scenario}" "external password reveal refused" "DATABASE_PASSWO
 	c4_cli --json db user password --service mysql --user-id "${uid_ext}" --reveal
 c4_expect_code "${scenario}" "user-supplied password --set refused" "DATABASE_PASSWORD_SET_UNSUPPORTED" \
 	c4_cli --json db user password --service mysql --user-id "${uid_pw}" --set
-mkdir -p "${home}/sites/e2e-site"
-printf '<!doctype html><html><body>e2e</body></html>\n' >"${home}/sites/e2e-site/index.html"
-run_json "${private}/site-add.json" site add --name e2e-site --path "${home}/sites/e2e-site" >/dev/null 2>&1 || true
+mkdir -p "${devstack_home}/projects/e2e-site"
+printf '<!doctype html><html><body>e2e</body></html>\n' >"${devstack_home}/projects/e2e-site/index.html"
+run_json "${private}/site-add.json" site add --name e2e-site --path "${devstack_home}/projects/e2e-site" >/dev/null 2>&1 || true
 c4_expect_code "${scenario}" "external password stdin flag refused" "DATABASE_EXTERNAL_PASSWORD_UNSUPPORTED" \
 	c4_cli --json db link --site e2e-site --service mysql --database e2e_app --user-id "${uid_ext}" --password-stdin
 

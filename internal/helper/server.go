@@ -77,6 +77,8 @@ type Config struct {
 	// TrustSkipUpdate skips the distribution trust refresh command. It is used
 	// only for disposable E2E helper homes with a temporary anchor directory.
 	TrustSkipUpdate bool
+	// SuppressPublishedPorts keeps fixed service ports out of rendered Compose.
+	SuppressPublishedPorts bool
 	// Runner executes system trust-update commands. A nil runner uses
 	// os/exec.
 	Runner CommandRunner
@@ -258,7 +260,11 @@ func NewServer(cfg Config) (*Server, error) {
 		s.vhosts = manager
 	}
 	if cfg.ServiceRoot != "" {
-		s.dockerServices = NewDockerServiceController(cfg.ServiceRoot, services.DefaultCatalog(), cfg.Runner)
+		catalog := services.DefaultCatalog()
+		if cfg.SuppressPublishedPorts {
+			catalog = services.WithoutPublishedPorts(catalog)
+		}
+		s.dockerServices = NewDockerServiceController(cfg.ServiceRoot, catalog, cfg.Runner)
 		s.dockerServices.OwnerUID = cfg.AllowUID
 		// A Docker web server owns 80/443. The daemon writes this marker before
 		// stopping the builtin forwarders, so a helper restart/reboot must not

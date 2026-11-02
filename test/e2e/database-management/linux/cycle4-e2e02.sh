@@ -380,9 +380,9 @@ c4_expect_code "${scenario}" "protected redis default user" "DATABASE_PROTECTED"
 	c4_cli --json db user create --service redis --name default --access-level full
 
 # --- site link, linked-user delete, site removal preservation ---------------
-mkdir -p "${home}/sites/e2e-site"
-printf '<!doctype html><html><body>e2e</body></html>\n' >"${home}/sites/e2e-site/index.html"
-if run_json "${private}/site-add.json" site add --name e2e-site --path "${home}/sites/e2e-site"; then
+mkdir -p "${devstack_home}/projects/e2e-site"
+printf '<!doctype html><html><body>e2e</body></html>\n' >"${devstack_home}/projects/e2e-site/index.html"
+if run_json "${private}/site-add.json" site add --name e2e-site --path "${devstack_home}/projects/e2e-site"; then
 	c4_pass "${scenario}" "site add"
 else
 	c4_fail "${scenario}" "site add" "$(head -1 "${private}/site-add.json.err")"

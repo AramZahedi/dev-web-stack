@@ -76,6 +76,7 @@ trust_dir: ${trust_dir}
 allow_uid: ${c5_uid}
 allow_home: ${home}
 skip_trust_update: true
+suppress_published_ports: true
 forward_http_port: ${forward_http_port}
 forward_https_port: ${forward_https_port}
 proxy_http_port: ${proxy_http_port}

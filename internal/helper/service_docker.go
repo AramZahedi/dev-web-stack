@@ -517,6 +517,9 @@ func (c *DockerServiceController) Activate(ctx context.Context, id services.ID) 
 		if err := c.waitReady(ctx, svc); err != nil {
 			return rollback(&ServiceActivationError{Service: id, Phase: "health", Err: err, RollbackErr: nil}, true)
 		}
+		if svc.SuppressPublishedPorts {
+			return nil
+		}
 		busy, err := c.waitPortsReachable(ctx, svc)
 		if err != nil {
 			return rollback(&ServiceActivationError{Service: id, Phase: "ports", Err: err}, true)
@@ -532,17 +535,19 @@ func (c *DockerServiceController) Activate(ctx context.Context, id services.ID) 
 		return nil
 	}
 
-	busy, err := c.waitPortsFree(ctx, svc)
-	if err != nil {
-		return rollback(&ServiceActivationError{Service: id, Phase: "port-check", Err: err}, false)
-	}
-	if busy != 0 {
-		return rollback(&ServiceActivationError{
-			Service: id,
-			Phase:   "port-check",
-			Port:    busy,
-			Err:     fmt.Errorf("host port %d is already in use; stop the process using it or choose a different service", busy),
-		}, false)
+	if !svc.SuppressPublishedPorts {
+		busy, err := c.waitPortsFree(ctx, svc)
+		if err != nil {
+			return rollback(&ServiceActivationError{Service: id, Phase: "port-check", Err: err}, false)
+		}
+		if busy != 0 {
+			return rollback(&ServiceActivationError{
+				Service: id,
+				Phase:   "port-check",
+				Port:    busy,
+				Err:     fmt.Errorf("host port %d is already in use; stop the process using it or choose a different service", busy),
+			}, false)
+		}
 	}
 
 	if _, err := c.runCompose(ctx, "up", "-d", "--no-deps", string(id)); err != nil {
@@ -553,7 +558,10 @@ func (c *DockerServiceController) Activate(ctx context.Context, id services.ID) 
 	if err := c.waitReady(ctx, svc); err != nil {
 		return rollback(&ServiceActivationError{Service: id, Phase: "health", Err: err}, true)
 	}
-	busy, err = c.waitPortsReachable(ctx, svc)
+	if svc.SuppressPublishedPorts {
+		return nil
+	}
+	busy, err := c.waitPortsReachable(ctx, svc)
 	if err != nil {
 		return rollback(&ServiceActivationError{Service: id, Phase: "ports", Err: err}, true)
 	}

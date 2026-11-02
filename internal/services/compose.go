@@ -122,7 +122,7 @@ func RenderCompose(catalog Catalog, root string) ([]byte, error) {
 		// Process ports. Host-network services own their ports directly and never
 		// publish them through Compose; catalog status still reports them.
 		var ports []string
-		if s.NetworkMode != "host" {
+		if s.NetworkMode != "host" && !s.SuppressPublishedPorts {
 			for _, p := range s.Ports {
 				ports = append(ports, fmt.Sprintf("127.0.0.1:%d:%d", p.Host, p.Container))
 			}

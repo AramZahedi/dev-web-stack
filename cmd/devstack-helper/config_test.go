@@ -27,6 +27,7 @@ trust_dir: /tmp/config/trust
 allow_uid: 4242
 allow_home: /tmp/config/home
 skip_trust_update: true
+suppress_published_ports: true
 forward_http_port: 20080
 forward_https_port: 20443
 proxy_http_port: 21080
@@ -47,27 +48,28 @@ log_level: debug
 		t.Fatal(err)
 	}
 	want := options{
-		configPath:       path,
-		socket:           "/tmp/config/helper.sock",
-		stateDir:         "/tmp/config/state",
-		hosts:            "/tmp/config/hosts",
-		trustDir:         "/tmp/config/trust",
-		allowUID:         4242,
-		allowHome:        "/tmp/config/home",
-		skipTrustUpdate:  true,
-		httpPort:         20080,
-		httpsPort:        20443,
-		proxyHTTPPort:    21080,
-		proxyHTTPSPort:   21443,
-		autoForward:      false,
-		vhostHTTPPort:    23080,
-		vhostHTTPSPort:   23443,
-		vhostRoot:        "/tmp/config/vhosts",
-		vhostState:       "/tmp/config/vhost-state.json",
-		nginxIncludeDir:  "/tmp/config/nginx.d",
-		apacheIncludeDir: "/tmp/config/apache.d",
-		serviceRoot:      "/tmp/config/devstack",
-		logLevel:         "debug",
+		configPath:             path,
+		socket:                 "/tmp/config/helper.sock",
+		stateDir:               "/tmp/config/state",
+		hosts:                  "/tmp/config/hosts",
+		trustDir:               "/tmp/config/trust",
+		allowUID:               4242,
+		allowHome:              "/tmp/config/home",
+		skipTrustUpdate:        true,
+		suppressPublishedPorts: true,
+		httpPort:               20080,
+		httpsPort:              20443,
+		proxyHTTPPort:          21080,
+		proxyHTTPSPort:         21443,
+		autoForward:            false,
+		vhostHTTPPort:          23080,
+		vhostHTTPSPort:         23443,
+		vhostRoot:              "/tmp/config/vhosts",
+		vhostState:             "/tmp/config/vhost-state.json",
+		nginxIncludeDir:        "/tmp/config/nginx.d",
+		apacheIncludeDir:       "/tmp/config/apache.d",
+		serviceRoot:            "/tmp/config/devstack",
+		logLevel:               "debug",
 	}
 	if opts != want {
 		t.Fatalf("options = %+v, want %+v", opts, want)

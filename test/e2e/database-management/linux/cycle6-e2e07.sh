@@ -169,7 +169,7 @@ c4_assert_eq "${scenario}" "pre_restore contains later sentinel" "$(c4_mysql_roo
 
 c6_section "linked-site overwrite gate"
 c5_create_project e2e07-static >/dev/null
-c5_cli --json site add --name e2e07-site --path "${home}/projects/e2e07-static" --kind static \
+c5_cli --json site add --name e2e07-site --path "${devstack_home}/projects/e2e07-static" --kind static \
 	>"${evidence_dir}/${scenario}/site-add.json" 2>"${evidence_dir}/${scenario}/site-add.err" ||
 	c6_die "site add failed: $(head -1 "${evidence_dir}/${scenario}/site-add.err")"
 c5_cli --json db user create --service mysql --name e2e07_user --grant e2e_app:read_write_schema \
