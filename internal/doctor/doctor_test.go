@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
 	"github.com/AramZahedi/dev-web-stack/internal/hosts"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	"github.com/AramZahedi/dev-web-stack/internal/store"
 	"github.com/AramZahedi/dev-web-stack/internal/trust"
 )
@@ -24,17 +26,18 @@ import (
 // testFakes groups the simulated edges of the doctor with the real store and a
 // real temporary hosts file.
 type testFakes struct {
-	helper    *fakeHelper
-	trust     *fakeTrust
-	ports     *fakePorts
-	runtimes  *fakeRuntimes
-	disk      *fakeDisk
-	vhosts    *fakeVhosts
-	php       *fakePHPValidator
-	store     *store.Store
-	hostsPath string
-	home      string
-	dir       string
+	helper       *fakeHelper
+	trust        *fakeTrust
+	ports        *fakePorts
+	runtimes     *fakeRuntimes
+	disk         *fakeDisk
+	vhosts       *fakeVhosts
+	php          *fakePHPValidator
+	store        *store.Store
+	hostsPath    string
+	home         string
+	dir          string
+	projectsRoot string
 
 	phpSiteCount int
 }
@@ -54,16 +57,28 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 		_ = st.Close()
 	})
 
+	projectsRoot := filepath.Join(dir, "projects")
+	if err := os.MkdirAll(projectsRoot, 0o755); err != nil {
+		t.Fatalf("create projects root: %v", err)
+	}
+	sourceMode := model.SourceLocal
+	if runtime.GOOS == "windows" {
+		sourceMode = model.SourceWindows
+	}
+	project := filepath.Join(projectsRoot, "blog")
 	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 	site := model.Site{
-		ID:        "site",
-		Name:      "blog",
-		Domain:    "blog.test",
-		WWW:       true,
-		Backend:   model.BackendLocal,
-		Kind:      model.SiteStatic,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          "site",
+		Name:        "blog",
+		Domain:      "blog.test",
+		WWW:         true,
+		Backend:     model.BackendLocal,
+		Kind:        model.SiteStatic,
+		SourceMode:  sourceMode,
+		HostPath:    project,
+		BackendPath: project,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if err := st.CreateSite(context.Background(), site); err != nil {
 		t.Fatalf("create site: %v", err)
@@ -89,14 +104,15 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 			":8080": syscall.EADDRINUSE,
 			":8443": syscall.EADDRINUSE,
 		}},
-		runtimes:  &fakeRuntimes{},
-		disk:      &fakeDisk{free: 20 << 30},
-		vhosts:    &fakeVhosts{status: helperproto.VhostStatusResponse{Mode: "builtin", ConfigOK: true}},
-		php:       &fakePHPValidator{},
-		store:     st,
-		hostsPath: hostsPath,
-		home:      filepath.Join(dir, "user"),
-		dir:       dir,
+		runtimes:     &fakeRuntimes{},
+		disk:         &fakeDisk{free: 20 << 30},
+		vhosts:       &fakeVhosts{status: helperproto.VhostStatusResponse{Mode: "builtin", ConfigOK: true}},
+		php:          &fakePHPValidator{},
+		store:        st,
+		hostsPath:    hostsPath,
+		home:         filepath.Join(dir, "user"),
+		dir:          dir,
+		projectsRoot: projectsRoot,
 	}
 	fakes.helper = &fakeHelper{
 		status: helperproto.StatusResponse{
@@ -110,6 +126,7 @@ func newTestDoctor(t *testing.T) (*Service, *testFakes) {
 
 	cfg := config.Default()
 	cfg.Home = dir
+	cfg.ProjectsRoot = projectsRoot
 
 	svc := NewService(Deps{
 		Config:    cfg,
@@ -673,6 +690,188 @@ func TestRepairRestoresMissingHostsBlock(t *testing.T) {
 	}
 	if !rep.OK {
 		t.Fatalf("repair report: %+v", rep.Checks)
+	}
+}
+
+// doctorProjectsRoot creates the managed projects root used by the
+// projects-root check and points the doctor at it.
+func doctorProjectsRoot(t *testing.T, svc *Service, fakes *testFakes) string {
+	t.Helper()
+	root := filepath.Join(fakes.dir, "projects")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("create projects root: %v", err)
+	}
+	svc.deps.Config.ProjectsRoot = root
+	return root
+}
+
+// clearDoctorSites removes the default fixture site so a test can seed its own
+// complete set.
+func clearDoctorSites(t *testing.T, fakes *testFakes) {
+	t.Helper()
+	if err := fakes.store.DeleteSite(context.Background(), "site"); err != nil {
+		t.Fatalf("delete default site: %v", err)
+	}
+}
+
+func seedDoctorProjectSite(t *testing.T, fakes *testFakes, site model.Site) {
+	t.Helper()
+	if site.ID == "" {
+		site.ID = site.Name
+	}
+	if site.Domain == "" {
+		site.Domain = site.Name + ".test"
+	}
+	if site.Kind == "" {
+		site.Kind = model.SiteStatic
+	}
+	if site.Backend == "" {
+		site.Backend = model.BackendLocal
+	}
+	if err := fakes.store.CreateSite(context.Background(), site); err != nil {
+		t.Fatalf("create site %q: %v", site.Name, err)
+	}
+}
+
+func TestDoctorProjectsRootAcceptsInsideSites(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	clearDoctorSites(t, fakes)
+	root := doctorProjectsRoot(t, svc, fakes)
+
+	local := filepath.Join(root, "local-site")
+	seedDoctorProjectSite(t, fakes, model.Site{
+		Name: "local-site", HostPath: local, BackendPath: local,
+	})
+	wslHost := `\\wsl.localhost\devstack\data\devstack\projects\wsl-site`
+	seedDoctorProjectSite(t, fakes, model.Site{
+		Name: "wsl-site", SourceMode: model.SourceWSL,
+		HostPath: wslHost, BackendPath: "/data/devstack/projects/wsl-site",
+	})
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "projects-root")
+	if !ok {
+		t.Fatalf("missing projects-root check: %+v", rep.Checks)
+	}
+	if check.Status != StatusOK {
+		t.Fatalf("projects-root = %+v", check)
+	}
+	if check.Title != "Managed project folders" {
+		t.Fatalf("projects-root title = %q", check.Title)
+	}
+}
+
+func TestDoctorProjectsRootRejectsOutsideSite(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	clearDoctorSites(t, fakes)
+	root := doctorProjectsRoot(t, svc, fakes)
+
+	host, backend := `C:\legacy\old`, "/mnt/c/legacy/old"
+	if runtime.GOOS != "windows" {
+		host = filepath.Join(t.TempDir(), "old")
+		backend = host
+	}
+	seedDoctorProjectSite(t, fakes, model.Site{
+		Name: "legacy", HostPath: host, BackendPath: backend,
+	})
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "projects-root")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("projects-root = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "legacy") || !strings.Contains(check.Detail, root) {
+		t.Fatalf("projects-root detail = %q, want site name and root %q", check.Detail, root)
+	}
+	remediation := strings.ToLower(check.Remediation)
+	if !strings.Contains(remediation, "move") || !strings.Contains(remediation, "re-register") {
+		t.Fatalf("projects-root remediation = %q", check.Remediation)
+	}
+	if rep.OK {
+		t.Fatal("outside site must fail the report")
+	}
+}
+
+func TestDoctorProjectsRootMixedSitesReportsOnlyOffenders(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	clearDoctorSites(t, fakes)
+	root := doctorProjectsRoot(t, svc, fakes)
+
+	good := filepath.Join(root, "good")
+	seedDoctorProjectSite(t, fakes, model.Site{
+		Name: "good", HostPath: good, BackendPath: good,
+	})
+	seedDoctorProjectSite(t, fakes, model.Site{
+		Name:        "wsl-old",
+		SourceMode:  model.SourceWSL,
+		HostPath:    `\\wsl.localhost\devstack\home\legacy`,
+		BackendPath: "/home/legacy",
+	})
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "projects-root")
+	if !ok || check.Status != StatusFail {
+		t.Fatalf("projects-root = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "wsl-old") {
+		t.Fatalf("projects-root detail = %q, want the offending site", check.Detail)
+	}
+	if !strings.Contains(check.Detail, pathmode.WSLProjectsRoot) {
+		t.Fatalf("projects-root detail = %q, want the WSL root", check.Detail)
+	}
+	if strings.Contains(check.Detail, "good") {
+		t.Fatalf("projects-root detail lists an inside site: %q", check.Detail)
+	}
+}
+
+func TestDoctorProjectsRootOKWithoutSites(t *testing.T) {
+	svc, fakes := newTestDoctor(t)
+	clearDoctorSites(t, fakes)
+
+	rep, err := svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, ok := checkByID(rep, "projects-root")
+	if !ok {
+		t.Fatalf("missing projects-root check: %+v", rep.Checks)
+	}
+	if check.Status != StatusOK {
+		t.Fatalf("projects-root = %+v", check)
+	}
+	if !strings.Contains(check.Detail, "no registered sites") {
+		t.Fatalf("projects-root detail = %q", check.Detail)
+	}
+}
+
+func TestProjectSiteModeInfersEmptySourceMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		platform string
+		want     model.SourceMode
+	}{
+		{name: "windows drive", host: `C:\Users\dev\.devstack\projects\app`, platform: "windows", want: model.SourceWindows},
+		{name: "UNC", host: `\\wsl.localhost\devstack\data\devstack\projects\app`, platform: "windows", want: model.SourceWSL},
+		{name: "linux local", host: "/home/dev/.devstack/projects/app", platform: "linux", want: model.SourceLocal},
+		{name: "windows fallback", host: "/home/dev/.devstack/projects/app", platform: "windows", want: model.SourceWindows},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := projectSiteMode(model.Site{HostPath: tt.host}, tt.platform)
+			if got != tt.want {
+				t.Fatalf("projectSiteMode = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

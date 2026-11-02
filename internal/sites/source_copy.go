@@ -55,6 +55,9 @@ func (s *Service) ChangeSourceMode(ctx context.Context, ref string, mode model.S
 	if err := pathmode.ValidateCreatedPath(hostPath); err != nil {
 		return model.Site{}, fmt.Errorf("sites: destination: %w", err)
 	}
+	if err := s.validateManagedProjectPath(site.Name, mode, hostPath, backendPath); err != nil {
+		return model.Site{}, fmt.Errorf("sites: destination: %w", err)
+	}
 	source := site.BackendPath
 	if source == "" {
 		_, source, err = pathmode.TranslateSourceForDistro(site.SourceMode, site.HostPath, s.deps.Config.WSLDistro)

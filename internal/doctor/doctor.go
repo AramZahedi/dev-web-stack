@@ -157,6 +157,7 @@ func (s *Service) Run(ctx context.Context) (Report, error) {
 		helperCheck,
 		s.checkCA(helperStatus, helperOK),
 		s.checkHosts(expected, expectedErr),
+		s.checkProjectsRoot(ctx),
 		s.checkTrust(ctx, helperStatus.CAFingerprint),
 		s.checkPorts(),
 		s.checkRuntimes(ctx),
