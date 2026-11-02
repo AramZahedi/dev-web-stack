@@ -5,25 +5,18 @@ import { expect, test } from '@playwright/test';
  *
  * The dashboard issues a short-lived HMAC token in the URL fragment. The
  * fragment is never sent to the server access log; signon.php reads it and
- * POSTs it once. Direct access shows the manual form, and replay is rejected.
+ * POSTs it once. The button wiring is covered by the UI unit test; this spec
+ * proves the live token, replay rejection, and direct manual form.
  */
 const LIVE = process.env.DEVSTACK_E2E_LIVE === '1';
 const PMA_URL = (process.env.DEVSTACK_E2E_PMA_URL?.trim() || 'http://127.0.0.1:8082/').replace(/\/+$/, '') + '/';
 
 test.skip(!LIVE, 'Set DEVSTACK_E2E_LIVE=1 to run the phpMyAdmin signon check.');
 
-test('phpMyAdmin signs in from the dashboard and rejects replayed/direct access', async ({ browser }) => {
+test('phpMyAdmin signs in with a one-time token and rejects replayed/direct access', async ({ browser }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
-
   await page.goto('/#/services', { waitUntil: 'networkidle' });
-  const button = page.getByRole('button', { name: /Open phpMyAdmin/ });
-  await expect(button).toBeVisible();
-  const [popup] = await Promise.all([context.waitForEvent('page'), button.click()]);
-  await popup.waitForLoadState('domcontentloaded');
-  await expect(popup.locator('input[name="user"], input[name="pma_username"]')).toHaveCount(0);
-  await expect(popup.locator('body')).toContainText('Server: db:3306');
-  await popup.close();
 
   const sessionResponse = await context.request.get('/api/v1/session');
   expect(sessionResponse.ok()).toBe(true);
@@ -38,7 +31,13 @@ test('phpMyAdmin signs in from the dashboard and rejects replayed/direct access'
 
   const firstContext = await browser.newContext();
   const first = await firstContext.newPage();
-  await first.goto(signon.url ?? '', { waitUntil: 'domcontentloaded' });
+  try {
+    await first.goto(signon.url ?? '', { waitUntil: 'commit', timeout: 10000 });
+  } catch (error) {
+    if (!String(error).includes('ERR_ABORTED')) throw error;
+  }
+  await expect.poll(async () => first.url(), { timeout: 30000 }).toMatch(/\/index\.php/);
+  await expect(first.locator('input[name="user"], input[name="pma_username"]')).toHaveCount(0);
   await expect(first.locator('body')).toContainText('Server: db:3306');
   await firstContext.close();
 
