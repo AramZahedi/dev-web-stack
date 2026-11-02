@@ -76,8 +76,17 @@ func TestDefaultCatalogIncludesPhpMyAdmin(t *testing.T) {
 			}
 		}
 	}
-	if len(svc.Config) != 1 || svc.Config[0].ContainerPath != "/etc/phpmyadmin/config.user.inc.php" || !svc.Config[0].ReadOnly {
-		t.Errorf("phpmyadmin config mounts = %+v, want the read-only user config file", svc.Config)
+	if len(svc.Config) != 2 {
+		t.Fatalf("phpmyadmin config mounts = %+v, want the user config and the root secret", svc.Config)
+	}
+	configMount := svc.Config[0]
+	if configMount.ContainerPath != "/etc/phpmyadmin/config.user.inc.php" || !configMount.ReadOnly || configMount.Area != MountService {
+		t.Errorf("phpmyadmin config mount = %+v, want the read-only user config file", configMount)
+	}
+	secretMount := svc.Config[1]
+	if secretMount.Area != MountSecrets || secretMount.HostSubdir != "phpmyadmin/root_password" ||
+		secretMount.ContainerPath != "/run/secrets/root_password" || !secretMount.ReadOnly {
+		t.Errorf("phpmyadmin secret mount = %+v, want the read-only root password file", secretMount)
 	}
 	if len(svc.Data) != 0 {
 		t.Errorf("phpmyadmin data mounts = %+v, want none", svc.Data)

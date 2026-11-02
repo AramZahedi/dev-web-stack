@@ -211,3 +211,38 @@ func TestManagerPhpMyAdminDeactivateAndUninstallAllowed(t *testing.T) {
 		t.Fatalf("Uninstall(phpmyadmin) = %v", err)
 	}
 }
+
+type countingPreparer struct {
+	NoopPreparer
+	activations int
+}
+
+func (p *countingPreparer) PrepareActivate(context.Context, services.Service) error {
+	p.activations++
+	return nil
+}
+
+func TestManagerRestartPhpMyAdminRefreshesAutoLoginConfig(t *testing.T) {
+	helper := &fakeHelper{statuses: []helperproto.ServiceStatus{
+		activeStatus(services.IDMySQL),
+		activeStatus(services.IDPHPMyAdmin),
+	}}
+	store := newFakeStore(
+		services.Record{ID: services.IDMySQL, State: services.StateActive, Active: true},
+		services.Record{ID: services.IDPHPMyAdmin, State: services.StateActive, Active: true},
+	)
+	prep := &countingPreparer{}
+	manager := newTestManagerWithCatalog(t, testCatalogWithPhpMyAdmin(), store, helper, map[services.ID]Preparer{
+		services.IDPHPMyAdmin: prep,
+	})
+
+	if err := manager.restartPhpMyAdminIfActive(context.Background()); err != nil {
+		t.Fatalf("restartPhpMyAdminIfActive() = %v", err)
+	}
+	if prep.activations != 1 {
+		t.Fatalf("phpMyAdmin preparer activations = %d, want 1", prep.activations)
+	}
+	if got := strings.Join(helper.calls, ","); !strings.Contains(got, "helper_restart:phpmyadmin") {
+		t.Fatalf("helper calls = %v, want a phpMyAdmin restart", helper.calls)
+	}
+}

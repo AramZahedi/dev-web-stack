@@ -332,7 +332,7 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("daemon: docker web provider: %w", err)
 	}
 	preparers := servicecontrol.NewDatabasePreparers(cfg.Home, serviceHelper{client: helper})
-	for id, prep := range servicecontrol.NewPhpMyAdminPreparers(cfg.Home) {
+	for id, prep := range servicecontrol.NewPhpMyAdminPreparers(cfg.Home, st) {
 		preparers[id] = prep
 	}
 	for id, prep := range servicecontrol.NewWebPreparers(

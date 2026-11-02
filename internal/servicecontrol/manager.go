@@ -510,6 +510,11 @@ func (m *Manager) restartPhpMyAdminIfActive(ctx context.Context) error {
 	if !active {
 		return nil
 	}
+	// Refresh the auto-login secret before restarting: the active MySQL-family
+	// engine may have changed, or its root password may have just rotated.
+	if err := m.preparer(pma.ID).PrepareActivate(ctx, pma); err != nil {
+		return helperFailure("refresh phpMyAdmin auto-login", err)
+	}
 	if err := m.helper.Restart(ctx, string(services.IDPHPMyAdmin)); err != nil {
 		return helperFailure("restart phpMyAdmin", err)
 	}

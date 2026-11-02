@@ -422,6 +422,11 @@ func (d *Docker) Action(ctx context.Context, req agentproto.ServiceRequest) (age
 	default:
 		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: unsupported action %q", req.Action)
 	}
+	if service.ID == services.IDPHPMyAdmin && (req.Action == "activate" || req.Action == "restart") {
+		if err := d.syncPhpMyAdminRootPassword(ctx); err != nil {
+			return agentproto.ServiceResponse{}, err
+		}
+	}
 	if _, err := d.compose(ctx, args...); err != nil {
 		return agentproto.ServiceResponse{}, fmt.Errorf("agentdocker: %s %s: %w", req.Action, service.ID, err)
 	}
@@ -807,9 +812,60 @@ EOSQL
 `, 0o755)
 
 	case services.IDPHPMyAdmin:
-		return writeFileIfAbsent(filepath.Join(configDir, "config.user.inc.php"), services.PhpMyAdminUserConfig, 0o644)
+		return seedPhpMyAdminConfig(configDir)
 	}
 
+	return nil
+}
+
+// seedPhpMyAdminConfig writes the auto-login config when missing and migrates
+// only the exact legacy generated file. Operator-edited files are preserved.
+func seedPhpMyAdminConfig(configDir string) error {
+	path := filepath.Join(configDir, "config.user.inc.php")
+	content, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.WriteFile(path, []byte(services.PhpMyAdminUserConfig), 0o644)
+	}
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(content)) != strings.TrimSpace(services.PhpMyAdminLegacyUserConfig) {
+		return nil
+	}
+	return writeAtomic(path, []byte(services.PhpMyAdminUserConfig), 0o644)
+}
+
+// syncPhpMyAdminRootPassword copies the active MySQL-family root secret into
+// the stable file mounted into phpMyAdmin. The agent owns /data/devstack, so
+// this is the path that actually feeds the Windows/WSL install.
+func (d *Docker) syncPhpMyAdminRootPassword(ctx context.Context) error {
+	engine := services.ID("")
+	for _, candidate := range []services.ID{services.IDMySQL, services.IDMariaDB} {
+		status, err := d.Status(ctx, string(candidate))
+		if err == nil && status.State == "active" {
+			engine = candidate
+			break
+		}
+	}
+	if engine == "" {
+		return nil
+	}
+	source := filepath.Join(d.root, "services", string(engine), "secrets", "root_password")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return fmt.Errorf("agentdocker: read %s root password for phpMyAdmin: %w", engine, err)
+	}
+	secret := strings.TrimSpace(string(data))
+	if secret == "" {
+		return fmt.Errorf("agentdocker: read %s root password for phpMyAdmin: empty secret", engine)
+	}
+	dir := filepath.Join(d.root, "services", "phpmyadmin", "secrets")
+	if err := ensureRealDirectory(dir, 0o700); err != nil {
+		return fmt.Errorf("agentdocker: secure phpMyAdmin secrets: %w", err)
+	}
+	if err := writeAtomic(filepath.Join(dir, "root_password"), []byte(secret+"\n"), 0o644); err != nil {
+		return fmt.Errorf("agentdocker: write phpMyAdmin root secret: %w", err)
+	}
 	return nil
 }
 

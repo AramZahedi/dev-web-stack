@@ -446,7 +446,7 @@ cycles 9-15 and a permanent gate remain.
 | E2E-DB-22 | SSE inventory refresh and overlapping responses | UI-Live | Mock + Evidence | P1 |
 | E2E-DB-23 | Redis password and ACL-file persistence | UI-Live | Mock + Evidence | P1 |
 | E2E-DB-24 | Site database link, unlink, and environment resolution | UI-Live | Mock + Evidence | P0 |
-| E2E-DB-25 | phpMyAdmin active-database follow and login | UI-Live | Evidence | P1 |
+| E2E-DB-25 | phpMyAdmin auto-login as the active MySQL/MariaDB root user, active-database follow, and PMA UI access | UI-Live | Evidence | P1 |
 | E2E-DB-26 | Keyboard, focus, contrast, and responsive database screens | UI-Live | Mock | P2 |
 | E2E-DB-27 | MariaDB and MySQL-family parity | UI-Live | System + Evidence | P1 |
 | E2E-DB-28 | Database E2E cycles 9-15 completion | System | None | P1 |

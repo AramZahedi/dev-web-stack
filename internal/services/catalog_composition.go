@@ -26,6 +26,13 @@ func standaloneServices() []Service {
 					Area:          MountService,
 					SELinux:       true,
 				},
+				{
+					HostSubdir:    "phpmyadmin/root_password",
+					ContainerPath: "/run/secrets/root_password",
+					ReadOnly:      true,
+					Area:          MountSecrets,
+					SELinux:       true,
+				},
 			},
 			Environment: map[string]string{
 				"PMA_HOST":         "host.docker.internal",

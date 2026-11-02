@@ -375,11 +375,43 @@ func TestScaffoldSeedsPhpMyAdminServerConfig(t *testing.T) {
 	for _, want := range []string{
 		"$cfg['Servers'][1]['host'] = 'db';",
 		"$cfg['Servers'][1]['port'] = '3306';",
-		"$cfg['Servers'][1]['auth_type'] = 'cookie';",
+		"$cfg['Servers'][1]['auth_type'] = 'config';",
+		"$cfg['Servers'][1]['user'] = 'root';",
+		"/run/secrets/root_password",
 	} {
 		if !strings.Contains(string(content), want) {
 			t.Errorf("phpMyAdmin config missing %q:\n%s", want, content)
 		}
+	}
+}
+
+func TestActivatePhpMyAdminSyncsActiveRootSecret(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data", "devstack")
+	const secret = "root-secret-for-agent-pma"
+	mysqlSecrets := filepath.Join(root, "services", "mysql", "secrets")
+	if err := os.MkdirAll(mysqlSecrets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mysqlSecrets, "root_password"), []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeInputRunner{output: map[string][]byte{
+		" ps ": []byte(`{"State":"running","Health":"healthy"}`),
+	}}
+	module, err := agentdocker.New(agentdocker.Config{Root: root, Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.Action(context.Background(), agentproto.ServiceRequest{ID: "phpmyadmin", Action: "activate"}); err != nil {
+		t.Fatalf("activate phpmyadmin: %v", err)
+	}
+	path := filepath.Join(root, "services", "phpmyadmin", "secrets", "root_password")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read phpMyAdmin root secret: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != secret {
+		t.Fatalf("phpMyAdmin root secret = %q, want the active engine secret", got)
 	}
 }
 

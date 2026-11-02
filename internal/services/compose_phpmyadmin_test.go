@@ -57,9 +57,16 @@ func TestRenderComposePhpMyAdmin(t *testing.T) {
 	if len(svc.ExtraHosts) != 1 || svc.ExtraHosts[0] != "host.docker.internal:host-gateway" {
 		t.Errorf("extra_hosts = %v, want [host.docker.internal:host-gateway]", svc.ExtraHosts)
 	}
-	if len(svc.Volumes) != 1 || svc.Volumes[0].Source != "/data/devstack/services/phpmyadmin/config/config.user.inc.php" ||
+	if len(svc.Volumes) != 2 {
+		t.Fatalf("phpmyadmin volumes = %+v, want the user config and root secret", svc.Volumes)
+	}
+	if svc.Volumes[0].Source != "/data/devstack/services/phpmyadmin/config/config.user.inc.php" ||
 		svc.Volumes[0].Target != "/etc/phpmyadmin/config.user.inc.php" || !svc.Volumes[0].ReadOnly {
-		t.Errorf("phpmyadmin volumes = %+v, want the read-only user config", svc.Volumes)
+		t.Errorf("phpmyadmin config volume = %+v, want the read-only user config", svc.Volumes[0])
+	}
+	if svc.Volumes[1].Source != "/data/devstack/secrets/phpmyadmin/root_password" ||
+		svc.Volumes[1].Target != "/run/secrets/root_password" || !svc.Volumes[1].ReadOnly {
+		t.Errorf("phpmyadmin secret volume = %+v, want the read-only root password", svc.Volumes[1])
 	}
 	for _, id := range []string{"mysql", "mariadb"} {
 		network, ok := doc.Services[id].Networks["default"]

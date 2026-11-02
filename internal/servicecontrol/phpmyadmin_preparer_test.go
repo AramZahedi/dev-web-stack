@@ -27,13 +27,15 @@ func TestPhpMyAdminPreparerSeedsUserConfig(t *testing.T) {
 	for _, want := range []string{
 		"$cfg['Servers'][1]['host'] = 'db';",
 		"$cfg['Servers'][1]['port'] = '3306';",
-		"$cfg['Servers'][1]['auth_type'] = 'cookie';",
+		"$cfg['Servers'][1]['auth_type'] = 'config';",
+		"$cfg['Servers'][1]['user'] = 'root';",
+		"/run/secrets/root_password",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("config.user.inc.php missing %q:\n%s", want, content)
 		}
 	}
-	for _, forbidden := range []string{"password", "root_password", "devstack_password"} {
+	for _, forbidden := range []string{"root_password =", "devstack_password =", "password' = '"} {
 		if strings.Contains(strings.ToLower(content), forbidden) {
 			t.Errorf("config.user.inc.php contains credential material %q:\n%s", forbidden, content)
 		}
@@ -67,6 +69,98 @@ func TestPhpMyAdminPreparerRejectsWrongService(t *testing.T) {
 	svc, _ := services.DefaultCatalog().Get(services.IDMySQL)
 	if err := prep.PrepareInstall(context.Background(), svc); err == nil {
 		t.Fatal("PrepareInstall(mysql) = nil, want an error")
+	}
+}
+
+func TestPhpMyAdminPreparerSyncsActiveMySQLRootPassword(t *testing.T) {
+	root := t.TempDir()
+	const secret = "root-secret-for-pma"
+	writeSecret(t, root, "mysql", secret)
+	store := newFakeStore(services.Record{ID: services.IDMySQL, State: services.StateActive, Active: true})
+	prep := NewPhpMyAdminPreparer(root, store)
+	svc, _ := services.DefaultCatalog().Get(services.IDPHPMyAdmin)
+
+	if err := prep.PrepareActivate(context.Background(), svc); err != nil {
+		t.Fatalf("PrepareActivate() = %v", err)
+	}
+	path := filepath.Join(root, "secrets", "phpmyadmin", "root_password")
+	if got := strings.TrimSpace(readTestFile(t, path)); got != secret {
+		t.Fatalf("root password file = %q, want the active engine secret", got)
+	}
+	requireTestMode(t, path, 0o644)
+	requireTestMode(t, filepath.Dir(path), 0o700)
+	agentPath := filepath.Join(root, "services", "phpmyadmin", "secrets", "root_password")
+	if got := strings.TrimSpace(readTestFile(t, agentPath)); got != secret {
+		t.Fatalf("agent root password file = %q, want the active engine secret", got)
+	}
+	requireTestMode(t, agentPath, 0o644)
+	requireTestMode(t, filepath.Dir(agentPath), 0o700)
+}
+
+func TestPhpMyAdminPreparerSyncsActiveMariaDBRootPassword(t *testing.T) {
+	root := t.TempDir()
+	const secret = "mariadb-root-secret"
+	writeSecret(t, root, "mariadb", secret)
+	store := newFakeStore(services.Record{ID: services.IDMariaDB, State: services.StateActive, Active: true})
+	prep := NewPhpMyAdminPreparer(root, store)
+	svc, _ := services.DefaultCatalog().Get(services.IDPHPMyAdmin)
+
+	if err := prep.PrepareActivate(context.Background(), svc); err != nil {
+		t.Fatalf("PrepareActivate() = %v", err)
+	}
+	if got := strings.TrimSpace(readTestFile(t, filepath.Join(root, "secrets", "phpmyadmin", "root_password"))); got != secret {
+		t.Fatalf("root password file = %q, want the MariaDB secret", got)
+	}
+}
+
+func TestPhpMyAdminPreparerLeavesSecretWhenNoDatabaseIsActive(t *testing.T) {
+	root := t.TempDir()
+	const previous = "previous-root-secret"
+	writeSecret(t, root, "phpmyadmin", previous)
+	store := newFakeStore()
+	prep := NewPhpMyAdminPreparer(root, store)
+	svc, _ := services.DefaultCatalog().Get(services.IDPHPMyAdmin)
+
+	if err := prep.PrepareActivate(context.Background(), svc); err != nil {
+		t.Fatalf("PrepareActivate() = %v", err)
+	}
+	if got := strings.TrimSpace(readTestFile(t, filepath.Join(root, "secrets", "phpmyadmin", "root_password"))); got != previous {
+		t.Fatalf("root password file = %q, want the previous secret", got)
+	}
+}
+
+func TestPhpMyAdminPreparerMigratesLegacyGeneratedConfig(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "services", "phpmyadmin", "config", "config.user.inc.php")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(services.PhpMyAdminLegacyUserConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prep := NewPhpMyAdminPreparer(root)
+	svc, _ := services.DefaultCatalog().Get(services.IDPHPMyAdmin)
+
+	if err := prep.PrepareActivate(context.Background(), svc); err != nil {
+		t.Fatalf("PrepareActivate() = %v", err)
+	}
+	content := readTestFile(t, path)
+	if strings.Contains(content, "auth_type'] = 'cookie'") {
+		t.Fatal("legacy generated config was not migrated to auto-login")
+	}
+	if !strings.Contains(content, "auth_type'] = 'config'") {
+		t.Fatalf("migrated config missing auto-login:\n%s", content)
+	}
+}
+
+func writeSecret(t *testing.T, root, engine, value string) {
+	t.Helper()
+	dir := filepath.Join(root, "secrets", engine)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "root_password"), []byte(value), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
