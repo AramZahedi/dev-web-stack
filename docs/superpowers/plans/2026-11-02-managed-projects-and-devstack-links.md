@@ -294,13 +294,19 @@ Commit when the harness passes.
 
 ## Progress ledger
 
-- [ ] Task 0: shared pathmode helper + tests, committed on master
-- [ ] Worktrees created and four lanes dispatched
-- [ ] Lane A merged
-- [ ] Lane B merged
-- [ ] Lane C merged
-- [ ] Lane D merged
-- [ ] Full verification green
+- [x] Task 0: shared pathmode helper + tests, committed on master
+- [x] Worktrees created and four lanes dispatched
+- [x] Lane A merged
+- [x] Lane B merged
+- [x] Lane C merged
+- [x] Lane D merged
+- [x] Full verification green
+  - `go test ./... -count=1`
+  - `go vet ./...`
+  - `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...`
+  - UI `npm test` (370 tests) and `npm run check` (0 errors, 0 warnings)
+  - Playwright Add Site flows (2 passed)
+  - `build/windows/devstack-links.test.ps1` (87 assertions on PowerShell 5.1 and 7)
 - [ ] Combined review-and-fix round 1
 - [ ] Combined review-and-fix round 2
 - [ ] Pushed, upgraded, real install verified
