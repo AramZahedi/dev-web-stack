@@ -6,7 +6,7 @@ import { expect, test, type Page } from '@playwright/test';
  */
 
 const SITE_NAME = 'portfolio';
-const SITE_PATH = '/home/dev/projects/scratch';
+const SITE_PATH = '/home/dev/.devstack/projects/scratch';
 const PHP_SITE_NAME = 'phpdemo';
 const PHP_BUILD = 'php@8.4.4-r1';
 const PHP_FAILING_BUILD = 'php@8.5.0-r1';
@@ -76,7 +76,9 @@ test('Add Site browses a folder, applies options, and navigates to the new site'
   await page.getByRole('button', { name: 'Browse' }).click();
   const dialog = page.getByRole('dialog', { name: 'Choose a project folder' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText('Selected folder /home/dev/projects')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'WSL Projects' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'projects', exact: true })).toHaveCount(0);
+  await expect(dialog.getByText('Selected folder /home/dev/.devstack/projects')).toBeVisible();
 
   await dialog.getByRole('button', { name: 'scratch', exact: true }).click();
   await dialog.getByRole('button', { name: 'Use this folder' }).click();
@@ -157,7 +159,8 @@ test('PHP site creation, ini/extensions, and failed build switch roll back', asy
 
   await page.getByRole('button', { name: 'Browse' }).click();
   const browser = page.getByRole('dialog', { name: 'Choose a project folder' });
-  await browser.getByRole('button', { name: 'projects', exact: true }).click();
+  await expect(browser.getByRole('button', { name: 'WSL Projects' })).toBeVisible();
+  await expect(browser.getByRole('button', { name: 'projects', exact: true })).toHaveCount(0);
   await browser.getByRole('button', { name: 'scratch', exact: true }).click();
   await browser.getByRole('button', { name: 'Use this folder' }).click();
   await expect(browser).toBeHidden();
@@ -494,7 +497,7 @@ test('Site detail edits configuration and runs a static build', async ({ page })
   await page.getByRole('button', { name: 'Run build' }).click();
   await expect(page.getByText('Build succeeded')).toBeVisible();
   await expect(page.locator('.build-duration')).toHaveText('4.3 s');
-  await expect(page.getByText('/home/dev/projects/blog/public').first()).toBeVisible();
+  await expect(page.getByText('/home/dev/.devstack/projects/blog/public').first()).toBeVisible();
 
   await page.getByRole('button', { name: 'Edit configuration' }).click();
   const command = page.getByLabel(/Build command/);
@@ -690,7 +693,7 @@ test('Settings Serving switches modes, syncs, and previews vhosts', async ({ pag
   expect(parseFloat(focusRing.outlineWidth)).toBeGreaterThanOrEqual(2);
 
   await expect(drawer.locator('pre')).toContainText('server_name blog.test;');
-  await expect(drawer.locator('pre')).toContainText('root /home/dev/projects/blog/public;');
+  await expect(drawer.locator('pre')).toContainText('root /home/dev/.devstack/projects/blog/public;');
 
   await drawer.getByRole('tab', { name: 'Apache' }).click();
   await expect(drawer.locator('pre')).toContainText('<VirtualHost *:443>');
@@ -712,7 +715,7 @@ test('Site detail opens a site-scoped terminal and runs a command', async ({ pag
 
   await page.keyboard.type('pwd');
   await page.keyboard.press('Enter');
-  await expect(page.locator('.xterm-rows')).toContainText('/home/dev/projects/blog');
+  await expect(page.locator('.xterm-rows')).toContainText('/home/dev/.devstack/projects/blog');
 
   await terminalCard.getByRole('button', { name: 'Close' }).click();
   await expect(terminalCard.getByText('Closed', { exact: true })).toBeVisible();
@@ -726,11 +729,11 @@ test('Site detail previews its rendered vhost', async ({ page }) => {
   await previewButton.click();
   const drawer = page.getByRole('dialog', { name: 'blog vhost preview' });
   await expect(drawer).toBeVisible();
-  await expect(drawer.locator('pre')).toContainText('root /home/dev/projects/blog/public;');
+  await expect(drawer.locator('pre')).toContainText('root /home/dev/.devstack/projects/blog/public;');
 
   await drawer.getByRole('tab', { name: 'Apache' }).click();
   await expect(drawer.locator('pre')).toContainText(
-    'DocumentRoot "/home/dev/projects/blog/public"',
+    'DocumentRoot "/home/dev/.devstack/projects/blog/public"',
   );
 
   await drawer.getByRole('button', { name: 'Close vhost preview' }).click();

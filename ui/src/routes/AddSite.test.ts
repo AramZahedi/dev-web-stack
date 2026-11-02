@@ -111,6 +111,8 @@ const NODE_RELEASES: NodeReleaseSnapshot = {
 const SETTINGS: Settings = {
   home: '/home/dev/.devstack',
   user_home: '/home/dev',
+  projects_root: '/home/dev/.devstack/projects',
+  wsl_projects_root: '/data/devstack/projects',
   http_port: 8080,
   https_port: 8443,
   ui_port: 7070,
@@ -352,7 +354,7 @@ afterEach(() => {
 async function fillProject(): Promise<void> {
   await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
   await fireEvent.input(screen.getByLabelText(/Project folder/), {
-    target: { value: '/home/dev/projects/demo' },
+    target: { value: '/home/dev/.devstack/projects/demo' },
   });
 }
 
@@ -414,7 +416,7 @@ describe('AddSite Wave 2 fields', () => {
     await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());
     await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
     await fireEvent.input(screen.getByLabelText(/Project folder/), {
-      target: { value: 'C:\\Users\\Aram\\projects\\demo' },
+      target: { value: 'C:\\Users\\Aram\\.devstack\\projects\\demo' },
     });
     await fireEvent.click(screen.getByRole('radio', { name: /Node/ }));
     await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -754,6 +756,166 @@ describe('AddSite Wave 2 fields', () => {
     expect(pathInput.value).toBe('/data/devstack/projects/my-awesome-blog');
   });
 
+  it('rejects a Windows project folder outside or equal to the managed root', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\Users\\Aram\\.devstack',
+      user_home: 'C:\\Users\\Aram',
+      projects_root: 'C:\\Users\\Aram\\.devstack\\projects',
+      wsl_distro: 'devstack',
+    });
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());
+
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
+    const pathInput = screen.getByLabelText(/Project folder/);
+    await fireEvent.input(pathInput, {
+      target: { value: 'C:\\Users\\Aram\\projects\\demo' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(
+      (
+        await screen.findAllByText(
+          /Project folder must be inside C:\\Users\\Aram\\\.devstack\\projects\./,
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Choose or create a folder under Windows Projects\./).length,
+    ).toBeTruthy();
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+
+    await fireEvent.input(pathInput, {
+      target: { value: 'C:\\Users\\Aram\\.devstack\\projects' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(
+      (
+        await screen.findAllByText(
+          /Choose a subfolder inside C:\\Users\\Aram\\\.devstack\\projects, not the projects root itself\./,
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
+  it('rejects a WSL project folder outside or equal to the managed root', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\Users\\Aram\\.devstack',
+      user_home: 'C:\\Users\\Aram',
+      projects_root: 'C:\\Users\\Aram\\.devstack\\projects',
+      wsl_distro: 'devstack',
+    });
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
+    await fireEvent.click(screen.getByRole('radio', { name: /PHP/ }));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('radio', { name: /WSL distro/ }) as HTMLInputElement).checked,
+      ).toBe(true),
+    );
+    const pathInput = screen.getByLabelText(/Project folder/);
+    await fireEvent.input(pathInput, {
+      target: { value: '/data/devstack/projects-old/demo' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(
+      (
+        await screen.findAllByText(
+          /Project folder must be inside \/data\/devstack\/projects\./,
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Choose or create a folder under WSL Projects\./).length,
+    ).toBeTruthy();
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+
+    await fireEvent.input(pathInput, { target: { value: '/data/devstack/projects' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(
+      (
+        await screen.findAllByText(
+          /Choose a subfolder inside \/data\/devstack\/projects, not the projects root itself\./,
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
+  it('rejects a local project folder outside or equal to the managed root', async () => {
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
+    const pathInput = screen.getByLabelText(/Project folder/);
+    await fireEvent.input(pathInput, { target: { value: '/home/dev/projects/demo' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(
+      (
+        await screen.findAllByText(
+          /Project folder must be inside \/home\/dev\/\.devstack\/projects\./,
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/Choose or create a folder under Local Projects\./).length,
+    ).toBeTruthy();
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+
+    await fireEvent.input(pathInput, { target: { value: '/home/dev/.devstack/projects' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(
+      (
+        await screen.findAllByText(
+          /Choose a subfolder inside \/home\/dev\/\.devstack\/projects, not the projects root itself\./,
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
+  it('rejects parent components and the wrong source namespace', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\Users\\Aram\\.devstack',
+      user_home: 'C:\\Users\\Aram',
+      projects_root: 'C:\\Users\\Aram\\.devstack\\projects',
+      wsl_distro: 'devstack',
+    });
+    render(AddSite);
+    await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());
+    await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
+
+    await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'demo' } });
+    const pathInput = screen.getByLabelText(/Project folder/);
+    await fireEvent.input(pathInput, {
+      target: { value: 'C:\\Users\\Aram\\.devstack\\projects\\demo\\..\\other' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(
+      (await screen.findAllByText(/cannot contain "\.\."/)).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+
+    await fireEvent.input(pathInput, { target: { value: '/home/dev/.devstack/projects/demo' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(
+      (
+        await screen.findAllByText(/Windows source mode requires a drive path/)
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(mockApi.createSite).not.toHaveBeenCalled();
+  });
+
   it('keeps the database selection when navigating back to Options', async () => {
     await openOptionsStep();
     await enableDatabase('blog', 'blog_user');
@@ -774,7 +936,7 @@ describe('AddSite Wave 2 fields', () => {
     await waitFor(() => expect(mockApi.listRuntimes).toHaveBeenCalled());
     await fireEvent.input(screen.getByLabelText(/Site name/), { target: { value: 'My Blog' } });
     await fireEvent.input(screen.getByLabelText(/Project folder/), {
-      target: { value: '/home/dev/projects/my-blog' },
+      target: { value: '/home/dev/.devstack/projects/my-blog' },
     });
     await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Continue' }));

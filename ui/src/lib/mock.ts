@@ -1,5 +1,6 @@
 import { ApiError } from './errors';
 import { mockDatabaseApi } from './databaseMock';
+import { clampToRoot, isPathWithinRoot } from './pathRoots';
 import type {
   BuildLogs,
   BuildResult,
@@ -422,8 +423,8 @@ const sites: Site[] = [
     domain: 'blog.test',
     www: false,
     backend: 'local',
-    host_path: '/home/dev/projects/blog',
-    backend_path: '/home/dev/projects/blog',
+    host_path: '/home/dev/.devstack/projects/blog',
+    backend_path: '/home/dev/.devstack/projects/blog',
     kind: 'static',
     php_version: '',
     php_build: '',
@@ -468,8 +469,8 @@ const sites: Site[] = [
     domain: 'shop.test',
     www: true,
     backend: 'local',
-    host_path: '/home/dev/projects/shop',
-    backend_path: '/home/dev/projects/shop',
+    host_path: '/home/dev/.devstack/projects/shop',
+    backend_path: '/home/dev/.devstack/projects/shop',
     kind: 'node',
     php_version: '',
     php_build: '',
@@ -510,8 +511,8 @@ const sites: Site[] = [
     domain: 'api.test',
     www: false,
     backend: 'local',
-    host_path: '/home/dev/projects/api',
-    backend_path: '/home/dev/projects/api',
+    host_path: '/home/dev/.devstack/projects/api',
+    backend_path: '/home/dev/.devstack/projects/api',
     kind: 'node',
     php_version: '',
     php_build: '',
@@ -770,6 +771,8 @@ let trustTargets: TrustTarget[] = [
 const seedSettings: Settings = {
   home: '/home/dev/.devstack',
   user_home: '/home/dev',
+  projects_root: '/home/dev/.devstack/projects',
+  wsl_projects_root: '/data/devstack/projects',
   http_port: 8080,
   https_port: 8443,
   ui_port: 7070,
@@ -1226,8 +1229,8 @@ function renderVhost(site: Site, server: 'nginx' | 'apache'): string {
 const directories: Record<string, string[]> = {
   '/': ['home', 'opt', 'tmp', 'var'],
   '/home': ['dev'],
-  '/home/dev': ['.devstack', 'Documents', 'Downloads', 'projects'],
-  '/home/dev/.devstack': ['logs', 'runtimes'],
+  '/home/dev': ['.devstack', 'Documents', 'Downloads'],
+  '/home/dev/.devstack': ['logs', 'projects', 'runtimes'],
   '/home/dev/.devstack/logs': ['api', 'blog', 'shop'],
   '/home/dev/.devstack/logs/api': [],
   '/home/dev/.devstack/logs/blog': [],
@@ -1241,27 +1244,36 @@ const directories: Record<string, string[]> = {
   '/home/dev/Documents/notes': [],
   '/home/dev/Documents/specs': [],
   '/home/dev/Downloads': [],
-  '/home/dev/projects': ['api', 'blog', 'design-system', 'scratch', 'shop'],
-  '/home/dev/projects/api': ['src', 'test'],
-  '/home/dev/projects/api/src': ['handlers', 'middleware'],
-  '/home/dev/projects/api/src/handlers': [],
-  '/home/dev/projects/api/src/middleware': [],
-  '/home/dev/projects/api/test': [],
-  '/home/dev/projects/blog': ['public', 'src'],
-  '/home/dev/projects/blog/public': ['assets'],
-  '/home/dev/projects/blog/public/assets': [],
-  '/home/dev/projects/blog/src': [],
-  '/home/dev/projects/design-system': ['pages'],
-  '/home/dev/projects/design-system/pages': [],
-  '/home/dev/projects/shop': ['node_modules', 'public', 'src'],
-  '/home/dev/projects/shop/node_modules': ['.bin'],
-  '/home/dev/projects/shop/node_modules/.bin': [],
-  '/home/dev/projects/shop/public': [],
-  '/home/dev/projects/shop/src': ['components', 'routes'],
-  '/home/dev/projects/shop/src/components': [],
-  '/home/dev/projects/shop/src/routes': [],
-  '/home/dev/projects/scratch': ['public'],
-  '/home/dev/projects/scratch/public': [],
+  '/home/dev/.devstack/projects': ['api', 'blog', 'demo', 'design-system', 'scratch', 'shop'],
+  '/home/dev/.devstack/projects/api': ['src', 'test'],
+  '/home/dev/.devstack/projects/api/src': ['handlers', 'middleware'],
+  '/home/dev/.devstack/projects/api/src/handlers': [],
+  '/home/dev/.devstack/projects/api/src/middleware': [],
+  '/home/dev/.devstack/projects/api/test': [],
+  '/home/dev/.devstack/projects/blog': ['public', 'src'],
+  '/home/dev/.devstack/projects/blog/public': ['assets'],
+  '/home/dev/.devstack/projects/blog/public/assets': [],
+  '/home/dev/.devstack/projects/blog/src': [],
+  '/home/dev/.devstack/projects/demo': ['public'],
+  '/home/dev/.devstack/projects/demo/public': [],
+  '/home/dev/.devstack/projects/design-system': ['pages'],
+  '/home/dev/.devstack/projects/design-system/pages': [],
+  '/home/dev/.devstack/projects/shop': ['node_modules', 'public', 'src'],
+  '/home/dev/.devstack/projects/shop/node_modules': ['.bin'],
+  '/home/dev/.devstack/projects/shop/node_modules/.bin': [],
+  '/home/dev/.devstack/projects/shop/public': [],
+  '/home/dev/.devstack/projects/shop/src': ['components', 'routes'],
+  '/home/dev/.devstack/projects/shop/src/components': [],
+  '/home/dev/.devstack/projects/shop/src/routes': [],
+  '/home/dev/.devstack/projects/scratch': ['public'],
+  '/home/dev/.devstack/projects/scratch/public': [],
+  '/data': ['devstack'],
+  '/data/devstack': ['projects'],
+  '/data/devstack/projects': ['demo', 'scratch'],
+  '/data/devstack/projects/demo': ['public'],
+  '/data/devstack/projects/demo/public': [],
+  '/data/devstack/projects/scratch': ['public'],
+  '/data/devstack/projects/scratch/public': [],
   '/opt': ['devstack'],
   '/opt/devstack': ['bin'],
   '/opt/devstack/bin': [],
@@ -1271,6 +1283,16 @@ const directories: Record<string, string[]> = {
   '/var': ['log'],
   '/var/log': [],
 };
+
+function mockProjectsRoot(mode: 'wsl' | 'windows' | 'local'): string {
+  if (mode === 'wsl') {
+    return settings.wsl_projects_root?.trim() || '/data/devstack/projects';
+  }
+  return (
+    settings.projects_root?.trim() ||
+    (mode === 'windows' ? 'C:\\Users\\User\\.devstack\\projects' : '/home/dev/.devstack/projects')
+  );
+}
 
 function findSite(ref: string): Site {
   const decoded = ref;
@@ -2332,23 +2354,38 @@ export const mockApi = {
     return clone(trustTargets);
   },
 
-  async browseFs(path: string, _mode?: 'wsl' | 'windows' | 'local'): Promise<FsListing> {
+  async browseFs(
+    path: string,
+    mode: 'wsl' | 'windows' | 'local' = 'local',
+  ): Promise<FsListing> {
     await wait(120, 260);
-    let normalized = path.trim();
-    if (!normalized) {
+    const requested = path.trim();
+    if (!requested) {
       throw new ApiError('INVALID_REQUEST', 'A directory path is required.', 400);
     }
-    if (normalized.length > 1) normalized = normalized.replace(/\/+$/, '');
-    if (!normalized.startsWith('/')) {
+    const absolute =
+      requested.startsWith('/') ||
+      /^[a-z]:[\\/]/i.test(requested) ||
+      /^\\\\wsl(?:\.localhost|\$)\\/i.test(requested);
+    if (!absolute) {
       throw new ApiError('INVALID_REQUEST', 'Directory path must be absolute.', 400);
     }
-    const children = directories[normalized];
-    if (!children) throw new ApiError('NOT_FOUND', `Directory “${normalized}” is not readable.`, 404);
+    const root = mockProjectsRoot(mode);
+    if (!isPathWithinRoot(root, requested, mode)) {
+      throw new ApiError(
+        'FORBIDDEN',
+        `Directory “${requested}” is outside the managed projects root “${root}”.`,
+        403,
+      );
+    }
+    const target = clampToRoot(root, requested, mode);
+    const children = directories[target];
+    if (!children) throw new ApiError('NOT_FOUND', `Directory “${target}” is not readable.`, 404);
     return {
-      path: normalized,
+      path: target,
       entries: children.map((name) => ({
         name,
-        path: normalized === '/' ? `/${name}` : `${normalized}/${name}`,
+        path: target === '/' ? `/${name}` : `${target}/${name}`,
       })),
     };
   },
@@ -2356,17 +2393,29 @@ export const mockApi = {
   async mkdirFs(
     path: string,
     name: string,
-    _mode?: 'wsl' | 'windows' | 'local',
+    mode: 'wsl' | 'windows' | 'local' = 'local',
   ): Promise<FsListing> {
     await wait(120, 260);
-    let parent = path.trim();
-    if (!parent) {
+    const requested = path.trim();
+    if (!requested) {
       throw new ApiError('INVALID_REQUEST', 'A directory path is required.', 400);
     }
-    if (parent.length > 1) parent = parent.replace(/\/+$/, '');
-    if (!parent.startsWith('/')) {
+    const absolute =
+      requested.startsWith('/') ||
+      /^[a-z]:[\\/]/i.test(requested) ||
+      /^\\\\wsl(?:\.localhost|\$)\\/i.test(requested);
+    if (!absolute) {
       throw new ApiError('INVALID_REQUEST', 'Directory path must be absolute.', 400);
     }
+    const root = mockProjectsRoot(mode);
+    if (!isPathWithinRoot(root, requested, mode)) {
+      throw new ApiError(
+        'FORBIDDEN',
+        `Directory “${requested}” is outside the managed projects root “${root}”.`,
+        403,
+      );
+    }
+    const parent = clampToRoot(root, requested, mode);
     if (!directories[parent]) {
       throw new ApiError('NOT_FOUND', `Directory “${parent}” is not readable.`, 404);
     }

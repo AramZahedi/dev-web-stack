@@ -7,12 +7,18 @@
   import { describeError } from '../errors';
   import type { FsListing } from '../types';
   import {
+    clampToRoot,
+    crumbsBelowRoot,
+    isPathWithinRoot,
+    isStrictlyInsideRoot,
+    parentWithinRoot,
+  } from '../pathRoots';
+  import {
     ChevronRight,
     CornerLeftUp,
     Folder,
     FolderOpen,
     FolderPlus,
-    House,
     RefreshCw,
   } from 'lucide-svelte';
 
@@ -20,54 +26,81 @@
     open: boolean;
     initialPath?: string;
     mode?: 'wsl' | 'windows' | 'local';
+    /** Managed projects root. Browsing, Up and New folder never leave it. */
+    rootPath?: string;
+    /** Human label for the root crumb, e.g. "Windows Projects". */
+    rootLabel?: string;
     onselect: (path: string) => void;
     onclose: () => void;
   }
 
-  let { open, initialPath = '/', mode, onselect, onclose }: Props = $props();
+  let {
+    open,
+    initialPath = '',
+    mode,
+    rootPath = '',
+    rootLabel = '',
+    onselect,
+    onclose,
+  }: Props = $props();
 
   let listing = $state<FsListing | null>(null);
   let loading = $state(false);
   let error = $state<{ code: string; message: string } | null>(null);
-  let requestedPath = $state('/');
+  let requestedPath = $state('');
   let creating = $state(false);
   let newName = $state('');
   let createError = $state('');
   let createBusy = $state(false);
   let createInput = $state<HTMLInputElement | null>(null);
   let previousOpen = false;
+  let previousRoot = '';
+  let previousMode: 'wsl' | 'windows' | 'local' = 'local';
   let requestSeq = 0;
+
+  const browserMode = $derived(mode ?? 'local');
+  const effectiveRoot = $derived(
+    rootPath.trim() || (browserMode === 'windows' ? 'C:\\' : '/'),
+  );
+  const rootLabelText = $derived(
+    rootLabel.trim() ||
+      (browserMode === 'windows'
+        ? 'Windows Projects'
+        : browserMode === 'wsl'
+          ? 'WSL Projects'
+          : 'Projects'),
+  );
+  const crumbs = $derived(crumbsBelowRoot(effectiveRoot, listing?.path ?? '', browserMode));
+  const atRoot = $derived(
+    !listing || !isStrictlyInsideRoot(effectiveRoot, listing.path, browserMode),
+  );
 
   $effect(() => {
     if (creating) createInput?.focus();
   });
 
-  const isWindows = $derived(mode === 'windows' || Boolean(listing?.path && /^[a-zA-Z]:[\\/]/.test(listing.path)));
-  const rootPath = $derived(isWindows ? (listing?.path && /^[a-zA-Z]:/i.test(listing.path) ? listing.path.slice(0, 2) + '\\' : 'C:\\') : '/');
-
-  function isAtRoot(p?: string): boolean {
-    if (!p) return true;
-    if (p === '/') return true;
-    if (/^[a-zA-Z]:[\\/]?$/i.test(p)) return true;
-    return false;
-  }
-
   async function browse(path: string): Promise<void> {
+    // Clamp before every request. A stale path from another mode or a manual
+    // outside path must never reach the filesystem API.
+    const target = clampToRoot(effectiveRoot, path, browserMode);
     const seq = ++requestSeq;
     loading = true;
-    requestedPath = path;
+    requestedPath = target;
     error = null;
     try {
-      const next = await browseFs(path, mode);
+      const next = await browseFs(target, browserMode);
       if (seq !== requestSeq) return;
       listing = next;
     } catch (caught) {
       if (seq !== requestSeq) return;
       const described = describeError(caught);
-      const parent = parentPath(path);
-      if ((described.code === 'NOT_FOUND' || described.code === 'INVALID_REQUEST') && parent && parent !== path) {
+      const parent = parentWithinRoot(effectiveRoot, target, browserMode);
+      if (
+        (described.code === 'NOT_FOUND' || described.code === 'INVALID_REQUEST') &&
+        parent !== target
+      ) {
         try {
-          const parentListing = await browseFs(parent, mode);
+          const parentListing = await browseFs(parent, browserMode);
           if (seq !== requestSeq) return;
           listing = parentListing;
           return;
@@ -89,6 +122,10 @@
 
   async function createFolder(): Promise<void> {
     if (!listing || createBusy) return;
+    if (!isPathWithinRoot(effectiveRoot, listing.path, browserMode)) {
+      createError = 'Choose a folder inside the projects root first.';
+      return;
+    }
     const name = newName.trim();
     if (!name) {
       createError = 'Enter a folder name.';
@@ -97,7 +134,11 @@
     createBusy = true;
     createError = '';
     try {
-      listing = await mkdirFs(listing.path, name, mode);
+      listing = await mkdirFs(
+        clampToRoot(effectiveRoot, listing.path, browserMode),
+        name,
+        browserMode,
+      );
       newName = '';
       creating = false;
     } catch (caught) {
@@ -108,55 +149,39 @@
   }
 
   $effect(() => {
+    const currentRoot = effectiveRoot;
+    const currentMode = browserMode;
     if (open && !previousOpen) {
       previousOpen = true;
+      previousRoot = currentRoot;
+      previousMode = currentMode;
       listing = null;
       error = null;
       creating = false;
       newName = '';
       createError = '';
-      void browse(initialPath || rootPath);
+      void browse(initialPath || currentRoot);
+      return;
     }
-    if (!open) previousOpen = false;
+    if (!open) {
+      previousOpen = false;
+      previousRoot = currentRoot;
+      previousMode = currentMode;
+      return;
+    }
+    if (currentRoot !== previousRoot || currentMode !== previousMode) {
+      previousRoot = currentRoot;
+      previousMode = currentMode;
+      const candidate = listing?.path || requestedPath || initialPath || currentRoot;
+      creating = false;
+      createError = '';
+      void browse(candidate);
+    }
   });
-
-  const crumbs = $derived.by(() => {
-    const current = listing?.path;
-    if (!current) return [];
-    if (/^[a-zA-Z]:[\\/]/i.test(current)) {
-      const drive = current.slice(0, 2);
-      const rest = current.slice(2).replace(/^[\\/]+/, '');
-      const parts = rest.split(/[\\/]+/).filter(Boolean);
-      let accumulated = `${drive}\\`;
-      return parts.map((part) => {
-        accumulated += (accumulated.endsWith('\\') ? '' : '\\') + part;
-        return { label: part, path: accumulated };
-      });
-    }
-    const parts = current.split('/').filter(Boolean);
-    let accumulated = '';
-    return parts.map((part) => {
-      accumulated += `/${part}`;
-      return { label: part, path: accumulated };
-    });
-  });
-
-  function parentPath(path: string): string {
-    if (/^[a-zA-Z]:[\\/]?$/i.test(path)) return path.slice(0, 2) + '\\';
-    if (/^[a-zA-Z]:[\\/]/i.test(path)) {
-      const trimmed = path.replace(/[\\/]+$/, '');
-      const lastIndex = Math.max(trimmed.lastIndexOf('\\'), trimmed.lastIndexOf('/'));
-      if (lastIndex <= 2) return path.slice(0, 2) + '\\';
-      return trimmed.slice(0, lastIndex);
-    }
-    if (path === '/') return '/';
-    const trimmed = path.replace(/\/+$/, '');
-    const index = trimmed.lastIndexOf('/');
-    return index <= 0 ? '/' : trimmed.slice(0, index);
-  }
 
   function choose(): void {
     if (!listing) return;
+    if (!isPathWithinRoot(effectiveRoot, listing.path, browserMode)) return;
     onselect(listing.path);
     onclose();
   }
@@ -176,16 +201,22 @@
         class="up"
         aria-label="Go up one level"
         title="Go up one level"
-        disabled={!listing || isAtRoot(listing.path) || loading}
+        disabled={atRoot || loading}
         data-autofocus
-        onclick={() => listing && browse(parentPath(listing.path))}
+        onclick={() =>
+          listing && browse(parentWithinRoot(effectiveRoot, listing.path, browserMode))}
       >
         <CornerLeftUp size={15} strokeWidth={2} aria-hidden="true" />
       </button>
       <div class="crumbs" aria-label="Current directory">
-        <button type="button" class="crumb" onclick={() => browse(rootPath)} title="Root">
-          <House size={13} strokeWidth={2} aria-hidden="true" />
-          <span class="sr-only">Root</span>
+        <button
+          type="button"
+          class="crumb"
+          title={effectiveRoot}
+          onclick={() => browse(effectiveRoot)}
+        >
+          <Folder size={13} strokeWidth={2} aria-hidden="true" />
+          <span class="root-label">{rootLabelText}</span>
         </button>
         {#each crumbs as crumb (crumb.path)}
           <ChevronRight class="sep" size={12} aria-hidden="true" />
@@ -255,11 +286,16 @@
             title="Could not read that folder"
             code={error.code}
             message={error.message}
-            onretry={() => browse(requestedPath || initialPath)}
+            onretry={() => browse(requestedPath || initialPath || effectiveRoot)}
           />
           <div class="error-actions">
-            <Button size="sm" variant="secondary" onclick={() => browse(rootPath)}>
-              Go to root
+            <Button
+              size="sm"
+              variant="secondary"
+              title={`Go to ${rootLabelText}`}
+              onclick={() => browse(effectiveRoot)}
+            >
+              Go to projects root
             </Button>
           </div>
         </div>
@@ -277,7 +313,7 @@
           <div class="empty">
             <FolderOpen size={22} strokeWidth={1.7} aria-hidden="true" />
             <p>This folder has no subdirectories.</p>
-            <p class="sub">Choose it if this is the project root.</p>
+            <p class="sub">Choose it or create a folder inside it.</p>
           </div>
         {:else}
           <div class="dir-list" aria-label="Subdirectories">

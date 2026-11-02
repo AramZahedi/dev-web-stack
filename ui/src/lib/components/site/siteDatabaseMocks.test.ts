@@ -14,7 +14,7 @@ describe('mock database site flows', () => {
   it('creates a site database link when Add Site carries a database', async () => {
     const site = await mockApi.createSite({
       name: 'db-mock-check',
-      path: '/home/dev/projects/scratch',
+      path: '/home/dev/.devstack/projects/scratch',
       kind: 'static',
       database: {
         service_id: 'mysql',
@@ -99,7 +99,7 @@ describe('mock database site flows', () => {
   it('removes database links when a site is deleted', async () => {
     const site = await mockApi.createSite({
       name: 'link-cleanup',
-      path: '/home/dev/projects/scratch',
+      path: '/home/dev/.devstack/projects/scratch',
       kind: 'static',
       database: {
         service_id: 'mysql',

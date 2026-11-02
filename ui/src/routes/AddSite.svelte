@@ -21,6 +21,11 @@
   import { copyText } from '../lib/clipboard';
   import { describeError } from '../lib/errors';
   import { isAbsolutePath } from '../lib/format';
+  import {
+    clampToRoot,
+    isStrictlyInsideRoot,
+    normalizePathForCompare,
+  } from '../lib/pathRoots';
   import { addToast } from '../lib/stores';
   import type {
     ApacheAllowOverride,
@@ -200,47 +205,94 @@
       .replace(/^-+|-+$/g, '');
   }
 
+  function rootFitsMode(value: string, mode: SourceMode): boolean {
+    if (mode === 'windows') return /^[a-z]:[\\/]/i.test(value);
+    return (
+      value.startsWith('/') ||
+      (mode === 'wsl' && /^\\\\wsl(?:\.localhost|\$)\\/i.test(value))
+    );
+  }
+
+  function trimRoot(value: string): string {
+    const trimmed = value.trim();
+    if (/^[a-z]:[\\/]?$/i.test(trimmed)) return `${trimmed.slice(0, 2)}\\`;
+    if (trimmed === '/') return '/';
+    return trimmed.replace(/[\\/]+$/, '');
+  }
+
+  function joinRoot(base: string, child: string, mode: SourceMode): string {
+    const separator = mode === 'windows' ? '\\' : '/';
+    const trimmedBase = trimRoot(base);
+    const leaf = child.trim().replace(/^[\\/]+/, '');
+    if (!trimmedBase) return `${separator}${leaf}`;
+    if (!leaf) return trimmedBase;
+    if (trimmedBase === '/') return `/${leaf}`;
+    return `${trimmedBase}${separator}${leaf}`;
+  }
+
   function browseRootFor(mode: SourceMode): string {
+    const configured = (
+      mode === 'wsl' ? settings?.wsl_projects_root : settings?.projects_root
+    )?.trim();
+    if (configured && rootFitsMode(configured, mode)) return trimRoot(configured);
     if (mode === 'wsl') return '/data/devstack/projects';
     if (mode === 'windows') {
-      return settings?.home
-        ? `${settings.home}\\projects`
-        : settings?.user_home
-          ? `${settings.user_home}\\.devstack\\projects`
-          : 'C:\\';
+      const home = settings?.home?.trim() ?? '';
+      if (/^[a-z]:[\\/]/i.test(home)) return joinRoot(home, 'projects', mode);
+      const userHome = settings?.user_home?.trim() ?? '';
+      if (/^[a-z]:[\\/]/i.test(userHome)) {
+        return joinRoot(userHome, '.devstack\\projects', mode);
+      }
+      return 'C:\\Users\\User\\.devstack\\projects';
     }
-    return settings?.user_home ? `${settings.user_home}/projects` : '/';
+    const home = settings?.home?.trim() ?? '';
+    if (home) return joinRoot(home, 'projects', mode);
+    const userHome = settings?.user_home?.trim() ?? '';
+    if (userHome) return joinRoot(userHome, '.devstack/projects', mode);
+    return '/home/projects';
+  }
+
+  function rootLabelFor(mode: SourceMode): string {
+    if (mode === 'windows') return 'Windows Projects';
+    if (mode === 'wsl') return 'WSL Projects';
+    // The mock dashboard models the managed Linux backend behind Windows, so
+    // its local project set is presented as the WSL Projects root. Real Linux
+    // installations keep the local label.
+    return api.isMockMode ? 'WSL Projects' : 'Local Projects';
   }
 
   function samePath(left: string, right: string, mode: SourceMode): boolean {
-    const normalize = (value: string) => value.trim().replace(/[\\/]+$/, '').replace(/\\/g, '/');
-    const a = normalize(left);
-    const b = normalize(right);
-    return mode === 'windows' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    const a = normalizePathForCompare(left, mode);
+    return a !== '' && a === normalizePathForCompare(right, mode);
   }
 
   function defaultPathFor(slug: string, mode: SourceMode): string {
     if (!slug) return '';
-    if (mode === 'wsl') {
-      return `/data/devstack/projects/${slug}`;
+    return joinRoot(browseRootFor(mode), slug, mode);
+  }
+
+  function changeSourceMode(mode: SourceMode, touched: boolean): void {
+    sourceMode = mode;
+    sourceModeTouched = touched;
+    const root = browseRootFor(mode);
+    if (path.trim() && isStrictlyInsideRoot(root, path, mode)) {
+      path = clampToRoot(root, path, mode);
+    } else {
+      path = defaultPathFor(slugify(name), mode);
+      pathTouched = false;
     }
-    if (mode === 'windows') {
-      const base = settings?.home ? `${settings.home}\\projects` : 'C:\\Users\\User\\.devstack\\projects';
-      return `${base}\\${slug}`;
-    }
-    const base = settings?.user_home ? `${settings.user_home}/projects` : '/home/projects';
-    return `${base}/${slug}`;
+    clearError('path');
   }
 
   const isWindowsHost = $derived(Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)));
-  const initialBrowsePath = $derived(pathTouched && path ? path : browseRootFor(sourceMode));
-  const pathPlaceholder = $derived(
-    sourceMode === 'windows'
-      ? `${settings?.home ?? 'C:\\Users\\you\\.devstack'}\\projects\\my-app`
-      : sourceMode === 'wsl'
-        ? '/data/devstack/projects/my-app'
-        : '/home/you/projects/my-app',
+  const initialBrowsePath = $derived(
+    clampToRoot(
+      browseRootFor(sourceMode),
+      pathTouched && path ? path : browseRootFor(sourceMode),
+      sourceMode,
+    ),
   );
+  const pathPlaceholder = $derived(joinRoot(browseRootFor(sourceMode), 'my-app', sourceMode));
 
   function defaultSourceMode(siteKind: Kind, windowsHost: boolean): SourceMode {
     if (!windowsHost) return 'local';
@@ -271,7 +323,17 @@
       // Node pickers. Neither must prevent a static site when the other call
       // fails (for example while the WSL agent is asleep).
       settings = await api.getSettings().catch(() => null);
-      if (!sourceModeTouched) sourceMode = defaultSourceMode(kind, Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)));
+      if (!sourceModeTouched) {
+        const defaultMode = defaultSourceMode(
+          kind,
+          Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)),
+        );
+        if (defaultMode !== sourceMode) {
+          changeSourceMode(defaultMode, false);
+        } else if (!pathTouched) {
+          path = defaultPathFor(slugify(name), sourceMode);
+        }
+      }
       try {
         runtimes = await api.listRuntimes();
       } catch (caught) {
@@ -373,17 +435,34 @@
 
     if (!path.trim()) {
       next.path = 'Choose the project folder.';
-    } else if (!isAbsolutePath(path.trim())) {
-      next.path = 'Use an absolute path, for example /home/you/projects/app.';
-    } else if (isWindowsHost && sourceMode === 'windows' && !/^[a-z]:[\\/]/i.test(path.trim())) {
-      next.path = 'Windows source mode requires a drive path such as C:\\projects\\app.';
-    } else if (
-      isWindowsHost &&
-      sourceMode === 'wsl' &&
-      !path.trim().startsWith('/') &&
-      !/^\\\\wsl(?:\.localhost|\$)\\/i.test(path.trim())
-    ) {
-      next.path = 'WSL source mode requires a Linux path or a \\\\wsl.localhost\\... path.';
+    } else {
+      const candidate = path.trim();
+      const root = browseRootFor(sourceMode);
+      const rootLabel = rootLabelFor(sourceMode);
+      if (candidate.split(/[\\/]+/).some((part) => part === '..')) {
+        next.path =
+          'Project folder cannot contain "..". Choose a folder inside the projects root.';
+      } else if (!isAbsolutePath(candidate)) {
+        next.path = `Use an absolute path inside ${root}.`;
+      } else if (
+        isWindowsHost &&
+        sourceMode === 'windows' &&
+        !/^[a-z]:[\\/]/i.test(candidate)
+      ) {
+        next.path =
+          'Windows source mode requires a drive path such as C:\\Users\\you\\.devstack\\projects\\app.';
+      } else if (
+        isWindowsHost &&
+        sourceMode === 'wsl' &&
+        !candidate.startsWith('/') &&
+        !/^\\\\wsl(?:\.localhost|\$)\\/i.test(candidate)
+      ) {
+        next.path = 'WSL source mode requires a Linux path or a \\\\wsl.localhost\\... path.';
+      } else if (samePath(candidate, root, sourceMode)) {
+        next.path = `Choose a subfolder inside ${root}, not the projects root itself.`;
+      } else if (!isStrictlyInsideRoot(root, candidate, sourceMode)) {
+        next.path = `Project folder must be inside ${root}. Choose or create a folder under ${rootLabel}.`;
+      }
     }
 
     if (kind === 'static' || kind === 'php') {
@@ -699,10 +778,10 @@
   function setKind(value: Kind): void {
     kind = value;
     if (!sourceModeTouched) {
-      sourceMode = pathTouched ? sourceModeForPath(path, value) : defaultSourceMode(value, isWindowsHost);
-      if (!pathTouched) {
-        path = defaultPathFor(slugify(name), sourceMode);
-      }
+      const nextMode = pathTouched
+        ? sourceModeForPath(path, value)
+        : defaultSourceMode(value, isWindowsHost);
+      changeSourceMode(nextMode, false);
     }
     const next = { ...errors };
     delete next.kind;
@@ -1111,11 +1190,7 @@
                 kind={kind}
                 isWindows={isWindowsHost}
                 onmodechange={(value) => {
-                  sourceMode = value;
-                  sourceModeTouched = isWindowsHost;
-                  if (!pathTouched) {
-                    path = defaultPathFor(slugify(name), value);
-                  }
+                  changeSourceMode(value, isWindowsHost);
                 }}
               />
             </div>
@@ -1879,11 +1954,13 @@
   open={pathOpen}
   initialPath={initialBrowsePath}
   mode={sourceMode}
+  rootPath={browseRootFor(sourceMode)}
+  rootLabel={rootLabelFor(sourceMode)}
   onselect={(selected) => {
     const root = browseRootFor(sourceMode);
     if (samePath(selected, root, sourceMode)) {
       pathTouched = false;
-      path = defaultPathFor(slugify(name), sourceMode) || selected;
+      path = defaultPathFor(slugify(name), sourceMode) || '';
     } else {
       path = selected;
       pathTouched = true;
