@@ -528,7 +528,7 @@ func TestApplyPHPStoppedNoOpKeepsPortAndGeneration(t *testing.T) {
 	if got := reservedFastCGIPorts(t, fakes); !reflect.DeepEqual(got, []int{site.FastCGIPort}) {
 		t.Fatalf("reserved ports = %v, want [%d]", got, site.FastCGIPort)
 	}
-	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, site.PHPConfigHash)); err != nil {
+	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, site.PHPConfigHash)); err != nil {
 		t.Fatalf("generation missing after a stopped no-op: %v", err)
 	}
 }
@@ -658,12 +658,12 @@ func TestApplyPHPPrunesAllButCurrentAndPrevious(t *testing.T) {
 		t.Fatalf("generations = %v, want current and previous only (%v)", got, want)
 	}
 	for _, stale := range []string{initial, first.PHPConfigHash} {
-		if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, stale)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, stale)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stale generation %s still present: %v", stale, err)
 		}
 	}
 	for _, name := range []string{"php.ini", "php-fpm.conf", "health.php"} {
-		if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, name)); err != nil {
+		if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, name)); err != nil {
 			t.Fatalf("stable %s missing: %v", name, err)
 		}
 	}
@@ -1514,7 +1514,7 @@ func TestApplyPHPCanceledContextStopsTheStagedMaster(t *testing.T) {
 	if fakes.backend.phpStarted(site.ID, stagedHash) {
 		t.Fatal("staged master still runs after a canceled apply")
 	}
-	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, stagedHash)); !errors.Is(statErr, os.ErrNotExist) {
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, stagedHash)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("staged generation directory was not removed: %v", statErr)
 	}
 	if reserveErr := fakes.ports.Reserve(stagedPort); reserveErr != nil {
@@ -1555,7 +1555,7 @@ func TestApplyPHPRollbackRetainsGenerationWhenStopFails(t *testing.T) {
 	if !fakes.backend.phpStarted(site.ID, stagedHash) {
 		t.Fatal("fake stop failure did not leave the staged master running")
 	}
-	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, stagedHash)); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, stagedHash)); statErr != nil {
 		t.Fatalf("generation removed after a failed stop: %v", statErr)
 	}
 	if reserveErr := fakes.ports.Reserve(stagedPort); reserveErr == nil {
@@ -1601,14 +1601,14 @@ func TestApplyPHPRetainedGenerationStoppedByLaterApply(t *testing.T) {
 	if fakes.backend.phpStarted(site.ID, retainedHash) {
 		t.Fatal("retained master still runs after a later successful apply")
 	}
-	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, retainedHash)); !errors.Is(statErr, os.ErrNotExist) {
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, retainedHash)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("retained generation was not pruned after its stop succeeded: %v", statErr)
 	}
 	if reserveErr := fakes.ports.Reserve(retainedPort); reserveErr != nil {
 		t.Fatalf("retained FastCGI port %d was not released: %v", retainedPort, reserveErr)
 	}
 	fakes.ports.Release(retainedPort)
-	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, applied.PHPConfigHash)); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, applied.PHPConfigHash)); statErr != nil {
 		t.Fatalf("current generation was pruned: %v", statErr)
 	}
 	if active := fakes.backend.phpActiveGeneration(site.ID); active != applied.PHPConfigHash {
@@ -1642,7 +1642,7 @@ func TestApplyPHPRetainedStopFailureKeepsPortAndSkipsPruning(t *testing.T) {
 	if !fakes.backend.phpStarted(site.ID, retainedHash) {
 		t.Fatal("failed retained stop removed the staged master")
 	}
-	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, retainedHash)); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, retainedHash)); statErr != nil {
 		t.Fatalf("retained generation was pruned after a failed stop: %v", statErr)
 	}
 	if reserveErr := fakes.ports.Reserve(retainedPort); reserveErr == nil {
@@ -1654,7 +1654,7 @@ func TestApplyPHPRetainedStopFailureKeepsPortAndSkipsPruning(t *testing.T) {
 	}
 	// The successful drain must not prune the old live generation while a
 	// retained generation still exists.
-	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, liveHash)); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, liveHash)); statErr != nil {
 		t.Fatalf("live generation was pruned: %v", statErr)
 	}
 	if active := fakes.backend.phpActiveGeneration(site.ID); active != applied.PHPConfigHash {
@@ -1874,7 +1874,7 @@ func TestApplyPHPFailedDrainSkipsPruning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, liveHash)); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, liveHash)); statErr != nil {
 		t.Fatalf("live default generation was pruned after a failed drain: %v", statErr)
 	}
 	if reserveErr := fakes.ports.Reserve(livePort); reserveErr == nil {

@@ -123,7 +123,7 @@ repository now.
   state.db             SQLite state
   pki/                 native CA material
   runtimes/            installed PHP/Node builds
-  sites/               generated per-site PHP/FPM configuration
+  sites/<site>/        generated per-site PHP/FPM configuration, named by site
   projects/            default managed project root
   services/            generated Compose, web/database config, containers' data/logs
   certs/               leaf certificates and keys
@@ -135,6 +135,9 @@ repository now.
   cache/               downloads/cache
   backups/             pre-migration and operational backups
 ```
+
+Generated service vhosts use the unique site name (`<site>.conf`) rather than
+the opaque site ID. A provider sync removes the old ID-named file.
 
 ### Managed project boundary
 

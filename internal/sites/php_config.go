@@ -52,7 +52,10 @@ type phpRendered struct {
 // after hashing, so the hash is computed over a render anchored at a stable
 // directory name and the final render is then materialised under the hash.
 func (s *Service) composePHPFilesLocked(ctx context.Context, site model.Site, build model.RuntimeBuild) (phpFiles, error) {
-	siteRoot, err := s.phpSiteDir(site.ID)
+	if err := s.migratePHPSiteFolder(site); err != nil {
+		return phpFiles{}, err
+	}
+	siteRoot, err := s.phpSiteDir(site.Name)
 	if err != nil {
 		return phpFiles{}, err
 	}
@@ -281,15 +284,18 @@ func hashPHPConfig(ini, fpm []byte) string {
 	return hex.EncodeToString(digest.Sum(nil))
 }
 
-// writePHPFilesLocked writes one immutable generation at sites/<id>/<hash>/.
+// writePHPFilesLocked writes one immutable generation at sites/<name>/<hash>/.
 // The write is atomic: files are created in a temporary directory and the
 // directory is renamed into place. Existing complete generations are reused.
-func (s *Service) writePHPFilesLocked(siteID string, files phpFiles) (string, error) {
-	siteDir, err := s.phpSiteDir(siteID)
+func (s *Service) writePHPFilesLocked(site model.Site, files phpFiles) (string, error) {
+	if err := s.migratePHPSiteFolder(site); err != nil {
+		return "", err
+	}
+	siteDir, err := s.phpSiteDir(site.Name)
 	if err != nil {
 		return "", err
 	}
-	generationDir, err := s.phpGenerationDir(siteID, files.Hash)
+	generationDir, err := s.phpGenerationDir(site.Name, files.Hash)
 	if err != nil {
 		return "", err
 	}
@@ -348,11 +354,11 @@ func writePHPGeneration(dir string, files phpFiles) error {
 // commitPHPFilesLocked copies the active generation to the documented stable
 // per-site paths. A running master keeps using its immutable generation file.
 func (s *Service) commitPHPFilesLocked(site model.Site) error {
-	generationDir, err := s.phpGenerationDir(site.ID, site.PHPConfigHash)
+	generationDir, err := s.phpGenerationDir(site.Name, site.PHPConfigHash)
 	if err != nil {
 		return err
 	}
-	siteDir, err := s.phpSiteDir(site.ID)
+	siteDir, err := s.phpSiteDir(site.Name)
 	if err != nil {
 		return err
 	}
@@ -424,44 +430,75 @@ func phpGenerationComplete(dir string) bool {
 	return true
 }
 
-// phpGenerationDir returns sites/<id>/<hash>, rejecting ids and hashes that
+// migratePHPSiteFolder renames the legacy sites/<id> directory to the
+// readable, unique sites/<name> path. It never overwrites an existing name
+// directory and is safe to call repeatedly.
+func (s *Service) migratePHPSiteFolder(site model.Site) error {
+	if site.Name == "" || site.Name == site.ID {
+		return nil
+	}
+	home := strings.TrimSpace(s.deps.Config.Home)
+	if home == "" {
+		return errors.New("sites: config home is not set")
+	}
+	root := config.NewPaths(home).Sites
+	legacy := filepath.Join(root, site.ID)
+	target := filepath.Join(root, site.Name)
+	if _, err := os.Stat(legacy); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if _, err := os.Stat(target); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(legacy, target); err != nil {
+		return fmt.Errorf("sites: migrate PHP directory for %q: %w", site.Name, err)
+	}
+	return nil
+}
+
+// phpGenerationDir returns sites/<name>/<hash>, rejecting keys and hashes that
 // could escape the sites root.
-func (s *Service) phpGenerationDir(siteID, hash string) (string, error) {
-	siteDir, err := s.phpSiteDir(siteID)
+func (s *Service) phpGenerationDir(siteKey, hash string) (string, error) {
+	siteDir, err := s.phpSiteDir(siteKey)
 	if err != nil {
 		return "", err
 	}
 	if len(hash) != sha256.Size*2 {
-		return "", fmt.Errorf("sites: invalid PHP config hash for site %q", siteID)
+		return "", fmt.Errorf("sites: invalid PHP config hash for site %q", siteKey)
 	}
 	if _, err := hex.DecodeString(hash); err != nil {
-		return "", fmt.Errorf("sites: invalid PHP config hash for site %q", siteID)
+		return "", fmt.Errorf("sites: invalid PHP config hash for site %q", siteKey)
 	}
 	return filepath.Join(siteDir, hash), nil
 }
 
 // phpSiteDir returns the per-site config directory, never the sites root.
-func (s *Service) phpSiteDir(siteID string) (string, error) {
+func (s *Service) phpSiteDir(siteKey string) (string, error) {
 	home := strings.TrimSpace(s.deps.Config.Home)
 	if home == "" {
 		return "", errors.New("sites: config home is not set")
 	}
 	// filepath.IsLocal accepts "." and trailing separators, which would make
 	// the site directory the sites root and let RemoveAll wipe every site.
-	cleaned := filepath.Clean(siteID)
-	if siteID == "" ||
+	cleaned := filepath.Clean(siteKey)
+	if siteKey == "" ||
 		cleaned == "." ||
 		cleaned == ".." ||
-		cleaned != siteID ||
+		cleaned != siteKey ||
 		!filepath.IsLocal(cleaned) ||
-		strings.ContainsAny(siteID, `/\`) {
-		return "", fmt.Errorf("sites: invalid PHP site id %q", siteID)
+		strings.ContainsAny(siteKey, `/\`) {
+		return "", fmt.Errorf("sites: invalid PHP site key %q", siteKey)
 	}
 	root := config.NewPaths(home).Sites
 	dir := filepath.Join(root, cleaned)
 	rel, err := filepath.Rel(root, dir)
 	if err != nil || rel != cleaned {
-		return "", fmt.Errorf("sites: invalid PHP site id %q", siteID)
+		return "", fmt.Errorf("sites: invalid PHP site key %q", siteKey)
 	}
 	return dir, nil
 }
@@ -472,7 +509,10 @@ func (s *Service) phpConfigFilesExistLocked(site model.Site) bool {
 	if site.PHPConfigHash == "" {
 		return false
 	}
-	dir, err := s.phpGenerationDir(site.ID, site.PHPConfigHash)
+	if err := s.migratePHPSiteFolder(site); err != nil {
+		return false
+	}
+	dir, err := s.phpGenerationDir(site.Name, site.PHPConfigHash)
 	if err != nil {
 		return false
 	}
@@ -510,16 +550,25 @@ func (s *Service) saveAppliedPHPConfigLocked(ctx context.Context, site model.Sit
 	})
 }
 
-// removePHPConfigLocked removes only sites/<id>, never the sites root.
-func (s *Service) removePHPConfigLocked(siteID string) error {
-	dir, err := s.phpSiteDir(siteID)
-	if err != nil {
-		return err
+// removePHPConfigLocked removes only the site's config directories, never the
+// sites root. It also cleans the legacy ID directory after a migration failure.
+func (s *Service) removePHPConfigLocked(site model.Site) error {
+	keys := []string{site.Name}
+	if site.ID != "" && site.ID != site.Name {
+		keys = append(keys, site.ID)
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("sites: remove PHP config directory: %w", err)
+	var errs []error
+	for _, key := range keys {
+		dir, err := s.phpSiteDir(key)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			errs = append(errs, fmt.Errorf("sites: remove PHP config directory: %w", err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

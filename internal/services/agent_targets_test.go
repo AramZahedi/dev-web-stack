@@ -28,6 +28,7 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 			},
 			{
 				ID:           "app-php",
+				Name:         "app",
 				Domain:       "app.test",
 				Kind:         model.SitePHP,
 				BackendPath:  "/data/devstack/projects/app",
@@ -99,8 +100,8 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 
 	// PHP site carries the full vhost metadata and a www alias on one target.
 	php := byTarget["app.test"]
-	if php.Kind != "php" || php.Port != 43001 || php.Address != "/data/devstack/projects/app/public" {
-		t.Errorf("app.test target = kind:%s port:%d addr:%s", php.Kind, php.Port, php.Address)
+	if php.Kind != "php" || php.Name != "app" || php.Port != 43001 || php.Address != "/data/devstack/projects/app/public" {
+		t.Errorf("app.test target = kind:%s name:%s port:%d addr:%s", php.Kind, php.Name, php.Port, php.Address)
 	}
 	if !php.WWW || php.HostDocumentRoot != "/data/devstack/projects/app/public" {
 		t.Errorf("app.test metadata = %+v", php)

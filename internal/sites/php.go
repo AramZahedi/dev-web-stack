@@ -333,7 +333,7 @@ func (s *Service) phpBuildForSiteLocked(ctx context.Context, site model.Site) (m
 // phpSiteSpecFromBuildLocked converts a generated site and its build into the
 // backend's PHP specification.
 func (s *Service) phpSiteSpecFromBuildLocked(ctx context.Context, site model.Site, build model.RuntimeBuild) (backend.SiteSpec, error) {
-	generationDir, err := s.phpGenerationDir(site.ID, site.PHPConfigHash)
+	generationDir, err := s.phpGenerationDir(site.Name, site.PHPConfigHash)
 	if err != nil {
 		return backend.SiteSpec{}, err
 	}
@@ -434,7 +434,7 @@ func (s *Service) startPHPLocked(ctx context.Context, site model.Site) (model.Si
 		s.phpConfigFilesExistLocked(site)
 	if !reused {
 		site.PHPConfigHash = files.Hash
-		generationDir, err := s.writePHPFilesLocked(site.ID, files)
+		generationDir, err := s.writePHPFilesLocked(site, files)
 		if err != nil {
 			releaseAllocated()
 			return site, err
@@ -589,13 +589,13 @@ func (s *Service) preparePHPUpdateLocked(ctx context.Context, current model.Site
 	if err != nil {
 		return phpUpdatePlan{}, err
 	}
-	newDir, err := s.phpGenerationDir(updated.ID, files.Hash)
+	newDir, err := s.phpGenerationDir(updated.Name, files.Hash)
 	if err != nil {
 		return phpUpdatePlan{}, err
 	}
 	existing := phpGenerationComplete(newDir)
 	updated.PHPConfigHash = files.Hash
-	generationDir, err := s.writePHPFilesLocked(updated.ID, files)
+	generationDir, err := s.writePHPFilesLocked(*updated, files)
 	if err != nil {
 		return phpUpdatePlan{}, err
 	}
@@ -686,13 +686,13 @@ func (s *Service) ensurePHPConfigLocked(ctx context.Context, site model.Site) (m
 		return site, build, nil
 	}
 	site.PHPConfigHash = files.Hash
-	generationDir, err := s.phpGenerationDir(site.ID, files.Hash)
+	generationDir, err := s.phpGenerationDir(site.Name, files.Hash)
 	if err != nil {
 		releaseAllocated()
 		return site, model.RuntimeBuild{}, err
 	}
 	preexisting := phpGenerationComplete(generationDir)
-	written, err := s.writePHPFilesLocked(site.ID, files)
+	written, err := s.writePHPFilesLocked(site, files)
 	if err != nil {
 		if !preexisting {
 			_ = os.RemoveAll(generationDir)
@@ -833,7 +833,10 @@ func (s *Service) ValidatePHP(ctx context.Context, site model.Site) error {
 		defer s.releasePort(ctx, site.ID, allocated)
 	}
 
-	siteDir, err := s.phpSiteDir(site.ID)
+	if err := s.migratePHPSiteFolder(site); err != nil {
+		return err
+	}
+	siteDir, err := s.phpSiteDir(site.Name)
 	if err != nil {
 		return err
 	}

@@ -58,7 +58,7 @@ func TestRollbackCreateCleansUpWhenPHPSiteWasNeverPrepared(t *testing.T) {
 		Kind:        model.SitePHP,
 		FastCGIPort: 43000,
 	}
-	generation := filepath.Join(fakes.config.Home, "sites", site.ID, "hash")
+	generation := filepath.Join(fakes.config.Home, "sites", site.Name, "hash")
 	if err := os.MkdirAll(generation, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestRollbackCreateCleansUpWhenPHPSiteWasNeverPrepared(t *testing.T) {
 	if !errors.Is(err, cause) {
 		t.Fatalf("rollback error = %v, want cause %v", err, cause)
 	}
-	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID)); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name)); !os.IsNotExist(statErr) {
 		t.Fatalf("generation was retained after a never-prepared site: %v", statErr)
 	}
 	if reserveErr := fakes.ports.Reserve(site.FastCGIPort); reserveErr != nil {

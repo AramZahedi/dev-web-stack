@@ -29,6 +29,7 @@ type DatabaseLinkSpec struct {
 // expressed in the backend's namespace.
 type SiteSpec struct {
 	ID           string
+	Name         string
 	Kind         string
 	Domain       string
 	HostPath     string

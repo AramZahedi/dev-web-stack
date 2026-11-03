@@ -206,7 +206,7 @@ func BuildSiteEnv(site model.Site, deps EnvDeps) (SiteEnvironment, error) {
 		if err := validateHash(hash); err != nil {
 			return SiteEnvironment{}, fmt.Errorf("tooling: site %q PHP configuration hash: %w", site.Name, err)
 		}
-		ini := filepath.Join(deps.Paths.Sites, site.ID, hash, "php.ini")
+		ini := filepath.Join(deps.Paths.Sites, site.Name, hash, "php.ini")
 		if info, err := os.Stat(ini); err != nil || !info.Mode().IsRegular() {
 			return SiteEnvironment{}, fmt.Errorf("tooling: site %q php.ini is not written at %s; run `devstack site restart %s` to apply its PHP configuration", site.Name, ini, site.Name)
 		}

@@ -119,8 +119,8 @@ func TestRenderSet(t *testing.T) {
 		"_default.conf",
 		"_devstack.test.conf",
 		"_maintenance.html",
-		"blog-1a2b3c4d.conf",
-		"shop-5e6f7a8b.conf",
+		"blog.conf",
+		"shop.conf",
 	}
 	for _, server := range []Server{ServerNginx, ServerApache} {
 		t.Run(string(server), func(t *testing.T) {
@@ -227,29 +227,24 @@ func TestRenderRejectsDuplicateFilenames(t *testing.T) {
 }
 
 func TestSiteFilenames(t *testing.T) {
-	for _, tc := range []struct{ id, want string }{
-		{"s1", "blog-s1.conf"},
-		{"12345678", "blog-12345678.conf"},
-		{"1234567890", "blog-12345678.conf"},
-		{"1a2b3c4d-0000-4000-8000-000000000001", "blog-1a2b3c4d.conf"},
-	} {
-		t.Run(tc.id, func(t *testing.T) {
+	for _, id := range []string{"s1", "12345678", "1234567890", "1a2b3c4d-0000-4000-8000-000000000001"} {
+		t.Run(id, func(t *testing.T) {
 			set := testSet(ServerNginx, 0)
 			site := staticSite()
-			site.ID = tc.id
+			site.ID = id
 			set.Sites = []SiteSpec{site}
 
 			files, err := Render(set)
 			if err != nil {
 				t.Fatalf("Render: %v", err)
 			}
-			if _, ok := files[tc.want]; !ok {
+			if _, ok := files["blog.conf"]; !ok {
 				names := make([]string, 0, len(files))
 				for name := range files {
 					names = append(names, name)
 				}
 				sort.Strings(names)
-				t.Fatalf("missing %q in %v", tc.want, names)
+				t.Fatalf("missing %q in %v", "blog.conf", names)
 			}
 		})
 	}
@@ -820,7 +815,7 @@ func TestMaxBodyBytes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Render: %v", err)
 			}
-			if !bytes.Contains(files["blog-1a2b3c4d.conf"], []byte(tc.want)) {
+			if !bytes.Contains(files["blog.conf"], []byte(tc.want)) {
 				t.Fatalf("default body limit %q missing from %s vhost", tc.want, tc.server)
 			}
 
@@ -832,7 +827,7 @@ func TestMaxBodyBytes(t *testing.T) {
 			if tc.server == ServerApache {
 				want = "LimitRequestBody 5242880"
 			}
-			if !bytes.Contains(files["shop-5e6f7a8b.conf"], []byte(want)) {
+			if !bytes.Contains(files["shop.conf"], []byte(want)) {
 				t.Fatalf("custom body limit %q missing from %s node vhost", want, tc.server)
 			}
 
@@ -876,7 +871,7 @@ func TestRenderCustomTLSDir(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Render: %v", err)
 			}
-			blog := files["blog-1a2b3c4d.conf"]
+			blog := files["blog.conf"]
 			dashboard := files["_devstack.test.conf"]
 			notFound := files["_default.conf"]
 			if !bytes.Contains(blog, []byte(custom+"/1a2b3c4d-0000-4000-8000-000000000001.crt")) {
@@ -952,7 +947,7 @@ func TestRenderHighListenPorts(t *testing.T) {
 				t.Fatalf("Render: %v", err)
 			}
 
-			site := files["blog-1a2b3c4d.conf"]
+			site := files["blog.conf"]
 			dashboard := files["_devstack.test.conf"]
 			notFound := files["_default.conf"]
 			if len(site) == 0 || len(dashboard) == 0 || len(notFound) == 0 {
@@ -1034,9 +1029,9 @@ func TestRenderHighListenPortsStoppedAndRedirect(t *testing.T) {
 			}
 
 			for name, data := range map[string][]byte{
-				"stopped-stop.conf": files["stopped-stop.conf"],
-				"plain-plain.conf":  files["plain-plain.conf"],
-				"forced-force.conf": files["forced-force.conf"],
+				"stopped.conf": files["stopped.conf"],
+				"plain.conf":   files["plain.conf"],
+				"forced.conf":  files["forced.conf"],
 			} {
 				if len(data) == 0 {
 					t.Fatalf("%s was not rendered", name)
@@ -1067,17 +1062,17 @@ func TestRenderHighListenPortsStoppedAndRedirect(t *testing.T) {
 
 			switch server {
 			case ServerNginx:
-				assertContains("tls off", files["plain-plain.conf"], "return 308 http://$host:18080$request_uri;")
-				assertContains("force https", files["forced-force.conf"], "return 308 https://$host:18443$request_uri;")
-				assertNotContains("tls off", files["plain-plain.conf"], "return 308 http://$host$request_uri;")
-				assertNotContains("force https", files["forced-force.conf"], "return 308 https://$host$request_uri;")
+				assertContains("tls off", files["plain.conf"], "return 308 http://$host:18080$request_uri;")
+				assertContains("force https", files["forced.conf"], "return 308 https://$host:18443$request_uri;")
+				assertNotContains("tls off", files["plain.conf"], "return 308 http://$host$request_uri;")
+				assertNotContains("force https", files["forced.conf"], "return 308 https://$host$request_uri;")
 			case ServerApache:
-				assertContains("tls off", files["plain-plain.conf"], "RewriteCond %{HTTP_HOST} ^([^:]+)\n")
-				assertContains("tls off", files["plain-plain.conf"], "RewriteRule ^ http://%1:18080%{REQUEST_URI} [R=308,L]")
-				assertNotContains("tls off", files["plain-plain.conf"], "RewriteRule ^ http://%{HTTP_HOST}%{REQUEST_URI}")
-				assertContains("force https", files["forced-force.conf"], "RewriteCond %{HTTP_HOST} ^([^:]+)\n")
-				assertContains("force https", files["forced-force.conf"], "RewriteRule ^ https://%1:18443%{REQUEST_URI} [R=308,L]")
-				assertNotContains("force https", files["forced-force.conf"], "RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI}")
+				assertContains("tls off", files["plain.conf"], "RewriteCond %{HTTP_HOST} ^([^:]+)\n")
+				assertContains("tls off", files["plain.conf"], "RewriteRule ^ http://%1:18080%{REQUEST_URI} [R=308,L]")
+				assertNotContains("tls off", files["plain.conf"], "RewriteRule ^ http://%{HTTP_HOST}%{REQUEST_URI}")
+				assertContains("force https", files["forced.conf"], "RewriteCond %{HTTP_HOST} ^([^:]+)\n")
+				assertContains("force https", files["forced.conf"], "RewriteRule ^ https://%1:18443%{REQUEST_URI} [R=308,L]")
+				assertNotContains("force https", files["forced.conf"], "RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI}")
 			}
 		})
 	}

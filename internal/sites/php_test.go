@@ -357,11 +357,11 @@ func TestCreatePHPComposesIniFPMAndStoresSnapshot(t *testing.T) {
 	}
 
 	for _, name := range []string{"php.ini", "php-fpm.conf", "health.php"} {
-		if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, name)); err != nil {
+		if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, name)); err != nil {
 			t.Fatalf("active %s missing: %v", name, err)
 		}
 	}
-	if got := readFile(t, filepath.Join(fakes.config.Home, "sites", site.ID, "health.php")); !strings.Contains(string(got), `echo "ok"`) {
+	if got := readFile(t, filepath.Join(fakes.config.Home, "sites", site.Name, "health.php")); !strings.Contains(string(got), `echo "ok"`) {
 		t.Fatalf("health script = %q", got)
 	}
 
@@ -542,7 +542,7 @@ func TestCreatePHPRollsBackWhenValidationFails(t *testing.T) {
 	if fakes.backend.started["site"] {
 		t.Fatal("FPM started")
 	}
-	assertNoPHPConfigDir(t, fakes, "site")
+	assertNoPHPConfigDir(t, fakes, "blog")
 	assertNoReservedFastCGIPorts(t, fakes)
 }
 
@@ -563,7 +563,7 @@ func TestCreatePHPRollsBackOnFPMValidationFailure(t *testing.T) {
 	if fakes.hosts.has("blog.test") {
 		t.Fatalf("hosts changed despite validation failure: %v", fakes.hosts.last())
 	}
-	assertNoPHPConfigDir(t, fakes, "site")
+	assertNoPHPConfigDir(t, fakes, "blog")
 	assertNoReservedFastCGIPorts(t, fakes)
 }
 
@@ -590,7 +590,7 @@ func TestCreatePHPRollsBackOnStartFailure(t *testing.T) {
 	if _, err := fakes.store.GetCertBySite(ctx, "site"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("certificate row remains: %v", err)
 	}
-	assertNoPHPConfigDir(t, fakes, "site")
+	assertNoPHPConfigDir(t, fakes, "blog")
 	assertNoReservedFastCGIPorts(t, fakes)
 }
 
@@ -616,7 +616,7 @@ func TestCreatePHPRollsBackWhenStorePersistFails(t *testing.T) {
 	if fakes.backend.started["site"] {
 		t.Fatal("master started despite a persistence failure")
 	}
-	assertNoPHPConfigDir(t, fakes, "site")
+	assertNoPHPConfigDir(t, fakes, "blog")
 	assertNoReservedFastCGIPorts(t, fakes)
 	if fakes.hosts.has("blog.test") {
 		t.Fatalf("hosts not restored: %v", fakes.hosts.last())
@@ -856,7 +856,7 @@ func TestCreatePHPRollsBackWhenTheCertificateFails(t *testing.T) {
 	if sites, _ := svc.List(ctx); len(sites) != 0 {
 		t.Fatal("site persisted")
 	}
-	assertNoPHPConfigDir(t, fakes, "site")
+	assertNoPHPConfigDir(t, fakes, "blog")
 	assertNoReservedFastCGIPorts(t, fakes)
 	if fakes.hosts.has("blog.test") {
 		t.Fatalf("hosts not restored: %v", fakes.hosts.last())
@@ -877,7 +877,7 @@ func TestCreatePHPRollsBackWhenRoutePublicationFails(t *testing.T) {
 	if fakes.backend.startedGens["site#default"] {
 		t.Fatal("master left running after a failed route publication")
 	}
-	assertNoPHPConfigDir(t, fakes, "site")
+	assertNoPHPConfigDir(t, fakes, "blog")
 	assertNoReservedFastCGIPorts(t, fakes)
 }
 
@@ -898,7 +898,7 @@ func TestCreatePHPRollbackRetainsGenerationWhenStopFails(t *testing.T) {
 	if !fakes.backend.phpStarted("site", phpDefaultGeneration) {
 		t.Fatal("failed stop should leave the staged master running")
 	}
-	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", "site")); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(fakes.config.Home, "sites", "blog")); statErr != nil {
 		t.Fatalf("generation removed after a failed stop: %v", statErr)
 	}
 	if reserveErr := fakes.ports.Reserve(spec.FastCGIPort); reserveErr == nil {
@@ -931,7 +931,7 @@ func TestCreatePHPRollsBackWhenVhostPublicationFails(t *testing.T) {
 	if fakes.backend.startedGens["site#default"] {
 		t.Fatal("master left running after a failed vhost publication")
 	}
-	assertNoPHPConfigDir(t, fakes, "site")
+	assertNoPHPConfigDir(t, fakes, "blog")
 	assertNoReservedFastCGIPorts(t, fakes)
 	if fakes.hosts.has("blog.test") {
 		t.Fatalf("hosts not restored: %v", fakes.hosts.last())
@@ -945,7 +945,7 @@ func TestDeletePHPRemovesConfigDirAndPort(t *testing.T) {
 	svc, fakes := newTestService(t)
 	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
 	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
-	siteDir := filepath.Join(fakes.config.Home, "sites", site.ID)
+	siteDir := filepath.Join(fakes.config.Home, "sites", site.Name)
 	if _, err := os.Stat(siteDir); err != nil {
 		t.Fatalf("config dir missing before delete: %v", err)
 	}
@@ -1021,7 +1021,7 @@ func TestStartPHPReusesExistingGeneration(t *testing.T) {
 	if gotLint, gotFPM := fakes.php.counts(); gotLint != lint || gotFPM != fpm {
 		t.Fatalf("config was recomposed on reuse: lint %d->%d fpm %d->%d", lint, gotLint, fpm, gotFPM)
 	}
-	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, hash)); err != nil {
+	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, hash)); err != nil {
 		t.Fatalf("generation missing: %v", err)
 	}
 }
@@ -1036,7 +1036,7 @@ func TestStartPHPRecomposesWhenGenerationFilesAreMissing(t *testing.T) {
 	if err := svc.Stop(ctx, site.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(fakes.config.Home, "sites", site.ID, hash)); err != nil {
+	if err := os.RemoveAll(filepath.Join(fakes.config.Home, "sites", site.Name, hash)); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Start(ctx, site.ID); err != nil {
@@ -1045,7 +1045,7 @@ func TestStartPHPRecomposesWhenGenerationFilesAreMissing(t *testing.T) {
 	if gotLint, gotFPM := fakes.php.counts(); gotLint <= lint || gotFPM <= fpm {
 		t.Fatalf("config was not recomposed: lint %d->%d fpm %d->%d", lint, gotLint, fpm, gotFPM)
 	}
-	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, hash, "php.ini")); err != nil {
+	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, hash, "php.ini")); err != nil {
 		t.Fatalf("generation was not rewritten: %v", err)
 	}
 }
@@ -1202,12 +1202,12 @@ func TestUpdatePHPDocumentRootRecomposesGeneration(t *testing.T) {
 	if _, err := os.Stat(oldDir); err != nil {
 		t.Fatalf("old generation removed: %v", err)
 	}
-	newDir := filepath.Join(fakes.config.Home, "sites", site.ID, updated.PHPConfigHash)
+	newDir := filepath.Join(fakes.config.Home, "sites", site.Name, updated.PHPConfigHash)
 	fpmConfig := string(readFile(t, filepath.Join(newDir, "php-fpm.conf")))
 	if !strings.Contains(fpmConfig, `chdir = "`+public+`"`) {
 		t.Fatalf("new generation uses the old document root:\n%s", fpmConfig)
 	}
-	active := string(readFile(t, filepath.Join(fakes.config.Home, "sites", site.ID, "php-fpm.conf")))
+	active := string(readFile(t, filepath.Join(fakes.config.Home, "sites", site.Name, "php-fpm.conf")))
 	if !strings.Contains(active, `chdir = "`+public+`"`) {
 		t.Fatalf("active copy was not committed:\n%s", active)
 	}
@@ -1468,7 +1468,7 @@ func TestPHPExecRecomposesMissingConfigFiles(t *testing.T) {
 	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
 	site := mustCreate(t, svc, fakes, CreateRequest{Name: "blog", Path: fakes.root, Kind: "php", PHPVersion: "8.4"})
 	lint, fpm := fakes.php.counts()
-	if err := os.RemoveAll(filepath.Join(fakes.config.Home, "sites", site.ID, site.PHPConfigHash)); err != nil {
+	if err := os.RemoveAll(filepath.Join(fakes.config.Home, "sites", site.Name, site.PHPConfigHash)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1547,7 +1547,7 @@ func TestValidatePHPRunsValidatorsWithoutStartingOrMutating(t *testing.T) {
 	if !reflect.DeepEqual(storedBefore, storedAfter) {
 		t.Fatalf("ValidatePHP mutated the row:\n before %+v\n after  %+v", storedBefore, storedAfter)
 	}
-	entries, err := os.ReadDir(filepath.Join(fakes.config.Home, "sites", site.ID))
+	entries, err := os.ReadDir(filepath.Join(fakes.config.Home, "sites", site.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1603,7 +1603,7 @@ func TestValidatePHPPropagatesFailuresAndCleansUp(t *testing.T) {
 	if err := svc.ValidatePHP(ctx, site); err == nil || !strings.Contains(err.Error(), "syntax error") {
 		t.Fatalf("err = %v", err)
 	}
-	entries, err := os.ReadDir(filepath.Join(fakes.config.Home, "sites", site.ID))
+	entries, err := os.ReadDir(filepath.Join(fakes.config.Home, "sites", site.Name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1631,7 +1631,7 @@ func TestDeletePHPExternalRestoresMasterOnFailure(t *testing.T) {
 	if stored.DesiredState != model.DesiredRunning {
 		t.Fatalf("row not restored: %+v", stored)
 	}
-	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID, site.PHPConfigHash)); err != nil {
+	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name, site.PHPConfigHash)); err != nil {
 		t.Fatalf("config dir removed on a failed delete: %v", err)
 	}
 	if !fakes.backend.startedGens[site.ID+"#default"] {
@@ -1648,7 +1648,7 @@ func TestDeletePHPExternalRemovesConfigDir(t *testing.T) {
 	if err := svc.Delete(ctx, site.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.ID)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(fakes.config.Home, "sites", site.Name)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("config dir remains: %v", err)
 	}
 	if !fakes.backend.stopped[site.ID] {
@@ -1685,7 +1685,7 @@ func phpGenerationDir(t *testing.T, fakes *testFakes, site model.Site) string {
 	if site.PHPConfigHash == "" {
 		t.Fatalf("site %q has no PHP config hash", site.Name)
 	}
-	return filepath.Join(fakes.config.Home, "sites", site.ID, site.PHPConfigHash)
+	return filepath.Join(fakes.config.Home, "sites", site.Name, site.PHPConfigHash)
 }
 
 func readFile(t *testing.T, path string) []byte {
@@ -1722,6 +1722,47 @@ func phpGenerationDirs(t *testing.T, fakes *testFakes, siteID string) []string {
 	return directories
 }
 
+func TestMigratePHPSiteFolderMovesLegacyID(t *testing.T) {
+	svc, fakes := newTestService(t)
+	legacy := filepath.Join(fakes.config.Home, "sites", "site")
+	target := filepath.Join(fakes.config.Home, "sites", "blog")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "marker"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.migratePHPSiteFolder(model.Site{ID: "site", Name: "blog"}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy directory still present: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "marker")); err != nil || string(data) != "keep" {
+		t.Fatalf("migrated marker = %q, %v", data, err)
+	}
+}
+
+func TestMigratePHPSiteFolderNeverOverwritesNameDirectory(t *testing.T) {
+	svc, fakes := newTestService(t)
+	legacy := filepath.Join(fakes.config.Home, "sites", "site")
+	target := filepath.Join(fakes.config.Home, "sites", "blog")
+	for path, content := range map[string]string{legacy: "legacy", target: "named"} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "marker"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.migratePHPSiteFolder(model.Site{ID: "site", Name: "blog"}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "marker")); err != nil || string(data) != "named" {
+		t.Fatalf("target marker = %q, %v", data, err)
+	}
+}
+
 func TestPHPConfigDirectoryRejectsTheSitesRoot(t *testing.T) {
 	svc, fakes := newTestService(t)
 	sitesRoot := filepath.Join(fakes.config.Home, "sites")
@@ -1738,7 +1779,7 @@ func TestPHPConfigDirectoryRejectsTheSitesRoot(t *testing.T) {
 			if dir, err := svc.phpSiteDir(siteID); err == nil {
 				t.Fatalf("phpSiteDir(%q) = %q, want error", siteID, dir)
 			}
-			if err := svc.removePHPConfigLocked(siteID); err == nil {
+			if err := svc.removePHPConfigLocked(model.Site{ID: siteID, Name: siteID}); err == nil {
 				t.Fatalf("removePHPConfigLocked(%q) succeeded", siteID)
 			}
 			if _, err := os.Stat(marker); err != nil {

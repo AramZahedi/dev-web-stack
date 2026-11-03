@@ -1317,11 +1317,7 @@ func absoluteDocumentRoot(site model.Site) string {
 // vhostFilename mirrors vhost.siteFilename without exporting the renderer's
 // internal naming helper.
 func vhostFilename(site model.Site) string {
-	id := site.ID
-	if len(id) > 8 {
-		id = id[:8]
-	}
-	return site.Name + "-" + id + ".conf"
+	return vhost.Filename(site.Name)
 }
 
 // staticRootError verifies that an external static site's document root exists,
@@ -1418,7 +1414,7 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 	}
 	var removeErr error
 	if site.Kind == model.SitePHP {
-		removeErr = s.removePHPConfigLocked(site.ID)
+		removeErr = s.removePHPConfigLocked(site)
 	}
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
 		return errors.Join(fmt.Errorf("sites: publish routes after deleting %q: %w", site.Name, err), removeErr)

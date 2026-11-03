@@ -423,7 +423,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 			return fail(err, false)
 		}
 		site.PHPConfigHash = files.Hash
-		generationDir, err := s.writePHPFilesLocked(site.ID, files)
+		generationDir, err := s.writePHPFilesLocked(site, files)
 		if err != nil {
 			return fail(err, false)
 		}
@@ -942,7 +942,7 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 	}
 	var removeErr error
 	if site.Kind == model.SitePHP {
-		removeErr = s.removePHPConfigLocked(site.ID)
+		removeErr = s.removePHPConfigLocked(site)
 	}
 
 	if err := s.rebuildRoutesLocked(ctx); err != nil {
@@ -1777,7 +1777,7 @@ func (s *Service) rollbackCreate(ctx context.Context, site model.Site, oldHosts 
 				"rollback: retained PHP generation and FastCGI port %d for %q after a failed stop",
 				site.FastCGIPort, site.Name))
 		} else {
-			if err := s.removePHPConfigLocked(site.ID); err != nil {
+			if err := s.removePHPConfigLocked(site); err != nil {
 				errs = append(errs, fmt.Errorf("rollback: remove PHP config for %q: %w", site.Name, err))
 			}
 			if site.FastCGIPort != 0 && s.deps.Ports != nil {
@@ -1990,6 +1990,7 @@ const defaultNodeSettingKey = "node_default"
 func backendSpec(site model.Site) backend.SiteSpec {
 	return backend.SiteSpec{
 		ID:              site.ID,
+		Name:            site.Name,
 		Kind:            string(site.Kind),
 		Domain:          site.Domain,
 		HostPath:        site.HostPath,

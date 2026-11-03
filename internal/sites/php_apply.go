@@ -158,7 +158,7 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 	if err != nil {
 		return current, err
 	}
-	if _, err := s.phpSiteDir(current.ID); err != nil {
+	if _, err := s.phpSiteDir(current.Name); err != nil {
 		return current, err
 	}
 
@@ -227,13 +227,13 @@ func (s *Service) applyPHPChangeLocked(ctx context.Context, current model.Site, 
 	}
 	next.PHPConfigHash = files.Hash
 
-	generationDir, err := s.phpGenerationDir(next.ID, files.Hash)
+	generationDir, err := s.phpGenerationDir(next.Name, files.Hash)
 	if err != nil {
 		releaseNewPort()
 		return current, err
 	}
 	preexisting := phpGenerationComplete(generationDir)
-	written, err := s.writePHPFilesLocked(next.ID, files)
+	written, err := s.writePHPFilesLocked(next, files)
 	if err != nil {
 		releaseNewPort()
 		if !preexisting {
@@ -487,7 +487,7 @@ func (s *Service) prunePHPGenerationsLocked(ctx context.Context, site model.Site
 	if len(s.retainedPHP[site.ID]) > 0 {
 		return
 	}
-	dir, err := s.phpSiteDir(site.ID)
+	dir, err := s.phpSiteDir(site.Name)
 	if err != nil {
 		s.emitEvent(ctx, site.ID, "site.error", fmt.Sprintf("site %s: prune PHP generations: %v", site.Name, err))
 		return
@@ -672,7 +672,7 @@ func (s *Service) PHPInfo(ctx context.Context, ref string) (PHPInfo, error) {
 		info.Ini = map[string]string{}
 	}
 	if site.PHPConfigHash != "" {
-		generationDir, err := s.phpGenerationDir(site.ID, site.PHPConfigHash)
+		generationDir, err := s.phpGenerationDir(site.Name, site.PHPConfigHash)
 		if err != nil {
 			return PHPInfo{}, err
 		}

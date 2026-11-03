@@ -65,7 +65,8 @@ func toPOSIXPath(p string) string {
 
 // generateFPMConfig renders the canonical per-site FPM configuration for WSL.
 func generateFPMConfig(root string, site agentproto.SiteSpec, docroot string) ([]byte, string, error) {
-	siteDir := filepath.Clean(filepath.Join(root, "sites", site.ID))
+	key := siteFolder(site)
+	siteDir := filepath.Clean(filepath.Join(root, "sites", key))
 	fpmPath := filepath.Clean(filepath.Join(siteDir, "fpm.conf"))
 	pidPath := toPOSIXPath(filepath.Join(root, "run", site.ID+"-fpm.pid"))
 	logPath := toPOSIXPath(filepath.Join(root, "logs", site.ID+".log"))
@@ -89,7 +90,7 @@ func generateFPMConfig(root string, site agentproto.SiteSpec, docroot string) ([
 	phpIni = path.Clean(toPOSIXPath(phpIni))
 
 	cfg := phpfpm.Config{
-		SiteID:       site.ID,
+		SiteID:       key,
 		BuildRoot:    buildRoot,
 		PHPIni:       phpIni,
 		ListenHost:   "127.0.0.1",

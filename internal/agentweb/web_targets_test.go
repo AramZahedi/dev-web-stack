@@ -32,10 +32,13 @@ func TestSyncWritesHTTPOnlyVhostsWithoutDashboard(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := agentproto.WebTargetsRequest{Server: "nginx", Targets: []agentproto.WebTarget{{
-		SiteID: "shop", Domain: "shop.test", Kind: "node", Address: "127.0.0.1", Port: 41000, TLS: false,
+		SiteID: "opaque", Name: "shop", Domain: "shop.test", Kind: "node", Address: "127.0.0.1", Port: 41000, TLS: false,
 	}}}
 	if _, err := module.Sync(context.Background(), request); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "services", "nginx", "config", "conf.d", "generated", "shop.conf")); err != nil {
+		t.Fatalf("name-based vhost missing: %v", err)
 	}
 	base, err := os.ReadFile(filepath.Join(root, "services", "nginx", "config", "nginx.conf"))
 	if err != nil {

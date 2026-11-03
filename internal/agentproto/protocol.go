@@ -217,6 +217,7 @@ type DatabaseLinkSpec struct {
 // SiteSpec is the agent-visible description of one site.
 type SiteSpec struct {
 	ID                string             `json:"id"`
+	Name              string             `json:"name,omitempty"`
 	Kind              string             `json:"kind"`
 	Domain            string             `json:"domain"`
 	HostPath          string             `json:"host_path"`
@@ -449,6 +450,7 @@ type ServiceLogsResponse struct {
 // WebTarget is one private HTTP target the daemon may proxy to.
 type WebTarget struct {
 	SiteID  string `json:"site_id"`
+	Name    string `json:"name,omitempty"`
 	Domain  string `json:"domain"`
 	Kind    string `json:"kind"`
 	Address string `json:"address"`

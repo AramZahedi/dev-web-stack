@@ -108,10 +108,12 @@ func NewRuntime(root string) (*Runtime, error) {
 	if err := json.Unmarshal(data, &saved); err != nil || saved.Version != 1 {
 		return nil, fmt.Errorf("agent: invalid runtime state at %s", runtime.statePath)
 	}
+	knownFolders := make(map[string]struct{}, len(saved.Sites))
 	for _, item := range saved.Sites {
 		if err := validateSiteID(item.Spec.ID); err != nil {
 			return nil, fmt.Errorf("agent: invalid persisted site: %w", err)
 		}
+		knownFolders[siteFolder(item.Spec)] = struct{}{}
 		if item.Spec.HTTPPort > 0 {
 			if err := runtime.ports.Restore(item.Spec.ID, "http", item.Spec.HTTPPort); err != nil {
 				item.Spec.HTTPPort = 0
@@ -131,13 +133,17 @@ func NewRuntime(root string) (*Runtime, error) {
 			phpGenerations: make(map[string]*phpGeneration),
 		}
 		if item.Spec.Kind == "php" && item.Spec.FastCGIPort > 0 {
+			if err := migrateSiteFolders(root, item.Spec); err != nil {
+				return nil, fmt.Errorf("agent: migrate site %q folders: %w", item.Spec.ID, err)
+			}
 			gen := item.ActiveGen
 			if gen == "" {
 				gen = "default"
 			}
-			fpmPath := filepath.Join(root, "sites", item.Spec.ID, "fpm.conf")
+			key := siteFolder(item.Spec)
+			fpmPath := filepath.Join(root, "sites", key, "fpm.conf")
 			if gen != "default" {
-				fpmPath = filepath.Join(root, "sites", item.Spec.ID, gen, "php-fpm.conf")
+				fpmPath = filepath.Join(root, "sites", key, gen, "php-fpm.conf")
 			}
 			site.phpGenerations[gen] = &phpGeneration{
 				spec:         cloneAgentSiteSpec(item.Spec),
@@ -147,6 +153,9 @@ func NewRuntime(root string) (*Runtime, error) {
 			}
 		}
 		runtime.sites[item.Spec.ID] = site
+	}
+	if err := archiveOrphanSiteFolders(root, knownFolders); err != nil {
+		return nil, fmt.Errorf("agent: archive orphan site folders: %w", err)
 	}
 	return runtime, nil
 }
@@ -161,6 +170,9 @@ func (r *Runtime) PrepareSite(ctx context.Context, spec agentproto.SiteSpec) (ag
 	}
 	if err := validateSiteID(spec.ID); err != nil {
 		return agentproto.SitePrepareResponse{}, err
+	}
+	if err := migrateSiteFolders(r.root, spec); err != nil {
+		return agentproto.SitePrepareResponse{}, fmt.Errorf("agent: migrate site folders: %w", err)
 	}
 	if spec.FrontController {
 		return agentproto.SitePrepareResponse{}, errors.New("agent: front controller is only supported for PHP sites")

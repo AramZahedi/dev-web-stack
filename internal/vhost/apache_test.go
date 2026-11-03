@@ -182,7 +182,7 @@ func TestRenderApacheMixedPortRedirects(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Render: %v", err)
 			}
-			data := files["blog-s1.conf"]
+			data := files["blog.conf"]
 			if len(data) == 0 {
 				t.Fatal("site config was not rendered")
 			}

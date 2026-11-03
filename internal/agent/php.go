@@ -432,13 +432,17 @@ func (r *Runtime) PreparePHP(ctx context.Context, id string, req agentproto.PHPP
 	}
 	req.Site.FastCGIPort = port
 
+	if err := migrateSiteFolders(r.root, req.Site); err != nil {
+		_ = r.ports.Release(id, port)
+		return agentproto.SitePrepareResponse{}, fmt.Errorf("agent: migrate site folders: %w", err)
+	}
 	fpmBytes, fpmPath, err := generateFPMConfig(r.root, req.Site, docroot)
 	if err != nil {
 		_ = r.ports.Release(id, port)
 		return agentproto.SitePrepareResponse{}, err
 	}
 
-	siteDir := filepath.Join(r.root, "sites", id)
+	siteDir := filepath.Join(r.root, "sites", siteFolder(req.Site))
 	if err := os.MkdirAll(siteDir, 0o750); err != nil {
 		_ = r.ports.Release(id, port)
 		return agentproto.SitePrepareResponse{}, fmt.Errorf("agent: create site directory: %w", err)
@@ -526,9 +530,10 @@ func (r *Runtime) StartPHP(ctx context.Context, id string, req agentproto.PHPAct
 	}
 	targetGen := site.phpGenerations[gen]
 	if targetGen == nil {
-		fpmPath := filepath.Join(r.root, "sites", id, "fpm.conf")
+		key := siteFolder(site.spec)
+		fpmPath := filepath.Join(r.root, "sites", key, "fpm.conf")
 		if gen != "default" {
-			fpmPath = filepath.Join(r.root, "sites", id, gen, "php-fpm.conf")
+			fpmPath = filepath.Join(r.root, "sites", key, gen, "php-fpm.conf")
 		}
 		if _, err := os.Stat(fpmPath); err == nil && site.spec.FastCGIPort > 0 {
 			targetGen = &phpGeneration{

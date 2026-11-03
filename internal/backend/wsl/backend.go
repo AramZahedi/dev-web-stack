@@ -246,7 +246,7 @@ func toAgentSite(spec backend.SiteSpec) (agentproto.SiteSpec, error) {
 		mode = string(model.SourceWindows)
 	}
 	site := agentproto.SiteSpec{
-		ID: spec.ID, Kind: spec.Kind, Domain: spec.Domain, HostPath: spec.HostPath, BackendPath: toWSLPath(spec.BackendPath),
+		ID: spec.ID, Name: spec.Name, Kind: spec.Kind, Domain: spec.Domain, HostPath: spec.HostPath, BackendPath: toWSLPath(spec.BackendPath),
 		DocumentRoot: toWSLPath(backendDocumentRoot), ProxyDocumentRoot: proxyRoot, SourceMode: mode,
 		Command: spec.Command, Env: cloneMap(spec.Env), HTTPPort: spec.HTTPPort, FastCGIPort: spec.FastCGIPort,
 		SPAFallback: spec.SPAFallback, FrontController: spec.FrontController, RuntimeVersion: spec.RuntimeVersion,

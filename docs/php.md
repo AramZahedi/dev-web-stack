@@ -265,9 +265,10 @@ directory alone.
   connections in time.
 - The built-in proxy and the generated external vhosts both speak FastCGI to
   that loopback port. Only the master binds it; it is not exposed publicly.
-- Generated per-site files live under `~/.devstack/sites/<site-id>/<hash>/`
+- Generated per-site files live under `~/.devstack/sites/<site>/<hash>/`
   (`php.ini`, `php-fpm.conf`, `health.php`, `php-fpm.pid`). The current
-  generation is the newest validated hash.
+  generation is the newest validated hash. `<site>` is the unique site name;
+  legacy ID directories are renamed on the next prepare/start.
 
 ## Logs
 

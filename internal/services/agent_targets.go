@@ -76,6 +76,7 @@ func (s *AgentTargetSource) PrivateWebTargets(ctx context.Context, server string
 		}
 		targets = append(targets, agentproto.WebTarget{
 			SiteID:              site.ID,
+			Name:                site.Name,
 			Domain:              domain,
 			Kind:                kind,
 			Address:             address,

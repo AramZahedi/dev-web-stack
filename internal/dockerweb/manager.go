@@ -13,6 +13,7 @@ import (
 
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/serviceconfig"
+	"github.com/AramZahedi/dev-web-stack/internal/vhost"
 )
 
 // SiteStore lists the persisted sites that need vhosts.
@@ -301,7 +302,8 @@ func (m *Manager) Sync(ctx context.Context, server Server) (err error) {
 		"_devstack.test.conf": files["_devstack.test.conf"],
 	}
 	for _, spec := range specs {
-		desired[spec.ID+".conf"] = files[spec.ID+".conf"]
+		name := vhost.Filename(spec.Name)
+		desired[name] = files[name]
 	}
 
 	var conflicts []serviceconfig.Conflict

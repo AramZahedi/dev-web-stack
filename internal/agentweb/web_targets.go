@@ -115,7 +115,7 @@ func (m *Module) Sync(ctx context.Context, request agentproto.WebTargetsRequest)
 		if err != nil {
 			return agentproto.WebSyncResponse{}, err
 		}
-		name := target.SiteID + ".conf"
+		name := targetFileName(target)
 		dest := filepath.Join(generatedDir, name)
 		if err := writeAtomic(dest, body, 0o644); err != nil {
 			return agentproto.WebSyncResponse{}, fmt.Errorf("agentweb: write %s vhost for %s: %w", server, target.SiteID, err)
@@ -130,6 +130,19 @@ func (m *Module) Sync(ctx context.Context, request agentproto.WebTargetsRequest)
 	m.targets = targets
 	m.mu.Unlock()
 	return agentproto.WebSyncResponse{Changed: changed}, nil
+}
+
+// targetFileName uses the readable site name for generated vhosts. It falls
+// back to the opaque ID for old callers and never accepts a path component.
+func targetFileName(target agentproto.WebTarget) string {
+	name := strings.TrimSpace(target.Name)
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		name = strings.TrimSpace(target.SiteID)
+	}
+	if name == "" {
+		name = "site"
+	}
+	return name + ".conf"
 }
 
 // removeStale deletes generated vhost files that are no longer in the target

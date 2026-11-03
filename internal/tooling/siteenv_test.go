@@ -31,7 +31,7 @@ func fakeNodeBuild(t *testing.T, home, version string) model.RuntimeBuild {
 
 func fakeSitePHPInfo(t *testing.T, paths config.Paths, site model.Site, build model.RuntimeBuild) sites.PHPInfo {
 	t.Helper()
-	generation := filepath.Join(paths.Sites, site.ID, site.PHPConfigHash)
+	generation := filepath.Join(paths.Sites, site.Name, site.PHPConfigHash)
 	if err := os.MkdirAll(generation, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestBuildSiteEnvPHP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantIni := filepath.Join(paths.Sites, site.ID, site.PHPConfigHash, "php.ini")
+	wantIni := filepath.Join(paths.Sites, site.Name, site.PHPConfigHash, "php.ini")
 	if env.PHPIni != wantIni || env.Values["PHPRC"] != wantIni {
 		t.Fatalf("PHPRC = %q, want %q", env.Values["PHPRC"], wantIni)
 	}

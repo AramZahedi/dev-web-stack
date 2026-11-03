@@ -434,21 +434,22 @@ func renderDefault(server Server, tlsDir string, ports listenPorts, suppressDefa
 	}
 }
 
-// siteFilename is stable: the validated name plus the first eight ID
-// characters (or the whole ID when shorter).
-func siteFilename(s SiteSpec) string {
-	id := s.ID
-	if len(id) > 8 {
-		id = id[:8]
-	}
+// Filename returns the stable vhost filename for a validated site name.
+func Filename(siteName string) string {
 	prefix := ""
 	// Apache includes the directory glob in lexical order. A site name that
 	// starts with a digit would sort before _default.conf and steal unmatched
 	// hosts; move only those names behind the underscore-prefixed defaults.
-	if s.Name != "" && s.Name[0] >= '0' && s.Name[0] <= '9' {
+	if siteName != "" && siteName[0] >= '0' && siteName[0] <= '9' {
 		prefix = "site-"
 	}
-	return prefix + s.Name + "-" + id + ".conf"
+	return prefix + siteName + ".conf"
+}
+
+// siteFilename is the validated, unique site name plus .conf. Names are unique
+// and immutable, so no opaque ID suffix is needed.
+func siteFilename(s SiteSpec) string {
+	return Filename(s.Name)
 }
 
 func siteServerNames(s SiteSpec) string {
