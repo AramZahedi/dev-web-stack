@@ -539,7 +539,7 @@ func (s *Service) switchExternalToBuiltin(ctx context.Context, previous string) 
 		)
 	}
 
-	if err := s.startStaticBackendsLocked(ctx); err != nil {
+	if err := s.startStaticBackendsBestEffortLocked(ctx); err != nil {
 		return errors.Join(
 			fmt.Errorf("sites: start static backends: %w", err),
 			s.restoreExternalModeLocked(ctx, previous),
@@ -763,7 +763,7 @@ func (s *Service) startAfterDockerLocked(ctx context.Context) error {
 	// Static backends may allocate their ports here. Publish routes only after
 	// those ports exist, or a WSL static site that was external under Docker
 	// would be missing from the builtin snapshot.
-	if err := s.startStaticBackendsLocked(ctx); err != nil {
+	if err := s.startStaticBackendsBestEffortLocked(ctx); err != nil {
 		restoreProxy()
 		return fmt.Errorf("sites: start static backends after docker: %w", err)
 	}
@@ -959,6 +959,30 @@ func (s *Service) startStaticBackendsLocked(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// startStaticBackendsBestEffortLocked starts every static site whose desired
+// state is running, recording per-site failures without blocking a serving
+// transition. A stale project path must not prevent another server from taking
+// over, especially during an automatic fallback to builtin.
+func (s *Service) startStaticBackendsBestEffortLocked(ctx context.Context) error {
+	if s.deps.Store == nil {
+		return nil
+	}
+	stored, err := s.deps.Store.ListSites(ctx)
+	if err != nil {
+		return fmt.Errorf("sites: list sites for mode switch: %w", err)
+	}
+	for _, site := range stored {
+		if site.Kind != model.SiteStatic || site.DesiredState != model.DesiredRunning {
+			continue
+		}
+		if _, err := s.startLocked(ctx, site); err != nil {
+			s.emitEvent(ctx, site.ID, "site.error",
+				fmt.Sprintf("site %s could not start for builtin serving: %v", site.Name, err))
+		}
+	}
+	return nil
 }
 
 // buildVhostRequestLocked renders the complete helper request from the store.
@@ -1343,12 +1367,12 @@ func (s *Service) deleteExternalLocked(ctx context.Context, site model.Site) err
 			if s.deps.PHPBackend == nil {
 				return fmt.Errorf("sites: stop %q: PHP backend is not configured", site.Name)
 			}
-			if err := s.stopPHPProcessLocked(ctx, site.ID); err != nil {
+			if err := s.stopPHPProcessLocked(ctx, site.ID); err != nil && !errors.Is(err, agentproto.ErrNotFound) {
 				return fmt.Errorf("sites: stop %q: %w", site.Name, err)
 			}
 		default:
 			if s.deps.Backend != nil {
-				if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil {
+				if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil && !errors.Is(err, agentproto.ErrNotFound) {
 					return fmt.Errorf("sites: stop %q: %w", site.Name, err)
 				}
 			}

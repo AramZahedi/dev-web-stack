@@ -1528,7 +1528,7 @@ func (s *Service) stopLocked(ctx context.Context, site model.Site) (model.Site, 
 		return s.stopExternalStaticLocked(ctx, site)
 	}
 
-	if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil {
+	if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil && !errors.Is(err, agentproto.ErrNotFound) {
 		return site, fmt.Errorf("sites: stop %q: %w", site.Name, err)
 	}
 	oldStatus := site.Status

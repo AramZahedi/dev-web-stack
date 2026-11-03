@@ -341,7 +341,7 @@ func TestDockerToBuiltinSaveFailureStillRestoresBuiltin(t *testing.T) {
 	}
 }
 
-func TestDockerToBuiltinStaticFailureDoesNotEnableForwarders(t *testing.T) {
+func TestDockerToBuiltinStaticFailureStillRestoresBuiltin(t *testing.T) {
 	svc, fakes := newTestService(t)
 	svc.deps.Config.ServingMode = config.ServingModeNginx
 	svc.deps.Config.ServingProvider = config.ServingProviderDocker
@@ -366,19 +366,22 @@ func TestDockerToBuiltinStaticFailureDoesNotEnableForwarders(t *testing.T) {
 		t.Fatalf("create static site: %v", err)
 	}
 
-	err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin)
-	if err == nil {
-		t.Fatal("expected static backend start failure")
+	if err := svc.SetServingMode(context.Background(), config.ServingModeBuiltin); err != nil {
+		t.Fatalf("one failed static site must not block the builtin fallback: %v", err)
 	}
-	if fakes.proxy.isStarted() {
-		t.Fatal("proxy must be stopped when the builtin restore fails")
+	if !fakes.proxy.isStarted() {
+		t.Fatal("builtin proxy did not start")
 	}
-	if len(forwarders.calls) != 0 {
-		t.Fatalf("forwarders must not be enabled before static backends start: %v", forwarders.calls)
+	call, ok := forwarders.last()
+	if !ok || !call.enable {
+		t.Fatalf("forwarders = %+v, want enabled", forwarders.calls)
 	}
 	stopped, started := switcher.counts()
-	if stopped != 1 || started != 1 || switcher.started[0] != "nginx" {
-		t.Fatalf("switcher stop=%v start=%v, want docker rollback", switcher.stopped, switcher.started)
+	if stopped != 1 || started != 0 {
+		t.Fatalf("switcher stop=%v start=%v, want only the docker stop", switcher.stopped, switcher.started)
+	}
+	if svc.ServingMode() != config.ServingModeBuiltin || svc.ServingProvider() != config.ServingProviderNative {
+		t.Fatalf("serving state = %s/%s, want builtin/native", svc.ServingMode(), svc.ServingProvider())
 	}
 }
 
@@ -652,6 +655,29 @@ func TestDockerProviderWindowsStaticKeepsSupervisedBackend(t *testing.T) {
 	}
 	if !route.keep["win.test"] {
 		t.Fatalf("Docker route keep = %v, want win.test", route.keep)
+	}
+}
+
+func TestStartStaticBackendsBestEffortIgnoresFailedSite(t *testing.T) {
+	svc, fakes := newTestService(t)
+	site := model.Site{
+		ID:           "static",
+		Name:         "static",
+		Domain:       "static.test",
+		Kind:         model.SiteStatic,
+		HostPath:     fakes.root,
+		BackendPath:  fakes.root,
+		DocumentRoot: ".",
+		DesiredState: model.DesiredRunning,
+		Status:       model.StatusRunning,
+		HTTPPort:     41001,
+	}
+	if err := fakes.store.CreateSite(context.Background(), site); err != nil {
+		t.Fatal(err)
+	}
+	fakes.backend.startErr = errors.New("backend failed")
+	if err := svc.startStaticBackendsBestEffortLocked(context.Background()); err != nil {
+		t.Fatalf("best-effort start should not block a serving transition: %v", err)
 	}
 }
 

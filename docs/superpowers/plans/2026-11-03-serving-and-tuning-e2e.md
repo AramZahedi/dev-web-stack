@@ -51,10 +51,23 @@ pwsh -NoProfile -File test/windows/performance_e2e.ps1
 
 - Serving matrix: `SERVING_E2E_PASS`
 - Tuning matrix: `TUNING_E2E_PASS`
-- `devstack doctor`: all checks pass after the serving matrix.
+- Vertical slice: `ALL ACCEPTANCE GATES PASSED (100% GREEN)`
+- `devstack doctor`: all checks pass after both matrices.
 - Apache and nginx both served the Laravel front controller; Apache honored
   `.htaccess`; public TLS and the dashboard stayed with the daemon.
+- Direct nginx ↔ Apache switching succeeded without a builtin round trip.
+- Deactivating or uninstalling the active Apache container switched serving to
+  builtin before the container stopped and kept the PHP and static sites at 200.
+- A WSL static site added while Apache was running was served immediately after
+  the site-driven validate/reload, with no container restart.
+- Switching Docker → builtin started the WSL static backend, published its route,
+  and served the static site at 200; switching back to Apache restored the
+  Docker route.
+- A stale static site row with a missing project path no longer blocks a serving
+  switch or a site delete.
 - Balanced, Custom, reset, and final Throughput all verified on the real host.
+- Deferred by design: VM-only installer rows INST-24/25/29 and DB E2E cycles
+  9–15. Defender exclusions are skipped when the Defender module is unavailable.
 
 ## Regression gates
 
