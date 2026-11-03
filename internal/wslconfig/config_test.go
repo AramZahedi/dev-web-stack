@@ -40,6 +40,18 @@ func TestApplyMergesAndPreserves(t *testing.T) {
 	}
 }
 
+func TestApplySameValuesReportsNoChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".wslconfig")
+	values := wslconfig.Values{MemoryMB: 8192, Processors: 8, SwapMB: 2048}
+	if _, changed, err := wslconfig.Apply(path, filepath.Join(dir, "backup", ".wslconfig"), values); err != nil || !changed {
+		t.Fatalf("first apply changed=%t err=%v", changed, err)
+	}
+	if _, changed, err := wslconfig.Apply(path, filepath.Join(dir, "backup", ".wslconfig"), values); err != nil || changed {
+		t.Fatalf("identical apply changed=%t err=%v, want no change", changed, err)
+	}
+}
+
 func TestApplyCreatesSectionAndResetRestores(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".wslconfig")

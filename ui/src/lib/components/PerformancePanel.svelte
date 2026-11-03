@@ -10,6 +10,7 @@
     RefreshCw,
     RotateCcw,
     ShieldAlert,
+    SlidersHorizontal,
     Trash2,
     TriangleAlert,
   } from 'lucide-svelte';
@@ -79,6 +80,7 @@
   let benchRequestError = $state('');
   let benchDuration = $state(10);
   let benchConnections = $state(32);
+  let benchAdvanced = $state(false);
   let benchBusy = $state(false);
   let selectedRun = $state<BenchmarkRun | null>(null);
 
@@ -850,72 +852,89 @@
     {/snippet}
 
     <div class="benchmark-form">
-      <Field id="benchmark-site" label="Site">
-        <select id="benchmark-site" class="input" bind:value={benchSite} disabled={benchBusy}>
-          {#if sites.length === 0}<option value="">No registered sites</option>{/if}
-          {#each sites as site (site.id)}
-            <option value={site.name}>{site.name} · {site.domain}</option>
-          {/each}
-        </select>
-      </Field>
-      <Field id="benchmark-method" label="Method">
-        <select id="benchmark-method" class="input mono" bind:value={benchMethod} disabled={benchBusy}>
-          {#each ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as method (method)}
-            <option value={method}>{method}</option>
-          {/each}
-        </select>
-      </Field>
-      <Field id="benchmark-engine" label="Engine" hint="fasthttp is faster; net/http supports HTTP/2.">
-        <select id="benchmark-engine" class="input mono" bind:value={benchEngine} disabled={benchBusy}>
-          <option value="fasthttp">fasthttp</option>
-          <option value="nethttp">net/http</option>
-        </select>
-      </Field>
-      <Field id="benchmark-path" label="Path" hint="Relative to the selected site.">
-        <input
-          id="benchmark-path"
-          class="input mono"
-          type="text"
-          placeholder="/api"
-          bind:value={benchPath}
-          disabled={benchBusy}
-        />
-      </Field>
-      <Field id="benchmark-duration" label="Duration (s)">
-        <input
-          id="benchmark-duration"
-          class="input mono"
-          type="number"
-          min="1"
-          max="3600"
-          aria-describedby="benchmark-limits"
-          bind:value={benchDuration}
-          disabled={benchBusy}
-        />
-      </Field>
-      <Field id="benchmark-connections" label="Connections">
-        <input
-          id="benchmark-connections"
-          class="input mono"
-          type="number"
-          min="1"
-          max="100000"
-          aria-describedby="benchmark-limits"
-          bind:value={benchConnections}
-          disabled={benchBusy}
-        />
-      </Field>
-      <div class="benchmark-action">
-        <Button
-          size="sm"
-          variant="secondary"
-          loading={benchBusy}
-          disabled={benchBusy || !benchSite}
-          onclick={runBenchmark}
-        >
-          {#if !benchBusy}<Play size={12} strokeWidth={2} aria-hidden="true" />{/if}
-          Run benchmark
-        </Button>
+      <div class="benchmark-row primary">
+        <Field id="benchmark-site" label="Site">
+          <select id="benchmark-site" class="input" bind:value={benchSite} disabled={benchBusy}>
+            {#if sites.length === 0}<option value="">No registered sites</option>{/if}
+            {#each sites as site (site.id)}
+              <option value={site.name}>{site.name} · {site.domain}</option>
+            {/each}
+          </select>
+        </Field>
+        <Field id="benchmark-engine" label="Engine">
+          <select id="benchmark-engine" class="input mono" bind:value={benchEngine} disabled={benchBusy}>
+            <option value="fasthttp">fasthttp</option>
+            <option value="nethttp">net/http</option>
+          </select>
+        </Field>
+        <Field id="benchmark-method" label="Method">
+          <select id="benchmark-method" class="input mono" bind:value={benchMethod} disabled={benchBusy}>
+            {#each ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as method (method)}
+              <option value={method}>{method}</option>
+            {/each}
+          </select>
+        </Field>
+        <Field id="benchmark-path" label="Path">
+          <input
+            id="benchmark-path"
+            class="input mono"
+            type="text"
+            placeholder="/api"
+            bind:value={benchPath}
+            disabled={benchBusy}
+          />
+        </Field>
+      </div>
+      <div class="benchmark-row secondary">
+        <Field id="benchmark-duration" label="Duration (s)">
+          <input
+            id="benchmark-duration"
+            class="input mono"
+            type="number"
+            min="1"
+            max="3600"
+            aria-describedby="benchmark-limits"
+            bind:value={benchDuration}
+            disabled={benchBusy}
+          />
+        </Field>
+        <Field id="benchmark-connections" label="Connections">
+          <input
+            id="benchmark-connections"
+            class="input mono"
+            type="number"
+            min="1"
+            max="100000"
+            aria-describedby="benchmark-limits"
+            bind:value={benchConnections}
+            disabled={benchBusy}
+          />
+        </Field>
+        <div class="benchmark-advanced">
+          <button
+            type="button"
+            class="advanced-toggle"
+            aria-expanded={benchAdvanced}
+            aria-controls="benchmark-request"
+            disabled={benchBusy}
+            onclick={() => (benchAdvanced = !benchAdvanced)}
+          >
+            <SlidersHorizontal size={13} strokeWidth={2} aria-hidden="true" />
+            {benchAdvanced ? 'Hide advanced' : 'Advanced'}
+          </button>
+        </div>
+        <div class="benchmark-action">
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={benchBusy}
+            disabled={benchBusy || !benchSite}
+            onclick={runBenchmark}
+          >
+            {#if !benchBusy}<Play size={12} strokeWidth={2} aria-hidden="true" />{/if}
+            Run benchmark
+          </Button>
+        </div>
       </div>
     </div>
 
@@ -923,119 +942,121 @@
       Target: <span class="mono">{benchTargetPreview}</span>
     </p>
 
-    <div class="benchmark-request">
-      <div class="request-panel">
-        <div class="request-heading">
-          <span>Headers</span>
-          <div class="mode-toggle" role="group" aria-label="Header editor mode">
-            <button
-              type="button"
-              class:active={benchHeaderMode === 'rows'}
-              aria-pressed={benchHeaderMode === 'rows'}
-              disabled={benchBusy}
-              onclick={() => setHeaderMode('rows')}>Rows</button
-            >
-            <button
-              type="button"
-              class:active={benchHeaderMode === 'raw'}
-              aria-pressed={benchHeaderMode === 'raw'}
-              disabled={benchBusy}
-              onclick={() => setHeaderMode('raw')}>Raw</button
-            >
+    {#if benchAdvanced}
+      <div class="benchmark-request" id="benchmark-request">
+        <div class="request-panel">
+          <div class="request-heading">
+            <span>Headers</span>
+            <div class="mode-toggle" role="group" aria-label="Header editor mode">
+              <button
+                type="button"
+                class:active={benchHeaderMode === 'rows'}
+                aria-pressed={benchHeaderMode === 'rows'}
+                disabled={benchBusy}
+                onclick={() => setHeaderMode('rows')}>Rows</button
+              >
+              <button
+                type="button"
+                class:active={benchHeaderMode === 'raw'}
+                aria-pressed={benchHeaderMode === 'raw'}
+                disabled={benchBusy}
+                onclick={() => setHeaderMode('raw')}>Raw</button
+              >
+            </div>
           </div>
-        </div>
-        {#if benchHeaderMode === 'rows'}
-          <div class="header-rows">
-            {#each benchHeaders as row, index}
-              <div class="header-row">
-                <input
-                  class="input mono"
-                  type="text"
-                  placeholder="Authorization"
-                  aria-label={`Header ${index + 1} name`}
-                  bind:value={row.name}
-                  disabled={benchBusy}
-                />
-                <input
-                  class="input mono"
-                  type="text"
-                  placeholder="Bearer …"
-                  aria-label={`Header ${index + 1} value`}
-                  bind:value={row.value}
-                  disabled={benchBusy}
-                />
-                <IconButton
-                  label={`Remove header ${index + 1}`}
-                  icon={Trash2}
-                  size="sm"
-                  variant="danger"
-                  disabled={benchBusy}
-                  onclick={() => removeHeader(index)}
-                />
-              </div>
-            {/each}
-            <Button size="sm" variant="ghost" disabled={benchBusy} onclick={addHeader}>
-              <Plus size={12} strokeWidth={2} aria-hidden="true" />
-              Add header
-            </Button>
-          </div>
-        {:else}
-          <textarea
-            class="input mono header-raw"
-            rows="4"
-            placeholder="Authorization: Bearer …"
-            aria-label="Raw request headers"
-            bind:value={benchHeadersRaw}
-            disabled={benchBusy}
-          ></textarea>
-          <p class="request-hint">One <span class="mono">Name: value</span> header per line.</p>
-        {/if}
-      </div>
-
-      <div class="request-panel">
-        <div class="request-heading">
-          <span>JSON body</span>
-          <div class="mode-toggle" role="group" aria-label="Body editor mode">
-            <button
-              type="button"
-              class:active={benchBodyMode === 'pretty'}
-              aria-pressed={benchBodyMode === 'pretty'}
-              disabled={benchBusy || !benchBodyAllowed}
-              onclick={() => setBodyMode('pretty')}>Pretty</button
-            >
-            <button
-              type="button"
-              class:active={benchBodyMode === 'raw'}
-              aria-pressed={benchBodyMode === 'raw'}
-              disabled={benchBusy || !benchBodyAllowed}
-              onclick={() => setBodyMode('raw')}>Raw</button
-            >
-            <button
-              type="button"
-              class="format"
-              disabled={benchBusy || !benchBodyAllowed || !benchBody.trim()}
-              onclick={formatBody}>Format</button
-            >
-          </div>
-        </div>
-        <textarea
-          class="input mono body-editor"
-          rows="5"
-          placeholder={benchBodyAllowed ? '{ "key": "value" }' : 'GET and HEAD requests do not send a body.'}
-          aria-label="Request body"
-          bind:value={benchBody}
-          disabled={benchBusy || !benchBodyAllowed}
-        ></textarea>
-        <p class="request-hint">
-          {#if benchBodyAllowed}
-            Body up to 1 MiB. If no Content-Type is set, <span class="mono">application/json</span> is
-            added when the body is non-empty.
+          {#if benchHeaderMode === 'rows'}
+            <div class="header-rows">
+              {#each benchHeaders as row, index}
+                <div class="header-row">
+                  <input
+                    class="input mono"
+                    type="text"
+                    placeholder="Authorization"
+                    aria-label={`Header ${index + 1} name`}
+                    bind:value={row.name}
+                    disabled={benchBusy}
+                  />
+                  <input
+                    class="input mono"
+                    type="text"
+                    placeholder="Bearer …"
+                    aria-label={`Header ${index + 1} value`}
+                    bind:value={row.value}
+                    disabled={benchBusy}
+                  />
+                  <IconButton
+                    label={`Remove header ${index + 1}`}
+                    icon={Trash2}
+                    size="sm"
+                    variant="danger"
+                    disabled={benchBusy}
+                    onclick={() => removeHeader(index)}
+                  />
+                </div>
+              {/each}
+              <Button size="sm" variant="ghost" disabled={benchBusy} onclick={addHeader}>
+                <Plus size={12} strokeWidth={2} aria-hidden="true" />
+                Add header
+              </Button>
+            </div>
           {:else}
-            Choose POST, PUT, PATCH, DELETE, or OPTIONS to send a body.
+            <textarea
+              class="input mono header-raw"
+              rows="4"
+              placeholder="Authorization: Bearer …"
+              aria-label="Raw request headers"
+              bind:value={benchHeadersRaw}
+              disabled={benchBusy}
+            ></textarea>
+            <p class="request-hint">One <span class="mono">Name: value</span> header per line.</p>
           {/if}
-        </p>
+        </div>
+
+        <div class="request-panel">
+          <div class="request-heading">
+            <span>JSON body</span>
+            <div class="mode-toggle" role="group" aria-label="Body editor mode">
+              <button
+                type="button"
+                class:active={benchBodyMode === 'pretty'}
+                aria-pressed={benchBodyMode === 'pretty'}
+                disabled={benchBusy || !benchBodyAllowed}
+                onclick={() => setBodyMode('pretty')}>Pretty</button
+              >
+              <button
+                type="button"
+                class:active={benchBodyMode === 'raw'}
+                aria-pressed={benchBodyMode === 'raw'}
+                disabled={benchBusy || !benchBodyAllowed}
+                onclick={() => setBodyMode('raw')}>Raw</button
+              >
+              <button
+                type="button"
+                class="format"
+                disabled={benchBusy || !benchBodyAllowed || !benchBody.trim()}
+                onclick={formatBody}>Format</button
+              >
+            </div>
+          </div>
+          <textarea
+            class="input mono body-editor"
+            rows="5"
+            placeholder={benchBodyAllowed ? '{ "key": "value" }' : 'GET and HEAD requests do not send a body.'}
+            aria-label="Request body"
+            bind:value={benchBody}
+            disabled={benchBusy || !benchBodyAllowed}
+          ></textarea>
+          <p class="request-hint">
+            {#if benchBodyAllowed}
+              Body up to 1 MiB. If no Content-Type is set, <span class="mono">application/json</span> is
+              added when the body is non-empty.
+            {:else}
+              Choose POST, PUT, PATCH, DELETE, or OPTIONS to send a body.
+            {/if}
+          </p>
+        </div>
       </div>
-    </div>
+    {/if}
 
     {#if benchRequestError}
       <p class="benchmark-form-error" role="alert">{benchRequestError}</p>
@@ -1635,10 +1656,65 @@
   }
 
   .benchmark-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .benchmark-row {
     display: grid;
-    grid-template-columns: minmax(0, 1.2fr) 96px 130px minmax(0, 1.2fr) 100px 118px auto;
     align-items: end;
     gap: 10px;
+  }
+
+  .benchmark-row.primary {
+    grid-template-columns: minmax(0, 1.3fr) 124px 104px minmax(0, 1.4fr);
+  }
+
+  .benchmark-row.secondary {
+    grid-template-columns: 108px 124px minmax(0, 1fr) auto;
+  }
+
+  .benchmark-advanced {
+    display: flex;
+    align-items: end;
+    min-height: 34px;
+  }
+
+  .advanced-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 34px;
+    padding: 0 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .advanced-toggle:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    color: var(--fg);
+  }
+
+  .advanced-toggle[aria-expanded='true'] {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--success-fg);
+  }
+
+  .advanced-toggle:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .benchmark-action {
+    display: flex;
+    justify-content: flex-end;
   }
 
   .benchmark-target {
@@ -1880,16 +1956,13 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .benchmark-form {
+    .benchmark-row.primary,
+    .benchmark-row.secondary {
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     }
 
     .benchmark-request {
       grid-template-columns: minmax(0, 1fr);
-    }
-
-    .benchmark-form > :first-child {
-      grid-column: 1 / -1;
     }
   }
 
@@ -1897,8 +1970,17 @@
     .resource-grid,
     .value-grid,
     .profile-row,
-    .benchmark-form {
+    .benchmark-row.primary,
+    .benchmark-row.secondary {
       grid-template-columns: minmax(0, 1fr);
+    }
+
+    .benchmark-action {
+      justify-content: stretch;
+    }
+
+    .benchmark-action :global(.btn) {
+      width: 100%;
     }
 
     .action-row {

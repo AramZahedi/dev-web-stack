@@ -17,11 +17,14 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
+	"golang.org/x/sys/windows"
 )
 
 const (
 	powerPlanBalancedGUID = "381b4222-f694-41f0-9685-ff5bb260df2e"
 	powerPlanHighGUID     = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+
+	windowsTCPParametersPath = `HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`
 )
 
 // PerformanceCommandRunner executes fixed Windows tuning commands.
@@ -58,6 +61,9 @@ type windowsPerformanceState struct {
 	Disable8dot3      int                             `json:"disable_8dot3"`
 	ExclusionsAdded   []string                        `json:"exclusions_added"`
 	RestartRequired   bool                            `json:"restart_required"`
+	// TCPTimedWaitDelay records the last requested value so a restart can be
+	// cleared once the host has rebooted with that value active.
+	TCPTimedWaitDelay int `json:"tcp_timed_wait_delay,omitempty"`
 }
 
 // WindowsPerformanceManager applies the allowlisted Windows host layer.
@@ -65,6 +71,7 @@ type WindowsPerformanceManager struct {
 	systemDir string
 	runner    PerformanceCommandRunner
 	now       func() time.Time
+	sinceBoot func() time.Duration
 	mu        sync.Mutex
 }
 
@@ -80,7 +87,20 @@ func NewWindowsPerformanceManager(systemDir string, runner PerformanceCommandRun
 	if now == nil {
 		now = time.Now
 	}
-	return &WindowsPerformanceManager{systemDir: dir, runner: runner, now: now}, nil
+	return &WindowsPerformanceManager{
+		systemDir: dir,
+		runner:    runner,
+		now:       now,
+		sinceBoot: windows.DurationSinceBoot,
+	}, nil
+}
+
+// bootTime is the approximate instant the current Windows session booted.
+func (m *WindowsPerformanceManager) bootTime() time.Time {
+	if m.sinceBoot == nil {
+		return time.Time{}
+	}
+	return m.now().Add(-m.sinceBoot())
 }
 
 func (m *WindowsPerformanceManager) statePath() string {
@@ -105,7 +125,15 @@ func (m *WindowsPerformanceManager) Status(_ context.Context) (helperproto.Perfo
 		target.Applied = true
 		target.Paths = []string{"powercfg", "netsh dynamicport", "registry", "fsutil", "Defender exclusions"}
 		target.BackupDir = state.BackupDir
-		target.RestartRequired = state.RestartRequired
+		target.RestartRequired = m.restartRequired(state)
+		if state.RestartRequired && !target.RestartRequired {
+			// The host has rebooted since the last apply: the registry values
+			// are active now, so the pending-restart marker is stale.
+			state.RestartRequired = false
+			if err := m.writeState(state); err != nil {
+				return helperproto.PerformanceStatusResponse{}, err
+			}
+		}
 		target.Steps = []helperproto.PerformanceStep{
 			{Name: "profile", Status: "ok", Detail: state.Profile},
 			{Name: "power-plan", Status: "ok", Detail: state.PowerPlan},
@@ -119,6 +147,46 @@ func (m *WindowsPerformanceManager) Status(_ context.Context) (helperproto.Perfo
 		resp.Managed = true
 	}
 	return resp, nil
+}
+
+// restartRequired reports whether the persisted apply still needs a reboot.
+// Once the host has rebooted after that apply, the registry settings are live.
+func (m *WindowsPerformanceManager) restartRequired(state *windowsPerformanceState) bool {
+	if state == nil || !state.RestartRequired {
+		return false
+	}
+	if state.AppliedAt.IsZero() {
+		return true
+	}
+	boot := m.bootTime()
+	if boot.IsZero() {
+		return true
+	}
+	return !boot.After(state.AppliedAt)
+}
+
+// restartRequiredForApply decides whether writing the requested TCP timed-wait
+// value needs a reboot. When the host rebooted after the previous apply and the
+// value is already active, applying the same profile is a no-op for the stack.
+func (m *WindowsPerformanceManager) restartRequiredForApply(ctx context.Context, existing *windowsPerformanceState, delay int) bool {
+	if delay <= 0 {
+		return false
+	}
+	if existing == nil || existing.AppliedAt.IsZero() {
+		return true
+	}
+	boot := m.bootTime()
+	if boot.IsZero() || !boot.After(existing.AppliedAt) {
+		return true
+	}
+	if existing.TCPTimedWaitDelay == delay {
+		return false
+	}
+	live, err := m.readRegistry(ctx, windowsTCPParametersPath, "TcpTimedWaitDelay")
+	if err != nil {
+		return true
+	}
+	return !live.Exists || live.Value != uint32(delay)
 }
 
 // Apply writes every allowlisted Windows value and rolls back on failure.
@@ -159,6 +227,9 @@ func (m *WindowsPerformanceManager) Apply(ctx context.Context, req helperproto.P
 	} else if err := m.capture(ctx, state); err != nil {
 		return helperproto.PerformanceApplyResponse{}, err
 	}
+	// Decide before the registry write below whether this profile needs a
+	// reboot: a value already active since the last boot does not.
+	restartRequired := m.restartRequiredForApply(ctx, existing, req.Windows.TCPTimedWaitDelaySeconds)
 	if err := m.writeState(state); err != nil {
 		return helperproto.PerformanceApplyResponse{}, err
 	}
@@ -192,7 +263,8 @@ func (m *WindowsPerformanceManager) Apply(ctx context.Context, req helperproto.P
 		state.ExclusionsAdded = append(state.ExclusionsAdded, added...)
 		defenderStep.Detail = fmt.Sprintf("%d exclusion(s)", len(added))
 	}
-	state.RestartRequired = req.Windows.TCPTimedWaitDelaySeconds > 0
+	state.TCPTimedWaitDelay = req.Windows.TCPTimedWaitDelaySeconds
+	state.RestartRequired = restartRequired
 	if err := m.verify(ctx, req.Windows, state); err != nil {
 		return fail(err)
 	}
@@ -516,7 +588,7 @@ type registryTarget struct {
 }
 
 func windowsRegistryTargets(values *helperproto.PerformanceWindowsValues) []registryTarget {
-	tcp := `HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`
+	tcp := windowsTCPParametersPath
 	multimedia := `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile`
 	if values == nil {
 		return []registryTarget{

@@ -138,16 +138,19 @@ Host tuning uses only:
 The helper derives those paths itself, backs up under
 `<devstack-home>/backups/performance/`, runs `sysctl --system`, verifies values, and rolls
 back on failure. It never accepts a path or shell fragment from the API. Real root
-apply/reset remains an explicit host acceptance gate.
+apply/reset remains an explicit host acceptance gate. A pending **Restart required**
+badge clears itself once the host has actually rebooted, or once the WSL VM has
+booted again after a `.wslconfig` change.
 
 ### Benchmarks
 
 The benchmark form selects a registered site, engine, method, path relative to
-that site (for example `/api`), duration (1-3600 s), and connections (1-100000).
-The `fasthttp` engine is the default for HTTP/1.1 throughput; the selectable
-`net/http` engine supports HTTP/2 and can be faster when the target negotiates
-HTTP/2. You can add custom request headers as rows or raw `Name: value` lines, and send a JSON
-body in pretty or raw form. If the body is non-empty and no `Content-Type` is set,
+that site (for example `/api`), duration (1-3600 s), and connections (1-100000) in two
+aligned rows. Headers and the JSON body are hidden behind **Advanced**. The `fasthttp`
+engine is the default for HTTP/1.1 throughput; the selectable `net/http` engine supports
+HTTP/2 and can be faster when the target negotiates HTTP/2. In **Advanced** you can add
+custom request headers as rows or raw `Name: value` lines, and send a JSON body in
+pretty or raw form. If the body is non-empty and no `Content-Type` is set,
 `application/json` is used. Results include measured RPS, p50/p95/p99, errors,
 duration, target, engine, method, path, header names, body size, profile, and
 timestamps. Header values and request bodies are sent but never stored.

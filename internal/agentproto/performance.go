@@ -62,6 +62,7 @@ type PerformanceApplyRequest struct {
 type PerformanceStatusResponse struct {
 	Targets       []PerformanceTargetStatus `json:"targets"`
 	AppliedAt     *time.Time                `json:"applied_at,omitempty"`
+	BootAt        *time.Time                `json:"boot_at,omitempty"`
 	SysctlContent []byte                    `json:"sysctl_content,omitempty"`
 	LimitsContent []byte                    `json:"limits_content,omitempty"`
 }

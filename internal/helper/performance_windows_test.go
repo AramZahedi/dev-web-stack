@@ -4,7 +4,9 @@ package helper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -189,6 +191,135 @@ func TestWindowsPerformanceApplyAndReset(t *testing.T) {
 	}
 	if runner.fsutil["disablelastaccess"] != 0 || runner.fsutil["disable8dot3"] != 0 {
 		t.Fatalf("reset fsutil = %+v", runner.fsutil)
+	}
+}
+
+func TestWindowsPerformanceRestartClearsAfterReboot(t *testing.T) {
+	system := t.TempDir()
+	appliedAt := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	manager, err := NewWindowsPerformanceManager(system, newFakePerformanceRunner(), func() time.Time {
+		return appliedAt
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The host booted ten hours before the apply, so the TCP change is pending.
+	manager.sinceBoot = func() time.Duration { return 10 * time.Hour }
+
+	resp, err := manager.Apply(context.Background(), helperproto.PerformanceApplyRequest{
+		Profile: "throughput", Windows: testWindowsPerformanceValues(),
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !resp.Targets[0].RestartRequired {
+		t.Fatal("fresh apply did not report the pending restart")
+	}
+	status, err := manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Targets[0].RestartRequired {
+		t.Fatal("status cleared the restart before the host rebooted")
+	}
+
+	// Simulate a reboot: the status request arrives an hour after the apply and
+	// the current session booted ten minutes ago.
+	manager.now = func() time.Time { return appliedAt.Add(time.Hour) }
+	manager.sinceBoot = func() time.Duration { return 10 * time.Minute }
+	status, err = manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Targets[0].RestartRequired {
+		t.Fatal("status still requires a restart after the host rebooted")
+	}
+	data, err := os.ReadFile(manager.statePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state windowsPerformanceState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.RestartRequired {
+		t.Fatal("persisted state still requires a restart after the host rebooted")
+	}
+
+	// Applying the same profile in the new session must not re-arm the marker:
+	// the registry value already survived a boot.
+	resp, err = manager.Apply(context.Background(), helperproto.PerformanceApplyRequest{
+		Profile: "throughput", Windows: testWindowsPerformanceValues(),
+	})
+	if err != nil {
+		t.Fatalf("re-Apply: %v", err)
+	}
+	if resp.Targets[0].RestartRequired {
+		t.Fatal("re-applying the active profile re-armed the restart marker")
+	}
+}
+
+func TestWindowsPerformanceRestartReturnsWhenTCPValueChanges(t *testing.T) {
+	system := t.TempDir()
+	appliedAt := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	manager, err := NewWindowsPerformanceManager(system, newFakePerformanceRunner(), func() time.Time {
+		return appliedAt.Add(time.Hour)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.sinceBoot = func() time.Duration { return 10 * time.Minute }
+	deferred := appliedAt.Add(-time.Hour)
+	if err := manager.writeState(&windowsPerformanceState{
+		Profile:           "throughput",
+		AppliedAt:         deferred,
+		TCPTimedWaitDelay: 30,
+		RestartRequired:   false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	values := testWindowsPerformanceValues()
+	values.TCPTimedWaitDelaySeconds = 45
+	resp, err := manager.Apply(context.Background(), helperproto.PerformanceApplyRequest{
+		Profile: "custom", Windows: values,
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !resp.Targets[0].RestartRequired {
+		t.Fatal("a new TCP timed-wait value did not require a restart")
+	}
+}
+
+func TestWindowsPerformanceReapplyAfterRebootUsesLiveRegistryValue(t *testing.T) {
+	system := t.TempDir()
+	runner := newFakePerformanceRunner()
+	appliedAt := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	manager, err := NewWindowsPerformanceManager(system, runner, func() time.Time {
+		return appliedAt.Add(time.Hour)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.sinceBoot = func() time.Duration { return 10 * time.Minute }
+	if err := manager.writeState(&windowsPerformanceState{
+		Profile:         "throughput",
+		AppliedAt:       appliedAt.Add(-time.Hour),
+		RestartRequired: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The old helper did not persist the requested value. The registry shows
+	// the value survived the current boot, so re-applying it is already live.
+	runner.registry[windowsTCPParametersPath+"|TcpTimedWaitDelay"] = 30
+	resp, err := manager.Apply(context.Background(), helperproto.PerformanceApplyRequest{
+		Profile: "throughput", Windows: testWindowsPerformanceValues(),
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if resp.Targets[0].RestartRequired {
+		t.Fatal("re-applying a live value re-armed the restart marker")
 	}
 }
 

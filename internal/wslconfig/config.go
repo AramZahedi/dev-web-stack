@@ -18,8 +18,8 @@ type Values struct {
 	SwapMB     int
 }
 
-// Apply writes the managed [wsl2] keys and returns the backup path. The caller
-// must restart WSL for the new VM resources to take effect.
+// Apply writes the managed [wsl2] keys and returns the backup path. The boolean
+// reports whether the file changed and therefore whether WSL must be restarted.
 func Apply(path, backupPath string, values Values) (string, bool, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", false, errors.New("wslconfig: path is required")
@@ -39,6 +39,11 @@ func Apply(path, backupPath string, values Values) (string, bool, error) {
 		return "", false, readErr
 	}
 	original := string(data)
+	merged := merge(original, map[string]string{
+		"memory":     strconv.Itoa(values.MemoryMB) + "MB",
+		"processors": strconv.Itoa(values.Processors),
+		"swap":       strconv.Itoa(values.SwapMB) + "MB",
+	})
 	if exists && strings.TrimSpace(backupPath) != "" {
 		if _, statErr := os.Stat(backupPath); errors.Is(statErr, os.ErrNotExist) {
 			if err := writeAtomic(backupPath, []byte(original), 0o600); err != nil {
@@ -48,11 +53,9 @@ func Apply(path, backupPath string, values Values) (string, bool, error) {
 			return "", false, statErr
 		}
 	}
-	merged := merge(original, map[string]string{
-		"memory":     strconv.Itoa(values.MemoryMB) + "MB",
-		"processors": strconv.Itoa(values.Processors),
-		"swap":       strconv.Itoa(values.SwapMB) + "MB",
-	})
+	if exists && merged == original {
+		return backupPath, false, nil
+	}
 	if err := writeAtomic(path, []byte(merged), 0o600); err != nil {
 		return "", false, err
 	}

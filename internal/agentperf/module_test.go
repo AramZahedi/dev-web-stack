@@ -67,6 +67,33 @@ func newModule(t *testing.T) (*agentperf.Module, string, string, string, *fakeRu
 	return module, sysctl, limits, root, runner
 }
 
+func TestStatusReportsVMBootTime(t *testing.T) {
+	module, _, _, root, _ := newModule(t)
+	statPath := filepath.Join(root, "proc", "stat")
+	if err := os.WriteFile(statPath, []byte("cpu  1 2 3\nbtime 1760000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, err := module.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	want := time.Unix(1760000000, 0).UTC()
+	if status.BootAt == nil || !status.BootAt.Equal(want) {
+		t.Fatalf("BootAt = %v, want %v", status.BootAt, want)
+	}
+}
+
+func TestStatusOmitsBootTimeWhenProcStatIsUnavailable(t *testing.T) {
+	module, _, _, _, _ := newModule(t)
+	status, err := module.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.BootAt != nil {
+		t.Fatalf("BootAt = %v, want nil", status.BootAt)
+	}
+}
+
 func TestApplyWritesFilesRefreshesAndVerifies(t *testing.T) {
 	module, sysctl, limits, _, runner := newModule(t)
 	resp, err := module.Apply(context.Background(), hostRequest())

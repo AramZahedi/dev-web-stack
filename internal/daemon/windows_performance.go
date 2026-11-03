@@ -65,12 +65,14 @@ func (h *windowsPerformanceHost) wslConfigStatePath() string {
 
 func (h *windowsPerformanceHost) PerformanceStatus(ctx context.Context) (helperproto.PerformanceStatusResponse, error) {
 	resp := helperproto.PerformanceStatusResponse{}
+	var agentBootAt *time.Time
 	agentResp, agentErr := h.agent.PerformanceStatus(ctx)
 	if agentErr != nil {
 		resp.Targets = append(resp.Targets, helperproto.PerformanceTargetStatus{
 			Target: "wsl", Available: false, Error: agentErr.Error(),
 		})
 	} else {
+		agentBootAt = agentResp.BootAt
 		for _, target := range agentResp.Targets {
 			resp.Targets = append(resp.Targets, toHelperTarget(target))
 		}
@@ -97,7 +99,7 @@ func (h *windowsPerformanceHost) PerformanceStatus(ctx context.Context) (helperp
 			resp.BackupDir = windowsResp.BackupDir
 		}
 	}
-	resp.Targets = append(resp.Targets, h.wslVMStatus())
+	resp.Targets = append(resp.Targets, h.wslVMStatus(agentBootAt))
 	for _, target := range resp.Targets {
 		if target.Applied {
 			resp.Managed = true
@@ -146,23 +148,30 @@ func (h *windowsPerformanceHost) PerformanceApply(ctx context.Context, req helpe
 	if req.WSLVM != nil && req.WSLVM.MemoryMB > 0 {
 		backup := filepath.Join(h.home, "backups", "performance", h.now().UTC().Format("20060102T150405.000000000Z"), ".wslconfig")
 		existed := false
+		var previous *wslConfigState
 		if _, err := os.Stat(h.wslConfigPath()); err == nil {
 			existed = true
 		}
 		if state, err := h.readWSLVMState(); err == nil && state != nil {
 			backup = state.Backup
 			existed = state.Existed
+			previous = state
 		}
 		if !existed {
 			backup = ""
 		}
-		if _, _, err := wslconfig.Apply(h.wslConfigPath(), backup, wslconfig.Values{
+		_, changed, err := wslconfig.Apply(h.wslConfigPath(), backup, wslconfig.Values{
 			MemoryMB: req.WSLVM.MemoryMB, Processors: req.WSLVM.Processors, SwapMB: req.WSLVM.SwapMB,
-		}); err != nil {
+		})
+		if err != nil {
 			_, _ = h.windows.PerformanceReset(context.WithoutCancel(ctx), helperproto.PerformanceResetRequest{})
 			return rollbackAgent(fmt.Errorf("daemon: apply .wslconfig: %w", err))
 		}
-		_ = h.writeWSLVMState(wslConfigState{Backup: backup, At: h.now().UTC(), Existed: existed})
+		// Re-applying identical values must not restart the pending marker: the
+		// VM only needs a restart when the file actually changed.
+		if changed || previous == nil {
+			_ = h.writeWSLVMState(wslConfigState{Backup: backup, At: h.now().UTC(), Existed: existed})
+		}
 	}
 	resp := helperproto.PerformanceApplyResponse{
 		Applied:   true,
@@ -177,7 +186,7 @@ func (h *windowsPerformanceHost) PerformanceApply(ctx context.Context, req helpe
 	}
 	wslTarget := helperproto.PerformanceTargetStatus{Target: "wsl", Available: true, Managed: true, Applied: true}
 	resp.Targets = append([]helperproto.PerformanceTargetStatus{wslTarget}, resp.Targets...)
-	resp.Targets = append(resp.Targets, h.wslVMStatus())
+	resp.Targets = append(resp.Targets, h.wslVMStatus(nil))
 	return resp, nil
 }
 
@@ -210,7 +219,7 @@ func (h *windowsPerformanceHost) PerformanceReset(ctx context.Context, _ helperp
 	return helperproto.PerformanceResetResponse{Restored: true, Targets: targets}, nil
 }
 
-func (h *windowsPerformanceHost) wslVMStatus() helperproto.PerformanceTargetStatus {
+func (h *windowsPerformanceHost) wslVMStatus(bootAt *time.Time) helperproto.PerformanceTargetStatus {
 	state, err := h.readWSLVMState()
 	target := helperproto.PerformanceTargetStatus{
 		Target: "wsl-vm", Available: true, Paths: []string{h.wslConfigPath()},
@@ -225,7 +234,9 @@ func (h *windowsPerformanceHost) wslVMStatus() helperproto.PerformanceTargetStat
 		if state.Backup != "" {
 			target.BackupDir = filepath.Dir(state.Backup)
 		}
-		target.RestartRequired = true
+		// A .wslconfig change only needs a restart until the WSL VM has
+		// actually booted again after the apply.
+		target.RestartRequired = bootAt == nil || !bootAt.After(state.At)
 	}
 	return target
 }

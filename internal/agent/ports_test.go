@@ -5,6 +5,7 @@ import "testing"
 func TestPortAllocatorBackendSlotPartitionsRange(t *testing.T) {
 	t.Setenv("DEVSTACK_E2E_BACKEND_SLOT", "1")
 	t.Setenv("DEVSTACK_E2E_BACKEND_SLOTS", "4")
+	skipIfHostReservesRange(t, 43250, 43499)
 	a := NewPortAllocator()
 	httpPort, _, err := a.Allocate("site-a", "http", 0)
 	if err != nil {
@@ -33,4 +34,17 @@ func TestPortAllocatorInvalidBackendSlotUsesFullRange(t *testing.T) {
 	if httpPort < agentHTTPPortLow || httpPort > agentHTTPPortHigh {
 		t.Fatalf("HTTP port %d outside full range", httpPort)
 	}
+}
+
+// skipIfHostReservesRange avoids a spurious failure when Windows (Hyper-V/WSL)
+// has excluded the whole E2E slot range from loopback binds. The allocator
+// still has to handle that on a real host; this test only checks partitioning.
+func skipIfHostReservesRange(t *testing.T, low, high int) {
+	t.Helper()
+	for port := low; port <= high; port++ {
+		if portAvailable(port) {
+			return
+		}
+	}
+	t.Skipf("host reserves every port in %d-%d", low, high)
 }

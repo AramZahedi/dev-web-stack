@@ -68,7 +68,11 @@ exhaustive coverage for every database operation until those cycles are green.
 - Throughput, Balanced, Custom, and Reset were live-verified on the reference
   Windows host. Linux real-root `/etc` tuning remains a manual acceptance gate.
 - `.wslconfig` changes require `wsl --shutdown` (or a reboot) before they fully
-  apply. The dashboard reports `restart_required`.
+  apply. The dashboard reports `restart_required`; the marker is cleared when the
+  WSL VM or Windows host has actually rebooted after the apply.
+- Windows `TcpTimedWaitDelay` changes also report `restart_required` until the
+  next Windows boot. The helper persists the applied value so re-applying the
+  same profile after that boot does not re-arm the marker.
 - Defender exclusions are best-effort. If the Defender PowerShell module is
   unavailable, the step is skipped and reported instead of failing the profile.
 - The original pre-devstack tuning baseline is preserved across profile

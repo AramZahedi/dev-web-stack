@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -19,10 +20,14 @@ type fakePerformanceAgent struct {
 	reset     bool
 	applyErr  error
 	applyReqs []agentproto.PerformanceApplyRequest
+	bootAt    *time.Time
 }
 
 func (f *fakePerformanceAgent) PerformanceStatus(context.Context) (agentproto.PerformanceStatusResponse, error) {
-	return agentproto.PerformanceStatusResponse{Targets: []agentproto.PerformanceTargetStatus{{Target: "wsl", Available: true, Applied: f.applied}}}, nil
+	return agentproto.PerformanceStatusResponse{
+		Targets: []agentproto.PerformanceTargetStatus{{Target: "wsl", Available: true, Applied: f.applied}},
+		BootAt:  f.bootAt,
+	}, nil
 }
 func (f *fakePerformanceAgent) PerformanceApply(_ context.Context, req agentproto.PerformanceApplyRequest) (agentproto.PerformanceApplyResponse, error) {
 	f.applyReqs = append(f.applyReqs, req)
@@ -129,6 +134,96 @@ func TestWindowsPerformanceHostAppliesAllLayers(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(userHome, ".wslconfig")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("reset left .wslconfig: %v", err)
 	}
+}
+
+func TestWindowsPerformanceReapplyKeepsWSLVMState(t *testing.T) {
+	home := t.TempDir()
+	host, err := newWindowsPerformanceHost(&fakePerformanceAgent{}, &fakePerformanceWindows{}, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.userHome = t.TempDir()
+	appliedAt := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	host.now = func() time.Time { return appliedAt }
+	if _, err := host.PerformanceApply(context.Background(), testPerformanceRequest()); err != nil {
+		t.Fatal(err)
+	}
+	var first wslConfigState
+	data, err := os.ReadFile(host.wslConfigStatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &first); err != nil {
+		t.Fatal(err)
+	}
+
+	host.now = func() time.Time { return appliedAt.Add(time.Hour) }
+	if _, err := host.PerformanceApply(context.Background(), testPerformanceRequest()); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(host.wslConfigStatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var second wslConfigState
+	if err := json.Unmarshal(data, &second); err != nil {
+		t.Fatal(err)
+	}
+	if !second.At.Equal(first.At) {
+		t.Fatalf("identical re-apply moved the WSL-VM apply time from %s to %s", first.At, second.At)
+	}
+}
+
+func TestWSLVMRestartRequiredFollowsTheVMBoot(t *testing.T) {
+	home := t.TempDir()
+	agent := &fakePerformanceAgent{}
+	host, err := newWindowsPerformanceHost(agent, &fakePerformanceWindows{}, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.userHome = t.TempDir()
+	appliedAt := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	if err := host.writeWSLVMState(wslConfigState{At: appliedAt, Existed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	beforeApply := appliedAt.Add(-time.Minute)
+	agent.bootAt = &beforeApply
+	status, err := host.PerformanceStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target := performanceTarget(status, "wsl-vm"); target == nil || !target.RestartRequired {
+		t.Fatalf("wsl-vm before reboot = %+v, want restart required", target)
+	}
+
+	afterApply := appliedAt.Add(time.Minute)
+	agent.bootAt = &afterApply
+	status, err = host.PerformanceStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target := performanceTarget(status, "wsl-vm"); target == nil || target.RestartRequired {
+		t.Fatalf("wsl-vm after reboot = %+v, want no restart", target)
+	}
+
+	agent.bootAt = nil
+	status, err = host.PerformanceStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target := performanceTarget(status, "wsl-vm"); target == nil || !target.RestartRequired {
+		t.Fatalf("wsl-vm without a boot time = %+v, want conservative restart", target)
+	}
+}
+
+func performanceTarget(status helperproto.PerformanceStatusResponse, name string) *helperproto.PerformanceTargetStatus {
+	for index := range status.Targets {
+		if status.Targets[index].Target == name {
+			return &status.Targets[index]
+		}
+	}
+	return nil
 }
 
 func TestWindowsPerformanceHostRollsBackWSLWhenWindowsFails(t *testing.T) {

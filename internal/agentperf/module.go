@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,7 @@ type Config struct {
 	SysctlPath string
 	LimitsPath string
 	ProcRoot   string
+	StatPath   string
 	StatePath  string
 	Runner     Runner
 	Now        func() time.Time
@@ -56,6 +58,7 @@ type Module struct {
 	sysctlPath string
 	limitsPath string
 	procRoot   string
+	statPath   string
 	statePath  string
 	runner     Runner
 	now        func() time.Time
@@ -85,11 +88,15 @@ func New(cfg Config) (*Module, error) {
 	if procRoot == "" {
 		procRoot = "/proc/sys"
 	}
+	statPath := strings.TrimSpace(cfg.StatPath)
+	if statPath == "" {
+		statPath = filepath.Join(filepath.Dir(procRoot), "stat")
+	}
 	state := strings.TrimSpace(cfg.StatePath)
 	if state == "" {
 		state = filepath.Join(root, "state", "performance-host.json")
 	}
-	for name, path := range map[string]string{"sysctl": sysctl, "limits": limits, "proc": procRoot, "state": state} {
+	for name, path := range map[string]string{"sysctl": sysctl, "limits": limits, "proc": procRoot, "stat": statPath, "state": state} {
 		if !filepath.IsAbs(path) {
 			return nil, fmt.Errorf("agentperf: %s path must be absolute", name)
 		}
@@ -104,7 +111,7 @@ func New(cfg Config) (*Module, error) {
 	}
 	return &Module{
 		root: root, sysctlPath: sysctl, limitsPath: limits, procRoot: procRoot,
-		statePath: state, runner: runner, now: now,
+		statPath: statPath, statePath: state, runner: runner, now: now,
 	}, nil
 }
 
@@ -194,6 +201,7 @@ func (m *Module) Status() (agentproto.PerformanceStatusResponse, error) {
 		target.Error += limitsErr.Error()
 	}
 	resp := agentproto.PerformanceStatusResponse{Targets: []agentproto.PerformanceTargetStatus{target}}
+	resp.BootAt = readBootTime(m.statPath)
 	if len(sysctl) > 0 {
 		resp.SysctlContent = sysctl
 	}
@@ -207,6 +215,28 @@ func (m *Module) Status() (agentproto.PerformanceStatusResponse, error) {
 		resp.AppliedAt = &applied
 	}
 	return resp, nil
+}
+
+// readBootTime reads the WSL VM boot time from /proc/stat. It returns nil when
+// the value is unavailable so callers can stay conservative about restarts.
+func readBootTime(path string) *time.Time {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "btime" {
+			continue
+		}
+		seconds, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || seconds <= 0 {
+			return nil
+		}
+		boot := time.Unix(seconds, 0).UTC()
+		return &boot
+	}
+	return nil
 }
 
 // Apply writes the allowlisted sysctl/limits files, refreshes the kernel, and

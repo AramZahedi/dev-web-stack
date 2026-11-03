@@ -159,8 +159,13 @@ describe('PerformancePanel', () => {
 
     render(PerformancePanel);
 
+    expect(screen.queryByLabelText('Header 1 name')).toBeNull();
+    expect(screen.queryByLabelText('Request body')).toBeNull();
+    expect(screen.getByRole('button', { name: /advanced/i })).toBeTruthy();
+
     await fireEvent.change(await screen.findByLabelText('Method'), { target: { value: 'POST' } });
     await fireEvent.input(screen.getByLabelText('Path'), { target: { value: '/api/orders' } });
+    await fireEvent.click(screen.getByRole('button', { name: /advanced/i }));
     await fireEvent.input(screen.getByLabelText('Header 1 name'), { target: { value: 'X-Bench' } });
     await fireEvent.input(screen.getByLabelText('Header 1 value'), { target: { value: 'yes' } });
     await fireEvent.input(screen.getByLabelText('Request body'), {

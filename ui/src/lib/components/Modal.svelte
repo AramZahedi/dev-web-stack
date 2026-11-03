@@ -20,6 +20,18 @@
   const titleId = `dialog-title-${Math.random().toString(36).slice(2, 8)}`;
   const descriptionId = `dialog-desc-${Math.random().toString(36).slice(2, 8)}`;
 
+  // Move the overlay out of the route tree. Any ancestor with a transform,
+  // filter, or containment (including the global page transition) becomes the
+  // containing block for position: fixed and makes the overlay page-sized.
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        node.remove();
+      },
+    };
+  }
+
   function isUsable(element: HTMLElement | null | undefined): element is HTMLElement {
     if (!element) return false;
     if (element.hasAttribute('disabled')) return false;
@@ -39,8 +51,15 @@
   $effect(() => {
     if (!open) return;
     previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const originalOverflow = document.body.style.overflow;
+    const root = document.documentElement;
+    const originalHtmlOverflow = root.style.overflow;
+    const originalBodyOverflow = document.body.style.overflow;
+    const originalOverscroll = document.body.style.overscrollBehavior;
+    // Both html and body must be locked: the viewport scrolls on html when
+    // body overflow is propagated, and either element can own the scrollbar.
+    root.style.overflow = 'hidden';
     document.body.style.overflow = 'hidden';
+    document.body.style.overscrollBehavior = 'none';
 
     tick().then(() => {
       const autofocusCandidates = Array.from(
@@ -52,7 +71,9 @@
     });
 
     return () => {
-      document.body.style.overflow = originalOverflow;
+      root.style.overflow = originalHtmlOverflow;
+      document.body.style.overflow = originalBodyOverflow;
+      document.body.style.overscrollBehavior = originalOverscroll;
       previousFocus?.focus?.();
     };
   });
@@ -86,7 +107,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if open}
-  <div class="overlay">
+  <div class="overlay" use:portal>
     <div class="backdrop" aria-hidden="true" onclick={onclose}></div>
     <div
       class="dialog {size}"
@@ -120,10 +141,15 @@
   .overlay {
     position: fixed;
     inset: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
     z-index: 90;
     display: grid;
     place-items: center;
     padding: 24px;
+    overflow: hidden;
+    overscroll-behavior: none;
   }
 
   .backdrop {
@@ -213,6 +239,7 @@
 
   .body {
     min-width: 0;
+    min-height: 0;
     padding: 18px;
     overflow-x: hidden;
     overflow-y: auto;
