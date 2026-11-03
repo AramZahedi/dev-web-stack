@@ -123,8 +123,9 @@ Workflow:
 4. **Reset** and type `RESET` to restore prior host files and safe include snippets.
 
 Apply requires an active nginx/Apache service for web includes; database-only installs
-skip them. OPcache/realpath ini values are merged through the PHP validate-then-swap
-path. PHP-FPM `pm.*` pool sizing is persisted per site and applied to each running FPM
+skip them. Host tuning is independent of the web provider, so builtin and native
+nginx/Apache installs can still apply sysctl/limits. OPcache/realpath ini values are
+merged through the PHP validate-then-swap path. PHP-FPM `pm.*` pool sizing is persisted per site and applied to each running FPM
 master through the same validate-then-swap path. See
 [known issues](known-issues.md#k12--performance-limitations).
 
@@ -136,9 +137,11 @@ Host tuning uses only:
 ```
 
 The helper derives those paths itself, backs up under
-`<devstack-home>/backups/performance/`, runs `sysctl --system`, verifies values, and rolls
-back on failure. It never accepts a path or shell fragment from the API. Real root
-apply/reset remains an explicit host acceptance gate. A pending **Restart required**
+`<devstack-home>/backups/performance/`, runs `sysctl --system`, forces the generated
+values with `sysctl -w`, verifies them, and rolls back on failure. The explicit writes
+matter because a host `/etc/sysctl.conf` can be loaded after the drop-in and override it.
+It never accepts a path or shell fragment from the API. Real root apply/reset is exercised
+by `test/e2e/linux-performance`. A pending **Restart required**
 badge clears itself once the host has actually rebooted, or once the WSL VM has
 booted again after a `.wslconfig` change.
 

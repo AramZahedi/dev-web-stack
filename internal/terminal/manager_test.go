@@ -51,7 +51,7 @@ func TestPrepareUsesSiteShellEnvironment(t *testing.T) {
 	if env["TERM"] != "xterm-256color" {
 		t.Fatalf("TERM = %q, want xterm-256color", env["TERM"])
 	}
-	wantIni := filepath.Join(paths.Sites, site.ID, site.PHPConfigHash, "php.ini")
+	wantIni := filepath.Join(paths.Sites, site.Name, site.PHPConfigHash, "php.ini")
 	if env["PHPRC"] != wantIni {
 		t.Fatalf("PHPRC = %q, want %q", env["PHPRC"], wantIni)
 	}
@@ -236,7 +236,7 @@ func TestManagerEnforcesSessionLimits(t *testing.T) {
 	if err := os.MkdirAll(other.HostPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(paths.Sites, other.ID, other.PHPConfigHash, "php.ini"), "[PHP]\n")
+	writeFile(t, filepath.Join(paths.Sites, other.Name, other.PHPConfigHash, "php.ini"), "[PHP]\n")
 
 	deps := testDeps(paths)
 	deps.Runtimes = staticRuntimes{build}

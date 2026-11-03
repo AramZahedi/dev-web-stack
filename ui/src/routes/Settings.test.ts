@@ -242,6 +242,13 @@ describe('Settings tooling', () => {
     expect(ui.disabled).toBe(false);
   });
 
+  it('hides WSL-only machine details on Linux', async () => {
+    render(Settings);
+    await screen.findByRole('heading', { name: 'Machine' });
+    expect(screen.queryByText('WSL distro')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Windows + WSL' })).toBeNull();
+  });
+
   it('labels Windows external serving as managed Docker containers', async () => {
     mockApi.getSettings.mockResolvedValue({
       ...SETTINGS,

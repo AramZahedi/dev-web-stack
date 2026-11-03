@@ -79,7 +79,12 @@ exhaustive coverage for every database operation until those cycles are green.
 
 - Host tuning changes machine-wide settings, not only devstack.
 - Throughput, Balanced, Custom, and Reset were live-verified on the reference
-  Windows host. Linux real-root `/etc` tuning remains a manual acceptance gate.
+  Windows host. Linux real-root `/etc` tuning is exercised by
+  `test/e2e/linux-performance` (run as root): it applies a computed profile,
+  verifies the generated files and live sysctl values, and restores the prior
+  state. The helper forces the generated values with `sysctl -w` after
+  `sysctl --system`, because a host `/etc/sysctl.conf` can be loaded last and
+  override a drop-in.
 - `.wslconfig` changes require `wsl --shutdown` (or a reboot) before they fully
   apply. The dashboard reports `restart_required`; the marker is cleared when the
   WSL VM or Windows host has actually rebooted after the apply.

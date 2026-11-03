@@ -655,6 +655,9 @@ func TestStoppedBuildSitePublishesDockerRouteAndCertificate(t *testing.T) {
 }
 
 func TestDockerProviderWindowsStaticKeepsSupervisedBackend(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows source mode is only valid on Windows")
+	}
 	svc, fakes := newTestService(t)
 	svc.deps.Config.ServingMode = config.ServingModeNginx
 	svc.deps.Config.ServingProvider = config.ServingProviderDocker

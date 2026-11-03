@@ -346,6 +346,19 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	if err := ensureSourceRoot(site); err != nil {
 		return model.Site{}, err
 	}
+	if site.SourceMode == model.SourceLocal {
+		project, err := domain.ValidateProjectPath(site.HostPath)
+		if err != nil {
+			return model.Site{}, fmt.Errorf("sites: %w", err)
+		}
+		site.HostPath, site.BackendPath = project, project
+		if site.Kind == model.SitePHP {
+			site.DocumentRoot, err = resolveSiteDocumentRoot(site, site.DocumentRoot)
+			if err != nil {
+				return model.Site{}, err
+			}
+		}
+	}
 	var provisioned *databases.ProvisionedDatabase
 	if req.Database != nil {
 		if s.deps.Database == nil {
@@ -956,10 +969,10 @@ func (s *Service) Delete(ctx context.Context, ref string) error {
 
 // ensureSourceRoot creates a missing Windows or WSL project root and the
 // configured PHP document root before any service-wide database objects are
-// provisioned or PHP files are staged. Local paths are validated by newSite.
-// The daemon runs on Windows for these modes.
+// provisioned or PHP files are staged. Local paths are created here after the
+// managed-root check so a new project can be registered on Linux too.
 func ensureSourceRoot(site model.Site) error {
-	if site.SourceMode == "" || site.SourceMode == model.SourceLocal || runtime.GOOS != "windows" {
+	if site.SourceMode == "" || site.SourceMode == model.SourceWSL {
 		return nil
 	}
 	if err := ensureDirectory(site.HostPath, "project root"); err != nil {
@@ -1093,13 +1106,22 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 	if err != nil {
 		return model.Site{}, fmt.Errorf("sites: %w", err)
 	}
-	project := hostPath
+	deferLocalRoot := false
 	if sourceMode == model.SourceLocal {
-		project, err = domain.ValidateProjectPath(req.Path)
-		if err != nil {
-			return model.Site{}, fmt.Errorf("sites: %w", err)
+		// Keep the requested absolute path for the managed-root check. The
+		// directory may not exist yet; Create creates it after the boundary
+		// check, then canonicalizes it with ValidateProjectPath.
+		project, absErr := filepath.Abs(req.Path)
+		if absErr != nil {
+			return model.Site{}, fmt.Errorf("sites: resolve project path %q: %w", req.Path, absErr)
 		}
-		hostPath, backendPath = project, project
+		hostPath, backendPath = filepath.Clean(project), filepath.Clean(project)
+		if _, statErr := os.Stat(hostPath); statErr != nil {
+			if !os.IsNotExist(statErr) {
+				return model.Site{}, fmt.Errorf("sites: resolve project path %q: %w", req.Path, statErr)
+			}
+			deferLocalRoot = true
+		}
 	}
 	if err := s.validateManagedProjectPath(name, sourceMode, hostPath, backendPath); err != nil {
 		return model.Site{}, fmt.Errorf("sites: %w", err)
@@ -1194,6 +1216,13 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 			site.DocumentRoot = filepath.ToSlash(filepath.Clean(site.Build.Output))
 			break
 		}
+		if deferLocalRoot {
+			site.DocumentRoot = strings.TrimSpace(req.DocumentRoot)
+			if _, err := pathmode.ProxyDocumentRoot(site); err != nil {
+				return model.Site{}, fmt.Errorf("sites: %w", err)
+			}
+			break
+		}
 		site.DocumentRoot, err = resolveSiteDocumentRoot(site, req.DocumentRoot)
 		if err != nil {
 			return model.Site{}, err
@@ -1221,9 +1250,16 @@ func (s *Service) newSite(ctx context.Context, req CreateRequest) (model.Site, e
 		site.PHPIni = cloneStringMap(req.PHPIni)
 		site.PHPIniRaw = strings.ReplaceAll(strings.ReplaceAll(req.PHPIniRaw, "\r\n", "\n"), "\r", "\n")
 		site.FrontController = req.FrontController
-		site.DocumentRoot, err = resolveSiteDocumentRoot(site, req.DocumentRoot)
-		if err != nil {
-			return model.Site{}, err
+		if deferLocalRoot {
+			site.DocumentRoot = strings.TrimSpace(req.DocumentRoot)
+			if _, err := pathmode.ProxyDocumentRoot(site); err != nil {
+				return model.Site{}, fmt.Errorf("sites: %w", err)
+			}
+		} else {
+			site.DocumentRoot, err = resolveSiteDocumentRoot(site, req.DocumentRoot)
+			if err != nil {
+				return model.Site{}, err
+			}
 		}
 		if err := phpini.ValidateOverrides(site.PHPIni); err != nil {
 			return model.Site{}, fmt.Errorf("sites: php.ini overrides: %w", err)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -73,6 +74,9 @@ func testProvisioner(t *testing.T, runner Runner) *Provisioner {
 }
 
 func TestDefaultInstallDirUsesProfileHome(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("default install directory is a Windows path")
+	}
 	lower := strings.ToLower(DefaultInstallDir)
 	if !strings.HasSuffix(lower, `\.devstack\wsl\devstack`) {
 		t.Fatalf("DefaultInstallDir = %q, want a path under the profile .devstack directory", DefaultInstallDir)

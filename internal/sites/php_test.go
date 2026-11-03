@@ -1165,7 +1165,7 @@ func TestUpdatePHPFrontControllerOnlyDoesNotRecompose(t *testing.T) {
 	if !req.Sites[0].FrontController || req.Sites[0].DocumentRoot != filepath.Clean(fakes.root) {
 		t.Fatalf("vhost site = %+v", req.Sites[0])
 	}
-	if got := phpGenerationDirs(t, fakes, site.ID); !reflect.DeepEqual(got, []string{hash}) {
+	if got := phpGenerationDirs(t, fakes, site.Name); !reflect.DeepEqual(got, []string{hash}) {
 		t.Fatalf("generations = %v, want only %s", got, hash)
 	}
 }
@@ -1309,7 +1309,7 @@ func TestUpdatePHPWithoutAPortClearsTheHash(t *testing.T) {
 	if gotLint, gotFPM := fakes.php.counts(); gotLint != lint || gotFPM != fpm {
 		t.Fatal("generation was composed before a port existed")
 	}
-	if got := phpGenerationDirs(t, fakes, site.ID); len(got) != 1 {
+	if got := phpGenerationDirs(t, fakes, site.Name); len(got) != 1 {
 		t.Fatalf("generations = %v, want only the previous generation", got)
 	}
 
@@ -1353,7 +1353,7 @@ func TestUpdatePHPRollsBackANewGenerationOnFailure(t *testing.T) {
 		if stored.PHPConfigHash != oldHash || stored.DocumentRoot != "." {
 			t.Fatalf("row changed after a failed update: %+v", stored)
 		}
-		if got := phpGenerationDirs(t, fakes, site.ID); !reflect.DeepEqual(got, []string{oldHash}) {
+		if got := phpGenerationDirs(t, fakes, site.Name); !reflect.DeepEqual(got, []string{oldHash}) {
 			t.Fatalf("generations = %v, want only %s", got, oldHash)
 		}
 	})
@@ -1380,7 +1380,7 @@ func TestUpdatePHPRollsBackANewGenerationOnFailure(t *testing.T) {
 		if stored.PHPConfigHash != oldHash || stored.DocumentRoot != "." {
 			t.Fatalf("row not rolled back: %+v", stored)
 		}
-		if got := phpGenerationDirs(t, fakes, site.ID); !reflect.DeepEqual(got, []string{oldHash}) {
+		if got := phpGenerationDirs(t, fakes, site.Name); !reflect.DeepEqual(got, []string{oldHash}) {
 			t.Fatalf("generations = %v, want only %s", got, oldHash)
 		}
 	})
@@ -1698,9 +1698,9 @@ func readFile(t *testing.T, path string) []byte {
 }
 
 // phpGenerationDirs returns the hash-named generation directories for a site.
-func phpGenerationDirs(t *testing.T, fakes *testFakes, siteID string) []string {
+func phpGenerationDirs(t *testing.T, fakes *testFakes, siteName string) []string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(fakes.config.Home, "sites", siteID))
+	entries, err := os.ReadDir(filepath.Join(fakes.config.Home, "sites", siteName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

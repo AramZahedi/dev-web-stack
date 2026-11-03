@@ -40,12 +40,12 @@ containers, not the required runtime for devstack itself.
 | R18 | Nuxt/Vite static-build profiles and SPA fallback | Implemented — native build executor |
 | R19 | Full dashboard parity with CLI | Implemented — service actions/credentials, config, performance, benchmarks, terminal, build/tooling/settings |
 | R20 | Global `php` and `composer`, with a machine-wide PHP CLI default | Implemented |
-| R21 | Auto-tuned nginx/Apache/PHP performance and host tuning | Partial — preview/apply/reset, live per-site PHP-FPM pooling, fixed host tuning, and measured benchmarks are implemented; real root host tuning remains a gate |
+| R21 | Auto-tuned nginx/Apache/PHP performance and host tuning | Implemented — preview/apply/reset, live per-site PHP-FPM pooling, fixed host tuning, measured benchmarks, and a supervised Linux root-tuning E2E probe |
 | R22 | Project build/benchmark/terminal workflows in the dashboard | Implemented — build, performance benchmark history, and site terminal |
 | R23 | Existing native external nginx/Apache mode remains available | Required compatibility |
 | R24 | No automatic root migration from `~/.devstack` | Planned decision |
 | R25 | Keep work committed/pushed and CI green | Process |
-| R26 | Windows 10 22H2/Windows 11 native daemon/helper with managed WSL2 agent and Docker services | Planned — design and five-lane plan revised 2026-10-27; not implemented |
+| R26 | Windows 10 22H2/Windows 11 native daemon/helper with managed WSL2 agent and Docker services | Implemented in v0.5.0; full multi-machine Windows acceptance remains a release gate |
 
 ## 3. Hard constraints
 
@@ -71,9 +71,9 @@ containers, not the required runtime for devstack itself.
     tuning must be reversible.
 11. **Existing installs remain valid.** `~/.devstack` installs and native external modes
     continue to work.
-12. **M1 platform scope.** Linux only today. Windows 10 22H2 + Windows 11 with WSL2 is planned in
-    [the Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md); no Windows
-    support is claimed until its acceptance plan passes.
+12. **Platform scope.** Linux and Windows 10 22H2/Windows 11 with WSL2 are
+    implemented. Windows multi-machine acceptance remains a release gate; see
+    [the Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md).
 13. **No invented runtime data.** PHP/Node catalog entries must correspond to real
     published checksums and sizes.
 14. **Dashboard-first usability.** A user must be able to perform every operational task
@@ -185,9 +185,8 @@ The CLI remains an alternative interface, not a prerequisite.
 
 ## 6. Explicit non-goals
 
-- macOS, arm64, or multi-user shared workstations. Windows 10 22H2/Windows 11 + WSL2 is
-  planned (R26), not a non-goal; no Windows support is claimed until its
-  acceptance criteria pass.
+- macOS, arm64, or multi-user shared workstations. Windows 10 22H2/Windows 11 + WSL2
+  is implemented (R26); Windows multi-machine acceptance remains the release gate.
 - Native packages/systemd for optional services.
 - Running nginx and Apache simultaneously.
 - Running MySQL and MariaDB simultaneously.
@@ -199,7 +198,7 @@ The CLI remains an alternative interface, not a prerequisite.
 - Auto-updating devstack, signing releases, diagnostics bundles, or arm64 in this
   milestone.
 
-## 7. Acceptance criteria for the planned service platform
+## 7. Acceptance criteria for the service platform
 
 - Dashboard and CLI can install/activate both web servers and both MySQL-family engines,
   with strict conflict enforcement.

@@ -1,7 +1,7 @@
 # Project handoff
 
 - **Date:** 2026-10-26
-- **Revised:** 2026-10-30 (per-site Node toolchains, live Node discovery, global Node default, and the dashboard/CLI Node surfaces implemented and live-E2E tested)
+- **Revised:** 2026-11-03 (Linux parity review after the Windows-era feature work; see [Linux parity and E2E review](superpowers/status/2026-11-03-linux-parity-e2e.md))
 - **Repository:** `https://github.com/AramZahedi/dev-web-stack`
 - **Handoff commit:** the commit containing this file; run `git rev-parse HEAD` for the exact SHA.
 - **Branch:** `master`
@@ -22,6 +22,7 @@
   [service-platform design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
 - **Implemented 2026-10-30:** [Per-Site Node Toolchains and Global Node Default](superpowers/specs/2026-10-30-node-toolchain-design.md). The implementation covers live Node discovery with official SHA-256 verification, per-site Node pins for every site kind, a PHP-style global Node default, dashboard/CLI installation, and full live E2E evidence in the [Node toolchain E2E report](superpowers/audits/2026-10-30-node-toolchain-e2e.md). See the [Node toolchain handoff](superpowers/status/2026-10-30-node-toolchain-handoff.md) and [implementation plan](superpowers/plans/2026-10-30-node-toolchain.md).
 - **Full dashboard/CLI E2E coverage (2026-10-30):** completed in the [full dashboard/CLI E2E audit](superpowers/audits/2026-10-30-dashboard-full-e2e.md). All 15 tasks, 19 product fixes, Go/UI/installer/lifecycle/release/vertical-slice gates, and the baseline restore are recorded there; the [plan](superpowers/plans/2026-10-30-dashboard-full-e2e-coverage.md) is fully checked.
+- **Linux parity review (2026-11-03):** recent Windows-era changes were checked against Linux. Name-based site config/vhost consumers, local project-root creation, managed-root error semantics, Linux host tuning, native vhost remediation, and the benchmark/dashboard surfaces were corrected. Evidence and remaining limits are in the [Linux parity and E2E review](superpowers/status/2026-11-03-linux-parity-e2e.md).
 
 This is the continue-on-another-machine document. Read it first, then
 [architecture](architecture.md), [requirements](requirements.md), [decisions](decisions.md),

@@ -61,6 +61,7 @@ VHOST_USE_LOG="${LOG_DIR}/vhost-use.log"
 VHOST_PREVIEW_LOG="${LOG_DIR}/vhost-preview.log"
 REDIRECT_ADD_LOG="${LOG_DIR}/redirect-add.log"
 NODE_ADD_LOG="${LOG_DIR}/node-add.log"
+NODE_INSTALL_LOG="${LOG_DIR}/node-install.log"
 NGINX_LOG="${LOG_DIR}/nginx.log"
 
 HELPER_PID=""
@@ -577,6 +578,11 @@ HTML
 		fail "vhost preview does not contain the site root ${SITE_ROOT}"
 	printf 'e2e: vhost preview rendered the site root\n'
 
+	if [ "${E2E_INSTALL_NODE:-0}" = "1" ]; then
+		run_cli runtime install "node@${E2E_NODE_LINE:-22}" --yes >"${NODE_INSTALL_LOG}" 2>&1 ||
+			fail "Node runtime install failed"
+		printf 'e2e: installed a Node runtime for the live Node vhost check\n'
+	fi
 	RUNTIMES_JSON="$(run_cli runtime list --json 2>/dev/null || true)"
 	# Only the installed array counts; the available catalog also contains
 	# "kind":"node" entries that site add would try to download.

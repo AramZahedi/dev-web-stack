@@ -141,6 +141,17 @@ func testOptions(t *testing.T, home, helperSocket string) Options {
 	}
 }
 
+// testProjectRoot creates a project directory under the daemon's managed
+// projects root so site creation passes the source-path boundary.
+func testProjectRoot(t *testing.T, home, name string) string {
+	t.Helper()
+	root := filepath.Join(home, "projects", name)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 type runningDaemon struct {
 	cancel context.CancelFunc
 	done   chan error
@@ -606,7 +617,7 @@ func TestDaemonRestartKeepsDesiredStateRunning(t *testing.T) {
 	useBuiltBinary(t)
 	home := t.TempDir()
 	opts := testOptions(t, home, startTestHelper(t))
-	root := t.TempDir()
+	root := testProjectRoot(t, home, "blog")
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("blog hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -651,7 +662,7 @@ func TestDaemonGracefulShutdownStopsBackendsWithoutChangingDesiredState(t *testi
 	useBuiltBinary(t)
 	home := t.TempDir()
 	opts := testOptions(t, home, startTestHelper(t))
-	root := t.TempDir()
+	root := testProjectRoot(t, home, "graceful")
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("stop me"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1092,7 +1103,7 @@ func TestShutdownOverlapKeepsReplacementDaemonResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := testOptions(t, home, startTestHelper(t))
-	root := t.TempDir()
+	root := testProjectRoot(t, home, "overlap")
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("replacement"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1182,7 +1193,7 @@ func TestDaemonShutdownStopsDesiredStoppedBackend(t *testing.T) {
 	useBuiltBinary(t)
 	home := t.TempDir()
 	opts := testOptions(t, home, startTestHelper(t))
-	root := t.TempDir()
+	root := testProjectRoot(t, home, "inconsistent")
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("still running"), 0o644); err != nil {
 		t.Fatal(err)
 	}

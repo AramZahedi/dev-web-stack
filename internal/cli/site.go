@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,10 +24,25 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/logs"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/nodereleases"
+	"github.com/AramZahedi/dev-web-stack/internal/pathmode"
 	"github.com/AramZahedi/dev-web-stack/internal/sites"
 )
 
 var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func sourceModeChoices() string {
+	if runtime.GOOS == "windows" {
+		return "windows or wsl"
+	}
+	return "local"
+}
+
+func sourceModeRemediation(platform string) string {
+	if platform == "windows" {
+		return "Use --mode windows or --mode wsl with a destination under the managed Windows or WSL projects root."
+	}
+	return "Linux only supports --mode local; choose a destination under /data/devstack/projects."
+}
 
 func (a *App) newSiteCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -70,6 +86,9 @@ func (a *App) newSiteSourceCmd() *cobra.Command {
 			if mode != string(model.SourceLocal) && mode != string(model.SourceWindows) && mode != string(model.SourceWSL) {
 				return &Error{Code: "INVALID_SOURCE_MODE", Message: "--mode must be local, windows, or wsl", Remediation: "Choose a supported source mode and pass the destination with --path."}
 			}
+			if err := pathmode.ValidateSourceMode(model.SourceMode(mode), runtime.GOOS); err != nil {
+				return &Error{Code: "INVALID_SOURCE_MODE", Message: err.Error(), Remediation: sourceModeRemediation(runtime.GOOS)}
+			}
 			if strings.TrimSpace(path) == "" {
 				return &Error{Code: "INVALID_ARGUMENT", Message: "--path is required", Remediation: "Pass the copy destination path with --path."}
 			}
@@ -96,7 +115,7 @@ func (a *App) newSiteSourceCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&mode, "mode", "", "destination source mode: local, windows, or wsl")
+	cmd.Flags().StringVar(&mode, "mode", "", "destination source mode: "+sourceModeChoices())
 	cmd.Flags().StringVar(&path, "path", "", "destination project path")
 	cmd.Flags().BoolVar(&removeSource, "remove-source", false, "request source removal after verified copy (requires staged agent support)")
 	return cmd
@@ -142,7 +161,7 @@ func (a *App) newSiteAddCmd() *cobra.Command {
 	flags.StringVar(&opts.name, "name", "", "site name (the domain becomes <name>.test)")
 	flags.StringVar(&opts.path, "path", "", "project directory")
 	flags.StringVar(&opts.kind, "kind", "static", "site kind: static, php, or node")
-	flags.StringVar(&opts.sourceMode, "source-mode", "", "project source mode: local, windows, or wsl")
+	flags.StringVar(&opts.sourceMode, "source-mode", "", "project source mode: "+sourceModeChoices())
 	flags.StringVar(&opts.node, "node", "", "Node version or line (for example 22, 22.11, or 22.11.0); optional for static and PHP sites")
 	flags.StringVar(&opts.php, "php", "", "PHP version line (for example 8.4)")
 	flags.StringVar(&opts.phpBuild, "php-build", "", "exact PHP build id (for example php@8.4.4-r1)")

@@ -260,6 +260,18 @@ func (m *PerformanceManager) Apply(ctx context.Context, req helperproto.Performa
 	}
 	step("apply-sysctl", "ok", "sysctl --system")
 
+	if m.verifyProc {
+		if err := m.applySysctlValues(ctx, host); err != nil {
+			step("apply-values", "failed", err.Error())
+			rollbackErr := m.rollback(marker, prior)
+			if createdMarker && rollbackErr == nil {
+				_ = os.Remove(m.markerPath())
+			}
+			return response, &PerformanceApplyError{Err: errors.Join(err, rollbackErr), Response: response}
+		}
+		step("apply-values", "ok", "sysctl -w verified values")
+	}
+
 	verified, err := m.verify(sysctlPath, limitsPath, sysctlContent, limitsContent, host)
 	if err != nil {
 		step("verify", "failed", err.Error())
@@ -411,6 +423,14 @@ func (m *PerformanceManager) Status(_ context.Context) (helperproto.PerformanceS
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return helperproto.PerformanceStatusResponse{}, err
 	}
+	status.Targets = []helperproto.PerformanceTargetStatus{{
+		Target:    "linux",
+		Available: true,
+		Managed:   status.Managed,
+		Applied:   status.Managed,
+		Paths:     []string{performanceSysctlTarget, performanceLimitsTarget},
+		BackupDir: status.BackupDir,
+	}}
 	return status, nil
 }
 
@@ -761,6 +781,30 @@ func (m *PerformanceManager) captureSysctlValues() map[string]string {
 		return nil
 	}
 	return values
+}
+
+// applySysctlValues forces the generated values into the live kernel after
+// `sysctl --system`. A host's /etc/sysctl.conf is loaded last by some sysctl
+// implementations and can override a drop-in; the explicit writes make the
+// applied profile effective immediately and keep verification truthful.
+func (m *PerformanceManager) applySysctlValues(ctx context.Context, host performance.HostValues) error {
+	values := map[string]string{
+		"fs.file-max":                  strconv.FormatUint(host.FileMax, 10),
+		"net.core.somaxconn":           strconv.Itoa(host.Somaxconn),
+		"net.core.netdev_max_backlog":  strconv.Itoa(host.NetdevMaxBacklog),
+		"net.ipv4.ip_local_port_range": fmt.Sprintf("%d %d", host.IPLocalPortRange.Min, host.IPLocalPortRange.Max),
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, err := m.runner.Run(ctx, "sysctl", "-w", key+"="+values[key]); err != nil {
+			return fmt.Errorf("sysctl -w %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 // restoreSysctlValues writes the saved kernel values back after the file

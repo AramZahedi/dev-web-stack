@@ -176,7 +176,7 @@ func TestDaemonExternalSkipsProxyAndReconciles(t *testing.T) {
 		}
 	}
 
-	project := t.TempDir()
+	project := testProjectRoot(t, home, "blog")
 	if err := os.WriteFile(filepath.Join(project, "index.html"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestDaemonStartupWithBrokenStaticRoot(t *testing.T) {
 
 	run := startDaemon(t, opts)
 	client := unixHTTPClient(SocketPath(home), 5*time.Second)
-	project := t.TempDir()
+	project := testProjectRoot(t, home, "blog")
 	if err := os.WriteFile(filepath.Join(project, "index.html"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestRenewExternalSyncsVhosts(t *testing.T) {
 	defer run.stop(t)
 
 	client := unixHTTPClient(SocketPath(home), 5*time.Second)
-	project := t.TempDir()
+	project := testProjectRoot(t, home, "blog")
 	if err := os.WriteFile(filepath.Join(project, "index.html"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}

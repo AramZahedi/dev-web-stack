@@ -16,7 +16,7 @@ import (
 func TestWindowsSitePHPIniResolvesGeneratedConfig(t *testing.T) {
 	home := t.TempDir()
 	site := model.Site{ID: "site1", Name: "app", Kind: model.SitePHP, PHPConfigHash: "hash1"}
-	hashDir := filepath.Join(home, "sites", site.ID, site.PHPConfigHash)
+	hashDir := filepath.Join(home, "sites", site.Name, site.PHPConfigHash)
 	if err := os.MkdirAll(hashDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestWindowsSitePHPIniResolvesGeneratedConfig(t *testing.T) {
 	if err := os.RemoveAll(hashDir); err != nil {
 		t.Fatal(err)
 	}
-	rootDir := filepath.Join(home, "sites", site.ID)
+	rootDir := filepath.Join(home, "sites", site.Name)
 	if err := os.WriteFile(filepath.Join(rootDir, "php.ini"), []byte("[PHP]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

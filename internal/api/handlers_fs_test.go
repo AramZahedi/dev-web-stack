@@ -38,6 +38,9 @@ func (f *fakeWSLFSBrowser) MkdirFS(ctx context.Context, path, name string) (agen
 }
 
 func TestHandleFSWSLRejectsTraversalBeforeBrowsing(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("WSL browsing is a Windows-host feature")
+	}
 	mockBrowser := &fakeWSLFSBrowser{}
 	server := &Server{cfg: Config{UserHome: t.TempDir(), WSLFS: mockBrowser}}
 
@@ -60,6 +63,9 @@ func TestHandleFSWSLRejectsTraversalBeforeBrowsing(t *testing.T) {
 }
 
 func TestHandleFSWithWSLMode(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("WSL browsing is a Windows-host feature")
+	}
 	mockBrowser := &fakeWSLFSBrowser{
 		listing: agentproto.FSListing{
 			Path: "/data/devstack/projects",
@@ -91,6 +97,9 @@ func TestHandleFSWithWSLMode(t *testing.T) {
 }
 
 func TestHandleFSMkdirWSL(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("WSL browsing is a Windows-host feature")
+	}
 	mockBrowser := &fakeWSLFSBrowser{
 		mkdirListing: agentproto.FSListing{Path: "/data/devstack/projects/app", Entries: []agentproto.FSEntry{}},
 	}
@@ -107,6 +116,9 @@ func TestHandleFSMkdirWSL(t *testing.T) {
 }
 
 func TestHandleFSWSLConfinedToProjectsRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("WSL browsing is a Windows-host feature")
+	}
 	mockBrowser := &fakeWSLFSBrowser{
 		listing: agentproto.FSListing{Path: pathmode.WSLProjectsRoot, Entries: []agentproto.FSEntry{}},
 	}
@@ -161,6 +173,9 @@ func TestHandleFSWSLConfinedToProjectsRoot(t *testing.T) {
 }
 
 func TestHandleFSMkdirWSLConfinedToProjectsRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("WSL browsing is a Windows-host feature")
+	}
 	for _, path := range []string{"/", "/etc", "/data/devstack", "/data/devstack/projects-old", "/data/devstack/projects\\site"} {
 		mockBrowser := &fakeWSLFSBrowser{}
 		server := &Server{cfg: Config{UserHome: t.TempDir(), WSLFS: mockBrowser}}
@@ -228,6 +243,9 @@ func TestValidateFolderNameColonIsWindowsOnly(t *testing.T) {
 }
 
 func TestHandleFSMkdirWSLConflict(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("WSL browsing is a Windows-host feature")
+	}
 	mockBrowser := &fakeWSLFSBrowser{mkdirErr: agentproto.ErrConflict}
 	server := &Server{cfg: Config{UserHome: t.TempDir(), WSLFS: mockBrowser}}
 	body := `{"mode":"wsl","path":"/data/devstack/projects","name":"app"}`
@@ -262,6 +280,28 @@ func TestHandleFSMkdirLocalCreatesAndRejectsDuplicates(t *testing.T) {
 	}
 }
 
+func TestHandleFSRejectsWindowsOnlyModesOnLinux(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows supports these modes")
+	}
+	server := &Server{cfg: Config{UserHome: t.TempDir()}}
+	for _, target := range []string{"/api/v1/fs?mode=wsl", "/api/v1/fs?mode=windows"} {
+		rec := httptest.NewRecorder()
+		server.handleFS(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: code = %d, want 400; body = %s", target, rec.Code, rec.Body.String())
+		}
+	}
+	for _, mode := range []string{"wsl", "windows"} {
+		body := fmt.Sprintf(`{"mode":%q,"name":"app"}`, mode)
+		rec := httptest.NewRecorder()
+		server.handleFSMkdir(rec, httptest.NewRequest(http.MethodPost, "/api/v1/fs/mkdir", strings.NewReader(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("mkdir mode %s: code = %d, want 400; body = %s", mode, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestHandleFSMkdirRejectsTraversalAndOutsideRoot(t *testing.T) {
 	home := t.TempDir()
 	projects := filepath.Join(home, "projects")
@@ -272,11 +312,14 @@ func TestHandleFSMkdirRejectsTraversalAndOutsideRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := &Server{cfg: Config{UserHome: home}}
-	for _, body := range []string{
+	rejected := []string{
 		fmt.Sprintf(`{"path":%q,"name":"../escape"}`, projects),
 		fmt.Sprintf(`{"path":%q,"name":"."}`, projects),
-		fmt.Sprintf(`{"path":%q,"name":"CON"}`, projects),
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		rejected = append(rejected, fmt.Sprintf(`{"path":%q,"name":"CON"}`, projects))
+	}
+	for _, body := range rejected {
 		rec := httptest.NewRecorder()
 		server.handleFSMkdir(rec, httptest.NewRequest(http.MethodPost, "/api/v1/fs/mkdir", strings.NewReader(body)))
 		if rec.Code != http.StatusBadRequest {

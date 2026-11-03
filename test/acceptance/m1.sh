@@ -226,6 +226,10 @@ process.stdout.write(chromium.executablePath());
 		note "SKIP: Playwright Chromium is missing at ${browser}; no browser install was attempted"
 		return 77
 	fi
+	if ! ldconfig -p 2>/dev/null | grep -q 'libicudata\.so\.74'; then
+		export PLAYWRIGHT_WEBKIT=0
+		note "NOTE: WebKit was skipped because this host does not provide libicu74; Chromium and Firefox still run."
+	fi
 	printf '+ (cd ui && npm run test:e2e) [chromium: %s]\n' "${browser}"
 	(cd "${REPO_ROOT}/ui" && npm run test:e2e)
 }
@@ -472,7 +476,7 @@ phase_php_side_by_side() {
 }
 
 phase_windows_wsl() {
-	note "BLOCKED: Windows/WSL is deferred by user request (Plan 3); no Windows build was attempted"
+	note "BLOCKED: Windows/WSL acceptance requires a Windows host; this Linux run did not attempt it"
 	return 78
 }
 

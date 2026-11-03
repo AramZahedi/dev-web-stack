@@ -31,6 +31,8 @@ register, and historical design/plan records.
   - implemented 2026-10-30; live Node discovery, per-site Node for every kind,
     global Node default, and dashboard/CLI installation.
 - [Node toolchain handoff](superpowers/status/2026-10-30-node-toolchain-handoff.md)
+- [Linux parity and E2E review](superpowers/status/2026-11-03-linux-parity-e2e.md)
+  — recent Windows-era changes checked against Linux; fixes, E2E evidence, and remaining limits.
   - implementation status, findings, risks, and verification evidence.
 - [Node toolchain implementation plan](superpowers/plans/2026-10-30-node-toolchain.md)
   - executed task-by-task TDD plan.

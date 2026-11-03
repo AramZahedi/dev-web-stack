@@ -100,7 +100,7 @@ func testPHPFixture(t *testing.T, home string) (config.Paths, model.Site, model.
 		t.Fatalf("mkdir project: %v", err)
 	}
 	hash := strings.Repeat("a", 64)
-	ini := filepath.Join(paths.Sites, "site-1", hash, "php.ini")
+	ini := filepath.Join(paths.Sites, "app", hash, "php.ini")
 	writeFile(t, ini, "[PHP]\nmemory_limit = 512M\n")
 	build := testPHPBuild(t, home)
 	nodeBuild := testNodeBuild(t, home)

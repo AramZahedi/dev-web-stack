@@ -1,7 +1,7 @@
 # Decision log
 
 - **Last reviewed:** 2026-10-27
-- **Status:** M1, Waves 0–2, and the next service-platform batch are implemented. ImageMagick CLI is descoped; automatic GitHub CI is disabled. Windows/WSL has a revised design/plan and is not implemented.
+- **Status:** M1, Waves 0–2, the next service-platform batch, and Windows/WSL support are implemented. ImageMagick CLI is descoped; automatic GitHub CI is disabled. Windows multi-machine acceptance remains a release gate.
 - **Detailed service design:** [2026-10-25 design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
 - **Windows/WSL design:** [2026-10-26 design, revised 2026-10-27](superpowers/specs/2026-10-26-windows-wsl-design.md)
 
@@ -29,7 +29,7 @@ are tracked in [known issues](known-issues.md).
 | C14 | Embedded Svelte dashboard | Ships in the daemon binary; no separate web server for UI. |
 | C15 | Unsigned checksummed releases | Integrity in transit; signing deferred to M4. |
 | C16 | Static/Node/PHP site kinds | Clear runtime model; PHP front controller and Node process supervision are separate. |
-| C17 | Standalone devstack Docker image retired | Removed on 2026-10-25. Docker is reserved for the planned separate service containers. Generic public-port URL/redirect support and the mounted-hosts fallback were retained because they are useful outside the old image. |
+| C17 | Standalone devstack Docker image retired | Removed on 2026-10-25. Docker is reserved for the managed separate service containers. Generic public-port URL/redirect support and the mounted-hosts fallback were retained because they are useful outside the old image. |
 | C18 | Automatic GitHub Actions disabled | Pushes, pull requests, and tags do not start workflows; `ci.yml`, `php.yml`, and `release.yml` are manual dispatch only. Local verification is authoritative. |
 | C19 | Live Node discovery with official checksum verification (implemented 2026-10-30) | Fetch the official Node index, require the release's official `SHASUMS256.txt`, and keep the embedded catalog as offline fallback. Solves “all Node versions” without embedding hundreds of archives; shifts the Node trust root to nodejs.org + SHA-256. See [design](superpowers/specs/2026-10-30-node-toolchain-design.md). |
 | C20 | Global Node CLI default, mirroring PHP (implemented 2026-10-30) | Persist `node_default`, resolve explicit build then newest installed, and publish helper-managed `/usr/local/bin` wrappers on Linux plus `.cmd` shims on Windows and WSL shims. Gives `node`/`npm`/`npx` the same machine-wide behavior as `php`. |

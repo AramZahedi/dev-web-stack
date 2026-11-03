@@ -67,10 +67,10 @@ func TestApplyPHPIniChangeOnlyAffectsOneSite(t *testing.T) {
 	if active := fakes.backend.phpActiveGeneration(shop.ID); active != phpDefaultGeneration {
 		t.Fatalf("unrelated site active generation = %q", active)
 	}
-	if got := phpGenerationDirs(t, fakes, shop.ID); len(got) != 1 {
+	if got := phpGenerationDirs(t, fakes, shop.Name); len(got) != 1 {
 		t.Fatalf("unrelated site generations = %v", got)
 	}
-	if got := phpGenerationDirs(t, fakes, blog.ID); len(got) != 2 {
+	if got := phpGenerationDirs(t, fakes, blog.Name); len(got) != 2 {
 		t.Fatalf("blog generations = %v, want current and previous", got)
 	}
 }
@@ -255,7 +255,7 @@ func TestApplyPHPVersionSwitchRollsBackOnHealthFailure(t *testing.T) {
 	if got := reservedFastCGIPorts(t, fakes); !reflect.DeepEqual(got, []int{oldPort}) {
 		t.Fatalf("reserved ports = %v, want [%d]", got, oldPort)
 	}
-	if got := phpGenerationDirs(t, fakes, site.ID); len(got) != 1 || got[0] != oldHash {
+	if got := phpGenerationDirs(t, fakes, site.Name); len(got) != 1 || got[0] != oldHash {
 		t.Fatalf("generations = %v, want only %s", got, oldHash)
 	}
 	route, _ := fakes.router.Lookup("blog.test")
@@ -308,7 +308,7 @@ func TestApplyPHPInvalidIniLeavesOldMasterServing(t *testing.T) {
 	if active := fakes.backend.phpActiveGeneration(site.ID); active != phpDefaultGeneration {
 		t.Fatalf("active generation = %q", active)
 	}
-	if got := phpGenerationDirs(t, fakes, site.ID); len(got) != 1 || got[0] != oldHash {
+	if got := phpGenerationDirs(t, fakes, site.Name); len(got) != 1 || got[0] != oldHash {
 		t.Fatalf("generations = %v", got)
 	}
 	if got := reservedFastCGIPorts(t, fakes); !reflect.DeepEqual(got, []int{oldPort}) {
@@ -339,7 +339,7 @@ func TestApplyPHPFPMFailurePreservesErrorIdentity(t *testing.T) {
 	if active := fakes.backend.phpActiveGeneration(site.ID); active != phpDefaultGeneration {
 		t.Fatalf("active generation = %q", active)
 	}
-	if got := phpGenerationDirs(t, fakes, site.ID); len(got) != 1 || got[0] != oldHash {
+	if got := phpGenerationDirs(t, fakes, site.Name); len(got) != 1 || got[0] != oldHash {
 		t.Fatalf("generations = %v", got)
 	}
 }
@@ -355,7 +355,7 @@ func TestApplyPHPRejectsInvalidRawBeforeWriting(t *testing.T) {
 	if err == nil || !errors.Is(err, phpini.ErrInvalidConfig) {
 		t.Fatalf("err = %v, want ErrInvalidConfig", err)
 	}
-	if got := phpGenerationDirs(t, fakes, site.ID); len(got) != 1 || got[0] != oldHash {
+	if got := phpGenerationDirs(t, fakes, site.Name); len(got) != 1 || got[0] != oldHash {
 		t.Fatalf("generations = %v", got)
 	}
 }
@@ -386,7 +386,7 @@ func TestApplyPHPVhostFailureKeepsOldMaster(t *testing.T) {
 	if route.Upstream != net.JoinHostPort("127.0.0.1", strconv.Itoa(oldPort)) {
 		t.Fatalf("route upstream = %q", route.Upstream)
 	}
-	if got := phpGenerationDirs(t, fakes, site.ID); len(got) != 1 || got[0] != oldHash {
+	if got := phpGenerationDirs(t, fakes, site.Name); len(got) != 1 || got[0] != oldHash {
 		t.Fatalf("generations = %v", got)
 	}
 	if got := reservedFastCGIPorts(t, fakes); !reflect.DeepEqual(got, []int{oldPort}) {
@@ -654,7 +654,7 @@ func TestApplyPHPPrunesAllButCurrentAndPrevious(t *testing.T) {
 
 	want := []string{second.PHPConfigHash, third.PHPConfigHash}
 	sort.Strings(want)
-	if got := phpGenerationDirs(t, fakes, site.ID); !reflect.DeepEqual(got, want) {
+	if got := phpGenerationDirs(t, fakes, site.Name); !reflect.DeepEqual(got, want) {
 		t.Fatalf("generations = %v, want current and previous only (%v)", got, want)
 	}
 	for _, stale := range []string{initial, first.PHPConfigHash} {
@@ -1015,7 +1015,7 @@ func TestSavePHPDefaultsRollsBackPerSite(t *testing.T) {
 	blogHash, shopHash := blog.PHPConfigHash, shop.PHPConfigHash
 	parkedHash, apiHash := parked.PHPConfigHash, api.PHPConfigHash
 	fakes.php.fpmFunc = func(_ context.Context, _, configPath, _ string) error {
-		if strings.Contains(configPath, string(filepath.Separator)+shop.ID+string(filepath.Separator)) {
+		if strings.Contains(configPath, string(filepath.Separator)+shop.Name+string(filepath.Separator)) {
 			return errors.New("shop rejected the defaults")
 		}
 		return nil
@@ -1379,7 +1379,7 @@ func TestConcurrentApplySerializes(t *testing.T) {
 	if got := reservedFastCGIPorts(t, fakes); !reflect.DeepEqual(got, []int{final.FastCGIPort}) {
 		t.Fatalf("reserved ports = %v, want [%d]", got, final.FastCGIPort)
 	}
-	if got := phpGenerationDirs(t, fakes, site.ID); len(got) != 2 {
+	if got := phpGenerationDirs(t, fakes, site.Name); len(got) != 2 {
 		t.Fatalf("generations = %v, want current and previous", got)
 	}
 	if fakes.backend.startCount() != 3 {

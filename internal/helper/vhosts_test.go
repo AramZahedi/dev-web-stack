@@ -207,7 +207,7 @@ func TestSyncWritesReleaseAndBridge(t *testing.T) {
 	if !st.IncludePresent {
 		t.Fatalf("status does not report the bridge include: %+v", st)
 	}
-	if _, err := os.Stat(filepath.Join(env.root, "nginx", "current", "blog-s-1.conf")); err != nil {
+	if _, err := os.Stat(filepath.Join(env.root, "nginx", "current", "blog.conf")); err != nil {
 		t.Fatalf("rendered site config: %v", err)
 	}
 	bridgeData, err := os.ReadFile(env.bridge("nginx"))
@@ -247,7 +247,7 @@ func TestSyncWritesApacheReleaseAndBridge(t *testing.T) {
 	if st.Server != "apache" || !st.ConfigOK {
 		t.Fatalf("status = %+v", st)
 	}
-	if _, err := os.Stat(filepath.Join(env.root, "apache", "current", "blog-s-1.conf")); err != nil {
+	if _, err := os.Stat(filepath.Join(env.root, "apache", "current", "blog.conf")); err != nil {
 		t.Fatalf("rendered Apache site config: %v", err)
 	}
 	bridgeData, err := os.ReadFile(env.bridge("apache"))
@@ -306,7 +306,7 @@ func TestSyncCustomTLSDir(t *testing.T) {
 	if keyInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("key mode = %04o, want 0600", keyInfo.Mode().Perm())
 	}
-	rendered, err := os.ReadFile(filepath.Join(env.root, "nginx", "current", "blog-s-1.conf"))
+	rendered, err := os.ReadFile(filepath.Join(env.root, "nginx", "current", "blog.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestSyncRendersHighListenPorts(t *testing.T) {
 
 			release := env.currentTarget(mode)
 			for file, wants := range map[string][]string{
-				"blog-s-1.conf": {
+				"blog.conf": {
 					"18080",
 					"18443",
 				},
@@ -830,7 +830,7 @@ func TestSyncAllowsStoppedNodeWithoutBackendPath(t *testing.T) {
 	if _, err := env.manager.Sync(context.Background(), req); err != nil {
 		t.Fatalf("Sync stopped node without backend path: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog-s-1.conf"))
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -855,7 +855,7 @@ func TestSyncAllowsStoppedNodeWithStalePaths(t *testing.T) {
 	if _, err := env.manager.Sync(context.Background(), req); err != nil {
 		t.Fatalf("Sync stopped node with stale paths: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog-s-1.conf"))
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1208,7 +1208,7 @@ func TestSyncAllowsStoppedStaticWithMissingRoot(t *testing.T) {
 			if _, err := env.manager.Sync(context.Background(), req); err != nil {
 				t.Fatalf("sync stopped static site: %v", err)
 			}
-			data, err := os.ReadFile(filepath.Join(env.manager.serverTree("nginx"), "current", "blog-"+req.Sites[0].ID+".conf"))
+			data, err := os.ReadFile(filepath.Join(env.manager.serverTree("nginx"), "current", "blog.conf"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1242,7 +1242,7 @@ func TestSyncAllowsRunningPHPSite(t *testing.T) {
 	if _, err := env.manager.Sync(context.Background(), req); err != nil {
 		t.Fatalf("Sync PHP site: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog-s-1.conf"))
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1271,7 +1271,7 @@ func TestSyncAllowsStoppedPHPWithoutPaths(t *testing.T) {
 	if _, err := env.manager.Sync(context.Background(), req); err != nil {
 		t.Fatalf("Sync stopped PHP site without paths: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog-s-1.conf"))
+	data, err := os.ReadFile(filepath.Join(env.currentTarget("nginx"), "blog.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1349,7 +1349,7 @@ func TestSyncAllowsContainedSymlinkAndNodeWithoutRoot(t *testing.T) {
 	if _, err := env.manager.Sync(context.Background(), req); err != nil {
 		t.Fatalf("contained symlink rejected: %v", err)
 	}
-	rendered, err := os.ReadFile(filepath.Join(env.root, "nginx", "current", "blog-s-1.conf"))
+	rendered, err := os.ReadFile(filepath.Join(env.root, "nginx", "current", "blog.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}

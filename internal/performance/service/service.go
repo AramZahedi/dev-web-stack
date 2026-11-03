@@ -293,14 +293,9 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 	if active == "" {
 		warnings = append(warnings, "no active nginx/Apache catalog service; web-server includes are skipped (database-only or native serving)")
 	}
-	hostRequested := req.HostTuning && active != ""
-	if s.isHostTuningDisabled() {
-		if req.HostTuning {
-			warnings = append(warnings, "host tuning skipped: host sysctl and limits tuning are disabled on Windows")
-		}
-		hostRequested = false
-	} else if req.HostTuning && active == "" {
-		warnings = append(warnings, "host tuning skipped: no active nginx/Apache web server")
+	hostRequested := req.HostTuning && !s.isHostTuningDisabled()
+	if s.isHostTuningDisabled() && req.HostTuning {
+		warnings = append(warnings, "host tuning skipped: host sysctl and limits tuning are disabled on this host")
 	}
 	if warning := s.baseIncludeWarningLocked(active); warning != "" {
 		result := ApplyResult{
@@ -322,10 +317,6 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 	step := func(name, status, detail string) {
 		result.Steps = append(result.Steps, Step{Name: name, Status: status, Detail: detail})
 	}
-	if req.HostTuning && !hostRequested {
-		step("host-tuning", "skipped", "no active web server; host limits were not changed")
-	}
-
 	plan, err := BuildApplyPlan(s.cfg.Root, values, now, PriorHost{}, s.existingPHPFragmentsLocked()...)
 	if err != nil {
 		step("render", "failed", err.Error())
@@ -422,7 +413,11 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 		for _, helperStep := range hostResp.Steps {
 			step("host:"+helperStep.Name, helperStep.Status, helperStep.Detail)
 		}
-		step("host-tuning", "ok", "WSL and Windows host layers verified")
+		if runtime.GOOS == "windows" {
+			step("host-tuning", "ok", "WSL and Windows host layers verified")
+		} else {
+			step("host-tuning", "ok", "Linux sysctl and limits verified")
+		}
 	} else if s.isHostTuningDisabled() {
 		step("host-tuning", "skipped", "host tuning is unavailable")
 	} else if !req.HostTuning {
@@ -566,7 +561,11 @@ func (s *Service) Reset(ctx context.Context, req ResetRequest) (ResetResult, err
 			result.BackupDir = resp.BackupDir
 		}
 		result.Targets = hostTargetsFromProto(resp.Targets)
-		step("host-tuning", "ok", "pre-devstack WSL and Windows state restored")
+		if runtime.GOOS == "windows" {
+			step("host-tuning", "ok", "pre-devstack WSL and Windows state restored")
+		} else {
+			step("host-tuning", "ok", "pre-devstack Linux sysctl and limits restored")
+		}
 	} else {
 		step("host-tuning", "skipped", "no helper-managed host tuning")
 	}

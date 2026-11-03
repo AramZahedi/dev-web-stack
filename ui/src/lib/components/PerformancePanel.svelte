@@ -939,7 +939,10 @@
     </div>
 
     <p class="benchmark-target" aria-live="polite">
-      Target: <span class="mono">{benchTargetPreview}</span>
+      Host / public URL: <span class="mono">{benchTargetPreview}</span>
+    </p>
+    <p class="benchmark-note">
+      The request is sent to the local listener with this Host header.
     </p>
 
     {#if benchAdvanced}
@@ -1139,7 +1142,7 @@
 <ConfirmDialog
   open={applyOpen}
   title="Apply performance profile?"
-  description="The daemon writes managed includes, validates them, reloads only nginx/Apache and PHP-FPM, and keeps a backup. Host tuning covers WSL and Windows."
+  description="The daemon writes managed includes, validates them, reloads only nginx/Apache and PHP-FPM, and keeps a backup. Host tuning applies the available platform-specific host settings."
   confirmLabel="Apply profile"
   requireText="APPLY"
   busy={actionBusy}
@@ -1156,11 +1159,11 @@
         <input type="checkbox" bind:checked={hostTuning} disabled={!hostTuningAvailable} />
         <span>
           {hostTuningAvailable
-            ? 'Also apply WSL sysctl/limits, Windows network/NTFS/power, Defender exclusions, and WSL VM resources.'
+            ? 'Also apply the available host layers: Linux sysctl/limits, or Windows network/NTFS/power, WSL VM resources, and Defender exclusions.'
             : (performance?.host_tuning?.error || 'Host tuning is unavailable because the privileged helper is not available.')}
           <small>
             {hostTuningAvailable
-              ? 'This affects the whole machine and can be reset later. A WSL restart may be required for VM changes.'
+              ? 'This affects the whole machine and can be reset later. Linux applies sysctl/limits; Windows may require a WSL or host restart.'
               : 'Managed server and PHP includes can still be applied.'}
           </small>
         </span>
@@ -1168,8 +1171,8 @@
       {#if hostTuning}
         <p class="host-warning" role="status">
           <TriangleAlert size={13} strokeWidth={2} aria-hidden="true" />
-          Host tuning changes WSL kernel/login limits, Windows TCP/NTFS/power settings, Defender exclusions, and
-          .wslconfig. Every layer is backed up, verified, and reversible.
+          Host tuning changes machine-wide kernel/OS settings: Linux sysctl and login limits, or Windows TCP/NTFS/power
+          settings, WSL VM resources, and Defender exclusions. Every layer is backed up, verified, and reversible.
         </p>
       {/if}
     </div>

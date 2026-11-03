@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,6 +55,9 @@ func TestAgentConfigTerminalLimitsDefaultsAndBounds(t *testing.T) {
 }
 
 func TestAgentConfigTerminalLimitsRoundTrip(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("agent config requires a root-owned file; run as root to exercise the ownership check")
+	}
 	root := t.TempDir()
 	path := filepath.Join(root, "agent.yaml")
 	if err := WriteConfig(path, Config{Root: root, TerminalIdleSeconds: 42, TerminalMaxSeconds: 4242}); err != nil {

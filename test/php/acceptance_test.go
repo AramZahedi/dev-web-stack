@@ -825,7 +825,28 @@ func (h *acceptanceHarness) createSite(name, project string, extensions map[stri
 	}
 	h.siteNames = append(h.siteNames, site.Name)
 	h.notePort(site)
+	h.waitRunning(site)
 	return site
+}
+
+// waitRunning waits for the site backend to leave "starting". Create can
+// return before the supervisor's ready handshake under load.
+func (h *acceptanceHarness) waitRunning(site model.Site) {
+	h.t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, err := h.local.Status(context.Background(), site.ID)
+		if err == nil && status.State == model.StatusRunning {
+			return
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				h.t.Fatalf("site %s never became running: %v", site.Name, err)
+			}
+			h.t.Fatalf("site %s never became running: state=%s", site.Name, status.State)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (h *acceptanceHarness) registerRuntime(version, root string) string {
@@ -853,6 +874,7 @@ func (h *acceptanceHarness) createSiteWithBuild(name, project, buildID, version 
 	}
 	h.siteNames = append(h.siteNames, site.Name)
 	h.notePort(site)
+	h.waitRunning(site)
 	return site
 }
 
@@ -983,9 +1005,18 @@ func fastCGIBody(t *testing.T, port int, documentRoot string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	client, err := fcgi.Dial(ctx, addr)
-	if err != nil {
-		t.Fatalf("dial FastCGI %s: %v", addr, err)
+	var client *fcgi.Client
+	var err error
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		client, err = fcgi.Dial(ctx, addr)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dial FastCGI %s: %v", addr, err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	defer func() { _ = client.Close() }()
 	script := filepath.Join(documentRoot, "index.php")
@@ -1705,11 +1736,7 @@ func serveApacheHTTPS(t *testing.T, httpd, configPath string, port int, site mod
 }
 
 func vhostSiteFilename(site model.Site) string {
-	id := site.ID
-	if len(id) > 8 {
-		id = id[:8]
-	}
-	return site.Name + "-" + id + ".conf"
+	return site.Name + ".conf"
 }
 
 func firstApacheVirtualHost(t *testing.T, config string, port int) string {

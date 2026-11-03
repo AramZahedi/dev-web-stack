@@ -33,10 +33,16 @@ export default defineConfig({
       name: 'firefox',
       use: { ...devices['Desktop Firefox'] },
     },
-    {
-      name: 'webkit',
-      use: { ...devices['Desktop Safari'] },
-    },
+    // WebKit's Linux build needs the distro's libicu74. Hosts without it can
+    // opt out explicitly; Chromium and Firefox remain the required browsers.
+    ...(process.env.PLAYWRIGHT_WEBKIT === '0'
+      ? []
+      : [
+          {
+            name: 'webkit',
+            use: { ...devices['Desktop Safari'] },
+          },
+        ]),
   ],
   webServer: {
     command: `npm run dev -- --host 127.0.0.1 --port ${PORT} --strictPort`,

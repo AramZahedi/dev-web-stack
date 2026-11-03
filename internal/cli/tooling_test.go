@@ -168,7 +168,7 @@ func shellFixture(t *testing.T) (*fakeClient, string, model.Site) {
 			Source: model.NodeSourceGlobal, Installed: true,
 		},
 	}
-	generation := filepath.Join(home, "sites", site.ID, site.PHPConfigHash)
+	generation := filepath.Join(home, "sites", site.Name, site.PHPConfigHash)
 	if err := os.MkdirAll(generation, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestShellInitAndExec(t *testing.T) {
 		"export DEVSTACK_SITE='app'",
 		"export DEVSTACK_HOME='" + home + "'",
 		"export DEVSTACK_PROJECT='" + site.HostPath + "'",
-		"export PHPRC='" + filepath.Join(home, "sites", site.ID, site.PHPConfigHash, "php.ini") + "'",
+		"export PHPRC='" + filepath.Join(home, "sites", site.Name, site.PHPConfigHash, "php.ini") + "'",
 		"export PATH='",
 	} {
 		if !strings.Contains(out, want) {
@@ -221,7 +221,7 @@ func TestShellInitAndExec(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("exec output = %q", out)
 	}
-	if lines[0] != filepath.Join(home, "sites", site.ID, site.PHPConfigHash, "php.ini") {
+	if lines[0] != filepath.Join(home, "sites", site.Name, site.PHPConfigHash, "php.ini") {
 		t.Fatalf("PHPRC = %q", lines[0])
 	}
 	if lines[1] != site.HostPath {

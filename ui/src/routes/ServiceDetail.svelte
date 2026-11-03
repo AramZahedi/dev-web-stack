@@ -172,7 +172,13 @@
     try {
       const result = await dbApi.listServiceUsers(id);
       if (generation !== loadGeneration) return;
-      users = result.users ?? [];
+      const nextUsers = result.users ?? [];
+      // Polling must not replace an unchanged inventory: child components use
+      // a users-array change to clear revealed secrets, and a no-op poll would
+      // otherwise hide a password the user is still reading.
+      if (JSON.stringify(nextUsers) !== JSON.stringify(users)) {
+        users = nextUsers;
+      }
     } catch (caught) {
       if (generation !== loadGeneration) return;
       usersError = describeError(caught);

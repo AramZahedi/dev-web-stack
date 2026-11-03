@@ -130,6 +130,32 @@ func TestCreateAcceptsChildOfProjectsRoot(t *testing.T) {
 	}
 }
 
+func TestCreateCreatesMissingLocalPHPDocumentRoot(t *testing.T) {
+	svc, fakes := newTestService(t)
+	fakes.installPHPBuild("php@8.4.4-r1", "8.4.4")
+	root := managedTestRoot(t, fakes)
+	project := filepath.Join(root, "php-app")
+
+	site, err := svc.Create(ctx, CreateRequest{
+		Name:         "php-app",
+		Path:         project,
+		Kind:         "php",
+		PHPVersion:   "8.4",
+		DocumentRoot: "public",
+	})
+	if err != nil {
+		t.Fatalf("Create(php child): %v", err)
+	}
+	if site.DocumentRoot != "public" {
+		t.Fatalf("document root = %q, want public", site.DocumentRoot)
+	}
+	for _, path := range []string{project, filepath.Join(project, "public")} {
+		if info, statErr := os.Stat(path); statErr != nil || !info.IsDir() {
+			t.Fatalf("%s = %v, %v", path, info, statErr)
+		}
+	}
+}
+
 func TestCreateAcceptsWindowsCaseVariant(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows case-insensitive containment")

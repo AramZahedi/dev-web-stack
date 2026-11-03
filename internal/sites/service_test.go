@@ -582,7 +582,7 @@ func TestCreateRejectsInvalidAndDuplicateSites(t *testing.T) {
 		{name: "invalid name", req: CreateRequest{Name: "bad name", Kind: "static"}, want: "project name"},
 		{name: "reserved domain", req: CreateRequest{Name: "devstack", Kind: "static"}, want: "reserved"},
 		{name: "relative path", req: CreateRequest{Name: "blog", Path: "relative", Kind: "static"}, want: "absolute"},
-		{name: "missing path", req: CreateRequest{Name: "blog", Path: missing, Kind: "static"}, want: "resolve project path"},
+		{name: "missing path", req: CreateRequest{Name: "blog", Path: missing, Kind: "static"}, want: "outside the managed projects root"},
 		{name: "unsupported kind", req: CreateRequest{Name: "blog", Kind: "perl"}, want: "unsupported site kind"},
 		{name: "node missing version", req: CreateRequest{Name: "blog", Kind: "node", Command: "npm run dev"}, want: "requires a version"},
 		{name: "node missing command", req: CreateRequest{Name: "blog", Kind: "node", NodeVersion: "24"}, want: "requires a command"},
@@ -696,7 +696,7 @@ func TestStartRunningStaticSiteIsIdempotentWithoutReprepare(t *testing.T) {
 	}
 }
 
-func TestCreateNodeSiteEnsuresRuntime(t *testing.T) {
+func TestCreateNodeSiteUsesInstalledRuntimeWithoutCatalogInstall(t *testing.T) {
 	svc, fakes := newTestService(t)
 	installSiteNodeBuild(t, fakes, "24.9.0")
 	site := mustCreate(t, svc, fakes, CreateRequest{
@@ -707,8 +707,8 @@ func TestCreateNodeSiteEnsuresRuntime(t *testing.T) {
 		Command:     "npm run dev",
 	})
 
-	if calls := fakes.backend.runtimeList(); !containsString(calls, "node@24.9.0") {
-		t.Fatalf("runtime calls = %v", calls)
+	if calls := fakes.backend.runtimeList(); len(calls) != 0 {
+		t.Fatalf("node site creation used the catalog installer: %v", calls)
 	}
 	spec, ok := fakes.backend.lastPrepared()
 	if !ok {

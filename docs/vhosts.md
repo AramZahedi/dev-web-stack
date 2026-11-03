@@ -442,8 +442,9 @@ table; it never reports the skipped external steps as a pass.
 - PHP sites require an installed PHP build. The `v0.1.0` release embeds
   real 8.2.35, 8.3.36, 8.4.27, and 8.5.12 catalog entries (see [PHP](php.md)).
 - Apache PHP vhosts need `proxy_fcgi`; devstack does not enable it for you.
-- External serving is Linux only today. Windows/WSL is planned but not implemented;
-  no Windows or WSL serving path is claimed until the Windows acceptance plan passes.
+- Windows/WSL external serving uses managed Docker nginx/Apache containers behind the
+  Windows helper; native Windows web servers are not supported. Linux native serving is
+  administrator-managed as described above.
 - Apache HTTPS vhosts require `mod_ssl`. The automated acceptance validated
   nginx with real `nginx -t`, Apache HTTP and HTTPS PHP vhosts with real
   `httpd -t`, and a live Apache TLS listener serving a request through

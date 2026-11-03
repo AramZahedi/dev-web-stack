@@ -559,7 +559,7 @@ on Linux, host tuning, and performance under load need a real platform matrix.
 | E2E-SET-15 | Daemon information and uninstall guidance | UI-Live | Mock + Evidence | P2 |
 | E2E-SET-16 | Performance profile, preview, apply, reset | UI-Live | Mock + Evidence | P1 |
 | E2E-SET-17 | Benchmark run, history, and detail | UI-Live | Mock + Evidence | P1 |
-| E2E-SET-18 | Host tuning and PHP-FPM pooling | System | Evidence | P1 |
+| E2E-SET-18 | Host tuning and PHP-FPM pooling | System | System + Evidence | P1 |
 | E2E-SET-19 | External nginx/Apache on Linux with PHP sites | UI-Live | Evidence | P0 |
 | E2E-SET-20 | Serving-mode rollback on invalid config or reload failure | UI-Live | None | P1 |
 
@@ -678,7 +678,8 @@ single gate.
 | `ui/tests/database-management.spec.ts` | Mock Playwright, 32 declarations | Databases, users, passwords, backups, import/export, jobs, SSE, failures, a11y | Automated mock |
 | `ui/tests/live/dashboard.live.spec.ts` | Live Playwright, 1 declaration | Auth, CSRF, session expiry, core pages | Read-only live |
 | `ui/tests/live/site-databases.live.spec.ts` | Live Playwright, 4 declarations | Password reveal, metadata-only, env keys, Add Site review | Read-only live |
-| `test/e2e/linux.sh` | Linux shell E2E | Builtin proxy, helper, daemon, static site, nginx mode | Automated system |
+| `test/e2e/linux.sh` | Linux shell E2E | Builtin proxy, helper, daemon, static site, native nginx, optional live Node runtime/vhost | Automated system |
+| `test/e2e/linux-performance` | Root-only host-tuning probe | Computes a profile, applies fixed sysctl/limits, verifies live values, restores prior state | Automated system (root) |
 | `test/e2e/database-management/linux/cycle*` | Disposable WSL shell E2E | DB lifecycle, users, grants, backups, import/export, jobs, concurrency, cleanup | Automated system; paused after cycle 8 |
 | `test/windows/installer_test.ps1` | Windows installer suite | Installer checks, dry-run, sandbox, upgrade helpers | Automated system |
 | `test/windows/lifecycle_test.ps1` | Windows lifecycle suite | Daemon/helper/service lifecycle | Automated system |

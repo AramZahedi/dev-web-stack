@@ -442,7 +442,7 @@ test('Performance previews, applies, resets, and records a measured benchmark', 
   const applyDialog = page.getByRole('dialog', { name: 'Apply performance profile?' });
   await expect(applyDialog).toBeVisible();
   await applyDialog.getByRole('checkbox').check();
-  await expect(applyDialog.getByText(/Host tuning changes kernel/)).toBeVisible();
+  await expect(applyDialog.getByText(/Host tuning changes machine-wide/)).toBeVisible();
   await applyDialog.getByRole('textbox').fill('APPLY');
   await applyDialog.getByRole('button', { name: 'Apply profile' }).click();
   await expect(
@@ -454,22 +454,37 @@ test('Performance previews, applies, resets, and records a measured benchmark', 
 
   const benchmark = page.locator('.benchmark-card');
   await expect(benchmark.locator('.benchmark-form .hint')).toHaveCount(0);
-  const benchmarkControls = [
+  const firstRow = [
     benchmark.getByLabel('Site'),
+    benchmark.getByLabel('Engine'),
+    benchmark.getByLabel('Method'),
+    benchmark.getByLabel('Path'),
+  ];
+  const secondRow = [
     benchmark.getByLabel('Duration (s)'),
     benchmark.getByLabel('Connections'),
     benchmark.getByRole('button', { name: 'Run benchmark' }),
   ];
-  const controlBoxes = [];
-  for (const control of benchmarkControls) {
-    const box = await control.boundingBox();
-    if (!box) throw new Error('Benchmark control is not visible');
-    controlBoxes.push(box);
-  }
-  const controlBottom = controlBoxes[0].y + controlBoxes[0].height;
-  for (const box of controlBoxes.slice(1)) {
-    expect(Math.abs(box.y + box.height - controlBottom)).toBeLessThanOrEqual(1.5);
-  }
+  const rowBoxes = async (controls: ReturnType<typeof benchmark.getByLabel>[]) => {
+    const boxes = [];
+    for (const control of controls) {
+      const box = await control.boundingBox();
+      if (!box) throw new Error('Benchmark control is not visible');
+      boxes.push(box);
+    }
+    return boxes;
+  };
+  const firstBoxes = await rowBoxes(firstRow);
+  const secondBoxes = await rowBoxes(secondRow);
+  const aligned = (boxes: { y: number; height: number }[]) => {
+    const bottom = boxes[0].y + boxes[0].height;
+    for (const box of boxes.slice(1)) {
+      expect(Math.abs(box.y + box.height - bottom)).toBeLessThanOrEqual(1.5);
+    }
+  };
+  aligned(firstBoxes);
+  aligned(secondBoxes);
+  expect(firstBoxes[0].y + firstBoxes[0].height).toBeLessThan(secondBoxes[0].y);
   await expect(benchmark.locator('#benchmark-limits')).toContainText('1–3600 seconds');
   await benchmark.getByLabel('Duration (s)').fill('2');
   await benchmark.getByLabel('Connections').fill('8');
@@ -478,7 +493,7 @@ test('Performance previews, applies, resets, and records a measured benchmark', 
   const row = benchmark.locator('tbody tr').first();
   await expect(benchmark.locator('thead')).toContainText('Status');
   await expect(row).toContainText('blog');
-  await expect(row).toContainText('devstack-go-http');
+  await expect(row).toContainText('devstack-fasthttp-load');
 
   await performance.getByRole('button', { name: 'Reset', exact: true }).click();
   const resetDialog = page.getByRole('dialog', { name: 'Reset performance?' });

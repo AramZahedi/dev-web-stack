@@ -20,7 +20,7 @@ CATALOG           ?=
 PHP_ARTIFACTS_DIR ?= artifacts
 PHP_CATALOG_CHECK ?= 0
 
-.PHONY: build build-windows build-agent test test-linux test-windows-cross lint ui e2e clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test release-windows release-windows-test acceptance
+.PHONY: build build-windows build-agent test test-linux test-windows-cross lint ui e2e e2e-node clean php-build php-smoke php-catalog php-catalog-merge php-test release release-test release-windows release-windows-test acceptance
 
 # Cross-build the Windows daemon and helper. The output stays in dist/ so the
 # same artifacts feed packaging and the manual Windows CI dispatch.
@@ -66,6 +66,10 @@ ui:
 
 e2e: build
 	E2E_SKIP_BUILD=1 bash test/e2e/linux.sh
+
+# Linux E2E plus a real Node runtime download and Node vhost.
+e2e-node: build
+	E2E_SKIP_BUILD=1 E2E_INSTALL_NODE=1 bash test/e2e/linux.sh
 
 # Full Linux M1 acceptance. The runner is unprivileged and exits 0 only when
 # no phase FAILs; SKIP and BLOCKED gates are printed and counted. Pass

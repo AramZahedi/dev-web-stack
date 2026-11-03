@@ -340,7 +340,7 @@ func TestServiceApplyDatabaseOnlySkipsWebIncludes(t *testing.T) {
 	}
 }
 
-func TestServiceApplyDatabaseOnlySkipsHostTuning(t *testing.T) {
+func TestServiceApplyDatabaseOnlyAppliesHostTuning(t *testing.T) {
 	ctx := context.Background()
 	svc, _, helper, servicesFake, _, _ := newPerformanceTestService(t)
 	servicesFake.views = nil
@@ -349,20 +349,20 @@ func TestServiceApplyDatabaseOnlySkipsHostTuning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if result.HostTuning {
-		t.Fatal("database-only apply claimed host tuning")
+	if !result.HostTuning {
+		t.Fatal("database-only apply did not apply host tuning")
 	}
-	if len(helper.applyCalls) != 0 {
-		t.Fatalf("host apply calls = %d, want 0", len(helper.applyCalls))
+	if len(helper.applyCalls) != 1 {
+		t.Fatalf("host apply calls = %d, want 1", len(helper.applyCalls))
 	}
 	found := false
 	for _, step := range result.Steps {
-		if step.Name == "host-tuning" && step.Status == "skipped" {
+		if step.Name == "host-tuning" && step.Status == "ok" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("host tuning skip step missing: %+v", result.Steps)
+		t.Fatalf("host tuning success step missing: %+v", result.Steps)
 	}
 }
 

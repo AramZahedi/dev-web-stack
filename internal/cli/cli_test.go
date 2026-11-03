@@ -1012,6 +1012,9 @@ func TestCLIAddAndList(t *testing.T) {
 }
 
 func TestCLISiteSourceChangeUsesExplicitTargetAndPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("source-mode changes are a Windows/WSL feature")
+	}
 	useTestSeams(t)
 	fake := &fakeClient{}
 	code, stdout, stderr := runCLIExit(t, fake, "site", "source", "blog", "--mode", "wsl", "--path", `\\wsl.localhost\Ubuntu\home\aram\blog`)

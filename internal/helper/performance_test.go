@@ -237,11 +237,40 @@ func TestPerformanceManagerApplyRollsBackOnVerificationFailure(t *testing.T) {
 	}
 }
 
+func TestPerformanceManagerForcesGeneratedSysctlValues(t *testing.T) {
+	ctx := context.Background()
+	manager, _, _, runner := newPerformanceManagerForTest(t)
+	if _, err := manager.Apply(ctx, helperproto.PerformanceApplyRequest{Profile: "balanced", Host: testPerformanceHost()}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	want := map[string]bool{
+		"fs.file-max=1048576":                      false,
+		"net.core.somaxconn=4096":                  false,
+		"net.core.netdev_max_backlog=4096":         false,
+		"net.ipv4.ip_local_port_range=32768 60999": false,
+	}
+	for _, call := range runner.calls {
+		if call.name != "sysctl" || len(call.args) != 2 || call.args[0] != "-w" {
+			continue
+		}
+		if _, ok := want[call.args[1]]; ok {
+			want[call.args[1]] = true
+		}
+	}
+	for value, seen := range want {
+		if !seen {
+			t.Fatalf("apply did not force %s; calls=%+v", value, runner.calls)
+		}
+	}
+}
+
 func TestPerformanceManagerKeepsMarkerWhenRollbackFails(t *testing.T) {
 	ctx := context.Background()
 	manager, _, dest, runner := newPerformanceManagerForTest(t)
 	manager.readSysctl = func(key string) (string, error) { return "1", nil }
-	runner.failAt = 2 // first sysctl --system (apply) succeeds; rollback reload fails
+	runner.failAt = 6 // apply writes succeed; rollback sysctl --system fails
 	sysctlPath := filepath.Join(dest, strings.TrimPrefix(performanceSysctlTarget, "/"))
 	if err := os.MkdirAll(filepath.Dir(sysctlPath), 0o755); err != nil {
 		t.Fatal(err)

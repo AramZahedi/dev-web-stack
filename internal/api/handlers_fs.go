@@ -30,6 +30,10 @@ type fsListing struct {
 func (s *Server) handleFS(w http.ResponseWriter, r *http.Request) {
 	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
 	raw := strings.TrimSpace(r.URL.Query().Get("path"))
+	if runtime.GOOS != "windows" && (mode == "wsl" || mode == "windows") {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "source mode "+mode+" is only available on Windows", nil)
+		return
+	}
 
 	if mode == "wsl" || (raw != "" && strings.HasPrefix(raw, "/") && !filepath.IsAbs(raw)) {
 		if raw == "" {
@@ -154,6 +158,10 @@ func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 	}
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	raw := strings.TrimSpace(req.Path)
+	if runtime.GOOS != "windows" && (mode == "wsl" || mode == "windows") {
+		writeError(w, http.StatusBadRequest, codeInvalidRequest, "source mode "+mode+" is only available on Windows", nil)
+		return
+	}
 	windowsNames := mode == "windows" ||
 		(mode == "" && raw != "" && filepath.VolumeName(raw) != "") ||
 		(mode == "" && raw == "" && runtime.GOOS == "windows")

@@ -107,7 +107,7 @@ configure an already-installed native nginx or Apache.
 ### Standalone Docker image (retired)
 
 The old devstack-in-Docker image was removed on 2026-10-25. It is not part of the
-current implementation. Docker remains a requirement only for the planned separate
+current implementation. Docker remains a requirement only for the managed separate
 service containers. There is no supported devstack application container in this
 repository now.
 
@@ -465,18 +465,18 @@ service lifecycle paths exist.
 
 ## 12. Current limitations
 
-- Linux x86_64 is the implemented platform. Windows 11 + WSL2 has a revised
-  design and plan (2026-10-27) but is not implemented; see the
-  [Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md) and
-  [review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md).
+- Linux x86_64 and Windows 10 22H2/Windows 11 with WSL2 are implemented.
+  Windows multi-machine acceptance remains the general-availability gate; see
+  the [Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md).
   macOS and arm64 remain out of scope.
 - External nginx/Apache mode requires the server to be installed and configured by the
   administrator; devstack does not install packages.
 - M1 manual Linux gates (real root 80/443 install, browser trust, live UI) were not fully
   run.
 - Waves 0–1, Wave 2, and the next service-platform batch are implemented.
-- Still pending: external-site Docker mounts, real root host-tuning acceptance, and
-  live Wave 3 benchmark evidence. Per-site PHP-FPM pool sizing and OPcache/realpath ini
+- Still pending: external-site Docker mounts, Windows multi-machine acceptance,
+  and live Wave 3 benchmark evidence. Linux root host tuning is exercised by
+  `test/e2e/linux-performance`. Per-site PHP-FPM pool sizing and OPcache/realpath ini
   values are persisted and applied through the site validate/swap flow.
 - All sites must live under the managed projects root. Docker web servers use that
   root for their mounts; external-site bind mounts remain a follow-up.
@@ -487,11 +487,11 @@ service lifecycle paths exist.
 
 - For current behavior and commands: [install](install.md), [sites](sites.md),
   [PHP](php.md), [vhosts](vhosts.md), [TLS](tls.md).
-- For the next milestone: [planned services](planned-services.md) and the
+- For service behavior: [services](services.md) and the
   [full design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md).
 - For continuation state: [handoff](handoff.md).
 
-## 14. Planned Windows/WSL architecture (not implemented)
+## 14. Windows/WSL architecture
 
 The approved Windows design keeps Windows in charge of the public entry and
 host integration, and uses a managed Debian 12 WSL2 agent for Linux site

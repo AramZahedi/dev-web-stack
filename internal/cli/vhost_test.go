@@ -27,6 +27,26 @@ func TestCLIServingStatusAlias(t *testing.T) {
 	}
 }
 
+func TestCLIVhostUseLinuxExplainsNativeServerPrerequisite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux native serving guidance")
+	}
+	useTestSeams(t)
+	fake := &fakeClient{err: helperproto.ErrServingModeUnavailable}
+	code, _, stderr := runCLIExit(t, fake, "vhost", "use", "nginx", "--yes")
+	if code == 0 {
+		t.Fatal("want non-zero exit for a missing native server")
+	}
+	for _, want := range []string{"SERVING_MODE_UNAVAILABLE", "native nginx", "docs/vhosts.md"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	}
+	if fake.servingModeSet {
+		t.Fatal("servingModeSet should be false")
+	}
+}
+
 func TestCLIVhostUseWindowsUnsupported(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("external serving modes are rejected only by the Windows daemon")

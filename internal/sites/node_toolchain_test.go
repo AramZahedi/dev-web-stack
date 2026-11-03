@@ -99,7 +99,7 @@ func TestCreateNodeSiteUsesInstalledDiscoveryBuildWithoutCatalogInstall(t *testi
 		Kind:        "node",
 		NodeVersion: build.Version,
 		Command:     "node server.js",
-		SourceMode:  "windows",
+		SourceMode:  string(managedTestMode()),
 	})
 	if site.NodeVersion != build.Version {
 		t.Fatalf("site node version = %q, want %q", site.NodeVersion, build.Version)

@@ -270,7 +270,7 @@
     if (isWindowsHost && servicesLoaded && !installedWebServers.has(mode)) {
       return 'Managed Docker container — install from Services';
     }
-    return isWindowsHost ? 'Managed Docker container' : 'Native vhosts';
+    return isWindowsHost ? 'Managed Docker container' : 'Native vhosts — install nginx/Apache first';
   }
 
   function modeSelectable(mode: ServingMode): boolean {
@@ -972,10 +972,12 @@
           <dt>Max request body</dt>
           <dd class="mono">{settings.max_request_body_mb} MB</dd>
         </div>
-        <div class="config-item">
-          <dt>WSL distro</dt>
-          <dd class="mono">{settings.wsl_distro || '—'}</dd>
-        </div>
+        {#if isWindowsHost}
+          <div class="config-item">
+            <dt>WSL distro</dt>
+            <dd class="mono">{settings.wsl_distro || '—'}</dd>
+          </div>
+        {/if}
       </dl>
 
       {#if isWindowsHost}

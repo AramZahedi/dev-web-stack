@@ -107,6 +107,16 @@ func (a *App) newVhostUseCmd() *cobra.Command {
 			}
 			status, err := c.SetServingMode(ctx, mode)
 			if err != nil {
+				if runtime.GOOS != "windows" && mode != config.ServingModeBuiltin {
+					if errors.Is(err, helperproto.ErrServingModeUnavailable) {
+						return &Error{
+							Code:        "SERVING_MODE_UNAVAILABLE",
+							Message:     "the native " + mode + " server is not installed or is missing required modules",
+							Remediation: "Install and configure native nginx/Apache, then retry. See docs/vhosts.md for the required modules.",
+							cause:       err,
+						}
+					}
+				}
 				if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin {
 					if errors.Is(err, helperproto.ErrNotImplemented) ||
 						errors.Is(err, helperproto.ErrServingModeUnavailable) ||
@@ -141,6 +151,14 @@ func (a *App) newVhostSyncCmd() *cobra.Command {
 			}
 			status, err := c.SyncVhosts(ctx)
 			if err != nil {
+				if runtime.GOOS != "windows" && errors.Is(err, helperproto.ErrServingModeUnavailable) {
+					return &Error{
+						Code:        "SERVING_MODE_UNAVAILABLE",
+						Message:     "the native nginx/Apache server is not installed or is missing required modules",
+						Remediation: "Install and configure native nginx/Apache, then retry. See docs/vhosts.md for the required modules.",
+						cause:       err,
+					}
+				}
 				if runtime.GOOS == "windows" {
 					if errors.Is(err, helperproto.ErrNotImplemented) ||
 						errors.Is(err, helperproto.ErrServingModeUnavailable) ||

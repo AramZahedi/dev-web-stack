@@ -36,6 +36,7 @@ before changing behavior.
 | `make test` | `go test ./...` |
 | `make lint` | golangci-lint |
 | `make e2e` | Build + unprivileged Linux E2E |
+| `make e2e-node` | Linux E2E with a real Node runtime/vhost |
 | `make acceptance` | Full unprivileged M1 acceptance table |
 | `make release VERSION=0.2.0` | Local unsigned archive + checksums |
 | `make release-test` | Release archive contract test |
@@ -72,6 +73,24 @@ go test ./internal/store -run 'Migrate|Backup' -count=1 -v
 go test ./internal/serviceconfig ./internal/servicecontrol -count=1
 go test ./internal/performance/... ./internal/terminal -count=1
 ```
+
+Linux live parity checks:
+
+```sh
+# Builtin + native nginx, plus a real Node runtime/vhost when requested.
+E2E_INSTALL_NODE=1 bash test/e2e/linux.sh
+
+# Root-only host tuning apply/verify/reset. Do not run in CI or on a shared host.
+go build -o /tmp/devstack-linux-performance ./test/e2e/linux-performance
+sudo /tmp/devstack-linux-performance -profile throughput
+
+# Windows compile/vet/test-package check from Linux.
+make test-windows-cross
+```
+
+Playwright runs Chromium and Firefox by default. WebKit needs the host's
+`libicu74`; set `PLAYWRIGHT_WEBKIT=0` on hosts such as Fedora 44 that provide a
+different ICU soname. The acceptance runner detects this and records the skip.
 
 Shell changes:
 
@@ -209,10 +228,10 @@ real `/etc/hosts`, trust stores, or 80/443 in automated tests.
 ## 14. Current constraints to remember
 
 - Native devstack; Docker only for optional service containers.
-- Linux implementation is current. Windows/WSL is planned in
-  [the design](superpowers/specs/2026-10-26-windows-wsl-design.md) and
-  [implementation plan](superpowers/plans/2026-10-26-windows-wsl.md); do not start
-  implementation before plan approval.
+- Linux and Windows/WSL are implemented. Use
+  [the Windows design](superpowers/specs/2026-10-26-windows-wsl-design.md) and
+  [implementation plan](superpowers/plans/2026-10-26-windows-wsl.md) for platform
+  boundaries; Windows acceptance runs on a Windows host.
 - Existing native external nginx/Apache mode must remain compatible.
 - Preserve service config scope, terminal no-root scope, and fixed-target host tuning.
 - Do not claim host-tuning or benchmark acceptance without live evidence.
