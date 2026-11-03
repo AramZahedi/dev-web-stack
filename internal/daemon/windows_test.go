@@ -18,12 +18,14 @@ import (
 	"go/parser"
 	"go/token"
 	"math/big"
+	mathrand "math/rand"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -300,14 +302,31 @@ func TestWindowsEnsureArgsPreserveRunOverrides(t *testing.T) {
 	}
 }
 
+var (
+	testPortMu   sync.Mutex
+	testPortNext = 45000 + mathrand.Intn(3000)
+)
+
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	testPortMu.Lock()
+	defer testPortMu.Unlock()
+	// The daemon reserves 41000-43999 for site backends. Windows may hand out
+	// ephemeral listeners from that block, so scan a fixed free range instead.
+	for attempt := 0; attempt < 4000; attempt++ {
+		port := testPortNext
+		testPortNext++
+		if testPortNext >= 48000 {
+			testPortNext = 45000
+		}
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			_ = listener.Close()
+			return port
+		}
 	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
+	t.Fatal("could not allocate a public TCP port outside the backend range")
+	return 0
 }
 
 type testSigner struct {
@@ -577,20 +596,20 @@ func TestWindowsPerformanceServiceRootUsesWSLDataDir(t *testing.T) {
 		Home:      `C:\Users\Aram\.devstack`,
 		WSLDistro: "devstack",
 	}
-	got := windowsPerformanceServiceConfig(cfg, nil, nil, nil, nil)
+	got := windowsPerformanceServiceConfig(cfg, nil, nil, nil, nil, nil)
 	want := `\\wsl$\devstack\data\devstack`
 	if got.Root != want {
 		t.Fatalf("performance root = %q, want %q", got.Root, want)
 	}
-	if !got.DisableHostTuning {
-		t.Fatal("performance host tuning must stay disabled on Windows")
+	if got.DisableHostTuning {
+		t.Fatal("performance host tuning should be enabled on Windows")
 	}
 }
 
 func TestWindowsPerformanceServiceRootRejectsUnsafeDistro(t *testing.T) {
 	for _, distro := range []string{"", "dev stack", `dev\stack`, "dev/stack", `dev:stack`} {
 		cfg := config.Config{Home: `C:\Users\Aram\.devstack`, WSLDistro: distro}
-		got := windowsPerformanceServiceConfig(cfg, nil, nil, nil, nil)
+		got := windowsPerformanceServiceConfig(cfg, nil, nil, nil, nil, nil)
 		if got.Root != "" {
 			t.Errorf("distro %q produced performance root %q, want empty", distro, got.Root)
 		}

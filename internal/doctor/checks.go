@@ -865,6 +865,33 @@ func (s *Service) checkVhosts(ctx context.Context) []Check {
 		checks[0].Remediation = fmt.Sprintf("Run `devstack vhost use %s` to reconcile the helper, then rerun `devstack doctor`.", mode)
 	}
 
+	if s.deps.Config.ServingProvider == config.ServingProviderDocker {
+		checks[1].Status = StatusOK
+		checks[1].Detail = fmt.Sprintf("managed Docker %s is serving private vhosts", mode)
+		checks[2].Status = StatusSkipped
+		checks[2].Detail = "the daemon owns public routing; no native server include is required"
+		checks[2].Remediation = "No action is required."
+		if status.ConfigOK {
+			checks[3].Status = StatusOK
+			checks[3].Detail = "the managed Docker configuration test passed"
+		} else {
+			checks[3].Status = StatusFail
+			checks[3].Detail = "the managed Docker configuration test failed"
+			if lastError := strings.TrimSpace(status.LastError); lastError != "" {
+				checks[3].Detail += ": " + errorDetail(errors.New(lastError))
+			}
+			checks[3].Remediation = "Run `devstack vhost sync` after fixing the Docker web-server configuration."
+		}
+		checks[4] = s.checkVhostFreshness(ctx, status.LastSync)
+		checks[5].Status = StatusSkipped
+		checks[5].Detail = "public TLS is terminated by the daemon, not the container"
+		checks[5].Remediation = "No action is required."
+		checks[6].Status = StatusSkipped
+		checks[6].Detail = "the managed Docker server does not own the public default server"
+		checks[6].Remediation = "No action is required."
+		return checks
+	}
+
 	server := strings.ToLower(strings.TrimSpace(status.Server))
 	if server == "" {
 		server = mode

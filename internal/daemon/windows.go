@@ -185,6 +185,10 @@ func Run(ctx context.Context, opts Options) error {
 		distro:  cfg.WSLDistro,
 		logger:  logger,
 	}
+	perfHost, err := newWindowsPerformanceHost(agentServices, adapter, cfg.Home)
+	if err != nil {
+		return fmt.Errorf("daemon: Windows performance host: %w", err)
+	}
 
 	agentDocker, err := servicecontrol.NewAgentDocker(agentServices, agent.DefaultAgentRoot)
 	if err != nil {
@@ -250,7 +254,13 @@ func Run(ctx context.Context, opts Options) error {
 
 	webControl := servicecontrol.NewWebServiceControl(serviceManager)
 	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
-	webSyncer, err := dockerweb.NewAgentWindowsPrivateSyncer(agentServices, services.NewAgentTargetSource(st))
+	webSyncer, err := dockerweb.NewAgentWindowsPrivateSyncer(agentServices, services.NewAgentTargetSource(st), func(ctx context.Context, server string) error {
+		id := services.ID(strings.ToLower(strings.TrimSpace(server)))
+		if err := agentDocker.Validate(ctx, id); err != nil {
+			return err
+		}
+		return agentDocker.Reload(ctx, id)
+	})
 	if err != nil {
 		return fmt.Errorf("daemon: Windows private web syncer: %w", err)
 	}
@@ -264,7 +274,7 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("daemon: Windows Docker web provider: %w", err)
 	}
-	activator := &windowsDockerActivator{manager: serviceManager}
+	activator := &windowsDockerActivator{manager: serviceManager, state: siteService, switchTo: webSwitch}
 	siteService.ConfigureDockerServing(sites.DockerServingConfig{
 		Syncer:    webSyncer,
 		Switch:    windowsProvider,
@@ -275,7 +285,12 @@ func Run(ctx context.Context, opts Options) error {
 	})
 	serviceManager.RegisterPreparers(servicecontrol.NewWebPreparers(
 		windowsProvider,
-		servicecontrol.WebGuard{State: siteService},
+		servicecontrol.WebGuard{
+			State: siteService,
+			Fallback: func(ctx context.Context, _ services.ID) error {
+				return siteService.SetServingMode(ctx, config.ServingModeBuiltin)
+			},
+		},
 	))
 
 	agentConfig := &windowsAgentConfigAdapter{
@@ -296,7 +311,7 @@ func Run(ctx context.Context, opts Options) error {
 		logger.Warn("daemon: service config manager init", "error", err)
 	}
 
-	performanceService := perfservice.NewService(windowsPerformanceServiceConfig(cfg, st, serviceManager, siteService, logger))
+	performanceService := perfservice.NewService(windowsPerformanceServiceConfig(cfg, st, serviceManager, siteService, logger, perfHost))
 
 	runtimeService := &windowsRuntimeService{
 		backend:            wslBackend,
@@ -569,6 +584,11 @@ func Run(ctx context.Context, opts Options) error {
 	}()
 
 	logger.Info("Windows daemon ready", "home", cfg.Home, "dashboard_port", cfg.UIPort, "pipe", SocketPath(cfg.Home))
+
+	// Repair installs whose service state says builtin while nginx or Apache is
+	// actually running. The live worker status is authoritative; SQLite may
+	// still say installed after an earlier failed activation.
+	go activateDefaultWindowsWebServerLive(ctx, cfg, siteService, serviceManager, logger)
 
 	select {
 	case <-ctx.Done():
@@ -944,6 +964,30 @@ func (h *helperAdapter) Status(ctx context.Context) (helperproto.StatusResponse,
 	return c.Status(ctx)
 }
 
+func (h *helperAdapter) PerformanceStatus(ctx context.Context) (helperproto.PerformanceStatusResponse, error) {
+	c := h.get()
+	if c == nil {
+		return helperproto.PerformanceStatusResponse{}, helperproto.ErrNotImplemented
+	}
+	return c.PerformanceStatus(ctx)
+}
+
+func (h *helperAdapter) PerformanceApply(ctx context.Context, req helperproto.PerformanceApplyRequest) (helperproto.PerformanceApplyResponse, error) {
+	c := h.get()
+	if c == nil {
+		return helperproto.PerformanceApplyResponse{}, helperproto.ErrNotImplemented
+	}
+	return c.PerformanceApply(ctx, req)
+}
+
+func (h *helperAdapter) PerformanceReset(ctx context.Context, req helperproto.PerformanceResetRequest) (helperproto.PerformanceResetResponse, error) {
+	c := h.get()
+	if c == nil {
+		return helperproto.PerformanceResetResponse{}, helperproto.ErrNotImplemented
+	}
+	return c.PerformanceReset(ctx, req)
+}
+
 func (h *helperAdapter) VhostStatus(ctx context.Context) (helperproto.VhostStatusResponse, error) {
 	c := h.get()
 	if c == nil {
@@ -1082,16 +1126,17 @@ func windowsPerformanceRoot(distro string) string {
 // windowsPerformanceServiceConfig wires the performance service. Managed
 // includes and performance backups live beside the Docker services inside the
 // WSL agent root, not in the Windows home.
-func windowsPerformanceServiceConfig(cfg config.Config, st perfservice.SettingsStore, web perfservice.WebServices, sites perfservice.Sites, logger *slog.Logger) perfservice.ServiceConfig {
+func windowsPerformanceServiceConfig(cfg config.Config, st perfservice.SettingsStore, web perfservice.WebServices, sites perfservice.Sites, logger *slog.Logger, host *windowsPerformanceHost) perfservice.ServiceConfig {
 	return perfservice.ServiceConfig{
 		Root:              windowsPerformanceRoot(cfg.WSLDistro),
 		Store:             st,
 		Services:          web,
 		Sites:             sites,
+		Helper:            host,
 		HTTPPort:          cfg.HTTPPort,
 		HTTPSPort:         cfg.HTTPSPort,
 		ServingMode:       cfg.ServingMode,
-		DisableHostTuning: true,
+		DisableHostTuning: false,
 		Logger:            logger,
 	}
 }
@@ -1453,9 +1498,53 @@ func activeWindowsWebServer(ctx context.Context, st *store.Store) (string, error
 	return "", nil
 }
 
+// activeWindowsWebServerLive consults the helper-backed service view. It is
+// used after readiness so a slow WSL agent cannot delay the daemon.
+func activeWindowsWebServerLive(ctx context.Context, manager *servicecontrol.Manager) (string, error) {
+	if manager == nil {
+		return "", nil
+	}
+	list, err := manager.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, svc := range list {
+		if svc.Group != services.GroupWeb {
+			continue
+		}
+		if svc.Active || svc.State == services.StateActive {
+			return string(svc.ID), nil
+		}
+	}
+	return "", nil
+}
+
+func activateDefaultWindowsWebServerLive(ctx context.Context, cfg config.Config, siteService *sites.Service, manager *servicecontrol.Manager, logger *slog.Logger) {
+	if cfg.ServingMode != config.ServingModeBuiltin || cfg.ServingProvider != config.ServingProviderNative {
+		return
+	}
+	activateCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	server, err := activeWindowsWebServerLive(activateCtx, manager)
+	if err != nil {
+		logger.Warn("daemon: read live web server", "error", err)
+		return
+	}
+	if server == "" {
+		return
+	}
+	if err := siteService.SetServingMode(activateCtx, server); err != nil {
+		logger.Warn("daemon: activate default web server", "server", server, "error", err)
+		return
+	}
+	logger.Info("daemon: activated default web server", "server", server)
+}
+
 // windowsDockerActivator maps a serving mode to the managed Docker web service.
 type windowsDockerActivator struct {
-	manager *servicecontrol.Manager
+	manager  *servicecontrol.Manager
+	state    *sites.Service
+	switchTo *servicecontrol.WebSwitch
 }
 
 // ActivateServingMode starts the requested managed web server.
@@ -1471,6 +1560,38 @@ func (a *windowsDockerActivator) ActivateServingMode(ctx context.Context, mode s
 	default:
 		return fmt.Errorf("daemon: unsupported Windows web server %q", mode)
 	}
+}
+
+// SwitchServingMode moves directly between nginx and Apache. It stops the old
+// container, resets the saved state to builtin so the target activation sees a
+// clean baseline, then activates the target. Any failure restarts the old
+// container and restores its route.
+func (a *windowsDockerActivator) SwitchServingMode(ctx context.Context, from, to string) error {
+	if a == nil || a.manager == nil || a.state == nil || a.switchTo == nil {
+		return errors.New("daemon: Docker serving switch is not configured")
+	}
+	if from == to {
+		return nil
+	}
+	if err := a.switchTo.StopActiveServer(ctx, from); err != nil {
+		return fmt.Errorf("daemon: stop docker %s: %w", from, err)
+	}
+	if err := a.state.SaveServingState(ctx, config.ServingModeBuiltin, config.ServingProviderNative); err != nil {
+		_ = a.switchTo.StartActiveServer(context.WithoutCancel(ctx), from)
+		return fmt.Errorf("daemon: reset serving state before switch: %w", err)
+	}
+	if err := a.ActivateServingMode(ctx, to); err != nil {
+		restartErr := a.switchTo.StartActiveServer(context.WithoutCancel(ctx), from)
+		if restartErr != nil {
+			_ = a.state.SaveServingState(context.WithoutCancel(ctx), config.ServingModeBuiltin, config.ServingProviderNative)
+			_ = a.state.RebuildRoutes(context.WithoutCancel(ctx))
+			return errors.Join(err, fmt.Errorf("daemon: restart %s after failed switch: %w", from, restartErr))
+		}
+		_ = a.state.SaveServingState(context.WithoutCancel(ctx), from, config.ServingProviderDocker)
+		_ = a.state.RebuildRoutes(context.WithoutCancel(ctx))
+		return fmt.Errorf("daemon: activate %s after stopping %s: %w", to, from, err)
+	}
+	return a.state.RebuildRoutes(ctx)
 }
 
 // windowsAgentConfigAdapter adapts the authenticated agent client for config
@@ -1576,6 +1697,33 @@ func (a *windowsAgentServiceAdapter) SyncWeb(ctx context.Context, req agentproto
 		return agentproto.WebSyncResponse{}, err
 	}
 	return c.SyncWeb(ctx, req)
+}
+
+// PerformanceStatus reports WSL host tuning through the agent.
+func (a *windowsAgentServiceAdapter) PerformanceStatus(ctx context.Context) (agentproto.PerformanceStatusResponse, error) {
+	c, err := a.ensureAwake(ctx)
+	if err != nil {
+		return agentproto.PerformanceStatusResponse{}, err
+	}
+	return c.PerformanceStatus(ctx)
+}
+
+// PerformanceApply applies WSL host tuning through the agent.
+func (a *windowsAgentServiceAdapter) PerformanceApply(ctx context.Context, req agentproto.PerformanceApplyRequest) (agentproto.PerformanceApplyResponse, error) {
+	c, err := a.ensureAwake(ctx)
+	if err != nil {
+		return agentproto.PerformanceApplyResponse{}, err
+	}
+	return c.PerformanceApply(ctx, req)
+}
+
+// PerformanceReset restores WSL host tuning through the agent.
+func (a *windowsAgentServiceAdapter) PerformanceReset(ctx context.Context) (agentproto.PerformanceResetResponse, error) {
+	c, err := a.ensureAwake(ctx)
+	if err != nil {
+		return agentproto.PerformanceResetResponse{}, err
+	}
+	return c.PerformanceReset(ctx)
 }
 
 func (a *windowsAgentConfigAdapter) ServiceConfig(ctx context.Context, id string) (agentproto.ServiceConfigResponse, error) {

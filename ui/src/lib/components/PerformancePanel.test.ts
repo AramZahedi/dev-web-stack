@@ -22,7 +22,7 @@ describe('PerformancePanel', () => {
     vi.clearAllMocks();
   });
 
-  it('displays host tuning disabled banner when host tuning is unavailable on Windows', async () => {
+  it('displays an unavailable banner when host tuning is unavailable', async () => {
     const perfState: PerformanceState = {
       profile: 'balanced',
       values: {},
@@ -37,9 +37,9 @@ describe('PerformancePanel', () => {
         available: false,
         managed: false,
         applied: false,
-        error: 'Host sysctl and limits tuning are disabled on Windows.',
+        error: 'The privileged host helper is not available.',
       },
-      warnings: ['Host sysctl and limits tuning are disabled on Windows.'],
+      warnings: ['The privileged host helper is not available.'],
     };
 
     mockApi.getPerformance.mockResolvedValue(perfState);
@@ -48,9 +48,37 @@ describe('PerformancePanel', () => {
 
     render(PerformancePanel);
 
-    const elements = await screen.findAllByText('Host sysctl and limits tuning are disabled on Windows.');
+    const elements = await screen.findAllByText('The privileged host helper is not available.');
     expect(elements.length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Disabled')).toBeTruthy();
+    expect(screen.getByText('Unavailable')).toBeTruthy();
+  });
+
+  it('renders WSL and Windows host tuning targets', async () => {
+    const perfState: PerformanceState = {
+      profile: 'throughput',
+      values: {},
+      resources: { cpu_count: 8, memory_total_bytes: 16 * 1024 ** 3, memory_available_bytes: 8 * 1024 ** 3 },
+      host_tuning: {
+        available: true,
+        managed: true,
+        applied: true,
+        targets: [
+          { target: 'wsl', available: true, applied: true },
+          { target: 'windows', available: true, applied: true, restart_required: true },
+          { target: 'wsl-vm', available: true, applied: true, restart_required: true },
+        ],
+      },
+    };
+    mockApi.getPerformance.mockResolvedValue(perfState);
+    mockApi.listSites.mockResolvedValue([]);
+    mockApi.listBenchmarks.mockResolvedValue([]);
+
+    render(PerformancePanel);
+
+    expect(await screen.findByText('wsl')).toBeTruthy();
+    expect(screen.getByText('windows')).toBeTruthy();
+    expect(screen.getByText('wsl-vm')).toBeTruthy();
+    expect(screen.getAllByText('Restart required').length).toBe(2);
   });
 
   it('displays host tuning status when host tuning is available', async () => {

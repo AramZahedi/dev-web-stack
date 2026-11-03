@@ -24,6 +24,11 @@ func (v Values) Validate() error {
 	if err := v.Host.validate(); err != nil {
 		return err
 	}
+	if v.Windows != (WindowsHostValues{}) {
+		if err := v.Windows.Validate(); err != nil {
+			return err
+		}
+	}
 	wantBacklog := minInt(v.Host.Somaxconn, maxBacklog)
 	if v.Apache.ListenBacklog != wantBacklog {
 		return invalid("apache.listen_backlog", "%d must follow host somaxconn %d (capped at %d)", v.Apache.ListenBacklog, v.Host.Somaxconn, maxBacklog)

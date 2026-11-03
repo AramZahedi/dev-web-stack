@@ -141,12 +141,19 @@ func (r *Router) Replace(s Snapshot) {
 // web server (e.g. 127.0.0.1:18080) when active is true, and restores original
 // routes when active is false.
 func (r *Router) UpdateDockerWebRoutes(ctx context.Context, active bool, host string, port int) error {
+	return r.UpdateDockerWebRoutesExcept(ctx, active, host, port, nil)
+}
+
+// UpdateDockerWebRoutesExcept redirects non-dashboard routes except the hosts
+// in keep. Kept hosts retain their direct upstream so Windows-source sites can
+// stay on the daemon's built-in route while WSL sites use Docker.
+func (r *Router) UpdateDockerWebRoutesExcept(ctx context.Context, active bool, host string, port int, keep map[string]bool) error {
 	current := r.load()
 	if active {
 		newRoutes := make(map[string]Route, len(current.Routes))
 		upstream := net.JoinHostPort(host, strconv.Itoa(port))
 		for h, route := range current.Routes {
-			if route.Host == "devstack.test" || route.SiteID == "__dashboard__" {
+			if route.Host == "devstack.test" || route.SiteID == "__dashboard__" || keep[normalizeHost(h)] {
 				newRoutes[h] = route
 				continue
 			}

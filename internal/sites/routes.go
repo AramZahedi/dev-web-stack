@@ -85,8 +85,22 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 		if site.Kind == model.SitePHP {
 			upstreamPort = site.FastCGIPort
 		}
+		// External static sites served by the Docker web server have no
+		// supervised backend and therefore no HTTP port. Publish their routes
+		// directly to the private web port so the host is not a proxy 404.
+		dockerStatic := upstreamPort == 0 &&
+			site.Kind == model.SiteStatic &&
+			s.dockerServing() &&
+			s.deps.DockerRoute != nil &&
+			!s.suppressDockerRoutes &&
+			!s.siteNeedsBackend(site)
+		upstreamHost := s.backendHost(site.ID)
+		if dockerStatic {
+			upstreamHost, upstreamPort = s.dockerWebEndpoint()
+			kind = proxy.KindNode
+		}
 		if upstreamPort > 0 {
-			upstream := net.JoinHostPort(s.backendHost(site.ID), strconv.Itoa(upstreamPort))
+			upstream := net.JoinHostPort(upstreamHost, strconv.Itoa(upstreamPort))
 			route := proxy.Route{
 				SiteID:       site.ID,
 				Kind:         kind,
@@ -151,19 +165,37 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 				return nil
 			}
 		}
-		host := strings.TrimSpace(s.deps.DockerRouteHost)
-		if host == "" {
-			host = "127.0.0.1"
+		host, port := s.dockerWebEndpoint()
+		keep := map[string]bool{}
+		if router, ok := s.deps.DockerSyncer.(DockerSiteRouter); ok {
+			for _, site := range stored {
+				if router.DockerRoutable(site) {
+					continue
+				}
+				for _, host := range siteDomains(site) {
+					keep[strings.ToLower(host)] = true
+				}
+			}
 		}
-		port := s.deps.DockerRoutePort
-		if port == 0 {
-			port = 18080
-		}
-		if err := s.deps.DockerRoute.UpdateDockerWebRoutes(ctx, true, host, port); err != nil {
+		if err := s.deps.DockerRoute.UpdateDockerWebRoutesExcept(ctx, true, host, port, keep); err != nil {
 			return fmt.Errorf("sites: route site hosts to docker web server: %w", err)
 		}
 	}
 	return nil
+}
+
+// dockerWebEndpoint returns the private loopback address of the managed
+// Docker web server. It mirrors the defaults used by the Windows provider.
+func (s *Service) dockerWebEndpoint() (string, int) {
+	host := strings.TrimSpace(s.deps.DockerRouteHost)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := s.deps.DockerRoutePort
+	if port == 0 {
+		port = 18080
+	}
+	return host, port
 }
 
 // proxyKind maps a site kind onto a proxy route kind.

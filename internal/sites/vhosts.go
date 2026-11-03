@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
 	"github.com/AramZahedi/dev-web-stack/internal/helperproto"
@@ -62,10 +63,32 @@ func (s *Service) ServingProvider() string {
 	return s.servingProvider()
 }
 
+// externalStatic reports whether a static site is served by the external web
+// server with no supervised process. During a Docker -> builtin switch the
+// suppressed Docker route means every static site needs its builtin backend.
+func (s *Service) externalStatic(site model.Site) bool {
+	return site.Kind == model.SiteStatic &&
+		s.externalServing() &&
+		!s.suppressDockerRoutes &&
+		!s.siteNeedsBackend(site)
+}
+
 // siteNeedsBackend reports whether a site kind is served by a supervised
-// process in the current mode. External static sites have no process.
+// process in the current mode. External static sites have no process, except
+// Windows-source static sites that stay on the daemon's direct route.
 func (s *Service) siteNeedsBackend(site model.Site) bool {
-	return site.Kind != model.SiteStatic || !s.externalServing()
+	if site.Kind != model.SiteStatic {
+		return true
+	}
+	if !s.externalServing() {
+		return true
+	}
+	if s.dockerServing() && s.deps.DockerSyncer != nil {
+		if router, ok := s.deps.DockerSyncer.(DockerSiteRouter); ok && !router.DockerRoutable(site) {
+			return true
+		}
+	}
+	return false
 }
 
 // ServingMode returns the currently effective serving mode. It reflects a
@@ -163,6 +186,11 @@ func (s *Service) syncVhostsLocked(ctx context.Context, excludeID string) error 
 		if err := s.deps.DockerSyncer.Sync(ctx, mode); err != nil {
 			return fmt.Errorf("sites: sync docker %s vhosts: %w", mode, err)
 		}
+		if reloader, ok := s.deps.DockerSyncer.(DockerReloader); ok {
+			if err := reloader.DockerReload(ctx, mode); err != nil {
+				return fmt.Errorf("sites: reload docker %s vhosts: %w", mode, err)
+			}
+		}
 		return nil
 	}
 	if !s.externalServing() {
@@ -222,6 +250,9 @@ func (s *Service) ReconcileServingMode(ctx context.Context) error {
 		if err := s.deps.DockerSyncer.Sync(ctx, mode); err != nil {
 			return fmt.Errorf("sites: reconcile docker %s vhosts: %w", mode, err)
 		}
+		// No reload here: startup may run before the container is up. A
+		// running container has already loaded the files from the last sync,
+		// and site-driven syncs reload explicitly.
 		return nil
 	}
 	if s.deps.Vhosts == nil {
@@ -395,9 +426,15 @@ func (s *Service) setWindowsDockerServingMode(ctx context.Context, mode string) 
 
 	if provider == config.ServingProviderDocker {
 		if current == mode {
-			return s.SyncVhosts(ctx)
+			if err := s.SyncVhosts(ctx); err != nil {
+				return err
+			}
+			return s.RebuildRoutes(ctx)
 		}
-		return fmt.Errorf("sites: docker %s is active; switch to builtin before activating %s", current, mode)
+		if err := s.deps.DockerService.SwitchServingMode(ctx, current, mode); err != nil {
+			return fmt.Errorf("sites: switch docker %s to %s: %w", current, mode, err)
+		}
+		return nil
 	}
 	if provider != config.ServingProviderNative || current != config.ServingModeBuiltin {
 		return fmt.Errorf("sites: cannot activate %s from serving state %s/%s", mode, current, provider)
@@ -405,7 +442,10 @@ func (s *Service) setWindowsDockerServingMode(ctx context.Context, mode string) 
 	if err := s.deps.DockerService.ActivateServingMode(ctx, mode); err != nil {
 		return fmt.Errorf("sites: activate docker %s: %w", mode, err)
 	}
-	return nil
+	if s.deps.Router == nil || s.deps.Certs == nil {
+		return nil
+	}
+	return s.RebuildRoutes(ctx)
 }
 
 // helperModeLocked returns the helper's persisted mode, treating an old helper
@@ -720,13 +760,16 @@ func (s *Service) startAfterDockerLocked(ctx context.Context) error {
 	if err := s.startBuiltinProxyLocked(ctx); err != nil {
 		return fmt.Errorf("sites: start built-in proxy after docker: %w", err)
 	}
-	if err := s.rebuildRoutesLocked(ctx); err != nil {
-		restoreProxy()
-		return fmt.Errorf("sites: publish routes after docker: %w", err)
-	}
+	// Static backends may allocate their ports here. Publish routes only after
+	// those ports exist, or a WSL static site that was external under Docker
+	// would be missing from the builtin snapshot.
 	if err := s.startStaticBackendsLocked(ctx); err != nil {
 		restoreProxy()
 		return fmt.Errorf("sites: start static backends after docker: %w", err)
+	}
+	if err := s.rebuildRoutesLocked(ctx); err != nil {
+		restoreProxy()
+		return fmt.Errorf("sites: publish routes after docker: %w", err)
 	}
 	if s.deps.Forwarders != nil {
 		if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, true); err != nil {
@@ -872,8 +915,14 @@ func (s *Service) stopStaticBackendsLocked(ctx context.Context) error {
 		if site.Kind != model.SiteStatic || site.DesiredState != model.DesiredRunning {
 			continue
 		}
+		// A static site served by an external web server has no supervised
+		// backend and therefore no port. Asking the agent to stop it would
+		// fail with not-found and block the switch.
+		if site.HTTPPort == 0 {
+			continue
+		}
 		stopped = append(stopped, site)
-		if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil {
+		if err := s.deps.Backend.Stop(ctx, site.ID, true); err != nil && !errors.Is(err, agentproto.ErrNotFound) {
 			errs = append(errs, fmt.Errorf("sites: stop static site %q: %w", site.Name, err))
 		}
 	}
@@ -1257,6 +1306,10 @@ func staticRootError(site model.Site) error {
 	path := absoluteDocumentRoot(site)
 	if path == "" {
 		return errors.New("document root is empty")
+	}
+	// WSL paths are validated by the agent that actually owns the filesystem.
+	if runtime.GOOS == "windows" && strings.HasPrefix(path, "/") {
+		return nil
 	}
 	info, err := os.Stat(path)
 	if err != nil {

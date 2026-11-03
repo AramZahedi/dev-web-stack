@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"path"
 	"strings"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
@@ -38,6 +39,9 @@ func (s *AgentTargetSource) PrivateWebTargets(ctx context.Context, server string
 		if strings.TrimSpace(site.ID) == "" || site.ID == "__dashboard__" {
 			continue
 		}
+		if !s.DockerRoutable(site) {
+			continue
+		}
 		domain := strings.TrimSpace(site.Domain)
 		if domain == "" || domain == "devstack.test" {
 			continue
@@ -61,17 +65,11 @@ func (s *AgentTargetSource) PrivateWebTargets(ctx context.Context, server string
 				continue
 			}
 			kind = "php"
-			address = strings.TrimSpace(site.BackendPath)
-			if address == "" {
-				address = strings.TrimSpace(site.HostPath)
-			}
+			address = agentDocumentRoot(site)
 			port = site.FastCGIPort
 		case model.SiteStatic:
 			kind = "static"
-			address = strings.TrimSpace(site.BackendPath)
-			if address == "" {
-				address = strings.TrimSpace(site.HostPath)
-			}
+			address = agentDocumentRoot(site)
 			port = 0
 		default:
 			continue
@@ -95,4 +93,33 @@ func (s *AgentTargetSource) PrivateWebTargets(ctx context.Context, server string
 		})
 	}
 	return targets, nil
+}
+
+// agentDocumentRoot resolves a site's document root against its WSL backend
+// path. It mirrors sites.absoluteDocumentRoot for the agent-facing target.
+func agentDocumentRoot(site model.Site) string {
+	backend := strings.ReplaceAll(strings.TrimSpace(site.BackendPath), `\`, "/")
+	root := strings.ReplaceAll(strings.TrimSpace(site.DocumentRoot), `\`, "/")
+	if root == "" || root == "." {
+		return path.Clean(backend)
+	}
+	if path.IsAbs(root) {
+		return path.Clean(root)
+	}
+	return path.Clean(path.Join(backend, root))
+}
+
+// DockerRoutable reports whether a site can be served by the WSL Docker web
+// server. Node sites are proxied, so only their loopback port matters. Static
+// and PHP sites need a document root inside the ext4 projects mount; Windows
+// source paths stay on the daemon's direct route.
+func (s *AgentTargetSource) DockerRoutable(site model.Site) bool {
+	if site.Kind == model.SiteNode {
+		return true
+	}
+	if site.SourceMode == model.SourceWindows {
+		return false
+	}
+	root := agentDocumentRoot(site)
+	return root == "/data/devstack/projects" || strings.HasPrefix(root, "/data/devstack/projects/")
 }

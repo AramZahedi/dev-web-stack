@@ -29,6 +29,7 @@
     NodeDefaultStatus,
     PHPDefaultStatus,
     RuntimeBuild,
+    ServiceView,
     Settings,
     ServingMode,
     Site,
@@ -92,6 +93,8 @@
   let phpDefaultsOpen = $state(false);
   let phpDefaultsVersion = $state('');
   let sites = $state<Site[]>([]);
+  let services = $state<ServiceView[]>([]);
+  let servicesLoaded = $state(false);
   let toolingRuntimes = $state<RuntimeBuild[]>([]);
   let tools = $state<ToolStatus[]>([]);
   let toolsError = $state<{ code: string; message: string } | null>(null);
@@ -119,6 +122,9 @@
   );
   const version = $derived(settings?.version ?? $daemon.version ?? '0.1.0');
   const isWindowsHost = $derived(Boolean(settings?.home && /^[a-z]:[\\/]/i.test(settings.home)));
+  const installedWebServers = $derived(
+    new Set(services.filter((service) => service.installed).map((service) => service.id)),
+  );
   const failingTargets = $derived(trust.filter((target) => !target.ok).length);
   const activeMode = $derived(vhostStatus?.mode ?? settings?.serving_mode ?? 'builtin');
   const activeModeLabel = $derived(modeLabel(activeMode));
@@ -261,7 +267,15 @@
 
   function modeHint(mode: ServingMode): string {
     if (mode === 'builtin') return 'Go proxy + forwarders';
+    if (isWindowsHost && servicesLoaded && !installedWebServers.has(mode)) {
+      return 'Managed Docker container — install from Services';
+    }
     return isWindowsHost ? 'Managed Docker container' : 'Native vhosts';
+  }
+
+  function modeSelectable(mode: ServingMode): boolean {
+    if (mode === 'builtin' || !isWindowsHost || !servicesLoaded) return true;
+    return installedWebServers.has(mode);
   }
 
   function modeDescription(mode: ServingMode): string {
@@ -332,6 +346,12 @@
     // the whole settings page into an error: the remaining settings are local
     // to the daemon and still actionable.
     await refreshTrust();
+    try {
+      services = await api.listServices();
+      servicesLoaded = true;
+    } catch {
+      services = [];
+    }
     loading = false;
   }
 
@@ -533,8 +553,12 @@
             : `${modeLabel(target)} is now serving sites`,
         message:
           target === 'builtin'
-            ? 'The devstack vhosts were removed and the helper forwarders own ports 80 and 443 again.'
-            : `${modeLabel(target)} owns ports 80 and 443. The built-in proxy has stopped.`,
+            ? isWindowsHost
+              ? 'Site traffic returns to the built-in proxy. The daemon keeps ports 80 and 443.'
+              : 'The devstack vhosts were removed and the helper forwarders own ports 80 and 443 again.'
+            : isWindowsHost
+              ? `${modeLabel(target)} handles site traffic through its managed Docker container. The daemon keeps ports 80 and 443.`
+              : `${modeLabel(target)} owns ports 80 and 443. The built-in proxy has stopped.`,
       });
     } catch (caught) {
       const described = describeError(caught);
@@ -1148,7 +1172,7 @@
                 class:active={activeMode === option.value}
                 aria-pressed={activeMode === option.value}
                 aria-label={`Use ${option.label} serving`}
-                disabled={modeBusy}
+                disabled={modeBusy || !modeSelectable(option.value)}
                 onclick={() => requestServingMode(option.value)}
               >
                 <span class="mode-option-head">

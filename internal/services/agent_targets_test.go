@@ -27,12 +27,13 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 				HTTPPort: 7070,
 			},
 			{
-				ID:          "app-php",
-				Domain:      "app.test",
-				Kind:        model.SitePHP,
-				BackendPath: "/data/devstack/projects/app",
-				FastCGIPort: 43001,
-				WWW:         true,
+				ID:           "app-php",
+				Domain:       "app.test",
+				Kind:         model.SitePHP,
+				BackendPath:  "/data/devstack/projects/app",
+				DocumentRoot: "public",
+				FastCGIPort:  43001,
+				WWW:          true,
 			},
 			{
 				ID:       "api-node",
@@ -45,6 +46,20 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 				Domain:      "static.test",
 				Kind:        model.SiteStatic,
 				BackendPath: "/data/devstack/projects/static",
+			},
+			{
+				ID:          "windows-static",
+				Domain:      "windows-static.test",
+				Kind:        model.SiteStatic,
+				BackendPath: "/mnt/c/Users/Aram/.devstack/projects/windows-static",
+				SourceMode:  model.SourceWindows,
+			},
+			{
+				ID:         "windows-node",
+				Domain:     "windows-node.test",
+				Kind:       model.SiteNode,
+				HTTPPort:   41006,
+				SourceMode: model.SourceWindows,
 			},
 			{
 				ID:          "stopped-node",
@@ -84,10 +99,10 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 
 	// PHP site carries the full vhost metadata and a www alias on one target.
 	php := byTarget["app.test"]
-	if php.Kind != "php" || php.Port != 43001 || php.Address != "/data/devstack/projects/app" {
+	if php.Kind != "php" || php.Port != 43001 || php.Address != "/data/devstack/projects/app/public" {
 		t.Errorf("app.test target = kind:%s port:%d addr:%s", php.Kind, php.Port, php.Address)
 	}
-	if !php.WWW || php.HostDocumentRoot != "/data/devstack/projects/app" {
+	if !php.WWW || php.HostDocumentRoot != "/data/devstack/projects/app/public" {
 		t.Errorf("app.test metadata = %+v", php)
 	}
 	if _, ok := byTarget["www.app.test"]; ok {
@@ -110,5 +125,13 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 		if _, ok := byDomain[domain]; ok {
 			t.Errorf("stopped site %s was included as a private web target", domain)
 		}
+	}
+
+	// Windows-source static sites stay on the daemon's direct route.
+	if _, ok := byTarget["windows-static.test"]; ok {
+		t.Error("Windows-source static site was included in the Docker target set")
+	}
+	if target, ok := byTarget["windows-node.test"]; !ok || target.Kind != "node" {
+		t.Errorf("Windows-source Node site was not included as a proxy target: %+v", target)
 	}
 }

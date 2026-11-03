@@ -223,6 +223,11 @@ func (a *fakeDockerServiceActivator) ActivateServingMode(_ context.Context, mode
 	return a.err
 }
 
+func (a *fakeDockerServiceActivator) SwitchServingMode(_ context.Context, from, to string) error {
+	a.mode = from + "->" + to
+	return a.err
+}
+
 func TestWindowsSetServingModeDelegatesDockerActivation(t *testing.T) {
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "state.db"))
@@ -245,6 +250,73 @@ func TestWindowsSetServingModeDelegatesDockerActivation(t *testing.T) {
 	}
 	if activator.mode != "apache" {
 		t.Fatalf("activated mode = %q, want apache", activator.mode)
+	}
+}
+
+func TestWindowsSetServingModeSwitchesDockerServer(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := config.Default()
+	cfg.Home = dir
+	cfg.ServingMode = config.ServingModeNginx
+	cfg.ServingProvider = config.ServingProviderDocker
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	activator := &fakeDockerServiceActivator{}
+	svc := NewService(Deps{Store: db, Config: cfg, DockerService: activator})
+	if err := svc.SetServingMode(context.Background(), "apache"); err != nil {
+		t.Fatalf("SetServingMode(apache): %v", err)
+	}
+	if activator.mode != "nginx->apache" {
+		t.Fatalf("switch = %q, want nginx->apache", activator.mode)
+	}
+}
+
+func TestStartAfterDockerPublishesStaticRoutesAfterPortAllocation(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	site := model.Site{
+		ID:           "static",
+		Name:         "static",
+		Domain:       "static.test",
+		Kind:         model.SiteStatic,
+		SourceMode:   model.SourceWindows,
+		HostPath:     fakes.root,
+		BackendPath:  fakes.root,
+		DocumentRoot: ".",
+		DesiredState: model.DesiredRunning,
+		Status:       model.StatusRunning,
+		TLS:          true,
+	}
+	if err := fakes.store.CreateSite(context.Background(), site); err != nil {
+		t.Fatalf("create static site: %v", err)
+	}
+	// Docker -> builtin transitions suppress Docker routes while static
+	// backends are restarted.
+	svc.suppressDockerRoutes = true
+	if err := svc.StartAfterDocker(context.Background()); err != nil {
+		t.Fatalf("StartAfterDocker: %v", err)
+	}
+	started, err := fakes.store.GetSite(context.Background(), site.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.HTTPPort == 0 {
+		t.Fatal("static backend did not receive a port")
+	}
+	route, ok := fakes.router.Lookup("static.test")
+	if !ok {
+		t.Fatal("static route was not published after backend start")
+	}
+	if route.Upstream == "" || route.Upstream == "127.0.0.1:18080" {
+		t.Fatalf("static route upstream = %q, want the direct backend", route.Upstream)
 	}
 }
 

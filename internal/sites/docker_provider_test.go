@@ -14,12 +14,15 @@ import (
 )
 
 type fakeDockerSyncer struct {
-	mu       sync.Mutex
-	calls    []string
-	err      error
-	lastSync time.Time
-	configOK bool
-	lastErr  string
+	mu        sync.Mutex
+	calls     []string
+	err       error
+	lastSync  time.Time
+	configOK  bool
+	lastErr   string
+	routable  func(model.Site) bool
+	reloadErr error
+	reloads   []string
 }
 
 func (f *fakeDockerSyncer) Sync(_ context.Context, server string) error {
@@ -33,6 +36,20 @@ func (f *fakeDockerSyncer) DockerStatus() (time.Time, bool, string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastSync, f.configOK, f.lastErr
+}
+
+func (f *fakeDockerSyncer) DockerRoutable(site model.Site) bool {
+	if f.routable != nil {
+		return f.routable(site)
+	}
+	return true
+}
+
+func (f *fakeDockerSyncer) DockerReload(_ context.Context, server string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reloads = append(f.reloads, server)
+	return f.reloadErr
 }
 
 func (f *fakeDockerSyncer) count() int {
@@ -128,10 +145,16 @@ type fakeDockerRoute struct {
 	active bool
 	host   string
 	port   int
+	keep   map[string]bool
 	err    error
 }
 
 func (r *fakeDockerRoute) UpdateDockerWebRoutes(_ context.Context, active bool, host string, port int) error {
+	return r.UpdateDockerWebRoutesExcept(context.Background(), active, host, port, nil)
+}
+
+func (r *fakeDockerRoute) UpdateDockerWebRoutesExcept(_ context.Context, active bool, host string, port int, keep map[string]bool) error {
+	r.keep = keep
 	r.active, r.host, r.port = active, host, port
 	return r.err
 }
@@ -177,6 +200,9 @@ func TestDockerProviderSyncVhostsUsesDockerSyncer(t *testing.T) {
 	}
 	if fakes.vhosts.syncCount() != 0 || len(fakes.vhosts.modeCalls) != 0 {
 		t.Fatalf("native vhosts were called in docker mode: sync=%d modes=%v", fakes.vhosts.syncCount(), fakes.vhosts.modeCalls)
+	}
+	if len(syncer.reloads) != 1 || syncer.reloads[0] != "nginx" {
+		t.Fatalf("docker reloads = %v, want nginx", syncer.reloads)
 	}
 }
 
@@ -547,6 +573,125 @@ func TestDockerProviderStaticSitesStillNeedNoBackend(t *testing.T) {
 	site.Kind = model.SiteNode
 	if !svc.siteNeedsBackend(site) {
 		t.Fatal("Node site must keep its native process")
+	}
+}
+
+func TestDockerProviderExternalStaticSiteRoutesToPrivateServer(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	svc.deps.DockerSyncer = &fakeDockerSyncer{configOK: true}
+	svc.deps.DockerRoute = &fakeDockerRoute{}
+	svc.deps.DockerRouteHost = "127.0.0.1"
+	svc.deps.DockerRoutePort = 18080
+	site := model.Site{
+		ID:           "static",
+		Name:         "static",
+		Domain:       "static.test",
+		Kind:         model.SiteStatic,
+		SourceMode:   model.SourceWSL,
+		BackendPath:  "/data/devstack/projects/static",
+		DesiredState: model.DesiredRunning,
+		Status:       model.StatusRunning,
+		TLS:          true,
+	}
+	if err := fakes.store.CreateSite(context.Background(), site); err != nil {
+		t.Fatalf("create static site: %v", err)
+	}
+	if err := svc.RebuildRoutes(context.Background()); err != nil {
+		t.Fatalf("RebuildRoutes: %v", err)
+	}
+	route, ok := fakes.router.Lookup("static.test")
+	if !ok {
+		t.Fatal("external static site has no proxy route")
+	}
+	if route.Upstream != "127.0.0.1:18080" {
+		t.Fatalf("upstream = %q, want 127.0.0.1:18080", route.Upstream)
+	}
+	if route.Kind != "node" || !route.TLS {
+		t.Fatalf("route = %+v, want KindNode/TLS", route)
+	}
+}
+
+func TestDockerProviderWindowsStaticKeepsSupervisedBackend(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	svc.deps.DockerSyncer = &fakeDockerSyncer{
+		configOK: true,
+		routable: func(site model.Site) bool {
+			return site.SourceMode != model.SourceWindows
+		},
+	}
+	route := &fakeDockerRoute{}
+	svc.deps.DockerRoute = route
+	svc.deps.DockerRouteHost = "127.0.0.1"
+	svc.deps.DockerRoutePort = 18080
+	site, err := svc.Create(context.Background(), CreateRequest{
+		Name:       "win",
+		Path:       fakes.root,
+		Kind:       "static",
+		SourceMode: "windows",
+		TLS:        true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if site.HTTPPort == 0 {
+		t.Fatal("Windows static site has no backend port")
+	}
+	if !fakes.backend.started[site.ID] {
+		t.Fatal("Windows static backend was not started")
+	}
+	direct, ok := fakes.router.Lookup("win.test")
+	if !ok {
+		t.Fatal("Windows static site has no proxy route")
+	}
+	if direct.Upstream == "127.0.0.1:18080" {
+		t.Fatal("Windows static site was routed to the Docker server")
+	}
+	if !route.keep["win.test"] {
+		t.Fatalf("Docker route keep = %v, want win.test", route.keep)
+	}
+}
+
+func TestStopStaticBackendsSkipsSitesWithoutBackend(t *testing.T) {
+	svc, fakes := newTestService(t)
+	site := model.Site{
+		ID:           "static",
+		Name:         "static",
+		Domain:       "static.test",
+		Kind:         model.SiteStatic,
+		DesiredState: model.DesiredRunning,
+		Status:       model.StatusRunning,
+	}
+	if err := fakes.store.CreateSite(context.Background(), site); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.stopStaticBackendsLocked(context.Background()); err != nil {
+		t.Fatalf("stopStaticBackendsLocked: %v", err)
+	}
+	if got := fakes.backend.stopCount(); got != 0 {
+		t.Fatalf("backend Stop calls = %d, want 0 for a site without a backend", got)
+	}
+}
+
+func TestExternalStaticNeedsBackendDuringBuiltinTransition(t *testing.T) {
+	svc, _ := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	svc.deps.DockerSyncer = &fakeDockerSyncer{}
+	site := model.Site{
+		Kind:        model.SiteStatic,
+		SourceMode:  model.SourceWSL,
+		BackendPath: "/data/devstack/projects/static",
+	}
+	if !svc.externalStatic(site) {
+		t.Fatal("WSL static site is not external while Docker serving is active")
+	}
+	svc.suppressDockerRoutes = true
+	if svc.externalStatic(site) {
+		t.Fatal("WSL static site stayed external during the builtin transition")
 	}
 }
 

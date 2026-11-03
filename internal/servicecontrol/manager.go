@@ -317,6 +317,9 @@ func (m *Manager) deactivateLocked(ctx context.Context, id services.ID) error {
 		return err
 	}
 	if err := m.checkDeactivationGuard(ctx, id, false); err != nil {
+		if errors.Is(err, ErrWebFallbackStopped) {
+			return m.persist(ctx, svc, services.StateInstalledButStopped, false, "deactivate", "")
+		}
 		return err
 	}
 	if err := m.helper.Deactivate(ctx, string(id)); err != nil {
@@ -364,7 +367,7 @@ func (m *Manager) uninstallLocked(ctx context.Context, id services.ID, deleteDat
 	if err != nil {
 		return UninstallResult{}, err
 	}
-	if err := m.checkDeactivationGuard(ctx, id, true); err != nil {
+	if err := m.checkDeactivationGuard(ctx, id, true); err != nil && !errors.Is(err, ErrWebFallbackStopped) {
 		return UninstallResult{}, err
 	}
 	if err := m.helper.Uninstall(ctx, string(id), deleteData); err != nil {

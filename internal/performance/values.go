@@ -88,13 +88,14 @@ type HostValues struct {
 
 // Values is one fully computed performance profile.
 type Values struct {
-	Profile  Profile      `json:"profile"`
-	Hostname string       `json:"hostname,omitempty"`
-	Arch     string       `json:"arch,omitempty"`
-	Nginx    NginxValues  `json:"nginx"`
-	Apache   ApacheValues `json:"apache"`
-	PHP      PHPValues    `json:"php"`
-	Host     HostValues   `json:"host"`
+	Profile  Profile           `json:"profile"`
+	Hostname string            `json:"hostname,omitempty"`
+	Arch     string            `json:"arch,omitempty"`
+	Nginx    NginxValues       `json:"nginx"`
+	Apache   ApacheValues      `json:"apache"`
+	PHP      PHPValues         `json:"php"`
+	Host     HostValues        `json:"host"`
+	Windows  WindowsHostValues `json:"windows"`
 }
 
 // Options selects the profile and the active PHP sites. Custom values are
@@ -121,6 +122,7 @@ func Compute(res Resources, opts Options) (Values, error) {
 		v := *opts.Custom
 		v.Profile = Custom
 		v.PHP.Sites = append([]PHPSite(nil), v.PHP.Sites...)
+		v.Windows = fillWindowsDefaults(v.Windows, res)
 		if err := v.Validate(); err != nil {
 			return Values{}, err
 		}
@@ -152,6 +154,7 @@ func Compute(res Resources, opts Options) (Values, error) {
 		Apache:   apache,
 		PHP:      php,
 		Host:     host,
+		Windows:  computeWindowsHost(res, opts.Profile),
 	}
 	if err := v.Validate(); err != nil {
 		return Values{}, fmt.Errorf("performance: computed profile failed validation: %w", err)

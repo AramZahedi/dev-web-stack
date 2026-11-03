@@ -76,6 +76,7 @@
   const host = $derived(section(values, 'host'));
   const hostTuningState = $derived(performance?.host_tuning ?? { applied: false });
   const hostTuningAvailable = $derived(performance?.host_tuning?.available !== false);
+  const hostTargets = $derived(performance?.host_tuning?.targets ?? []);
   const appliedAt = $derived(performance?.applied?.applied_at ?? '');
   const benchSiteName = $derived(
     sites.find((site) => site.name === benchSite || site.id === benchSite)?.name ?? benchSite,
@@ -413,20 +414,39 @@
           <div>
             <span>Host tuning</span>
             {#if !hostTuningAvailable}
-              <strong>Disabled</strong>
-              <small>{performance?.host_tuning?.error || 'Unavailable on Windows'}</small>
+              <strong>Unavailable</strong>
+              <small>{performance?.host_tuning?.error || 'The privileged host helper is not available.'}</small>
             {:else}
               <strong>{hostTuningState.applied ? 'Applied' : 'Not applied'}</strong>
-              <small>{appliedAt ? `Last apply ${timestamp(appliedAt)}` : 'Explicit opt-in'}</small>
+              <small>{hostTargets.length ? hostTargets.map((target) => target.target).join(' + ') : (appliedAt ? `Last apply ${timestamp(appliedAt)}` : 'Selected by default')}</small>
             {/if}
           </div>
         </div>
       </div>
 
+      {#if hostTargets.length}
+        <div class="host-targets" role="list" aria-label="Host tuning targets">
+          {#each hostTargets as target (target.target)}
+            <div class="host-target" role="listitem">
+              <span class="host-target-name">{target.target}</span>
+              <Badge variant={target.error ? 'danger' : target.applied ? 'accent' : 'neutral'}>
+                {target.error ? 'Error' : target.applied ? 'Applied' : target.available ? 'Available' : 'Unavailable'}
+              </Badge>
+              {#if target.restart_required}
+                <Badge variant="warning">Restart required</Badge>
+              {/if}
+              {#if target.error}
+                <small>{target.error}</small>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+
       {#if !hostTuningAvailable}
         <div class="host-tuning-banner" role="status">
           <TriangleAlert size={14} strokeWidth={2} aria-hidden="true" />
-          <span>{performance?.host_tuning?.error || 'Host sysctl and limits tuning are disabled on Windows.'}</span>
+          <span>{performance?.host_tuning?.error || 'Host tuning is not available on this host.'}</span>
         </div>
       {/if}
 
@@ -612,7 +632,7 @@
           variant="primary"
           disabled={!preview || actionBusy}
           onclick={() => {
-            hostTuning = false;
+            hostTuning = hostTuningAvailable;
             applyOpen = true;
           }}
         >
@@ -771,7 +791,7 @@
 <ConfirmDialog
   open={applyOpen}
   title="Apply performance profile?"
-  description="The daemon writes managed includes, validates them, reloads only nginx/Apache and PHP-FPM, and keeps a backup. Host tuning is a separate global change."
+  description="The daemon writes managed includes, validates them, reloads only nginx/Apache and PHP-FPM, and keeps a backup. Host tuning covers WSL and Windows."
   confirmLabel="Apply profile"
   requireText="APPLY"
   busy={actionBusy}
@@ -788,11 +808,11 @@
         <input type="checkbox" bind:checked={hostTuning} disabled={!hostTuningAvailable} />
         <span>
           {hostTuningAvailable
-            ? 'Also apply host-wide sysctl and limits tuning through the privileged helper.'
-            : (performance?.host_tuning?.error || 'Host tuning is unavailable on Windows or because the privileged helper is not available.')}
+            ? 'Also apply WSL sysctl/limits, Windows network/NTFS/power, Defender exclusions, and WSL VM resources.'
+            : (performance?.host_tuning?.error || 'Host tuning is unavailable because the privileged helper is not available.')}
           <small>
             {hostTuningAvailable
-              ? 'This affects the whole machine and can be reset later.'
+              ? 'This affects the whole machine and can be reset later. A WSL restart may be required for VM changes.'
               : 'Managed server and PHP includes can still be applied.'}
           </small>
         </span>
@@ -800,8 +820,8 @@
       {#if hostTuning}
         <p class="host-warning" role="status">
           <TriangleAlert size={13} strokeWidth={2} aria-hidden="true" />
-          Host tuning changes kernel and login limits globally. The helper backs up, verifies,
-          and can restore the previous files.
+          Host tuning changes WSL kernel/login limits, Windows TCP/NTFS/power settings, Defender exclusions, and
+          .wslconfig. Every layer is backed up, verified, and reversible.
         </p>
       {/if}
     </div>
@@ -934,6 +954,34 @@
 
   .host-tuning-banner :global(svg) {
     flex-shrink: 0;
+  }
+
+  .host-targets {
+    display: grid;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .host-target {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 6px 10px;
+    border: 1px solid var(--border, rgba(148, 163, 184, 0.18));
+    border-radius: var(--radius);
+    font-size: 11.5px;
+  }
+
+  .host-target-name {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted, #94a3b8);
+  }
+
+  .host-target small {
+    color: var(--text-muted, #94a3b8);
   }
 
   .profile-row {

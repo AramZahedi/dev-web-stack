@@ -55,7 +55,7 @@ func (f fakeSitesService) ApplyPHP(context.Context, string, sites.PHPChange) (mo
 	return model.Site{}, nil
 }
 
-func TestWindowsHostTuningDisabledInStatusAndPreview(t *testing.T) {
+func TestWindowsHostTuningUnavailableInStatusAndPreview(t *testing.T) {
 	root := t.TempDir()
 	st := newMemorySettingsStore()
 	svc := NewService(ServiceConfig{
@@ -80,7 +80,7 @@ func TestWindowsHostTuningDisabledInStatusAndPreview(t *testing.T) {
 	}
 	hasWarning := false
 	for _, w := range status.Warnings {
-		if w == "Host sysctl and limits tuning are disabled on Windows." || w == "Host sysctl tuning is disabled on Windows." {
+		if w == "Host tuning is not available on this host." {
 			hasWarning = true
 			break
 		}
@@ -95,7 +95,7 @@ func TestWindowsHostTuningDisabledInStatusAndPreview(t *testing.T) {
 	}
 	hasPreviewWarning := false
 	for _, w := range preview.Warnings {
-		if w == "Host sysctl and limits tuning are disabled on Windows." || w == "Host sysctl tuning is disabled on Windows." {
+		if w == "Host tuning is not available on this host." {
 			hasPreviewWarning = true
 			break
 		}

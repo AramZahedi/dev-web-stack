@@ -12,6 +12,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agent"
 	"github.com/AramZahedi/dev-web-stack/internal/agentapi"
 	"github.com/AramZahedi/dev-web-stack/internal/agentdocker"
+	"github.com/AramZahedi/dev-web-stack/internal/agentperf"
 	"github.com/AramZahedi/dev-web-stack/internal/agentrelay"
 	"github.com/AramZahedi/dev-web-stack/internal/agentweb"
 )
@@ -42,11 +43,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("devstack-agent: web module: %v", err)
 	}
+	perfModule, err := agentperf.New(agentperf.Config{Root: agent.DefaultAgentRoot})
+	if err != nil {
+		log.Fatalf("devstack-agent: performance module: %v", err)
+	}
 	relayModule, err := agentrelay.New(agentrelay.Config{})
 	if err != nil {
 		log.Fatalf("devstack-agent: relay module: %v", err)
 	}
-	modules := []agentapi.Module{dockerModule, webModule, relayModule}
+	modules := []agentapi.Module{dockerModule, webModule, perfModule, relayModule}
 
 	server, err := agent.NewServerFromFilesWithRuntimeAndDocker(*configPath, modules, runtime, docker)
 	if err != nil {

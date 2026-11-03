@@ -155,6 +155,30 @@ func TestAgentWindowsPrivateSyncerUsesTypedAgentTargets(t *testing.T) {
 	}
 }
 
+func TestAgentWindowsPrivateSyncerReloadsSiteSyncs(t *testing.T) {
+	var reloads []string
+	syncer, err := dockerweb.NewAgentWindowsPrivateSyncer(
+		&fakeWebAgent{},
+		fakeTargetSource{},
+		func(_ context.Context, server string) error {
+			reloads = append(reloads, server)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.DockerReload(context.Background(), "apache"); err != nil {
+		t.Fatal(err)
+	}
+	if len(reloads) != 1 || reloads[0] != "apache" {
+		t.Fatalf("reloads = %v, want apache", reloads)
+	}
+	if err := syncer.DockerReload(context.Background(), "arbitrary"); err == nil {
+		t.Fatal("unsupported server was accepted for reload")
+	}
+}
+
 type fakeProviderSwitch struct {
 	stopped []string
 	started []string

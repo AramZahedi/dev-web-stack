@@ -22,6 +22,7 @@ type (
 	Step                 = performance.Step
 	AppliedState         = performance.AppliedState
 	HostTuningStatus     = performance.HostTuningStatus
+	HostTargetStatus     = performance.HostTargetStatus
 	IncludePreview       = performance.IncludePreview
 	ApachePreview        = performance.ApachePreview
 	PHPPreview           = performance.PHPPreview

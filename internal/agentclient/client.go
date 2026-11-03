@@ -517,6 +517,27 @@ func (c *Client) SyncWeb(ctx context.Context, req agentproto.WebTargetsRequest) 
 	return out, err
 }
 
+// PerformanceStatus reports the agent-managed WSL host tuning.
+func (c *Client) PerformanceStatus(ctx context.Context) (agentproto.PerformanceStatusResponse, error) {
+	var out agentproto.PerformanceStatusResponse
+	err := c.do(ctx, http.MethodGet, agentproto.PathPerformanceStatus, nil, &out)
+	return out, err
+}
+
+// PerformanceApply applies WSL host and VM tuning.
+func (c *Client) PerformanceApply(ctx context.Context, req agentproto.PerformanceApplyRequest) (agentproto.PerformanceApplyResponse, error) {
+	var out agentproto.PerformanceApplyResponse
+	err := c.do(ctx, http.MethodPost, agentproto.PathPerformanceApply, req, &out)
+	return out, err
+}
+
+// PerformanceReset restores the previous WSL host tuning.
+func (c *Client) PerformanceReset(ctx context.Context) (agentproto.PerformanceResetResponse, error) {
+	var out agentproto.PerformanceResetResponse
+	err := c.do(ctx, http.MethodPost, agentproto.PathPerformanceReset, agentproto.PerformanceResetRequest{}, &out)
+	return out, err
+}
+
 // SyncHosts replaces the WSL hosts block.
 func (c *Client) SyncHosts(ctx context.Context, req agentproto.HostsRequest) (agentproto.HostsResponse, error) {
 	var out agentproto.HostsResponse

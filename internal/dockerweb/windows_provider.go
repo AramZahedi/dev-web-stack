@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 const windowsPrivateHTTPPort = 18080
@@ -24,6 +25,9 @@ type privateWebAgent interface {
 	SyncWeb(context.Context, agentproto.WebTargetsRequest) (agentproto.WebSyncResponse, error)
 }
 
+// PrivateWebReloader applies synced files to the running web container.
+type PrivateWebReloader func(ctx context.Context, server string) error
+
 // WindowsTargetSource builds the typed WSL backend target set for one active
 // Docker web server. Site data and certificates are still agent-owned.
 type WindowsTargetSource interface {
@@ -35,6 +39,7 @@ type WindowsTargetSource interface {
 type AgentWindowsPrivateSyncer struct {
 	agent   privateWebAgent
 	targets WindowsTargetSource
+	reload  PrivateWebReloader
 
 	mu        sync.Mutex
 	lastSync  time.Time
@@ -43,11 +48,33 @@ type AgentWindowsPrivateSyncer struct {
 }
 
 // NewAgentWindowsPrivateSyncer constructs the authenticated-agent web syncer.
-func NewAgentWindowsPrivateSyncer(agent privateWebAgent, targets WindowsTargetSource) (*AgentWindowsPrivateSyncer, error) {
+// An optional reloader applies site-driven config syncs to the live container;
+// provider activations pass no reloader because Commit owns that transition.
+func NewAgentWindowsPrivateSyncer(agent privateWebAgent, targets WindowsTargetSource, reload ...PrivateWebReloader) (*AgentWindowsPrivateSyncer, error) {
 	if agent == nil || targets == nil {
 		return nil, errors.New("dockerweb: Windows agent sync requires an agent client and target source")
 	}
-	return &AgentWindowsPrivateSyncer{agent: agent, targets: targets}, nil
+	syncer := &AgentWindowsPrivateSyncer{agent: agent, targets: targets}
+	if len(reload) > 0 {
+		syncer.reload = reload[0]
+	}
+	return syncer, nil
+}
+
+// DockerReload applies site-driven vhost syncs to the running container.
+func (s *AgentWindowsPrivateSyncer) DockerReload(ctx context.Context, server string) error {
+	if s.reload == nil {
+		return nil
+	}
+	parsed := Server(strings.ToLower(strings.TrimSpace(server)))
+	if err := parsed.Validate(); err != nil {
+		return err
+	}
+	if err := s.reload(ctx, string(parsed)); err != nil {
+		s.record(fmt.Errorf("dockerweb: reload private %s: %w", parsed, err))
+		return err
+	}
+	return nil
 }
 
 // EnsurePrivateBase validates the fixed server; the agent seeds the private
@@ -99,6 +126,15 @@ func (s *AgentWindowsPrivateSyncer) DockerStatus() (time.Time, bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastSync, s.configOK, s.lastError
+}
+
+// DockerRoutable delegates to the target source when it exposes the source-mode
+// policy. Unknown sources default to routable.
+func (s *AgentWindowsPrivateSyncer) DockerRoutable(site model.Site) bool {
+	if source, ok := s.targets.(interface{ DockerRoutable(model.Site) bool }); ok {
+		return source.DockerRoutable(site)
+	}
+	return true
 }
 
 func (s *AgentWindowsPrivateSyncer) record(err error) {

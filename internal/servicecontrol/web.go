@@ -19,6 +19,10 @@ var _ sites.DockerSwitch = (*WebSwitch)(nil)
 // deactivated or uninstalled until the serving provider changes.
 var ErrWebServerActive = errors.New("the active docker web server cannot be deactivated or uninstalled")
 
+// ErrWebFallbackStopped reports that a fallback already stopped the active
+// container, so the manager must not ask the helper to stop it again.
+var ErrWebFallbackStopped = errors.New("web serving fallback stopped the active container")
+
 // WebLifecycle is the dockerweb provider surface used by the service preparer.
 type WebLifecycle interface {
 	EnsureBase(server string) error
@@ -121,11 +125,15 @@ type WebServingState interface {
 	ServingProvider() string
 }
 
-// WebGuard refuses deactivation or uninstall of the active Docker web server.
+// WebGuard refuses deactivation or uninstall of the active Docker web server
+// unless a fallback switches serving back to builtin first.
 // It is an optional preparer capability; Manager can call it when the
 // registered web preparer implements DeactivationGuard.
 type WebGuard struct {
 	State WebServingState
+	// Fallback restores builtin serving before the active container stops.
+	// Nil preserves the explicit refusal used by older callers.
+	Fallback func(context.Context, services.ID) error
 }
 
 // DeactivationGuard is an optional capability checked by the service manager
@@ -136,16 +144,16 @@ type DeactivationGuard interface {
 }
 
 // CanDeactivate reports whether the service may be stopped.
-func (g WebGuard) CanDeactivate(_ context.Context, id services.ID) error {
-	return g.check(id)
+func (g WebGuard) CanDeactivate(ctx context.Context, id services.ID) error {
+	return g.check(ctx, id)
 }
 
 // CanUninstall reports whether the service may be removed.
-func (g WebGuard) CanUninstall(_ context.Context, id services.ID) error {
-	return g.check(id)
+func (g WebGuard) CanUninstall(ctx context.Context, id services.ID) error {
+	return g.check(ctx, id)
 }
 
-func (g WebGuard) check(id services.ID) error {
+func (g WebGuard) check(ctx context.Context, id services.ID) error {
 	server, err := webServerName(id)
 	if err != nil {
 		return nil
@@ -158,6 +166,12 @@ func (g WebGuard) check(id services.ID) error {
 	}
 	if strings.TrimSpace(g.State.ServingMode()) != server {
 		return nil
+	}
+	if g.Fallback != nil {
+		if err := g.Fallback(ctx, id); err != nil {
+			return fmt.Errorf("switch to builtin before deactivating %s: %w", id, err)
+		}
+		return ErrWebFallbackStopped
 	}
 	return fmt.Errorf("%w: %s is serving 80/443; switch serving_mode to builtin or another web server first", ErrWebServerActive, id)
 }

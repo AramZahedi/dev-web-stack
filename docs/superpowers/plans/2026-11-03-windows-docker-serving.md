@@ -119,9 +119,9 @@
 - `WindowsProviderConfig` adds `Switch ProviderSwitch`.
 - `ProviderSwitch` has `StopActiveServer(ctx, server string) error` and `StartActiveServer(ctx, server string) error`.
 - `StopActiveServer`/`StartActiveServer` use `Switch` when set; otherwise fall back to `Services`.
-- `Prepare` rejects direct switching from nginx to Apache while Docker is active.
+- `Prepare` rejects a target Docker server only while another Docker server is saved as active. The Windows activator resets that state before an automatic direct switch.
 
-- [ ] **Step 1: Write failing tests** that assert a builtin → Apache commit routes to 18080, builtin switch uses the switch path, and direct nginx → Apache is rejected.
+- [ ] **Step 1: Write failing tests** that assert a builtin → Apache commit routes to 18080, builtin switch uses the switch path, and a direct nginx → Apache switch rolls back cleanly on failure.
 - [ ] **Step 2: Run tests; expect failures.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run tests; expect PASS.**
@@ -145,7 +145,7 @@
 - `ReconcileServingMode` does not disable forwarders for Windows Docker.
 - `rebuildRoutesLocked` redirects to the private route when Docker is healthy; suppresses during builtin switch.
 
-- [ ] **Step 1: Write failing tests** for delegation, same-mode idempotence, direct nginx ↔ Apache rejection, docker state save, and route redirect.
+- [ ] **Step 1: Write failing tests** for delegation, same-mode idempotence, automatic direct nginx ↔ Apache switching, docker state save, and route redirect.
 - [ ] **Step 2: Run tests; expect failures.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run tests; expect PASS.**

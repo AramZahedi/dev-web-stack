@@ -489,6 +489,17 @@ export interface PerformanceAppliedState {
   steps?: PerformanceStep[];
 }
 
+export interface PerformanceHostTarget {
+  target: string;
+  available?: boolean;
+  managed?: boolean;
+  applied?: boolean;
+  paths?: string[];
+  backup_dir?: string;
+  restart_required?: boolean;
+  error?: string;
+}
+
 export interface PerformanceHostTuning {
   available?: boolean;
   managed?: boolean;
@@ -499,6 +510,7 @@ export interface PerformanceHostTuning {
   applied_at?: string;
   profile?: string;
   error?: string;
+  targets?: PerformanceHostTarget[];
 }
 
 export interface PerformanceState {
@@ -530,6 +542,7 @@ export interface PerformanceHostPreview {
   opt_in: boolean;
   files: PerformanceHostFile[];
   warnings?: string[];
+  targets?: PerformanceHostTarget[];
 }
 
 export interface PerformancePreview {
@@ -556,6 +569,7 @@ export interface PerformanceApplyResult {
   backup_dir?: string;
   rollback_error?: string;
   warnings?: string[];
+  host_targets?: PerformanceHostTarget[];
 }
 
 export interface PerformanceResetResult {
@@ -564,6 +578,7 @@ export interface PerformanceResetResult {
   backup_dir?: string;
   rollback_error?: string;
   warnings?: string[];
+  host_targets?: PerformanceHostTarget[];
 }
 
 export interface BenchmarkRequest {

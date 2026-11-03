@@ -59,6 +59,7 @@ type Server struct {
 	forwarders       windowsForwarders
 	forwardersKey    string
 	forwarderFactory windowsForwarderFactory
+	performance      *WindowsPerformanceManager
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -88,6 +89,10 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	if cfg.RootCertPath == "" {
 		cfg.RootCertPath = filepath.Join(cfg.CADir, "root.crt")
+	}
+	performance, err := NewWindowsPerformanceManager(cfg.SystemDir, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("helper: Windows performance manager: %w", err)
 	}
 	if cfg.ConfigPath == "" {
 		cfg.ConfigPath = filepath.Join(cfg.SystemDir, "helper.yaml")
@@ -134,6 +139,7 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg: cfg, logger: cfg.Logger, hosts: hosts, trust: trustManager, firewall: firewall,
 		authority: cfg.Authority, proxyHTTPPort: cfg.ProxyHTTPPort, proxyHTTPSPort: cfg.ProxyHTTPSPort,
 		forwarderFactory: factory,
+		performance:      performance,
 	}, nil
 }
 
@@ -248,6 +254,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST "+helperproto.PathForwarders, s.handleForwarders)
 	mux.HandleFunc("POST "+helperproto.PathProxyTargets, s.handleProxyTargets)
 	mux.HandleFunc("POST "+helperproto.PathUninstall, s.handleUninstall)
+	mux.HandleFunc("GET "+helperproto.PathPerformanceStatus, s.handlePerformanceStatus)
+	mux.HandleFunc("POST "+helperproto.PathPerformanceApply, s.handlePerformanceApply)
+	mux.HandleFunc("POST "+helperproto.PathPerformanceReset, s.handlePerformanceReset)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		peerSID, _ := r.Context().Value(peerSIDKey{}).(string)
 		if err := authorizePeerSID(s.cfg.AllowSID, ipc.PeerIdentity{SID: peerSID}); err != nil {
@@ -480,6 +489,50 @@ func (s *Server) ensureAuthority(ctx context.Context) (*Authority, error) {
 	}
 	s.authority = authority
 	return authority, nil
+}
+
+func (s *Server) handlePerformanceStatus(w http.ResponseWriter, r *http.Request) {
+	if s.performance == nil {
+		writeWindowsJSON(w, http.StatusNotImplemented, map[string]string{"error": "performance status is not configured"})
+		return
+	}
+	resp, err := s.performance.Status(r.Context())
+	if err != nil {
+		writeWindowsJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeWindowsJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handlePerformanceApply(w http.ResponseWriter, r *http.Request) {
+	if s.performance == nil {
+		writeWindowsJSON(w, http.StatusNotImplemented, map[string]string{"error": "performance apply is not configured"})
+		return
+	}
+	var req helperproto.PerformanceApplyRequest
+	if err := decodeWindowsJSON(w, r, &req); err != nil {
+		writeWindowsJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	resp, err := s.performance.Apply(r.Context(), req)
+	if err != nil {
+		writeWindowsJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeWindowsJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handlePerformanceReset(w http.ResponseWriter, r *http.Request) {
+	if s.performance == nil {
+		writeWindowsJSON(w, http.StatusNotImplemented, map[string]string{"error": "performance reset is not configured"})
+		return
+	}
+	resp, err := s.performance.Reset(r.Context())
+	if err != nil {
+		writeWindowsJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeWindowsJSON(w, http.StatusOK, resp)
 }
 
 func decodeWindowsJSON(w http.ResponseWriter, r *http.Request, dst any) error {

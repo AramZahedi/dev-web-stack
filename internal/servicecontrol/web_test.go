@@ -170,6 +170,52 @@ func TestManagerRefusesActiveDockerWebServer(t *testing.T) {
 	}
 }
 
+func TestManagerWebGuardFallbackSwitchesToBuiltinBeforeDeactivate(t *testing.T) {
+	helper := &fakeHelper{}
+	called := false
+	guard := WebGuard{
+		State: fakeServingState{mode: "nginx", provider: "docker"},
+		Fallback: func(context.Context, services.ID) error {
+			called = true
+			return nil
+		},
+	}
+	preparers := NewWebPreparers(&fakeWebLifecycle{}, guard)
+	manager := NewManager(t.TempDir(), newFakeStore(), helper, testCatalog(), preparers)
+	if err := manager.Deactivate(context.Background(), services.IDNginx); err != nil {
+		t.Fatalf("Deactivate(nginx) with fallback: %v", err)
+	}
+	if !called {
+		t.Fatal("fallback was not called")
+	}
+	if len(helper.calls) != 0 {
+		t.Fatalf("helper was called after the fallback stopped the container: %v", helper.calls)
+	}
+}
+
+func TestManagerWebGuardFallbackAllowsUninstall(t *testing.T) {
+	helper := &fakeHelper{}
+	called := false
+	guard := WebGuard{
+		State: fakeServingState{mode: "nginx", provider: "docker"},
+		Fallback: func(context.Context, services.ID) error {
+			called = true
+			return nil
+		},
+	}
+	preparers := NewWebPreparers(&fakeWebLifecycle{}, guard)
+	manager := NewManager(t.TempDir(), newFakeStore(), helper, testCatalog(), preparers)
+	if _, err := manager.Uninstall(context.Background(), services.IDNginx, false); err != nil {
+		t.Fatalf("Uninstall(nginx) with fallback: %v", err)
+	}
+	if !called {
+		t.Fatal("fallback was not called")
+	}
+	if len(helper.calls) != 1 || helper.calls[0] != "helper_uninstall:nginx" {
+		t.Fatalf("helper calls = %v", helper.calls)
+	}
+}
+
 func TestManagerAllowsInactiveWebServerDeactivate(t *testing.T) {
 	helper := &fakeHelper{}
 	preparers := NewWebPreparers(&fakeWebLifecycle{}, WebGuard{State: fakeServingState{mode: "builtin", provider: "native"}})

@@ -101,8 +101,16 @@ the guarded `Deactivate`, or switching back to builtin would be refused.
   - `nginx`/`apache` calls the injected activator when the current provider is
     native/builtin.
   - the same Docker server is idempotent: sync vhosts and return.
-  - a different Docker server while one is active returns a clear
-    "switch to builtin first" error.
+  - a different Docker server while one is active switches automatically: stop
+    the old container, reset the saved state, activate the target, and restart
+    the old container if activation fails.
+  - a site-driven vhost sync validates and gracefully reloads the running
+    container, so newly added sites do not wait for a container restart.
+  - deactivating or uninstalling the active Docker web server first switches
+    serving back to `builtin`; the service operation then proceeds instead of
+    being refused.
+  - the dashboard disables nginx/Apache mode options whose service is not
+    installed and keeps them enabled when the service list cannot be read.
 - `ReconcileServingMode` for Docker on Windows must not disable the helper
   forwarders or stop the public proxy. It syncs the private targets and keeps the
   daemon public entry alive.

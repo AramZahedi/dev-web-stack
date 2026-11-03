@@ -152,6 +152,7 @@ type DockerSwitch interface {
 // save serving state during commit.
 type DockerServiceActivator interface {
 	ActivateServingMode(ctx context.Context, mode string) error
+	SwitchServingMode(ctx context.Context, from, to string) error
 }
 
 // DockerServingConfig wires the Docker serving hooks after construction. The
@@ -168,6 +169,20 @@ type DockerServingConfig struct {
 // DockerRoute redirects public site routes to the active private web server.
 type DockerRoute interface {
 	UpdateDockerWebRoutes(ctx context.Context, active bool, host string, port int) error
+	UpdateDockerWebRoutesExcept(ctx context.Context, active bool, host string, port int, keep map[string]bool) error
+}
+
+// DockerSiteRouter reports whether a site can be served by the active Docker
+// web server. Sites outside the WSL projects mount stay on the direct route.
+type DockerSiteRouter interface {
+	DockerRoutable(site model.Site) bool
+}
+
+// DockerReloader applies a synced vhost set to the running web container.
+// Site-driven syncs are not part of a provider activation, so they must reload
+// explicitly or new vhosts stay invisible until the container restarts.
+type DockerReloader interface {
+	DockerReload(ctx context.Context, server string) error
 }
 
 // DockerStatusProvider exposes the last Docker config sync result.
@@ -375,7 +390,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	case site.Kind == model.SitePHP:
 		// PHP sites use only a FastCGI port, allocated before any external
 		// side effects.
-	case site.Kind == model.SiteNode || !s.externalServing():
+	case site.Kind == model.SiteNode || s.siteNeedsBackend(site):
 		port, err = s.allocatePort(ctx, site.ID, domain.PortHTTP)
 		if err != nil {
 			return model.Site{}, warnProvisioned(fmt.Errorf("sites: allocate HTTP port for %q: %w", site.Name, err))
@@ -505,8 +520,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 	}
 
 	// External static sites are served directly by nginx/Apache: no backend
-	// process and no proxy port.
-	if s.externalServing() && site.Kind == model.SiteStatic {
+	// process and no proxy port. Windows-source static sites stay on the
+	// supervised direct route and fall through to the backend path.
+	if s.externalStatic(site) {
 		if err := s.checkDatabaseGuard(ctx, site); err != nil {
 			return fail(err, true)
 		}
@@ -1430,7 +1446,7 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 	if site.Kind == model.SitePHP {
 		return s.startPHPLocked(ctx, site)
 	}
-	if s.externalServing() && site.Kind == model.SiteStatic {
+	if s.externalStatic(site) {
 		return s.startExternalStaticLocked(ctx, site)
 	}
 
@@ -1508,7 +1524,7 @@ func (s *Service) stopLocked(ctx context.Context, site model.Site) (model.Site, 
 	if site.Kind == model.SitePHP {
 		return s.stopPHPLocked(ctx, site)
 	}
-	if s.externalServing() && site.Kind == model.SiteStatic {
+	if s.externalStatic(site) {
 		return s.stopExternalStaticLocked(ctx, site)
 	}
 
@@ -1642,7 +1658,7 @@ func (s *Service) restoreSiteStateLocked(ctx context.Context, previous, current 
 // transition. External static status is derived from desired state and document
 // root readability without touching a backend. The caller must hold s.mu.
 func (s *Service) refreshLocked(ctx context.Context, site model.Site) (model.Site, error) {
-	if s.externalServing() && site.Kind == model.SiteStatic {
+	if s.externalStatic(site) {
 		return s.refreshExternalStaticLocked(ctx, site)
 	}
 	status, err := s.deps.Backend.Status(ctx, site.ID)

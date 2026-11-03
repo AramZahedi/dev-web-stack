@@ -175,8 +175,8 @@ func TestServiceProfilePersistsAndRevalidatesCustom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Profile != Balanced {
-		t.Fatalf("default profile = %q, want balanced", status.Profile)
+	if status.Profile != Throughput {
+		t.Fatalf("default profile = %q, want throughput", status.Profile)
 	}
 	if status.Resources.CPUCount == 0 {
 		t.Fatal("status did not report measured resources")
@@ -225,7 +225,7 @@ func TestServicePreviewDoesNotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Profile != Balanced {
+	if preview.Profile != Throughput {
 		t.Fatalf("profile = %q", preview.Profile)
 	}
 	if preview.Nginx.Main == "" || preview.Nginx.Events == "" || preview.Nginx.HTTP == "" {
@@ -376,8 +376,11 @@ func TestServiceApplyHostTuningIsExplicit(t *testing.T) {
 		t.Fatalf("host apply calls = %d, want 1", len(helper.applyCalls))
 	}
 	req := helper.applyCalls[0]
-	if req.Profile != string(Balanced) || req.Host.FileMax == 0 || req.Host.NoFileSoft == 0 {
+	if req.Profile != string(Throughput) || req.Host.FileMax == 0 || req.Host.NoFileSoft == 0 {
 		t.Fatalf("host apply request = %+v", req)
+	}
+	if req.Windows == nil || req.WSLVM == nil {
+		t.Fatalf("host apply request is missing the Windows/WSL-VM layers: %+v", req)
 	}
 }
 

@@ -401,10 +401,7 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 			result.RollbackError = errorString(s.rollbackApplyLocked(ctx, snapshots, phpSnapshots, false, active, reloaded))
 			return result, &ApplyError{Err: err, Result: result}
 		}
-		hostResp, err := s.cfg.Helper.PerformanceApply(ctx, helperproto.PerformanceApplyRequest{
-			Profile: string(values.Profile),
-			Host:    hostValuesForProto(values.Host),
-		})
+		hostResp, err := s.cfg.Helper.PerformanceApply(ctx, performanceApplyRequest(values))
 		if err != nil {
 			step("host-tuning", "failed", err.Error())
 			result.RollbackError = errorString(s.rollbackApplyLocked(ctx, snapshots, phpSnapshots, false, active, reloaded))
@@ -418,15 +415,16 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (ApplyResult, err
 		}
 		hostApplied = true
 		result.HostTuning = true
+		result.Targets = hostTargetsFromProto(hostResp.Targets)
 		if hostResp.BackupDir != "" {
 			result.BackupDir = hostResp.BackupDir
 		}
 		for _, helperStep := range hostResp.Steps {
 			step("host:"+helperStep.Name, helperStep.Status, helperStep.Detail)
 		}
-		step("host-tuning", "ok", "fixed sysctl/limits paths verified by helper")
+		step("host-tuning", "ok", "WSL and Windows host layers verified")
 	} else if s.isHostTuningDisabled() {
-		step("host-tuning", "skipped", "host sysctl and limits tuning are disabled on Windows")
+		step("host-tuning", "skipped", "host tuning is unavailable")
 	} else if !req.HostTuning {
 		step("host-tuning", "skipped", "host tuning is opt-in (host_tuning:true)")
 	}
@@ -567,7 +565,8 @@ func (s *Service) Reset(ctx context.Context, req ResetRequest) (ResetResult, err
 		if resp.BackupDir != "" {
 			result.BackupDir = resp.BackupDir
 		}
-		step("host-tuning", "ok", "pre-devstack files restored")
+		result.Targets = hostTargetsFromProto(resp.Targets)
+		step("host-tuning", "ok", "pre-devstack WSL and Windows state restored")
 	} else {
 		step("host-tuning", "skipped", "no helper-managed host tuning")
 	}
@@ -622,7 +621,7 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 	}
 	defer s.benchMu.Unlock()
 
-	profile := Balanced
+	profile := Throughput
 	if raw, err := s.cfg.Store.GetSetting(ctx, settingProfile); err == nil {
 		if parsed, parseErr := ParseProfile(raw); parseErr == nil {
 			profile = parsed
@@ -837,7 +836,7 @@ func (s *Service) collectLocked() (Resources, error) {
 }
 
 func (s *Service) loadProfileLocked(ctx context.Context, res Resources) (Profile, *Values, Values, error) {
-	profile := Balanced
+	profile := Throughput
 	if raw, err := s.cfg.Store.GetSetting(ctx, settingProfile); err == nil && strings.TrimSpace(raw) != "" {
 		parsed, err := ParseProfile(raw)
 		if err != nil {
@@ -998,7 +997,7 @@ func (s *Service) hostStatusLocked(ctx context.Context, applied *AppliedState) H
 			Applied:    false,
 			SysctlPath: "",
 			LimitsPath: "",
-			Error:      "Host sysctl and limits tuning are disabled on Windows.",
+			Error:      "Host tuning is not available on this host.",
 		}
 		if applied != nil {
 			status.Applied = applied.HostTuning
@@ -1027,7 +1026,13 @@ func (s *Service) hostStatusLocked(ctx context.Context, applied *AppliedState) H
 		status.Error = err.Error()
 		return status
 	}
-	status.Available = true
+	status.Available = len(resp.Targets) == 0
+	for _, target := range resp.Targets {
+		if target.Available {
+			status.Available = true
+			break
+		}
+	}
 	status.Managed = resp.Managed
 	status.Applied = resp.Managed
 	if resp.SysctlPath != "" {
@@ -1045,12 +1050,25 @@ func (s *Service) hostStatusLocked(ctx context.Context, applied *AppliedState) H
 	if resp.Profile != "" {
 		status.Profile = Profile(resp.Profile)
 	}
+	status.Targets = hostTargetsFromProto(resp.Targets)
 	return status
+}
+
+func hostTargetsFromProto(targets []helperproto.PerformanceTargetStatus) []HostTargetStatus {
+	out := make([]HostTargetStatus, 0, len(targets))
+	for _, target := range targets {
+		out = append(out, HostTargetStatus{
+			Target: target.Target, Available: target.Available, Managed: target.Managed,
+			Applied: target.Applied, Paths: append([]string(nil), target.Paths...),
+			BackupDir: target.BackupDir, RestartRequired: target.RestartRequired, Error: target.Error,
+		})
+	}
+	return out
 }
 
 func (s *Service) hostPreviewLocked(ctx context.Context, values Values) (HostPreview, []string) {
 	if s.isHostTuningDisabled() {
-		msg := "Host sysctl and limits tuning are disabled on Windows."
+		msg := "Host tuning is not available on this host."
 		return HostPreview{
 			OptIn:    false,
 			Warnings: []string{msg},
@@ -1074,6 +1092,7 @@ func (s *Service) hostPreviewLocked(ctx context.Context, values Values) (HostPre
 	if s.cfg.Helper != nil {
 		if status, err := s.cfg.Helper.PerformanceStatus(ctx); err == nil {
 			current = status
+			preview.Targets = hostTargetsFromProto(status.Targets)
 		} else {
 			preview.Warnings = append(preview.Warnings, "cannot read current host tuning: "+err.Error())
 		}
@@ -1420,6 +1439,32 @@ func hostValuesForProto(host HostValues) helperproto.PerformanceHostValues {
 		User:             host.User,
 		Group:            host.Group,
 	}
+}
+
+func performanceApplyRequest(values Values) helperproto.PerformanceApplyRequest {
+	req := helperproto.PerformanceApplyRequest{
+		Profile: string(values.Profile),
+		Host:    hostValuesForProto(values.Host),
+	}
+	if values.Windows.PowerPlan != "" {
+		req.Windows = &helperproto.PerformanceWindowsValues{
+			PowerPlan:                values.Windows.PowerPlan,
+			DynamicPortMin:           values.Windows.DynamicPortMin,
+			DynamicPortMax:           values.Windows.DynamicPortMax,
+			TCPTimedWaitDelaySeconds: values.Windows.TCPTimedWaitDelaySeconds,
+			NetworkThrottlingIndex:   values.Windows.NetworkThrottlingIndex,
+			SystemResponsiveness:     values.Windows.SystemResponsiveness,
+			DisableLastAccess:        values.Windows.DisableLastAccess,
+			Disable8dot3:             values.Windows.Disable8dot3,
+			DefenderExclusions:       values.Windows.DefenderExclusions,
+		}
+		req.WSLVM = &helperproto.PerformanceWSLVMValues{
+			MemoryMB:   values.Windows.WSLMemoryMB,
+			Processors: values.Windows.WSLProcessors,
+			SwapMB:     values.Windows.WSLSwapMB,
+		}
+	}
+	return req
 }
 
 func filterApplyFiles(files []ManagedFile, active services.ID) []ManagedFile {

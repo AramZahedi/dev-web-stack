@@ -68,17 +68,30 @@ type AppliedState struct {
 	Steps      []Step                        `json:"steps,omitempty"`
 }
 
+// HostTargetStatus reports one host tuning layer.
+type HostTargetStatus struct {
+	Target          string   `json:"target"`
+	Available       bool     `json:"available"`
+	Managed         bool     `json:"managed"`
+	Applied         bool     `json:"applied"`
+	Paths           []string `json:"paths,omitempty"`
+	BackupDir       string   `json:"backup_dir,omitempty"`
+	RestartRequired bool     `json:"restart_required,omitempty"`
+	Error           string   `json:"error,omitempty"`
+}
+
 // HostTuningStatus reports the helper-owned host tuning state.
 type HostTuningStatus struct {
-	Available  bool       `json:"available"`
-	Managed    bool       `json:"managed"`
-	Applied    bool       `json:"applied"`
-	SysctlPath string     `json:"sysctl_path"`
-	LimitsPath string     `json:"limits_path"`
-	BackupDir  string     `json:"backup_dir,omitempty"`
-	AppliedAt  *time.Time `json:"applied_at,omitempty"`
-	Profile    Profile    `json:"profile,omitempty"`
-	Error      string     `json:"error,omitempty"`
+	Available  bool               `json:"available"`
+	Managed    bool               `json:"managed"`
+	Applied    bool               `json:"applied"`
+	SysctlPath string             `json:"sysctl_path"`
+	LimitsPath string             `json:"limits_path"`
+	BackupDir  string             `json:"backup_dir,omitempty"`
+	AppliedAt  *time.Time         `json:"applied_at,omitempty"`
+	Profile    Profile            `json:"profile,omitempty"`
+	Error      string             `json:"error,omitempty"`
+	Targets    []HostTargetStatus `json:"targets,omitempty"`
 }
 
 // Status is the GET /performance response.
@@ -130,9 +143,10 @@ type HostFilePreview struct {
 
 // HostPreview is the host tuning section of a preview.
 type HostPreview struct {
-	OptIn    bool              `json:"opt_in"`
-	Files    []HostFilePreview `json:"files"`
-	Warnings []string          `json:"warnings,omitempty"`
+	OptIn    bool               `json:"opt_in"`
+	Files    []HostFilePreview  `json:"files"`
+	Warnings []string           `json:"warnings,omitempty"`
+	Targets  []HostTargetStatus `json:"targets,omitempty"`
 }
 
 // Preview is the GET /performance/preview response. It is produced entirely
@@ -162,15 +176,17 @@ type ApplyResult struct {
 	BackupDir     string               `json:"backup_dir,omitempty"`
 	RollbackError string               `json:"rollback_error,omitempty"`
 	Warnings      []string             `json:"warnings,omitempty"`
+	Targets       []HostTargetStatus   `json:"host_targets,omitempty"`
 }
 
 // ResetResult reports each reset step.
 type ResetResult struct {
-	Reset         bool     `json:"reset"`
-	Steps         []Step   `json:"steps"`
-	BackupDir     string   `json:"backup_dir,omitempty"`
-	RollbackError string   `json:"rollback_error,omitempty"`
-	Warnings      []string `json:"warnings,omitempty"`
+	Reset         bool               `json:"reset"`
+	Steps         []Step             `json:"steps"`
+	BackupDir     string             `json:"backup_dir,omitempty"`
+	RollbackError string             `json:"rollback_error,omitempty"`
+	Warnings      []string           `json:"warnings,omitempty"`
+	Targets       []HostTargetStatus `json:"host_targets,omitempty"`
 }
 
 // ApplyError carries the per-step result when apply fails after making changes.

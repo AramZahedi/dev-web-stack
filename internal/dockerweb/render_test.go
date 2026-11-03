@@ -174,7 +174,8 @@ func TestRenderPrivateSiteApacheGeneratedFallback(t *testing.T) {
 	}
 }
 
-func TestRenderPrivateSiteStoppedReturns503(t *testing.T) {	f := newRenderFixture(t)
+func TestRenderPrivateSiteStoppedReturns503(t *testing.T) {
+	f := newRenderFixture(t)
 	f.writeFile(t, "site/index.html", "<html>site</html>")
 	site := f.site("site", "site", "site.test", "site")
 	site.DesiredState = model.DesiredStopped

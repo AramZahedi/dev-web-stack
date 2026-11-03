@@ -9,6 +9,7 @@ import type {
   PHPDefaultStatus,
   RuntimeBuild,
   Settings as SettingsType,
+  ServiceView,
   ToolStatus,
   VhostStatus,
 } from '../lib/types';
@@ -22,6 +23,7 @@ vi.mock('../lib/api', () => ({
   setServingMode: vi.fn(),
   syncVhosts: vi.fn(),
   listSites: vi.fn(),
+  listServices: vi.fn(),
   repairTrust: vi.fn(),
   removeTrust: vi.fn(),
   getPHPDefault: vi.fn(),
@@ -56,6 +58,18 @@ const SETTINGS: SettingsType = {
   log_max_mb: 10,
   log_keep: 5,
   restart_required: false,
+};
+
+const NGINX_SERVICE: ServiceView = {
+  id: 'nginx',
+  display_name: 'Nginx Web Server',
+  group: 'web',
+  state: 'active',
+  active: true,
+  installed: true,
+  health: 'healthy',
+  container_id: '',
+  image: 'nginx:1.30.6',
 };
 
 const VHOSTS: VhostStatus = {
@@ -158,6 +172,7 @@ beforeEach(() => {
   mockApi.getPHPDefault.mockResolvedValue(DEFAULT_STATUS);
   mockApi.listRuntimes.mockResolvedValue([PHP_84, PHP_83, NODE_24, NODE_22]);
   mockApi.listSites.mockResolvedValue([]);
+  mockApi.listServices.mockResolvedValue([]);
   mockApi.getPHPDefaults.mockResolvedValue({
     version: '8.4',
     ini: { memory_limit: '256M' },
@@ -240,8 +255,44 @@ describe('Settings tooling', () => {
     const nginx = await screen.findByRole('button', { name: 'Use nginx serving' });
     expect(nginx.textContent).toContain('Managed Docker container');
     expect(nginx.textContent).not.toContain('Native vhosts');
+    expect(nginx.textContent).toContain('install from Services');
+    expect((nginx as HTMLButtonElement).disabled).toBe(true);
     const apache = screen.getByRole('button', { name: 'Use Apache serving' });
     expect(apache.textContent).toContain('Managed Docker container');
+    expect((apache as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('enables installed Windows external serving options', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\devstack',
+      user_home: 'C:\\Users\\Aram',
+      wsl_distro: 'devstack',
+      public_ports_fixed: true,
+    });
+    mockApi.listServices.mockResolvedValue([NGINX_SERVICE]);
+    render(Settings);
+
+    const nginx = await screen.findByRole('button', { name: 'Use nginx serving' });
+    expect((nginx as HTMLButtonElement).disabled).toBe(false);
+    expect(nginx.textContent).toContain('Managed Docker container');
+    expect(nginx.textContent).not.toContain('install from Services');
+  });
+
+  it('keeps Windows external serving enabled when the service list is unavailable', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\devstack',
+      user_home: 'C:\\Users\\Aram',
+      wsl_distro: 'devstack',
+      public_ports_fixed: true,
+    });
+    mockApi.listServices.mockRejectedValue(new Error('service list unavailable'));
+    render(Settings);
+
+    const nginx = await screen.findByRole('button', { name: 'Use nginx serving' });
+    expect((nginx as HTMLButtonElement).disabled).toBe(false);
+    expect(nginx.textContent).not.toContain('install from Services');
   });
 
   it('keeps local settings visible when the helper trust status is unavailable', async () => {
