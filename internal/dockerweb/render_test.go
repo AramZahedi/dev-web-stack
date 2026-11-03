@@ -84,6 +84,115 @@ func keys(files map[string][]byte) []string {
 	return out
 }
 
+func TestRenderPrivateSiteUsesContainerRootsAndNoTLS(t *testing.T) {
+	f := newRenderFixture(t)
+	f.writeFile(t, "laravel/public/index.php", "<?php echo 'ok';")
+	f.writeFile(t, "laravel/public/.htaccess", "RewriteEngine On")
+	site := SiteSpec{
+		ID:                  "laravel",
+		Name:                "laravel",
+		Domain:              "laravel.test",
+		WWW:                 true,
+		Kind:                model.SitePHP,
+		HostDocumentRoot:    filepath.Join(f.projects, "laravel", "public"),
+		BackendPort:         43000,
+		FrontController:     true,
+		FrontControllerFile: "index.php",
+		FrontControllerMode: "auto",
+		ApacheAllowOverride: "all",
+		DesiredState:        model.DesiredRunning,
+	}
+
+	for _, server := range []Server{ServerNginx, ServerApache} {
+		out, err := RenderPrivateSite(server, f.projects, site, 64<<20)
+		if err != nil {
+			t.Fatalf("RenderPrivateSite(%s): %v", server, err)
+		}
+		text := string(out)
+		for _, forbidden := range []string{"listen 443", "ssl_certificate", "devstack.test"} {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("%s private vhost contains %q\n%s", server, forbidden, text)
+			}
+		}
+		if server == ServerNginx {
+			for _, want := range []string{
+				"listen 18080;",
+				"server_name laravel.test www.laravel.test;",
+				"fastcgi_pass 127.0.0.1:43000;",
+				"root /sites/laravel/public;",
+				"fastcgi_param SCRIPT_FILENAME \"",
+				"try_files $uri $uri/ @devstack_front_controller;",
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("nginx private vhost missing %q\n%s", want, text)
+				}
+			}
+		} else {
+			for _, want := range []string{
+				`<VirtualHost *:18080>`,
+				`DocumentRoot "/sites/laravel/public"`,
+				`<Directory "/sites/laravel/public">`,
+				"AllowOverride All",
+				`SetHandler "proxy:fcgi://127.0.0.1:43000"`,
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("apache private vhost missing %q\n%s", want, text)
+				}
+			}
+			if strings.Contains(text, "FallbackResource") {
+				t.Errorf("apache private vhost generated a fallback despite an existing .htaccess\n%s", text)
+			}
+		}
+	}
+}
+
+func TestRenderPrivateSiteApacheGeneratedFallback(t *testing.T) {
+	f := newRenderFixture(t)
+	f.writeFile(t, "app/public/index.php", "<?php echo 'ok';")
+	site := SiteSpec{
+		ID:                  "app",
+		Name:                "app",
+		Domain:              "app.test",
+		Kind:                model.SitePHP,
+		HostDocumentRoot:    filepath.Join(f.projects, "app", "public"),
+		BackendPort:         43001,
+		FrontController:     true,
+		FrontControllerFile: "index.php",
+		FrontControllerMode: "generated",
+		ApacheAllowOverride: "none",
+		DesiredState:        model.DesiredRunning,
+	}
+	out, err := RenderPrivateSite(ServerApache, f.projects, site, 64<<20)
+	if err != nil {
+		t.Fatalf("RenderPrivateSite(apache): %v", err)
+	}
+	text := string(out)
+	for _, want := range []string{"AllowOverride None", "FallbackResource /index.php"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("apache private vhost missing %q\n%s", want, text)
+		}
+	}
+}
+
+func TestRenderPrivateSiteStoppedReturns503(t *testing.T) {	f := newRenderFixture(t)
+	f.writeFile(t, "site/index.html", "<html>site</html>")
+	site := f.site("site", "site", "site.test", "site")
+	site.DesiredState = model.DesiredStopped
+	for _, server := range []Server{ServerNginx, ServerApache} {
+		out, err := RenderPrivateSite(server, f.projects, site, 64<<20)
+		if err != nil {
+			t.Fatalf("RenderPrivateSite(%s): %v", server, err)
+		}
+		text := string(out)
+		if !strings.Contains(text, "503") {
+			t.Errorf("%s stopped vhost missing 503\n%s", server, text)
+		}
+		if strings.Contains(text, "listen 443") || strings.Contains(text, "ssl_certificate") {
+			t.Errorf("%s stopped vhost contains TLS\n%s", server, text)
+		}
+	}
+}
+
 func TestRenderNginxStaticTLSForceHTTPS(t *testing.T) {
 	f := newRenderFixture(t)
 	f.writeFile(t, "site/index.html", "<html>site</html>")

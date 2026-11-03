@@ -20,6 +20,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
+	"github.com/AramZahedi/dev-web-stack/internal/model"
 )
 
 const PrivateHTTPPort = 18080
@@ -82,10 +83,14 @@ func (m *Module) validProjectPath(root string) bool {
 }
 
 // Sync validates and installs one generated HTTP-only vhost for each site in
-// the fixed nginx/Apache service trees. It never creates a dashboard vhost.
+// the selected server's fixed service tree. It never creates a dashboard vhost.
 func (m *Module) Sync(ctx context.Context, request agentproto.WebTargetsRequest) (agentproto.WebSyncResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return agentproto.WebSyncResponse{}, err
+	}
+	server := dockerweb.Server(strings.ToLower(strings.TrimSpace(request.Server)))
+	if err := server.Validate(); err != nil {
+		return agentproto.WebSyncResponse{}, fmt.Errorf("agentweb: %w", err)
 	}
 	targets := append([]agentproto.WebTarget(nil), request.Targets...)
 	sort.Slice(targets, func(i, j int) bool { return targets[i].SiteID < targets[j].SiteID })
@@ -99,27 +104,64 @@ func (m *Module) Sync(ctx context.Context, request agentproto.WebTargetsRequest)
 		}
 		seen[target.SiteID] = struct{}{}
 	}
+	if err := m.ensurePrivateBase(string(server)); err != nil {
+		return agentproto.WebSyncResponse{}, err
+	}
+	generatedDir := filepath.Join(m.root, "services", string(server), "config", "conf.d", "generated")
+	desired := make(map[string]struct{}, len(targets))
 	changed := 0
-	for _, server := range []string{"nginx", "apache"} {
-		if err := m.ensurePrivateBase(server); err != nil {
+	for _, target := range targets {
+		body, err := m.RenderedVhost(string(server), target)
+		if err != nil {
 			return agentproto.WebSyncResponse{}, err
 		}
-		for _, target := range targets {
-			body, err := m.RenderedVhost(server, target)
-			if err != nil {
-				return agentproto.WebSyncResponse{}, err
-			}
-			dest := filepath.Join(m.root, "services", server, "config", "conf.d", "generated", target.SiteID+".conf")
-			if err := writeAtomic(dest, body, 0o644); err != nil {
-				return agentproto.WebSyncResponse{}, fmt.Errorf("agentweb: write %s vhost for %s: %w", server, target.SiteID, err)
-			}
-			changed++
+		name := target.SiteID + ".conf"
+		dest := filepath.Join(generatedDir, name)
+		if err := writeAtomic(dest, body, 0o644); err != nil {
+			return agentproto.WebSyncResponse{}, fmt.Errorf("agentweb: write %s vhost for %s: %w", server, target.SiteID, err)
 		}
+		desired[name] = struct{}{}
+		changed++
+	}
+	if err := m.removeStale(generatedDir, desired); err != nil {
+		return agentproto.WebSyncResponse{}, err
 	}
 	m.mu.Lock()
 	m.targets = targets
 	m.mu.Unlock()
 	return agentproto.WebSyncResponse{Changed: changed}, nil
+}
+
+// removeStale deletes generated vhost files that are no longer in the target
+// set. Only regular .conf files directly under the generated directory are
+// touched; symlinks and directories are left alone.
+func (m *Module) removeStale(dir string, desired map[string]struct{}) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("agentweb: list generated vhosts: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".conf") {
+			continue
+		}
+		if _, ok := desired[entry.Name()]; ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("agentweb: inspect generated vhost %s: %w", entry.Name(), err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+			return fmt.Errorf("agentweb: remove stale vhost %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 func (m *Module) ensurePrivateBase(server string) error {
@@ -160,47 +202,48 @@ func writeIfAbsent(name string, data []byte, mode os.FileMode) error {
 	return writeAtomic(name, data, mode)
 }
 
-// RenderedVhost returns one private HTTP vhost for focused tests and config
-// adapters. The public dashboard is deliberately not part of this output.
+// RenderedVhost returns one private HTTP vhost using the full dockerweb
+// renderer so front controllers, .htaccess, SPA fallbacks, and deny rules match
+// the public Docker provider.
 func (m *Module) RenderedVhost(server string, target agentproto.WebTarget) ([]byte, error) {
 	if err := m.ValidateTarget(target); err != nil {
 		return nil, err
 	}
-	var b strings.Builder
-	switch server {
-	case "nginx":
-		b.WriteString("server {\n    listen 18080;\n")
-		fmt.Fprintf(&b, "    server_name %s;\n", target.Domain)
-		switch target.Kind {
-		case "node":
-			fmt.Fprintf(&b, "    location / { proxy_pass http://127.0.0.1:%d; proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto $scheme; }\n", target.Port)
-		case "php":
-			fmt.Fprintf(&b, "    root %s;\n    location ~ \\.php$ { fastcgi_pass 127.0.0.1:%d; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; include fastcgi_params; }\n", nginxProjectRoot(m.projectsRoot, target.Address), target.Port)
-		case "static":
-			fmt.Fprintf(&b, "    root %s;\n    location / { try_files $uri $uri/ =404; }\n", nginxProjectRoot(m.projectsRoot, target.Address))
-		}
-		b.WriteString("}\n")
-	case "apache":
-		b.WriteString("<VirtualHost *:18080>\n")
-		fmt.Fprintf(&b, "    ServerName %s\n", target.Domain)
-		switch target.Kind {
-		case "node":
-			fmt.Fprintf(&b, "    ProxyPass / http://127.0.0.1:%d/ upgrade=websocket\n    ProxyPassReverse / http://127.0.0.1:%d/\n", target.Port, target.Port)
-		case "php":
-			fmt.Fprintf(&b, "    DocumentRoot %q\n    <FilesMatch \"(?i)\\.php$\">\n        SetHandler \"proxy:fcgi://127.0.0.1:%d\"\n    </FilesMatch>\n", target.Address, target.Port)
-		case "static":
-			fmt.Fprintf(&b, "    DocumentRoot %q\n", target.Address)
-		}
-		b.WriteString("</VirtualHost>\n")
-	default:
-		return nil, fmt.Errorf("agentweb: unsupported web server %q", server)
+	webServer := dockerweb.Server(strings.ToLower(strings.TrimSpace(server)))
+	if err := webServer.Validate(); err != nil {
+		return nil, fmt.Errorf("agentweb: %w", err)
 	}
-	return []byte(b.String()), nil
-}
-
-func nginxProjectRoot(projectsRoot, root string) string {
-	rel, _ := filepath.Rel(projectsRoot, root)
-	return filepath.ToSlash(filepath.Join("/sites", rel))
+	desired := model.DesiredRunning
+	if target.DesiredState == string(model.DesiredStopped) {
+		desired = model.DesiredStopped
+	} else if target.DesiredState != "" && target.DesiredState != string(model.DesiredRunning) {
+		return nil, fmt.Errorf("agentweb: invalid desired state %q", target.DesiredState)
+	}
+	root := strings.TrimSpace(target.HostDocumentRoot)
+	if root == "" {
+		root = strings.TrimSpace(target.Address)
+	}
+	spec := dockerweb.SiteSpec{
+		ID:                  target.SiteID,
+		Name:                target.SiteID,
+		Domain:              target.Domain,
+		WWW:                 target.WWW,
+		Kind:                model.SiteKind(target.Kind),
+		HostDocumentRoot:    root,
+		BackendPort:         target.Port,
+		FrontController:     target.FrontController,
+		FrontControllerFile: target.FrontControllerFile,
+		FrontControllerMode: target.FrontControllerMode,
+		ApacheAllowOverride: target.ApacheAllowOverride,
+		SPAFallback:         target.SPAFallback,
+		SPAFallbackFile:     target.SPAFallbackFile,
+		DesiredState:        desired,
+	}
+	body, err := dockerweb.RenderPrivateSite(webServer, m.projectsRoot, spec, 1<<30)
+	if err != nil {
+		return nil, fmt.Errorf("agentweb: render %s vhost for %s: %w", webServer, target.SiteID, err)
+	}
+	return body, nil
 }
 
 type certificateCopyRequest struct {

@@ -77,23 +77,22 @@ func (s *AgentTargetSource) PrivateWebTargets(ctx context.Context, server string
 			continue
 		}
 		targets = append(targets, agentproto.WebTarget{
-			SiteID:  site.ID,
-			Domain:  domain,
-			Kind:    kind,
-			Address: address,
-			Port:    port,
-			TLS:     false,
+			SiteID:              site.ID,
+			Domain:              domain,
+			Kind:                kind,
+			Address:             address,
+			Port:                port,
+			TLS:                 false,
+			WWW:                 site.WWW,
+			HostDocumentRoot:    address,
+			FrontController:     site.FrontController,
+			FrontControllerFile: site.FrontControllerFile,
+			FrontControllerMode: site.FrontControllerMode,
+			SPAFallback:         site.SPAFallback,
+			SPAFallbackFile:     site.SPAFallbackFile,
+			ApacheAllowOverride: site.ApacheAllowOverride,
+			DesiredState:        string(site.DesiredState),
 		})
-		if site.WWW {
-			targets = append(targets, agentproto.WebTarget{
-				SiteID:  site.ID + "-www",
-				Domain:  "www." + domain,
-				Kind:    kind,
-				Address: address,
-				Port:    port,
-				TLS:     false,
-			})
-		}
 	}
 	return targets, nil
 }

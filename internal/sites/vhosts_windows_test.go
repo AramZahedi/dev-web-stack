@@ -212,3 +212,62 @@ func TestWindowsSetServingModeWithUnsupportedHelper(t *testing.T) {
 		t.Fatal("persisted config was updated to nginx in sqlite")
 	}
 }
+
+type fakeDockerServiceActivator struct {
+	mode string
+	err  error
+}
+
+func (a *fakeDockerServiceActivator) ActivateServingMode(_ context.Context, mode string) error {
+	a.mode = mode
+	return a.err
+}
+
+func TestWindowsSetServingModeDelegatesDockerActivation(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := config.Default()
+	cfg.Home = dir
+	cfg.ServingMode = config.ServingModeBuiltin
+	cfg.ServingProvider = config.ServingProviderNative
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	activator := &fakeDockerServiceActivator{}
+	svc := NewService(Deps{Store: db, Config: cfg, DockerService: activator})
+	if err := svc.SetServingMode(context.Background(), "apache"); err != nil {
+		t.Fatalf("SetServingMode(apache): %v", err)
+	}
+	if activator.mode != "apache" {
+		t.Fatalf("activated mode = %q, want apache", activator.mode)
+	}
+}
+
+func TestWindowsSaveDockerServingState(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := config.Default()
+	cfg.Home = dir
+	cfg.ServingMode = config.ServingModeBuiltin
+	cfg.ServingProvider = config.ServingProviderNative
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Deps{Store: db, Config: cfg})
+	if err := svc.SaveServingState(context.Background(), "apache", config.ServingProviderDocker); err != nil {
+		t.Fatalf("SaveServingState(apache/docker): %v", err)
+	}
+	if svc.ServingMode() != "apache" || svc.ServingProvider() != config.ServingProviderDocker {
+		t.Fatalf("state = %s/%s", svc.ServingMode(), svc.ServingProvider())
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/services"
 )
@@ -68,10 +69,12 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 	byDomain := make(map[string]string)
 	byPort := make(map[string]int)
 	byKind := make(map[string]string)
+	byTarget := make(map[string]agentproto.WebTarget)
 	for _, target := range targets {
 		byDomain[target.Domain] = target.Address
 		byPort[target.Domain] = target.Port
 		byKind[target.Domain] = target.Kind
+		byTarget[target.Domain] = target
 	}
 
 	// Dashboard is excluded
@@ -79,13 +82,16 @@ func TestAgentTargetSourceBuildsTypedTargets(t *testing.T) {
 		t.Error("dashboard domain devstack.test was not excluded")
 	}
 
-	// PHP site
-	if byKind["app.test"] != "php" || byPort["app.test"] != 43001 || byDomain["app.test"] != "/data/devstack/projects/app" {
-		t.Errorf("app.test target = kind:%s port:%d addr:%s", byKind["app.test"], byPort["app.test"], byDomain["app.test"])
+	// PHP site carries the full vhost metadata and a www alias on one target.
+	php := byTarget["app.test"]
+	if php.Kind != "php" || php.Port != 43001 || php.Address != "/data/devstack/projects/app" {
+		t.Errorf("app.test target = kind:%s port:%d addr:%s", php.Kind, php.Port, php.Address)
 	}
-	// WWW alias
-	if byKind["www.app.test"] != "php" || byPort["www.app.test"] != 43001 {
-		t.Errorf("www.app.test target = kind:%s port:%d", byKind["www.app.test"], byPort["www.app.test"])
+	if !php.WWW || php.HostDocumentRoot != "/data/devstack/projects/app" {
+		t.Errorf("app.test metadata = %+v", php)
+	}
+	if _, ok := byTarget["www.app.test"]; ok {
+		t.Error("www alias was emitted as a separate target")
 	}
 
 	// Node site

@@ -31,24 +31,22 @@ func TestSyncWritesHTTPOnlyVhostsWithoutDashboard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := agentproto.WebTargetsRequest{Targets: []agentproto.WebTarget{{
+	request := agentproto.WebTargetsRequest{Server: "nginx", Targets: []agentproto.WebTarget{{
 		SiteID: "shop", Domain: "shop.test", Kind: "node", Address: "127.0.0.1", Port: 41000, TLS: false,
 	}}}
 	if _, err := module.Sync(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	for server, baseName := range map[string]string{"nginx": "nginx.conf", "apache": "httpd.conf"} {
-		base, err := os.ReadFile(filepath.Join(root, "services", server, "config", baseName))
-		if err != nil {
-			t.Fatalf("read %s private base config: %v", server, err)
-		}
-		text := strings.ToLower(string(base))
-		if server == "apache" && !strings.Contains(text, "listen 18080") {
-			t.Errorf("Apache base does not listen on private HTTP port: %s", base)
-		}
-		if strings.Contains(text, "listen 443") || strings.Contains(text, "listen 8443") || strings.Contains(text, "sslcertificate") {
-			t.Errorf("%s private base contains public TLS listener/certificate config: %s", server, base)
-		}
+	base, err := os.ReadFile(filepath.Join(root, "services", "nginx", "config", "nginx.conf"))
+	if err != nil {
+		t.Fatalf("read nginx private base config: %v", err)
+	}
+	baseText := strings.ToLower(string(base))
+	if strings.Contains(baseText, "listen 443") || strings.Contains(baseText, "listen 8443") || strings.Contains(baseText, "ssl_certificate") {
+		t.Errorf("nginx private base contains public TLS listener/certificate config: %s", base)
+	}
+	if _, err := os.Stat(filepath.Join(root, "services", "apache", "config", "httpd.conf")); !os.IsNotExist(err) {
+		t.Fatalf("nginx sync wrote the Apache base config: %v", err)
 	}
 	project := filepath.Join(module.Root(), "projects", "shop")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -69,10 +67,42 @@ func TestSyncWritesHTTPOnlyVhostsWithoutDashboard(t *testing.T) {
 			if !strings.Contains(text, "18080") || !strings.Contains(text, target.Domain) {
 				t.Errorf("%s private vhost is missing private listener/site: %s", server, config)
 			}
-			if strings.Contains(text, "listen 443") || strings.Contains(text, "listen 8443") || strings.Contains(text, "ssl_certificate") || strings.Contains(text, "devstack.test") {
+			if strings.Contains(text, "listen 443") || strings.Contains(text, "listen 8443") || strings.Contains(text, "ssl_certificate") || strings.Contains(text, "server_name devstack.test") || strings.Contains(text, "servername devstack.test") {
 				t.Errorf("%s private vhost contains public TLS or dashboard config: %s", server, config)
 			}
 		}
+	}
+}
+
+func TestSyncWritesOnlyTheSelectedServerAndRemovesStaleVhosts(t *testing.T) {
+	root := t.TempDir()
+	module, err := agentweb.New(agentweb.Config{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(module.Root(), "projects", "shop")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	request := agentproto.WebTargetsRequest{Server: "apache", Targets: []agentproto.WebTarget{{
+		SiteID: "shop", Domain: "shop.test", Kind: "static", Address: project,
+	}}}
+	if _, err := module.Sync(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	generated := filepath.Join(root, "services", "apache", "config", "conf.d", "generated")
+	if _, err := os.Stat(filepath.Join(generated, "shop.conf")); err != nil {
+		t.Fatalf("shop vhost missing: %v", err)
+	}
+	request.Targets = nil
+	if _, err := module.Sync(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(generated, "shop.conf")); !os.IsNotExist(err) {
+		t.Fatalf("stale shop vhost was not removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "services", "nginx", "config", "nginx.conf")); !os.IsNotExist(err) {
+		t.Fatalf("apache sync wrote the nginx base config: %v", err)
 	}
 }
 
@@ -83,7 +113,7 @@ func TestWebModuleMountsTargetsAndRejectsPublicOrArbitraryTargets(t *testing.T) 
 	}
 	mux := http.NewServeMux()
 	agentapi.Mount(mux, module)
-	valid := agentproto.WebTargetsRequest{Targets: []agentproto.WebTarget{{
+	valid := agentproto.WebTargetsRequest{Server: "nginx", Targets: []agentproto.WebTarget{{
 		SiteID: "shop", Domain: "shop.test", Kind: "node", Address: "127.0.0.1", Port: 41000,
 	}}}
 	body, _ := json.Marshal(valid)

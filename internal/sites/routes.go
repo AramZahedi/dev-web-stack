@@ -145,6 +145,24 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 		Certs:       certMap,
 		DefaultCert: dashboardCert,
 	})
+	if s.dockerServing() && s.deps.DockerRoute != nil && !s.suppressDockerRoutes {
+		if provider, ok := s.deps.DockerSyncer.(DockerStatusProvider); ok {
+			if _, configOK, _ := provider.DockerStatus(); !configOK {
+				return nil
+			}
+		}
+		host := strings.TrimSpace(s.deps.DockerRouteHost)
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		port := s.deps.DockerRoutePort
+		if port == 0 {
+			port = 18080
+		}
+		if err := s.deps.DockerRoute.UpdateDockerWebRoutes(ctx, true, host, port); err != nil {
+			return fmt.Errorf("sites: route site hosts to docker web server: %w", err)
+		}
+	}
 	return nil
 }
 

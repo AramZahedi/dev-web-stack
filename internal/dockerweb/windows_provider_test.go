@@ -140,11 +140,74 @@ func TestAgentWindowsPrivateSyncerUsesTypedAgentTargets(t *testing.T) {
 	if err := syncer.SyncPrivate(context.Background(), dockerweb.ServerNginx); err != nil {
 		t.Fatal(err)
 	}
-	if len(agent.requests) != 1 || len(agent.requests[0].Targets) != 1 || agent.requests[0].Targets[0] != target {
-		t.Fatalf("agent target sync = %+v, want one typed private target", agent.requests)
+	if len(agent.requests) != 1 || agent.requests[0].Server != "nginx" || len(agent.requests[0].Targets) != 1 || agent.requests[0].Targets[0] != target {
+		t.Fatalf("agent target sync = %+v, want one typed private target for nginx", agent.requests)
+	}
+	lastSync, ok, lastErr := syncer.DockerStatus()
+	if lastSync.IsZero() || !ok || lastErr != "" {
+		t.Fatalf("DockerStatus after sync = %v %t %q", lastSync, ok, lastErr)
 	}
 	if err := syncer.SyncPrivate(context.Background(), dockerweb.Server("arbitrary")); err == nil {
 		t.Fatal("unsupported server was accepted by the Windows agent adapter")
+	}
+	if _, ok, _ := syncer.DockerStatus(); ok {
+		t.Fatal("failed sync left config_ok true")
+	}
+}
+
+type fakeProviderSwitch struct {
+	stopped []string
+	started []string
+}
+
+func (s *fakeProviderSwitch) StopActiveServer(_ context.Context, server string) error {
+	s.stopped = append(s.stopped, server)
+	return nil
+}
+func (s *fakeProviderSwitch) StartActiveServer(_ context.Context, server string) error {
+	s.started = append(s.started, server)
+	return nil
+}
+
+func TestWindowsProviderUsesProviderSwitchForStopAndStart(t *testing.T) {
+	state := &windowsState{mode: "apache", provider: "docker"}
+	services := &windowsServices{}
+	switcher := &fakeProviderSwitch{}
+	provider, err := dockerweb.NewWindowsProvider(dockerweb.WindowsProviderConfig{
+		State:    state,
+		Syncer:   &privateSyncer{},
+		Services: services,
+		Switch:   switcher,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.StopActiveServer(context.Background(), "apache"); err != nil {
+		t.Fatal(err)
+	}
+	if len(switcher.stopped) != 1 || switcher.stopped[0] != "apache" || len(services.stopped) != 0 {
+		t.Fatalf("switch stop = %v services stop = %v", switcher.stopped, services.stopped)
+	}
+	if err := provider.StartActiveServer(context.Background(), "apache"); err != nil {
+		t.Fatal(err)
+	}
+	if len(switcher.started) != 1 || switcher.started[0] != "apache" {
+		t.Fatalf("switch start = %v", switcher.started)
+	}
+}
+
+func TestWindowsProviderRejectsDirectServerSwitch(t *testing.T) {
+	state := &windowsState{mode: "nginx", provider: "docker"}
+	provider, err := dockerweb.NewWindowsProvider(dockerweb.WindowsProviderConfig{
+		State:    state,
+		Syncer:   &privateSyncer{},
+		Services: &windowsServices{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Prepare(context.Background(), "apache"); err == nil {
+		t.Fatal("direct nginx to apache switch was accepted")
 	}
 }
 

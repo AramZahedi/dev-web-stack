@@ -20,6 +20,9 @@ import (
 )
 
 const (
+	// PrivateHTTPPort is the loopback port used by container web servers that
+	// sit behind the Windows daemon's public TLS router.
+	PrivateHTTPPort        = 18080
 	defaultCertsDir        = "/certs"
 	defaultMaxBodyBytes    = int64(1 << 30)
 	dashboardDomain        = "devstack.test"
@@ -153,6 +156,66 @@ func generatedFile(server Server, siteID string, body []byte) []byte {
 	sum := sha256.Sum256(body)
 	header := fmt.Sprintf("# devstack dockerweb server=%s site=%s sha256=%x\n\n", server, siteID, sum)
 	return append([]byte(header), body...)
+}
+
+// RenderPrivateSite renders one HTTP-only vhost for a container web server
+// fronted by the Windows daemon. It never emits TLS, HTTPS redirects, or the
+// dashboard vhost. Container document roots use /sites; FastCGI keeps the
+// native WSL document root.
+func RenderPrivateSite(server Server, projects string, s SiteSpec, maxBody int64) ([]byte, error) {
+	if err := server.Validate(); err != nil {
+		return nil, err
+	}
+	projects, err := cleanAbsolutePath("projects root", projects)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSite(s, projects); err != nil {
+		return nil, err
+	}
+	if maxBody < 0 {
+		return nil, errors.New("dockerweb: max body bytes must not be negative")
+	}
+	if maxBody == 0 {
+		maxBody = defaultMaxBodyBytes
+	}
+	containerRoot, err := containerRoot(projects, s)
+	if err != nil {
+		return nil, err
+	}
+	ports := listenPorts{http: PrivateHTTPPort, https: PrivateHTTPPort}
+	var b strings.Builder
+	switch server {
+	case ServerNginx:
+		if s.DesiredState == model.DesiredStopped {
+			writeNginxStoppedServer(&b, s, "", ports, false)
+		} else {
+			writeNginxServingServer(&b, s, containerRoot, "", maxBody, ports, false)
+		}
+	case ServerApache:
+		mode, err := frontControllerMode(s.FrontControllerMode)
+		if err != nil {
+			return nil, fmt.Errorf("dockerweb: site %q: %w", s.ID, err)
+		}
+		override, err := allowOverrideValue(s.ApacheAllowOverride)
+		if err != nil {
+			return nil, fmt.Errorf("dockerweb: site %q: %w", s.ID, err)
+		}
+		generatedFallback := s.FrontController && mode != "htaccess"
+		if mode == "auto" && s.ApacheAllowOverride != "none" {
+			if _, err := checkedFileInRoot(s.HostDocumentRoot, ".htaccess", "", false); err == nil {
+				generatedFallback = false
+			}
+		}
+		if s.DesiredState == model.DesiredStopped {
+			writeApacheStoppedVHost(&b, s, false, "", ports)
+		} else {
+			writeApacheServingVHost(&b, s, containerRoot, "", maxBody, ports, false, override, generatedFallback)
+		}
+	default:
+		return nil, fmt.Errorf("dockerweb: unsupported server %q", server)
+	}
+	return []byte(b.String()), nil
 }
 
 func resolvePorts(httpPort, httpsPort int) (listenPorts, error) {

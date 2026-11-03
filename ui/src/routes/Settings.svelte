@@ -102,10 +102,10 @@
   let removeToolError = $state<{ code: string; message: string } | null>(null);
   let removingTool = $state(false);
 
-  const servingModes: { value: ServingMode; label: string; hint: string }[] = [
-    { value: 'builtin', label: 'Built-in', hint: 'Go proxy + forwarders' },
-    { value: 'nginx', label: 'nginx', hint: 'Native vhosts' },
-    { value: 'apache', label: 'Apache', hint: 'Native vhosts' },
+  const servingModes: { value: ServingMode; label: string }[] = [
+    { value: 'builtin', label: 'Built-in' },
+    { value: 'nginx', label: 'nginx' },
+    { value: 'apache', label: 'Apache' },
   ];
 
   const configPath = $derived(
@@ -259,12 +259,21 @@
     return 'Built-in proxy';
   }
 
+  function modeHint(mode: ServingMode): string {
+    if (mode === 'builtin') return 'Go proxy + forwarders';
+    return isWindowsHost ? 'Managed Docker container' : 'Native vhosts';
+  }
+
   function modeDescription(mode: ServingMode): string {
     if (mode === 'nginx') {
-      return 'Native nginx vhosts own ports 80 and 443. The built-in proxy and helper forwarders are stopped.';
+      return isWindowsHost
+        ? 'Managed Docker nginx serves sites on 18080. The daemon keeps public ports 80/443, TLS, and the dashboard.'
+        : 'Native nginx vhosts own ports 80 and 443. The built-in proxy and helper forwarders are stopped.';
     }
     if (mode === 'apache') {
-      return 'Native Apache vhosts own ports 80 and 443. The built-in proxy and helper forwarders are stopped.';
+      return isWindowsHost
+        ? 'Managed Docker Apache serves sites on 18080 and honors .htaccess. The daemon keeps public ports 80/443, TLS, and the dashboard.'
+        : 'Native Apache vhosts own ports 80 and 443. The built-in proxy and helper forwarders are stopped.';
     }
     return 'The built-in Go proxy and helper forwarders publish every site on ports 80 and 443.';
   }
@@ -281,6 +290,15 @@
           ? 'No restart is needed.'
           : `${modeLabel(current)} reloads after the vhosts are removed.`,
         'Brief downtime is possible for every site while the switch completes.',
+      ];
+    }
+    if (isWindowsHost) {
+      return [
+        `${modeLabel(target)} starts as a managed Docker service.`,
+        `The daemon routes site traffic to ${modeLabel(target)} on 127.0.0.1:18080.`,
+        'Public ports 80/443, TLS, and the dashboard stay with the daemon.',
+        'Brief downtime is possible for every site while the switch completes.',
+        'Switching directly to another Docker web server requires builtin first.',
       ];
     }
     const items = [
@@ -1139,7 +1157,7 @@
                   {/if}
                   {option.label}
                 </span>
-                <span class="mode-option-hint">{option.hint}</span>
+                <span class="mode-option-hint">{modeHint(option.value)}</span>
               </button>
             {/each}
           </div>

@@ -3,6 +3,7 @@ package sites
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -97,6 +98,9 @@ func (f *fakeDockerSwitch) counts() (int, int) {
 }
 
 func TestSetServingModeTakesSharedLifecycleLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows external modes delegate to the Docker service manager")
+	}
 	svc, fakes := newTestService(t)
 	if _, err := svc.Create(context.Background(), CreateRequest{Name: "blog", Path: fakes.root, Kind: "static"}); err != nil {
 		t.Fatal(err)
@@ -117,6 +121,44 @@ func TestSetServingModeTakesSharedLifecycleLock(t *testing.T) {
 	coordinator.Unlock()
 	if err := <-done; err != nil {
 		t.Fatalf("SetServingMode: %v", err)
+	}
+}
+
+type fakeDockerRoute struct {
+	active bool
+	host   string
+	port   int
+	err    error
+}
+
+func (r *fakeDockerRoute) UpdateDockerWebRoutes(_ context.Context, active bool, host string, port int) error {
+	r.active, r.host, r.port = active, host, port
+	return r.err
+}
+
+func TestDockerRouteRedirectsOnlyWhenSyncerHealthy(t *testing.T) {
+	svc, _ := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	svc.deps.DockerSyncer = &fakeDockerSyncer{configOK: true}
+	route := &fakeDockerRoute{}
+	svc.deps.DockerRoute = route
+	svc.deps.DockerRouteHost = "127.0.0.1"
+	svc.deps.DockerRoutePort = 18080
+	if err := svc.RebuildRoutes(context.Background()); err != nil {
+		t.Fatalf("RebuildRoutes: %v", err)
+	}
+	if !route.active || route.host != "127.0.0.1" || route.port != 18080 {
+		t.Fatalf("route = %+v, want active 127.0.0.1:18080", route)
+	}
+
+	svc.deps.DockerSyncer = &fakeDockerSyncer{configOK: false}
+	route.active = false
+	if err := svc.RebuildRoutes(context.Background()); err != nil {
+		t.Fatalf("RebuildRoutes with unhealthy sync: %v", err)
+	}
+	if route.active {
+		t.Fatal("unhealthy Docker sync still redirected routes")
 	}
 }
 

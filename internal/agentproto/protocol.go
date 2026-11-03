@@ -454,10 +454,27 @@ type WebTarget struct {
 	Address string `json:"address"`
 	Port    int    `json:"port"`
 	TLS     bool   `json:"tls"`
+	// WWW adds the www.<domain> alias to the private vhost.
+	WWW bool `json:"www,omitempty"`
+	// HostDocumentRoot is the WSL document root used by FastCGI and the full
+	// vhost renderer. Container paths are derived from the managed projects root.
+	HostDocumentRoot string `json:"document_root,omitempty"`
+	// FrontController and its file/mode mirror the site row.
+	FrontController     bool   `json:"front_controller,omitempty"`
+	FrontControllerFile string `json:"front_controller_file,omitempty"`
+	FrontControllerMode string `json:"front_controller_mode,omitempty"`
+	// SPAFallback and its file mirror the site row.
+	SPAFallback     bool   `json:"spa_fallback,omitempty"`
+	SPAFallbackFile string `json:"spa_fallback_file,omitempty"`
+	// ApacheAllowOverride is all, fileinfo, or none.
+	ApacheAllowOverride string `json:"apache_allow_override,omitempty"`
+	// DesiredState is running or stopped.
+	DesiredState string `json:"desired_state,omitempty"`
 }
 
-// WebTargetsRequest replaces the agent's target set.
+// WebTargetsRequest replaces the agent's target set for one web server.
 type WebTargetsRequest struct {
+	Server  string      `json:"server"`
 	Targets []WebTarget `json:"targets"`
 }
 

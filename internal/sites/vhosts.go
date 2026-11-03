@@ -210,10 +210,11 @@ func (s *Service) ReconcileServingMode(ctx context.Context) error {
 		if s.deps.DockerSyncer == nil {
 			return errors.New("sites: docker web config syncer is not configured")
 		}
-		// A helper restart re-enables its AutoForward listeners. The Docker web
-		// container owns 80/443 in this mode, so explicitly release them before
-		// syncing and validating the config.
-		if s.deps.Forwarders != nil {
+		// A helper restart re-enables its AutoForward listeners. On Linux the
+		// Docker web container owns 80/443 in this mode, so explicitly release
+		// them before syncing. On Windows the daemon keeps the public entry and
+		// the helper forwarders must stay enabled.
+		if runtime.GOOS != "windows" && s.deps.Forwarders != nil {
 			if err := s.deps.Forwarders.SetForwarders(ctx, s.deps.Config.HTTPPort, s.deps.Config.HTTPSPort, false); err != nil {
 				return fmt.Errorf("sites: release built-in forwarders for docker: %w", err)
 			}
@@ -280,6 +281,13 @@ func (s *Service) SetServingMode(ctx context.Context, mode string) error {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if !config.ValidServingMode(mode) {
 		return fmt.Errorf("sites: unsupported serving mode %q", mode)
+	}
+
+	// Windows external modes are owned by managed Docker services. Delegate
+	// before taking the sites mutex: provider commit calls SaveServingState,
+	// which locks it.
+	if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin {
+		return s.setWindowsDockerServingMode(ctx, mode)
 	}
 
 	// Serialize provider switches with service lifecycle mutations. Service
@@ -367,6 +375,37 @@ func (s *Service) SetServingMode(ctx context.Context, mode string) error {
 	default:
 		return s.switchExternal(ctx, current, mode, target)
 	}
+}
+
+// setWindowsDockerServingMode activates nginx or Apache through the managed
+// Docker service. It must run without holding s.mu because the provider commit
+// saves serving state through SaveServingState.
+func (s *Service) setWindowsDockerServingMode(ctx context.Context, mode string) error {
+	if s.deps.DockerService == nil {
+		return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
+	}
+	if s.deps.Lifecycle != nil {
+		s.deps.Lifecycle.Lock()
+		defer s.deps.Lifecycle.Unlock()
+	}
+	s.mu.Lock()
+	current := s.servingMode()
+	provider := s.servingProvider()
+	s.mu.Unlock()
+
+	if provider == config.ServingProviderDocker {
+		if current == mode {
+			return s.SyncVhosts(ctx)
+		}
+		return fmt.Errorf("sites: docker %s is active; switch to builtin before activating %s", current, mode)
+	}
+	if provider != config.ServingProviderNative || current != config.ServingModeBuiltin {
+		return fmt.Errorf("sites: cannot activate %s from serving state %s/%s", mode, current, provider)
+	}
+	if err := s.deps.DockerService.ActivateServingMode(ctx, mode); err != nil {
+		return fmt.Errorf("sites: activate docker %s: %w", mode, err)
+	}
+	return nil
 }
 
 // helperModeLocked returns the helper's persisted mode, treating an old helper
@@ -548,7 +587,7 @@ func (s *Service) SaveServingState(ctx context.Context, mode, provider string) e
 	if provider == config.ServingProviderDocker && mode == config.ServingModeBuiltin {
 		return errors.New("sites: serving_provider docker requires serving_mode nginx or apache")
 	}
-	if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin {
+	if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin && provider != config.ServingProviderDocker {
 		if s.deps.Vhosts == nil {
 			return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
 		}
@@ -563,7 +602,7 @@ func (s *Service) SaveServingState(ctx context.Context, mode, provider string) e
 }
 
 func (s *Service) saveServingStateLocked(ctx context.Context, mode, provider string) error {
-	if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin {
+	if runtime.GOOS == "windows" && mode != config.ServingModeBuiltin && provider != config.ServingProviderDocker {
 		if s.deps.Vhosts == nil {
 			return errors.New("external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active")
 		}
@@ -765,6 +804,8 @@ func (s *Service) switchDockerToBuiltinLocked(ctx context.Context) error {
 	if s.deps.DockerSwitch == nil {
 		return errors.New("sites: docker provider switch is not configured")
 	}
+	s.suppressDockerRoutes = true
+	defer func() { s.suppressDockerRoutes = false }()
 	if err := s.deps.DockerSwitch.StopActiveServer(ctx, current); err != nil {
 		return fmt.Errorf("sites: stop docker %s container for builtin switch: %w", current, err)
 	}

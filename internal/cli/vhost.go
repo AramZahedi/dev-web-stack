@@ -115,8 +115,8 @@ func (a *App) newVhostUseCmd() *cobra.Command {
 						strings.Contains(err.Error(), "HELPER_UNAVAILABLE") {
 						return &Error{
 							Code:        "NOT_SUPPORTED",
-							Message:     "external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active",
-							Remediation: "Use `devstack vhost use builtin`.",
+							Message:     "external serving modes (nginx, caddy, apache) require the managed Docker web server on Windows",
+							Remediation: "Install the service with `devstack service install nginx` or `apache`, then activate it.",
 							cause:       err,
 						}
 					}
@@ -149,8 +149,8 @@ func (a *App) newVhostSyncCmd() *cobra.Command {
 						strings.Contains(err.Error(), "HELPER_UNAVAILABLE") {
 						return &Error{
 							Code:        "NOT_SUPPORTED",
-							Message:     "external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active",
-							Remediation: "Use `devstack vhost use builtin`.",
+							Message:     "external serving modes (nginx, caddy, apache) require the managed Docker web server on Windows",
+							Remediation: "Install the service with `devstack service install nginx` or `apache`, then activate it.",
 							cause:       err,
 						}
 					}

@@ -41,7 +41,7 @@ func TestCLIVhostUseWindowsUnsupported(t *testing.T) {
 		if code == 0 {
 			t.Fatal("want non-zero exit code on Windows when switching to external mode")
 		}
-		want := "external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active"
+		want := "external serving modes (nginx, caddy, apache) require the managed Docker web server on Windows"
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want %q", stderr, want)
 		}
@@ -58,7 +58,7 @@ func TestCLIVhostUseWindowsUnsupported(t *testing.T) {
 		if code == 0 {
 			t.Fatal("want non-zero exit code on Windows when switching to external mode")
 		}
-		want := "external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active"
+		want := "external serving modes (nginx, caddy, apache) require the managed Docker web server on Windows"
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want %q", stderr, want)
 		}
@@ -75,7 +75,7 @@ func TestCLIVhostUseWindowsUnsupported(t *testing.T) {
 		if code == 0 {
 			t.Fatal("want non-zero exit code on Windows when syncing external vhosts")
 		}
-		want := "external serving modes (nginx, caddy, apache) are not supported on Windows; builtin mode is active"
+		want := "external serving modes (nginx, caddy, apache) require the managed Docker web server on Windows"
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr = %q, want %q", stderr, want)
 		}

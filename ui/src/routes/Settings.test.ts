@@ -227,6 +227,23 @@ describe('Settings tooling', () => {
     expect(ui.disabled).toBe(false);
   });
 
+  it('labels Windows external serving as managed Docker containers', async () => {
+    mockApi.getSettings.mockResolvedValue({
+      ...SETTINGS,
+      home: 'C:\\devstack',
+      user_home: 'C:\\Users\\Aram',
+      wsl_distro: 'devstack',
+      public_ports_fixed: true,
+    });
+    render(Settings);
+
+    const nginx = await screen.findByRole('button', { name: 'Use nginx serving' });
+    expect(nginx.textContent).toContain('Managed Docker container');
+    expect(nginx.textContent).not.toContain('Native vhosts');
+    const apache = screen.getByRole('button', { name: 'Use Apache serving' });
+    expect(apache.textContent).toContain('Managed Docker container');
+  });
+
   it('keeps local settings visible when the helper trust status is unavailable', async () => {
     mockApi.getTrust.mockRejectedValue(
       new ApiError('HELPER_UNAVAILABLE', 'devstack-helper is not running', 502),

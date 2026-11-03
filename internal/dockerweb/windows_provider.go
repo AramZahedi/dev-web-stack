@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AramZahedi/dev-web-stack/internal/agentproto"
 )
@@ -34,6 +35,11 @@ type WindowsTargetSource interface {
 type AgentWindowsPrivateSyncer struct {
 	agent   privateWebAgent
 	targets WindowsTargetSource
+
+	mu        sync.Mutex
+	lastSync  time.Time
+	configOK  bool
+	lastError string
 }
 
 // NewAgentWindowsPrivateSyncer constructs the authenticated-agent web syncer.
@@ -50,17 +56,58 @@ func (*AgentWindowsPrivateSyncer) EnsurePrivateBase(server Server) error { retur
 
 // SyncPrivate sends only typed targets. The agent owns all WSL config files.
 func (s *AgentWindowsPrivateSyncer) SyncPrivate(ctx context.Context, server Server) error {
-	if err := server.Validate(); err != nil {
+	return s.Sync(ctx, string(server))
+}
+
+// Sync implements sites.DockerSyncer for the Windows Docker provider.
+func (s *AgentWindowsPrivateSyncer) Sync(ctx context.Context, server string) error {
+	if strings.TrimSpace(server) == "" {
+		s.record(errors.New("dockerweb: private web server is required"))
+		return errors.New("dockerweb: private web server is required")
+	}
+	parsed := Server(strings.ToLower(strings.TrimSpace(server)))
+	if err := parsed.Validate(); err != nil {
+		s.record(err)
 		return err
 	}
-	targets, err := s.targets.PrivateWebTargets(ctx, string(server))
+	targets, err := s.targets.PrivateWebTargets(ctx, string(parsed))
 	if err != nil {
-		return fmt.Errorf("dockerweb: build private %s targets: %w", server, err)
+		err = fmt.Errorf("dockerweb: build private %s targets: %w", parsed, err)
+		s.record(err)
+		return err
 	}
-	if _, err := s.agent.SyncWeb(ctx, agentproto.WebTargetsRequest{Targets: targets}); err != nil {
-		return fmt.Errorf("dockerweb: sync private %s targets through agent: %w", server, err)
+	if s.agent == nil {
+		err = errors.New("dockerweb: WSL agent is not connected")
+		s.record(err)
+		return err
 	}
+	if _, err := s.agent.SyncWeb(ctx, agentproto.WebTargetsRequest{Server: string(parsed), Targets: targets}); err != nil {
+		err = fmt.Errorf("dockerweb: sync private %s targets through agent: %w", parsed, err)
+		s.record(err)
+		return err
+	}
+	s.mu.Lock()
+	s.lastSync = time.Now().UTC()
+	s.configOK = true
+	s.lastError = ""
+	s.mu.Unlock()
 	return nil
+}
+
+// DockerStatus reports the last successful private sync.
+func (s *AgentWindowsPrivateSyncer) DockerStatus() (time.Time, bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastSync, s.configOK, s.lastError
+}
+
+func (s *AgentWindowsPrivateSyncer) record(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.configOK = false
+	if err != nil {
+		s.lastError = err.Error()
+	}
 }
 
 // ProxyRouterTargetUpdater updates proxy router targets when Docker web services start or stop.
@@ -68,11 +115,19 @@ type ProxyRouterTargetUpdater interface {
 	UpdateDockerWebRoutes(ctx context.Context, active bool, host string, port int) error
 }
 
+// ProviderSwitch stops or starts a web container through the explicit
+// provider-switch path, bypassing the active-server deactivation guard.
+type ProviderSwitch interface {
+	StopActiveServer(ctx context.Context, server string) error
+	StartActiveServer(ctx context.Context, server string) error
+}
+
 // WindowsProviderConfig wires the Windows/WSL private-HTTP serving adapter.
 type WindowsProviderConfig struct {
 	State    ServingState
 	Syncer   WindowsPrivateSyncer
 	Services ServiceControl
+	Switch   ProviderSwitch
 	Router   ProxyRouterTargetUpdater
 }
 
@@ -82,6 +137,7 @@ type WindowsProvider struct {
 	state    ServingState
 	syncer   WindowsPrivateSyncer
 	services ServiceControl
+	switchTo ProviderSwitch
 	router   ProxyRouterTargetUpdater
 
 	mu           sync.Mutex
@@ -100,6 +156,7 @@ func NewWindowsProvider(cfg WindowsProviderConfig) (*WindowsProvider, error) {
 		state:    cfg.State,
 		syncer:   cfg.Syncer,
 		services: cfg.Services,
+		switchTo: cfg.Switch,
 		router:   cfg.Router,
 	}, nil
 }
@@ -133,6 +190,9 @@ func (p *WindowsProvider) Prepare(ctx context.Context, serverName string) error 
 		previousProvider = "native"
 	}
 	p.mu.Unlock()
+	if previousProvider == "docker" && previousMode != "" && previousMode != "builtin" && previousMode != string(server) {
+		return fmt.Errorf("dockerweb: %s is active; switch to builtin before activating %s", previousMode, server)
+	}
 	if err := p.syncer.EnsurePrivateBase(server); err != nil {
 		return fmt.Errorf("dockerweb: ensure WSL private %s config: %w", server, err)
 	}
@@ -204,6 +264,19 @@ func (p *WindowsProvider) Rollback(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("dockerweb: restore router targets: %w", err))
 		}
 	}
+	if provider == "docker" && mode != "" && mode != "builtin" && mode != string(server) {
+		if p.switchTo != nil {
+			if err := p.switchTo.StartActiveServer(ctx, mode); err != nil {
+				errs = append(errs, fmt.Errorf("dockerweb: restore previous %s: %w", mode, err))
+			} else if p.router != nil {
+				if err := p.router.UpdateDockerWebRoutes(ctx, true, "127.0.0.1", windowsPrivateHTTPPort); err != nil {
+					errs = append(errs, fmt.Errorf("dockerweb: restore previous %s route: %w", mode, err))
+				}
+			}
+		} else if err := p.services.Activate(ctx, mode); err != nil {
+			errs = append(errs, fmt.Errorf("dockerweb: restore previous %s: %w", mode, err))
+		}
+	}
 	if err := p.state.SaveServingState(ctx, mode, provider); err != nil {
 		errs = append(errs, fmt.Errorf("dockerweb: restore Windows serving state: %w", err))
 	}
@@ -217,7 +290,11 @@ func (p *WindowsProvider) StopActiveServer(ctx context.Context, serverName strin
 		return err
 	}
 	var errs []error
-	if err := p.services.Deactivate(ctx, string(server)); err != nil {
+	if p.switchTo != nil {
+		if err := p.switchTo.StopActiveServer(ctx, string(server)); err != nil {
+			errs = append(errs, fmt.Errorf("dockerweb: stop %s: %w", server, err))
+		}
+	} else if err := p.services.Deactivate(ctx, string(server)); err != nil {
 		errs = append(errs, fmt.Errorf("dockerweb: stop %s: %w", server, err))
 	}
 	if p.router != nil {
@@ -234,7 +311,11 @@ func (p *WindowsProvider) StartActiveServer(ctx context.Context, serverName stri
 	if err != nil {
 		return err
 	}
-	if err := p.services.Activate(ctx, string(server)); err != nil {
+	if p.switchTo != nil {
+		if err := p.switchTo.StartActiveServer(ctx, string(server)); err != nil {
+			return fmt.Errorf("dockerweb: start %s: %w", server, err)
+		}
+	} else if err := p.services.Activate(ctx, string(server)); err != nil {
 		return fmt.Errorf("dockerweb: start %s: %w", server, err)
 	}
 	if p.router != nil {

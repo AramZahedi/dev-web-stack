@@ -147,6 +147,29 @@ type DockerSwitch interface {
 	StartActiveServer(ctx context.Context, server string) error
 }
 
+// DockerServiceActivator maps a Windows serving mode to the managed Docker web
+// service lifecycle. It is called without the sites mutex so the provider can
+// save serving state during commit.
+type DockerServiceActivator interface {
+	ActivateServingMode(ctx context.Context, mode string) error
+}
+
+// DockerServingConfig wires the Docker serving hooks after construction. The
+// daemon builds the provider and service manager in a cycle-safe order.
+type DockerServingConfig struct {
+	Syncer    DockerSyncer
+	Switch    DockerSwitch
+	Activator DockerServiceActivator
+	Route     DockerRoute
+	RouteHost string
+	RoutePort int
+}
+
+// DockerRoute redirects public site routes to the active private web server.
+type DockerRoute interface {
+	UpdateDockerWebRoutes(ctx context.Context, active bool, host string, port int) error
+}
+
 // DockerStatusProvider exposes the last Docker config sync result.
 type DockerStatusProvider interface {
 	DockerStatus() (lastSync time.Time, configOK bool, lastError string)
@@ -162,26 +185,31 @@ type DatabaseProvisioner interface {
 // Deps is the complete set of service dependencies. Now and NewID are optional
 // and default to the wall clock and a random 128-bit hex id.
 type Deps struct {
-	Store        *store.Store
-	Backend      backend.Backend
-	Helper       Hosts
-	Certs        Certs
-	Vhosts       Vhosts
-	Proxy        ProxyControl
-	Forwarders   Forwarders
-	DockerSyncer DockerSyncer
-	DockerSwitch DockerSwitch
-	Router       *proxy.Router
-	Ports        *domain.PortAllocator
-	PortProvider ports.Provider
-	Config       config.Config
-	Logs         *logs.Store
-	PHP          PHPCommands
-	PHPBackend   backend.PHPStager
-	PHPManifest  *catalog.PHPManifest
-	SourceCopier SourceCopier
-	Now          func() time.Time
-	NewID        func() string
+	Store         *store.Store
+	Backend       backend.Backend
+	Helper        Hosts
+	Certs         Certs
+	Vhosts        Vhosts
+	Proxy         ProxyControl
+	Forwarders    Forwarders
+	DockerSyncer  DockerSyncer
+	DockerSwitch  DockerSwitch
+	DockerService DockerServiceActivator
+	DockerRoute   DockerRoute
+	// DockerRouteHost and DockerRoutePort identify the private web endpoint.
+	DockerRouteHost string
+	DockerRoutePort int
+	Router          *proxy.Router
+	Ports           *domain.PortAllocator
+	PortProvider    ports.Provider
+	Config          config.Config
+	Logs            *logs.Store
+	PHP             PHPCommands
+	PHPBackend      backend.PHPStager
+	PHPManifest     *catalog.PHPManifest
+	SourceCopier    SourceCopier
+	Now             func() time.Time
+	NewID           func() string
 	// Lifecycle is shared with the service manager so provider switches and
 	// service activation cannot interleave.
 	Lifecycle *sync.Mutex
@@ -229,6 +257,27 @@ type Service struct {
 	// runtime is serving but persisting builtin/native failed. It is surfaced
 	// through VhostStatus and cleared by the next successful state save.
 	servingStateErr string
+
+	// suppressDockerRoutes is set while switching Docker -> builtin so a route
+	// rebuild restores direct backend routes instead of re-applying the private
+	// Docker redirect. Only accessed while mu is held.
+	suppressDockerRoutes bool
+}
+
+// ConfigureDockerServing attaches the Docker serving hooks after the provider
+// and service manager exist. It is a no-op for Linux installs.
+func (s *Service) ConfigureDockerServing(cfg DockerServingConfig) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps.DockerSyncer = cfg.Syncer
+	s.deps.DockerSwitch = cfg.Switch
+	s.deps.DockerService = cfg.Activator
+	s.deps.DockerRoute = cfg.Route
+	s.deps.DockerRouteHost = cfg.RouteHost
+	s.deps.DockerRoutePort = cfg.RoutePort
 }
 
 // NewService returns a service and reserves every port already recorded for a

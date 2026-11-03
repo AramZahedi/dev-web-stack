@@ -29,6 +29,7 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/catalog"
 	"github.com/AramZahedi/dev-web-stack/internal/certs"
 	"github.com/AramZahedi/dev-web-stack/internal/config"
+	"github.com/AramZahedi/dev-web-stack/internal/dockerweb"
 	"github.com/AramZahedi/dev-web-stack/internal/doctor"
 	"github.com/AramZahedi/dev-web-stack/internal/domain"
 	"github.com/AramZahedi/dev-web-stack/internal/helperclient"
@@ -246,6 +247,36 @@ func Run(ctx context.Context, opts Options) error {
 		DatabaseGuard: databaseManager.GuardSite,
 		Database:      databaseManager,
 	})
+
+	webControl := servicecontrol.NewWebServiceControl(serviceManager)
+	webSwitch := servicecontrol.NewWebSwitch(serviceManager)
+	webSyncer, err := dockerweb.NewAgentWindowsPrivateSyncer(agentServices, services.NewAgentTargetSource(st))
+	if err != nil {
+		return fmt.Errorf("daemon: Windows private web syncer: %w", err)
+	}
+	windowsProvider, err := dockerweb.NewWindowsProvider(dockerweb.WindowsProviderConfig{
+		State:    siteService,
+		Syncer:   webSyncer,
+		Services: webControl,
+		Switch:   webSwitch,
+		Router:   router,
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: Windows Docker web provider: %w", err)
+	}
+	activator := &windowsDockerActivator{manager: serviceManager}
+	siteService.ConfigureDockerServing(sites.DockerServingConfig{
+		Syncer:    webSyncer,
+		Switch:    windowsProvider,
+		Activator: activator,
+		Route:     router,
+		RouteHost: "127.0.0.1",
+		RoutePort: 18080,
+	})
+	serviceManager.RegisterPreparers(servicecontrol.NewWebPreparers(
+		windowsProvider,
+		servicecontrol.WebGuard{State: siteService},
+	))
 
 	agentConfig := &windowsAgentConfigAdapter{
 		home:    cfg.Home,
@@ -481,6 +512,20 @@ func Run(ctx context.Context, opts Options) error {
 			}
 			if err := siteService.RebuildRoutes(ctx); err != nil {
 				logger.Warn("daemon: rebuild routes", "error", err)
+			}
+			// An already-active web server becomes the default serving mode.
+			// This repairs installs from the earlier builtin-only behavior and
+			// makes Apache/nginx the default after activation.
+			if cfg.ServingMode == config.ServingModeBuiltin && cfg.ServingProvider == config.ServingProviderNative {
+				if server, err := activeWindowsWebServer(ctx, st); err != nil {
+					logger.Warn("daemon: read active web server", "error", err)
+				} else if server != "" {
+					if err := siteService.SetServingMode(ctx, server); err != nil {
+						logger.Warn("daemon: activate default web server", "server", server, "error", err)
+					} else {
+						logger.Info("daemon: activated default web server", "server", server)
+					}
+				}
 			}
 			return nil
 		},
@@ -1387,6 +1432,49 @@ func runWSLKeepalive(ctx context.Context, distro string, logger *slog.Logger, on
 	}
 }
 
+// activeWindowsWebServer returns the first recorded active managed web server.
+// It reads SQLite only so daemon readiness never waits for the WSL agent.
+func activeWindowsWebServer(ctx context.Context, st *store.Store) (string, error) {
+	if st == nil {
+		return "", nil
+	}
+	records, err := st.ListServiceStates(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, record := range records {
+		if record.ID != services.IDNginx && record.ID != services.IDApache {
+			continue
+		}
+		if record.Active || record.State == services.StateActive {
+			return string(record.ID), nil
+		}
+	}
+	return "", nil
+}
+
+// windowsDockerActivator maps a serving mode to the managed Docker web service.
+type windowsDockerActivator struct {
+	manager *servicecontrol.Manager
+}
+
+// ActivateServingMode starts the requested managed web server.
+func (a *windowsDockerActivator) ActivateServingMode(ctx context.Context, mode string) error {
+	if a == nil || a.manager == nil {
+		return errors.New("daemon: service manager is not configured")
+	}
+	switch mode {
+	case "nginx":
+		return a.manager.Activate(ctx, services.IDNginx)
+	case "apache":
+		return a.manager.Activate(ctx, services.IDApache)
+	default:
+		return fmt.Errorf("daemon: unsupported Windows web server %q", mode)
+	}
+}
+
+// windowsAgentConfigAdapter adapts the authenticated agent client for config
+// operations. The client is loaded lazily after bootstrap.
 type windowsAgentConfigAdapter struct {
 	mu      sync.RWMutex
 	home    string
@@ -1479,6 +1567,15 @@ func (a *windowsAgentServiceAdapter) CopySource(ctx context.Context, req agentpr
 		return agentproto.SourceCopyResponse{}, err
 	}
 	return c.CopySource(ctx, req)
+}
+
+// SyncWeb forwards the active private web target set to the WSL agent.
+func (a *windowsAgentServiceAdapter) SyncWeb(ctx context.Context, req agentproto.WebTargetsRequest) (agentproto.WebSyncResponse, error) {
+	c, err := a.ensureAwake(ctx)
+	if err != nil {
+		return agentproto.WebSyncResponse{}, err
+	}
+	return c.SyncWeb(ctx, req)
 }
 
 func (a *windowsAgentConfigAdapter) ServiceConfig(ctx context.Context, id string) (agentproto.ServiceConfigResponse, error) {
