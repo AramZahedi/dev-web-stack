@@ -4,13 +4,17 @@ devstack is a local web development stack for Linux. It serves static, Node, and
 PHP sites at trusted `https://<name>.test` URLs and manages the daemon, helper,
 hosts entries, and local certificate authority.
 
-This document covers the Linux install. For Windows 10/11 with WSL2, see the dedicated [Windows Installation Guide](install-windows.md).
-External nginx/Apache serving is
-available. PHP 8.2–8.5 builds are published in the catalog (see
+This document covers the **Linux** install. For Windows 10/11 with WSL2, see the
+dedicated [Windows Installation Guide](install-windows.md). The current release
+is `v0.4.0`. External native nginx/Apache serving and managed Docker web servers
+are available. PHP 8.2-8.5 builds are published in the catalog (see
 [PHP](php.md)). Release archives are unsigned and checksum-verified. See
 [Sites](sites.md), [Vhosts](vhosts.md), and
 [TLS and trust](tls.md) for day-to-day use, and [Release](release.md) for the
 packaging and publication path.
+
+> devstack is for local development only. Do not expose its dashboard, daemon,
+> services, or ports to the internet.
 
 ## Supported systems
 
@@ -78,13 +82,13 @@ archive, and a release downloaded from GitHub.
 ./install.sh
 
 # From a published release (downloads over HTTPS):
-./install.sh --release 0.2.0
+./install.sh --release 0.4.0
 
 # From a release archive you already downloaded:
-./install.sh --archive devstack_0.2.0_linux_amd64.tar.gz --checksums checksums.txt
+./install.sh --archive devstack_0.4.0_linux_amd64.tar.gz --checksums checksums.txt
 
 # From a mirror or CI artifact host (HTTPS only):
-./install.sh --release 0.2.0 --base-url https://artifacts.example.test/devstack
+./install.sh --release 0.4.0 --base-url https://artifacts.example.test/devstack
 ```
 
 `--release` downloads `devstack_<version>_linux_amd64.tar.gz` and
@@ -94,7 +98,7 @@ archive, and a release downloaded from GitHub.
 plain-HTTP fallback. `--archive` and `--checksums` must be supplied together and
 cannot be combined with `--release`.
 
-`v0.2.0` is published, so `--release 0.2.0` downloads and verifies the public
+`v0.4.0` is published, so `--release 0.4.0` downloads and verifies the public
 archive. For local development you can still use the source install or a local
 archive produced with `make release VERSION=<semver>`. Release archives are
 **unsigned**; the SHA-256 manifest detects corruption and tampering in transit,
@@ -296,11 +300,11 @@ Upgrades are forward-only. Install the new release with the same installer
 entry point you used originally, keeping the existing helper configuration:
 
 ```sh
-./install.sh --upgrade --release 0.2.0
+./install.sh --upgrade --release 0.4.0
 # or, from a source checkout:
 make build && ./install.sh --upgrade
 # or, from a downloaded archive:
-./install.sh --upgrade --archive devstack_0.2.0_linux_amd64.tar.gz --checksums checksums.txt
+./install.sh --upgrade --archive devstack_0.4.0_linux_amd64.tar.gz --checksums checksums.txt
 ```
 
 `--upgrade` requires an existing `~/.local/bin/devstack`, stops the user daemon
@@ -394,19 +398,27 @@ markers by hand.
 - Builtin serving is the default; optional native nginx/Apache vhosts are
   available for static, Node, and PHP sites. The external server must already be
   installed and own 80/443; Apache PHP vhosts additionally need `proxy_fcgi`.
+  Managed Docker nginx/Apache are also available through the Services UI.
 - Static, Node, and PHP sites are supported. PHP sites need an installed build;
-  `v0.1.0` embeds PHP 8.2.35, 8.3.36, 8.4.27, and 8.5.12 entries from the
-  published runtime release (see [PHP](php.md)).
-- Linux x86_64 and systemd only. Windows/WSL is **planned but not implemented**;
-  there is no `devstack-agent`, `install.ps1`, or Windows release yet.
-- Release archives are unsigned and Linux x86_64 only. Signed packages and
-  installers are M4 work.
-- M1 has no diagnostics bundle/zip, auto-update, remote catalog, arm64 build, or
-  log aggregation. `devstack doctor --json` is the supported diagnostic surface.
+  the current catalog embeds PHP 8.2.35, 8.3.36, 8.4.27, and 8.5.12 entries from
+  the published runtime release (see [PHP](php.md)).
+- Linux x86_64 and systemd only. Windows 10/11 + WSL2 is implemented and has its
+  own installer, agent, and release artifacts; see
+  [Windows Installation](install-windows.md). macOS and arm64 are not supported.
+- Release archives and Windows installers are unsigned. SHA-256 checksums verify
+  transport integrity, not the publisher identity. Signed packages/installers
+  remain future work.
+- There is no diagnostics bundle/zip, auto-update, remote catalog, arm64 build,
+  or log aggregation. `devstack doctor --json` is the supported diagnostic
+  surface.
 - The helper, CA, hosts block, and trust targets are machine-global but scoped
   to the single installing UID.
-- The installer can use locally built binaries or a GitHub release archive. It
-  does not install OS packages or configure a system nginx/Apache.
+- The installer can use locally built binaries, a local archive, or a GitHub
+  release archive. It does not install OS packages or configure a system
+  nginx/Apache.
 - Browser trust installation, root install/uninstall on 80/443, and live UI
   checks are manual acceptance items; the unprivileged acceptance runner does
   not perform them. Apache HTTPS is skipped when `mod_ssl` is unavailable.
+- Host performance tuning is machine-wide and needs a WSL restart for
+  `.wslconfig` changes. Defender exclusions are best-effort.
+

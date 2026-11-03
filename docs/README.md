@@ -1,8 +1,12 @@
 # devstack documentation
 
 This directory is the starting point for both users and contributors. It contains the
-current implementation documentation, the handoff for continuing the project on another
-machine, and the design/plan for the next milestone.
+current implementation documentation, user guides, release notes, the known-issues
+register, and historical design/plan records.
+
+> devstack is a **local development tool**. It is not intended for public or
+> internet-facing hosting. See [Known issues](known-issues.md) for the current
+> support boundary and the [README](../README.md) for installation and usage.
 
 ## Start here
 
@@ -15,6 +19,7 @@ machine, and the design/plan for the next milestone.
 | [Services guide](services.md) | Service lifecycle, config editing, performance/host tuning, benchmarks, and the site terminal |
 | [Planned service platform](planned-services.md) | High-level overview of the service platform; detailed spec linked below |
 | [Known issues](known-issues.md) | Current bugs, parked work, and limitations that should not be mistaken for completed features |
+| [v0.4.0 release notes](releases/v0.4.0.md) | Published feature summary, downloads, verification evidence, and release caveats |
 | [Glossary](glossary.md) | Project terminology: sites, modes, services, conflicts, providers |
 | [E2E coverage inventory](e2e-coverage.md) | Complete feature inventory, coverage codes, priorities, and the definition of done for full-coverage E2E testing |
 | [Developer guide](development.md) | build/test/debug, package boundaries, migrations, release, commit discipline |
@@ -38,10 +43,11 @@ machine, and the design/plan for the next milestone.
 - [Service containers, editable config, and performance design](superpowers/specs/2026-10-25-service-containers-and-performance-design.md)
   — Waves 0–2 and the next batch implemented; remaining host gates noted.
 - [Windows 11 + WSL2 design](superpowers/specs/2026-10-26-windows-wsl-design.md)
-  — revised 2026-10-27; planned native Windows daemon/helper, managed WSL2
-  agent, WSL ingress, and Docker services; not implemented.
+  - revised 2026-10-27; implemented native Windows daemon/helper, managed WSL2
+  agent, WSL ingress, Docker services, Docker nginx/Apache serving, and
+  cross-platform tuning.
 - [Windows/WSL implementation plan](superpowers/plans/2026-10-26-windows-wsl.md)
-  — revised five-lane TDD plan, frozen contracts, Wave 0 T0.1–T0.10, merge
+  - revised five-lane TDD plan, frozen contracts, Wave 0 T0.1-T0.10, merge
   protocol, and Windows acceptance matrix.
 - [Windows plan review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md)
   — the 2026-10-27 review findings and resolved contracts.
@@ -103,12 +109,13 @@ The M1 user documentation covers the released Linux product, and the Windows doc
 
 ## Implementation status in one sentence
 
-The Linux M1 native application is implemented and released as `v0.1.0`. Service
-platform Waves 0–2 are implemented on Linux. Windows 10 22H2+ / Windows 11
-platform parity is implemented across Wave 2 (Lanes F, G, H, I, J) with native
-Windows helper and user daemon, managed Debian 12 WSL2 agent, dedicated Docker
-Engine, dual source modes, `.cmd` tooling shims, release packaging
-(`build/release-windows.sh`), and the vertical slice acceptance suite
-(`test/windows/vertical_slice.ps1`). Full multi-machine acceptance evidence is
-pending before declaring Windows general availability. Automatic GitHub CI is
-disabled; workflows are manual-dispatch only.
+The current release is `v0.4.0`: Linux x86_64 and Windows 10/11 + WSL2 are
+implemented, with the native Windows helper/daemon, managed Debian 12 WSL2
+agent, Docker services, Docker nginx/Apache serving, dual source modes, `.cmd`
+tooling shims, cross-platform performance tuning, release packaging, and live
+acceptance suites. The Windows path is live-verified on the reference host; a
+full multi-machine/VM matrix and paused database E2E cycles remain open.
+Automatic GitHub CI is disabled; workflows are manual-dispatch only.
+
+See [Known issues](known-issues.md) and the
+[Windows install guide](install-windows.md) for the current support boundary.

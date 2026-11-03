@@ -1,8 +1,9 @@
-# GoReleaser v2 configuration for the Linux amd64 M1 release.
+# GoReleaser v2 configuration for the Linux amd64 release.
 #
-# Linux amd64 is the only supported release target today. Windows/WSL has a
-# revised design and implementation plan (2026-10-27) but no Windows artifact
-# is produced yet. Signing/diagnostics bundles are M4, so neither appears here.
+# Linux amd64 is the only target produced by GoReleaser. Windows x64 artifacts
+# (zip, tarball, standalone installer) are produced separately by
+# build/release-windows.sh and attached to the same GitHub release. Signing and
+# diagnostics bundles are not implemented, so neither appears here.
 #
 # `make ui` runs before GoReleaser builds the binaries so the dashboard stays
 # embedded, exactly like build/release.sh. The archive name, member set, and

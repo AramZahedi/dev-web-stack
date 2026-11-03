@@ -24,7 +24,7 @@ To attempt automated remediation of recoverable items (such as missing firewall
 rules, uninstalled root CA certs, or stale hosts entries):
 
 ```powershell
-devstack doctor --fix
+devstack doctor --repair
 ```
 
 ---

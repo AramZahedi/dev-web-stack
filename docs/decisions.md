@@ -63,7 +63,7 @@ are tracked in [known issues](known-issues.md).
 | S23 | Global `php`/`composer` shims | Machine-wide CLI convenience; helper installs `/usr/local/bin` wrappers. |
 | S24 | Machine-wide PHP CLI default | User picks installed build; global CLI ini; site shell overrides. |
 | S25 | Random per-engine DB credentials | Avoid shared defaults; secrets `0600`; root local-only; `devstack` admin for phpMyAdmin. |
-| S26 | phpMyAdmin cookie login on `127.0.0.1:8082` | No embedded credentials/auto-login; follows active MySQL family. |
+| S26 | phpMyAdmin signed one-time signon from the dashboard | Short-lived HMAC token, single-use nonce, loopback-only `127.0.0.1:8082`; follows active MySQL family. Direct access keeps the manual login form. |
 | S27 | Dashboard parity | Every operational task available in UI; CLI alternative; site terminal/build/config/credentials. |
 | S28 | Explicit build/terminal scope | Dashboard terminal runs as user, site root, no sudo; no arbitrary host file editing. |
 | S29 | Auto-tuned throughput profile | Resource-aware values, capped, benchmarked; no blind maximum constants. |

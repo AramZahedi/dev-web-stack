@@ -1,212 +1,270 @@
-# Known issues and parked work
+# Known issues and current limitations
 
-- **Last reviewed:** 2026-10-27
-- **Scope:** current native implementation, the planned service platform, and
-  the revised Windows/WSL plan.
+- **Last reviewed:** 2026-11-03
+- **Current release:** `v0.4.0`
+- **Scope:** Windows 10/11 + WSL2, Linux x86_64 with systemd, managed Docker
+  services, cross-platform performance tuning, and local-only operation.
 
-## 1. Standalone Docker image removed
+> **devstack is a local development tool.** It is not intended to host public or
+> internet-facing websites. Do not expose the dashboard, daemon listeners,
+> service ports, helper pipe, or local CA private key to untrusted users or
+> networks.
 
-The old devstack-in-Docker image was retired on 2026-10-25 and removed from the
-repository and reference machine. The old runtime container, local images,
-`.docker-data`, test projects, and `/etc/hosts` block were deleted.
+## Status at a glance
 
-The removed runtime state was backed up at:
+| Area | Status | Evidence / limitation |
+|---|---|---|
+| Windows 10 22H2+ / Windows 11 x64 + WSL2 | Supported | Standalone installer, helper service, user daemon, managed Debian 12 WSL2 distro, Docker services, PHP/Node, Docker nginx/Apache switching, trusted TLS. Live vertical slice passed 100% on the tested host. |
+| Linux x86_64 + systemd | Supported | Built-in proxy, managed Docker services, native and Docker vhosts, PHP/Node runtimes, installer/upgrade, and release packaging. Automated acceptance passed on Fedora 44; some manual root/browser gates remain. |
+| macOS / Windows ARM / Linux arm64 | Not supported | No release artifact or supported runtime. |
+| Public/internet-facing hosting | Not supported | Local development only. No hardening for untrusted networks, hostile tenants, or public exposure. |
+| Release artifacts | Published | `v0.4.0` publishes Linux and Windows archives plus Windows installers. Binaries are unsigned. |
 
-```text
-/tmp/opencode/devstack-old-docker-20261025T111246Z/
-```
+## Resolved in 0.4.0
 
-If another machine still runs the old image, remove it:
+These were real gaps in earlier releases and are covered by tests and live
+acceptance now:
 
-```sh
-docker rm -f devstack
-docker rmi devstack:0.1.0-docker devstack:latest
-```
+- Windows Docker nginx and Apache serving, including private HTTP-only vhosts
+  on `127.0.0.1:18080` while the Windows daemon keeps public 80/443 and TLS.
+- Direct nginx ↔ Apache switching without a built-in round trip, with automatic
+  rollback to the previous container on failure.
+- Automatic fallback to `builtin` when the active web service is deactivated or
+  uninstalled.
+- Dashboard serving choices disable nginx/Apache when that service is not
+  installed, and remain usable if the service list cannot be read.
+- WSL static sites on the Docker provider route through the managed web server.
+- Adding or removing a site validates and gracefully reloads the active web
+  container without a restart.
+- Switching Docker → built-in starts WSL static backends, allocates ports, and
+  publishes the builtin routes correctly.
+- A stale static-site row (missing project folder or missing agent backend) no
+  longer blocks a serving switch, stop, or delete.
+- Balanced/Throughput/Custom tuning for managed services, WSL, the WSL VM, and
+  Windows host settings. Throughput is the default.
+- phpMyAdmin signed one-time dashboard signon replaced cookie/config auto-login.
 
-Docker Engine stays installed because the new service-platform design uses separate
-nginx/Apache/database/Redis/phpMyAdmin containers. The old external-mode `7070/7071`
-container bug is historical and no longer relevant to this repository.
+## Current limitations and risks
 
-## 2. Planned service-platform gaps
+### K1 — Windows VM and multi-machine coverage is incomplete
 
-### K1 — Remaining platform work
+The Windows path is implemented and live-verified on the reference Windows 11
+host, including the vertical slice, serving matrix, tuning matrix, installer,
+and lifecycle suites. The disposable-VM rows INST-24/25/29 and a full
+multi-machine matrix have not been completed. Treat Windows support as
+**verified on the tested configuration**, not yet proven across every Windows
+edition, locale, VPN, antivirus product, or VM provider.
 
-Waves 0–1, Wave 2, and the next batch are implemented. Still missing:
-external-site Docker bind mounts, real root host-tuning acceptance, and live Wave 3
-benchmark/acceptance evidence. Per-site PHP-FPM pool sizing is persisted and applied
-through the live validate/swap flow. See the
-[Next Batch Completion](superpowers/status/2026-10-26-next-batch-completion.md) and the
-[automatic performance/ports report](superpowers/status/2026-10-26-auto-performance-ports-completion.md).
+### K2 — Database E2E cycles 9–15 are paused
 
-### K2 — Existing native provider vs Docker provider
+The database unit/integration tests, dashboard flows, credentials, backups, and
+the live phpMyAdmin signon pass. The full live database E2E cycles 9–15 were
+paused during the latest campaign and have not been resumed. Do not claim
+exhaustive coverage for every database operation until those cycles are green.
 
-The existing native external nginx/Apache mode is retained for manually installed
-servers. Docker nginx/Apache are managed by the service layer; `vhost use builtin` performs
-the explicit Docker→builtin switch. The dashboard exposes lifecycle, configuration,
-performance, benchmark, and terminal surfaces.
+### K3 — Host tuning is global, opt-in, and partly host-specific
 
-### K7 — Managed projects root is a hard boundary
+- Host tuning changes machine-wide settings, not only devstack.
+- Throughput, Balanced, Custom, and Reset were live-verified on the reference
+  Windows host. Linux real-root `/etc` tuning remains a manual acceptance gate.
+- `.wslconfig` changes require `wsl --shutdown` (or a reboot) before they fully
+  apply. The dashboard reports `restart_required`.
+- Defender exclusions are best-effort. If the Defender PowerShell module is
+  unavailable, the step is skipped and reported instead of failing the profile.
+- The original pre-devstack tuning baseline is preserved across profile
+  switches, but a machine-wide tuning profile can still affect unrelated local
+  workloads.
 
-Every site path must be a strict descendant of its mode's managed projects root.
-The root itself, sibling prefixes such as `projects-old`, traversal segments, and
-links that resolve outside the root are rejected on create, source-mode copy, and
-start/reconcile. Existing sites outside the root are not deleted; they are
-blocked from starting and reported by `devstack doctor`.
+### K4 — Managed projects roots are hard boundaries
 
-Docker nginx/Apache vhosts use the same root for their mounts. External-site bind
-mounts and per-site Docker mounts remain a follow-up. On Windows, the four
-`C:\devstack` links are navigation only and are never valid site paths; use the
-canonical target path.
+Every site path must be a strict descendant of its source mode's managed
+projects root. The root itself, sibling prefixes such as `projects-old`,
+`..` traversal, and links that resolve outside the root are rejected.
 
-### K8 — Official MySQL process environment retains passwords
+This is intentional. Existing sites outside the root are not deleted, but they
+are blocked from starting and reported by `devstack doctor`. Arbitrary
+external-site Docker bind mounts are not supported; projects must live under the
+managed Windows or WSL projects root.
 
-The official MySQL entrypoint exports `MYSQL_ROOT_PASSWORD`/`MYSQL_PASSWORD` and does not
-unset them before the final server process. Compose files, logs, and the dashboard never
-contain the values, and ports are loopback-only, but container-local process inspection is
-sensitive. PostgreSQL/MariaDB are unset by their entrypoints.
+On Windows, `C:\devstack\Windows-Projects` and `C:\devstack\WSL-Projects` are
+navigation links only and are **not valid site paths**. Use the canonical target
+path or the dashboard folder browser.
 
-### K3 — No automatic root migration
+### K5 — MySQL container environment retains passwords
 
-Automatic migration from `~/.devstack` to `/data/devstack` is deliberately out of scope.
-New installs can choose the root; existing installs remain in place.
+The official MySQL entrypoint exports `MYSQL_ROOT_PASSWORD` / `MYSQL_PASSWORD`
+and does not unset them before the final server process. Compose files, logs,
+and the dashboard do not contain the values, and the database ports bind
+loopback only, but a local process with container-inspection rights can read the
+environment. This is a local-development risk, not a remote exposure. MariaDB
+and PostgreSQL unset their entrypoint credentials.
 
-### K4 — Manual Linux M1 gates
+### K6 — Linux native external mode is administrator-managed
 
-Browser trust, real root install/uninstall on 80/443, and live UI flows were not fully run
-in the unprivileged M1 acceptance. M1 is not claimed as fully accepted despite the Linux
-release.
+On Linux, native nginx/Apache mode requires the administrator to install and
+configure the host server. devstack does not install packages or enable modules.
+Apache vhosts require the documented `ssl`, `proxy`, `proxy_http`,
+`proxy_wstunnel`, `headers`, and `rewrite` modules; PHP vhosts additionally need
+`proxy_fcgi`.
 
-### K5 — Settled implementation decisions
+Windows uses managed Docker nginx/Apache instead; a native Windows web server is
+not supported as the serving provider.
 
-The listener-port restart contract, host-tuning fixed paths/opt-in, benchmark result
-schema and built-in generator, service config scope, and terminal ticket/PTY limits are
-implemented. Remaining host-specific decisions are limited to optional public 80/443
-editing and live acceptance evidence.
+### K7 — phpMyAdmin requires the dashboard signon
 
-### K6 — Host performance tuning changes are global
+phpMyAdmin is loopback-only. The dashboard opens it with a short-lived,
+single-use HMAC-signed signon token and consumes the nonce once. Opening the
+phpMyAdmin port directly shows the normal manual login form, not the dashboard
+auto-login. Do not bypass the dashboard flow in shared or untrusted environments.
 
-Host tuning is implemented behind an explicit `host_tuning:true` opt-in and a typed
-confirmation in the dashboard. The helper writes only two fixed paths, backs up, verifies,
-and rolls back. The real root apply/reset was not run on this host; unit/fake-runner and
-destination-root tests pass.
+### K8 — Releases are unsigned
+
+The Linux archives and Windows archives/installers are **unsigned**. SHA-256
+checksums detect corruption or tampering in transit, not a compromised release
+host. Windows SmartScreen can show an unknown-publisher warning. Authenticode
+signing, signed packages, and a signed installer are future work.
+
+### K9 — Automatic GitHub CI is disabled
+
+All GitHub workflows are `workflow_dispatch` only. Pushes, pull requests, and tag
+pushes do not start automation. The local verification gate is authoritative.
+The release workflow publishes the Linux archive with GoReleaser; the Windows
+archive, tarball, and installers are built manually with
+`build/release-windows.sh` and attached to the GitHub release.
+
+### K10 — Terminal limitations
+
+- A stopped site still gets a shell if its project directory is valid.
+- Descendants that create a new session/process group can escape process-group
+  teardown; normal shell jobs are killed.
+- There is no background ticket janitor; expired tickets are pruned on issuance
+  and consumption.
+- Sessions are limited (4 total, 2 per site/user), idle time is 30 minutes,
+  duration is 4 hours, and output is capped at 4 MiB.
+- Keystrokes and terminal output are not audited; only session start/stop is.
+
+### K11 — Unsupported platforms and packaging gaps
+
+- macOS, Windows on ARM, and Linux arm64 have no supported artifact.
+- There is no auto-update. Installing a newer release is an explicit installer
+  run.
+- There is no diagnostics bundle. `devstack doctor --json` is the support
+  surface.
+- There is no remote PHP catalog or log aggregation service.
 
 ### K12 — Performance limitations
 
-- PHP-FPM `pm.*` pool sizing is persisted on the site row and applied to each running
-  per-site FPM master through the same validate/swap flow as OPcache and realpath ini
-  values. The generated fragment under `services/php/performance/` remains a readable
-  preview of the applied budget.
-- Performance-managed includes are reserved and hidden from the service-config editor
-  (`conf.d/performance/` and `conf.d/performance.conf`), so an editor write cannot be
-  silently replaced by the next profile apply.
-- Existing pre-change nginx/Apache base configs do not gain the managed include lines
-  automatically; base files are user-owned. Fresh installs seed them, and apply reports a
-  profile conflict until an existing base config adds them.
-- Benchmarks use the labelled built-in Go HTTP generator, not wrk/hey. Results are
-  measured but not directly comparable to wrk/hey.
-- Host tuning was not applied to the real `/etc` during verification.
+- PHP-FPM `pm.*` pool sizing is persisted on the site row and applied to each
+  running per-site FPM master through the same validate/swap flow as OPcache and
+  realpath ini values. The generated fragment under `services/php/performance/`
+  remains a readable preview of the applied budget.
+- Performance-managed includes are reserved and hidden from the service config
+  editor (`conf.d/performance/` and `conf.d/performance.conf`), so an editor
+  write cannot be silently replaced by the next profile apply.
+- Existing pre-change nginx/Apache base configs do not gain the managed include
+  lines automatically; base files are user-owned. Fresh installs seed them, and
+  apply reports a profile conflict until an existing base config adds them.
+- Benchmarks use the labelled built-in Go HTTP generator, not wrk/hey. Results
+  are measured but are not directly comparable to wrk/hey.
+- Windows host tuning was live-verified; real Linux `/etc` host tuning remains a
+  manual gate.
+- Host tuning is machine-wide and needs a WSL restart for `.wslconfig` changes.
 
 ### K13 — Service config baseline and backups
 
-- Generate-conflict reset uses the newest ordinary backup; it cannot reconstruct a
-  generated baseline from a hash alone. A directly edited generated file with no prior
-  backup cannot be reset. The UI requires an explicit keep/use/merge action instead.
-- Backups live under `services/<id>/config/backups/{config,config-reset}` because the
-  manager is rooted at the config directory. They are hidden from the editor/API policy.
+- Generate-conflict reset uses the newest ordinary backup; it cannot reconstruct
+  a generated baseline from a hash alone. A directly edited generated file with
+  no prior backup cannot be reset. The UI requires an explicit keep/use/merge
+  action instead.
+- Backups live under `services/<id>/config/backups/{config,config-reset}` because
+  the manager is rooted at the config directory. They are hidden from the
+  editor/API policy.
+- Apply validates before reload when the service is active. Inactive services
+  save with `validation_pending`; the dashboard does not claim the file is live.
 
 ### K14 — Helper proxy targets follow daemon restart automatically
 
 The daemon calls a narrow helper RPC with its configured HTTP/HTTPS ports before
 serving-mode reconciliation. The helper validates the targets, rewrites only
-`proxy_http_port`/`proxy_https_port` in `/etc/devstack/helper.yaml` atomically and
-updates its in-memory targets. Serving-mode reconciliation then restarts the
-privileged forwarders against the new targets. A helper started with flags but
-no `--config` file still updates in memory for that process and reports that
-persistence was unavailable. Explicit `--proxy-http`/`--proxy-https` flags also
-override the file after a helper restart, so production units should rely on the
-config file for these two keys.
+`proxy_http_port` / `proxy_https_port` in `/etc/devstack/helper.yaml` atomically,
+and updates its in-memory targets. Serving-mode reconciliation then restarts the
+privileged forwarders against the new targets.
+
+A helper started with flags but no `--config` file still updates in memory for
+that process and reports that persistence was unavailable. Explicit
+`--proxy-http` / `--proxy-https` flags also override the file after a helper
+restart, so production units should rely on the config file for these two keys.
 
 ### K15 — Terminal limitations
 
-- A stopped site still gets a shell if its project directory is valid.
-- Descendants that deliberately create a new session/process group can escape process
-  group teardown; normal shell jobs are killed.
-- There is no background ticket janitor; expired tickets are pruned on issuance/consumption.
-- Live host acceptance now exercises a real PTY with installed PHP/Node shims on real
-  static, PHP, and Node sites; see the
-  [Node toolchain E2E report](superpowers/audits/2026-10-30-node-toolchain-e2e.md).
+See K10. The terminal is site-scoped, runs as the installing user on Linux or
+inside the managed WSL environment on Windows, and never uses root/sudo or the
+Docker socket. Live PTY coverage exists for static, PHP, and Node sites.
 
-### K9 — ImageMagick CLI descoped
+### K16 — Runtime and tooling caveats
 
-ImageMagick CLI is no longer planned: no Settings card, catalog service, helper tool RPC,
-or image digest. PHP's `imagick` extension remains available per site. Historical design
-text mentioning the CLI is superseded by this decision.
-
-### K10 — Automatic GitHub CI is disabled
-
-`.github/workflows/ci.yml`, `php.yml`, and `release.yml` are `workflow_dispatch` only.
-Pushes, pull requests, and tags do not start workflows. Use the local verification gate in
-the Next Batch Plan. Manual dispatch still works if explicitly invoked.
-
-### K11 — Current test runtime uses `~/.devstack`
-
-The local test daemon uses `--home /home/aram/.devstack` and a temporary root helper state
-under `/tmp/opencode/devstack-runtime`; hosts/trust are intentionally not modified. This
-is not a system install. Host nginx owns 80/443, so Docker web-server activation will
-conflict until those ports are freed. See [Continuation State](superpowers/status/2026-10-26-continuation.md).
-
-### K16 — Windows/WSL plan revised; implementation not started
-
-The 2026-10-27 review resolved the first plan’s public-entry/WSL ingress,
-backend/port/route/PHP-path, canonical storage, source-copy, agent TLS/token,
-helper/daemon pipe security, no-dot, tooling, Linux layout, and rootfs/artifact
-gaps. The revised [design](superpowers/specs/2026-10-26-windows-wsl-design.md),
-[plan](superpowers/plans/2026-10-26-windows-wsl.md), and
-[review resolution](superpowers/status/2026-10-27-windows-plan-review-resolution.md)
-are the source of truth. No Windows artifact, agent, installer, ingress, or
-acceptance run exists yet.
-
-## 3. Current native product limitations
-
-- Linux x86_64 is the implemented platform. Windows 11 + WSL2 has a revised
-  design and implementation plan (2026-10-27) but no implementation has
-  started; macOS and arm64 remain out of scope.
-- Native external nginx/Apache mode requires the server to be installed and configured by
-  the administrator; devstack does not install packages.
-- Browser trust, root install on 80/443, and live UI gates remain manual.
-- phpMyAdmin, credentials/rotation, service lifecycle, builds, service config editing,
-  performance preview/apply/reset/benchmarks, site terminal, and editable listener ports
-  are implemented.
-- ImageMagick CLI is descoped; PHP `imagick` remains available.
-- Site paths outside the managed projects root are rejected (K7).
-- External-site Docker mounts and real host-tuning acceptance remain (K1/K12).
-- `install.sh` adds missing `service_root`, `tool_root`, and `tool_bin_dir` keys to an
-  existing helper config and restarts it. A manually managed config without
-  `service_root` leaves the service API at helper NOT_IMPLEMENTED until fixed.
-
-### Node toolchain notes
-
+- PHP `imap` is omitted from the current build pipeline because the verified
+  upstream release does not cover the manifest's PHP 8.2/8.3 pairing.
 - Node releases are Linux x64 only. Very old releases can fail the post-extract
-  `node --version` smoke on a newer glibc/OpenSSL distro; installs fail closed rather
-  than registering a broken build.
-- Switching Node versions can invalidate native addons; run `npm rebuild` in the project
-  after a switch. devstack does not run it automatically.
+  `node --version` smoke on a newer glibc/OpenSSL distro; installs fail closed
+  rather than registering a broken build.
+- Switching Node versions can invalidate native addons; run `npm rebuild` in the
+  project after a switch. devstack does not run it automatically.
 - The embedded catalog is intentionally limited to shipped LTS entries; use
-  `devstack runtime available` for the full official release list and `--offline` for the
-  fallback.
-- `build.node_version` is build-only. A site shell uses the site pin, then the global
-  default; it never silently falls back to an arbitrary installed build.
-- Upgrading a WSL install requires the installer to copy the new `devstack-agent` binary
-  into `/data/devstack/bin` and restart the service. `devstack init` refreshes
-  credentials/hosts/trust but does not replace an already-running agent binary.
+  `devstack runtime available` for the full official Node list and `--offline`
+  for the fallback.
+- `build.node_version` is build-only. A site shell uses the site pin, then the
+  global default; it never silently falls back to an arbitrary installed build.
+- Upgrading a WSL install requires the installer to copy the new
+  `devstack-agent` binary into `/data/devstack/bin` and restart the service.
+  `devstack init` refreshes credentials/hosts/trust but does not replace an
+  already-running agent binary.
 
-## 4. Deferred/parked work
+### K17 — Windows-managed WSL runs as root
 
-- Windows/WSL is no longer deferred: it has a revised architecture and
-  implementation plan (2026-10-27), but no Windows artifact exists yet and
-  implementation has not started. The revised plan supersedes the 2026-10-26
-  version.
-- Signed packages/installers, auto-update, diagnostics bundles, remote catalog, arm64, and
-  log aggregation are later milestones.
-- The old standalone Docker image is not coming back; the new Docker model is service
-  containers plus native devstack.
+The managed Debian 12 distro runs its agent, PHP/Node workers, Docker engine, and
+interactive shells as root inside the distro. That is deliberate for local
+service management, but it means site code, build scripts, and terminal commands
+have full power inside the managed Linux environment. Treat the distro as a
+trusted local development machine and do not run untrusted code.
+
+### K18 — Local-only authentication and exposure
+
+- The dashboard is loopback-only and uses a local session cookie and CSRF token.
+- Optional dashboard token authentication is available with `dashboard_auth:
+  true` or `devstack init --dashboard-auth`.
+- Service ports bind loopback. Web containers on Linux may use host networking
+  for 80/443; on Windows the managed web server listens privately on 18080.
+- The Windows firewall rule is scoped to the WSL subnet for the daemon proxy
+  ports, not the LAN.
+- None of this makes devstack safe for public exposure.
+
+## Deferred and parked work
+
+- Disposable-VM and multi-machine Windows acceptance (including INST-24/25/29).
+- Full database E2E cycles 9–15.
+- Linux real-root host-tuning acceptance and additional Linux distribution
+  matrix runs.
+- Authenticode/code signing for Windows binaries and installers.
+- Automatic GitHub CI and an automated Windows release job.
+- Auto-update and diagnostics bundles.
+- Remote PHP catalog, log aggregation, arm64, and macOS support.
+- External-site Docker bind mounts beyond the managed projects roots.
+- The old standalone devstack-in-Docker image remains retired; Docker is used
+  only for managed services and managed web servers.
+
+## Reporting a problem
+
+Collect the least-sensitive evidence first:
+
+```sh
+devstack version --json
+devstack doctor --json
+devstack site show <site> --json
+devstack site logs <site> --tail 200
+devstack service logs <service> --tail 200
+```
+
+Remove credentials, tokens, passwords, customer data, and private project files
+before posting logs publicly. Never paste the local CA private key, agent token,
+agent pin, database passwords, or dashboard auth token.

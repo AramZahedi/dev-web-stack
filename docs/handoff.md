@@ -60,8 +60,9 @@ and the [service-platform design](superpowers/specs/2026-10-25-service-container
   - service lifecycle API/CLI and credential reveal.
   - Live Docker smoke suites for databases and nginx/Apache pass.
 - Wave 2 service-platform work:
-  - phpMyAdmin 5.2.3 container on loopback 8082, cookie auth, MySQL-family dependency,
-    active-engine follow/restart, and live Docker smoke;
+  - phpMyAdmin 5.2.3 container on loopback 8082 with short-lived, single-use signed
+    dashboard signon, MySQL-family dependency, active-engine follow/restart, and live
+    Docker smoke;
   - database credential rotation for MySQL/MariaDB/PostgreSQL through the helper, with
     admin-account SQL on stdin, rollback, owner-preserving 0600 secrets, and active
     phpMyAdmin restart;

@@ -10,6 +10,13 @@ browser certificate warnings.
 This document details the installation, system requirements, disk layouts,
 upgrade procedures, uninstallation, and initial verification for Windows.
 
+> **Current release:** `v0.4.0`. The Windows installer and release archives are
+> unsigned, so Windows SmartScreen may show an unknown-publisher warning. Verify
+> the SHA-256 checksum before running anything.
+>
+> **devstack is for local development only.** Do not expose the dashboard,
+> daemon, services, or local CA to the internet.
+
 ---
 
 ## 1. System Requirements & Prerequisites
@@ -117,7 +124,7 @@ You can install devstack on Windows using the standalone installer executable (r
 The standalone binary installer executable (`devstack-installer.exe` or `devstack-setup.exe`) embeds the entire release payload—including Windows CLI binaries, the privileged helper service, the Linux agent, and the Debian 12 WSL root filesystem. It requires zero external downloads and circumvents PowerShell execution policy restrictions.
 
 1. **Download:**
-   Download **`devstack-installer.exe`** (or `devstack-setup.exe`) and `checksums.txt` from the [Releases](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.2.0) page.
+   Download **`devstack-installer.exe`** (or `devstack-setup.exe`) and `checksums.txt` from the [Releases](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.4.0) page.
 
 2. **Verify Checksum (Optional but recommended):**
    ```powershell
@@ -180,7 +187,7 @@ If you prefer manual control or run in constrained environments where custom exe
 
 ### Option C: Building and Installing from Source
 
-Requires Go 1.24+, Node 22 LTS, and Git:
+Requires Go 1.26+, Node 22 LTS, and Git:
 
 ```powershell
 git clone https://github.com/AramZahedi/dev-web-stack.git
@@ -386,3 +393,4 @@ To permanently remove user state or the WSL distro:
 `-PurgeDistro` refuses to delete the distro directory if `wsl --unregister`
 fails. `-PurgeData` requires a valid `system\install-manifest.json` in the target
 directory and fails instead of recursively deleting an unverified path.
+

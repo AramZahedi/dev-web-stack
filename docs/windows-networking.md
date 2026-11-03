@@ -57,7 +57,7 @@ proxying, firewall security rules, and certificate trust mechanics.
 | **3306** | TCP | WSL `127.0.0.1` | Docker MySQL / MariaDB | Database listener (reachable via loopback forwarding). |
 | **5432** | TCP | WSL `127.0.0.1` | Docker PostgreSQL | Database listener. |
 | **6379** | TCP | WSL `127.0.0.1` | Docker Redis | In-memory cache listener. |
-| **8082** | HTTP | WSL `127.0.0.1` | Docker phpMyAdmin | Cookie-authenticated database administration GUI. |
+| **8082** | HTTP | WSL `127.0.0.1` | Docker phpMyAdmin | Database administration GUI; opened through the dashboard's short-lived, single-use signed signon. |
 
 ---
 

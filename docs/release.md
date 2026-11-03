@@ -1,32 +1,30 @@
 # Release and packaging
 
-This document covers the Linux x86_64 M1 release: how a tag becomes a
-checksummed archive, how the archive is installed and upgraded, and the gated
-PHP catalog merge that runs only after real PHP artifacts are published.
+This document describes how devstack releases are versioned, built, verified,
+and published. The current release is **`v0.4.0`**.
+
+> devstack is a local development tool. Publishing an artifact does not make it
+> suitable for public or internet-facing hosting.
 
 ## Scope and status
 
-- **Platform:** Linux x86_64 (glibc 2.35 or newer) only.
-- **Artifacts:** unsigned `tar.gz` archives with a SHA-256 manifest. Signed
-  packages and installers are M4 work.
-- **No agent:** the archive's binaries are `devstack` and `devstack-helper` only.
-  There is no `devstack-agent` build.
-- **No other platforms:** no Windows, WSL, macOS, or arm64 release artifact is
-  produced by this release path.
-- **No auto-update:** devstack never checks for or installs updates on its own.
-  Installing a newer release is an explicit installer run.
-- **No diagnostics bundle:** M1 does not create a diagnostics zip/bundle.
-  `devstack doctor --json` is the support surface.
-- **Published:** the app release is `v0.1.0`; the PHP runtime release is
-  `php-runtimes-2026-10-25`. Both carry checksummed archives. The app release
-  also attaches `install.sh`.
+| Platform | Artifact | Builder |
+|---|---|---|
+| Linux x86_64 | `devstack_<version>_linux_amd64.tar.gz` | `build/release.sh` or the manual GoReleaser workflow |
+| Windows x64 | `devstack_<version>_windows_amd64.zip` | `build/release-windows.sh` |
+| Windows x64 | `devstack_<version>_windows_amd64.tar.gz` | `build/release-windows.sh` |
+| Windows x64 | `devstack-installer.exe`, `devstack-setup.exe` | `build/release-windows.sh` |
+| All | `checksums.txt` | release builder / publication step |
 
-Windows/WSL is planned but not implemented; no Windows artifact is part of this
-release. Signing, diagnostics bundles, and auto-update are M4 non-goals. The Plan 4 acceptance report records the release,
-install, upgrade, and remaining gates:
-[2026-10-24-dev-web-stack-plan-4-acceptance.md](superpowers/plans/2026-10-24-dev-web-stack-plan-4-acceptance.md).
-The M1 handoff records branch/commit state and next steps:
-[2026-10-24-m1-handoff.md](superpowers/status/2026-10-24-m1-handoff.md).
+- **Unsigned:** all archives and Windows installers are unsigned. SHA-256
+  checksums verify transport integrity, not publisher identity. Authenticode
+  signing and signed packages remain future work.
+- **Local-only:** do not publish devstack as a hosting platform or expose its
+  services to the internet.
+- **No auto-update:** installing a newer release is an explicit installer run.
+- **No diagnostics bundle:** `devstack doctor --json` is the support surface.
+- **Unsupported:** macOS, Windows on ARM, and Linux arm64 have no release
+  artifact.
 
 ## Version and tag format
 
@@ -36,247 +34,270 @@ Release tags use:
 v<major>.<minor>.<patch>
 ```
 
-An optional prerelease suffix (`v1.2.3-rc.1`) is accepted by the tag guard and
-the local packager. The version embedded in the binary and in the archive name
-drops the leading `v`, so tag `v0.2.0` produces
-`devstack_0.2.0_linux_amd64.tar.gz`.
+An optional prerelease suffix is accepted (`v1.2.3-rc.1`). The version embedded
+in binaries and archive names drops the leading `v`, so tag `v0.4.0` produces
+`devstack_0.4.0_linux_amd64.tar.gz`.
 
-Check the embedded identity with:
+Check the embedded identity:
 
 ```sh
 devstack version
 devstack version --json
 ```
 
-The JSON form includes the release version, commit, helper protocol, OS, and
-architecture. Release builds report the tag version; local development builds
+Release builds report the tag version and short commit. Local development builds
 may report `dev`.
 
-## What the archive contains
+## Linux archive
 
 ```text
 devstack_<version>_linux_amd64.tar.gz
-  devstack                (executable)
-  devstack-helper         (executable)
-  install.sh              (executable)
+  devstack
+  devstack-helper
+  install.sh
   README.md
-  LICENSE                 (when the repository has one)
-checksums.txt             (one lowercase SHA-256 line for the archive)
+  LICENSE
+checksums.txt
 ```
 
-`checksums.txt` names only the archive basename so the installer can verify it
-from the download directory. A checksum mismatch aborts before extraction or
-any privileged command.
+`checksums.txt` names archive basenames so the installer can verify a download
+from the same directory. A mismatch aborts before extraction or any privileged
+command.
 
-## Local packaging
-
-The local packager mirrors the GoReleaser release and is useful before tagging:
+Build:
 
 ```sh
-make release VERSION=0.2.0
+bash build/release.sh \
+  --version 0.4.0 \
+  --skip-ui \
+  --output dist/release \
+  --build-dir dist/build-linux
 ```
 
-It builds the UI (unless `--skip-ui` is passed directly to
-`build/release.sh`), cross-compiles both binaries with `CGO_ENABLED=0` for
-`linux/amd64`, and writes the archive plus `checksums.txt` under
-`dist/release/`. The intermediate binaries go to `dist/` by default; pass
-`--build-dir <dir>` to use another directory. Tar member mtimes are pinned to
-`SOURCE_DATE_EPOCH` (default `0`) and gzip runs with `-n`, so two builds of the
-same source and version are byte-identical. The packaged binary is executed to
-confirm it reports the requested version.
+Omit `--skip-ui` to rebuild the dashboard first. Tar member mtimes are pinned to
+`SOURCE_DATE_EPOCH` (default `0`) and gzip runs with `-n`, so two serial builds
+of the same source and version are byte-identical.
 
-Run the archive contract test with:
-
-```sh
-make release-test
-```
-
-The test uses a temporary `--build-dir`, so it never overwrites or creates
-`dist/devstack`/`dist/devstack-helper`. It also compares two independent builds
-and asserts the archive and checksums are identical.
-
-## Manual release workflow
-
-Automatic GitHub Actions are disabled. `.github/workflows/release.yml` publishes a release
-only when manually dispatched with an existing `tag` input; tag pushes do not start it.
-
-The manual dispatch passes a tag guard before building. The tag must match
-`v<major>.<minor>.<patch>` (with an optional prerelease suffix), the checkout is
-pinned to `refs/tags/<tag>`, and the checked-out commit must equal the tag's
-commit. A malformed tag or a tag that does not resolve fails the job; nothing is
-published.
-
-The workflow uses least privilege: the workflow default is `contents: read`, and
-only the release job receives `contents: write` for the GitHub release. It does
-not print secrets.
-
-Before GoReleaser runs, the workflow:
-
-1. installs Go from `go.mod` and Node 22;
-2. runs the UI install, type check, unit tests, and production build;
-3. runs `go test ./... -race` and `go vet ./...`;
-4. runs `goreleaser check` to validate `.goreleaser.yaml`;
-5. builds a GoReleaser snapshot, verifies `checksums.txt`, and inspects the
-   archive member set and packaged version before publishing.
-
-It then runs `goreleaser release --clean` through
-`goreleaser/goreleaser-action@v6` with `GITHUB_TOKEN`. GoReleaser uses the
-repository `.goreleaser.yaml`, builds `devstack` and `devstack-helper` for
-linux/amd64 only, writes `checksums.txt`, and attaches `install.sh` to the
-release. The configuration's `before` hook runs the UI build again so the
-embedded dashboard matches the tagged source.
-
-The workflow runs `goreleaser check` and passed at `v0.1.0` (run
-`40139716377`), publishing the app archive, `checksums.txt`, and `install.sh`.
-The local `test/release/workflow_test.sh` validates the checked-in workflow and
-configuration contract; the live run is the evidence for the published release.
-
-The release workflow does **not** publish a PHP catalog. PHP catalog publication
-is a separate gated step described below; it was completed for
-`php-runtimes-2026-10-25`.
-
-## Install from a release
-
-Release installs download the archive and `checksums.txt` over HTTPS, verify the
-checksum, reject unsafe archive members, and check the packaged version before
-installing:
-
-```sh
-./install.sh --release 0.2.0
-```
-
-A local archive and checksum file can be used instead:
-
-```sh
-./install.sh \
-  --archive devstack_0.2.0_linux_amd64.tar.gz \
-  --checksums checksums.txt
-```
-
-`--base-url https://...` points at a mirror. Plain HTTP is rejected. See
-[install.md](install.md) for source installs, dry runs, and the installer's
-privilege model.
-
-## Upgrade and database backup
-
-Upgrades use the same verified archive path with `--upgrade`:
-
-```sh
-./install.sh --upgrade --release 0.2.0
-```
-
-The installer requires an existing `~/.local/bin/devstack`, stops the user
-daemon before replacing binaries, keeps `/etc/devstack/helper.yaml`, and prints
-the required `devstack init` follow-up. Downgrades are unsupported.
-
-Before applying pending migrations to an existing database, the store creates a
-consistent SQLite snapshot with `VACUUM INTO`:
+## Windows archive and installer
 
 ```text
-${DEVSTACK_HOME:-~/.devstack}/backups/state.db.pre-migrate-<UTC timestamp>.bak
+devstack_<version>_windows_amd64.zip
+devstack_<version>_windows_amd64.tar.gz
+  devstack.exe
+  devstack-helper.exe
+  devstack-agent
+  debian-12-wsl-rootfs.tar.gz
+  debian-12-wsl-rootfs.tar.gz.sha256
+  install.ps1
+  uninstall.ps1
+  README.md
+  LICENSE
+  checksums.txt
+  devstack.spdx.json
+  build/wsl/agent.service
+  build/wsl/install-agent.sh
+  build/wsl/install-docker.sh
+  build/wsl/docker-daemon.json
+  devstack-installer.exe / devstack-setup.exe   (release payload)
 ```
 
-At most three backups are kept. The backup is written before the first pending
-migration; if it cannot be created or the backups directory cannot be rotated,
-the migration is not applied. A fresh database skips the backup. See
-[upgrade.md](upgrade.md) for the full upgrade and recovery procedure.
-
-## PHP catalog gate (completed)
-
-The production catalog `internal/catalog/catalog.json` now contains four PHP
-entries: `php@8.2.35-r1`, `php@8.3.36-r1`, `php@8.4.27-r1`, and
-`php@8.5.12-r1`, alongside the two Node entries. The PHP workflow
-`.github/workflows/php.yml` builds and uploads a `php-catalog` artifact
-(`{entries:[...]}`) for PHP 8.2, 8.3, 8.4, and 8.5; it does not publish the
-archives or edit the embedded catalog.
-
-A release may merge that artifact only after all four checksummed
-`php-<version>-r<revision>-linux-x64.tar.gz` archives have been published at a
-real HTTPS host. Download those exact tarballs from the PHP workflow run (or
-from the published host) into one local directory; `catalogmerge` verifies each
-file's name, regular-file type, byte size, and SHA-256 before it writes
-anything. The merge is a release-preparation step, not a CI commit, and it must
-land in a commit before the release tag is created; a tag cannot add catalog
-entries retroactively.
+Build from a Linux/macOS shell with Go 1.26+, Node 22, and the verified WSL
+rootfs:
 
 ```sh
-# Download the archives named by the generated php-catalog.json into the
-# default artifacts/ directory (override with PHP_ARTIFACTS_DIR). The directory
-# must contain exactly those tarballs and no other files.
-mkdir -p artifacts
-# ... copy or download php-<version>-r<revision>-linux-x64.tar.gz files here ...
-
-# Validate first. --check writes nothing.
-make php-catalog-merge \
-  PHP_CATALOG_JSON=dist/php-catalog.json \
-  CATALOG=internal/catalog/catalog.json \
-  PHP_ARTIFACTS_DIR=artifacts \
-  PHP_CATALOG_CHECK=1
-
-# Then merge and commit the updated catalog with the release.
-make php-catalog-merge \
-  PHP_CATALOG_JSON=dist/php-catalog.json \
-  CATALOG=internal/catalog/catalog.json \
-  PHP_ARTIFACTS_DIR=artifacts
+bash build/release-windows.sh \
+  --version 0.4.0 \
+  --skip-ui \
+  --rootfs build/wsl/debian-12-wsl-rootfs.tar.gz \
+  --output dist/release \
+  --build-dir dist/build-win
 ```
 
-The equivalent direct command is:
+The Windows package requires the rootfs. The script fails closed if the supplied
+rootfs is missing. Use `--mock-rootfs` only for contract tests, never for a
+published artifact.
+
+The standalone installer embeds the Windows binaries, helper, Linux agent, WSL
+rootfs, and installer payload so it needs no external downloads.
+
+## Build both platforms and publish
+
+Typical release sequence:
 
 ```sh
-go run ./cmd/catalogmerge \
-  --catalog internal/catalog/catalog.json \
-  --php-catalog dist/php-catalog.json \
-  --artifacts artifacts \
-  --check
+# 1. Clean the output.
+rm -rf dist/release
+mkdir -p dist/release
+
+# 2. Build both platforms.
+bash build/release.sh \
+  --version 0.4.0 \
+  --skip-ui \
+  --output dist/release \
+  --build-dir dist/build-linux
+
+bash build/release-windows.sh \
+  --version 0.4.0 \
+  --skip-ui \
+  --rootfs build/wsl/debian-12-wsl-rootfs.tar.gz \
+  --output dist/release \
+  --build-dir dist/build-win
+
+# 3. Generate one combined checksum manifest.
+cd dist/release
+sha256sum \
+  devstack_0.4.0_linux_amd64.tar.gz \
+  devstack_0.4.0_windows_amd64.zip \
+  devstack_0.4.0_windows_amd64.tar.gz \
+  devstack-installer.exe \
+  devstack-setup.exe > checksums.txt
+sha256sum -c checksums.txt
 ```
 
-Drop `--check` to write the catalog in place, or add `--output <path>` to write
-the merged document elsewhere. `--artifacts` is required; a missing, extra,
-unreadable, non-regular, or mismatched tarball aborts the merge.
+Why combine manually? `release.sh` and `release-windows.sh` each write a
+`checksums.txt` for their own artifacts. A combined release should publish one
+manifest covering every downloadable asset.
 
-`catalogmerge` refuses to write unless every incoming entry:
+## Release contract tests
 
-- has `kind: php` and `build: linux-x64`;
-- belongs to exactly PHP 8.2, 8.3, 8.4, or 8.5 (an extra line is rejected);
-- uses `revision >= 1` and an ID matching `php@<version>-r<revision>`;
-- has an HTTPS URL with a non-empty hostname, no query, fragment, userinfo, or
-  empty path segment, whose basename is exactly
-  `php-<version>-r<revision>-linux-x64.tar.gz`;
-- has a 64-character lowercase SHA-256 and a positive size;
-- has a unique ID; and
-- has a regular local artifact in `--artifacts` whose bytes match that size and
-  SHA-256.
+Run serially when validating a release:
 
-It also requires at least one entry for each of PHP 8.2, 8.3, 8.4, and 8.5.
-Non-PHP entries are preserved in their existing order. Existing PHP entries are
-replaced by the validated set, sorted by version and then revision. The write is
-atomic, and malformed, duplicate, or HTTP entries fail without leaving partial
-output. `--check` validates the complete merge without writing.
+```sh
+bash test/release/release_test.sh
+bash test/release/release_windows_test.sh
+```
 
-The four archives are published at
-`https://github.com/AramZahedi/dev-web-stack/releases/tag/php-runtimes-2026-10-25`,
-and the repository variable `PHP_DOWNLOAD_BASE_URL` points there. The catalog
-was merged and committed at `784c830`; `catalogmerge --check` validated two
-Node entries plus four PHP entries. The real 8.2/8.5 side-by-side acceptance
-passed from those published URLs. Do not invent replacements: future version
-bumps must rerun the same gated merge with real checksummed artifacts.
+The Linux test checks archive members, version identity, installer executable
+bits, deterministic rebuilds, default output behavior, and that developer
+`dist/devstack*` files are untouched. The Windows test checks the archive member
+set, PE/ELF headers, SPDX SBOM validity, rootfs assets, installer references,
+internal checksums, and corruption detection. It uses `--mock-rootfs` for
+speed and does not replace a real-rootfs release build.
+
+Do not run the two contract tests in parallel on a machine that is also building
+the real release; concurrent Go builds can make the byte-identical rebuild check
+appear nondeterministic.
+
+## GitHub release publication
+
+The repository workflows are manual-dispatch only. The Linux GoReleaser workflow
+does not publish Windows assets. Publish both platforms with an explicit GitHub
+release.
+
+Example with GitHub CLI:
+
+```sh
+gh release create v0.4.0 \
+  dist/release/devstack_0.4.0_linux_amd64.tar.gz \
+  dist/release/devstack_0.4.0_windows_amd64.zip \
+  dist/release/devstack_0.4.0_windows_amd64.tar.gz \
+  dist/release/devstack-installer.exe \
+  dist/release/devstack-setup.exe \
+  dist/release/checksums.txt \
+  --title "devstack 0.4.0" \
+  --notes-file docs/releases/v0.4.0.md
+```
+
+Useful validation:
+
+```sh
+gh release view v0.4.0
+gh release download v0.4.0 --dir /tmp/devstack-release-check
+```
+
+`v0.4.0` should publish to:
+
+<https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.4.0>
+
+## Manual GitHub workflows
+
+- `.github/workflows/ci.yml` is `workflow_dispatch` only and runs the Linux test
+  matrix, UI checks, Playwright, and optional Windows jobs when dispatched.
+- `.github/workflows/release.yml` is `workflow_dispatch` only, validates the
+  tag, runs release contract tests, and publishes the Linux archive with
+  GoReleaser. It does not build Windows or WSL assets.
+- `.github/workflows/php.yml` is `workflow_dispatch` only and builds PHP
+  artifacts for the separate runtime catalog.
+
+Automatic CI is intentionally disabled. Run the local gates before tagging:
+
+```sh
+go test ./...
+go vet ./...
+go test ./... -race
+
+cd ui
+npm run check
+npm run test -- --run
+npm run build
+cd ..
+
+pwsh -NoProfile -File test/windows/installer_test.ps1
+pwsh -NoProfile -File test/windows/lifecycle_test.ps1
+pwsh -NoProfile -File test/windows/vertical_slice.ps1
+pwsh -NoProfile -File test/windows/serving_e2e.ps1
+pwsh -NoProfile -File test/windows/performance_e2e.ps1
+```
+
+## Install and upgrade from a release
+
+Linux:
+
+```sh
+./install.sh --release 0.4.0
+devstack init
+
+./install.sh --upgrade --release 0.4.0
+devstack doctor
+```
+
+Windows:
+
+```powershell
+.\devstack-installer.exe --upgrade
+# or
+.\install.ps1 -Upgrade
+```
+
+Windows upgrades back up binaries and `/data/devstack` and roll back on failure.
+Linux upgrades take a SQLite snapshot before the first pending migration.
+Downgrades are unsupported.
+
+## PHP catalog gate
+
+The production PHP catalog is embedded in the application release. Publishing a
+new PHP build requires a new app release containing the updated catalog entry.
+The PHP workflow builds artifacts and a catalog JSON; merging is a separate
+gated step documented in [PHP](php.md) and implemented by
+`cmd/catalogmerge`. A tag cannot add catalog entries retroactively, so merge and
+commit the catalog before tagging.
 
 ## Release checklist
 
-1. Confirm the branch is clean and the focused tests pass:
-   `go test ./... -race`, `go vet ./...`, UI checks (`npm run check`,
-   `npm test`, `npm run build`), and `make release-test`.
-2. Confirm `.goreleaser.yaml` still builds only `devstack` and
-   `devstack-helper` for linux/amd64, with `install.sh` attached.
-3. Create and push the tag (`git tag v0.2.0 && git push origin v0.2.0`), or run
-   the workflow manually with that tag.
-4. Wait for the release workflow: tag guard, tests, `goreleaser check`, and
-   `goreleaser release --clean` must all pass.
-5. Download the published archive and `checksums.txt`; verify
-   `sha256sum -c checksums.txt` and the final archive member list.
-6. Test `./install.sh --dry-run --release <version>` on a clean machine or
-   sandbox before announcing the release.
-7. For a PHP version bump, publish the four real artifacts first, run the gated
-   merge above, commit the catalog, and build the release from that commit.
-   The current catalog already contains 8.2–8.5; do not remove or hand-edit
-   those entries without replacement artifacts.
+1. Confirm the working tree is clean and `go.mod`/UI lockfiles are current.
+2. Run all local quality gates, including UI, installer, lifecycle, vertical
+   slice, serving E2E, and performance E2E.
+3. Run Linux and Windows release contract tests **serially**.
+4. Update `README.md`, `docs/install.md`, `docs/install-windows.md`,
+   `docs/upgrade.md`, `docs/release.md`, `docs/known-issues.md`, and the release
+   notes with the new version and current limitations.
+5. Build the Linux and Windows artifacts from the final commit.
+6. Generate and verify the combined `checksums.txt`.
+7. Tag the final commit with `v<version>` and push the tag.
+8. Create the GitHub release with both archives, both Windows installers, and
+   `checksums.txt`; attach the release notes.
+9. Install the published Linux archive on a clean supported host and the Windows
+   installer on a clean supported Windows host; run `devstack doctor`.
+10. Do not describe the release as production-ready or internet-facing.
+
+## Signing
+
+Signing is not implemented. Do not imply that a checksum proves publisher
+identity. If Authenticode signing is added later:
+
+- sign `devstack.exe`, `devstack-helper.exe`, and the standalone installers,
+- timestamp the signatures,
+- document the certificate and verification command,
+- keep the SHA-256 manifest for transport verification.
+
+Until then, download only from the official GitHub release and verify checksums.

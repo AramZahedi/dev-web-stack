@@ -1,15 +1,15 @@
 # Upgrade devstack
 
-This guide covers forward upgrades of a Linux install. Upgrades replace the
-`devstack` and `devstack-helper` binaries, keep the host integration, and back
-up device state before the store applies a schema migration. Downgrades are not
-supported.
+This guide covers forward upgrades of a **Linux** install. For Windows, see the
+upgrade section in [Install devstack on Windows](install-windows.md). Upgrades
+replace the `devstack` and `devstack-helper` binaries, keep the host integration,
+and back up device state before the store applies a schema migration. Downgrades
+are not supported.
 
-M1 release archives are unsigned and Linux x86_64 only. The current published
-release is `v0.1.0`; the later version numbers below (`0.2.0`) are examples for
-a future upgrade. There is no automatic update check or self-update, and M1 does not
-create a diagnostics bundle: use `devstack doctor --json` plus service logs for
-support.
+The current release is `v0.4.0`. Release archives and Windows installers are
+unsigned; verify SHA-256 checksums before installing. There is no automatic
+update check or self-update, and there is no diagnostics bundle: use
+`devstack doctor --json` plus service logs for support.
 
 ## Preflight
 
@@ -46,14 +46,14 @@ Use the same source mode as the original install.
 Published release (downloads over HTTPS):
 
 ```sh
-./install.sh --upgrade --release 0.2.0
+./install.sh --upgrade --release 0.4.0
 ```
 
 Downloaded archive:
 
 ```sh
 ./install.sh --upgrade \
-  --archive devstack_0.2.0_linux_amd64.tar.gz \
+  --archive devstack_0.4.0_linux_amd64.tar.gz \
   --checksums checksums.txt
 ```
 
@@ -71,7 +71,7 @@ requires `--checksums`.
 Preview the complete plan without writing files or changing services:
 
 ```sh
-./install.sh --upgrade --dry-run --release 0.2.0
+./install.sh --upgrade --dry-run --release 0.4.0
 ```
 
 The dry run still downloads, verifies the checksum, checks archive members,
@@ -160,7 +160,7 @@ running, commands fail with the existing upgrade instruction instead of
 guessing. Re-run the installer for the same release, then run `devstack init`:
 
 ```sh
-./install.sh --upgrade --release 0.2.0
+./install.sh --upgrade --release 0.4.0
 devstack init
 ```
 
@@ -208,3 +208,4 @@ the user unit logs, and rerun `devstack init`:
 ```sh
 journalctl --user -u devstack-daemon -n 100 --no-pager
 ```
+

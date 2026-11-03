@@ -194,14 +194,16 @@ Unrelated hosts lines are preserved.
 
 - The embedded catalog pins nginx, Apache httpd, MySQL, MariaDB, PostgreSQL, Redis, and
   phpMyAdmin 5.2.3 by digest. ImageMagick CLI is descoped; PHP `imagick` remains.
-- phpMyAdmin is a standalone loopback:8082 cookie-auth container that follows the active
-  MySQL/MariaDB engine through the fixed `db` Compose alias; activating it without an
-  active MySQL family is rejected.
+- phpMyAdmin is a standalone loopback:8082 container that follows the active
+  MySQL/MariaDB engine through the fixed `db` Compose alias. The dashboard opens it with
+  a short-lived, single-use HMAC-signed signon; direct access shows the normal manual
+  login form. Activating it without an active MySQL family is rejected.
 - Credentials can be rotated for MySQL/MariaDB/PostgreSQL through the helper; the account
   update runs on stdin, the host secret is owner-preserving 0600, and active phpMyAdmin is
   restarted after rotation.
-- A pure `internal/performance` engine computes bounded nginx/Apache/PHP/host values and
-  apply/reset/benchmark plans; host application and dashboard wiring are pending.
+- A pure `internal/performance` engine computes bounded nginx/Apache/PHP, WSL, WSL-VM,
+  and Windows host values. The dashboard and CLI expose preview/apply/reset/benchmark
+  plans, including opt-in machine-wide host tuning.
 - The unprivileged daemon owns the service manager/API/CLI and writes database
   config/credentials under the root. The root helper owns the fixed Compose project:
   install/pull, exclusive activation, health/port checks, rollback, restart,
