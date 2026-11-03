@@ -10,7 +10,7 @@ browser certificate warnings.
 This document details the installation, system requirements, disk layouts,
 upgrade procedures, uninstallation, and initial verification for Windows.
 
-> **Current release:** `v0.4.0`. The Windows installer and release archives are
+> **Current release:** `v0.5.0`. The Windows installer and release archives are
 > unsigned, so Windows SmartScreen may show an unknown-publisher warning. Verify
 > the SHA-256 checksum before running anything.
 >
@@ -124,7 +124,7 @@ You can install devstack on Windows using the standalone installer executable (r
 The standalone binary installer executable (`devstack-installer.exe` or `devstack-setup.exe`) embeds the entire release payload—including Windows CLI binaries, the privileged helper service, the Linux agent, and the Debian 12 WSL root filesystem. It requires zero external downloads and circumvents PowerShell execution policy restrictions.
 
 1. **Download:**
-   Download **`devstack-installer.exe`** (or `devstack-setup.exe`) and `checksums.txt` from the [Releases](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.4.0) page.
+   Download **`devstack-installer.exe`** (or `devstack-setup.exe`) and `checksums.txt` from the [Releases](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.5.0) page.
 
 2. **Verify Checksum (Optional but recommended):**
    ```powershell

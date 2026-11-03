@@ -19,7 +19,8 @@ register, and historical design/plan records.
 | [Services guide](services.md) | Service lifecycle, config editing, performance/host tuning, benchmarks, and the site terminal |
 | [Planned service platform](planned-services.md) | High-level overview of the service platform; detailed spec linked below |
 | [Known issues](known-issues.md) | Current bugs, parked work, and limitations that should not be mistaken for completed features |
-| [v0.4.0 release notes](releases/v0.4.0.md) | Published feature summary, downloads, verification evidence, and release caveats |
+| [v0.5.0 release notes](releases/v0.5.0.md) | Published feature summary, downloads, verification evidence, and release caveats |
+| [v0.4.0 release notes](releases/v0.4.0.md) | Previous release notes |
 | [Glossary](glossary.md) | Project terminology: sites, modes, services, conflicts, providers |
 | [E2E coverage inventory](e2e-coverage.md) | Complete feature inventory, coverage codes, priorities, and the definition of done for full-coverage E2E testing |
 | [Developer guide](development.md) | build/test/debug, package boundaries, migrations, release, commit discipline |
@@ -109,7 +110,7 @@ The M1 user documentation covers the released Linux product, and the Windows doc
 
 ## Implementation status in one sentence
 
-The current release is `v0.4.0`: Linux x86_64 and Windows 10/11 + WSL2 are
+The current release is `v0.5.0`: Linux x86_64 and Windows 10/11 + WSL2 are
 implemented, with the native Windows helper/daemon, managed Debian 12 WSL2
 agent, Docker services, Docker nginx/Apache serving, dual source modes, `.cmd`
 tooling shims, cross-platform performance tuning, release packaging, and live

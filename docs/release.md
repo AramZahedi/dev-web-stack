@@ -1,7 +1,7 @@
 # Release and packaging
 
 This document describes how devstack releases are versioned, built, verified,
-and published. The current release is **`v0.4.0`**.
+and published. The current release is **`v0.5.0`**.
 
 > devstack is a local development tool. Publishing an artifact does not make it
 > suitable for public or internet-facing hosting.
@@ -35,8 +35,8 @@ v<major>.<minor>.<patch>
 ```
 
 An optional prerelease suffix is accepted (`v1.2.3-rc.1`). The version embedded
-in binaries and archive names drops the leading `v`, so tag `v0.4.0` produces
-`devstack_0.4.0_linux_amd64.tar.gz`.
+in binaries and archive names drops the leading `v`, so tag `v0.5.0` produces
+`devstack_0.5.0_linux_amd64.tar.gz`.
 
 Check the embedded identity:
 
@@ -68,7 +68,7 @@ Build:
 
 ```sh
 bash build/release.sh \
-  --version 0.4.0 \
+  --version 0.5.0 \
   --skip-ui \
   --output dist/release \
   --build-dir dist/build-linux
@@ -106,7 +106,7 @@ rootfs:
 
 ```sh
 bash build/release-windows.sh \
-  --version 0.4.0 \
+  --version 0.5.0 \
   --skip-ui \
   --rootfs build/wsl/debian-12-wsl-rootfs.tar.gz \
   --output dist/release \
@@ -131,13 +131,13 @@ mkdir -p dist/release
 
 # 2. Build both platforms.
 bash build/release.sh \
-  --version 0.4.0 \
+  --version 0.5.0 \
   --skip-ui \
   --output dist/release \
   --build-dir dist/build-linux
 
 bash build/release-windows.sh \
-  --version 0.4.0 \
+  --version 0.5.0 \
   --skip-ui \
   --rootfs build/wsl/debian-12-wsl-rootfs.tar.gz \
   --output dist/release \
@@ -146,9 +146,9 @@ bash build/release-windows.sh \
 # 3. Generate one combined checksum manifest.
 cd dist/release
 sha256sum \
-  devstack_0.4.0_linux_amd64.tar.gz \
-  devstack_0.4.0_windows_amd64.zip \
-  devstack_0.4.0_windows_amd64.tar.gz \
+  devstack_0.5.0_linux_amd64.tar.gz \
+  devstack_0.5.0_windows_amd64.zip \
+  devstack_0.5.0_windows_amd64.tar.gz \
   devstack-installer.exe \
   devstack-setup.exe > checksums.txt
 sha256sum -c checksums.txt
@@ -187,27 +187,27 @@ release.
 Example with GitHub CLI:
 
 ```sh
-gh release create v0.4.0 \
-  dist/release/devstack_0.4.0_linux_amd64.tar.gz \
-  dist/release/devstack_0.4.0_windows_amd64.zip \
-  dist/release/devstack_0.4.0_windows_amd64.tar.gz \
+gh release create v0.5.0 \
+  dist/release/devstack_0.5.0_linux_amd64.tar.gz \
+  dist/release/devstack_0.5.0_windows_amd64.zip \
+  dist/release/devstack_0.5.0_windows_amd64.tar.gz \
   dist/release/devstack-installer.exe \
   dist/release/devstack-setup.exe \
   dist/release/checksums.txt \
-  --title "devstack 0.4.0" \
-  --notes-file docs/releases/v0.4.0.md
+  --title "devstack 0.5.0" \
+  --notes-file docs/releases/v0.5.0.md
 ```
 
 Useful validation:
 
 ```sh
-gh release view v0.4.0
-gh release download v0.4.0 --dir /tmp/devstack-release-check
+gh release view v0.5.0
+gh release download v0.5.0 --dir /tmp/devstack-release-check
 ```
 
-`v0.4.0` should publish to:
+`v0.5.0` should publish to:
 
-<https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.4.0>
+<https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.5.0>
 
 ## Manual GitHub workflows
 
@@ -244,10 +244,10 @@ pwsh -NoProfile -File test/windows/performance_e2e.ps1
 Linux:
 
 ```sh
-./install.sh --release 0.4.0
+./install.sh --release 0.5.0
 devstack init
 
-./install.sh --upgrade --release 0.4.0
+./install.sh --upgrade --release 0.5.0
 devstack doctor
 ```
 

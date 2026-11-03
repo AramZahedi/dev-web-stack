@@ -419,7 +419,7 @@ service lifecycle paths exist.
 - Release archives are unsigned Linux amd64 tarballs with SHA-256 checksums.
 - `install.sh` installs from source, a local archive, or a published release.
 - Helper/system units and a per-user daemon unit are installed by the installer.
-- The app release `v0.1.0` and PHP runtime release `php-runtimes-2026-10-25` are
+- The app release `v0.5.0` and PHP runtime release `php-runtimes-2026-10-25` are
   published.
 
 ## 11. Security model (current)

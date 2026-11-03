@@ -1,7 +1,7 @@
 # Known issues and current limitations
 
 - **Last reviewed:** 2026-11-03
-- **Current release:** `v0.4.0`
+- **Current release:** `v0.5.0`
 - **Scope:** Windows 10/11 + WSL2, Linux x86_64 with systemd, managed Docker
   services, cross-platform performance tuning, and local-only operation.
 
@@ -18,7 +18,20 @@
 | Linux x86_64 + systemd | Supported | Built-in proxy, managed Docker services, native and Docker vhosts, PHP/Node runtimes, installer/upgrade, and release packaging. Automated acceptance passed on Fedora 44; some manual root/browser gates remain. |
 | macOS / Windows ARM / Linux arm64 | Not supported | No release artifact or supported runtime. |
 | Public/internet-facing hosting | Not supported | Local development only. No hardening for untrusted networks, hostile tenants, or public exposure. |
-| Release artifacts | Published | `v0.4.0` publishes Linux and Windows archives plus Windows installers. Binaries are unsigned. |
+| Release artifacts | Published | `v0.5.0` publishes Linux and Windows archives plus Windows installers. Binaries are unsigned. |
+
+## Resolved in 0.5.0
+
+- The benchmark request builder supports method, path, headers, JSON body, and a
+  selectable `fasthttp` or `net/http` engine.
+- The benchmark form uses two aligned rows and hides headers/body behind
+  **Advanced**.
+- The benchmark result modal is viewport-fixed, locks page scrolling, and scrolls
+  only its own body.
+- Site configuration folders and generated vhosts use the unique site name;
+  legacy ID paths migrate automatically.
+- Host-tuning restart markers clear after the Windows host or WSL VM actually
+  reboots, and re-applying an unchanged profile no longer re-arms them.
 
 ## Resolved in 0.4.0
 

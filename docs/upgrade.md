@@ -6,7 +6,7 @@ replace the `devstack` and `devstack-helper` binaries, keep the host integration
 and back up device state before the store applies a schema migration. Downgrades
 are not supported.
 
-The current release is `v0.4.0`. Release archives and Windows installers are
+The current release is `v0.5.0`. Release archives and Windows installers are
 unsigned; verify SHA-256 checksums before installing. There is no automatic
 update check or self-update, and there is no diagnostics bundle: use
 `devstack doctor --json` plus service logs for support.
@@ -46,14 +46,14 @@ Use the same source mode as the original install.
 Published release (downloads over HTTPS):
 
 ```sh
-./install.sh --upgrade --release 0.4.0
+./install.sh --upgrade --release 0.5.0
 ```
 
 Downloaded archive:
 
 ```sh
 ./install.sh --upgrade \
-  --archive devstack_0.4.0_linux_amd64.tar.gz \
+  --archive devstack_0.5.0_linux_amd64.tar.gz \
   --checksums checksums.txt
 ```
 
@@ -71,7 +71,7 @@ requires `--checksums`.
 Preview the complete plan without writing files or changing services:
 
 ```sh
-./install.sh --upgrade --dry-run --release 0.4.0
+./install.sh --upgrade --dry-run --release 0.5.0
 ```
 
 The dry run still downloads, verifies the checksum, checks archive members,
@@ -160,7 +160,7 @@ running, commands fail with the existing upgrade instruction instead of
 guessing. Re-run the installer for the same release, then run `devstack init`:
 
 ```sh
-./install.sh --upgrade --release 0.4.0
+./install.sh --upgrade --release 0.5.0
 devstack init
 ```
 

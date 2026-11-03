@@ -171,7 +171,7 @@ make release-test
 - Releases are unsigned Linux amd64 archives with `checksums.txt`.
 - Tags are `v<major>.<minor>.<patch>`.
 - Do not move/reuse a release tag.
-- The app release `v0.1.0` and PHP runtime release `php-runtimes-2026-10-25` are published.
+- The app release `v0.5.0` and PHP runtime release `php-runtimes-2026-10-25` are published.
 
 ## 11. Docker development
 

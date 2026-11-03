@@ -6,7 +6,7 @@ hosts entries, and local certificate authority.
 
 This document covers the **Linux** install. For Windows 10/11 with WSL2, see the
 dedicated [Windows Installation Guide](install-windows.md). The current release
-is `v0.4.0`. External native nginx/Apache serving and managed Docker web servers
+is `v0.5.0`. External native nginx/Apache serving and managed Docker web servers
 are available. PHP 8.2-8.5 builds are published in the catalog (see
 [PHP](php.md)). Release archives are unsigned and checksum-verified. See
 [Sites](sites.md), [Vhosts](vhosts.md), and
@@ -82,13 +82,13 @@ archive, and a release downloaded from GitHub.
 ./install.sh
 
 # From a published release (downloads over HTTPS):
-./install.sh --release 0.4.0
+./install.sh --release 0.5.0
 
 # From a release archive you already downloaded:
-./install.sh --archive devstack_0.4.0_linux_amd64.tar.gz --checksums checksums.txt
+./install.sh --archive devstack_0.5.0_linux_amd64.tar.gz --checksums checksums.txt
 
 # From a mirror or CI artifact host (HTTPS only):
-./install.sh --release 0.4.0 --base-url https://artifacts.example.test/devstack
+./install.sh --release 0.5.0 --base-url https://artifacts.example.test/devstack
 ```
 
 `--release` downloads `devstack_<version>_linux_amd64.tar.gz` and
@@ -98,7 +98,7 @@ archive, and a release downloaded from GitHub.
 plain-HTTP fallback. `--archive` and `--checksums` must be supplied together and
 cannot be combined with `--release`.
 
-`v0.4.0` is published, so `--release 0.4.0` downloads and verifies the public
+`v0.5.0` is published, so `--release 0.5.0` downloads and verifies the public
 archive. For local development you can still use the source install or a local
 archive produced with `make release VERSION=<semver>`. Release archives are
 **unsigned**; the SHA-256 manifest detects corruption and tampering in transit,
@@ -300,11 +300,11 @@ Upgrades are forward-only. Install the new release with the same installer
 entry point you used originally, keeping the existing helper configuration:
 
 ```sh
-./install.sh --upgrade --release 0.4.0
+./install.sh --upgrade --release 0.5.0
 # or, from a source checkout:
 make build && ./install.sh --upgrade
 # or, from a downloaded archive:
-./install.sh --upgrade --archive devstack_0.4.0_linux_amd64.tar.gz --checksums checksums.txt
+./install.sh --upgrade --archive devstack_0.5.0_linux_amd64.tar.gz --checksums checksums.txt
 ```
 
 `--upgrade` requires an existing `~/.local/bin/devstack`, stops the user daemon

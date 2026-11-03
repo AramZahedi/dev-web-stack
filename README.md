@@ -12,7 +12,7 @@ dashboard.
 > the internet.
 
 > [!NOTE]
-> **Current release:** `v0.4.0` (2026-11-03).
+> **Current release:** `v0.5.0` (2026-11-03).
 >
 > - **Windows 10 22H2+ / Windows 11 x64 with WSL2:** fully implemented and
 >   live-verified. Includes a standalone installer, native Windows helper
@@ -26,7 +26,7 @@ dashboard.
 > - **Managed services:** nginx, Apache, MySQL, MariaDB, PostgreSQL, Redis, and
 >   phpMyAdmin.
 >
-> Release downloads: <https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.4.0>
+> Release downloads: <https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.5.0>
 >
 > The release binaries and installers are **unsigned**. Windows SmartScreen may
 > show an unknown-publisher warning. Verify the SHA-256 checksum before running
@@ -130,7 +130,7 @@ supported because devstack depends on WSL localhost forwarding.
 
 ### Option A — Standalone installer (recommended)
 
-Download from the [v0.4.0 release](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.4.0):
+Download from the [v0.5.0 release](https://github.com/AramZahedi/dev-web-stack/releases/tag/v0.5.0):
 
 - `devstack-installer.exe` (or the identical `devstack-setup.exe`)
 - `checksums.txt`
@@ -174,19 +174,19 @@ Installer flags:
 
 ### Option B — Release ZIP
 
-1. Download `devstack_0.4.0_windows_amd64.zip` and `checksums.txt`.
+1. Download `devstack_0.5.0_windows_amd64.zip` and `checksums.txt`.
 2. Verify the archive:
 
    ```powershell
-   $expected = (Get-Content .\checksums.txt | Select-String 'devstack_0.4.0_windows_amd64.zip').Line.Split()[0]
-   $actual = (Get-FileHash .\devstack_0.4.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLower()
+   $expected = (Get-Content .\checksums.txt | Select-String 'devstack_0.5.0_windows_amd64.zip').Line.Split()[0]
+   $actual = (Get-FileHash .\devstack_0.5.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLower()
    if ($actual -ne $expected) { throw 'Checksum mismatch!' }
    ```
 
 3. Extract and install from an **elevated** PowerShell:
 
    ```powershell
-   Expand-Archive .\devstack_0.4.0_windows_amd64.zip -DestinationPath .\devstack-installer
+   Expand-Archive .\devstack_0.5.0_windows_amd64.zip -DestinationPath .\devstack-installer
    cd .\devstack-installer
    .\install.ps1
    ```
@@ -223,11 +223,11 @@ canonical target path, or pick a folder in the dashboard browser.
 ### Option A — Published release
 
 ```sh
-curl -fLO https://github.com/AramZahedi/dev-web-stack/releases/download/v0.4.0/devstack_0.4.0_linux_amd64.tar.gz
-curl -fLO https://github.com/AramZahedi/dev-web-stack/releases/download/v0.4.0/checksums.txt
+curl -fLO https://github.com/AramZahedi/dev-web-stack/releases/download/v0.5.0/devstack_0.5.0_linux_amd64.tar.gz
+curl -fLO https://github.com/AramZahedi/dev-web-stack/releases/download/v0.5.0/checksums.txt
 sha256sum -c checksums.txt
-tar -xzf devstack_0.4.0_linux_amd64.tar.gz
-cd devstack_0.4.0_linux_amd64
+tar -xzf devstack_0.5.0_linux_amd64.tar.gz
+cd devstack_0.5.0_linux_amd64
 ./install.sh
 devstack init
 ```
@@ -235,7 +235,7 @@ devstack init
 Or let the installer download and verify it for you:
 
 ```sh
-./install.sh --release 0.4.0
+./install.sh --release 0.5.0
 devstack init
 ```
 
@@ -243,14 +243,14 @@ Install from a local archive/checksum pair:
 
 ```sh
 ./install.sh \
-  --archive devstack_0.4.0_linux_amd64.tar.gz \
+  --archive devstack_0.5.0_linux_amd64.tar.gz \
   --checksums checksums.txt
 ```
 
 Install from a mirror (HTTPS only):
 
 ```sh
-./install.sh --release 0.4.0 --base-url https://artifacts.example.test/devstack
+./install.sh --release 0.5.0 --base-url https://artifacts.example.test/devstack
 ```
 
 The installer runs as your normal user and uses `sudo` only for the helper
@@ -1032,7 +1032,7 @@ Changing listener ports requires a daemon restart. The dashboard reports
 ### Windows
 
 ```powershell
-Expand-Archive .\devstack_0.4.0_windows_amd64.zip -DestinationPath .\upgrade
+Expand-Archive .\devstack_0.5.0_windows_amd64.zip -DestinationPath .\upgrade
 cd .\upgrade
 .\install.ps1 -Upgrade
 ```
@@ -1053,7 +1053,7 @@ Always keep the previous installer/archive until the new version passes
 ### Linux
 
 ```sh
-./install.sh --upgrade --release 0.4.0
+./install.sh --upgrade --release 0.5.0
 devstack doctor
 ```
 
@@ -1227,11 +1227,11 @@ Release packaging:
 
 ```sh
 # Linux
-bash build/release.sh --version 0.4.0 --skip-ui
+bash build/release.sh --version 0.5.0 --skip-ui
 
 # Windows
 bash build/release-windows.sh \
-  --version 0.4.0 \
+  --version 0.5.0 \
   --skip-ui \
   --rootfs build/wsl/debian-12-wsl-rootfs.tar.gz
 ```
@@ -1286,7 +1286,7 @@ Historical design and implementation records live under
 
 ## Status and known limitations
 
-devstack v0.4.0 is ready for local development on the tested Windows/WSL2 and
+devstack v0.5.0 is ready for local development on the tested Windows/WSL2 and
 Linux configurations. It is **not** a production web host.
 
 Important current limitations:
