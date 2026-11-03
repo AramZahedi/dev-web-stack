@@ -59,9 +59,15 @@ func TestWSLInteractiveLaunchKeepsConsole(t *testing.T) {
 	if interactive.SysProcAttr != nil && interactive.SysProcAttr.HideWindow {
 		t.Fatal("interactive wsl.exe launch must not hide or detach the console")
 	}
+	if strings.TrimSpace(interactive.Dir) == "" {
+		t.Fatal("interactive wsl.exe launch has no safe working directory")
+	}
 	batch := newWSLCommand(context.Background(), []string{"-d", "devstack", "--", "true"}, false)
 	if batch.SysProcAttr == nil || !batch.SysProcAttr.HideWindow {
 		t.Fatal("non-interactive wsl.exe launch should stay hidden")
+	}
+	if strings.TrimSpace(batch.Dir) == "" {
+		t.Fatal("non-interactive wsl.exe launch has no safe working directory")
 	}
 }
 

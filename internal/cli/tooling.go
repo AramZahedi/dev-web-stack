@@ -36,6 +36,13 @@ var runWSL = func(ctx context.Context, args []string, stdin io.Reader, stdout, s
 func newWSLCommand(ctx context.Context, args []string, interactive bool) *exec.Cmd {
 	command := exec.CommandContext(ctx, "wsl.exe", args...)
 	command.WaitDelay = 3 * time.Second
+	// wsl.exe inherits the Windows cwd and tries to translate it before the
+	// script cd's to the site. A link such as C:\devstack\WSL-Projects\... can
+	// fail that translation noisily, so start from a guaranteed local directory.
+	command.Dir = os.Getenv("SystemRoot")
+	if strings.TrimSpace(command.Dir) == "" {
+		command.Dir = os.TempDir()
+	}
 	if !interactive {
 		platform.ConfigureProcess(command)
 	}
