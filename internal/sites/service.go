@@ -381,6 +381,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 			return model.Site{}, warnProvisioned(fmt.Errorf("sites: build output for %q: %w", site.Name, err))
 		}
 		buildOutputMissing = !exists
+		site.BuildOutputMissing = buildOutputMissing
 	}
 
 	var port int
@@ -480,6 +481,12 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (model.Site, er
 		s.emitEvent(ctx, site.ID, "site.created", createdMessage)
 	}
 	if buildOutputMissing {
+		// Publish the site's certificate and a stopped route now. Otherwise a
+		// browser visiting the registered domain before the first build would
+		// receive the dashboard certificate and report a TLS name mismatch.
+		if err := s.rebuildRoutesLocked(ctx); err != nil {
+			return fail(fmt.Errorf("sites: publish routes for %q: %w", site.Name, err), true)
+		}
 		emitCreated()
 		s.attachNodeToolchain(ctx, &site)
 		return site, nil
@@ -688,6 +695,7 @@ func (s *Service) Update(ctx context.Context, ref string, req UpdateRequest) (mo
 
 	s.emitEvent(ctx, current.ID, "site.updated", fmt.Sprintf("site %s updated", updated.Name))
 	s.attachNodeToolchain(ctx, &updated)
+	s.attachBuildOutputState(&updated)
 	return updated, nil
 }
 
@@ -720,6 +728,7 @@ func (s *Service) Get(ctx context.Context, ref string) (model.Site, error) {
 		return model.Site{}, err
 	}
 	s.attachNodeToolchain(ctx, &refreshed)
+	s.attachBuildOutputState(&refreshed)
 	return refreshed, nil
 }
 
@@ -762,6 +771,7 @@ func (s *Service) List(ctx context.Context) ([]model.Site, error) {
 			return nil, err
 		}
 		s.attachNodeToolchain(ctx, &refreshed)
+		s.attachBuildOutputState(&refreshed)
 		sites = append(sites, refreshed)
 	}
 	return sites, nil
@@ -1446,6 +1456,17 @@ func (s *Service) startLocked(ctx context.Context, site model.Site) (model.Site,
 	if site.Kind == model.SitePHP {
 		return s.startPHPLocked(ctx, site)
 	}
+	if site.Kind == model.SiteStatic && site.Build != nil {
+		exists, err := build.OutputExists(site)
+		if err != nil {
+			return site, fmt.Errorf("sites: build output for %q: %w", site.Name, err)
+		}
+		if !exists {
+			return site, fmt.Errorf(
+				"sites: build output %q for %q is missing; run `devstack site build %s` before starting",
+				site.Build.Output, site.Name, site.Name)
+		}
+	}
 	if s.externalStatic(site) {
 		return s.startExternalStaticLocked(ctx, site)
 	}
@@ -2082,6 +2103,19 @@ func (s *Service) attachNodeToolchain(ctx context.Context, site *model.Site) {
 		return
 	}
 	site.NodeToolchain = &toolchain
+}
+
+// attachBuildOutputState marks static build sites whose output directory does
+// not exist yet. The dashboard uses this to show a build-required state before
+// the user tries to start the site.
+func (s *Service) attachBuildOutputState(site *model.Site) {
+	if site == nil || site.Kind != model.SiteStatic || site.Build == nil {
+		return
+	}
+	exists, err := build.OutputExists(*site)
+	if err == nil {
+		site.BuildOutputMissing = !exists
+	}
 }
 
 // ErrNodeVersionNotInstalled matches a site pin that does not name an installed

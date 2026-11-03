@@ -11,6 +11,7 @@
     FileCode,
     Globe,
     KeyRound,
+    LoaderCircle,
     LockOpen,
     Play,
     RotateCw,
@@ -169,6 +170,28 @@
 
   const stopped = $derived(
     Boolean(site && (site.desired_state === 'stopped' || site.status === 'stopped')),
+  );
+
+  const buildRequired = $derived(
+    Boolean(
+      site &&
+        site.kind === 'static' &&
+        site.build &&
+        site.build_output_missing &&
+        !buildRunning,
+    ),
+  );
+
+  const buildReadyToStart = $derived(
+    Boolean(
+      site &&
+        site.kind === 'static' &&
+        site.build &&
+        buildResult?.success &&
+        !buildRequired &&
+        site.status === 'stopped' &&
+        site.desired_state === 'stopped',
+    ),
   );
 
   const canSwitchSource = $derived(
@@ -828,12 +851,22 @@
     }
   }
 
+  function showBuildSection(): void {
+    const section = document.getElementById('build-section');
+    if (!section) return;
+    if (typeof section.scrollIntoView === 'function') {
+      section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    section.focus({ preventScroll: true });
+  }
+
   async function runBuild(): Promise<void> {
     if (!site || buildRunning) return;
     const target = site;
     buildRunning = true;
     buildError = null;
     buildResult = null;
+    showBuildSection();
     try {
       const result = await api.buildSite(target.id);
       if (site?.id !== target.id) return;
@@ -950,7 +983,7 @@
             variant="secondary"
             onclick={() => act('stop')}
             loading={busyAction === 'stop'}
-            disabled={Boolean(busyAction)}
+            disabled={Boolean(busyAction) || buildRunning}
           >
             {#if busyAction !== 'stop'}<Square size={13} strokeWidth={2} aria-hidden="true" />{/if}
             Stop
@@ -960,7 +993,7 @@
             variant="primary"
             onclick={() => act('start')}
             loading={busyAction === 'start'}
-            disabled={Boolean(busyAction)}
+            disabled={Boolean(busyAction) || buildRunning || buildRequired}
           >
             {#if busyAction !== 'start'}<Play size={13} strokeWidth={2} aria-hidden="true" />{/if}
             Start
@@ -970,13 +1003,86 @@
           variant="secondary"
           onclick={() => act('restart')}
           loading={busyAction === 'restart'}
-          disabled={Boolean(busyAction)}
+          disabled={Boolean(busyAction) || buildRunning}
         >
           {#if busyAction !== 'restart'}<RotateCw size={13} strokeWidth={2} aria-hidden="true" />{/if}
           Restart
         </Button>
       </div>
     </header>
+
+    {#if site.kind === 'static' && site.build && (buildRunning || buildRequired || buildReadyToStart)}
+      <div
+        class="build-status-band"
+        class:running={buildRunning}
+        class:required={buildRequired}
+        class:success={buildReadyToStart}
+        role="status"
+        aria-live="polite"
+      >
+        <div class="build-status-icon" aria-hidden="true">
+          {#if buildRunning}
+            <LoaderCircle class="spin" size={18} strokeWidth={2} />
+          {:else}
+            <TriangleAlert size={18} strokeWidth={2} />
+          {/if}
+        </div>
+        <div class="build-status-copy">
+          {#if buildRunning}
+            <strong>Building {site.name}…</strong>
+            <p>
+              Running <span class="mono">{site.build.command || 'the build command'}</span>. Keep this
+              page open; the build card stays active while the rest of the page is dimmed.
+            </p>
+          {:else if buildReadyToStart}
+            <strong>Build succeeded — ready to start</strong>
+            <p>
+              The output directory
+              <span class="mono">{site.build.output || site.document_root || 'dist'}</span>
+              is ready. Start the site to serve the new build.
+            </p>
+          {:else}
+            <strong>
+              {site.status === 'running'
+                ? 'Build output is missing; rebuild this site'
+                : 'Build required before this site can start'}
+            </strong>
+            <p>
+              The output directory
+              <span class="mono">{site.build.output || site.document_root || 'dist'}</span>
+              does not exist yet. Run the build, wait for it to finish, then
+              {site.status === 'running' ? 'verify the site' : 'start the site'}.
+            </p>
+          {/if}
+        </div>
+        <div class="build-status-actions">
+          {#if buildRunning}
+            <Button size="sm" variant="secondary" onclick={showBuildSection}>
+              <Eye size={13} strokeWidth={2} aria-hidden="true" />
+              View build
+            </Button>
+          {:else if buildReadyToStart}
+            <Button size="sm" variant="secondary" onclick={showBuildSection}>View build</Button>
+            <Button
+              size="sm"
+              variant="primary"
+              loading={busyAction === 'start'}
+              disabled={Boolean(busyAction)}
+              onclick={() => act('start')}
+            >
+              <Play size={13} strokeWidth={2} aria-hidden="true" />
+              Start site
+            </Button>
+          {:else}
+            <Button size="sm" variant="secondary" onclick={showBuildSection}>View details</Button>
+            <Button size="sm" variant="primary" onclick={runBuild}>
+              <Play size={13} strokeWidth={2} aria-hidden="true" />
+              Run build
+            </Button>
+          {/if}
+        </div>
+      </div>
+    {/if}
 
     {#if error}
       <div class="inline-error">
@@ -991,6 +1097,9 @@
     {/if}
 
     <div class="detail-grid">
+      {#if buildRunning}
+        <div class="build-scrim" aria-hidden="true"></div>
+      {/if}
       <div class="main-col">
         <LogsPanel {site} />
       </div>
@@ -1194,18 +1303,22 @@
       </aside>
     </div>
 
-    <SiteDatabaseCard
-      {site}
-      links={siteLinks}
-      {linksError}
-      onRefresh={() => void load()}
-      onRetryLinks={() => void load()}
-      onRestart={() => void act('restart')}
-    />
+    <div class="build-dimmed-block" class:build-dimmed={buildRunning}>
+      <SiteDatabaseCard
+        {site}
+        links={siteLinks}
+        {linksError}
+        onRefresh={() => void load()}
+        onRetryLinks={() => void load()}
+        onRestart={() => void act('restart')}
+      />
+    </div>
 
-    <TerminalPanel {site} />
+    <div class="build-dimmed-block" class:build-dimmed={buildRunning}>
+      <TerminalPanel {site} />
+    </div>
 
-    <section class="config-section" aria-labelledby="config-heading">
+    <section class="config-section" class:build-dimmed={buildRunning} aria-labelledby="config-heading">
       <div class="section-head">
         <div class="section-head-copy">
           <p class="section-eyebrow">Site</p>
@@ -1619,7 +1732,11 @@
     </section>
 
     {#if canSwitchSource}
-      <section class="config-section" aria-labelledby="source-heading">
+      <section
+        class="config-section"
+        class:build-dimmed={buildRunning}
+        aria-labelledby="source-heading"
+      >
         <div class="section-head">
           <div class="section-head-copy">
             <p class="section-eyebrow">Source</p>
@@ -1702,7 +1819,14 @@
     {/if}
 
     {#if site.kind === 'static'}
-      <section class="build-section" aria-labelledby="build-heading">
+      <section
+        id="build-section"
+        class="build-section"
+        class:build-active={buildRunning}
+        aria-labelledby="build-heading"
+        aria-busy={buildRunning}
+        tabindex="-1"
+      >
         <div class="section-head">
           <div class="section-head-copy">
             <p class="section-eyebrow">Build</p>
@@ -1832,7 +1956,7 @@
     {/if}
 
     {#if site.kind === 'php'}
-      <section class="php-section" aria-labelledby="php-heading">
+      <section class="php-section" class:build-dimmed={buildRunning} aria-labelledby="php-heading">
         <div class="php-head">
           <div class="php-head-copy">
             <p class="php-eyebrow">PHP</p>
@@ -1967,7 +2091,7 @@
       </section>
     {/if}
 
-    <section class="danger" aria-labelledby="danger-title">
+    <section class="danger" class:build-dimmed={buildRunning} aria-labelledby="danger-title">
       <div class="danger-copy">
         <p class="danger-eyebrow">Danger zone</p>
         <h3 id="danger-title">Remove this site</h3>
@@ -2117,10 +2241,121 @@
   }
 
   .detail-grid {
+    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 2fr) minmax(286px, 1fr);
     align-items: stretch;
     gap: 14px;
+  }
+
+  .build-status-band {
+    position: sticky;
+    top: calc(var(--topbar-h) + 8px);
+    z-index: 35;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-lg);
+    background: var(--accent-soft);
+    color: var(--fg);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .build-status-band.required {
+    border-color: color-mix(in srgb, var(--warning) 38%, var(--border));
+    background: var(--warning-soft);
+    color: var(--warning-fg);
+  }
+
+  .build-status-icon {
+    display: flex;
+    flex: none;
+    padding-top: 1px;
+  }
+
+  .build-status-copy {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .build-status-copy strong {
+    display: block;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .build-status-copy p {
+    margin: 3px 0 0;
+    color: var(--muted-2);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
+  .build-status-band.required .build-status-copy p {
+    color: var(--warning-fg);
+    opacity: 0.82;
+  }
+
+  .build-status-actions {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  .build-scrim {
+    position: absolute;
+    inset: -4px;
+    z-index: 1;
+    border-radius: var(--radius-xl);
+    background: color-mix(in srgb, var(--bg) 62%, transparent);
+    backdrop-filter: blur(1.5px);
+    pointer-events: auto;
+  }
+
+  .build-dimmed {
+    position: relative;
+    pointer-events: none;
+    opacity: 0.52;
+    filter: saturate(0.45) brightness(0.78);
+    transition:
+      opacity 160ms ease,
+      filter 160ms ease;
+  }
+
+  .build-dimmed::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--bg-deep) 38%, transparent);
+    pointer-events: none;
+  }
+
+  .build-section.build-active {
+    position: relative;
+    z-index: 2;
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 1px var(--accent-border), var(--shadow-md);
+  }
+
+  .build-section:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  :global(.spin) {
+    animation: spin 800ms linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .main-col,
@@ -2442,6 +2677,7 @@
     gap: 12px;
     margin-top: 16px;
     padding: 16px;
+    scroll-margin-top: calc(var(--topbar-h) + 18px);
     border: 1px solid var(--border);
     border-radius: var(--radius-xl);
     background: var(--surface);

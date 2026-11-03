@@ -628,6 +628,138 @@ describe('SiteDetail configuration and builds', () => {
     });
   });
 
+  it('shows a top build-required band and disables Start before the first build', async () => {
+    mockApi.getSite.mockResolvedValue({
+      ...STATIC_SITE,
+      status: 'stopped',
+      desired_state: 'stopped',
+      http_port: 0,
+      build_output_missing: true,
+    });
+    await renderSite();
+
+    expect(await screen.findByText('Build required before this site can start')).toBeTruthy();
+    const start = screen.getByRole('button', { name: 'Start' }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    expect(screen.getAllByRole('button', { name: 'Run build' }).length).toBeGreaterThan(1);
+    expect(screen.getByRole('button', { name: 'View details' })).toBeTruthy();
+  });
+
+  it('shows a top building band and dims the other cards while the build runs', async () => {
+    mockApi.getSite.mockResolvedValue({
+      ...STATIC_SITE,
+      status: 'stopped',
+      desired_state: 'stopped',
+      http_port: 0,
+      build_output_missing: true,
+    });
+    mockApi.buildSite.mockReturnValue(new Promise(() => {}) as Promise<never>);
+    await renderSite();
+
+    const buttons = screen.getAllByRole('button', { name: 'Run build' });
+    await fireEvent.click(buttons[0]);
+
+    expect(await screen.findByText('Building blog…')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'View build' })).toBeTruthy();
+    expect(document.querySelector('.build-scrim')).not.toBeNull();
+    const start = screen.getByRole('button', { name: 'Start' }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+  });
+
+  it('scrolls to the build card and prevents duplicate builds while one runs', async () => {
+    mockApi.getSite.mockResolvedValue({
+      ...STATIC_SITE,
+      status: 'stopped',
+      desired_state: 'stopped',
+      http_port: 0,
+      build_output_missing: true,
+    });
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    mockApi.buildSite.mockReturnValue(new Promise(() => {}) as Promise<never>);
+    try {
+      await renderSite();
+      await fireEvent.click(screen.getAllByRole('button', { name: 'Run build' })[0]);
+      await screen.findByText('Building blog…');
+      expect(scroll).toHaveBeenCalled();
+      expect((screen.getByRole('button', { name: 'Building…' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+      expect((screen.getByRole('button', { name: 'Restart' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+      expect(mockApi.buildSite).toHaveBeenCalledTimes(1);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('turns the top band into a ready-to-start state after a successful build', async () => {
+    const required: Site = {
+      ...STATIC_SITE,
+      status: 'stopped',
+      desired_state: 'stopped',
+      http_port: 0,
+      build_output_missing: true,
+    };
+    mockApi.getSite
+      .mockResolvedValueOnce(required)
+      .mockResolvedValue({ ...required, build_output_missing: false });
+    await renderSite();
+    expect(await screen.findByText('Build required before this site can start')).toBeTruthy();
+
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Run build' })[0]);
+
+    expect(await screen.findByText('Build succeeded — ready to start')).toBeTruthy();
+    expect(screen.queryByText('Build required before this site can start')).toBeNull();
+    await waitFor(() => {
+      const start = screen.getByRole('button', { name: 'Start' }) as HTMLButtonElement;
+      expect(start.disabled).toBe(false);
+    });
+    expect(screen.getByRole('button', { name: 'Start site' })).toBeTruthy();
+  });
+
+  it('uses rebuild wording when a running site loses its output', async () => {
+    mockApi.getSite.mockResolvedValue({
+      ...STATIC_SITE,
+      status: 'running',
+      desired_state: 'running',
+      build_output_missing: true,
+    });
+    await renderSite();
+
+    expect(await screen.findByText('Build output is missing; rebuild this site')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull();
+  });
+
+  it('returns to the build-required state after a failed build', async () => {
+    mockApi.getSite.mockResolvedValue({
+      ...STATIC_SITE,
+      status: 'stopped',
+      desired_state: 'stopped',
+      http_port: 0,
+      build_output_missing: true,
+    });
+    mockApi.buildSite.mockResolvedValue({
+      site: 'blog',
+      success: false,
+      command: 'npm run build',
+      duration_ms: 1200,
+      log_path: '/home/dev/.devstack/logs/builds/blog/build.log',
+      output_path: '',
+      restored: false,
+      snapshot_skipped: false,
+      error: 'vite build failed',
+    });
+    await renderSite();
+
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Run build' })[0]);
+
+    expect(await screen.findByText('Build failed')).toBeTruthy();
+    expect(await screen.findByText('Build required before this site can start')).toBeTruthy();
+  });
+
   it('runs a build, shows duration/output, and refreshes the log tail', async () => {
     await renderSite();
     expect(await screen.findByLabelText('Build log tail')).toBeTruthy();

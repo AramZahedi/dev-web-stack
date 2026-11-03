@@ -2,6 +2,7 @@ package sites
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"runtime"
 	"strings"
@@ -613,6 +614,43 @@ func TestDockerProviderExternalStaticSiteRoutesToPrivateServer(t *testing.T) {
 	}
 	if route.Kind != "node" || !route.TLS {
 		t.Fatalf("route = %+v, want KindNode/TLS", route)
+	}
+}
+
+func TestStoppedBuildSitePublishesDockerRouteAndCertificate(t *testing.T) {
+	svc, fakes := newTestService(t)
+	svc.deps.Config.ServingMode = config.ServingModeNginx
+	svc.deps.Config.ServingProvider = config.ServingProviderDocker
+	svc.deps.DockerSyncer = &fakeDockerSyncer{configOK: true}
+	svc.deps.DockerRoute = &fakeDockerRoute{}
+	svc.deps.DockerRouteHost = "127.0.0.1"
+	svc.deps.DockerRoutePort = 18080
+	site, err := svc.Create(context.Background(), CreateRequest{
+		Name: "app",
+		Path: fakes.root,
+		Kind: "static",
+		Build: &model.BuildProfile{
+			NodeVersion: "22",
+			Command:     "npm run build",
+			Output:      "dist",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	route, ok := fakes.router.Lookup(site.Domain)
+	if !ok {
+		t.Fatal("stopped build site published no route")
+	}
+	if route.State != string(model.StatusStopped) {
+		t.Fatalf("route state = %q, want stopped", route.State)
+	}
+	cert, err := fakes.router.Certificate(&tls.ClientHelloInfo{ServerName: site.Domain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert != fakes.certs.certFor(site.ID) {
+		t.Fatal("stopped build site did not publish its own certificate")
 	}
 }
 

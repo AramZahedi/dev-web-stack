@@ -85,11 +85,21 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 		if site.Kind == model.SitePHP {
 			upstreamPort = site.FastCGIPort
 		}
+		// A stopped static site with no backend (for example a build-profile
+		// site whose output has not been built yet) still gets a route and its
+		// certificate. The proxy returns the branded "Site stopped" page before
+		// it ever needs an upstream, so browsers never see the dashboard
+		// certificate for the site's hostname.
+		stoppedPlaceholder := upstreamPort == 0 &&
+			site.Kind == model.SiteStatic &&
+			site.Status == model.StatusStopped &&
+			site.DesiredState == model.DesiredStopped
 		// External static sites served by the Docker web server have no
 		// supervised backend and therefore no HTTP port. Publish their routes
 		// directly to the private web port so the host is not a proxy 404.
 		dockerStatic := upstreamPort == 0 &&
 			site.Kind == model.SiteStatic &&
+			!stoppedPlaceholder &&
 			s.dockerServing() &&
 			s.deps.DockerRoute != nil &&
 			!s.suppressDockerRoutes &&
@@ -99,8 +109,11 @@ func (s *Service) rebuildRoutesLocked(ctx context.Context) error {
 			upstreamHost, upstreamPort = s.dockerWebEndpoint()
 			kind = proxy.KindNode
 		}
-		if upstreamPort > 0 {
-			upstream := net.JoinHostPort(upstreamHost, strconv.Itoa(upstreamPort))
+		if upstreamPort > 0 || stoppedPlaceholder {
+			upstream := ""
+			if upstreamPort > 0 {
+				upstream = net.JoinHostPort(upstreamHost, strconv.Itoa(upstreamPort))
+			}
 			route := proxy.Route{
 				SiteID:       site.ID,
 				Kind:         kind,

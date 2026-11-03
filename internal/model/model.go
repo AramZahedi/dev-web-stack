@@ -132,6 +132,9 @@ type Site struct {
 	SPAFallback         bool          `json:"spa_fallback"`
 	SPAFallbackFile     string        `json:"spa_fallback_file"`
 	Build               *BuildProfile `json:"build,omitempty"`
+	// BuildOutputMissing is a response-only flag for static build sites whose
+	// configured output directory does not exist yet. It is never persisted.
+	BuildOutputMissing bool `json:"build_output_missing,omitempty"`
 
 	TLS        bool `json:"tls"`
 	ForceHTTPS bool `json:"force_https"`
