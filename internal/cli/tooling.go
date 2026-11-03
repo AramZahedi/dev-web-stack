@@ -23,14 +23,23 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
-var runWSL = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	command := exec.CommandContext(ctx, "wsl.exe", args...)
-	command.WaitDelay = 3 * time.Second
-	platform.ConfigureProcess(command)
+var runWSL = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, interactive bool) error {
+	command := newWSLCommand(ctx, args, interactive)
 	command.Stdin = stdin
 	command.Stdout = stdout
 	command.Stderr = stderr
 	return exitStatus(command.Run())
+}
+
+// newWSLCommand builds the wsl.exe invocation. Interactive shells need the
+// inherited console/TTY; background execs must stay hidden.
+func newWSLCommand(ctx context.Context, args []string, interactive bool) *exec.Cmd {
+	command := exec.CommandContext(ctx, "wsl.exe", args...)
+	command.WaitDelay = 3 * time.Second
+	if !interactive {
+		platform.ConfigureProcess(command)
+	}
+	return command
 }
 
 var newWSLEnvFile = tooling.NewWSLEnvFile
@@ -486,7 +495,7 @@ func execWSLSite(ctx context.Context, distro string, site model.Site, env map[st
 		if err != nil {
 			return wrapError(err, "WSL_SITE_ENV_FAILED", "Check the site's backend path and runtime environment, then retry.")
 		}
-		return runWSL(ctx, args, stdin, stdout, stderr)
+		return runWSL(ctx, args, stdin, stdout, stderr, interactive)
 	}
 	envFile, err := newWSLEnvFile(env)
 	if err != nil {
@@ -497,7 +506,7 @@ func execWSLSite(ctx context.Context, distro string, site model.Site, env map[st
 	if err != nil {
 		return wrapError(err, "WSL_SITE_ENV_FAILED", "Check the site's backend path and runtime environment, then retry.")
 	}
-	return runWSL(ctx, args, stdin, stdout, stderr)
+	return runWSL(ctx, args, stdin, stdout, stderr, interactive)
 }
 
 // newShellInitCmd prints the exports for direnv-style opt-in shells.

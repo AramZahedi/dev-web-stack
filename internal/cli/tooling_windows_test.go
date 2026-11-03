@@ -12,6 +12,17 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
 
+func TestWSLInteractiveLaunchKeepsConsole(t *testing.T) {
+	interactive := newWSLCommand(context.Background(), []string{"-d", "devstack"}, true)
+	if interactive.SysProcAttr != nil && interactive.SysProcAttr.HideWindow {
+		t.Fatal("interactive wsl.exe launch must not hide or detach the console")
+	}
+	batch := newWSLCommand(context.Background(), []string{"-d", "devstack", "--", "true"}, false)
+	if batch.SysProcAttr == nil || !batch.SysProcAttr.HideWindow {
+		t.Fatal("non-interactive wsl.exe launch should stay hidden")
+	}
+}
+
 func TestExecWSLSitePassesBackendPathAndSiteEnvironment(t *testing.T) {
 	previousRun := runWSL
 	previousEnv := newWSLEnvFile
@@ -28,7 +39,7 @@ func TestExecWSLSitePassesBackendPathAndSiteEnvironment(t *testing.T) {
 		envFile = file
 		return file, err
 	}
-	runWSL = func(_ context.Context, args []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
+	runWSL = func(_ context.Context, args []string, _ io.Reader, _ io.Writer, _ io.Writer, _ bool) error {
 		got = append([]string(nil), args...)
 		if envFile != nil {
 			info, err := os.Stat(envFile.Path)
@@ -79,7 +90,7 @@ func TestExecWSLSiteKeepsDatabaseSecretsOutOfArgv(t *testing.T) {
 	previous := runWSL
 	t.Cleanup(func() { runWSL = previous })
 	var got []string
-	runWSL = func(_ context.Context, args []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
+	runWSL = func(_ context.Context, args []string, _ io.Reader, _ io.Writer, _ io.Writer, _ bool) error {
 		got = append([]string(nil), args...)
 		return nil
 	}
@@ -110,7 +121,7 @@ func TestExecWSLSitePreservesCommandArguments(t *testing.T) {
 	previous := runWSL
 	t.Cleanup(func() { runWSL = previous })
 	var got []string
-	runWSL = func(_ context.Context, args []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
+	runWSL = func(_ context.Context, args []string, _ io.Reader, _ io.Writer, _ io.Writer, _ bool) error {
 		got = append([]string(nil), args...)
 		return nil
 	}
