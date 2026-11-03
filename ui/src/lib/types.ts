@@ -582,8 +582,11 @@ export interface PerformanceResetResult {
   host_targets?: PerformanceHostTarget[];
 }
 
+export type BenchmarkEngine = 'fasthttp' | 'nethttp';
+
 export interface BenchmarkRequest {
   site: string;
+  engine?: BenchmarkEngine;
   method?: string;
   path?: string;
   headers?: Record<string, string>;
@@ -606,6 +609,7 @@ export interface BenchmarkRun {
   id: string;
   site: string;
   target: string;
+  engine?: BenchmarkEngine;
   method?: string;
   path?: string;
   header_names?: string[];

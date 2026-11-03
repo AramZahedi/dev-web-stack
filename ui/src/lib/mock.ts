@@ -2862,6 +2862,8 @@ export const mockApi = {
     const duration = request.duration_s ?? 10;
     const connections = request.connections ?? 32;
     const method = (request.method || 'GET').toUpperCase();
+    const engine = request.engine === 'nethttp' ? 'nethttp' : 'fasthttp';
+    const tool = engine === 'nethttp' ? 'devstack-go-http-load' : 'devstack-fasthttp-load';
     const path = request.path?.startsWith('/') ? request.path : `/${request.path ?? ''}`;
     const bodyBytes = request.body ? new TextEncoder().encode(request.body).length : 0;
     const headerNames = Object.keys(request.headers ?? {}).sort((a, b) => a.localeCompare(b));
@@ -2871,8 +2873,9 @@ export const mockApi = {
     const run: BenchmarkRun = {
       id: `bench-${started.getTime().toString(36)}`,
       site: targetSite.name,
-      tool: 'devstack-go-http',
+      tool,
       tool_version: 'built-in (mock)',
+      engine,
       target: `${targetSite.tls ? 'https' : 'http'}://${targetSite.domain}${path}`,
       method,
       path,

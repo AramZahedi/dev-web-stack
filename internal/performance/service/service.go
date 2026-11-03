@@ -616,6 +616,10 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 	if connections < 1 || connections > 100000 {
 		return BenchmarkResult{}, invalid("benchmark connections", "%d is outside 1-100000", connections)
 	}
+	engine, err := NormalizeBenchmarkEngine(req.Engine)
+	if err != nil {
+		return BenchmarkResult{}, err
+	}
 	method, err := NormalizeBenchmarkMethod(req.Method)
 	if err != nil {
 		return BenchmarkResult{}, err
@@ -684,15 +688,16 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 		ID:              id,
 		Site:            site.Name,
 		Target:          target,
+		Engine:          engine,
 		Method:          method,
 		Path:            path,
 		HeaderNames:     headerNames,
 		BodyBytes:       len(body),
 		Profile:         runProfile,
 		Status:          BenchmarkCompleted,
-		Tool:            LoadToolName,
+		Tool:            BenchmarkToolName(engine),
 		ToolVersion:     LoadToolVersion,
-		Limitations:     append([]string(nil), LoadLimitations...),
+		Limitations:     append([]string(nil), BenchmarkLimitations(engine)...),
 		DurationSeconds: duration,
 		Connections:     connections,
 		StartedAt:       now,
@@ -707,6 +712,7 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(duration)*time.Second+15*time.Second)
 	defer cancel()
 	load, raw, loadErr := s.cfg.LoadRun(runCtx, LoadOptions{
+		Engine:      engine,
 		URL:         target,
 		HostHeader:  site.Domain,
 		Method:      method,
@@ -726,6 +732,9 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 	}
 	if load.Method != "" {
 		result.Method = load.Method
+	}
+	if load.Engine != "" {
+		result.Engine = load.Engine
 	}
 	if load.BodyBytes > 0 {
 		result.BodyBytes = load.BodyBytes

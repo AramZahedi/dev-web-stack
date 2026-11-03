@@ -171,6 +171,7 @@ describe('PerformancePanel', () => {
     await waitFor(() => expect(mockApi.runBenchmark).toHaveBeenCalledTimes(1));
     expect(mockApi.runBenchmark).toHaveBeenCalledWith({
       site: 'laravel',
+      engine: 'fasthttp',
       method: 'POST',
       path: '/api/orders',
       headers: { 'X-Bench': 'yes', 'Content-Type': 'application/json' },

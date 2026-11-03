@@ -677,7 +677,7 @@ func TestServiceBenchmarkAppliesCustomRequest(t *testing.T) {
 	svc.cfg.LoadRun = func(_ context.Context, opts LoadOptions) (LoadResult, []byte, error) {
 		got = opts
 		return LoadResult{
-			Tool: LoadToolName, Version: LoadToolVersion,
+			Tool: NetHTTPToolName, Version: LoadToolVersion, Engine: opts.Engine,
 			URL: opts.URL, Method: opts.Method, BodyBytes: len(opts.Body),
 			Requests: 100, Errors: 0, RPS: 25,
 			P50MS: 1, P95MS: 2, P99MS: 3,
@@ -688,6 +688,7 @@ func TestServiceBenchmarkAppliesCustomRequest(t *testing.T) {
 
 	result, err := svc.RunBenchmark(ctx, BenchmarkRequest{
 		Site:            "blog",
+		Engine:          EngineNetHTTP,
 		Method:          "post",
 		Path:            "api/orders?trace=1",
 		Headers:         map[string]string{"X-Bench": "yes", "Content-Type": "application/json"},
@@ -698,6 +699,9 @@ func TestServiceBenchmarkAppliesCustomRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("benchmark: %v", err)
 	}
+	if got.Engine != EngineNetHTTP {
+		t.Fatalf("engine = %q, want %q", got.Engine, EngineNetHTTP)
+	}
 	if !strings.HasSuffix(got.URL, "/api/orders?trace=1") {
 		t.Fatalf("target = %q, want the requested path", got.URL)
 	}
@@ -706,7 +710,8 @@ func TestServiceBenchmarkAppliesCustomRequest(t *testing.T) {
 		t.Fatalf("load options = %+v", got)
 	}
 	if result.Target != got.URL || result.Method != http.MethodPost ||
-		result.Path != "/api/orders?trace=1" || result.BodyBytes != len(got.Body) {
+		result.Path != "/api/orders?trace=1" || result.BodyBytes != len(got.Body) ||
+		result.Engine != EngineNetHTTP || result.Tool != NetHTTPToolName {
 		t.Fatalf("result request metadata = %+v", result)
 	}
 	if len(result.HeaderNames) != 2 || result.HeaderNames[0] != "Content-Type" || result.HeaderNames[1] != "X-Bench" {
@@ -742,6 +747,7 @@ func TestServiceBenchmarkValidatesSiteAndBounds(t *testing.T) {
 	}
 	for name, req := range map[string]BenchmarkRequest{
 		"method": {Site: "blog", Method: "TRACE"},
+		"engine": {Site: "blog", Engine: "wrk"},
 		"path":   {Site: "blog", Path: "https://example.com/"},
 		"header": {Site: "blog", Headers: map[string]string{"Bad Header": "x"}},
 		"body":   {Site: "blog", Method: "GET", Body: "x"},

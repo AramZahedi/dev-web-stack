@@ -115,6 +115,74 @@ func TestRunLoadSendsMethodPathHeadersAndBody(t *testing.T) {
 	}
 }
 
+func TestRunLoadNetHTTPEngineSendsCustomRequest(t *testing.T) {
+	type observed struct {
+		method string
+		path   string
+		host   string
+		header string
+		body   string
+	}
+	got := make(chan observed, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		select {
+		case got <- observed{method: r.Method, path: r.URL.Path, host: r.Host, header: r.Header.Get("X-Bench"), body: string(body)}:
+		default:
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	result, raw, err := RunLoad(context.Background(), LoadOptions{
+		Engine:      EngineNetHTTP,
+		URL:         server.URL + "/api/orders",
+		HostHeader:  "bench.test",
+		Method:      http.MethodPost,
+		Headers:     map[string]string{"X-Bench": "yes"},
+		Body:        []byte(`{"hello":"world"}`),
+		Duration:    250 * time.Millisecond,
+		Connections: 2,
+	})
+	if err != nil {
+		t.Fatalf("RunLoad(nethttp): %v", err)
+	}
+	if result.Tool != NetHTTPToolName || result.Engine != EngineNetHTTP || result.Version != LoadToolVersion {
+		t.Fatalf("tool metadata = %q/%q/%q", result.Tool, result.Engine, result.Version)
+	}
+	if !strings.Contains(string(raw), "engine=nethttp") {
+		t.Fatalf("raw output = %q", raw)
+	}
+	select {
+	case o := <-got:
+		if o.method != http.MethodPost || o.path != "/api/orders" || o.host != "bench.test" ||
+			o.header != "yes" || o.body != `{"hello":"world"}` {
+			t.Fatalf("request = %+v", o)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not receive a request")
+	}
+}
+
+func TestNormalizeBenchmarkEngine(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"", EngineFastHTTP},
+		{"fasthttp", EngineFastHTTP},
+		{"FAST", EngineFastHTTP},
+		{"nethttp", EngineNetHTTP},
+		{"net/http", EngineNetHTTP},
+		{"go", EngineNetHTTP},
+	} {
+		got, err := NormalizeBenchmarkEngine(tc.input)
+		if err != nil || got != tc.want {
+			t.Fatalf("NormalizeBenchmarkEngine(%q) = %q, %v; want %q", tc.input, got, err, tc.want)
+		}
+	}
+	if _, err := NormalizeBenchmarkEngine("wrk"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unsupported engine error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestRunLoadSendsTestHostsToLoopback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -212,6 +280,7 @@ func TestRunLoadRejectsUnsafeOptions(t *testing.T) {
 		{"bad header name", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 1, Method: http.MethodGet, Headers: map[string]string{"Bad Header": "x"}}},
 		{"header newline", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 1, Method: http.MethodGet, Headers: map[string]string{"X-Test": "a\r\nB: c"}}},
 		{"body too large", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 1, Method: http.MethodPost, Body: make([]byte, MaxBenchmarkBodyBytes+1)}},
+		{"bad engine", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 1, Engine: "wrk"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

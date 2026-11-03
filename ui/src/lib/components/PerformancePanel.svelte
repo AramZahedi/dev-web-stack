@@ -17,6 +17,7 @@
   import { ApiError, describeError } from '../errors';
   import { addToast, toastError } from '../stores';
   import type {
+    BenchmarkEngine,
     BenchmarkRun,
     PerformanceApplyResult,
     PerformancePreview,
@@ -67,6 +68,7 @@
   let benchmarkLoading = $state(true);
   let benchmarkError = $state<{ code: string; message: string } | null>(null);
   let benchSite = $state('');
+  let benchEngine = $state<BenchmarkEngine>('fasthttp');
   let benchMethod = $state('GET');
   let benchPath = $state('/');
   let benchHeaders = $state<HeaderRow[]>([{ name: '', value: '' }]);
@@ -475,6 +477,7 @@
     try {
       const run = await api.runBenchmark({
         site: benchSite,
+        engine: benchEngine,
         method: benchMethod,
         path,
         headers,
@@ -862,6 +865,12 @@
           {/each}
         </select>
       </Field>
+      <Field id="benchmark-engine" label="Engine" hint="fasthttp is faster; net/http supports HTTP/2.">
+        <select id="benchmark-engine" class="input mono" bind:value={benchEngine} disabled={benchBusy}>
+          <option value="fasthttp">fasthttp</option>
+          <option value="nethttp">net/http</option>
+        </select>
+      </Field>
       <Field id="benchmark-path" label="Path" hint="Relative to the selected site.">
         <input
           id="benchmark-path"
@@ -1035,7 +1044,7 @@
       Allowed ranges: duration 1–3600 seconds · connections 1–100000 · body up to 1 MiB.
     </p>
     <p class="benchmark-note">
-      Runs are measured by the daemon's built-in Go HTTP generator against
+      Runs are measured by <span class="mono">{benchEngine}</span> against
       {benchSiteName || 'the selected site'} and stored under <span class="mono">logs/performance/</span>.
       Header values and request bodies are not stored with the result.
     </p>
@@ -1168,6 +1177,7 @@
   {#if selectedRun}
     <dl class="run-detail">
       <div><dt>Target</dt><dd class="mono break">{selectedRun.target ?? '—'}</dd></div>
+      <div><dt>Engine</dt><dd class="mono">{selectedRun.engine ?? selectedRun.tool}</dd></div>
       <div><dt>Method</dt><dd class="mono">{selectedRun.method ?? 'GET'}</dd></div>
       <div><dt>Path</dt><dd class="mono break">{selectedRun.path ?? '/'}</dd></div>
       <div><dt>Headers</dt><dd class="mono break">{selectedRun.header_names && selectedRun.header_names.length > 0 ? selectedRun.header_names.join(', ') : 'None'}</dd></div>
@@ -1626,7 +1636,7 @@
 
   .benchmark-form {
     display: grid;
-    grid-template-columns: minmax(0, 1.25fr) 104px minmax(0, 1.35fr) 112px 126px auto;
+    grid-template-columns: minmax(0, 1.2fr) 96px 130px minmax(0, 1.2fr) 100px 118px auto;
     align-items: end;
     gap: 10px;
   }

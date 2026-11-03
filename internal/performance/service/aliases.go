@@ -54,8 +54,13 @@ const (
 	BenchmarkFailed    = performance.BenchmarkFailed
 	BenchmarkCanceled  = performance.BenchmarkCanceled
 
-	LoadToolName    = performance.LoadToolName
-	LoadToolVersion = performance.LoadToolVersion
+	LoadToolName     = performance.LoadToolName
+	LoadToolVersion  = performance.LoadToolVersion
+	FastHTTPToolName = performance.FastHTTPToolName
+	NetHTTPToolName  = performance.NetHTTPToolName
+
+	EngineFastHTTP = performance.EngineFastHTTP
+	EngineNetHTTP  = performance.EngineNetHTTP
 )
 
 var (
@@ -77,10 +82,13 @@ var (
 	BuildApplyPlan            = performance.BuildApplyPlan
 	ResetManagedFiles         = performance.ResetManagedFiles
 	RunLoad                   = performance.RunLoad
+	NormalizeBenchmarkEngine  = performance.NormalizeBenchmarkEngine
 	NormalizeBenchmarkMethod  = performance.NormalizeBenchmarkMethod
 	NormalizeBenchmarkPath    = performance.NormalizeBenchmarkPath
 	NormalizeBenchmarkHeaders = performance.NormalizeBenchmarkHeaders
 	ValidateBenchmarkBody     = performance.ValidateBenchmarkBody
+	BenchmarkToolName         = performance.BenchmarkToolName
+	BenchmarkLimitations      = performance.BenchmarkLimitations
 	Collect                   = performance.Collect
 	PublicRouteURL            = performance.PublicRouteURL
 )

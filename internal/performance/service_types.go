@@ -45,6 +45,7 @@ type ResetRequest struct {
 // every request in the run; body values are never persisted with the result.
 type BenchmarkRequest struct {
 	Site            string            `json:"site"`
+	Engine          string            `json:"engine,omitempty"`
 	Method          string            `json:"method,omitempty"`
 	Path            string            `json:"path,omitempty"`
 	Headers         map[string]string `json:"headers,omitempty"`
@@ -253,6 +254,7 @@ type BenchmarkResult struct {
 	ID               string                `json:"id"`
 	Site             string                `json:"site"`
 	Target           string                `json:"target"`
+	Engine           string                `json:"engine,omitempty"`
 	Method           string                `json:"method,omitempty"`
 	Path             string                `json:"path,omitempty"`
 	HeaderNames      []string              `json:"header_names,omitempty"`

@@ -164,11 +164,15 @@ archive, tarball, and installers are built manually with
 - Existing pre-change nginx/Apache base configs do not gain the managed include
   lines automatically; base files are user-owned. Fresh installs seed them, and
   apply reports a profile conflict until an existing base config adds them.
-- Benchmarks use the labelled built-in Go HTTP generator, not wrk, hey, or
+- Benchmarks use the labelled built-in Go generators, not wrk, hey, or
   bombardier. Results are measured but are not directly comparable to those
-  tools. Bombardier was evaluated: its fasthttp mode cannot set the custom Host
-  header devstack needs for local vhost routing, and its net/http fallback was
-  slower than the built-in generator in a loopback comparison.
+  tools. The default `fasthttp` engine uses the same HTTP engine as bombardier
+  without its Host-header limitation and is faster on HTTP/1.1; the selectable
+  `net/http` engine supports HTTP/2 and can be faster when the target negotiates
+  HTTP/2. Bombardier itself was evaluated and not adopted because it is a CLI
+  `main` package, its fasthttp mode cannot set the custom Host header devstack
+  needs for local vhost routing, and its net/http fallback was slower than the
+  built-in net/http generator in a loopback comparison.
 - Windows host tuning was live-verified; real Linux `/etc` host tuning remains a
   manual gate.
 - Host tuning is machine-wide and needs a WSL restart for `.wslconfig` changes.

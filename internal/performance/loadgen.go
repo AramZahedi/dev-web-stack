@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,10 +17,17 @@ import (
 	"time"
 )
 
-// Built-in load generator identity. No external wrk/hey image is pinned in
-// this repository, so benchmarks are labelled as the built-in Go generator.
+// Built-in load generator identities. The daemon ships both engines so a run
+// can trade HTTP/2 compatibility for fasthttp throughput without an external
+// binary.
 const (
-	LoadToolName    = "devstack-go-http-load"
+	EngineFastHTTP = "fasthttp"
+	EngineNetHTTP  = "nethttp"
+
+	FastHTTPToolName = "devstack-fasthttp-load"
+	NetHTTPToolName  = "devstack-go-http-load"
+
+	LoadToolName    = FastHTTPToolName
 	LoadToolVersion = "1"
 )
 
@@ -31,13 +39,29 @@ const (
 	// MaxBenchmarkBodyBytes bounds a custom request body so a benchmark cannot
 	// turn into an accidental file-upload test.
 	MaxBenchmarkBodyBytes = 1 << 20
+	maxBenchmarkResponse  = 1 << 20
 )
 
-// LoadLimitations is reported with every benchmark so a result is never
-// presented as a wrk/hey-comparable measurement.
-var LoadLimitations = []string{
-	"Built-in Go HTTP load generator; not wrk, hey, bombardier, or another pinned external tool.",
+// FastHTTPLimitations is reported for the default fasthttp engine.
+var FastHTTPLimitations = []string{
+	"Built-in Go load generator using fasthttp; not wrk, hey, bombardier, or another pinned external tool.",
 	"Requests use the configured method, path, headers, and optional body.",
+	"fasthttp uses HTTP/1.1; HTTP/2-only targets are not supported by this engine.",
+	"Requests are sequential per worker; the requested connection count is used as the HTTP transport connection limit.",
+	"Worker goroutines are capped at 2048 for host safety.",
+	"Latency percentiles use a bounded reservoir sample of up to 200000 completed requests.",
+	"RPS counts completed HTTP exchanges (including non-2xx responses and transport failures); errors are reported separately.",
+	"Redirects are not followed; 3xx, 4xx, and 5xx responses count as errors.",
+	"Response bodies are read up to 1 MiB; larger responses count as errors.",
+	"TLS uses InsecureSkipVerify only for loopback benchmark targets.",
+	"Header values and request bodies are sent but never stored; results keep only the method, path, header names, and body size.",
+}
+
+// NetHTTPLimitations is reported for the net/http engine.
+var NetHTTPLimitations = []string{
+	"Built-in Go net/http load generator; not wrk, hey, bombardier, or another pinned external tool.",
+	"Requests use the configured method, path, headers, and optional body.",
+	"net/http supports HTTP/2 when the target negotiates it.",
 	"Requests are sequential per worker; the requested connection count is used as the HTTP transport connection limit.",
 	"Worker goroutines are capped at 2048 for host safety.",
 	"Latency percentiles use a bounded reservoir sample of up to 200000 completed requests.",
@@ -48,8 +72,41 @@ var LoadLimitations = []string{
 	"Header values and request bodies are sent but never stored; results keep only the method, path, header names, and body size.",
 }
 
+// LoadLimitations aliases the default engine limitations for compatibility.
+var LoadLimitations = FastHTTPLimitations
+
+// NormalizeBenchmarkEngine returns the engine selected for a run. An empty
+// value selects the faster fasthttp engine.
+func NormalizeBenchmarkEngine(engine string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case "", EngineFastHTTP, "fast":
+		return EngineFastHTTP, nil
+	case EngineNetHTTP, "net/http", "go", "net-http":
+		return EngineNetHTTP, nil
+	default:
+		return "", invalid("benchmark engine", "%q must be fasthttp or nethttp", engine)
+	}
+}
+
+// BenchmarkToolName reports the tool identity stored with a run.
+func BenchmarkToolName(engine string) string {
+	if engine == EngineNetHTTP {
+		return NetHTTPToolName
+	}
+	return FastHTTPToolName
+}
+
+// BenchmarkLimitations reports the engine-specific limitations stored with a run.
+func BenchmarkLimitations(engine string) []string {
+	if engine == EngineNetHTTP {
+		return NetHTTPLimitations
+	}
+	return FastHTTPLimitations
+}
+
 // LoadOptions configures one measured run.
 type LoadOptions struct {
+	Engine      string
 	URL         string
 	HostHeader  string
 	Method      string
@@ -65,6 +122,7 @@ type LoadOptions struct {
 type LoadResult struct {
 	Tool        string        `json:"tool"`
 	Version     string        `json:"version"`
+	Engine      string        `json:"engine"`
 	Limitations []string      `json:"limitations"`
 	URL         string        `json:"url"`
 	Method      string        `json:"method"`
@@ -84,10 +142,27 @@ type LoadResult struct {
 	FinishedAt  time.Time     `json:"finished_at"`
 }
 
-// RunLoad performs a real HTTP load run against a loopback URL. It never
+// RunLoad dispatches a real HTTP load run to the selected engine. It never
 // invents results: on cancellation or transport failure the returned result has
 // no requests-per-second or latency claim and the error is non-nil.
 func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) {
+	engine, err := NormalizeBenchmarkEngine(opts.Engine)
+	if err != nil {
+		return LoadResult{}, nil, err
+	}
+	opts.Engine = engine
+	switch engine {
+	case EngineNetHTTP:
+		return runLoadNetHTTP(ctx, opts)
+	case EngineFastHTTP:
+		return runLoadFastHTTP(ctx, opts)
+	default:
+		return LoadResult{}, nil, invalid("benchmark engine", "%q is not supported", engine)
+	}
+}
+
+// runLoadNetHTTP performs a measured run with Go's net/http client.
+func runLoadNetHTTP(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) {
 	if err := validateLoadOptions(opts); err != nil {
 		return LoadResult{}, nil, err
 	}
@@ -107,9 +182,10 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 		workers = loadWorkerCap
 	}
 	result := LoadResult{
-		Tool:        LoadToolName,
+		Tool:        NetHTTPToolName,
 		Version:     LoadToolVersion,
-		Limitations: append([]string(nil), LoadLimitations...),
+		Engine:      EngineNetHTTP,
+		Limitations: append([]string(nil), NetHTTPLimitations...),
 		URL:         opts.URL,
 		Method:      method,
 		BodyBytes:   len(opts.Body),
@@ -228,14 +304,20 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 	}
 	wg.Wait()
 	finished := time.Now().UTC()
-	elapsed := finished.Sub(start)
-
 	mu.Lock()
-	result.Requests = requests
-	result.Errors = errors
-	result.SampleSize = len(samples)
-	sampleCopy := append([]float64(nil), samples...)
+	finalRequests, finalErrors := requests, errors
+	finalSamples := append([]float64(nil), samples...)
 	mu.Unlock()
+	return finishLoadResult(ctx, result, finalRequests, finalErrors, finalSamples, start, finished, loopCtx.Err())
+}
+
+// finishLoadResult computes the measured metrics and never synthesizes RPS for
+// a canceled or failed run.
+func finishLoadResult(ctx context.Context, result LoadResult, requests int64, errorCount int64, samples []float64, start, finished time.Time, loopErr error) (LoadResult, []byte, error) {
+	elapsed := finished.Sub(start)
+	result.Requests = requests
+	result.Errors = errorCount
+	result.SampleSize = len(samples)
 	result.StartedAt = start
 	result.FinishedAt = finished
 	result.Duration = elapsed
@@ -243,8 +325,8 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 	if err := ctx.Err(); err != nil {
 		return result, []byte(renderLoadRaw(result, nil)), fmt.Errorf("%w: load run canceled: %w", ErrInvalid, err)
 	}
-	if err := loopCtx.Err(); err != nil && err != context.DeadlineExceeded {
-		return result, []byte(renderLoadRaw(result, nil)), fmt.Errorf("%w: load run canceled: %w", ErrInvalid, err)
+	if loopErr != nil && !errors.Is(loopErr, context.DeadlineExceeded) {
+		return result, []byte(renderLoadRaw(result, nil)), fmt.Errorf("%w: load run canceled: %w", ErrInvalid, loopErr)
 	}
 	if result.Requests == 0 {
 		return result, []byte(renderLoadRaw(result, nil)), fmt.Errorf("%w: load run completed no requests", ErrInvalid)
@@ -255,11 +337,11 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 	if elapsed > 0 {
 		result.RPS = float64(result.Requests) / elapsed.Seconds()
 	}
-	sort.Float64s(sampleCopy)
-	result.P50MS = percentile(sampleCopy, 50)
-	result.P95MS = percentile(sampleCopy, 95)
-	result.P99MS = percentile(sampleCopy, 99)
-	return result, []byte(renderLoadRaw(result, sampleCopy)), nil
+	sort.Float64s(samples)
+	result.P50MS = percentile(samples, 50)
+	result.P95MS = percentile(samples, 95)
+	result.P99MS = percentile(samples, 99)
+	return result, []byte(renderLoadRaw(result, samples)), nil
 }
 
 // NormalizeBenchmarkMethod returns the supported HTTP method used for a
@@ -364,6 +446,9 @@ func ValidateBenchmarkBody(method string, body []byte) error {
 }
 
 func validateLoadOptions(opts LoadOptions) error {
+	if _, err := NormalizeBenchmarkEngine(opts.Engine); err != nil {
+		return err
+	}
 	parsed, err := url.Parse(opts.URL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return invalid("load url", "%q is not an absolute URL", opts.URL)
@@ -418,6 +503,7 @@ func percentile(sorted []float64, p float64) float64 {
 func renderLoadRaw(result LoadResult, samples []float64) []byte {
 	var out bytes.Buffer
 	fmt.Fprintf(&out, "tool=%s/%s\n", result.Tool, result.Version)
+	fmt.Fprintf(&out, "engine=%s\n", result.Engine)
 	fmt.Fprintf(&out, "method=%s url=%s body_bytes=%d\n", result.Method, result.URL, result.BodyBytes)
 	fmt.Fprintf(&out, "started_at=%s\n", result.StartedAt.Format(time.RFC3339Nano))
 	fmt.Fprintf(&out, "finished_at=%s\n", result.FinishedAt.Format(time.RFC3339Nano))
