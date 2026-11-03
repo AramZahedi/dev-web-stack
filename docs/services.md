@@ -142,12 +142,17 @@ apply/reset remains an explicit host acceptance gate.
 
 ### Benchmarks
 
-The benchmark form selects a registered site, duration (1–3600 s), and connections
-(1–100000). devstack uses its built-in Go HTTP generator by default because no verified
-wrk/hey image is pinned; the tool and limitations are stored with every result. Results
-include measured RPS, p50/p95/p99, errors, duration, target, profile, and timestamps.
-`result.json` and `raw.log` live under `logs/performance/<timestamp>/`. Failed or canceled
-runs never synthesize a measurement.
+The benchmark form selects a registered site, method, path relative to that site
+(for example `/api`), duration (1-3600 s), and connections (1-100000). You can add
+custom request headers as rows or raw `Name: value` lines, and send a JSON body in
+pretty or raw form. If the body is non-empty and no `Content-Type` is set,
+`application/json` is used. devstack uses its built-in Go HTTP generator because no
+verified wrk/hey image is pinned; the tool and limitations are stored with every
+result. Results include measured RPS, p50/p95/p99, errors, duration, target, method,
+path, header names, body size, profile, and timestamps. Header values and request
+bodies are sent but never stored. `result.json` and `raw.log` live under
+`logs/performance/<timestamp>/`. Failed or canceled runs never synthesize a
+measurement.
 
 ## Site terminal
 

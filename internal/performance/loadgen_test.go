@@ -3,6 +3,7 @@ package performance
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -48,6 +49,69 @@ func TestRunLoadMeasuresLocalHTTPServer(t *testing.T) {
 	text := string(raw)
 	if !strings.Contains(text, LoadToolName) || !strings.Contains(text, "requests=") {
 		t.Fatalf("raw output = %q", text)
+	}
+}
+
+func TestRunLoadSendsMethodPathHeadersAndBody(t *testing.T) {
+	type observed struct {
+		method      string
+		path        string
+		query       string
+		host        string
+		header      string
+		contentType string
+		body        string
+	}
+	got := make(chan observed, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		select {
+		case got <- observed{
+			method:      r.Method,
+			path:        r.URL.Path,
+			query:       r.URL.RawQuery,
+			host:        r.Host,
+			header:      r.Header.Get("X-Bench"),
+			contentType: r.Header.Get("Content-Type"),
+			body:        string(body),
+		}:
+		default:
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	result, raw, err := RunLoad(context.Background(), LoadOptions{
+		URL:         server.URL + "/api/orders?trace=1",
+		HostHeader:  "bench.test",
+		Method:      http.MethodPost,
+		Headers:     map[string]string{"X-Bench": "yes", "Content-Type": "application/json"},
+		Body:        []byte(`{"hello":"world"}`),
+		Duration:    250 * time.Millisecond,
+		Connections: 2,
+	})
+	if err != nil {
+		t.Fatalf("RunLoad: %v", err)
+	}
+	if result.Method != http.MethodPost || result.BodyBytes != len(`{"hello":"world"}`) {
+		t.Fatalf("result method/body = %q/%d", result.Method, result.BodyBytes)
+	}
+	if !strings.Contains(string(raw), "method=POST") || !strings.Contains(string(raw), "body_bytes=17") {
+		t.Fatalf("raw output = %q", raw)
+	}
+	select {
+	case o := <-got:
+		if o.method != http.MethodPost || o.path != "/api/orders" || o.query != "trace=1" {
+			t.Fatalf("request line = %s %s?%s", o.method, o.path, o.query)
+		}
+		if o.host != "bench.test" || o.header != "yes" || o.contentType != "application/json" {
+			t.Fatalf("request headers = host=%q x-bench=%q content-type=%q", o.host, o.header, o.contentType)
+		}
+		if o.body != `{"hello":"world"}` {
+			t.Fatalf("request body = %q", o.body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not receive a request")
 	}
 }
 
@@ -143,6 +207,11 @@ func TestRunLoadRejectsUnsafeOptions(t *testing.T) {
 		{"zero duration", LoadOptions{URL: "http://127.0.0.1:1/", Connections: 1}},
 		{"negative connections", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: -1}},
 		{"too many connections", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 100001}},
+		{"bad method", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 1, Method: "TRACE"}},
+		{"get with body", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 1, Method: http.MethodGet, Body: []byte("x")}},
+		{"bad header name", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 1, Method: http.MethodGet, Headers: map[string]string{"Bad Header": "x"}}},
+		{"header newline", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 1, Method: http.MethodGet, Headers: map[string]string{"X-Test": "a\r\nB: c"}}},
+		{"body too large", LoadOptions{URL: "http://127.0.0.1:1/", Duration: time.Second, Connections: 1, Method: http.MethodPost, Body: make([]byte, MaxBenchmarkBodyBytes+1)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

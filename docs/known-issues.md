@@ -164,8 +164,11 @@ archive, tarball, and installers are built manually with
 - Existing pre-change nginx/Apache base configs do not gain the managed include
   lines automatically; base files are user-owned. Fresh installs seed them, and
   apply reports a profile conflict until an existing base config adds them.
-- Benchmarks use the labelled built-in Go HTTP generator, not wrk/hey. Results
-  are measured but are not directly comparable to wrk/hey.
+- Benchmarks use the labelled built-in Go HTTP generator, not wrk, hey, or
+  bombardier. Results are measured but are not directly comparable to those
+  tools. Bombardier was evaluated: its fasthttp mode cannot set the custom Host
+  header devstack needs for local vhost routing, and its net/http fallback was
+  slower than the built-in generator in a loopback comparison.
 - Windows host tuning was live-verified; real Linux `/etc` host tuning remains a
   manual gate.
 - Host tuning is machine-wide and needs a WSL restart for `.wslconfig` changes.

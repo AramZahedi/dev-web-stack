@@ -59,27 +59,33 @@ const (
 )
 
 var (
-	ErrInvalid              = performance.ErrInvalid
-	ErrConfirmationRequired = performance.ErrConfirmationRequired
-	ErrBenchmarkSite        = performance.ErrBenchmarkSite
-	ErrBenchmarkNotFound    = performance.ErrBenchmarkNotFound
-	ErrBenchmarkBusy        = performance.ErrBenchmarkBusy
-	ErrProfileConflict      = performance.ErrProfileConflict
-	LoadLimitations         = performance.LoadLimitations
-	Compute                 = performance.Compute
-	ParseProfile            = performance.ParseProfile
-	RenderNginx             = performance.RenderNginx
-	RenderApache            = performance.RenderApache
-	RenderPHPPool           = performance.RenderPHPPool
-	RenderPHPINI            = performance.RenderPHPINI
-	RenderHostSysctl        = performance.RenderHostSysctl
-	RenderHostLimits        = performance.RenderHostLimits
-	BuildApplyPlan          = performance.BuildApplyPlan
-	ResetManagedFiles       = performance.ResetManagedFiles
-	RunLoad                 = performance.RunLoad
-	Collect                 = performance.Collect
-	PublicRouteURL          = performance.PublicRouteURL
+	ErrInvalid                = performance.ErrInvalid
+	ErrConfirmationRequired   = performance.ErrConfirmationRequired
+	ErrBenchmarkSite          = performance.ErrBenchmarkSite
+	ErrBenchmarkNotFound      = performance.ErrBenchmarkNotFound
+	ErrBenchmarkBusy          = performance.ErrBenchmarkBusy
+	ErrProfileConflict        = performance.ErrProfileConflict
+	LoadLimitations           = performance.LoadLimitations
+	Compute                   = performance.Compute
+	ParseProfile              = performance.ParseProfile
+	RenderNginx               = performance.RenderNginx
+	RenderApache              = performance.RenderApache
+	RenderPHPPool             = performance.RenderPHPPool
+	RenderPHPINI              = performance.RenderPHPINI
+	RenderHostSysctl          = performance.RenderHostSysctl
+	RenderHostLimits          = performance.RenderHostLimits
+	BuildApplyPlan            = performance.BuildApplyPlan
+	ResetManagedFiles         = performance.ResetManagedFiles
+	RunLoad                   = performance.RunLoad
+	NormalizeBenchmarkMethod  = performance.NormalizeBenchmarkMethod
+	NormalizeBenchmarkPath    = performance.NormalizeBenchmarkPath
+	NormalizeBenchmarkHeaders = performance.NormalizeBenchmarkHeaders
+	ValidateBenchmarkBody     = performance.ValidateBenchmarkBody
+	Collect                   = performance.Collect
+	PublicRouteURL            = performance.PublicRouteURL
 )
+
+const MaxBenchmarkBodyBytes = performance.MaxBenchmarkBodyBytes
 
 func invalid(field, format string, args ...any) error {
 	return &performance.ValidationError{Field: field, Message: fmt.Sprintf(format, args...)}

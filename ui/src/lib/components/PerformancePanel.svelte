@@ -6,9 +6,11 @@
     Gauge,
     MemoryStick,
     Play,
+    Plus,
     RefreshCw,
     RotateCcw,
     ShieldAlert,
+    Trash2,
     TriangleAlert,
   } from 'lucide-svelte';
   import * as api from '../api';
@@ -31,8 +33,11 @@
   import EmptyState from './EmptyState.svelte';
   import ErrorBanner from './ErrorBanner.svelte';
   import Field from './Field.svelte';
+  import IconButton from './IconButton.svelte';
   import Modal from './Modal.svelte';
   import Skeleton from './Skeleton.svelte';
+
+  type HeaderRow = { name: string; value: string };
 
   const profiles: { value: PerformanceProfile; label: string; hint: string }[] = [
     { value: 'balanced', label: 'Balanced', hint: 'Conservative local development' },
@@ -62,6 +67,14 @@
   let benchmarkLoading = $state(true);
   let benchmarkError = $state<{ code: string; message: string } | null>(null);
   let benchSite = $state('');
+  let benchMethod = $state('GET');
+  let benchPath = $state('/');
+  let benchHeaders = $state<HeaderRow[]>([{ name: '', value: '' }]);
+  let benchHeaderMode = $state<'rows' | 'raw'>('rows');
+  let benchHeadersRaw = $state('');
+  let benchBody = $state('');
+  let benchBodyMode = $state<'pretty' | 'raw'>('pretty');
+  let benchRequestError = $state('');
   let benchDuration = $state(10);
   let benchConnections = $state(32);
   let benchBusy = $state(false);
@@ -81,6 +94,16 @@
   const benchSiteName = $derived(
     sites.find((site) => site.name === benchSite || site.id === benchSite)?.name ?? benchSite,
   );
+  const benchSiteRecord = $derived(
+    sites.find((site) => site.name === benchSite || site.id === benchSite),
+  );
+  const benchBodyAllowed = $derived(benchMethod !== 'GET' && benchMethod !== 'HEAD');
+  const benchTargetPreview = $derived.by(() => {
+    if (!benchSiteRecord) return 'Select a site to preview the request URL.';
+    const scheme = benchSiteRecord.tls || benchSiteRecord.force_https ? 'https' : 'http';
+    const path = previewPath(benchPath);
+    return `${benchMethod} ${scheme}://${benchSiteRecord.domain}${path}`;
+  });
   const previewWarnings = $derived([
     ...new Set([
       ...(preview?.warnings ?? []),
@@ -293,13 +316,169 @@
     }
   }
 
+  function previewPath(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed) return '/';
+    return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  }
+
+  function requestPath(): string | null {
+    const trimmed = benchPath.trim();
+    if (!trimmed) return '/';
+    if (trimmed.startsWith('//') || /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+      benchRequestError = 'Use a path such as /api, not a full URL.';
+      return null;
+    }
+    if (trimmed.includes('#')) {
+      benchRequestError = 'URL fragments are not sent to the server. Remove the # fragment.';
+      return null;
+    }
+    return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  }
+
+  function headerRowsText(rows: HeaderRow[]): string {
+    return rows
+      .filter((row) => row.name.trim())
+      .map((row) => `${row.name.trim()}: ${row.value}`)
+      .join('\n');
+  }
+
+  function parseHeaderRows(raw: string): HeaderRow[] | null {
+    const rows: HeaderRow[] = [];
+    const lines = raw.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index].trim();
+      if (!line) continue;
+      const colon = line.indexOf(':');
+      if (colon <= 0) {
+        benchRequestError = `Header line ${index + 1} must be in Name: value form.`;
+        return null;
+      }
+      rows.push({ name: line.slice(0, colon).trim(), value: line.slice(colon + 1).trim() });
+    }
+    return rows.length > 0 ? rows : [{ name: '', value: '' }];
+  }
+
+  function setHeaderMode(mode: 'rows' | 'raw'): void {
+    if (mode === benchHeaderMode) return;
+    benchRequestError = '';
+    if (mode === 'raw') {
+      benchHeadersRaw = headerRowsText(benchHeaders);
+      benchHeaderMode = 'raw';
+      return;
+    }
+    const rows = parseHeaderRows(benchHeadersRaw);
+    if (rows === null) return;
+    benchHeaders = rows;
+    benchHeaderMode = 'rows';
+  }
+
+  function addHeader(): void {
+    benchHeaders = [...benchHeaders, { name: '', value: '' }];
+  }
+
+  function removeHeader(index: number): void {
+    benchHeaders = benchHeaders.filter((_, rowIndex) => rowIndex !== index);
+    if (benchHeaders.length === 0) benchHeaders = [{ name: '', value: '' }];
+  }
+
+  function requestHeaders(): Record<string, string> | null {
+    let rows = benchHeaders;
+    if (benchHeaderMode === 'raw') {
+      const parsed = parseHeaderRows(benchHeadersRaw);
+      if (parsed === null) return null;
+      rows = parsed;
+    }
+    const headers: Record<string, string> = {};
+    const seen = new Set<string>();
+    const reserved = new Set([
+      'host',
+      'content-length',
+      'transfer-encoding',
+      'connection',
+      'proxy-connection',
+      'upgrade',
+      'trailer',
+      'te',
+    ]);
+    for (const row of rows) {
+      const name = row.name.trim();
+      const value = row.value;
+      if (!name && !value.trim()) continue;
+      if (!name) {
+        benchRequestError = 'Every header value needs a header name.';
+        return null;
+      }
+      if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name)) {
+        benchRequestError = `"${name}" is not a valid header name.`;
+        return null;
+      }
+      const lower = name.toLowerCase();
+      if (reserved.has(lower)) {
+        benchRequestError = `${name} is controlled by the benchmark transport.`;
+        return null;
+      }
+      if (seen.has(lower)) {
+        benchRequestError = `${name} is specified more than once.`;
+        return null;
+      }
+      if (value.length > 8192 || /[\r\n]/.test(value)) {
+        benchRequestError = `${name} contains a control character or is too long.`;
+        return null;
+      }
+      seen.add(lower);
+      headers[name] = value;
+    }
+    return headers;
+  }
+
+  function formatBody(): void {
+    if (!benchBody.trim()) {
+      benchBodyMode = 'pretty';
+      return;
+    }
+    try {
+      benchBody = JSON.stringify(JSON.parse(benchBody), null, 2);
+      benchBodyMode = 'pretty';
+      benchRequestError = '';
+    } catch {
+      benchRequestError = 'The request body is not valid JSON. Switch to Raw to send it as-is.';
+    }
+  }
+
+  function setBodyMode(mode: 'pretty' | 'raw'): void {
+    if (mode === benchBodyMode) return;
+    if (mode === 'pretty') {
+      formatBody();
+      return;
+    }
+    benchBodyMode = 'raw';
+  }
+
   async function runBenchmark(): Promise<void> {
     if (benchBusy || !benchSite) return;
-    benchBusy = true;
+    benchRequestError = '';
     benchmarkError = null;
+    const path = requestPath();
+    if (path === null) return;
+    const headers = requestHeaders();
+    if (headers === null) return;
+    const body = benchBodyAllowed ? benchBody : '';
+    if (new TextEncoder().encode(body).length > 1 << 20) {
+      benchRequestError = 'Request bodies are limited to 1 MiB.';
+      return;
+    }
+    if (body && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) {
+      headers['Content-Type'] = 'application/json';
+    }
+    benchBusy = true;
     try {
       const run = await api.runBenchmark({
         site: benchSite,
+        method: benchMethod,
+        path,
+        headers,
+        body,
         duration_s: benchDuration,
         connections: benchConnections,
       });
@@ -676,6 +855,23 @@
           {/each}
         </select>
       </Field>
+      <Field id="benchmark-method" label="Method">
+        <select id="benchmark-method" class="input mono" bind:value={benchMethod} disabled={benchBusy}>
+          {#each ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as method (method)}
+            <option value={method}>{method}</option>
+          {/each}
+        </select>
+      </Field>
+      <Field id="benchmark-path" label="Path" hint="Relative to the selected site.">
+        <input
+          id="benchmark-path"
+          class="input mono"
+          type="text"
+          placeholder="/api"
+          bind:value={benchPath}
+          disabled={benchBusy}
+        />
+      </Field>
       <Field id="benchmark-duration" label="Duration (s)">
         <input
           id="benchmark-duration"
@@ -713,13 +909,135 @@
         </Button>
       </div>
     </div>
+
+    <p class="benchmark-target" aria-live="polite">
+      Target: <span class="mono">{benchTargetPreview}</span>
+    </p>
+
+    <div class="benchmark-request">
+      <div class="request-panel">
+        <div class="request-heading">
+          <span>Headers</span>
+          <div class="mode-toggle" role="group" aria-label="Header editor mode">
+            <button
+              type="button"
+              class:active={benchHeaderMode === 'rows'}
+              aria-pressed={benchHeaderMode === 'rows'}
+              disabled={benchBusy}
+              onclick={() => setHeaderMode('rows')}>Rows</button
+            >
+            <button
+              type="button"
+              class:active={benchHeaderMode === 'raw'}
+              aria-pressed={benchHeaderMode === 'raw'}
+              disabled={benchBusy}
+              onclick={() => setHeaderMode('raw')}>Raw</button
+            >
+          </div>
+        </div>
+        {#if benchHeaderMode === 'rows'}
+          <div class="header-rows">
+            {#each benchHeaders as row, index}
+              <div class="header-row">
+                <input
+                  class="input mono"
+                  type="text"
+                  placeholder="Authorization"
+                  aria-label={`Header ${index + 1} name`}
+                  bind:value={row.name}
+                  disabled={benchBusy}
+                />
+                <input
+                  class="input mono"
+                  type="text"
+                  placeholder="Bearer …"
+                  aria-label={`Header ${index + 1} value`}
+                  bind:value={row.value}
+                  disabled={benchBusy}
+                />
+                <IconButton
+                  label={`Remove header ${index + 1}`}
+                  icon={Trash2}
+                  size="sm"
+                  variant="danger"
+                  disabled={benchBusy}
+                  onclick={() => removeHeader(index)}
+                />
+              </div>
+            {/each}
+            <Button size="sm" variant="ghost" disabled={benchBusy} onclick={addHeader}>
+              <Plus size={12} strokeWidth={2} aria-hidden="true" />
+              Add header
+            </Button>
+          </div>
+        {:else}
+          <textarea
+            class="input mono header-raw"
+            rows="4"
+            placeholder="Authorization: Bearer …"
+            aria-label="Raw request headers"
+            bind:value={benchHeadersRaw}
+            disabled={benchBusy}
+          ></textarea>
+          <p class="request-hint">One <span class="mono">Name: value</span> header per line.</p>
+        {/if}
+      </div>
+
+      <div class="request-panel">
+        <div class="request-heading">
+          <span>JSON body</span>
+          <div class="mode-toggle" role="group" aria-label="Body editor mode">
+            <button
+              type="button"
+              class:active={benchBodyMode === 'pretty'}
+              aria-pressed={benchBodyMode === 'pretty'}
+              disabled={benchBusy || !benchBodyAllowed}
+              onclick={() => setBodyMode('pretty')}>Pretty</button
+            >
+            <button
+              type="button"
+              class:active={benchBodyMode === 'raw'}
+              aria-pressed={benchBodyMode === 'raw'}
+              disabled={benchBusy || !benchBodyAllowed}
+              onclick={() => setBodyMode('raw')}>Raw</button
+            >
+            <button
+              type="button"
+              class="format"
+              disabled={benchBusy || !benchBodyAllowed || !benchBody.trim()}
+              onclick={formatBody}>Format</button
+            >
+          </div>
+        </div>
+        <textarea
+          class="input mono body-editor"
+          rows="5"
+          placeholder={benchBodyAllowed ? '{ "key": "value" }' : 'GET and HEAD requests do not send a body.'}
+          aria-label="Request body"
+          bind:value={benchBody}
+          disabled={benchBusy || !benchBodyAllowed}
+        ></textarea>
+        <p class="request-hint">
+          {#if benchBodyAllowed}
+            Body up to 1 MiB. If no Content-Type is set, <span class="mono">application/json</span> is
+            added when the body is non-empty.
+          {:else}
+            Choose POST, PUT, PATCH, DELETE, or OPTIONS to send a body.
+          {/if}
+        </p>
+      </div>
+    </div>
+
+    {#if benchRequestError}
+      <p class="benchmark-form-error" role="alert">{benchRequestError}</p>
+    {/if}
     <p class="benchmark-limits" id="benchmark-limits">
-      Allowed ranges: duration 1–3600 seconds · connections 1–100000.
+      Allowed ranges: duration 1–3600 seconds · connections 1–100000 · body up to 1 MiB.
     </p>
     <p class="benchmark-note">
       Runs are measured by the daemon's built-in Go HTTP generator against
       {benchSiteName || 'the selected site'} and stored under <span class="mono">logs/performance/</span>.
-      No RPS is estimated or synthesized.
+      Header values and request bodies are not stored with the result.
     </p>
 
     {#if benchmarkError}
@@ -850,6 +1168,10 @@
   {#if selectedRun}
     <dl class="run-detail">
       <div><dt>Target</dt><dd class="mono break">{selectedRun.target ?? '—'}</dd></div>
+      <div><dt>Method</dt><dd class="mono">{selectedRun.method ?? 'GET'}</dd></div>
+      <div><dt>Path</dt><dd class="mono break">{selectedRun.path ?? '/'}</dd></div>
+      <div><dt>Headers</dt><dd class="mono break">{selectedRun.header_names && selectedRun.header_names.length > 0 ? selectedRun.header_names.join(', ') : 'None'}</dd></div>
+      <div><dt>Body</dt><dd class="mono">{selectedRun.body_bytes ? `${selectedRun.body_bytes.toLocaleString()} bytes` : 'None'}</dd></div>
       <div><dt>Started</dt><dd>{timestamp(selectedRun.started_at)}</dd></div>
       <div><dt>Duration</dt><dd class="mono">{selectedRun.duration_s}s · {selectedRun.connections} connections</dd></div>
       <div><dt>Status</dt><dd><Badge variant={selectedRun.status === 'completed' ? 'accent' : 'danger'}>{selectedRun.status}</Badge></dd></div>
@@ -1304,9 +1626,124 @@
 
   .benchmark-form {
     display: grid;
-    grid-template-columns: minmax(0, 1.4fr) 130px 150px auto;
+    grid-template-columns: minmax(0, 1.25fr) 104px minmax(0, 1.35fr) 112px 126px auto;
     align-items: end;
     gap: 10px;
+  }
+
+  .benchmark-target {
+    margin: 9px 0 0;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  .benchmark-target .mono {
+    color: var(--fg);
+  }
+
+  .benchmark-request {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+    margin-top: 11px;
+  }
+
+  .request-panel {
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+  }
+
+  .request-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+    color: var(--fg);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .mode-toggle {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+  }
+
+  .mode-toggle button {
+    padding: 3px 7px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.3;
+    cursor: pointer;
+  }
+
+  .mode-toggle button.active {
+    background: var(--accent-soft);
+    color: var(--success-fg);
+    font-weight: 600;
+  }
+
+  .mode-toggle button.format {
+    border-left: 1px solid var(--border);
+    border-radius: 0;
+  }
+
+  .mode-toggle button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .header-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .header-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .header-raw,
+  .body-editor {
+    min-height: 0;
+    font-size: 11.5px;
+  }
+
+  .header-raw {
+    height: 104px;
+  }
+
+  .body-editor {
+    height: 131px;
+  }
+
+  .request-hint {
+    margin: 6px 0 0;
+    color: var(--muted-2);
+    font-size: 10px;
+    line-height: 1.5;
+  }
+
+  .benchmark-form-error {
+    margin: 8px 0 0;
+    color: var(--danger-fg);
+    font-size: 10.5px;
+    line-height: 1.5;
   }
 
   .benchmark-limits {
@@ -1372,11 +1809,13 @@
   .run-detail {
     display: flex;
     flex-direction: column;
+    min-width: 0;
     margin: 0;
   }
 
   .run-detail > div {
     display: flex;
+    min-width: 0;
     justify-content: space-between;
     gap: 14px;
     padding: 7px 0;
@@ -1393,8 +1832,12 @@
   }
 
   .run-detail dd {
+    min-width: 0;
+    max-width: 72%;
     text-align: right;
     font-size: 10.5px;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .run-detail dd.bad {
@@ -1431,6 +1874,10 @@
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     }
 
+    .benchmark-request {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .benchmark-form > :first-child {
       grid-column: 1 / -1;
     }
@@ -1446,6 +1893,14 @@
 
     .action-row {
       flex-wrap: wrap;
+    }
+
+    .header-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .header-row :global(.icon-btn) {
+      justify-self: end;
     }
   }
 </style>

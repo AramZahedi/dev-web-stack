@@ -40,11 +40,17 @@ type ResetRequest struct {
 	Confirm bool `json:"confirm"`
 }
 
-// BenchmarkRequest is the POST /performance/benchmarks body.
+// BenchmarkRequest is the POST /performance/benchmarks body. Path is relative
+// to the selected site (for example /api). Headers and Body are applied to
+// every request in the run; body values are never persisted with the result.
 type BenchmarkRequest struct {
-	Site            string `json:"site"`
-	DurationSeconds int    `json:"duration_s"`
-	Connections     int    `json:"connections"`
+	Site            string            `json:"site"`
+	Method          string            `json:"method,omitempty"`
+	Path            string            `json:"path,omitempty"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	Body            string            `json:"body,omitempty"`
+	DurationSeconds int               `json:"duration_s"`
+	Connections     int               `json:"connections"`
 }
 
 // Step is one apply/reset step result.
@@ -247,6 +253,10 @@ type BenchmarkResult struct {
 	ID               string                `json:"id"`
 	Site             string                `json:"site"`
 	Target           string                `json:"target"`
+	Method           string                `json:"method,omitempty"`
+	Path             string                `json:"path,omitempty"`
+	HeaderNames      []string              `json:"header_names,omitempty"`
+	BodyBytes        int                   `json:"body_bytes,omitempty"`
 	Profile          Profile               `json:"profile"`
 	Status           string                `json:"status"`
 	Tool             string                `json:"tool"`

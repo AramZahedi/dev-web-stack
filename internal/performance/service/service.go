@@ -616,6 +616,27 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 	if connections < 1 || connections > 100000 {
 		return BenchmarkResult{}, invalid("benchmark connections", "%d is outside 1-100000", connections)
 	}
+	method, err := NormalizeBenchmarkMethod(req.Method)
+	if err != nil {
+		return BenchmarkResult{}, err
+	}
+	path, err := NormalizeBenchmarkPath(req.Path)
+	if err != nil {
+		return BenchmarkResult{}, err
+	}
+	headers, err := NormalizeBenchmarkHeaders(req.Headers)
+	if err != nil {
+		return BenchmarkResult{}, err
+	}
+	body := []byte(req.Body)
+	if err := ValidateBenchmarkBody(method, body); err != nil {
+		return BenchmarkResult{}, err
+	}
+	headerNames := make([]string, 0, len(headers))
+	for name := range headers {
+		headerNames = append(headerNames, name)
+	}
+	sort.Strings(headerNames)
 	if !s.benchMu.TryLock() {
 		return BenchmarkResult{}, ErrBenchmarkBusy
 	}
@@ -641,6 +662,7 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 	if err != nil {
 		return BenchmarkResult{}, err
 	}
+	target = strings.TrimRight(target, "/") + path
 	now := s.cfg.Now().UTC()
 	id := now.Format("20060102T150405.000000000Z")
 	dir := filepath.Join(s.cfg.Root, "logs", "performance", id)
@@ -662,6 +684,10 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 		ID:              id,
 		Site:            site.Name,
 		Target:          target,
+		Method:          method,
+		Path:            path,
+		HeaderNames:     headerNames,
+		BodyBytes:       len(body),
 		Profile:         runProfile,
 		Status:          BenchmarkCompleted,
 		Tool:            LoadToolName,
@@ -683,6 +709,9 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 	load, raw, loadErr := s.cfg.LoadRun(runCtx, LoadOptions{
 		URL:         target,
 		HostHeader:  site.Domain,
+		Method:      method,
+		Headers:     headers,
+		Body:        body,
 		Duration:    time.Duration(duration) * time.Second,
 		Connections: connections,
 		InsecureTLS: insecure,
@@ -694,6 +723,12 @@ func (s *Service) RunBenchmark(ctx context.Context, req BenchmarkRequest) (Bench
 		if len(load.Limitations) > 0 {
 			result.Limitations = append([]string(nil), load.Limitations...)
 		}
+	}
+	if load.Method != "" {
+		result.Method = load.Method
+	}
+	if load.BodyBytes > 0 {
+		result.BodyBytes = load.BodyBytes
 	}
 	if loadErr == nil && (load.Requests <= 0 || load.RPS <= 0 || load.Errors >= load.Requests) {
 		loadErr = errors.New("load generator produced no successful measured requests")

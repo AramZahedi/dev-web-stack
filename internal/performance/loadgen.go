@@ -28,12 +28,16 @@ const (
 	loadWorkerCap      = 2048
 	loadRequestTimeout = 10 * time.Second
 	maxLoadDuration    = time.Hour
+	// MaxBenchmarkBodyBytes bounds a custom request body so a benchmark cannot
+	// turn into an accidental file-upload test.
+	MaxBenchmarkBodyBytes = 1 << 20
 )
 
 // LoadLimitations is reported with every benchmark so a result is never
 // presented as a wrk/hey-comparable measurement.
 var LoadLimitations = []string{
-	"Built-in Go HTTP load generator; not wrk, hey, or another pinned external tool.",
+	"Built-in Go HTTP load generator; not wrk, hey, bombardier, or another pinned external tool.",
+	"Requests use the configured method, path, headers, and optional body.",
 	"Requests are sequential per worker; the requested connection count is used as the HTTP transport connection limit.",
 	"Worker goroutines are capped at 2048 for host safety.",
 	"Latency percentiles use a bounded reservoir sample of up to 200000 completed requests.",
@@ -41,12 +45,16 @@ var LoadLimitations = []string{
 	"Redirects are not followed; 3xx, 4xx, and 5xx responses count as errors.",
 	"Response bodies are read up to 4 KiB and then closed to bound memory and output.",
 	"TLS uses InsecureSkipVerify only for loopback benchmark targets.",
+	"Header values and request bodies are sent but never stored; results keep only the method, path, header names, and body size.",
 }
 
 // LoadOptions configures one measured run.
 type LoadOptions struct {
 	URL         string
 	HostHeader  string
+	Method      string
+	Headers     map[string]string
+	Body        []byte
 	Duration    time.Duration
 	Connections int
 	InsecureTLS bool
@@ -59,6 +67,8 @@ type LoadResult struct {
 	Version     string        `json:"version"`
 	Limitations []string      `json:"limitations"`
 	URL         string        `json:"url"`
+	Method      string        `json:"method"`
+	BodyBytes   int           `json:"body_bytes"`
 	Requests    int64         `json:"requests"`
 	Errors      int64         `json:"errors"`
 	RPS         float64       `json:"requests_per_second"`
@@ -84,6 +94,14 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	method, err := NormalizeBenchmarkMethod(opts.Method)
+	if err != nil {
+		return LoadResult{}, nil, err
+	}
+	headers, err := NormalizeBenchmarkHeaders(opts.Headers)
+	if err != nil {
+		return LoadResult{}, nil, err
+	}
 	workers := opts.Connections
 	if workers > loadWorkerCap {
 		workers = loadWorkerCap
@@ -93,6 +111,8 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 		Version:     LoadToolVersion,
 		Limitations: append([]string(nil), LoadLimitations...),
 		URL:         opts.URL,
+		Method:      method,
+		BodyBytes:   len(opts.Body),
 		Connections: opts.Connections,
 		Workers:     workers,
 		SampleLimit: loadSampleLimit,
@@ -125,6 +145,10 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+	}
+	requestHeaders := make(http.Header, len(headers))
+	for name, value := range headers {
+		requestHeaders.Set(name, value)
 	}
 
 	var (
@@ -165,12 +189,17 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 					return
 				}
 				reqCtx, reqCancel := context.WithTimeout(loopCtx, loadRequestTimeout)
-				req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, opts.URL, nil)
+				var body io.Reader
+				if len(opts.Body) > 0 {
+					body = bytes.NewReader(opts.Body)
+				}
+				req, err := http.NewRequestWithContext(reqCtx, method, opts.URL, body)
 				if err != nil {
 					reqCancel()
 					record(0, true)
 					return
 				}
+				req.Header = requestHeaders.Clone()
 				if opts.HostHeader != "" {
 					req.Host = opts.HostHeader
 				}
@@ -233,6 +262,107 @@ func RunLoad(ctx context.Context, opts LoadOptions) (LoadResult, []byte, error) 
 	return result, []byte(renderLoadRaw(result, sampleCopy)), nil
 }
 
+// NormalizeBenchmarkMethod returns the supported HTTP method used for a
+// benchmark request. An empty method means GET.
+func NormalizeBenchmarkMethod(method string) (string, error) {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		return http.MethodGet, nil
+	}
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions:
+		return method, nil
+	default:
+		return "", invalid("benchmark method", "%q must be GET, POST, PUT, PATCH, DELETE, HEAD, or OPTIONS", method)
+	}
+}
+
+// NormalizeBenchmarkPath accepts a path or path?query value and returns an
+// absolute in-app path. It rejects schemes, hosts, control characters,
+// fragments, and traversal outside the requested site.
+func NormalizeBenchmarkPath(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	if strings.HasPrefix(value, "//") || strings.Contains(value, "://") || strings.ContainsAny(value, "\x00\r\n\t ") {
+		return "", invalid("benchmark path", "%q must be a URL path without a scheme, host, or control characters", raw)
+	}
+	if len(value) > 2048 {
+		return "", invalid("benchmark path", "is longer than 2048 bytes")
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" {
+		return "", invalid("benchmark path", "%q is not a valid URL path", raw)
+	}
+	return parsed.RequestURI(), nil
+}
+
+// NormalizeBenchmarkHeaders validates custom request headers and returns them
+// canonicalized. Host is controlled by the selected site, and hop-by-hop
+// headers are reserved for the transport.
+func NormalizeBenchmarkHeaders(headers map[string]string) (map[string]string, error) {
+	if len(headers) == 0 {
+		return nil, nil
+	}
+	if len(headers) > 100 {
+		return nil, invalid("benchmark headers", "at most 100 headers are allowed")
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		name = strings.TrimSpace(name)
+		if !validHeaderName(name) {
+			return nil, invalid("benchmark header", "%q is not a valid header name", name)
+		}
+		canonical := http.CanonicalHeaderKey(name)
+		switch canonical {
+		case "Host", "Content-Length", "Transfer-Encoding", "Connection", "Proxy-Connection", "Upgrade", "Trailer", "Te":
+			return nil, invalid("benchmark header", "%s is controlled by the benchmark transport", canonical)
+		}
+		if len(value) > 8192 || strings.ContainsAny(value, "\x00\r\n") {
+			return nil, invalid("benchmark header", "%s contains a control character or is too long", canonical)
+		}
+		if _, exists := out[canonical]; exists {
+			return nil, invalid("benchmark header", "%s is specified more than once", canonical)
+		}
+		out[canonical] = value
+	}
+	return out, nil
+}
+
+func validHeaderName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", char) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validateBenchmarkBody(method string, body []byte) error {
+	if len(body) > MaxBenchmarkBodyBytes {
+		return invalid("benchmark body", "is larger than %d bytes", MaxBenchmarkBodyBytes)
+	}
+	if len(body) > 0 && (method == http.MethodGet || method == http.MethodHead) {
+		return invalid("benchmark body", "%s requests cannot include a body", method)
+	}
+	return nil
+}
+
+// ValidateBenchmarkBody exposes the body limits so the service can reject an
+// invalid request before it creates a result directory or takes the run lock.
+func ValidateBenchmarkBody(method string, body []byte) error {
+	return validateBenchmarkBody(method, body)
+}
+
 func validateLoadOptions(opts LoadOptions) error {
 	parsed, err := url.Parse(opts.URL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -253,6 +383,16 @@ func validateLoadOptions(opts LoadOptions) error {
 	}
 	if strings.ContainsAny(opts.HostHeader, "\x00\r\n \t/") {
 		return invalid("load host header", "contains whitespace, a slash, or a control character")
+	}
+	method, err := NormalizeBenchmarkMethod(opts.Method)
+	if err != nil {
+		return err
+	}
+	if err := validateBenchmarkBody(method, opts.Body); err != nil {
+		return err
+	}
+	if _, err := NormalizeBenchmarkHeaders(opts.Headers); err != nil {
+		return err
 	}
 	return nil
 }
@@ -278,7 +418,7 @@ func percentile(sorted []float64, p float64) float64 {
 func renderLoadRaw(result LoadResult, samples []float64) []byte {
 	var out bytes.Buffer
 	fmt.Fprintf(&out, "tool=%s/%s\n", result.Tool, result.Version)
-	fmt.Fprintf(&out, "url=%s\n", result.URL)
+	fmt.Fprintf(&out, "method=%s url=%s body_bytes=%d\n", result.Method, result.URL, result.BodyBytes)
 	fmt.Fprintf(&out, "started_at=%s\n", result.StartedAt.Format(time.RFC3339Nano))
 	fmt.Fprintf(&out, "finished_at=%s\n", result.FinishedAt.Format(time.RFC3339Nano))
 	fmt.Fprintf(&out, "duration=%s\n", result.Duration)

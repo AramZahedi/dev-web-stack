@@ -185,11 +185,14 @@ func TestPerformanceAPIBenchmarks(t *testing.T) {
 	fx := newFixture(t, Config{Performance: fake})
 
 	rec := fx.request(t, http.MethodPost, "/api/v1/performance/benchmarks",
-		strings.NewReader(`{"site":"blog","duration_s":5,"connections":20}`))
+		strings.NewReader(`{"site":"blog","method":"POST","path":"/api/orders","headers":{"X-Bench":"yes"},"body":"{\"hello\":\"world\"}","duration_s":5,"connections":20}`))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("benchmark = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.benchReq.Site != "blog" || fake.benchReq.DurationSeconds != 5 || fake.benchReq.Connections != 20 {
+	if fake.benchReq.Site != "blog" || fake.benchReq.Method != http.MethodPost ||
+		fake.benchReq.Path != "/api/orders" || fake.benchReq.Headers["X-Bench"] != "yes" ||
+		fake.benchReq.Body != `{"hello":"world"}` || fake.benchReq.DurationSeconds != 5 ||
+		fake.benchReq.Connections != 20 {
 		t.Fatalf("benchmark request = %+v", fake.benchReq)
 	}
 

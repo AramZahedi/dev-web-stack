@@ -151,6 +151,7 @@ export interface Site {
   spa_fallback: boolean;
   spa_fallback_file: string;
   build?: BuildProfile;
+  build_output_missing?: boolean;
   tls: boolean;
   force_https: boolean;
   desired_state: DesiredState;
@@ -583,6 +584,10 @@ export interface PerformanceResetResult {
 
 export interface BenchmarkRequest {
   site: string;
+  method?: string;
+  path?: string;
+  headers?: Record<string, string>;
+  body?: string;
   duration_s?: number;
   connections?: number;
 }
@@ -601,6 +606,10 @@ export interface BenchmarkRun {
   id: string;
   site: string;
   target: string;
+  method?: string;
+  path?: string;
+  header_names?: string[];
+  body_bytes?: number;
   profile: string;
   status: 'completed' | 'failed' | 'canceled' | string;
   tool: string;

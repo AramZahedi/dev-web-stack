@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -667,6 +668,59 @@ func TestServiceBenchmarkUsesLastAppliedProfile(t *testing.T) {
 	}
 }
 
+func TestServiceBenchmarkAppliesCustomRequest(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _, servicesFake, sitesFake, root := newPerformanceTestService(t)
+	servicesFake.views = nil
+	sitesFake.sites = []model.Site{{ID: "site1", Name: "blog", Domain: "blog.test", Kind: model.SiteStatic, Status: model.StatusRunning, TLS: true, ForceHTTPS: true}}
+	var got LoadOptions
+	svc.cfg.LoadRun = func(_ context.Context, opts LoadOptions) (LoadResult, []byte, error) {
+		got = opts
+		return LoadResult{
+			Tool: LoadToolName, Version: LoadToolVersion,
+			URL: opts.URL, Method: opts.Method, BodyBytes: len(opts.Body),
+			Requests: 100, Errors: 0, RPS: 25,
+			P50MS: 1, P95MS: 2, P99MS: 3,
+			Duration: time.Second, Connections: opts.Connections,
+			StartedAt: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC),
+		}, []byte("raw load output\n"), nil
+	}
+
+	result, err := svc.RunBenchmark(ctx, BenchmarkRequest{
+		Site:            "blog",
+		Method:          "post",
+		Path:            "api/orders?trace=1",
+		Headers:         map[string]string{"X-Bench": "yes", "Content-Type": "application/json"},
+		Body:            `{"hello":"world"}`,
+		DurationSeconds: 5,
+		Connections:     20,
+	})
+	if err != nil {
+		t.Fatalf("benchmark: %v", err)
+	}
+	if !strings.HasSuffix(got.URL, "/api/orders?trace=1") {
+		t.Fatalf("target = %q, want the requested path", got.URL)
+	}
+	if got.Method != http.MethodPost || string(got.Body) != `{"hello":"world"}` ||
+		got.Headers["X-Bench"] != "yes" || got.Headers["Content-Type"] != "application/json" {
+		t.Fatalf("load options = %+v", got)
+	}
+	if result.Target != got.URL || result.Method != http.MethodPost ||
+		result.Path != "/api/orders?trace=1" || result.BodyBytes != len(got.Body) {
+		t.Fatalf("result request metadata = %+v", result)
+	}
+	if len(result.HeaderNames) != 2 || result.HeaderNames[0] != "Content-Type" || result.HeaderNames[1] != "X-Bench" {
+		t.Fatalf("result header names = %v", result.HeaderNames)
+	}
+	data, readErr := os.ReadFile(filepath.Join(root, "logs", "performance", result.ID, "result.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(data), `"hello"`) || strings.Contains(string(data), `"yes"`) {
+		t.Fatalf("stored result leaked request body or header value: %s", data)
+	}
+}
+
 func TestServiceBenchmarkValidatesSiteAndBounds(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _, servicesFake, sitesFake, _ := newPerformanceTestService(t)
@@ -685,6 +739,17 @@ func TestServiceBenchmarkValidatesSiteAndBounds(t *testing.T) {
 	}
 	if _, err := svc.RunBenchmark(ctx, BenchmarkRequest{Site: "blog", Connections: 100001}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("connections error = %v, want ErrInvalid", err)
+	}
+	for name, req := range map[string]BenchmarkRequest{
+		"method": {Site: "blog", Method: "TRACE"},
+		"path":   {Site: "blog", Path: "https://example.com/"},
+		"header": {Site: "blog", Headers: map[string]string{"Bad Header": "x"}},
+		"body":   {Site: "blog", Method: "GET", Body: "x"},
+		"large":  {Site: "blog", Method: "POST", Body: strings.Repeat("x", MaxBenchmarkBodyBytes+1)},
+	} {
+		if _, err := svc.RunBenchmark(ctx, req); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("%s error = %v, want ErrInvalid", name, err)
+		}
 	}
 }
 

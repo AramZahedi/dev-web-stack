@@ -2861,6 +2861,10 @@ export const mockApi = {
     const targetSite = findSite(request.site);
     const duration = request.duration_s ?? 10;
     const connections = request.connections ?? 32;
+    const method = (request.method || 'GET').toUpperCase();
+    const path = request.path?.startsWith('/') ? request.path : `/${request.path ?? ''}`;
+    const bodyBytes = request.body ? new TextEncoder().encode(request.body).length : 0;
+    const headerNames = Object.keys(request.headers ?? {}).sort((a, b) => a.localeCompare(b));
     const seed = 900 + connections * 7 + duration * 3;
     const started = new Date();
     const directory = `/home/dev/.devstack/logs/performance/${started.toISOString().replaceAll(':', '-')}`;
@@ -2869,7 +2873,11 @@ export const mockApi = {
       site: targetSite.name,
       tool: 'devstack-go-http',
       tool_version: 'built-in (mock)',
-      target: `http://127.0.0.1:${targetSite.http_port || 41001}/`,
+      target: `${targetSite.tls ? 'https' : 'http'}://${targetSite.domain}${path}`,
+      method,
+      path,
+      header_names: headerNames,
+      body_bytes: bodyBytes,
       profile: mockPerformance.profile,
       status: 'completed',
       started_at: started.toISOString(),
