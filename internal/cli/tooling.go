@@ -314,7 +314,15 @@ func (a *App) siteShellContext(ctx context.Context, c Client, ref string, warn i
 		if !strings.HasPrefix(site.BackendPath, "/") {
 			return model.Site{}, tooling.SiteEnvironment{}, "", &Error{Code: "WSL_PATH_INVALID", Message: "site has no absolute WSL backend path", Remediation: "Recreate the site with a validated Windows or WSL source path."}
 		}
-		env = tooling.SiteEnvironment{Site: site, Values: tooling.WindowsSiteEnvironment(site)}
+		values := tooling.WindowsSiteEnvironment(site)
+		if site.Kind == model.SitePHP {
+			ini, err := windowsSitePHPIni(home, site)
+			if err != nil {
+				return model.Site{}, tooling.SiteEnvironment{}, "", wrapError(err, "SHELL_ENV_FAILED", "Run `devstack site restart "+site.Name+"` to apply its PHP configuration.")
+			}
+			values["PHPRC"] = ini
+		}
+		env = tooling.SiteEnvironment{Site: site, Values: values}
 	} else {
 		builds, err := c.Runtimes(ctx)
 		if err != nil {
@@ -343,6 +351,31 @@ func (a *App) siteShellContext(ctx context.Context, c Client, ref string, warn i
 		return model.Site{}, tooling.SiteEnvironment{}, "", err
 	}
 	return site, env, home, nil
+}
+
+// windowsSitePHPIni resolves the generated ini path the Windows daemon writes
+// for a PHP site and converts it to the /mnt/<drive> path WSL PHP can read.
+// The hash-scoped copy wins; the root copy keeps older installs working.
+func windowsSitePHPIni(home string, site model.Site) (string, error) {
+	id := strings.TrimSpace(site.ID)
+	if id == "" {
+		return "", fmt.Errorf("site %q has no ID", site.Name)
+	}
+	candidates := make([]string, 0, 2)
+	if hash := strings.TrimSpace(site.PHPConfigHash); hash != "" {
+		candidates = append(candidates, filepath.Join(home, "sites", id, hash, "php.ini"))
+	}
+	candidates = append(candidates, filepath.Join(home, "sites", id, "php.ini"))
+	for _, path := range candidates {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			wslPath, err := tooling.WindowsPathToWSLPath(path)
+			if err != nil {
+				return "", fmt.Errorf("site %q php.ini path: %w", site.Name, err)
+			}
+			return wslPath, nil
+		}
+	}
+	return "", fmt.Errorf("site %q php.ini is not written under %s", site.Name, filepath.Join(home, "sites", id))
 }
 
 // mergeSiteDatabaseEnv resolves the dynamic DB_*/DATABASE_URL values and

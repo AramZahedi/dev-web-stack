@@ -151,6 +151,13 @@ func EnsureGlobalWindowsToolShimsForBuild(home, distro, phpBuildPath string) err
 	return EnsureWindowsToolShims(binDir, distro)
 }
 
+// WindowsPathToWSLPath maps an absolute Windows drive path to its WSL mount
+// path. It is exported for CLI environment construction that must hand paths to
+// wsl.exe.
+func WindowsPathToWSLPath(value string) (string, error) {
+	return windowsPathToWSLPath(value)
+}
+
 // windowsPathToWSLPath maps an absolute Windows drive path to its WSL mount
 // path. POSIX paths pass through so the shim builder remains testable off
 // Windows.

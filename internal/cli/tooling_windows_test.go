@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -11,6 +12,47 @@ import (
 	"github.com/AramZahedi/dev-web-stack/internal/model"
 	"github.com/AramZahedi/dev-web-stack/internal/tooling"
 )
+
+func TestWindowsSitePHPIniResolvesGeneratedConfig(t *testing.T) {
+	home := t.TempDir()
+	site := model.Site{ID: "site1", Name: "app", Kind: model.SitePHP, PHPConfigHash: "hash1"}
+	hashDir := filepath.Join(home, "sites", site.ID, site.PHPConfigHash)
+	if err := os.MkdirAll(hashDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hashDir, "php.ini"), []byte("[PHP]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := windowsSitePHPIni(home, site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "/mnt/") || !strings.HasSuffix(got, "/sites/site1/hash1/php.ini") {
+		t.Fatalf("ini path = %q, want a /mnt/... hash-scoped path", got)
+	}
+
+	if err := os.RemoveAll(hashDir); err != nil {
+		t.Fatal(err)
+	}
+	rootDir := filepath.Join(home, "sites", site.ID)
+	if err := os.WriteFile(filepath.Join(rootDir, "php.ini"), []byte("[PHP]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = windowsSitePHPIni(home, site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(got, "/sites/site1/php.ini") {
+		t.Fatalf("root fallback ini path = %q", got)
+	}
+
+	if err := os.Remove(filepath.Join(rootDir, "php.ini")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := windowsSitePHPIni(home, site); err == nil {
+		t.Fatal("missing php.ini was accepted")
+	}
+}
 
 func TestWSLInteractiveLaunchKeepsConsole(t *testing.T) {
 	interactive := newWSLCommand(context.Background(), []string{"-d", "devstack"}, true)
